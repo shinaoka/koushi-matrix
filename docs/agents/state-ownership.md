@@ -259,8 +259,12 @@ carry tokens and counts only. The full prohibited list is in
 ## Local viewed and server-confirmed read state
 
 `TimelineActor` owns the verified local viewed boundary for Room and Thread
-windows. It accepts only an at-bottom viewport observation whose last visible
-canonical event is the latest eligible readable item, has exact actor-generation
+windows. It accepts only an at-bottom viewport observation of the final eligible
+visible row. In Room timelines, a row's latest-reply activity identity is resolved
+back to displayed content; the boundary is the latest eligible displayed main
+conversation event, never a hidden thread reply. Hidden replies after that event
+must not stall the main conversation's read progress. Thread timelines retain
+per-thread reading. Every accepted target has exact actor-generation
 and position-index evidence, and is not obscured by a visible gap. It emits the
 local boundary immediately; it never calls receipt or read-marker IPC.
 

@@ -263,6 +263,7 @@ const transport: TimelineTransport = {
     lastVisibleEventId,
     visibleGapIds,
     atBottom,
+    bottomArrival,
     threadRootEventId
   ) {
     return ipc.invoke("observe_timeline_viewport", {
@@ -271,6 +272,7 @@ const transport: TimelineTransport = {
       lastVisibleEventId,
       visibleGapIds,
       atBottom,
+      bottomArrival,
       threadRootEventId
     });
   },

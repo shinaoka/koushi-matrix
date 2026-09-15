@@ -87,6 +87,7 @@ fn event_item(event_id: &str, body: &str) -> TimelineItem {
         media: None,
         link_previews: None,
         link_ranges: Vec::new(),
+        mentioned_user_ids: Vec::new(),
         reactions: Vec::new(),
         can_react: false,
         is_redacted: false,

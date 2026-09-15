@@ -1561,11 +1561,26 @@ fn effective_message_content(raw: &serde_json::Value) -> Option<&serde_json::Val
             .get("m.relates_to")
             .and_then(|relation| {
                 (relation.get("rel_type")?.as_str() == Some("m.replace"))
-                    .then(|| relation.get("m.new_content"))
+                    .then(|| content.get("m.new_content"))
             })
             .flatten()
             .unwrap_or(content),
     )
+}
+
+pub(super) fn mentioned_user_ids_from_event_json(raw: &serde_json::Value) -> Vec<String> {
+    mention_intent_from_event_json(raw)
+        .map(|intent| {
+            intent
+                .targets
+                .into_iter()
+                .filter_map(|target| match target {
+                    MentionTarget::User { user_id, .. } => Some(user_id),
+                    MentionTarget::Room { .. } | MentionTarget::RoomMention { .. } => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn mention_intent_from_event_json(raw: &serde_json::Value) -> Option<MentionIntent> {
@@ -2449,8 +2464,14 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 media.is_some(),
                 is_redacted,
             );
-            if let Some(raw) = original_json_for_event_item(event_item) {
+            let mut mentioned_user_ids = Vec::new();
+            // Editing uses the effective revision; source/crypto projections
+            // deliberately continue to use original_json_for_event_item.
+            if let Some(raw) = event_item.latest_json()
+                .and_then(|raw| serde_json::from_str(raw.json().get()).ok())
+            {
                 actions.editable_document = composer_document_from_event_json(&raw);
+                mentioned_user_ids = mentioned_user_ids_from_event_json(&raw);
             }
             let is_hidden = timeline_item_should_be_hidden_for_key(
                 key,
@@ -2485,6 +2506,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 media,
                 link_previews: None,
                 link_ranges,
+                mentioned_user_ids,
                 reactions,
                 can_react,
                 is_redacted,
@@ -2525,6 +2547,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 media: None,
                 link_previews: None,
                 link_ranges: Vec::new(),
+                mentioned_user_ids: Vec::new(),
                 reactions: Vec::new(),
                 can_react: false,
                 is_redacted: false,

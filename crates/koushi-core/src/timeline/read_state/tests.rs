@@ -50,8 +50,10 @@ use super::{
 };
 
 use super::super::test_support::{
-    fake_rid, live_tail_test_manager, room_key, test_timeline_actor_handle,
+    fake_rid, live_tail_test_manager, room_key, test_timeline_actor_handle, timeline_item,
 };
+use super::viewed_boundary_target;
+use koushi_protocol::event::TimelineBottomArrival;
 
 #[test]
 fn private_read_receipt_target_advances_to_hidden_edit_notification() {
@@ -103,7 +105,7 @@ fn private_read_receipt_target_advances_to_hidden_edit_notification() {
 }
 
 #[test]
-fn private_read_receipt_target_advances_to_hidden_thread_notification() {
+fn private_read_receipt_target_does_not_read_hidden_thread_notification() {
     let target = private_read_receipt_event_id_for_fully_read(FullyReadReceiptContext {
         visible_event_id: "$visible:test",
         latest_event_id: Some("$latest-thread:test"),
@@ -112,7 +114,7 @@ fn private_read_receipt_target_advances_to_hidden_thread_notification() {
         notification_count: 1,
     });
 
-    assert_eq!(target, "$latest-thread:test");
+    assert_eq!(target, "$visible:test");
 }
 
 fn restored_read_snapshot(key: ReadStateKey, event_id: &str) -> ReadPersistenceSnapshot {
@@ -3039,5 +3041,244 @@ async fn stale_production_receipt_diff_result_is_discarded_after_generation_repl
     assert!(
         action_rx.try_recv().is_err(),
         "a stale actor generation must not publish the receipt batch"
+    );
+}
+
+#[test]
+fn room_viewport_cannot_read_a_reply_the_room_never_renders() {
+    // #872: the room timeline reports a thread root row's activity event id as
+    // the visible identity while the reply itself is never drawn. Reading it
+    // would consume the room's unread badge on content the user never saw.
+    let ordinary = timeline_item("$m1:test", Some("hello"), "@other:test", false);
+    let root = timeline_item("$root:test", Some("thread root"), "@other:test", false);
+    let mut reply = timeline_item("$r1:test", Some("reply"), "@other:test", false);
+    reply.thread_root = Some("$root:test".to_owned());
+    let navigation = vec![ordinary.clone(), root.clone(), reply.clone()];
+    let room_display = vec![ordinary.clone(), root.clone()];
+
+    assert!(
+        viewed_boundary_target(
+            &room_key().kind,
+            &navigation,
+            &room_display,
+            "$r1:test",
+            TimelineBottomArrival::User,
+        )
+        .is_none(),
+        "a reply the room does not render must not be read"
+    );
+    // Even a reply present in a room display does not advance its main boundary.
+    assert_eq!(
+        viewed_boundary_target(
+            &room_key().kind,
+            &navigation,
+            &[ordinary.clone(), root.clone(), reply.clone()],
+            "$r1:test",
+            TimelineBottomArrival::User,
+        )
+        .map(|(index, _)| index),
+        Some(1)
+    );
+    // A displayed bottom row with no newer canonical item still reads.
+    assert_eq!(
+        viewed_boundary_target(
+            &room_key().kind,
+            &[ordinary.clone(), root.clone()],
+            &room_display,
+            "$root:test",
+            TimelineBottomArrival::User,
+        )
+        .map(|(index, _)| index),
+        Some(1)
+    );
+}
+
+#[test]
+fn thread_viewport_still_reads_its_own_displayed_replies() {
+    // In a thread timeline the replies are the displayed rows, so the room-only
+    // guard must not block them.
+    let reply = timeline_item("$r1:test", Some("reply"), "@other:test", false);
+    let thread_kind = TimelineKind::Thread {
+        room_id: "!r:test".to_owned(),
+        root_event_id: "$root:test".to_owned(),
+    };
+
+    assert_eq!(
+        viewed_boundary_target(
+            &thread_kind,
+            &[reply.clone()],
+            &[reply],
+            "$r1:test",
+            TimelineBottomArrival::ContentFits,
+        )
+        .map(|(index, _)| index),
+        Some(0)
+    );
+}
+
+#[test]
+fn viewport_reads_only_the_bottom_row_it_reports() {
+    let first = timeline_item("$m1:test", Some("one"), "@other:test", false);
+    let second = timeline_item("$m2:test", Some("two"), "@other:test", false);
+    let navigation = vec![first.clone(), second.clone()];
+    let display = vec![first, second.clone()];
+
+    // The reported bottom row is the newest eligible item: read.
+    assert!(
+        viewed_boundary_target(
+            &room_key().kind,
+            &navigation,
+            &display,
+            "$m2:test",
+            TimelineBottomArrival::Programmatic,
+        )
+        .is_some()
+    );
+    // A stale observation naming an older row must not read past it.
+    assert!(
+        viewed_boundary_target(
+            &room_key().kind,
+            &navigation,
+            &display,
+            "$m1:test",
+            TimelineBottomArrival::User,
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn thread_viewport_does_not_read_a_live_edge_the_client_scrolled_to() {
+    // #872: opening a thread snaps the pane to the newest reply. That snap is
+    // not the reader reading, and admitting the threaded receipt from it zeroed
+    // the attention count the same open had just computed.
+    let reply = timeline_item("$r1:test", Some("reply"), "@other:test", false);
+    let thread_kind = TimelineKind::Thread {
+        room_id: "!r:test".to_owned(),
+        root_event_id: "$root:test".to_owned(),
+    };
+    let navigation = vec![reply.clone()];
+    let display = vec![reply.clone()];
+
+    assert!(
+        viewed_boundary_target(
+            &thread_kind,
+            &navigation,
+            &display,
+            "$r1:test",
+            TimelineBottomArrival::Programmatic,
+        )
+        .is_none(),
+        "the open-time snap must not read the thread"
+    );
+    assert!(
+        viewed_boundary_target(
+            &thread_kind,
+            &navigation,
+            &display,
+            "$r1:test",
+            TimelineBottomArrival::User,
+        )
+        .is_some(),
+        "a bottom the reader reached does read the thread"
+    );
+    assert!(
+        viewed_boundary_target(
+            &thread_kind,
+            &navigation,
+            &display,
+            "$r1:test",
+            TimelineBottomArrival::ContentFits,
+        )
+        .is_some(),
+        "a thread whose rows all fit on screen is read on sight"
+    );
+}
+
+#[test]
+fn room_viewport_still_reads_a_bottom_the_client_scrolled_to() {
+    // A room is read by looking at its live edge, as before; only the thread
+    // pane had to stop treating its own snap as reading (#872).
+    let message = timeline_item("$m1:test", Some("hello"), "@other:test", false);
+    assert!(
+        viewed_boundary_target(
+            &room_key().kind,
+            std::slice::from_ref(&message),
+            std::slice::from_ref(&message),
+            "$m1:test",
+            TimelineBottomArrival::Programmatic,
+        )
+        .is_some()
+    );
+}
+
+#[test]
+fn room_viewed_boundary_advances_past_hidden_reply_tail_to_displayed_content() {
+    let root = timeline_item("$root:test", Some("root"), "@other:test", false);
+    let mut reply = timeline_item("$reply:test", Some("reply"), "@other:test", false);
+    reply.thread_root = Some("$root:test".to_owned());
+    let navigation = vec![root.clone(), reply];
+    let result = viewed_boundary_target(
+        &room_key().kind,
+        &navigation,
+        &[root],
+        "$root:test",
+        TimelineBottomArrival::User,
+    )
+    .map(|(index, _)| index);
+    assert_eq!(result, Some(0));
+}
+
+#[test]
+fn room_viewed_boundary_resolves_latest_reply_row_without_reading_reply() {
+    use koushi_protocol::event::{TimelineDisplayKind, TimelineDisplayMetadata};
+    let root = timeline_item("$root:test", Some("root"), "@other:test", false);
+    let main = timeline_item("$main:test", Some("main"), "@other:test", false);
+    let mut reply = timeline_item("$reply:test", Some("reply"), "@other:test", false);
+    reply.thread_root = Some("$root:test".to_owned());
+    let navigation = vec![root.clone(), main.clone(), reply];
+    let mut displayed_root = root;
+    displayed_root.display_metadata = Some(TimelineDisplayMetadata {
+        row_id: "thread-root:synthetic".to_owned(),
+        kind: TimelineDisplayKind::ThreadRoot,
+        content_event_id: Some("$root:test".to_owned()),
+        activity_event_id: Some("$reply:test".to_owned()),
+        display_timestamp_ms: None,
+    });
+    let display = vec![main, displayed_root];
+    let result = viewed_boundary_target(
+        &room_key().kind,
+        &navigation,
+        &display,
+        "$reply:test",
+        TimelineBottomArrival::User,
+    )
+    .map(|(index, _)| index);
+    assert_eq!(
+        result,
+        Some(1),
+        "the main boundary must not advance to the hidden reply"
+    );
+    assert_eq!(
+        viewed_boundary_target(
+            &room_key().kind,
+            &navigation,
+            &display,
+            "$root:test",
+            TimelineBottomArrival::User
+        )
+        .map(|(index, _)| index),
+        Some(1)
+    );
+    assert!(
+        viewed_boundary_target(
+            &room_key().kind,
+            &navigation,
+            &display,
+            "$main:test",
+            TimelineBottomArrival::User
+        )
+        .is_none(),
+        "a stale non-bottom observation must not read"
     );
 }

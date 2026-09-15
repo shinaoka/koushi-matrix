@@ -1,5 +1,5 @@
 use crate::MatrixClientSession;
-use matrix_sdk::message_search::SearchError;
+use futures_util::{StreamExt as _, pin_mut};
 use matrix_sdk_search::error::IndexError;
 use std::{
     fmt,
@@ -132,10 +132,12 @@ pub async fn search_message_candidates_scoped(
             let Some(room) = session.client().get_room(&room_id) else {
                 return Ok(Vec::new());
             };
-            let mut iterator = room.search_messages(query.to_owned(), limit);
+            let iterator = room.search_messages(query.to_owned());
+            pin_mut!(iterator);
             let Some(candidates) = iterator
                 .next()
                 .await
+                .transpose()
                 .map_err(|error| matrix_search_error_from_index(&error))?
             else {
                 return Ok(Vec::new());
@@ -145,7 +147,7 @@ pub async fn search_message_candidates_scoped(
                 .into_iter()
                 .take(limit)
                 .enumerate()
-                .map(|(index, event_id)| MatrixSearchCandidate {
+                .map(|(index, (_score, event_id))| MatrixSearchCandidate {
                     room_id: room_id.to_string(),
                     event_id: event_id.to_string(),
                     score_millis: 1_000_u32.saturating_sub(index as u32),
@@ -155,12 +157,14 @@ pub async fn search_message_candidates_scoped(
         MatrixSearchScope::AllRooms | MatrixSearchScope::RoomSet { .. } => {}
     }
 
-    let builder = session.client().search_messages(query.to_owned(), limit);
-    let mut iterator = builder.build();
+    let builder = session.client().search_messages(query.to_owned());
+    let iterator = builder.build();
+    pin_mut!(iterator);
     let Some(candidates) = iterator
         .next()
         .await
-        .map_err(matrix_search_error_from_sdk)?
+        .transpose()
+        .map_err(|error| matrix_search_error_from_index(&error))?
     else {
         return Ok(Vec::new());
     };
@@ -169,7 +173,7 @@ pub async fn search_message_candidates_scoped(
         .into_iter()
         .take(limit)
         .enumerate()
-        .map(|(index, (room_id, event_id))| MatrixSearchCandidate {
+        .map(|(index, (room_id, _score, event_id))| MatrixSearchCandidate {
             room_id: room_id.to_string(),
             event_id: event_id.to_string(),
             score_millis: 1_000_u32.saturating_sub(index as u32),
@@ -179,13 +183,6 @@ pub async fn search_message_candidates_scoped(
         candidates.retain(|candidate| room_ids.iter().any(|room_id| room_id == &candidate.room_id));
     }
     Ok(candidates)
-}
-
-fn matrix_search_error_from_sdk(error: SearchError) -> MatrixSearchError {
-    match error {
-        SearchError::IndexError(error) => matrix_search_error_from_index(&error),
-        SearchError::EventLoadError(_) => MatrixSearchError::Internal,
-    }
 }
 
 fn matrix_search_error_from_index(error: &IndexError) -> MatrixSearchError {

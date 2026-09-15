@@ -10,8 +10,8 @@ use super::participants::{QaParticipantLoginGate, login_synced_participant_for_q
 use super::registry::{EVENT_TIMEOUT, QaConfig};
 use super::{
     AccountCommand, AccountKey, CoreCommand, CoreConnection, CoreEvent, CoreRuntime,
-    LiveSignalsEvent, SyncCommand, TimelineCommand, TimelineEvent, TimelineItemId, TimelineKey,
-    TimelineKind, TimelineReadStateSync, TimelineViewportObservation,
+    LiveSignalsEvent, SyncCommand, TimelineBottomArrival, TimelineCommand, TimelineEvent,
+    TimelineItemId, TimelineKey, TimelineKind, TimelineReadStateSync, TimelineViewportObservation,
 };
 
 struct ReadStateRestartCheckpoint {
@@ -426,6 +426,7 @@ async fn observe_viewport(
             last_visible_event_id: Some(event_id.to_owned()),
             visible_gap_ids: Vec::new(),
             at_bottom: true,
+            bottom_arrival: TimelineBottomArrival::User,
         },
     }))
     .await

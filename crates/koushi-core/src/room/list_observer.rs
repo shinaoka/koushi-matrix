@@ -734,7 +734,6 @@ async fn run_live_room_list_observation_with_sources(
     ));
     let mut entries = Box::pin(entries);
     let mut loading_state = all_rooms.loading_state();
-    let mut range_loading_state = all_rooms.range_loading_state();
     let mut room_updates_closed = false;
     record(
         DiagnosticEvent::new(DiagnosticLevel::Debug, "core.room", "live_observer_started").field(
@@ -755,10 +754,13 @@ async fn run_live_room_list_observation_with_sources(
             entries_controller.add_one_page();
         }
     }
-    reconciliation.report_range_fully_loaded(matches!(
-        range_loading_state.get(),
-        matrix_sdk_ui::room_list_service::RoomListRangeLoadingState::FullyLoaded
-    ));
+    // The authoritative, response-correlated snapshot is the single source of
+    // truth for room-range readiness: the standalone `range_loading_state`
+    // observable that the SDK used to publish is gone (koushi-matrix#888,
+    // Stage 2).
+    reconciliation.report_range_fully_loaded(
+        all_rooms.current_entries_snapshot().range_fully_loaded() == Some(true),
+    );
     let mut rls_wake_count = 0_u64;
     let mut base_wake_count = 0_u64;
     let mut entries_observed = false;
@@ -1034,39 +1036,6 @@ async fn run_live_room_list_observation_with_sources(
                             timeline_residency.as_ref(),
                         ).await;
                     }
-                }
-            }
-            next_range_state = range_loading_state.next() => {
-                let Some(next_range_state) = next_range_state else {
-                    record_live_observer_exit(
-                        DiagnosticLevel::Error,
-                        "range_state_stream_ended",
-                        rls_wake_count,
-                        base_wake_count,
-                    );
-                    break;
-                };
-                reconciliation.report_range_fully_loaded(matches!(
-                    next_range_state,
-                    matrix_sdk_ui::room_list_service::RoomListRangeLoadingState::FullyLoaded
-                ));
-                if reconciliation.has_pending_reconciliation() {
-                    project_live_entries_and_ack_if_reconciled(
-                        &mut reconciliation,
-                        &session,
-                        &current,
-                        &direct_state,
-                        &known_room_ids,
-                        &known_dm_rooms,
-                        &room_tx,
-                        &action_tx,
-                        &event_tx,
-                        generation,
-                        source,
-                        &authoritative,
-                        &sliding_sync_diagnostics,
-                        timeline_residency.as_ref(),
-                    ).await;
                 }
             }
             maybe_diffs = entries.next(), if entries_enabled => match maybe_diffs {

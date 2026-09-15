@@ -30,6 +30,7 @@ async function gotoReadyShell(page: import("@playwright/test").Page): Promise<vo
 
 async function openUserSettings(page: import("@playwright/test").Page): Promise<void> {
   await page.getByRole("button", { name: t("workspace.userSettings") }).click();
+  await page.getByRole("tab", { name: "Search history", exact: true }).click();
   // Wait for the settings panel to be open and the search history section to be present
   await expect(page.getByRole("region", { name: t("settings.searchHistory") })).toBeVisible();
 }

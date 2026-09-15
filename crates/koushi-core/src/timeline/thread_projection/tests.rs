@@ -488,6 +488,7 @@ fn timeline_message_item(event_id: &str, sender: &str) -> TimelineItem {
         media: None,
         link_previews: None,
         link_ranges: Vec::new(),
+        mentioned_user_ids: Vec::new(),
         reactions: Vec::new(),
         can_react: true,
         is_redacted: false,
@@ -992,8 +993,6 @@ fn thread_summary_projection_preserves_ready_latest_event_id() {
             identifier: TimelineEventItemId::EventId(latest_event_id.clone()),
         })),
         num_replies: 1,
-        public_read_receipt_event_id: None,
-        private_read_receipt_event_id: None,
     };
 
     let dto = thread_summary_from_sdk(summary);

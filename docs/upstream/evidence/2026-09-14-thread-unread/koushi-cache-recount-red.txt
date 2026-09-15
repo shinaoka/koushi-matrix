@@ -1,0 +1,6 @@
+running 1 test
+test event_cache::caches::room::timed_tests::test_subscribe_recounts_cached_thread_edit_notifications ... FAILED
+assertion `left == right` failed
+  left: 1
+ right: 0
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 653 filtered out; finished in 0.03s

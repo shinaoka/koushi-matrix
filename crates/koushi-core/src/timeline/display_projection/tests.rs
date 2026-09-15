@@ -846,6 +846,7 @@ async fn restore_terminal_flush_publishes_two_projected_batches_once_then_reboun
     ));
 
     let navigation_snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
         &canonical_items,
         None,
         &TimelineViewportObservation::default(),
@@ -1357,4 +1358,186 @@ fn display_diff_application_normalizes_duplicate_render_identities() {
     );
     apply_timeline_diffs_to_display_items(&mut display_items, &[TimelineDiff::Clear]);
     assert!(display_items.is_empty());
+}
+
+#[test]
+fn thread_replies_do_not_evict_the_ordinary_rows_from_the_live_edge_window() {
+    // #873: the room live-edge window was sized in canonical items, so a run of
+    // suppressed thread replies filled it and the ordinary history drained away
+    // one row per reply until only the thread root remained.
+    let mut canonical_items = synthetic_projection_items(8);
+    let root_event_id = "$canonical-0:test";
+    let mut state =
+        DisplayProjectionState::from_canonical_window(&canonical_items, 0..canonical_items.len());
+    let context = DisplayProjectionContext::bounded_live_edge();
+
+    for index in 0..(ROOM_REPLAY_INITIAL_ITEMS_MAX + 10) {
+        let mut reply = timeline_item(
+            &format!("$reply-{index}:test"),
+            Some("reply"),
+            "@sender:test",
+            false,
+        );
+        reply.thread_root = Some(root_event_id.to_owned());
+        project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &[TimelineDiff::PushBack { item: reply }],
+            &context,
+        );
+    }
+
+    let visible = state
+        .display_items()
+        .iter()
+        .filter_map(timeline_item_event_id)
+        .collect::<Vec<_>>();
+    for index in 0..8 {
+        let ordinary = format!("$canonical-{index}:test");
+        assert!(
+            visible.iter().any(|event_id| event_id == &ordinary),
+            "ordinary row {ordinary} was evicted by thread replies: {visible:?}"
+        );
+    }
+    assert!(
+        !visible
+            .iter()
+            .any(|event_id| event_id.starts_with("$reply-")),
+        "thread replies must not render as room rows: {visible:?}"
+    );
+}
+
+#[test]
+fn reset_window_counts_displayed_rows_not_canonical_items() {
+    // #873: a Reset rebuilds the window from the canonical tail. The same rule
+    // has to hold there, or a resumed room loses its history on arrival.
+    let mut items = synthetic_projection_items(8);
+    for index in 0..(ROOM_REPLAY_INITIAL_ITEMS_MAX + 10) {
+        let mut reply = timeline_item(
+            &format!("$reply-{index}:test"),
+            Some("reply"),
+            "@sender:test",
+            false,
+        );
+        reply.thread_root = Some("$canonical-0:test".to_owned());
+        items.push(reply);
+    }
+    let start = super::live_edge_window_start(&items, ROOM_REPLAY_INITIAL_ITEMS_MAX);
+
+    assert_eq!(start, 0, "every ordinary row is inside the window");
+}
+
+#[test]
+fn live_edge_window_retains_one_reply_slot_per_root() {
+    // #873: replies stay in the window only as far as LatestReply placement
+    // needs them — the newest canonical index per root. The bounded window must
+    // not grow with the thread, or protecting the ordinary rows above would just
+    // move the memory and per-batch cost into the reply tail.
+    let mut canonical_items = synthetic_projection_items(8);
+    let mut state =
+        DisplayProjectionState::from_canonical_window(&canonical_items, 0..canonical_items.len());
+    let context = DisplayProjectionContext::bounded_live_edge();
+
+    for index in 0..(ROOM_REPLAY_INITIAL_ITEMS_MAX * 3) {
+        let mut reply = timeline_item(
+            &format!("$reply-{index}:test"),
+            Some("reply"),
+            "@sender:test",
+            false,
+        );
+        reply.thread_root = Some("$canonical-0:test".to_owned());
+        project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &[TimelineDiff::PushBack { item: reply }],
+            &context,
+        );
+    }
+
+    let reply_slots = state
+        .slots
+        .iter()
+        .filter(|slot| slot.item.thread_root.is_some())
+        .count();
+    assert_eq!(
+        reply_slots, 1,
+        "only the newest reply of a root stays in the window"
+    );
+    // Eight ordinary rows (one of them the thread root) and the retained reply.
+    assert_eq!(state.slots.len(), 9);
+}
+
+#[test]
+fn thread_reply_items_survive_room_order_setting_toggle() {
+    let root = timeline_item("$root:test", Some("root"), "@other:test", false);
+    let mut items = vec![root];
+    for index in 0..6 {
+        let mut reply = timeline_item(
+            &format!("$reply-{index}:test"),
+            Some("reply"),
+            "@other:test",
+            false,
+        );
+        reply.thread_root = Some("$root:test".to_owned());
+        items.push(reply);
+    }
+    let mut projection = DisplayProjectionState::from_canonical_window(&items, 0..items.len());
+    let mut model = projection.display_items().to_vec();
+    for order in [
+        TimelineThreadRootOrder::LatestReply,
+        TimelineThreadRootOrder::RootEvent,
+        TimelineThreadRootOrder::LatestReply,
+    ] {
+        let context = DisplayProjectionContext::for_timeline(
+            &thread_key().kind,
+            &TimelineViewportObservation::default(),
+            false,
+        )
+        .with_thread_roots(order, Vec::new());
+        let diffs = projection.reproject(&context);
+        apply_timeline_diffs_to_items(&mut model, &diffs);
+        assert_eq!(
+            model.iter().map(|item| &item.id).collect::<Vec<_>>(),
+            items.iter().map(|item| &item.id).collect::<Vec<_>>()
+        );
+    }
+}
+
+
+#[test]
+fn edited_thread_root_keeps_latest_document_through_service_and_display() {
+    let mut service = crate::threads_list::ThreadRootProjectionService::default();
+    let mut root = timeline_item(
+        "$root:example.test",
+        Some("original"),
+        "@alice:example.test",
+        false,
+    );
+    root.thread_summary = Some(koushi_protocol::event::ThreadSummaryDto {
+        reply_count: 1,
+        latest_event_id: Some("$reply:example.test".into()),
+        latest_sender: Some("@bob:example.test".into()),
+        latest_sender_label: None,
+        latest_body_preview: Some("reply".into()),
+        latest_timestamp_ms: Some(2),
+    });
+    let stale_fallback = root.clone();
+    for body in ["original", "first edit", "second edit"] {
+        root.actions.editable_document = Some(koushi_state::ComposerDocument::new(vec![
+            koushi_state::ComposerInline::Text { text: body.into() },
+        ]));
+        service.seed_canonical_root("!room:example.test", &root);
+        let data = service.display_data_for_room("!room:example.test");
+        assert_eq!(data.len(), 1);
+        let display = super::root_display_item(
+            &data[0],
+            &stale_fallback,
+            "$reply:example.test".into(),
+            Some(2),
+        );
+        assert_eq!(
+            display.actions.editable_document.unwrap().plain_body(),
+            body
+        );
+    }
 }

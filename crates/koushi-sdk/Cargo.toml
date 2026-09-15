@@ -19,7 +19,7 @@ path = "src/bin/headless-local-qa.rs"
 required-features = ["smoke"]
 
 [dependencies]
-eyeball-im = "0.8"
+eyeball-im = "0.9"
 futures-util = "0.3"
 koushi-diagnostics = { path = "../koushi-diagnostics" }
 koushi-state = { path = "../koushi-state" }
@@ -29,7 +29,7 @@ matrix-sdk-ui = { workspace = true }
 mime = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
 rpassword = { version = "7", optional = true }
-ruma = "0.16"
+ruma = { git = "https://github.com/ruma/ruma", rev = "0908aaa9847093ecb32bc6edf0af525f726717fd" }
 matrix-sdk-base = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -51,7 +51,7 @@ koushi-sdk = { path = ".", features = ["test-hooks"] }
 matrix-sdk = { workspace = true, features = ["testing"] }
 matrix-sdk-test = { workspace = true }
 tempfile = "3"
-vodozemac = "0.10"
+vodozemac = { git = "https://github.com/matrix-org/vodozemac/", rev = "cfc4eee", features = ["insecure-pk-encryption", "experimental-session-config"] }
 wiremock = "0.6"
 
 # cargo-machete ignore list: ruma types are accessed through matrix_sdk::ruma

@@ -18,6 +18,19 @@ permissions:
   contents: read
 
 jobs:
+  user-help:
+    name: User help (links / generated index)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Test help tooling
+        run: node --test scripts/user-help.test.mjs
+      - name: Check help navigation and llms.txt
+        run: node scripts/user-help.mjs --check
+
   frontend:
     name: Frontend (typecheck / vitest / build / secret-scan)
     runs-on: ubuntu-latest

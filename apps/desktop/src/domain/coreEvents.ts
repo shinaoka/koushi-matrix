@@ -330,6 +330,8 @@ export interface TimelineItem {
   media?: TimelineMedia | null;
   link_previews?: LinkPreview[];
   link_ranges?: TimelineLinkRange[];
+  /** User ids this message's `m.mentions` named (#874). Absent when none. */
+  mentioned_user_ids?: string[];
   reactions: ReactionGroup[];
   can_react: boolean;
   is_redacted: boolean;
@@ -1518,3 +1520,6 @@ export function threadTimelineKey(
     kind: { Thread: { room_id: roomId, root_event_id: rootEventId } }
   };
 }
+
+/** How a timeline viewport reached its current live edge (#872). */
+export type TimelineBottomArrival = "user" | "content_fits" | "programmatic";

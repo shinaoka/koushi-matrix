@@ -132,7 +132,6 @@ describe("UserSettingsPanel", () => {
     onOpenRecovery: () => undefined,
     onChooseRoomKeyExportDestination: async () => null,
     onChooseRoomKeyImportSource: async () => null,
-    onOpenKeyboardSettings: () => undefined,
     onProbeLocalEncryption: () => undefined,
     onLogout: () => undefined,
     onResetLocalData: () => undefined,
@@ -381,7 +380,7 @@ describe("UserSettingsPanel", () => {
     const accountManagementPosition = markup.indexOf('aria-label="Account management"');
     const keyboardPosition = markup.indexOf('aria-label="Keyboard"');
     expect(sessionPosition).toBeGreaterThanOrEqual(0);
-    expect(accountsPosition).toBeGreaterThan(sessionPosition);
+    expect(sessionPosition).toBeGreaterThan(accountManagementPosition);
     expect(remoteSessionsPosition).toBe(-1);
     expect(accountManagementPosition).toBeGreaterThan(accountsPosition);
     expect(keyboardPosition).toBeGreaterThan(accountManagementPosition);
@@ -479,6 +478,7 @@ describe("UserSettingsPanel", () => {
       />
     );
 
+    fireEvent.click(screen.getByRole("tab", { name: "Sessions" }));
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
 
     expect(onLogout).toHaveBeenCalledTimes(1);
@@ -507,6 +507,7 @@ describe("UserSettingsPanel", () => {
       />
     );
 
+    fireEvent.click(screen.getByRole("tab", { name: "Encryption" }));
     fireEvent.click(screen.getByRole("button", { name: "Reset local data" }));
 
     expect(onResetLocalData).toHaveBeenCalledTimes(1);
@@ -556,6 +557,7 @@ describe("UserSettingsPanel", () => {
         onUpdateSettings={onUpdateSettings}
       />
     );
+    fireEvent.click(screen.getByRole("tab", { name: "Search history" }));
 
     expect(screen.queryByRole("button", { name: "Off" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Pause crawler" }));
@@ -621,6 +623,7 @@ describe("UserSettingsPanel", () => {
       />
     );
 
+    fireEvent.click(screen.getByRole("tab", { name: "Preferences" }));
     const control = screen.getByRole("switch", {
       name: "Place threaded conversations at their latest reply"
     });
@@ -671,6 +674,7 @@ describe("UserSettingsPanel", () => {
       />
     );
 
+    fireEvent.click(screen.getByRole("tab", { name: "Preferences" }));
     const control = screen.getByRole("switch", {
       name: "Place threaded conversations at their latest reply"
     });
@@ -777,6 +781,7 @@ describe("UserSettingsPanel", () => {
         {...handlers}
       />
     );
+    fireEvent.click(screen.getByRole("tab", { name: "Search history" }));
 
     const crawlerActivity = screen.getByRole("region", { name: "Search crawler activity" });
     const crawlerStatus = screen.getByRole("region", { name: "Room index status" });
@@ -892,6 +897,7 @@ describe("UserSettingsPanel", () => {
         {...handlers}
       />
     );
+    fireEvent.click(screen.getByRole("tab", { name: "Search history" }));
 
     const crawlerActivity = screen.getByRole("region", { name: "Search crawler activity" });
     const crawlerStatus = screen.getByRole("region", { name: "Room index status" });
@@ -956,6 +962,7 @@ describe("UserSettingsPanel", () => {
         {...handlers}
       />
     );
+    fireEvent.click(screen.getByRole("tab", { name: "Search history" }));
 
     const crawlerActivity = screen.getByRole("region", { name: "Search crawler activity" });
     const activityScope = within(crawlerActivity);
@@ -985,6 +992,7 @@ describe("UserSettingsPanel", () => {
         onRebuildSearchIndex={onRebuildSearchIndex}
       />
     );
+    fireEvent.click(screen.getByRole("tab", { name: "Search history" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Rebuild search database" }));
     expect(confirmSpy).toHaveBeenCalledWith(
@@ -1069,7 +1077,7 @@ describe("UserSettingsPanel", () => {
       />
     );
 
-    expect(markup).toContain("Matrix account");
+    expect(markup).toContain("Accounts");
     expect(markup).toContain("Not restored");
     expect(markup).toContain("@second-user:example.invalid");
     expect(markup).toContain("Switch");

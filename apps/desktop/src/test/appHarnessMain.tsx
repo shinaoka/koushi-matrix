@@ -109,6 +109,7 @@ interface AppHarnessControl {
   setNextTextSendPendingBody(body: string): void;
   setSnapshot(snapshot: DesktopSnapshot): void;
   pushCoreEvent(event: CoreEventPayload): Promise<void>;
+  pushDesktopMenu(action: string): Promise<void>;
   pushStateUpdate(envelope?: StateUpdateEnvelope): void;
   currentSnapshot(): DesktopSnapshot;
   e2eeTrustSnapshot(): DesktopSnapshot;
@@ -3677,6 +3678,7 @@ const harnessControl: AppHarnessControl = {
     setCurrentSnapshot(snapshot);
     mock.setCommandResponse("get_snapshot", () => currentSnapshot);
   },
+  pushDesktopMenu: (action) => emit("koushi-desktop://menu", action),
   pushCoreEvent: (event) => {
     // Records that a test now owns the CoreEvent stream so the boot seed
     // loop below stops re-emitting its generation-1 timeline over test data.

@@ -2127,6 +2127,13 @@ impl AccountActor {
             &diagnostics,
             crate::room_key_receive::RECEIVE_SUMMARY_TRIGGER_RESTORE,
         );
+
+        let protection_counters =
+            koushi_sdk::incoming_verification_request_protection_counters(session).await;
+        crate::account::verification::record_incoming_verification_protection_summary(
+            &protection_counters,
+            crate::account::verification::VERIFICATION_PROTECTION_SUMMARY_TRIGGER_RESTORE,
+        );
     }
 
     /// Roll back a failed login bootstrap: best-effort server logout of the

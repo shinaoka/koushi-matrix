@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-09-09.
+Last amended: 2026-09-12.
 
 The evidence-based classification of remaining frontend-owned resources and
 semantic migration candidates is maintained in
@@ -903,15 +903,33 @@ and retains DOM measurement, virtualization, date-divider presentation, scroll
 anchoring and layout settlement; it never infers projection death or thread
 placement from frontend timeline contents.
 
+Editable documents and mention metadata use the latest SDK event revision's
+effective message content (`content.m.new_content` for replacements). Original
+event JSON remains the source for source/crypto diagnostics. This applies also
+to canonical thread roots and their relocated display projections; re-editing
+must preserve the last accepted edit.
+
 Opening an `ExistingThread` or `PinnedReply` whose first SDK Thread snapshot is
-empty performs one bounded scheduler-owned backward page before any InitialItems
+empty performs one bounded scheduler-owned backward hydration request before any InitialItems
 or `ThreadSubscribed` success is published. The accepted Rust intent travels
 through AppEffect and an internal Core subscription policy; mutable reducer state
-is not reread later. End-reached plus empty is authoritative empty. A non-end
-empty page or SDK error takes the typed subscription-failure path and publishes
-no InitialItems. The existing Room empty-hydration policy remains separately
+is not reread later. Hydration uses the public Thread event-cache pagination API
+to target 100 raw events across cached chunks, including chunks containing
+only hidden edits or reactions. This is one bounded request, not one chunk or
+one HTTP call. Pagination and projection readiness share a 10-second deadline.
+End-reached plus empty is authoritative empty. For a non-end result, Core awaits
+visible content from the same SDK subscription created before pagination. This checks
+content readiness, not full page-publication completion; the actor continues
+receiving subsequent updates. Immediate snapshot emptiness is not failure.
+Stream closure, deadline expiry, or SDK error takes the typed subscription-failure
+path and publishes no InitialItems. The existing Room empty-hydration policy remains separately
 non-fatal. `NewThreadDraft` stays immediately composer-capable and performs no
 initial history page.
+
+The frontend pagination projection belongs to the Core actor generation. A new
+actor InitialItems resets projected pagination to Idle in both directions; a
+same-actor replay preserves it. A closed actor's EndReached must not suppress
+loading a replacement actor's partially restored cache.
 
 The runtime assigns each attached consumer a `RuntimeConnectionId`; the
 attached connection allocates a monotonically increasing `sequence` within that
@@ -1214,6 +1232,10 @@ notification dispatcher replaces the webview/window sound port,
 exception: it may retain positive-edge, three-second cooldown and one in-flight
 call state, but receives Rust-owned count/candidate/capability/settings facts and
 must not classify Matrix attention or carry identifiers/content.
+Redacted events contribute no unread, notification, or mention count, even if
+cached push actions predate their redaction. They remain usable as receipt
+boundaries. This does not suppress valid push actions on non-redacted edits,
+reactions, or state events.
 Pane-level thread attention is also Rust-owned: `AppState.thread_attention`
 tracks the open thread's notification, highlight, and live-event marker counts
 and reaches React only through the Tauri/TypeScript DTO.
@@ -1908,3 +1930,15 @@ and keeps the same QA hierarchy.
 - **Phase 15+:** finish desktop interaction completeness, E2EE trust
   implementation and GUI, performance/soak, distribution hardening,
   platform credential-store evidence, signing/notarization, and release.
+
+## User Settings And Help Presentation
+
+User settings open as a modal in the browser top layer, above the three-pane
+workspace. They do not occupy or resize the contextual right pane. The dialog
+has a left category list and a separately scrolling selected page on the right;
+both fit within the viewport. Category selection and modal visibility are
+transient presentation state; all setting values and update results remain
+Rust-owned. Keyboard reference and send-key preferences belong to the Keyboard
+category. Help offers the public repository URL, a copy action, and a short
+instruction to ask an AI assistant. It must be usable before sign-in and must
+not collect or copy account details or messages.

@@ -159,7 +159,6 @@ export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[]
     case "account":
       return [
         { id: "openUserSettings", labelMessageId: "context.openUserSettings" },
-        { id: "openKeyboardSettings", labelMessageId: "context.openKeyboardSettings" },
         { id: "switchAccount", labelMessageId: "context.switchAccount" }
       ];
   }

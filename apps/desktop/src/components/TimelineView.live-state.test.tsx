@@ -94,6 +94,8 @@ describe("TimelineView", () => {
           "$latest:example.invalid",
           [],
           true,
+          // #872: the observation reports how the viewport arrived.
+          "user",
           null
         );
       });
@@ -181,6 +183,8 @@ describe("TimelineView", () => {
         "$thread-reply:example.invalid",
         [],
         true,
+        // #872: the observation reports how the viewport arrived.
+        "user",
         "$root:example.invalid"
       );
     } finally {

@@ -4,7 +4,12 @@ import { desktopEventPort } from "./desktopEventRuntime";
 import { saveReadyMediaFile } from "./linkMediaRuntime";
 import { isTauriRuntime } from "./runtimeEnvironment";
 import type { TimelineTransport } from "../components/timeline/TimelineTransport";
-import type { CoreEventPayload, TimelineGapId, TimelineKey } from "../domain/coreEvents";
+import type {
+  CoreEventPayload,
+  TimelineBottomArrival,
+  TimelineGapId,
+  TimelineKey
+} from "../domain/coreEvents";
 import type { ComposerDocument, TimelineScrollAnchor } from "../domain/types";
 
 let tauriCoreEventListenerReady: Promise<void> = Promise.resolve();
@@ -143,6 +148,7 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
         lastVisibleEventId: string | null,
         visibleGapIds: TimelineGapId[],
         atBottom: boolean,
+        bottomArrival: TimelineBottomArrival,
         threadRootEventId: string | null
       ) {
         await invoke("observe_timeline_viewport", {
@@ -151,6 +157,7 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
           lastVisibleEventId,
           visibleGapIds,
           atBottom,
+          bottomArrival,
           threadRootEventId
         });
       },

@@ -1,0 +1,22 @@
+running 20 tests
+test event_cache::caches::read_receipts::tests::test_maybe_receipt_event_content_from_empty_iterator ... ok
+test event_cache::caches::read_receipts::tests::test_redaction_does_not_mark_room_as_unread ... ok
+test event_cache::caches::read_receipts::tests::test_reaction_does_not_mark_room_as_unread ... ok
+test event_cache::caches::read_receipts::tests::test_state_event_does_not_mark_as_unread ... ok
+test event_cache::caches::read_receipts::tests::test_room_message_marks_as_unread ... ok
+test event_cache::caches::read_receipts::tests::test_room_edit_does_not_mark_as_unread ... ok
+test event_cache::caches::read_receipts::tests::test_find_and_process_events ... ok
+test event_cache::caches::read_receipts::tests::test_count_unread_and_mentions ... ok
+test event_cache::caches::read_receipts::tests::test_maybe_receipt_event_content_from_iterator ... ok
+test event_cache::caches::read_receipts::tests::test_stop_on_event_ids ... ok
+test event_cache::caches::read_receipts::tests::test_compute_unread_counts_with_threading_enabled ... ok
+test event_cache::caches::read_receipts::tests::test_select_best_receipt_stashes_pending_receipts ... ok
+test event_cache::caches::read_receipts::tests::test_select_best_receipt_implicit ... ok
+test event_cache::caches::read_receipts::tests::test_select_best_receipt_new_receipt_event ... ok
+test event_cache::caches::read_receipts::tests::test_select_best_receipt_active_receipt ... ok
+test event_cache::caches::read_receipts::tests::test_select_best_receipt_mixed ... ok
+test event_cache::caches::read_receipts::tests::test_select_best_receipt_noop ... ok
+test event_cache::caches::read_receipts::tests::test_select_best_receipt_matched_pending_receipt ... ok
+test event_cache::caches::read_receipts::tests::unthreaded_receipt_on_thread_reply_preserves_room_read_boundary ... ok
+test event_cache::caches::read_receipts::tests::unthreaded_reply_receipt_is_matched_from_sync_and_store ... ok
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 631 filtered out; finished in 0.01s

@@ -1254,3 +1254,59 @@ describe("SpaceMembersPanel", () => {
     }
   );
 });
+
+describe("SpaceMembersPanel member row role display (#880)", () => {
+  const administrator = () =>
+    member("@alice:example.invalid", "Alice", "space_joined", {
+      power_level: 100,
+      role: "administrator",
+      role_options: [{ power_level: 0, role: "user", requires_confirmation: true }]
+    });
+
+  it("states the role only through the control that edits it", () => {
+    const { container } = render(
+      <SpaceMembersPanel
+        state={state({ can_edit_roles: true, space_joined: [administrator()] })}
+        canInvite={true}
+        onInviteUser={vi.fn()}
+        onOpenProfile={vi.fn()}
+        onUpdateRole={vi.fn()}
+      />
+    );
+
+    const row = screen
+      .getByRole("combobox", { name: "Role for Alice" })
+      .closest(".space-members-row");
+    expect(row).not.toBeNull();
+    expect(row!.querySelectorAll(".space-members-name")).toHaveLength(1);
+    expect(row!.querySelector(".space-members-name")?.textContent).toBe("Alice");
+    // The control already states the role; a chip would name it twice.
+    expect(row!.querySelector(".space-members-role")).toBeNull();
+    // The duplicate label text stays in the document for assistive technology
+    // only, via the shared visually-hidden rule rather than an undefined class.
+    expect(row!.querySelector(".space-members-role-control > .sr-only")?.textContent).toBe(
+      "Role for Alice"
+    );
+    expect(container.querySelectorAll(".visually-hidden")).toHaveLength(0);
+    expect(container.querySelector("label[for='space-members-search-input']")?.className).toBe(
+      "sr-only"
+    );
+  });
+
+  it("keeps stating the role when the row has no role control", () => {
+    render(
+      <SpaceMembersPanel
+        state={state({ can_edit_roles: false, space_joined: [administrator()] })}
+        canInvite={true}
+        onInviteUser={vi.fn()}
+        onOpenProfile={vi.fn()}
+      />
+    );
+
+    const row = screen
+      .getByRole("button", { name: "Open profile for Alice" })
+      .closest(".space-members-row");
+    expect(row!.querySelector(".space-members-role")?.textContent).toBe("Administrator");
+    expect(screen.queryByRole("combobox", { name: "Role for Alice" })).toBeNull();
+  });
+});

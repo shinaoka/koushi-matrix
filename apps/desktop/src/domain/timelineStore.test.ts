@@ -1822,3 +1822,22 @@ describe("applyDiffs — immutability", () => {
     expect(itemId(original[0])).toBe(itemId(snapshot[0]));
   });
 });
+
+ test("new actor clears pagination exhaustion while replay preserves it", () => {
+  let store = createTimelineStore();
+  const initial = (actor: number): TimelineEvent => ({ InitialItems: {
+    request_id: null, key: KEY, generation: 0, actor_generation: actor, items: []
+  }});
+  store = applyTimelineEvent(store, initial(1));
+  for (const direction of ["Backward", "Forward"] as const) {
+    store = applyTimelineEvent(store, { PaginationStateChanged: {
+      request_id: null, key: KEY, direction, state: "EndReached"
+    }});
+  }
+  store = applyTimelineEvent(store, initial(1));
+  expect(shouldSuppressAutoBackfill(store, KEY)).toBe(true);
+  store = applyTimelineEvent(store, initial(2));
+  expect(getPaginationState(store, KEY, "Backward")).toBe("Idle");
+  expect(getPaginationState(store, KEY, "Forward")).toBe("Idle");
+  expect(shouldSuppressAutoBackfill(store, KEY)).toBe(false);
+});

@@ -86,6 +86,7 @@ test("Security settings render local encryption health and dispatch probe comman
   });
 
   await page.getByRole("button", { name: "User settings" }).click();
+  await page.getByRole("tab", { name: "Encryption", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Security" })).toBeVisible();
   await expect(page.getByText("Secret Service")).toBeVisible();
   await expect(page.getByText("Protected")).toBeVisible();
@@ -178,6 +179,7 @@ test("E2EE trust controls dispatch Rust-owned commands and render snapshot updat
   });
 
   await page.getByRole("button", { name: "User settings" }).click();
+  await page.getByRole("tab", { name: "Encryption", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Encryption" })).toBeVisible();
   await expect(page.getByText("Device verification")).toBeVisible();
   await expect(page.getByText("Device 1")).toHaveCount(0);
@@ -264,7 +266,7 @@ test("security settings drive Rust-owned room-key transfer and secure backup sta
   });
 
   await page.getByRole("button", { name: "User settings" }).click();
-  await page.getByRole("button", { name: "Security & Privacy" }).click();
+  await page.getByRole("tab", { name: "Encryption", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Key management" })).toBeVisible();
   await page.evaluate(() => {
     window.__harness.setCommandResponse("plugin:dialog|save", "/tmp/koushi-export.txt");

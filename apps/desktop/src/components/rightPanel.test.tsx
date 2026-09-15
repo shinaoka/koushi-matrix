@@ -259,7 +259,6 @@ const defaultProps = {
   onOpenFiles: vi.fn(),
   onRefreshFilesView: vi.fn(),
   onPaginateThreadsList: vi.fn(),
-  onOpenKeyboardSettings: vi.fn(),
   onOpenRecovery: vi.fn(),
   onProbeLocalEncryption: vi.fn(),
   onResetLocalData: vi.fn(),

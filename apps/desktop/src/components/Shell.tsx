@@ -16,7 +16,6 @@ import {
   Clock3,
   Compass,
   Edit3,
-  HelpCircle,
   Home,
   MessageCircle,
   MessageSquare,
@@ -143,7 +142,6 @@ export function TopBar({
   userId = null,
   onManageAccount = () => undefined,
   onCopyDiagnostics = async () => undefined,
-  onOpenKeyboardSettings,
   onOpenDiagnostics = () => undefined,
   onRefreshCurrentSessionStatus = () => undefined,
   onRetryRuntimeAlert = () => undefined,
@@ -169,7 +167,6 @@ export function TopBar({
   userId?: string | null;
   onManageAccount?: (safeExternalUrl: string) => void;
   onCopyDiagnostics?: () => Promise<void>;
-  onOpenKeyboardSettings: () => void;
   onOpenDiagnostics?: () => void;
   onRefreshCurrentSessionStatus?: (trigger: SessionStatusRefreshCommandTrigger) => void;
   onRetryRuntimeAlert?: (kind: RuntimeAlertKind) => void;
@@ -354,14 +351,6 @@ export function TopBar({
             <RefreshCw size={ICON_SIZE.control} />
           </button>
         ) : null}
-        <button
-          className="icon-button"
-          type="button"
-          aria-label={t("shortcut.showKeyboardSettings")}
-          onClick={onOpenKeyboardSettings}
-        >
-          <HelpCircle size={ICON_SIZE.control} />
-        </button>
         <button
           className="icon-button"
           type="button"

@@ -1325,6 +1325,7 @@ impl TimelineActor {
                                 startup_trace::trace_origin("cache");
                             }
                             trace_event_cache_items("cache_initial", &key, &initial);
+                            super::diagnostics::trace_room_receipt_cache(&key, &observer_room, &initial);
                             let trace_key = key.clone();
                             auxiliary_tasks.push(executor::spawn(async move {
                                 let _event_cache_drop_guards = drop_guards;

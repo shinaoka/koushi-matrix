@@ -560,8 +560,59 @@ export const ImeInlineMentionEditor = forwardRef<
   }
 );
 
+/**
+ * Issue #875: a caret at a parent-level offset beside an atomic inline has no
+ * geometry of its own, so each engine paints it against a guess — inside the
+ * mention pill's border box. A zero-width space gives the browser a real text
+ * box on the pill's outside. The character is presentation-only and never
+ * reaches the composer document (see `editorVisibleText`).
+ */
+const CARET_ANCHOR = "\u200b";
+const CARET_ANCHOR_ATTRIBUTE = "data-composer-caret-anchor";
+
+function caretAnchorNode(control: HTMLDivElement): HTMLElement {
+  const anchor = control.ownerDocument.createElement("span");
+  anchor.setAttribute(CARET_ANCHOR_ATTRIBUTE, "");
+  anchor.textContent = CARET_ANCHOR;
+  return anchor;
+}
+
+function isCaretAnchor(node: Node): node is HTMLElement {
+  return node instanceof HTMLElement && node.hasAttribute(CARET_ANCHOR_ATTRIBUTE);
+}
+
+function isComposerMention(node: Node): node is HTMLElement {
+  return node instanceof HTMLElement && node.hasAttribute("data-composer-mention");
+}
+
+/**
+ * Editor text as the composer document sees it. The composer reserves U+200B for
+ * caret anchors, so a zero-width space typed into the editor is dropped instead
+ * of becoming message content.
+ */
+function editorVisibleText(text: string): string {
+  return text.split(CARET_ANCHOR).join("");
+}
+
+function textPointOf(
+  node: Node,
+  side: "start" | "end"
+): { node: Node; offset: number } | null {
+  const text = node.firstChild;
+  if (text?.nodeType !== Node.TEXT_NODE) return null;
+  const length = text.textContent?.length ?? 0;
+  return { node: text, offset: side === "start" ? 0 : length };
+}
+
 function renderEditorDocument(control: HTMLDivElement, document: ComposerDocument) {
-  const nodes = document.inlines.map((inline, index) => {
+  const nodes: Node[] = [];
+  document.inlines.forEach((inline, index) => {
+    // Issue #875: render a caret anchor wherever a mention has no text box beside
+    // it — at the document edges and between two mentions — so the caret beside
+    // the pill lands on real text outside its border box.
+    if (inline.kind === "mention" && index === 0) {
+      nodes.push(caretAnchorNode(control));
+    }
     const span = control.ownerDocument.createElement("span");
     if (inline.kind === "text") {
       span.dataset.composerText = "";
@@ -574,7 +625,10 @@ function renderEditorDocument(control: HTMLDivElement, document: ComposerDocumen
       span.setAttribute("aria-label", t("composer.inlineMention", { label: inline.display_label }));
       span.textContent = `@${inline.display_label}`;
     }
-    return span;
+    nodes.push(span);
+    if (inline.kind === "mention" && document.inlines[index + 1]?.kind !== "text") {
+      nodes.push(caretAnchorNode(control));
+    }
   });
   // Issue #471: under `white-space: pre-wrap` a trailing newline as the last
   // character of the block creates no final line box — the composer neither
@@ -647,18 +701,19 @@ function documentOffsetFromDomPoint(
   const before = Array.from(control.childNodes)
     .slice(0, Array.from(control.childNodes).indexOf(child))
     .reduce((total, node) => total + editorNodeLength(node), 0);
-  if (child instanceof HTMLElement && child.hasAttribute("data-composer-mention")) {
+  if (isComposerMention(child)) {
     return before + (offset > 0 ? 1 : 0);
   }
-  const textLength = child.textContent?.length ?? 0;
+  // Issue #875: a caret inside a zero-width caret anchor is the document offset
+  // that anchor sits at, whatever offset the anchor's own text reports.
+  if (isCaretAnchor(child)) return before;
+  const textLength = editorVisibleText(child.textContent ?? "").length;
   if (container.nodeType === Node.TEXT_NODE) return before + Math.min(textLength, offset);
   return before + (offset > 0 ? textLength : 0);
 }
 
 function editorNodeLength(node: Node): number {
-  return node instanceof HTMLElement && node.hasAttribute("data-composer-mention")
-    ? 1
-    : (node.textContent?.length ?? 0);
+  return isComposerMention(node) ? 1 : editorVisibleText(node.textContent ?? "").length;
 }
 
 function documentFromEditorDom(
@@ -672,13 +727,13 @@ function documentFromEditorDom(
       // never becomes document content.
       continue;
     }
-    if (node instanceof HTMLElement && node.hasAttribute("data-composer-mention")) {
+    if (isComposerMention(node)) {
       const index = Number(node.dataset.composerMention);
       const mention = current.inlines[index];
       if (mention?.kind === "mention") inlines.push(mention);
       continue;
     }
-    const text = node.textContent ?? "";
+    const text = editorVisibleText(node.textContent ?? "");
     if (text) inlines.push({ kind: "text", text });
   }
   return normalizeDocument({ version: 2, inlines });
@@ -697,20 +752,40 @@ function restoreDocumentSelection(control: HTMLDivElement, selection: DocumentSe
 
 function domPointFromDocumentOffset(control: HTMLDivElement, rawOffset: number) {
   let remaining = Math.max(0, rawOffset);
-  for (const child of control.childNodes) {
+  const children = Array.from(control.childNodes);
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index];
     const length = editorNodeLength(child);
-    if (remaining <= length) {
-      if (child instanceof HTMLElement && child.hasAttribute("data-composer-mention")) {
-        const index = Array.from(control.childNodes).indexOf(child);
-        return { node: control as Node, offset: index + (remaining === 0 ? 0 : 1) };
-      }
-      const text = child.firstChild;
-      if (text?.nodeType === Node.TEXT_NODE) {
-        return { node: text, offset: Math.min(remaining, text.textContent?.length ?? 0) };
-      }
-      return { node: child, offset: 0 };
+    if (remaining > length) {
+      remaining -= length;
+      continue;
     }
-    remaining -= length;
+    if (isCaretAnchor(child)) {
+      const point = textPointOf(child, "start");
+      if (point) return point;
+    }
+    if (isComposerMention(child)) {
+      // Issue #875: a parent-level offset beside a mention has no caret geometry,
+      // so prefer real text on the requested side — the zero-width anchor or the
+      // neighbouring text span — instead of the browser's guess.
+      const sibling = remaining === 0 ? children[index - 1] : children[index + 1];
+      const point =
+        sibling && !isComposerMention(sibling)
+          ? textPointOf(sibling, remaining === 0 ? "end" : "start")
+          : null;
+      if (point) return point;
+      return { node: control as Node, offset: index + (remaining === 0 ? 0 : 1) };
+    }
+    const text = child.firstChild;
+    if (text?.nodeType === Node.TEXT_NODE) {
+      return { node: text, offset: Math.min(remaining, text.textContent?.length ?? 0) };
+    }
+    return { node: child, offset: 0 };
+  }
+  const last = children.at(-1);
+  if (last && isCaretAnchor(last)) {
+    const point = textPointOf(last, "end");
+    if (point) return point;
   }
   return { node: control as Node, offset: control.childNodes.length };
 }

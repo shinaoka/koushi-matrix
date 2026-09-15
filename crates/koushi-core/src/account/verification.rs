@@ -3,7 +3,7 @@
 use std::{future::Future, sync::Arc, time::Duration};
 
 use futures_util::StreamExt;
-use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_sdk::MatrixClientSession;
 use koushi_state::{
     AppAction, SasEmoji, TrustOperationFailureKind, VerificationCancelReason,
@@ -25,9 +25,46 @@ use super::recovery_backup::{
 
 const IDENTITY_RESET_AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Diagnostic trigger for the activation summary recorded on session restore.
+pub(super) const VERIFICATION_PROTECTION_SUMMARY_TRIGGER_RESTORE: &str = "restore";
+
 const INCOMING_VERIFICATION_OBSERVER_JOIN_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub(super) const INCOMING_VERIFICATION_FLOW_ID_BASE: u64 = 1 << 63;
+
+/// Record the private-data-free activation counters for the incoming
+/// verification-request protections.
+///
+/// The counters show whether the protections against rare conditions (unknown
+/// sender devices, repeated SAS start events, released deliveries) are still
+/// exercised in practice; only counts are recorded, never identifiers or
+/// content.
+pub(super) fn record_incoming_verification_protection_summary(
+    counters: &koushi_sdk::IncomingVerificationRequestProtectionCounters,
+    trigger: &'static str,
+) {
+    record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.verification_protection_summary",
+            "summary",
+        )
+        .field(DiagnosticField::token("trigger", trigger))
+        .field(DiagnosticField::count(
+            "unknown_sender_deferred",
+            counters.unknown_sender_deferred,
+        ))
+        .field(DiagnosticField::count("key_query_replays", counters.key_query_replays))
+        .field(DiagnosticField::count(
+            "released_deliveries",
+            counters.released_deliveries,
+        ))
+        .field(DiagnosticField::count(
+            "suppressed_sas_start_replays",
+            counters.suppressed_sas_start_replays,
+        )),
+    );
+}
 
 pub(super) struct VerificationObservation {
     pub(super) stop_tx: oneshot::Sender<()>,

@@ -6,9 +6,11 @@ This note separates SDK-upstreamable material from desktop-product decisions. El
 
 ## Fork Maintenance Snapshot
 
-As of 2026-07-27, the checked-in SDK gitlink follows the maintained
-`shinaoka/matrix-rust-sdk-work` fork on a branch rebased onto that fork's
-`origin/main` commit `35672e96a`. The fork is expected to be managed and
+As of 2026-09-12, the checked-in SDK gitlink follows the maintained
+`shinaoka/matrix-rust-sdk-work` fork at commit `a3754f6be` on `main`, which is
+upstream `matrix-org/matrix-rust-sdk` `6602de58e` (2026-09-11) merged into the
+previous pin `a04792c7a` plus the retained Koushi customizations. The
+2026-07-27 snapshot below described the state before that upgrade. The fork is expected to be managed and
 maintained for a while; local SDK patches should therefore stay as small topic
 commits with clear upstream intent instead of being squashed into an opaque
 vendor snapshot.
@@ -47,6 +49,42 @@ diagnostics around `to_device_delivery`, `sas_start`, `mac`, and
 or SDK boundary without logging private Matrix payloads.
 
 ## Upstreamable Patch Material
+
+The [2026-09-14 thread unread evidence packet](2026-09-14-thread-unread-regressions.md) records exact historical revisions, separate reproduction cases, sanitized RED/GREEN results, and patch export instructions. It distinguishes fork test evidence from still-pending clean upstream verification.
+
+- Thread-related edit notification ownership (2026-09-14, local SDK topic
+  `9aac22df2`) follows the receipt-boundary fix below. A read main message
+  followed by a thread reply and a notifying edit of that reply reproduced
+  `num_unread=0` with `num_notifications=1`: the Room filter excluded the reply
+  but admitted its `m.replace`. The filter now resolves one-hop relation targets
+  with the same ownership convention as the thread aggregator. It scans loaded
+  events once, checks each unique missing target in the already-locked event
+  store, and retains unknown/main targets. No network or additional outer lock
+  is introduced. Explicit receipts still match excluded event boundaries;
+  implicit own-event receipts use the scoped filter. A client wrapper cannot
+  correct these authoritative SDK counters without hiding valid notifications.
+  Tests cover loaded/stored reply targets, Thread notifications, main/unknown
+  edit notifications, own thread edits, threading disabled, and explicit edit
+  boundaries. The original reproducer failed before the fix; the focused
+  receipt suite passes 22 tests. Independent review approved the change.
+  Upstream intent: submit the ownership fix with regressions and remove the
+  topic once upstream includes it. No upstream PR has been submitted here.
+
+- Unthreaded receipt boundaries on thread replies (2026-09-14, local SDK
+  topic commit `b65d72ba8`, based on `f9d55baf7`) fixes
+  `crates/matrix-sdk/src/event_cache/caches/read_receipts.rs`. With threading
+  enabled, filtering replies before receipt matching loses explicit room
+  receipts whose event ID is a reply. Match active, incoming and persisted
+  receipts against all event IDs, and pass the selected boundary through count
+  reset; keep replies excluded from room counts and implicit own-message read
+  advancement. This cannot be repaired through a public client wrapper because
+  SDK event-cache recomputation owns receipt selection and local notification
+  counts. Sending a newer receipt merely hides the failure and can incorrectly
+  read unseen messages. Upstream intent: submit this minimal matching fix and
+  synthetic regressions as one SDK bugfix, then drop the topic patch when
+  incorporated upstream. The focused read-receipt suite passes all 20 tests;
+  the new boundary regression failed before the fix. Independent review found
+  no blockers. No upstream PR has been opened by this local installation task.
 
 - Element X Megolm send parity cleanup (issue #795, 2026-09-05) removes the
   Koushi-only readiness fence, repeated/duplicate pre-share, initial-share
@@ -536,3 +574,529 @@ has no production caller) and the 825-commit upstream rebase. A trial merge of
 `upstream/main` into the pinned revision conflicts in 24 files, concentrated in
 `event_cache`, `room_list_service`, `timeline`, and `matrix-sdk-base`/crypto
 identity handling.
+
+## 2026-09-12: upstream SDK upgrade to 6602de58e
+
+The gitlink moved from the 2026-06-10 base `a04792c7a` to upstream
+`6602de58e` (825 upstream commits). The fork merge is
+`shinaoka/matrix-rust-sdk-work` PR #8 (merge commit `fc780574d`), followed by
+`a3754f6be` for test-target adaptations.
+
+### Retained customizations (ported onto the new upstream structures)
+
+Each entry lists its rationale, the concrete call sites (SDK and Koushi), and the
+regression tests that guard it, so later stages can judge a removal without
+re-deriving the usage.
+
+- **ngram / CJK search** (explicitly excluded from removal):
+  `SearchIndexStoreKind::{UnencryptedDirectoryWithConfig,
+  EncryptedDirectoryWithConfig, InMemoryWithConfig}`, `encrypted_directory_ngram`,
+  the ngram tokenizer registration in `search_index`, and the CJK search
+  candidates API.
+  Call sites: `crates/koushi-sdk/src/search.rs` (builds the encrypted index store
+  with `encrypted_directory_ngram`); SDK
+  `crates/matrix-sdk/src/search_index/mod.rs` (store kinds, `room_message_body`)
+  and `crates/matrix-sdk-search/src/{config.rs,schema.rs,index/mod.rs}`.
+  Regression tests: `test_search_index_store_kind_can_configure_ngram_tokenizer`
+  (matrix-sdk), `test_ngram_search_matches_japanese_substring` and
+  `ngram_schema_uses_named_body_tokenizer` (matrix-sdk-search), plus the
+  Koushi `search_crawler` and `edit_redact_search` QA scenarios.
+- **Event cache**: persisted gap inspection/repair (`RoomTimelineGapHandle`,
+  `RoomTimelineGapRepair*`, `inspect_timeline_gaps`), cache-only back
+  pagination (`run_backwards_cache_only`), live-tail refresh
+  (`RoomLiveTailRefresh*`) and `RoomTimelineSyncObservation`. Ported onto
+  upstream's `StateLockReadGuard`/`StateLockWriteGuard` and
+  `states::selectors`; `latest_sync_observation` feeds the room-subscription
+  checkpoints.
+  Call sites: `crates/koushi-sdk/src/timeline.rs`
+  (`inspect_room_timeline_gaps`, `repair_room_timeline_gap`,
+  `refresh_room_live_tail`, `MatrixCommittedRoomTimelineCheckpoint::from_room_subscription`),
+  `crates/koushi-core/src/timeline/navigation.rs` (`live_restore_from_cache`),
+  `crates/koushi-core/src/timeline/gap_repair.rs`; SDK
+  `crates/matrix-sdk/src/event_cache/caches/room/{pagination.rs,live_tail.rs,state.rs,mod.rs}`
+  and `crates/matrix-sdk-ui/src/room_list_service/mod.rs` (checkpoint capture).
+  Regression tests: the `event_cache` integration targets plus Koushi's
+  `timeline`, `timeline_nav` and gap-repair tests. At the old fork head the
+  committed per-room response fence was already removed as unused; the sync
+  observation itself is still consumed by Koushi's
+  `MatrixCommittedRoomTimelineCheckpoint`.
+- **Redaction replay**: `pending_redactions` re-applies a persisted redaction
+  when its target only arrives later (or is delivered again). Since 2026-09-13 the
+  registry lives in the per-room cache internals (`CachesInternals`) and is shared
+  by the room cache and every per-thread cache: both redact pending targets before
+  inserting an event into a chunk, and entries stay in the registry after they are
+  applied, because a target already seen in the room chunk can still be written
+  into a thread chunk afterwards (see the Stage 3 section below).
+  Call sites: SDK-internal in `crates/matrix-sdk/src/event_cache/caches/{mod.rs,room/state.rs,thread/{mod.rs,state.rs}}`
+  (`pending_redactions`, `rebuild_pending_redactions_with_store`,
+  `apply_pending_redaction_to_event`, `redact_pending_events`, hooked from `new`,
+  the sync insertion paths and `post_process_upserted_events`); consumers are the
+  search index (`crates/matrix-sdk/src/search_index/mod.rs`) and Koushi's thread
+  aggregates read through the store
+  (`crates/matrix-sdk-ui/src/timeline/thread_list_service.rs`).
+  Regression tests: `test_search_index_redaction_preserves_edit_aware_cache_hit`,
+  `test_search_index_redaction_removes_redacted_event_when_cache_misses` and
+  `test_relation_aggregate_matches_after_persistent_reopen` (restored to an active
+  test by the Stage 3 fix).
+- **Room subscriptions**: `reconcile_room_subscriptions_with_generation` and the
+  per-room `RoomSubscriptionCheckpoint`, now implemented on top of the standard
+  `SlidingSync::set_room_subscriptions` plus `subscribed_rooms()`. Generation
+  tracking stays application-level.
+  Call sites: `crates/koushi-core/src/timeline/manager.rs`
+  (`reconcile_room_subscriptions_with_generation`, `actual_subscribed_rooms`,
+  `subscription_generation`), `crates/koushi-core/src/timeline/actor.rs`
+  (checkpoint messages), `crates/koushi-sdk/src/timeline.rs`
+  (`MatrixRoomSubscriptionCheckpoint`, `MatrixCommittedRoomTimelineCheckpoint`);
+  SDK `crates/matrix-sdk-ui/src/room_list_service/mod.rs` and
+  `crates/matrix-sdk/src/sliding_sync/mod.rs` (`subscribed_rooms`).
+  Regression tests: `koushi-core-testkit` room-subscription residency plus the
+  Koushi `room_space`/`invites_dm` QA scenarios.
+- **Encryption sync readiness**: `EncryptionSyncGenerationGuard` and the
+  `begin_encryption_sync_generation` wiring in `run_iterations`/`sync`,
+  adapted to upstream's stream API.
+  Call sites: SDK producer `crates/matrix-sdk-ui/src/encryption_sync_service.rs`
+  with the state in `crates/matrix-sdk/src/encryption/readiness.rs`; Koushi
+  consumers `crates/koushi-core/src/sync.rs`,
+  `crates/koushi-core/src/sync/observer.rs`,
+  `crates/koushi-core/src/account/trust_gate.rs`, `crates/koushi-sdk/src/sync.rs`.
+- **Crypto**: key-query response leases (`acquire_key_query_response_lease`,
+  `covered_users`, multi-in-flight request metadata), the deferred
+  unknown-device verification replay, rotation-reason diagnostics and the
+  X.509 signature-upload field.
+  Call sites: SDK
+  `crates/matrix-sdk-crypto/src/{identities/manager.rs,machine/mod.rs,verification/{machine.rs,requests.rs},room_key_diagnostics.rs}`;
+  Koushi consumers `crates/koushi-sdk/src/e2ee.rs`,
+  `crates/koushi-core/src/room_key_receive.rs`,
+  `crates/koushi-core/src/timeline/room_key_recovery.rs`.
+  Regression tests: `machine::tests::interactive_verification` (32 tests),
+  `room_key_receive_diagnostics` (5), `persisted_rotation_reason` (4),
+  `sas_start` replay (2).
+- **Timeline**: lazy-reveal live pagination
+  (`live_lazy_paginate_backwards_with_reveal`) and gap-repair projection
+  settlement (`complete_gap_repair_projection`,
+  `wait_for_gap_repair_projection`, `GapRepairProjectionSettlement`).
+  Call sites: SDK `crates/matrix-sdk-ui/src/timeline/{controller/mod.rs,tasks.rs,pagination.rs}`;
+  Koushi `crates/koushi-core/src/timeline/gap_repair.rs`
+  (`wait_for_gap_repair_projection`). Regression tests:
+  `timeline::tests::event_filter`'s gap-repair cases and Koushi's gap-repair
+  tests.
+
+### Removed (upstream supersedes them, or they were unused)
+
+- `RoomEventCacheSubscriber` (upstream's generic
+  `event_cache::Subscriber`), and the fork's `room/subscriber.rs`.
+- Search-index redaction/replacement hardening in `matrix-sdk`: upstream's
+  `IndexableEvent`, media caption/filename and poll indexing, and
+  `check_validity_of_replacement_events` cross-sender validation are strictly
+  stronger. Replacement: upstream's `handle_room_message`/`handle_room_redaction`
+  and media/poll handlers.
+- `Room::subscribe_to_rooms` and the fork's private
+  `SlidingSync::subscribe_to_rooms` helper → `SlidingSync::set_room_subscriptions`
+  (+ `RoomListService::set_room_subscriptions`).
+- `refresh_event_focused_cache` / `get_or_create_event_focused_cache` on
+  `RoomEventCache` → `EventCache::event_focused` (upstream now owns the
+  focused-cache lifecycle). Koushi had no production caller.
+- Encrypted-room reply/thread-root extraction in the timeline controller
+  metadata → upstream's `extract_reply_and_thread_root`.
+- `subscribe_to_thread` / `subscribe_to_pinned_events` / `thread_pagination`
+  wrappers on `RoomEventCache` → `EventCache::thread`/`pinned_events`. Koushi
+  had no caller.
+- `RoomPagination::repair_timeline_gap` (the outcome-only wrapper) and
+  `RoomListService::subscribe_to_rooms_with_generation`: both were public but
+  had no production caller, so PR #12 removed them. Tests use
+  `repair_timeline_gap_with_projection` (the path Koushi's
+  `koushi-sdk::repair_room_timeline_gap` calls) and
+  `reconcile_room_subscriptions_with_generation` instead.
+- `SlidingSync::reconcile_subscriptions` and `SlidingSyncSubscriptionDelta`
+  (the fork's differential reconciliation from #518): with room subscriptions on
+  the standard `set_room_subscriptions` plus `subscribed_rooms()` they had no
+  production caller left, so PR #11 removed them and drove the remaining
+  sliding-sync cache tests through the standard API.
+
+### Follow-up: behaviors restored after running the SDK suites (PR #9)
+
+Running the SDK's own suites against the merged revision exposed fork behaviors
+that the merge had silently dropped and one regression introduced by the port.
+All are fixed in `shinaoka/matrix-rust-sdk-work` PRs #9 (`5ba0c4790`), #10
+(`f622e82db`), #11 (`bec5f680b`) and #12 (`526be0aa2`):
+
+- Room-subscription settings expand the `$ME` member placeholder again (the fork
+  hardening from issue #285), with the upstream request-shape expectations
+  updated. Regression: `room_list_service` integration tests plus
+  `all_rooms_request_matches_element_x_26_07_28`.
+- The targeted gap repair flushes linked-chunk updates to the store before
+  post-processing; without it a joined gap was reported as `Progress` instead of
+  `BoundariesJoined`. Regression: the five `event_cache::test_*gap*`
+  integration tests.
+- `RoomEventCache::clear()` (test-only) is back for the persisted gap-repair
+  tests.
+- The classic-sync token guard only drops tokens shaped like `s<stream>_...`
+  instead of every non-numeric token, which had discarded valid opaque Sliding
+  Sync tokens and broken the to-device token reload.
+- `ReadReceiptSnapshot::changes_since` compares receipts explicitly; imbl 7's
+  `OrdMap::diff` skips shared subtrees before comparing values, so a
+  timestamp-only receipt update was reported as unchanged.
+- `RoomEventCacheState::new` no longer performs a store write while rebuilding
+  the pending-redaction map unless the replay actually changed an in-memory
+  event, which is what made the SDK lib suite hang.
+
+### Fixed in the same pass (PR #10)
+
+- `cargo test -p matrix-sdk --lib` used to hang in the fork-added
+  `event_cache::redecryptor::tests::test_event_is_redecrypted_even_if_key_arrives_while_event_processing`.
+  `RoomEventCacheState::new` drained and flushed the linked chunk's pending store
+  updates unconditionally after rebuilding the pending-redaction map, so creating
+  a cache performed a store write that upstream's `new` never does; with a
+  delayable store (the test's `DelayingStore`) that blocked cache creation.
+  The flush now runs only when the replay actually replaced an in-memory event.
+  The SDK lib suite completes again (663 passed).
+
+### Known gaps discovered in the same pass
+
+- ~~Upstream serializes every cache kind (room, thread, pinned, event-focused) on
+  one event-cache state lock (`states::StateLock`), so an in-flight
+  event-focused pagination blocks room-cache reads for its whole network
+  request.~~ **Evaluated on 2026-09-13 and corrected** (Stage 3 below): the lock
+  is one `RwLock` per client shared by every room and cache kind
+  (`EventCacheInner::state`), and network waits are **not** taken under it —
+  pagination holds the write guard only to persist results, and the live-tail
+  commit holds it across store I/O and post-processing. A write therefore
+  delays reads of other rooms for the duration of that bounded work, not for a
+  network request.
+- ~~A redaction replayed from `pending_redactions` reaches only the room cache's
+  copy of an event.~~ **Fixed on 2026-09-13** (Stage 3): this was a parity loss
+  from the Stage 1 upgrade, not an upstream gap — the pre-upgrade pin
+  `a04792c7a` carried
+  `timeline::thread_list_service::tests::test_relation_aggregate_matches_after_persistent_reopen`
+  *without* `#[ignore]` and with a byte-identical body, and upstream has no
+  `pending_redactions` at all. See the 2026-09-13 Stage 3 section below.
+
+### Still open for stages 2-4
+
+- Stage 3 read-receipt structures: evaluated on 2026-09-13 and kept, with
+  measurements and rationale (see the Stage 3 sections below).
+- Stage 3 gap repair/cache restoration, thread aggregates and the event-cache
+  state lock: evaluated on 2026-09-13 and kept, with the per-item verification
+  recorded below.
+- Stage 2 is complete (2026-09-13): the duplicated room-range-readiness
+  publisher was removed, and the remaining readiness surfaces were evaluated
+  and kept because each serves a distinct, tested purpose (committed-response
+  event stream with handoff evidence, authoritative entries snapshot, upstream
+  loading state). See below.
+- Stage 3 is evaluated and complete on the automated side (2026-09-13):
+  read-receipt structures measured and kept; gap-repair/cache-restoration and
+  thread-aggregate patches verified as having no upstream equivalent; the
+  pending-redaction parity loss from Stage 1 fixed; the single event-cache state
+  lock evaluated and corrected. See the Stage 3 sections below.
+- Stage 4 is implemented on the automated side (2026-09-13): the deferred
+  verification-request delivery and the repeated-SAS-start protection are
+  verified as still needed, no migration is possible, and private-data-free
+  activation counters are now observable in the product. See the Stage 4 section
+  below.
+- Stages 3 and 4 real-world validation: performed once at the end, per the
+  user's decision of 2026-09-13, instead of after each stage.
+- Stage 1 real-world validation was confirmed by the user on 2026-09-13
+  (startup, login, restart with room-list restore, send/receive, Japanese ngram
+  search).
+
+## 2026-09-13: Stage 2 — one publisher for room-range readiness
+
+The fork published room-range readiness twice from the same predicate
+(`RoomListRangeLoadingState::from_states(list_state, service_state)` equals
+`FullyLoaded`):
+
+- a standalone `RoomList::range_loading_state` observable, refreshed by a
+  dedicated background task over `SlidingSyncList::state_stream()` and
+  `RoomListService` state, with its own public accessor, and
+- the authoritative `RoomListEntriesSnapshot::range_fully_loaded()`, backed by
+  the observed committed all-rooms response (`AllRoomsObservedIds`) — the same
+  response that carries the room-subscription checkpoints.
+
+Removed the first: the observable, its background task and the
+`range_loading_state()` accessor. `RoomListRangeLoadingState` remains the shared
+predicate and is now crate-internal. Connection state (`RoomListService`/
+`SyncService`), room-list data readiness (committed all-rooms response plus the
+entries snapshot) and completion of UI updates stay distinct, and
+application-level generation tracking (`RoomSubscriptionReconcile`,
+`RoomSubscriptionGeneration`) is unchanged.
+
+Call sites after the change: SDK
+`crates/matrix-sdk-ui/src/room_list_service/{room_list.rs,all_rooms.rs}`
+(snapshot assembly and response tracker); Koushi
+`crates/koushi-core/src/room/list_observer.rs` seeds and refreshes readiness
+from `all_rooms.current_entries_snapshot().range_fully_loaded()`. The
+`RoomListObservationCommand::Refresh` wake sent from
+`crates/koushi-core/src/room/actor.rs` on sync responses already re-read that
+snapshot, so no readiness transition lost its trigger.
+
+Regression tests: `all_rooms_range_loading_state_becomes_full_only_after_final_growing_range`
+and `fully_loaded_all_rooms_entries_preserve_persisted_joined_room`
+(`matrix-sdk-ui`; they keep their invariants and now assert the committed
+response observable and the entries snapshot), plus the `room_list_service`
+integration target. Also removed an unused `use std::fmt`
+(`matrix-sdk/src/sliding_sync/mod.rs`) and an unused test binding left over from
+the previous fork work.
+
+Verification: SDK `cargo test -p matrix-sdk-ui` (lib 386 passed / 1 ignored,
+integration 213 passed / 1 ignored and 10 passed) and
+`cargo test -p matrix-sdk --lib` (649 passed); Koushi workspace gate,
+`koushi-core` (1065 passed / 9 ignored), `koushi-core-testkit`,
+`koushi-desktop --lib` (140); headless core QA `--scenario=all` on `tuwunel`
+and `synapse` (199 checks each); native Linux GUI lane `local-login`
+(rebuilt), `local-send`, `local-activity`.
+
+Real-world checks for the stage on this revision: room switching (GUI lane),
+invite receive/accept (`rooms` 2 to 3, `No pending invites`), disconnect then
+reconnect (`reconnecting` within 2 s, `running` 2 s after the server returned,
+live message rendered 1 s later), and room-list restore after restart (ready
+with 2 rooms in 2 s, no login). The user confirmed the stage works in practice.
+
+### Why the committed all-rooms response observable stays
+
+Evaluated for the same Stage 2 bullet: `RoomListService::committed_all_rooms_response()`
+and the authoritative `RoomListEntriesSnapshot` are not interchangeable, so both
+remain.
+
+- `CommittedAllRoomsResponse` is a per-response *event stream* carrying
+  `pos_present()` and `sequence()`. Koushi's sync observer
+  (`crates/koushi-core/src/sync.rs`, `crates/koushi-core/src/sync/observer.rs`)
+  uses each response to advance `last_committed_sequence` and to decide startup
+  handoff evidence (`committed_response_is_handoff_evidence`: `pos_present &&
+  sequence > last_committed_sequence`), which feeds `ReplacementRecoveryProof`.
+  A poll of the current projection cannot express "this response, with a
+  position, was committed after the previous one".
+- `pos_present` does not exist on the entries snapshot at all
+  (`crates/matrix-sdk-ui/src/room_list_service/all_rooms.rs`), so folding would
+  add a field rather than remove one.
+- Covered by `sync::tests::any_new_positioned_commit_is_startup_handoff_evidence`
+  and the room-list integration tests for the committed observable
+  (`committed_all_rooms_response_observable_waits_for_committed_response`,
+  `committed_all_rooms_response_observable_ignores_failure_then_advances`).
+- The remaining readiness surfaces keep the three concerns the Stage 2 bullet
+  requires separate: connection state (`sync_service::State`), room-list data
+  readiness (the committed all-rooms response plus the authoritative entries
+  snapshot), and completion of the UI projection
+  (`RoomListReconcileResult` and
+  `project_live_entries_and_ack_if_reconciled` in
+  `crates/koushi-core/src/room/list_observer.rs`). Application-level generation
+  tracking (`ReplacementRecoveryProof` sequences,
+  `RoomSubscriptionReconcile.generation`) is unchanged.
+- `RoomListService::sliding_sync_for_testing()` stays as well: it is a test
+  seam, not an unused API — the room-list integration tests need it to force a
+  session expiry (`expire_session`), and this crate has no `testing` feature to
+  gate it behind.
+
+## 2026-09-13: Stage 3 — shared pending redactions (restores a Stage 1 parity loss)
+
+**What was lost:** the Stage 1 upgrade merge stopped replaying a
+"redaction that arrived before its target" into the copy that upstream's
+separate per-thread cache writes. `pending_redactions` does not exist upstream
+at all (`git show 6602de58e:.../room/state.rs | grep -c pending_redactions` → 0);
+the mechanism and its regression test were added together by fork commit
+`873cbf497 fix(threads): converge aggregates across redactions`; at the
+pre-upgrade pin `a04792c7a` that test carried no `#[ignore]` and its body is
+byte-identical to the current one. The upgrade therefore filed a live
+regression as a "known gap", which this section corrects.
+
+**Root cause (probe-verified):** the room cache's replay replaced only the copy
+`find_event` located, and `persistence.rs::find_event_relations` resolves
+relations **from the store**. The per-thread cache later wrote its own
+`LinkedChunkId::Thread(room, root)` copy of the target with the raw event, so a
+thread/relation aggregate counted a redacted reply after a store reopen.
+
+**Fix:** the registry moved from the room cache state to the per-room cache
+internals (`CachesInternals::pending_redactions`, shared `Arc<Mutex<HashMap<OwnedEventId, Event>>>`)
+so the room cache and every per-thread cache of that room see the same entries.
+Both caches now redact pending targets *before* an event is inserted into a chunk
+(`redact_pending_events`, sharing `RoomEventCacheState::apply_redaction_to_event`),
+so the chunk item, the queued store updates and the store copy all carry the
+redacted form whichever cache writes that copy. Entries are **kept** after being
+applied, because a target already present in the room chunk can still be written
+into a thread chunk later; the registry is bounded by the room's stored
+redactions. `test_relation_aggregate_matches_after_persistent_reopen` no longer
+carries `#[ignore]`.
+
+**Verification:** `cargo test -p matrix-sdk --lib` 649 passed;
+`cargo test -p matrix-sdk --features testing --test integration` 443 passed;
+`cargo test -p matrix-sdk-ui` lib 387 passed / 0 ignored (was 386 + 1 ignored),
+integration 213 passed / 1 ignored, plus 10. Details in the Koushi PR that bumps
+the gitlink.
+
+**Upstreaming intent:** propose as a small self-contained patch — the shared
+pending-redaction registry, the pre-insertion redaction in both caches, and the
+restored regression test. It follows upstream's cache layout (no re-forking of
+the cache structure) and keeps all identifiers out of `Debug` output, so it
+should be reviewable as an ordinary bug fix.
+
+## 2026-09-13: Stage 3 — read-receipt structures evaluated (kept, with measurements)
+
+Stage 3 asks for the custom read-receipt structures and incremental
+notifications to be evaluated, including performance in large rooms, before
+anything is replaced.
+
+**What exists today (fork-only).** Upstream has no `ReadReceiptSnapshot` (0
+occurrences at `6602de58e`) and exposes only
+`EventTimelineItem::read_receipts() -> &IndexMap<OwnedUserId, Receipt>`. The fork
+adds `ReadReceiptSnapshot` — a persistent `OrdMap<OwnedUserId, IndexedReceipt>`,
+an insertion-order `Vector<OwnedUserId>` for the compatibility order, and a
+lazily materialized `IndexMap` behind upstream's accessor — plus
+`changes_since(previous)`, which reports exactly the changed, removed and added
+readers (an explicit value comparison, because imbl's `OrdMap::diff` skips
+shared subtrees before comparing values and therefore misses a timestamp-only
+update). Consumers: `crates/koushi-core/src/timeline/receipt_index.rs`
+(`ReceiptReaderIndex::update` walks only the diff, keeps a sorted reader order
+with binary-search insert/remove, and invalidates/renews a `ReceiptEpoch` only
+when the set actually changed) and
+`crates/koushi-core/src/timeline/receipt_endpoints.rs` (endpoint projection).
+
+**Measurements** (release build, worst case: one event with an extreme number of
+readers; the per-update cost is bounded by that event's readers, which is exactly
+the incrementality the index relies on):
+
+| operation | time |
+| --- | --- |
+| snapshot build, 50,000 readers | 28.6 ms |
+| `clone` x 1,000 | 192 us total (~0.19 us each, persistent maps) |
+| `changes_since` with 1 change over 50,000 readers | 14.6 ms (O(readers)) |
+| 1,000 `insert`s, then `clone` | 2.6 ms |
+
+**Decision: keep.** Upstream offers no snapshot/diff API, so a replacement would
+mean materializing and cloning the full `IndexMap` on every receipt update (the
+cost the lazily built compatibility map exists to avoid) plus a full re-sort per
+update in Koushi. The linear scan in `changes_since` is a correctness
+requirement, not an accident, and its cost is bounded by that event's readers
+(tens in practice).
+
+**Regression test:** `large_receipt_set_reports_only_changed_readers`
+(`matrix-sdk-ui`) pins the 10,000-reader diff contract, including the documented
+ordering, so a cheaper-but-wrong diff fails.
+
+**Upstreaming intent:** propose `ReadReceiptSnapshot` + `changes_since` upstream
+together with this incrementality evidence; the fork patch can then be deleted at
+the next SDK upgrade.
+
+## 2026-09-13: Stage 4 — verification protections verified and made observable
+
+Stage 4 asks to establish whether the deferred replay of verification requests
+from unknown devices and the protection against repeated SAS start events are
+still needed, to migrate the incoming request path if the custom subscription API
+is removed, to simplify the send-delay conditions and the custom observation of
+key/backup/verification state, and to add counters free of personal data that
+show when these protections activate — treating "did not activate during ordinary
+use" as insufficient evidence on its own.
+
+**Findings.**
+
+- **Deferred delivery and the SAS replay protection are still needed.** Upstream
+  `6602de58e` has no `subscribe_to_incoming_verification_requests` and no
+  `IncomingVerificationRequestDelivery`: it emits verification requests once, so a
+  request that arrives while the sender's device keys are unknown, or that the
+  application cannot yet hand to its UI, is lost. The fork's subscription is a
+  single-owner, bounded lease queue: `commit()` acknowledges application and
+  `Drop` returns an uncommitted request to the queue. Koushi consumes it
+  (`crates/koushi-sdk/src/e2ee.rs`'s incoming-request observer drives
+  `crates/koushi-core/src/account/verification.rs`). The repeated-SAS-start guard
+  (`RequestState::receive_start` keeps the adopted remote SAS for the same peer,
+  device and flow) likewise has no upstream counterpart.
+- **No migration is possible**: there is no standard API for the incoming request
+  path at this revision, so nothing is removed and the "migrate if removed"
+  clause does not apply.
+- **Send-delay and observation surface**: the remaining fork-added crypto items
+  are load-bearing. `discard_room_key_after_member_reload`,
+  `discard_room_key_for_membership_change` and `discard_room_key_with_reason` are
+  called by the SDK itself (`matrix-sdk-base/src/client.rs`,
+  `matrix-sdk/src/encryption/mod.rs`) and pinned by the
+  `persisted_rotation_reason` tests; `current_outbound_group_session_id`,
+  `receive_any_event` and `get_own_user_identity_data` are used internally or by
+  the crypto tests. The private-data-free observation surface
+  (`room_key_receive_counters`, `room_key_rotation_reason`,
+  `set_room_key_diagnostic_observer`) stays.
+- **Activation counters added.**
+  `IncomingVerificationRequestProtectionCounters` counts unknown-sender
+  deferrals, key-query replays, deliveries released without a commit, and
+  suppressed repeated SAS starts — counts only, with no user, device, room or
+  event identifiers and no content. It is exposed as
+  `OlmMachine::incoming_verification_request_protection_counters` and
+  `Encryption::incoming_verification_request_protection_counters`, and Koushi
+  records it as the `core.verification_protection_summary` diagnostic on session
+  restore (`crates/koushi-core/src/account/verification.rs`), with a test that
+  the event carries no private identifiers.
+- **Rare-condition reproduction tests are preserved** and now also assert that
+  the protection they exercise is counted:
+  `test_unknown_sender_verification_request_is_recovered_after_key_query`, the
+  uncommitted-lease delivery test, and
+  `test_replayed_sas_start_keeps_adopted_responder_sas`, alongside
+  `test_unknown_sender_scheduling_failure_remains_retryable`,
+  `test_unknown_sender_verification_request_queue_is_fifo_bounded`,
+  `test_unknown_sender_verification_request_expires_before_key_query_replay`,
+  `test_applied_key_query_response_is_not_failed_by_pending_replay_and_reschedules_retry`
+  and `test_cancelled_post_commit_key_query_replay_remains_schedulable`.
+
+**Upstreaming intent:** propose the bounded lease-queue subscription, the SAS
+replay guard and the activation counters upstream together with these
+reproduction tests; until then they stay fork-maintained and are observable in
+the product through the diagnostic summary.
+
+## 2026-09-13: Stage 3 — gap repair, thread aggregates and the event-cache state lock (evaluated)
+
+Stage 3's remaining bullets ask for simplification/removal work that is only
+allowed once upstream equivalence is established. This section records that
+verification.
+
+**Gap repair and cache restoration (bullet 1).** Compared the fork's
+`crates/matrix-sdk/src/event_cache` delta against upstream `6602de58e`:
+`live_tail.rs` is fork-only (380 lines, no upstream file), `pagination.rs` adds
+`inspect_timeline_gaps`, `repair_timeline_gap_inner`/`_task`/`_with_projection`,
+`run_backwards_cache_only`, `run_backwards_once_serialized`, `pagination_operation_lock`
+and the `RoomTimelineGap*`/`CacheOnlyBackOutcome` types, and `room/mod.rs` adds
+`RoomTimelineSyncObservation`/`latest_sync_observation`. Upstream has no gap
+inspection or repair API, no cache-only back pagination and no live-tail or
+sync-observation surface at all; the fork's machinery is built on the standard
+pagination primitives rather than duplicating them, and every added item is
+consumed — Koushi through `crates/koushi-sdk/src/timeline.rs`
+(`inspect_room_timeline_gaps`, `repair_room_timeline_gap`,
+`refresh_room_live_tail`, `MatrixCommittedRoomTimelineCheckpoint`) and the SDK's
+own timeline path (`crates/matrix-sdk-ui/src/timeline/pagination.rs` calls
+`run_backwards_cache_only`). No dead or ungated test-only surface remains: the
+live-tail commit hook is already `#[cfg(feature = "testing")]` and
+`#[doc(hidden)]`. Decision: **keep** — there is no upstream equivalent to
+converge on, and re-expressing the machinery on the standard focus APIs would be
+a rewrite without an upstream counterpart, not a simplification.
+
+**Thread aggregates after edits, redactions and duplicate delivery (bullet 3).**
+Function-set comparison of
+`crates/matrix-sdk-ui/src/timeline/thread_list_service.rs` shows additions only
+and no `resolve_thread_relation_aggregate` upstream, so upstream provides no
+equivalent correctness and nothing may be removed:
+
+| Risk area | Fork-only code | Regression tests |
+| --- | --- | --- |
+| edits | `latest_valid_replacement` | `test_relation_aggregate_preserves_original_identity_and_new_content`, `test_edit_before_original_replay_matches_in_order_aggregate` |
+| redactions | `is_redaction_event`, `is_redacted_raw_event` | `test_redaction_of_latest_reply_reconciles_exact_aggregate`, `test_redaction_reconciles_all_tracked_roots`, `test_relation_aggregate_matches_after_persistent_reopen` (restored by #899) |
+| duplicate delivery / batch order | `requires_full_reconciliation`, `collect_affected_roots`, `tracked_roots`, `apply_aggregate`, `aggregate_projection`, resolver gates | `test_bundled_proof_keeps_latest_and_count_until_local_count_is_proven`, `test_queued_newer_batch_wins_after_first_resolver_is_released`, `test_serial_batches_leave_the_latest_final_aggregate` |
+
+Decision: **keep**, consumed by `crates/koushi-core/src/timeline/thread_projection.rs`
+and `crates/koushi-core/src/threads_list.rs`.
+
+**Event-cache state lock (known gap).** `EventCacheInner` owns one
+`states::StateLock` (`RwLock<State>`), shared by every room and every cache kind;
+each room's `Caches` receives the same lock. The write guard is taken to persist
+pagination results (`pagination.rs`: read guard to build the request, network
+outside the lock, write guard to store the outcome) and, for the fork's
+live-tail commit, across the store writes and post-processing
+(`live_tail.rs`). No network wait is performed while holding it. So the real
+effect is that a cache write briefly delays reads of other rooms for the
+duration of that bounded store work — not, as the earlier note in this file
+claimed, for the duration of a network request. Decision: **no change** (it is
+upstream's design, the effect is bounded, and a fork-side per-cache lock would
+diverge from upstream); the earlier note is corrected above.
+
+## 2026-09-15: Redacted entries retain cached notification actions
+
+`ReadReceipts::process_event` now excludes redacted events from all counters,
+while retaining their receipt-boundary identity. Cached push actions can
+survive `replace_raw`; filtering only `marks_as_unread` left notifications and
+mentions behind. A wrapper cannot correct SDK-owned aggregate counts without
+duplicating cache ownership. This minimal fork fix is intended for upstream
+submission with its production-redaction and cache-restoration regression.
+See [reproduction and historical limits](2026-09-15-redacted-notifications.md).

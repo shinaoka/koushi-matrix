@@ -59,7 +59,7 @@ export interface ShortcutLabelProfile {
   modLabel: "Cmd" | "Ctrl";
 }
 
-const nativeMenuOnlyActionIds = new Set(["logout"]);
+const nativeMenuOnlyActionIds = new Set(["logout", "showHelp"]);
 
 const shortcuts: KeyboardShortcut[] = [
   {
@@ -253,16 +253,6 @@ const shortcuts: KeyboardShortcut[] = [
     accelerator: "Ctrl+Command+F"
   },
   {
-    id: "showKeyboardSettings",
-    category: "navigation",
-    labelMessageId: "shortcut.showKeyboardSettings",
-    keys: ["Ctrl/Cmd", "/"],
-    parity: "same",
-    implemented: true,
-    nativeMenu: "help",
-    accelerator: "CmdOrCtrl+/"
-  },
-  {
     id: "openUserSettings",
     category: "navigation",
     labelMessageId: "shortcut.openUserSettings",
@@ -422,7 +412,6 @@ const categoryMessageIds: Record<ShortcutCategory, MessageId> = {
 };
 
 const globalKeyboardHandlerIds = [
-  "showKeyboardSettings",
   "openUserSettings",
   "searchInRoom",
   "filterRooms",
@@ -496,9 +485,6 @@ export function shortcutIdForKeyboardEvent(
   const primaryMod =
     platform === "macos" ? event.metaKey && !event.ctrlKey : ctrlOrCmd;
 
-  if (ctrlOrCmd && !event.altKey && !event.shiftKey && key === "/") {
-    return "showKeyboardSettings";
-  }
   if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && key === ",") {
     return "openUserSettings";
   }

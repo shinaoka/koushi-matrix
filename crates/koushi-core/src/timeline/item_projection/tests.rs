@@ -44,9 +44,9 @@ fn live_receipt_summary_compacts_large_reader_input_with_exact_total() {
     assert_eq!(summaries[0].total_count, 1_500);
 }
 use koushi_protocol::event::{
-    LinkPreview, LinkPreviewState, TimelineFormattedBody, TimelineItemId, TimelineMessageKind,
-    TimelineNoticeI18n, TimelineNoticeI18nKey, TimelineSendFailureReason, TimelineSendState,
-    TimelineSpoilerSpan, TimelineViewportObservation,
+    LinkPreview, LinkPreviewState, TimelineBottomArrival, TimelineFormattedBody, TimelineItemId,
+    TimelineMessageKind, TimelineNoticeI18n, TimelineNoticeI18nKey, TimelineSendFailureReason,
+    TimelineSendState, TimelineSpoilerSpan, TimelineViewportObservation,
 };
 
 use koushi_protocol::failure::TimelineFailureKind;
@@ -65,13 +65,14 @@ use super::{
     edited_content_for_edit_target, edited_document_content_for_edit_target,
     has_user_visible_content, link_ranges_for_message_projection,
     megolm_message_index_from_original_json, membership_change_projection,
-    message_edit_target_token, message_projection_from_msgtype, msgtype_carries_editable_caption,
-    project_local_megolm_rotation_reason, reaction_groups_from_sdk,
-    reply_quote_from_message_projection, reset_loading_link_previews_to_pending,
-    room_name_notice_projection, state_event_notice_body, state_event_notice_projection,
-    timeline_item_can_edit, timeline_item_can_react, timeline_item_can_redact,
-    timeline_item_should_be_hidden, validate_cancel_send, validate_redact_reaction,
-    validate_retry_send, validate_send_reaction, visible_missing_reply_detail_event_ids,
+    mentioned_user_ids_from_event_json, message_edit_target_token, message_projection_from_msgtype,
+    msgtype_carries_editable_caption, project_local_megolm_rotation_reason,
+    reaction_groups_from_sdk, reply_quote_from_message_projection,
+    reset_loading_link_previews_to_pending, room_name_notice_projection, state_event_notice_body,
+    state_event_notice_projection, timeline_item_can_edit, timeline_item_can_react,
+    timeline_item_can_redact, timeline_item_should_be_hidden, validate_cancel_send,
+    validate_redact_reaction, validate_retry_send, validate_send_reaction,
+    visible_missing_reply_detail_event_ids,
 };
 
 use super::super::test_support::{fake_rid, room_key, timeline_item};
@@ -261,6 +262,7 @@ fn visible_missing_reply_detail_event_ids_only_returns_visible_unrequested_missi
             first_visible_event_id: Some("$first-visible:test".to_owned()),
             last_visible_event_id: Some("$already-requested:test".to_owned()),
             visible_gap_ids: Vec::new(),
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: false,
         },
         &requested,
@@ -327,6 +329,64 @@ fn editable_document_uses_formatted_links_for_duplicate_mention_identity() {
     );
     assert!(
         matches!(document.inlines.last(), Some(ComposerInline::Text { text }) if text.ends_with("typed @Same"))
+    );
+}
+
+#[test]
+fn mentioned_user_ids_come_from_the_event_mentions_metadata() {
+    assert_eq!(
+        mentioned_user_ids_from_event_json(&serde_json::json!({
+            "content": {
+                "body": "@Alice please look",
+                "format": "org.matrix.custom.html",
+                "formatted_body": "<a href=\"https://matrix.to/#/%40alice%3Aexample.test\">@Alice</a> please look",
+                "m.mentions": { "user_ids": ["@alice:example.test"] }
+            }
+        })),
+        vec!["@alice:example.test"]
+    );
+}
+
+#[test]
+fn mentioned_user_ids_ignore_text_that_only_looks_like_a_mention() {
+    // Raw "@Alice" without `m.mentions` names nobody, so no viewer may render a
+    // pill for it (#874).
+    assert!(
+        mentioned_user_ids_from_event_json(&serde_json::json!({
+            "content": { "body": "@Alice please look" }
+        }))
+        .is_empty()
+    );
+}
+
+#[test]
+fn mentioned_user_ids_ignore_room_mentions() {
+    assert!(
+        mentioned_user_ids_from_event_json(&serde_json::json!({
+            "content": { "body": "@room", "m.mentions": { "room": true } }
+        }))
+        .is_empty()
+    );
+}
+
+#[test]
+fn mentioned_user_ids_follow_the_edit_replacement() {
+    assert_eq!(
+        mentioned_user_ids_from_event_json(&serde_json::json!({
+            "content": {
+                "body": "* @Bob",
+                "m.mentions": { "user_ids": ["@alice:example.test"] },
+                "m.relates_to": {
+                    "rel_type": "m.replace",
+                    "event_id": "$original:example.test"
+                },
+                "m.new_content": {
+                    "body": "@Bob",
+                    "m.mentions": { "user_ids": ["@bob:example.test"] }
+                }
+            }
+        })),
+        vec!["@bob:example.test"]
     );
 }
 
@@ -1302,4 +1362,150 @@ fn cancelled_link_preview_loads_return_loading_previews_to_pending() {
     assert_eq!(previews[0].state, LinkPreviewState::Pending);
     assert_eq!(previews[1].state, LinkPreviewState::Ready);
     assert!(!reset_loading_link_previews_to_pending(&mut item));
+}
+
+
+#[test]
+fn editable_document_reads_replacement_content_not_fallback() {
+    let raw = serde_json::json!({"content": {
+        "body": "* old fallback @Project", "format": "org.matrix.custom.html",
+        "formatted_body": "* old fallback <a href=\"https://matrix.to/#/%23project%3Aexample.test\">@Project</a>",
+        "m.relates_to": {"rel_type": "m.replace", "event_id": "$original:example.test"},
+        "m.new_content": {"body": "edited text @Project", "format": "org.matrix.custom.html",
+            "formatted_body": "edited text <a href=\"https://matrix.to/#/%23project%3Aexample.test\">@Project</a>"}
+    }});
+    assert_eq!(
+        composer_document_from_event_json(&raw)
+            .unwrap()
+            .plain_body(),
+        "edited text @Project"
+    );
+}
+
+#[tokio::test]
+async fn reopening_edit_uses_latest_sdk_revision() {
+    check_reopening_edit(false).await;
+}
+
+#[tokio::test]
+async fn reopening_thread_root_edit_uses_latest_sdk_revision() {
+    check_reopening_edit(true).await;
+}
+
+async fn check_reopening_edit(with_reply: bool) {
+    use futures_util::StreamExt;
+    use koushi_protocol::{AccountKey, TimelineKey};
+    use matrix_sdk::{
+        ruma::{event_id, room_id, user_id},
+        test_utils::mocks::MatrixMockServer,
+    };
+    use matrix_sdk_test::{JoinedRoomBuilder, event_factory::EventFactory};
+    use matrix_sdk_ui::timeline::TimelineFocus;
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = room_id!("!edit:example.test");
+    let room = server.sync_joined_room(&client, room_id).await;
+    let timeline = super::super::relay::koushi_timeline_builder(
+        &room,
+        TimelineFocus::Live {
+            hide_threaded_events: false,
+        },
+    )
+    .build()
+    .await
+    .unwrap();
+    let (mut items, mut updates) = timeline.subscribe().await;
+    let factory = EventFactory::new()
+        .room(room_id)
+        .sender(user_id!("@alice:example.test"));
+    let original_id = event_id!("$original:example.test");
+    let key = TimelineKey::room(AccountKey("test".into()), room_id.as_str());
+    let reply = factory
+        .text_msg("reply")
+        .in_thread(original_id, original_id)
+        .into_raw_sync();
+    let mut roots = crate::threads_list::ThreadRootProjectionService::default();
+    for (revision, body) in [
+        "original text @Project",
+        "first edited text @Project",
+        "second edited text @Project",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let html = body.replace(
+            "@Project",
+            "<a href=\"https://matrix.to/#/%23project%3Aexample.test\">@Project</a>",
+        );
+        let event = if revision == 0 {
+            let mut original = factory.text_html(body, &html).event_id(original_id);
+            if with_reply {
+                original =
+                    original.with_bundled_thread_summary(reply.clone().cast_unchecked(), 1, false);
+            }
+            original.into_raw_sync()
+        } else {
+            factory
+                .text_msg(format!("* {body}"))
+                .edit(
+                    original_id,
+                    MessageType::Text(TextMessageEventContent::html(body, &html)).into(),
+                )
+                .into_raw_sync()
+        };
+        let mut room_update = JoinedRoomBuilder::new(room_id).add_timeline_event(event);
+        if with_reply && revision == 0 {
+            room_update = room_update.add_timeline_event(reply.clone());
+        }
+        server.sync_room(&client, room_update).await;
+        let projected = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Some(item) = items.iter().find(|item| {
+                    item.as_event().is_some_and(|e| {
+                        e.event_id() == Some(original_id)
+                            && e.content().as_message().is_some_and(|m| m.body() == body)
+                    })
+                }) {
+                    return super::sdk_item_to_timeline_item(
+                        &key,
+                        item,
+                        Some(user_id!("@alice:example.test")),
+                    );
+                }
+                for diff in updates.next().await.unwrap() {
+                    diff.apply(&mut items);
+                }
+            }
+        })
+        .await
+        .expect("SDK projects revision");
+        assert_eq!(
+            projected
+                .actions
+                .editable_document
+                .as_ref()
+                .unwrap()
+                .plain_body(),
+            body,
+            "reopening revision {revision} must retain the saved edit"
+        );
+        if with_reply {
+            assert_eq!(projected.thread_summary.as_ref().unwrap().reply_count, 1);
+            roots.seed_canonical_root(room_id.as_str(), &projected);
+            let data = roots.display_data_for_room(room_id.as_str());
+            assert_eq!(
+                data[0]
+                    .item
+                    .as_ref()
+                    .unwrap()
+                    .actions
+                    .editable_document
+                    .as_ref()
+                    .unwrap()
+                    .plain_body(),
+                body
+            );
+        }
+    }
 }

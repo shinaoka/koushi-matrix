@@ -312,9 +312,7 @@ fn desktop_menu_items_include_element_compatible_shortcuts() {
         .expect("sign out menu item should exist");
     assert_eq!(sign_out_index, user_settings_index + 1);
     assert!(items.iter().any(|item| {
-        item.id == "show_keyboard_settings"
-            && item.accelerator == "CmdOrCtrl+/"
-            && item.menu == "help"
+        item.id == "show_help" && item.accelerator.is_empty() && item.menu == "help"
     }));
     assert!(items.iter().any(|item| {
         item.id == "toggle_right_panel" && item.accelerator == "CmdOrCtrl+." && item.menu == "view"

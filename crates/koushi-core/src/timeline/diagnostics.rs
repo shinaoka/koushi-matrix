@@ -511,6 +511,11 @@ fn timeline_stage_token(value: &str) -> &'static str {
         "subscribe_rooms_done" => "subscribe_rooms_done",
         "build_begin" => "build_begin",
         "build_done" => "build_done",
+        "initial_backfill_projection_wait" => "initial_backfill_projection_wait",
+        "initial_backfill_projection_closed" => "initial_backfill_projection_closed",
+        "initial_backfill_projection_deadline" => "initial_backfill_projection_deadline",
+        "initial_backfill_sdk_failed" => "initial_backfill_sdk_failed",
+
         "spawn_begin" => "spawn_begin",
         "spawn_done" => "spawn_done",
         "initial_emitted" => "initial_emitted",
@@ -1650,10 +1655,7 @@ pub(super) fn private_read_receipt_event_id_for_fully_read<'a>(
 ) -> &'a str {
     if context.unread_messages == 0
         && context.notification_count > 0
-        && matches!(
-            context.latest_event_relation_type,
-            Some("m.replace" | "m.thread")
-        )
+        && context.latest_event_relation_type == Some("m.replace")
         && let Some(latest_event_id) = context.latest_event_id
         && !latest_event_id.trim().is_empty()
     {
@@ -1679,7 +1681,6 @@ pub(super) fn private_read_receipt_event_id_from_room_for_fully_read(
 }
 
 fn room_latest_receipt_context(room: &matrix_sdk::Room) -> RoomLatestReceiptContext {
-    let unread_notifications = room.unread_notification_counts();
     let (event_id, relation_type) = match room.latest_event() {
         matrix_sdk::latest_events::LatestEventValue::Remote(timeline_event) => (
             timeline_event
@@ -1694,7 +1695,7 @@ fn room_latest_receipt_context(room: &matrix_sdk::Room) -> RoomLatestReceiptCont
         event_id,
         relation_type,
         unread_messages: room.num_unread_messages(),
-        notification_count: unread_notifications.notification_count.into(),
+        notification_count: room.num_unread_notifications(),
     }
 }
 
@@ -1757,6 +1758,10 @@ fn event_cache_item_diagnostic_event(
         event_id_present,
     ))
     .field(DiagnosticField::boolean("sender_present", sender_present))
+    .field(DiagnosticField::boolean(
+        "redacted",
+        item.raw().deserialize().is_ok_and(|event| event.is_redacted()),
+    ))
     .field(DiagnosticField::count(
         "timestamp_minute",
         timestamp_ms.unwrap_or(0) / 60_000,
@@ -1764,6 +1769,18 @@ fn event_cache_item_diagnostic_event(
     .field(DiagnosticField::boolean(
         "timestamp_present",
         timestamp_ms.is_some(),
+    ))
+    .field(DiagnosticField::boolean(
+        "push_actions_present",
+        item.push_actions().is_some(),
+    ))
+    .field(DiagnosticField::boolean(
+        "push_notify",
+        item.push_actions().is_some_and(|actions| actions.iter().any(|action| action.should_notify())),
+    ))
+    .field(DiagnosticField::boolean(
+        "push_highlight",
+        item.push_actions().is_some_and(|actions| actions.iter().any(|action| action.is_highlight())),
     ))
     .field(DiagnosticField::token("relation", relation.rel_type))
     .field(DiagnosticField::boolean(
@@ -1794,6 +1811,27 @@ fn record_event_cache_item(
     ));
 }
 
+pub(super) fn trace_room_receipt_cache(
+    key: &TimelineKey,
+    room: &matrix_sdk::Room,
+    items: &[matrix_sdk_base::event_cache::Event],
+) {
+    let receipts = room.read_receipts();
+    let active_index = receipts.latest_active.as_ref().and_then(|active|
+        items.iter().rposition(|item| item.event_id() == Some(active.event_id.as_ref())));
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.room_receipt_cache", "snapshot")
+            .field(DiagnosticField::token("timeline", timeline_key_trace_kind(key)))
+            .field(DiagnosticField::count("items", items.len() as u64))
+            .field(DiagnosticField::boolean("active_present", receipts.latest_active.is_some()))
+            .field(DiagnosticField::boolean("active_in_cache", active_index.is_some()))
+            .field(DiagnosticField::count("active_index", active_index.unwrap_or(0) as u64))
+            .field(DiagnosticField::count("unread", receipts.num_unread))
+            .field(DiagnosticField::count("notifications", receipts.num_notifications))
+            .field(DiagnosticField::count("mentions", receipts.num_mentions))
+    );
+}
+
 pub(super) fn trace_event_cache_items(
     stage: &str,
     key: &TimelineKey,
@@ -1813,14 +1851,22 @@ pub(super) fn trace_event_cache_items(
         ))
         .field(DiagnosticField::count("count", items.len() as u64)),
     );
+    let positions: std::collections::HashMap<_, _> = items.iter().enumerate()
+        .filter_map(|(index, item)| item.event_id().map(|id| (id.as_str(), index)))
+        .collect();
     for (index, item) in items.iter().enumerate() {
+        let relation = event_cache_relation_trace(item);
+        let target_index = relation.relation_event_id.as_deref()
+            .and_then(|id| positions.get(id).copied());
         events.push(event_cache_item_diagnostic_event(
             stage,
             key,
             "item",
             Some(index),
             item,
-        ));
+        )
+        .field(DiagnosticField::boolean("relation_target_in_cache", target_index.is_some()))
+        .field(DiagnosticField::count("relation_target_index", target_index.unwrap_or(0) as u64)));
     }
     koushi_diagnostics::record_batch(events);
 }

@@ -847,10 +847,23 @@ stateDiagram-v2
 ```
 
 Rust keeps the local viewed boundary separate from server-confirmed read state.
+For the displayed read divider, comparable local and confirmed boundaries in the
+same canonical window use the newer position, mapped to a visible event at or
+before that position. A stale local boundary cannot override a newer confirmed
+one. Missing positions retain conservative fallback behavior. This display
+choice does not acknowledge unsent receipts or change server-based unread counts.
+Replaying `InitialItems` for a new or returning subscriber also republishes the
+current `NavigationUpdated` snapshot, even when it is unchanged within the actor.
+An earlier consumer having received that snapshot is not evidence that the new
+consumer has it; room-level fallback must not substitute for thread read state.
 Only a current Room or Thread actor may admit an at-bottom, gap-free, latest
 attention-eligible event with exact position and actor-generation evidence.
 Room observations require the atomic fully-read/private-unthreaded key and, when
-receipt privacy permits, the room-wide public key. Thread observations require
+receipt privacy permits, the room-wide public key. Resolving a displayed root's
+activity identity must not promote either receipt to an unseen thread reply.
+Hidden-edit notification repair uses the same SDK-local notification counter as
+the room list; server notification counters are not interchangeable with it.
+Thread observations require
 only their per-root threaded key; Focused timelines never originate automatic
 read intent. React renders `pending`/`failed`/`synced`/`notRequested` and the
 Rust-derived divider but sends no viewport-derived receipt commands.
@@ -1415,12 +1428,18 @@ stateDiagram-v2
   The production runtime must also subscribe the corresponding
   `TimelineKind::Thread { room_id, root_event_id }`. For `ExistingThread` and
   `PinnedReply`, an empty first SDK snapshot triggers one bounded scheduler-owned
-  backward page before any InitialItems or success action is published. The
+  backward hydration request before any InitialItems or success action is published.
+  The public Thread event-cache paginator targets 100 raw events across
+  cached chunks, so an edit/reaction-only chunk does not stop hydration. The
   reducer copies its accepted `ThreadOpenIntent` into the AppEffect; runtime and
-  manager carry a typed Core policy instead of rereading mutable state. Only a
-  settled page (including authoritative end-reached empty) and actual thread
-  timeline subscription success may drive `ThreadSubscribed` and move the pane
-  to `Open`. Non-end empty, pagination error, or subscription failure publishes
+  manager carry a typed Core policy instead of rereading mutable state. Only successful pagination plus either authoritative end-reached or visible
+  content observed on the pre-pagination SDK subscription, and actual thread
+  timeline subscription success, may drive `ThreadSubscribed` and move the pane
+  to `Open`. Pagination and visible-content readiness share one 10-second
+  deadline; a non-end result waits for visible content on that same stream; an immediate empty snapshot is not failure. This is
+  content readiness, not an exact page-publication barrier. Remaining updates
+  continue through the actor subscription. Stream closure, deadline expiry,
+  pagination error, or subscription failure publishes
   no InitialItems and drives `ThreadSubscriptionFailed`,
   closes the pane, clears pane-level thread attention, and records a
   private-data-free recoverable error. `NewThreadDraft` skips this page.
@@ -1709,7 +1728,10 @@ stateDiagram-v2
   `unread_event_count`, `unread_position`, `newer_event_count`, and
   `can_jump_to_bottom` from Rust-owned item order. Local echoes, synthetic
   rows, hidden rows, and the current user's own events do not create unread
-  counts.
+  counts. Room navigation also excludes thread replies: their unread state belongs
+  to their Thread timeline. Canonical positions are retained, including hidden
+  replies, so an existing unthreaded read marker can still define the boundary.
+  Room own-message divider advancement likewise excludes thread replies.
 - `NavigationUpdated` is emitted only when the projection changes. Diff-driven
   updates are emitted after the corresponding `ItemsUpdated` event so the GUI
   has the referenced rows before it renders or scrolls to an anchor.

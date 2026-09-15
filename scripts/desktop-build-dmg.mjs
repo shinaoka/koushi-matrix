@@ -30,15 +30,23 @@ printStorageNotice();
 
 const bundleVersion = macOSBundleVersion();
 const buildEnvironment = localSigningEnvironment();
+const updaterPublicKey = buildEnvironment.KOUSHI_UPDATER_PUBLIC_KEY?.trim();
+const buildConfig = {
+  bundle: {
+    macOS: { bundleVersion },
+    createUpdaterArtifacts: args.has("--signed") || Boolean(updaterPublicKey)
+  },
+  ...(updaterPublicKey ? { plugins: { updater: { pubkey: updaterPublicKey } } } : {})
+};
 const buildCommand = [
   "run",
   "tauri",
   "--",
   "build",
   "--bundles",
-  "dmg",
+  "app,dmg",
   "--config",
-  JSON.stringify({ bundle: { macOS: { bundleVersion } } })
+  JSON.stringify(buildConfig)
 ];
 if (target) {
   buildCommand.push("--target", target);
@@ -192,6 +200,6 @@ function printUsage() {
   console.log(
     "Usage: npm --prefix apps/desktop run build:dmg [-- --signed|--skip-preflight] [--target TARGET]"
   );
-  console.log("Builds the local macOS DMG via Tauri: tauri build --bundles dmg");
+  console.log("Builds the local macOS app and DMG via Tauri: tauri build --bundles app,dmg");
   printStorageNotice();
 }

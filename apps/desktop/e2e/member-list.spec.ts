@@ -344,6 +344,35 @@ test("Space Members Profile preserves the Space member context", async ({ page }
   await expect(panel).toContainText(HARNESS_MEMBERS[2].userId);
 });
 
+test("Space Members rows show each name once and keep one labelled role control", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  await openSpaceMembersFromSpaceInfo(page);
+  const joinedList = contextPanel(page).getByRole("list", {
+    name: t("spaceMembers.sectionJoined")
+  });
+
+  // #880: the role label reserved its own cell while rendering at full size, so
+  // every row printed its display name a second time as "<name>'s role".
+  const rowLabel = "Harness Role Target";
+  const row = joinedList.locator(".space-members-row").filter({ hasText: rowLabel });
+  await expect(row).toHaveCount(1);
+
+  // The name cell states the member once; the duplicate came from the label.
+  await expect(row.locator(".space-members-name")).toHaveText(rowLabel);
+
+  // The label stays in the document for assistive technology only: clipped to
+  // a single pixel instead of laid out at full width beside the control.
+  const labelBox = await row.locator(".space-members-role-control > span").boundingBox();
+  expect(labelBox?.width ?? 0).toBeLessThanOrEqual(1);
+  expect(labelBox?.height ?? 0).toBeLessThanOrEqual(1);
+  await expect(
+    row.getByRole("combobox", { name: t("spaceMembers.roleSelect", { name: rowLabel }) })
+  ).toBeVisible();
+});
+
 test("Space Members can invite a brand-new user to the Space via the invite search", async ({
   page
 }) => {
@@ -418,4 +447,60 @@ test("Space Members can invite a brand-new user to the Space via the invite sear
   await clearInvocations(page);
   await panel.getByRole("button", { name: t("action.cancel") }).click();
   await expect.poll(() => invocationCount(page, "close_invite_workflow")).toBe(1);
+});
+
+test("Space Members rows keep a long Japanese name and one compact role control on one line", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await openSpaceMembersFromSpaceInfo(page);
+
+  const longName = "山田太郎（スペース管理者・テスト用アカウント）";
+  await page.evaluate((name) => {
+    const harness = (
+      window as unknown as {
+        __harness: {
+          currentSnapshot(): {
+            state: { domain: { space_members: { space_joined: Record<string, unknown>[] } } };
+          };
+          setSnapshot(snapshot: unknown): void;
+          pushStateUpdate(): void;
+        };
+      }
+    ).__harness;
+    const snapshot = harness.currentSnapshot();
+    const members = snapshot.state.domain.space_members;
+    harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          space_members: {
+            ...members,
+            space_joined: members.space_joined.map((entry) =>
+              entry.user_id === "@harness-role-target:example.invalid"
+                ? { ...entry, display_label: name, display_name: name }
+                : entry
+            )
+          }
+        }
+      }
+    });
+    harness.pushStateUpdate();
+  }, longName);
+
+  // #880: the role control must not squeeze a long name into a collapsed or
+  // wrapped row when the panel is narrow.
+  await page.setViewportSize({ width: 900, height: 800 });
+  const row = contextPanel(page).locator(".space-members-row").filter({ hasText: longName });
+  await expect(row.locator(".space-members-name")).toHaveText(longName);
+
+  const rowBox = await row.boundingBox();
+  const nameBox = await row.locator(".space-members-name").boundingBox();
+  const selectBox = await row.getByRole("combobox").boundingBox();
+  expect(rowBox?.height ?? 0).toBeLessThan(48);
+  expect(nameBox?.width ?? 0).toBeGreaterThan(80);
+  expect(selectBox?.width ?? 0).toBeGreaterThan(0);
+  await expect(row.getByRole("combobox")).toBeVisible();
 });

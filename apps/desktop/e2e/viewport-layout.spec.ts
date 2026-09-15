@@ -48,7 +48,7 @@ function expectRootAligned(geometry: Awaited<ReturnType<typeof layoutGeometry>>)
 test("right-panel header exposes no inert More action", async ({ page }) => {
   await gotoReadyShell(page);
   await page.getByRole("button", { name: t("workspace.userSettings"), exact: true }).click();
-  const contextPanel = page.locator('aside[aria-label="Context panel"]');
+  const contextPanel = page.getByRole("dialog", { name: "User settings" });
   await expect(contextPanel.getByRole("button", { name: "More", exact: true })).toHaveCount(0);
   const close = contextPanel.getByRole("button", {
     name: t("action.close", { title: t("panel.userSettings") }),
@@ -59,57 +59,16 @@ test("right-panel header exposes no inert More action", async ({ page }) => {
   await expect(page.locator(".app-grid")).toHaveClass(/(^|\s)thread-closed(\s|$)/);
 });
 
-test("User settings quick navigation scrolls only its panel", async ({ page }) => {
-  await page.setViewportSize({ width: 1334, height: 852 });
+test("User settings categories change without scrolling the desktop", async ({ page }) => {
   await gotoReadyShell(page);
-  await page.getByRole("button", { name: t("workspace.userSettings"), exact: true }).click();
-  const panel = page.locator(".settings-panel");
-  await expect(panel).toBeVisible();
-
-  const quickNavigation = [
-    t("settings.general"),
-    t("settings.session"),
-    t("settings.appearance"),
-    t("settings.display"),
-    t("settings.notifications"),
-    t("settings.messagingPrivacy"),
-    t("settings.keyboard"),
-    t("settings.timeline"),
-    t("settings.searchHistory"),
-    t("settings.securityPrivacy")
-  ];
-  const shellObservations: Array<{
-    desktopScrollTop: number;
-    titlebarTop: number;
-  }> = [];
-  for (const name of quickNavigation) {
-    await panel.getByRole("button", { name, exact: true }).click();
-    shellObservations.push(
-      await page.evaluate(() => ({
-        desktopScrollTop: document.querySelector<HTMLElement>(".desktop")!.scrollTop,
-        titlebarTop: document.querySelector<HTMLElement>(".titlebar")!.getBoundingClientRect().top
-      }))
-    );
+  await page.getByRole("button", { name: "User settings", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "User settings" });
+  for (const name of ["Account", "Sessions", "Appearance", "Notifications", "Preferences", "Keyboard", "Security & Privacy", "Encryption", "Search history", "Help & About"]) {
+    await dialog.getByRole("tab", { name, exact: true }).click();
+    await expect(dialog.getByRole("tabpanel")).toHaveCount(1);
+    await expect(dialog.getByRole("tabpanel", { name, exact: true })).toBeVisible();
+    expect(await page.locator(".desktop").evaluate(element => element.scrollTop)).toBe(0);
   }
-
-  for (const observation of shellObservations) {
-    expect(observation.desktopScrollTop).toBe(0);
-    expect(observation.titlebarTop).toBeCloseTo(0, 0);
-  }
-  const shellRange = await page.locator(".desktop").evaluate((element) => ({
-    clientHeight: element.clientHeight,
-    scrollHeight: element.scrollHeight
-  }));
-  expect(shellRange.scrollHeight).toBe(shellRange.clientHeight);
-
-  await panel.getByRole("button", { name: t("settings.general"), exact: true }).click();
-  const generalTop = await panel.evaluate((element) => element.scrollTop);
-  await panel.getByRole("button", { name: t("settings.securityPrivacy"), exact: true }).click();
-  const securityTop = await panel.evaluate((element) => element.scrollTop);
-  await panel.getByRole("button", { name: t("settings.general"), exact: true }).click();
-  const returnedTop = await panel.evaluate((element) => element.scrollTop);
-  expect(securityTop).toBeGreaterThan(generalTop);
-  expect(returnedTop).toBe(generalTop);
 });
 
 test("density, browser resize, and right-panel resize preserve the root viewport", async ({
@@ -118,7 +77,7 @@ test("density, browser resize, and right-panel resize preserve the root viewport
   await page.setViewportSize({ width: 1280, height: 800 });
   await gotoReadyShell(page);
   await page.getByRole("button", { name: t("workspace.userSettings"), exact: true }).click();
-  await expect(page.locator(".thread-pane")).toBeVisible();
+  await page.getByRole("tab", { name: "Appearance", exact: true }).click();
 
   for (const density of ["Compact", "Default", "Comfortable"] as const) {
     await page.getByRole("button", { name: density, exact: true }).click();
@@ -128,6 +87,14 @@ test("density, browser resize, and right-panel resize preserve the root viewport
 
   expectRootAligned(await layoutGeometry(page));
 
+  const closePanel = page.getByRole("button", {
+    name: t("action.close", { title: t("panel.userSettings") }),
+    exact: true
+  });
+  await closePanel.click();
+  await expect(page.locator(".app-grid")).toHaveClass(/(^|\s)thread-closed(\s|$)/);
+  await expect(closePanel).toBeHidden();
+  await page.getByRole("button", { name: "Room info", exact: true }).click();
   const resizer = page.getByRole("button", { name: t("workspace.resizeRightPanel") });
   const beforePanel = await page
     .locator(".thread-pane")
@@ -144,13 +111,7 @@ test("density, browser resize, and right-panel resize preserve the root viewport
   expect(afterPanel).not.toBe(beforePanel);
   expectRootAligned(await layoutGeometry(page));
 
-  const closePanel = page.getByRole("button", {
-    name: t("action.close", { title: t("panel.userSettings") }),
-    exact: true
-  });
-  await closePanel.click();
-  await expect(page.locator(".app-grid")).toHaveClass(/(^|\s)thread-closed(\s|$)/);
-  await expect(closePanel).toBeHidden();
+
   expectRootAligned(await layoutGeometry(page));
 
   await page.setViewportSize({ width: 1100, height: 720 });

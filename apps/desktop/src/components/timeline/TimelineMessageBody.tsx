@@ -15,6 +15,12 @@ type TimelineMentionToken = {
   userId: string;
 };
 
+/**
+ * Issue #874: a mention pill is a property of the message, not of the viewer's
+ * loaded profiles. Only ids the event's `m.mentions` named are pill candidates.
+ */
+const NO_MENTIONED_USER_IDS: ReadonlySet<string> = new Set<string>();
+
 /** Opens a Matrix entity a rendered message links to. */
 export type OpenMatrixTargetHandler = (target: MatrixPermalinkTarget) => void;
 
@@ -43,9 +49,10 @@ export function renderTimelineMessageText(
   text: string,
   highlightRanges: TextRange[] = [],
   profileUsers: Record<string, UserProfile> = {},
-  baseOffset = 0
+  baseOffset = 0,
+  mentionedUserIds: ReadonlySet<string> = NO_MENTIONED_USER_IDS
 ) {
-  const mentionTokens = timelineMentionTokens(profileUsers);
+  const mentionTokens = timelineMentionTokens(profileUsers, mentionedUserIds);
   let offset = baseOffset;
   return text.split("\n").map((line, index) => {
     const lineOffset = offset;
@@ -64,11 +71,12 @@ function renderTimelineMessageTextWithSpoilers(
   spoilerSpans: TimelineItem["spoiler_spans"] | undefined,
   highlightRanges: TextRange[],
   profileUsers: Record<string, UserProfile>,
-  spoilerState: SpoilerRevealState
+  spoilerState: SpoilerRevealState,
+  mentionedUserIds: ReadonlySet<string>
 ): ReactNode {
   const spans = normalizeSpoilerSpans(spoilerSpans, text.length);
   if (spans.length === 0) {
-    return renderTimelineMessageText(text, highlightRanges, profileUsers);
+    return renderTimelineMessageText(text, highlightRanges, profileUsers, 0, mentionedUserIds);
   }
 
   const nodes: ReactNode[] = [];
@@ -78,7 +86,13 @@ function renderTimelineMessageTextWithSpoilers(
       const visibleText = text.slice(cursor, span.start_utf16);
       nodes.push(
         <Fragment key={`text:${cursor}`}>
-          {renderTimelineMessageText(visibleText, highlightRanges, profileUsers, cursor)}
+          {renderTimelineMessageText(
+            visibleText,
+            highlightRanges,
+            profileUsers,
+            cursor,
+            mentionedUserIds
+          )}
         </Fragment>
       );
     }
@@ -87,7 +101,13 @@ function renderTimelineMessageTextWithSpoilers(
     nodes.push(
       renderSpoiler(
         `plain:${span.start_utf16}:${span.end_utf16}:${index}`,
-        renderTimelineMessageText(spoilerText, highlightRanges, profileUsers, span.start_utf16),
+        renderTimelineMessageText(
+          spoilerText,
+          highlightRanges,
+          profileUsers,
+          span.start_utf16,
+          mentionedUserIds
+        ),
         span.reason,
         spoilerState
       )
@@ -98,7 +118,13 @@ function renderTimelineMessageTextWithSpoilers(
   if (cursor < text.length) {
     nodes.push(
       <Fragment key={`text:${cursor}`}>
-        {renderTimelineMessageText(text.slice(cursor), highlightRanges, profileUsers, cursor)}
+        {renderTimelineMessageText(
+          text.slice(cursor),
+          highlightRanges,
+          profileUsers,
+          cursor,
+          mentionedUserIds
+        )}
       </Fragment>
     );
   }
@@ -112,7 +138,8 @@ export function renderPlainTextBody(
   highlightRanges: TextRange[],
   profileUsers: Record<string, UserProfile>,
   spoilerState: SpoilerRevealState,
-  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined
+  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined,
+  mentionedUserIds: ReadonlySet<string> = NO_MENTIONED_USER_IDS
 ): ReactNode {
   if (linkRanges.length === 0) {
     return renderTimelineMessageTextWithSpoilers(
@@ -120,7 +147,8 @@ export function renderPlainTextBody(
       spoilerSpans,
       highlightRanges,
       profileUsers,
-      spoilerState
+      spoilerState,
+      mentionedUserIds
     );
   }
   const spans = normalizeSpoilerSpans(spoilerSpans, text.length);
@@ -141,7 +169,8 @@ export function renderPlainTextBody(
             sortedLinks,
             highlightRanges,
             profileUsers,
-            onOpenMatrixTarget
+            onOpenMatrixTarget,
+            mentionedUserIds
           )}
         </Fragment>
       );
@@ -154,7 +183,8 @@ export function renderPlainTextBody(
       sortedLinks,
       highlightRanges,
       profileUsers,
-      onOpenMatrixTarget
+      onOpenMatrixTarget,
+      mentionedUserIds
     );
     nodes.push(
       renderSpoiler(
@@ -177,7 +207,8 @@ export function renderPlainTextBody(
           sortedLinks,
           highlightRanges,
           profileUsers,
-          onOpenMatrixTarget
+          onOpenMatrixTarget,
+          mentionedUserIds
         )}
       </Fragment>
     );
@@ -192,7 +223,8 @@ function renderPlainTextSegment(
   sortedLinks: TimelineLinkRange[],
   highlightRanges: TextRange[],
   profileUsers: Record<string, UserProfile>,
-  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined
+  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined,
+  mentionedUserIds: ReadonlySet<string>
 ): ReactNode {
   const nodes: ReactNode[] = [];
   let cursor = segStart;
@@ -208,7 +240,8 @@ function renderPlainTextSegment(
             text.slice(cursor, linkStart),
             highlightRanges,
             profileUsers,
-            cursor
+            cursor,
+            mentionedUserIds
           )}
         </Fragment>
       );
@@ -219,7 +252,8 @@ function renderPlainTextSegment(
       text.slice(linkStart, linkEnd),
       highlightRanges,
       profileUsers,
-      linkStart
+      linkStart,
+      mentionedUserIds
     );
     nodes.push(
       href ? (
@@ -249,7 +283,8 @@ function renderPlainTextSegment(
           text.slice(cursor, segEnd),
           highlightRanges,
           profileUsers,
-          cursor
+          cursor,
+          mentionedUserIds
         )}
       </Fragment>
     );
@@ -397,12 +432,14 @@ export function renderFormattedBody(
   onCopyText: TimelineRowActionHandlers["onCopyText"],
   highlightRanges: TextRange[],
   spoilerState: SpoilerRevealState,
-  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined
+  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined,
+  mentionedUserIds: ReadonlySet<string> = NO_MENTIONED_USER_IDS
 ): ReactNode {
-  const nodes =
+  const parsed =
     linkRanges.length > 0 && !formatted.html.includes("<a")
       ? linkifyFormattedNodes(parseFormattedHtml(formatted.html), linkRanges)
       : parseFormattedHtml(formatted.html);
+  const nodes = markMentionAnchors(parsed, mentionedUserIds);
   const codeBlockIndexRef = { current: 0 };
   const textOffsetRef = { current: 0 };
   const projectedHighlightRanges = formattedTextOffsetsProject(nodes, formatted.plain_text)
@@ -440,6 +477,42 @@ function formattedTextOffsetsProject(nodes: FormattedNode[], plainText: string):
     return true;
   };
   return visit(nodes, null);
+}
+
+/**
+ * Issue #874: tag the `<a>` anchors whose `matrix.to` target is a user this
+ * message's `m.mentions` named. The anchor renderer then draws the pill the
+ * composer uses, instead of a generic link indistinguishable from a web URL.
+ */
+function markMentionAnchors(
+  nodes: FormattedNode[],
+  mentionedUserIds: ReadonlySet<string>
+): FormattedNode[] {
+  if (mentionedUserIds.size === 0) {
+    return nodes;
+  }
+  const visit = (candidates: FormattedNode[]): FormattedNode[] =>
+    candidates.map((node) => {
+      if (node.kind !== "element") {
+        return node;
+      }
+      const children = visit(node.children);
+      const target = node.tagName === "a" ? matrixPermalinkUser(node.attrs.href ?? "") : null;
+      if (!target || !mentionedUserIds.has(target)) {
+        return children === node.children ? node : { ...node, children };
+      }
+      return {
+        ...node,
+        attrs: { ...node.attrs, "data-mention-user-id": target },
+        children
+      };
+    });
+  return visit(nodes);
+}
+
+function matrixPermalinkUser(href: string): string | null {
+  const target = parseMatrixPermalink(href);
+  return target?.kind === "user" ? target.userId : null;
 }
 
 function parseFormattedHtml(html: string): FormattedNode[] {
@@ -783,12 +856,17 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     if (!href) {
       return <Fragment key={key}>{children}</Fragment>;
     }
+    // Issue #874: a real mention reads as the composer's pill, not as a link
+    // that looks like any other URL.
+    const mentionUserId = node.attrs["data-mention-user-id"];
     return (
       <a
         key={key}
         href={href}
         rel="noopener noreferrer"
         target="_blank"
+        className={mentionUserId ? "message-mention-pill" : undefined}
+        data-mention-user-id={mentionUserId}
         onClick={(event) => {
           event.preventDefault();
           activateTimelineLink(href, onOpenMatrixTarget);
@@ -1146,10 +1224,17 @@ function findNextMentionToken(
 }
 
 function timelineMentionTokens(
-  profileUsers: Record<string, UserProfile>
+  profileUsers: Record<string, UserProfile>,
+  mentionedUserIds: ReadonlySet<string>
 ): TimelineMentionToken[] {
+  if (mentionedUserIds.size === 0) {
+    return [];
+  }
   const tokens = new Map<string, string>();
   for (const profile of Object.values(profileUsers)) {
+    if (!mentionedUserIds.has(profile.user_id)) {
+      continue;
+    }
     const terms = profile.mention_search_terms.length
       ? profile.mention_search_terms
       : [profile.display_label, profile.user_id];

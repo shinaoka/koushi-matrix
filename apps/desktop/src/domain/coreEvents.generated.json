@@ -916,6 +916,9 @@
             "is_edited": true,
             "is_hidden": false,
             "is_redacted": false,
+            "mentioned_user_ids": [
+              "@mentioned:example.test"
+            ],
             "message_kind": "emote",
             "reactions": [
               {
@@ -1038,6 +1041,9 @@
                 "is_edited": true,
                 "is_hidden": false,
                 "is_redacted": false,
+                "mentioned_user_ids": [
+                  "@mentioned:example.test"
+                ],
                 "message_kind": "emote",
                 "reactions": [
                   {

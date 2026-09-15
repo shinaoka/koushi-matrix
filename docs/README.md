@@ -4,6 +4,15 @@ This directory separates long-term normative documents from dated, short-term
 working documents. When documents disagree, the normative documents win, and
 the conflict must be resolved by amending one of them explicitly.
 
+## User help
+
+- [User guide](help/README.md) — usage instructions for people and AI assistants,
+  maintained alongside the product code. Use the matching release tag for
+  installed versions.
+- [Help maintenance](help-maintenance.md) — edit the shared Markdown source,
+  regenerate llms.txt, and check links. Design proposals and worklogs do not
+  establish which features a released version supports.
+
 ## Normative (long-term, kept current)
 
 These documents describe what the product and codebase must look like. They are

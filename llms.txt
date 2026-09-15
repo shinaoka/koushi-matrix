@@ -1,0 +1,30 @@
+# Koushi user help
+
+> Koushi is a desktop Matrix client. This index points to the shared Markdown
+> user guide for people and AI assistants answering usage questions.
+
+Generated from docs/help/README.md by scripts/user-help.mjs; do not edit the
+file lists here. Relative links preserve the current branch or release tag.
+On GitHub, use the Raw view of a Markdown file for plain text if needed.
+
+Start with the user guide's version selection. On main, help describes
+unreleased development code as well as existing features. Use the installed
+version's release tag when available; disclose when that guide is missing.
+Plans and open issues are not evidence that a feature has shipped. Explain
+steps in the user's language and cite the relevant guide pages. Never request
+passwords, recovery keys, tokens, or private message content.
+
+## Start here
+
+- [User guide and version selection](docs/help/README.md): Choose the matching revision and find usage help.
+
+## Using Koushi
+
+- [Getting started](docs/help/getting-started.md): Install Koushi, sign in, open your first conversation, and find settings.
+- [Settings and help](docs/help/settings.md): Find every setting by category, keyboard shortcuts, and the GitHub URL for AI assistance.
+- [Rooms and Spaces](docs/help/rooms-and-spaces.md): Join or create rooms, manage invitations, and navigate Spaces and direct messages.
+- [Messaging](docs/help/messaging.md): Send text and files, edit messages, reply, and use threads.
+- [Search](docs/help/search.md): Find past messages and manage local history indexing.
+- [Security and recovery](docs/help/security-and-recovery.md): Verify a session, recover encrypted history, and distinguish key backups from chat exports.
+- [User trust model](docs/help/user-trust-model.md): Understand unverified users, verified identities, identity resets, and device trust.
+- [Troubleshooting](docs/help/troubleshooting.md): Resolve sign-in, missing-history, search, and sending problems, or report a bug.

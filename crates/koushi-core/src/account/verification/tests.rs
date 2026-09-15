@@ -27,6 +27,8 @@ use super::{
     send_observer_output_until_stopped, stop_incoming_verification_observation_with_timeout,
     trust_failure_token, verification_cancel_kind_token, verification_request_state_token,
     verification_terminal_token,
+    record_incoming_verification_protection_summary,
+    VERIFICATION_PROTECTION_SUMMARY_TRIGGER_RESTORE,
 };
 use crate::account::actor::{AccountActor, AccountMessage};
 use crate::account::recovery_backup::recovery_verification_event;
@@ -793,4 +795,41 @@ async fn identity_reset_auth_without_session_settles_pending_state() {
         }
         other => panic!("expected OperationFailed(SessionRequired), got {other:?}"),
     }
+}
+
+#[test]
+fn verification_protection_summary_is_private_data_free() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock();
+    let counters = koushi_sdk::IncomingVerificationRequestProtectionCounters {
+        unknown_sender_deferred: 2,
+        key_query_replays: 1,
+        released_deliveries: 3,
+        suppressed_sas_start_replays: 4,
+    };
+    record_incoming_verification_protection_summary(
+        &counters,
+        VERIFICATION_PROTECTION_SUMMARY_TRIGGER_RESTORE,
+    );
+
+    let snapshot = koushi_diagnostics::snapshot();
+    let summary = snapshot
+        .records
+        .iter()
+        .find(|record| record.event.source == "core.verification_protection_summary")
+        .expect("summary recorded");
+    let text = format!("{:?}", summary.event);
+    for private in [
+        "@",
+        "!",
+        "room_id",
+        "user_id",
+        "device_id",
+        "event_id",
+        "session_id",
+        "http",
+    ] {
+        assert!(!text.contains(private), "{private} leaked into summary: {text}");
+    }
+    assert!(text.contains("unknown_sender_deferred"));
+    assert!(text.contains("suppressed_sas_start_replays"));
 }

@@ -116,7 +116,6 @@ describe("context menu registry", () => {
     ]);
     expect(contextMenuItems({ kind: "account" }).map((item) => item.id)).toEqual([
       "openUserSettings",
-      "openKeyboardSettings",
       "switchAccount"
     ]);
   });

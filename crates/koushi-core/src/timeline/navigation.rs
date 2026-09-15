@@ -1610,7 +1610,7 @@ impl TimelineActor {
     pub(super) fn handle_replay_initial_items(&mut self, cause_request_id: Option<RequestId>) {
         let window = replay_initial_items_window_range(
             &self.key.kind,
-            self.navigation_items.len(),
+            &self.navigation_items,
             &self.viewport_observation,
         );
         let items = self.navigation_items[window.clone()].to_vec();
@@ -1647,6 +1647,10 @@ impl TimelineActor {
                 self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
                 ThreadAttentionObservation::Replay,
             );
+            // A replay may serve a new subscriber that never received the last
+            // navigation snapshot. Incremental change suppression does not apply.
+            self.last_navigation_snapshot = None;
+            self.emit_navigation_if_changed();
         }
         record_subscribe_stage(
             if emitted {
@@ -1659,6 +1663,7 @@ impl TimelineActor {
     }
     pub(super) fn emit_navigation_if_changed(&mut self) {
         let snapshot = derive_timeline_navigation_snapshot_with_read_state(
+            &self.key.kind,
             &self.navigation_items,
             self.fully_read_event_id.as_deref(),
             self.server_confirmed_read_event_id.as_deref(),
@@ -1707,6 +1712,7 @@ impl TimelineActor {
         terminal: Option<(RequestId, TimelineAnchorRestoreStatus)>,
     ) -> Option<bool> {
         let navigation_snapshot = derive_timeline_navigation_snapshot_with_read_state(
+            &self.key.kind,
             &self.navigation_items,
             self.fully_read_event_id.as_deref(),
             self.server_confirmed_read_event_id.as_deref(),
@@ -1823,23 +1829,22 @@ pub(super) fn replay_initial_items_window(
     items: &[TimelineItem],
     observation: &TimelineViewportObservation,
 ) -> Vec<TimelineItem> {
-    items[replay_initial_items_window_range(kind, items.len(), observation)].to_vec()
+    items[replay_initial_items_window_range(kind, items, observation)].to_vec()
 }
 
+/// The same live-edge rule the display projection applies, so a replay in a test
+/// cannot pass while the projection has moved on.
 fn replay_initial_items_window_range(
     kind: &TimelineKind,
-    item_count: usize,
+    items: &[TimelineItem],
     observation: &TimelineViewportObservation,
 ) -> std::ops::Range<usize> {
-    let start = if matches!(kind, TimelineKind::Room { .. })
-        && observation.at_bottom
-        && item_count > ROOM_REPLAY_INITIAL_ITEMS_MAX
-    {
-        item_count - ROOM_REPLAY_INITIAL_ITEMS_MAX
+    let start = if matches!(kind, TimelineKind::Room { .. }) && observation.at_bottom {
+        super::display_projection::live_edge_window_start(items, ROOM_REPLAY_INITIAL_ITEMS_MAX)
     } else {
         0
     };
-    start..item_count
+    start..items.len()
 }
 
 pub(super) fn should_hydrate_empty_initial_room_timeline(
@@ -1887,12 +1892,14 @@ fn activity_row_from_timeline_item(room_id: &str, item: &TimelineItem) -> Option
 }
 
 pub(super) fn derive_timeline_navigation_snapshot(
+    kind: &TimelineKind,
     items: &[TimelineItem],
     fully_read_event_id: Option<&str>,
     observation: &TimelineViewportObservation,
     own_user_id: Option<&str>,
 ) -> TimelineNavigationSnapshot {
     derive_timeline_navigation_snapshot_with_read_state(
+        kind,
         items,
         fully_read_event_id,
         fully_read_event_id,
@@ -1904,6 +1911,7 @@ pub(super) fn derive_timeline_navigation_snapshot(
 }
 
 pub(super) fn derive_timeline_navigation_snapshot_with_read_state(
+    kind: &TimelineKind,
     items: &[TimelineItem],
     fully_read_event_id: Option<&str>,
     server_confirmed_read_event_id: Option<&str>,
@@ -1916,14 +1924,26 @@ pub(super) fn derive_timeline_navigation_snapshot_with_read_state(
         .or(fully_read_event_id)
         .map(ToOwned::to_owned);
     let local_viewed_event_id = local_viewed_event_id.map(ToOwned::to_owned);
-    let local_viewed_is_canonical = local_viewed_event_id
-        .as_deref()
-        .is_some_and(|event_id| item_index_for_event_id(items, event_id).is_some());
+    let local_position = local_viewed_event_id.as_deref()
+        .and_then(|event_id| item_index_for_event_id(items, event_id));
+    let confirmed_position = server_confirmed_read_event_id.as_deref()
+        .and_then(|event_id| item_index_for_event_id(items, event_id));
+    let display_marker = match (local_position, confirmed_position) {
+        (Some(local), Some(confirmed)) if confirmed > local => {
+            // A stored local observation may predate a successful receipt from
+            // this or another view. Never place the divider behind that receipt.
+            // Hidden edits remain boundaries but are not rendered divider rows.
+            items[local..=confirmed].iter().rev()
+                .find(|item| !item.is_hidden && navigation_item_in_scope(kind, item)
+                    && timeline_item_event_id(item).is_some())
+                .and_then(timeline_item_event_id).map(ToOwned::to_owned)
+        }
+        (Some(_), _) => local_viewed_event_id.clone(),
+        _ => None,
+    };
     let mut snapshot = TimelineNavigationSnapshot {
         read_marker_event_id: server_confirmed_read_event_id.clone(),
-        read_marker_display_event_id: local_viewed_is_canonical
-            .then(|| local_viewed_event_id.clone())
-            .flatten(),
+        read_marker_display_event_id: display_marker,
         first_unread_event_id: None,
         unread_event_count: 0,
         unread_position: TimelineUnreadPosition::None,
@@ -1942,14 +1962,16 @@ pub(super) fn derive_timeline_navigation_snapshot_with_read_state(
         return snapshot;
     };
     snapshot.newer_event_count =
-        newer_unread_event_count(items, observation, own_user_id, read_marker_index);
+        newer_unread_event_count(kind, items, observation, own_user_id, read_marker_index);
     snapshot.can_jump_to_bottom = snapshot.newer_event_count > 0;
 
     let unread_items: Vec<(usize, &TimelineItem)> = items
         .iter()
         .enumerate()
         .skip(read_marker_index.saturating_add(1))
-        .filter(|(_, item)| is_unread_navigation_item(item, own_user_id))
+        .filter(|(_, item)| {
+            navigation_item_in_scope(kind, item) && is_unread_navigation_item(item, own_user_id)
+        })
         .collect();
 
     snapshot.unread_event_count = unread_items.len() as u64;
@@ -1969,7 +1991,9 @@ pub(super) fn derive_timeline_navigation_snapshot_with_read_state(
             .iter()
             .enumerate()
             .skip(read_marker_index)
-            .filter(|(_, item)| is_own_visible_event(item, own_user_id))
+            .filter(|(_, item)| {
+                navigation_item_in_scope(kind, item) && is_own_visible_event(item, own_user_id)
+            })
             .last()
             .and_then(|(_, item)| timeline_item_event_id(item).map(ToOwned::to_owned));
     }
@@ -2014,6 +2038,9 @@ fn timeline_unread_consistency_diagnostic_event(
         .read_marker_event_id
         .as_deref()
         .and_then(event_position);
+    let local_position = snapshot.local_viewed_event_id.as_deref().and_then(event_position);
+    let confirmed_position = snapshot.server_confirmed_read_event_id.as_deref().and_then(event_position);
+    let marker_display_position = snapshot.read_marker_display_event_id.as_deref().and_then(event_position);
     let first_unread_item = snapshot
         .first_unread_event_id
         .as_deref()
@@ -2088,6 +2115,13 @@ fn timeline_unread_consistency_diagnostic_event(
         "fully_read_in_canonical",
         fully_read_position.is_some(),
     ))
+    .field(DiagnosticField::boolean("local_viewed_in_canonical", local_position.is_some()))
+    .field(DiagnosticField::boolean("confirmed_in_canonical", confirmed_position.is_some()))
+    .field(DiagnosticField::boolean("display_marker_in_canonical", marker_display_position.is_some()))
+    .field(DiagnosticField::boolean("local_before_confirmed",
+        matches!((local_position, confirmed_position), (Some(local), Some(confirmed)) if local < confirmed)))
+    .field(DiagnosticField::boolean("display_before_confirmed",
+        matches!((marker_display_position, confirmed_position), (Some(display), Some(confirmed)) if display < confirmed)))
     .field(DiagnosticField::boolean(
         "first_unread_present",
         snapshot.first_unread_event_id.is_some(),
@@ -2192,7 +2226,14 @@ fn is_own_visible_event(item: &TimelineItem, own_user_id: Option<&str>) -> bool 
     matches!(item.id, TimelineItemId::Event { .. })
 }
 
+// Preserve canonical indices for hidden receipt targets, but do not count
+// thread replies as main-conversation unread events.
+fn navigation_item_in_scope(kind: &TimelineKind, item: &TimelineItem) -> bool {
+    !matches!(kind, TimelineKind::Room { .. }) || item.thread_root.is_none()
+}
+
 fn newer_unread_event_count(
+    kind: &TimelineKind,
     items: &[TimelineItem],
     observation: &TimelineViewportObservation,
     own_user_id: Option<&str>,
@@ -2211,7 +2252,9 @@ fn newer_unread_event_count(
     items
         .iter()
         .skip(first_newer_unread_index)
-        .filter(|item| is_unread_navigation_item(item, own_user_id))
+        .filter(|item| {
+            navigation_item_in_scope(kind, item) && is_unread_navigation_item(item, own_user_id)
+        })
         .count() as u64
 }
 

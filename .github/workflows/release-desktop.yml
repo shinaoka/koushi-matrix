@@ -425,6 +425,7 @@ jobs:
 
       - name: Create hidden draft with all assets
         run: |
+          node scripts/user-help.mjs --release-notes "$GITHUB_REPOSITORY" "$RELEASE_TAG" > release-notes.md
           prerelease_args=()
           if [[ "$RELEASE_PRERELEASE" == "true" ]]; then
             prerelease_args+=(--prerelease)
@@ -435,7 +436,7 @@ jobs:
             --title "Koushi $RELEASE_VERSION" \
             --draft \
             --generate-notes \
-            --notes $'### Windows trial notice\n\nThe Windows installer is currently unsigned. Windows SmartScreen may display a warning; verify the accompanying SHA-256 file before testing.\n' \
+            --notes-file release-notes.md \
             "${prerelease_args[@]}" \
             release-assets/*
 

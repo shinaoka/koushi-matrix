@@ -31,9 +31,9 @@ use koushi_protocol::ids::{TimelineKey, TimelineKind};
 use super::actor::{ThreadSummaryProjectionWake, TimelineActor};
 use super::item_projection::{
     MessageProjection, eligible_activity_preview, is_attention_eligible_event,
-    link_ranges_for_message_projection, message_projection_from_msgtype,
-    non_user_content_projection, sticker_projection_from_body, timeline_content_is_renderable,
-    timeline_item_event_id,
+    link_ranges_for_message_projection, mentioned_user_ids_from_event_json,
+    message_projection_from_msgtype, non_user_content_projection, sticker_projection_from_body,
+    timeline_content_is_renderable, timeline_item_event_id,
 };
 use super::manager::{TimelineManagerActor, TimelineMessage};
 use super::navigation::TimelineActorGenerationGate;
@@ -1374,6 +1374,7 @@ fn thread_root_projection_item_from_raw_with_context(
         media: media.clone(),
         link_previews: None,
         link_ranges: link_ranges_for_message_projection(body.as_deref(), formatted.as_ref()),
+        mentioned_user_ids: mentioned_user_ids_from_event_json(&raw),
         reactions: context.reactions,
         can_react: !is_redacted
             && timeline_content_is_renderable(body.as_deref(), media.as_ref(), formatted.as_ref()),

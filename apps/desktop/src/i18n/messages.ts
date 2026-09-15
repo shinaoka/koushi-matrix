@@ -1,6 +1,17 @@
 export type Locale = "en" | "ja" | "pseudo";
 
 export type MessageId =
+  | "help.title"
+  | "help.askAi"
+  | "help.copyRepositoryUrl"
+  | "help.urlCopied"
+  | "help.copyFailed"
+  | "settings.categories"
+  | "settings.categoryAccount"
+  | "settings.categorySessions"
+  | "settings.categoryPreferences"
+  | "settings.categoryHelp"
+
   | "action.add"
   | "action.back"
   | "action.cancel"
@@ -1330,6 +1341,17 @@ export function pseudoLocalize(input: string, mode: PseudoLocaleMode = "accented
 }
 
 const en: Catalog = {
+  "help.title": "Koushi Help",
+  "help.askAi": "Copy this GitHub URL and ask ChatGPT or another AI assistant how to use Koushi. Include your Koushi version, operating system, and question.",
+  "help.copyRepositoryUrl": "Copy GitHub URL",
+  "help.urlCopied": "URL copied",
+  "help.copyFailed": "Could not copy. Select and copy the URL above.",
+  "settings.categories": "Settings categories",
+  "settings.categoryAccount": "Account",
+  "settings.categorySessions": "Sessions",
+  "settings.categoryPreferences": "Preferences",
+  "settings.categoryHelp": "Help & About",
+
   "action.add": "Add",
   "action.back": "Back",
   "action.cancel": "Cancel",
@@ -2582,6 +2604,17 @@ const en: Catalog = {
 
 const ja: Catalog = {
   ...en,
+  "help.title": "Koushiのヘルプ",
+  "help.askAi": "このGitHub URLをコピーして、ChatGPTなどのAIにKoushiの使い方を質問してください。利用バージョン、OS、知りたいことを添えてください。",
+  "help.copyRepositoryUrl": "GitHub URLをコピー",
+  "help.urlCopied": "URLをコピーしました",
+  "help.copyFailed": "コピーできませんでした。上のURLを選択してコピーしてください。",
+  "settings.categories": "設定カテゴリ",
+  "settings.categoryAccount": "アカウント",
+  "settings.categorySessions": "セッション",
+  "settings.categoryPreferences": "環境設定",
+  "settings.categoryHelp": "ヘルプと情報",
+
   "action.add": "追加",
   "action.back": "戻る",
   "action.cancel": "キャンセル",

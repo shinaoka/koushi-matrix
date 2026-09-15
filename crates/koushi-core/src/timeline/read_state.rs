@@ -19,7 +19,9 @@ use crate::read_state::{
     ReadOperation, ReadOperationFence, ReadPersistenceSnapshot, ReadStateEngine, ReadStateKey,
     ReadTarget, ReadWaiterId, ReadWaiterTerminal, ReadWakeResult,
 };
-use koushi_protocol::event::{CoreEvent, LiveSignalsEvent, TimelineReadStateSync};
+use koushi_protocol::event::{
+    CoreEvent, LiveSignalsEvent, TimelineBottomArrival, TimelineItem, TimelineReadStateSync,
+};
 use koushi_protocol::failure::{CoreFailure, ReadStateFailureKind, TimelineFailureKind};
 use koushi_protocol::ids::{RequestId, TimelineKey, TimelineKind};
 
@@ -34,7 +36,8 @@ use super::diagnostics::{
     record_read_retry_scheduled, timeline_key_matches_read_state_key,
 };
 use super::item_projection::{
-    is_attention_eligible_event, live_event_receipts_from_endpoint_changes, timeline_room_id,
+    is_attention_eligible_event, live_event_receipts_from_endpoint_changes, timeline_item_event_id,
+    timeline_room_id,
 };
 use super::manager::{TimelineManagerActor, TimelineMessage};
 use super::navigation::{derive_timeline_navigation_snapshot, record_timeline_unread_consistency};
@@ -1912,6 +1915,68 @@ impl TimelineManagerActor {
     }
 }
 
+/// Issue #872: the newest canonical item a settled viewport can claim the user
+/// read, together with its navigation index.
+///
+/// A Room timeline hides thread replies behind their root row and reports the
+/// root row's *activity* event id as the visible identity, so the newest
+/// eligible canonical item beside the bottom row is usually a reply the room
+/// never renders. Advancing the unthreaded viewed boundary onto it marks replies
+/// read that the user never saw — and consumes the room's own unread badge with
+/// them. Only an event that is itself a displayed row may be read.
+fn viewed_boundary_target<'a>(
+    kind: &TimelineKind,
+    navigation_items: &'a [TimelineItem],
+    display_items: &'a [TimelineItem],
+    last_visible_event_id: &str,
+    bottom_arrival: TimelineBottomArrival,
+) -> Option<(usize, &'a TimelineItem)> {
+    // #872: inside a thread, a live edge the client scrolled to is not something
+    // the reader read. Opening a thread snapped it to the newest reply, and that
+    // snap alone acknowledged the attention count the same open had just
+    // computed, so the badge and the "Thread notifications" pill were never
+    // observable. A bottom the reader reached — or content that fits entirely on
+    // screen — still reads.
+    if matches!(kind, TimelineKind::Thread { .. })
+        && bottom_arrival == TimelineBottomArrival::Programmatic
+    {
+        return None;
+    }
+    if matches!(kind, TimelineKind::Room { .. }) {
+        // A reordered root can expose a reply's activity identity. It proves
+        // the viewport reached this row, not that the hidden reply was read.
+        let last_row = display_items
+            .iter()
+            .rev()
+            .find(|item| is_attention_eligible_event(item))?;
+        let activity_id = last_row
+            .display_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.activity_event_id.as_deref());
+        if timeline_item_event_id(last_row) != Some(last_visible_event_id)
+            && activity_id != Some(last_visible_event_id)
+        {
+            return None;
+        }
+        return navigation_items.iter().enumerate().rev().find(|(_, item)| {
+            is_attention_eligible_event(item)
+                && item.thread_root.is_none()
+                && display_items.iter().any(|displayed| {
+                    timeline_item_event_id(displayed) == timeline_item_event_id(item)
+                })
+        });
+    }
+    let (target_index, target_item) = navigation_items
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, item)| is_attention_eligible_event(item))?;
+    if timeline_item_event_id(target_item) != Some(last_visible_event_id) {
+        return None;
+    }
+    Some((target_index, target_item))
+}
+
 impl TimelineActor {
     pub(super) fn observe_local_viewed_boundary(&mut self) -> Option<ReadTarget> {
         if !matches!(
@@ -1922,18 +1987,16 @@ impl TimelineActor {
             return None;
         }
         let last_visible_event_id = self.viewport_observation.last_visible_event_id.as_deref()?;
-        let (target_index, target_item) = self
-            .navigation_items
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, item)| is_attention_eligible_event(item))?;
+        let (target_index, target_item) = viewed_boundary_target(
+            &self.key.kind,
+            &self.navigation_items,
+            self.display_projection.display_items(),
+            last_visible_event_id,
+            self.viewport_observation.bottom_arrival,
+        )?;
         let koushi_protocol::event::TimelineItemId::Event { event_id } = &target_item.id else {
             return None;
         };
-        if event_id != last_visible_event_id {
-            return None;
-        }
         for visible_gap_id in &self.viewport_observation.visible_gap_ids {
             let Some((gap_index, _)) = self
                 .gap_repair
@@ -2019,6 +2082,7 @@ impl TimelineActor {
                     return false;
                 }
                 let snapshot = derive_timeline_navigation_snapshot(
+                    &self.key.kind,
                     &self.navigation_items,
                     self.fully_read_event_id.as_deref(),
                     &self.viewport_observation,

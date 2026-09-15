@@ -18,7 +18,7 @@ use koushi_state::{
     VerificationMethodCapability, VerificationTarget,
 };
 use matrix_sdk::ruma::{events::AnySyncTimelineEvent, serde::Raw};
-use matrix_sdk_base::crypto::CollectStrategy;
+use matrix_sdk_base::crypto::{CollectStrategy, IncomingVerificationRequestProtectionCounters};
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf, pin::Pin, sync::Arc};
 use thiserror::Error;
@@ -3823,6 +3823,18 @@ pub struct MatrixRoomKeyReceiveDiagnostics {
     pub crypto: matrix_sdk::encryption::RoomKeyReceiveCounters,
     /// Event-cache late-decryption counters and health.
     pub late_decryption: matrix_sdk::event_cache::RoomKeyLateDecryptionDiagnostics,
+}
+
+/// Snapshot the private-data-free activation counters for the incoming
+/// verification-request protections.
+///
+/// The counters answer whether the protections against rare conditions (unknown
+/// sender devices, repeated SAS start events, released deliveries) are still
+/// exercised; they contain counts only.
+pub async fn incoming_verification_request_protection_counters(
+    session: &MatrixClientSession,
+) -> IncomingVerificationRequestProtectionCounters {
+    session.client().encryption().incoming_verification_request_protection_counters().await
 }
 
 /// Snapshot the privacy-safe receive-side room-key diagnostics for a session.

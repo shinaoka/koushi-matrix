@@ -2259,6 +2259,7 @@ async fn matrix_room_list_dm_user_ids(
             cached_direct_targets
         } else if is_dm {
             room.heroes()
+                .await
                 .into_iter()
                 .map(|hero| hero.user_id.to_string())
                 .filter(|user_id| user_id != &own_user_id)
@@ -2457,7 +2458,7 @@ async fn matrix_room_private_read_receipt_event_id(room: &matrix_sdk::Room) -> O
     let user_id = room.client().user_id()?.to_owned();
     room.load_user_receipt(
         ReceiptType::ReadPrivate,
-        ReceiptThread::Unthreaded,
+        &ReceiptThread::Unthreaded,
         &user_id,
     )
     .await

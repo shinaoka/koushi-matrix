@@ -63,6 +63,24 @@ after all platform builds succeed:
 
 Verify the adjacent `.sha256` file when testing any downloaded installer.
 
+## Help with using Koushi
+
+Read the [user guide](docs/help/README.md) for text-based instructions, or ask
+ChatGPT or another AI assistant. Include the
+[repository URL](https://github.com/shinaoka/koushi-matrix), your Koushi version,
+your operating system, and what you want to do. You can ask in your preferred
+language.
+
+For example:
+
+> I use Koushi version [version] on [operating system]. Please consult
+> https://github.com/shinaoka/koushi-matrix, read the user guide for my release
+> tag, and explain how to search past messages. Link to the sources you used.
+
+For AI readers, [llms.txt](llms.txt) provides an index of the same Markdown help.
+The guide on `main` describes development code; use the matching release tag
+for an installed version. See [version selection](docs/help/README.md#choose-the-right-version).
+
 ## License
 
 This project is licensed under the [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE) dual license.
@@ -152,8 +170,13 @@ The repository-root shell entry point forwards the same options to that build:
 The wrapper runs the release preflight check, then builds the native DMG with:
 
 ```bash
-npm --prefix apps/desktop run tauri -- build --bundles dmg
+npm --prefix apps/desktop run tauri -- build --bundles app,dmg
 ```
+
+The wrapper also supplies the macOS bundle version and updater configuration.
+Release builds pass `KOUSHI_UPDATER_PUBLIC_KEY` to Tauri's updater configuration
+and require signed updater artifacts. Local builds without an updater key omit
+updater artifacts; use the wrapper for this configuration.
 
 Useful variants:
 

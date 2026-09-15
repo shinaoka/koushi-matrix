@@ -24,9 +24,9 @@ use crate::executor;
 use crate::link_preview::LinkPreviewContext;
 use koushi_protocol::command::TimelineCommand;
 use koushi_protocol::event::{
-    CoreEvent, PaginationDirection, PaginationState, ThreadSummaryDto, TimelineEvent,
-    TimelineFormattedBody, TimelineItemId, TimelineReadStateSync, TimelineUnreadPosition,
-    TimelineViewportObservation,
+    CoreEvent, PaginationDirection, PaginationState, ThreadSummaryDto, TimelineBottomArrival,
+    TimelineEvent, TimelineFormattedBody, TimelineItemId, TimelineReadStateSync,
+    TimelineUnreadPosition, TimelineViewportObservation,
 };
 use koushi_protocol::failure::{CoreFailure, TimelineFailureKind};
 #[cfg(any(test, feature = "test-hooks"))]
@@ -133,11 +133,13 @@ fn eligibility_skips_redacted_and_own_rows_for_first_unread_and_newer_count() {
     let observation = TimelineViewportObservation {
         first_visible_event_id: Some("$marker:test".to_owned()),
         last_visible_event_id: Some("$marker:test".to_owned()),
+        bottom_arrival: TimelineBottomArrival::User,
         at_bottom: false,
         ..TimelineViewportObservation::default()
     };
 
     let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
         &items,
         Some("$marker:test"),
         &observation,
@@ -249,6 +251,7 @@ fn resubscribe_replay_keeps_scrolled_room_context_complete() {
         &key.kind,
         &items,
         &TimelineViewportObservation {
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: false,
             first_visible_event_id: Some("$event-10:test".to_owned()),
             last_visible_event_id: Some("$event-20:test".to_owned()),
@@ -287,6 +290,7 @@ fn resubscribe_replay_keeps_focused_timeline_context_complete() {
         &key.kind,
         &items,
         &TimelineViewportObservation {
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: true,
             ..TimelineViewportObservation::default()
         },
@@ -2025,12 +2029,14 @@ fn timeline_navigation_marks_first_unread_inside_viewport() {
     ];
 
     let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
         &items,
         Some("$read:test"),
         &TimelineViewportObservation {
             first_visible_event_id: Some("$unread:test".to_owned()),
             last_visible_event_id: Some("$newer:test".to_owned()),
             visible_gap_ids: Vec::new(),
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: true,
         },
         Some("@me:test"),
@@ -2056,6 +2062,7 @@ fn timeline_navigation_separates_local_viewed_and_server_confirmed_boundaries() 
         timeline_item("$local:test", Some("local"), "@alice:test", false),
     ];
     let snapshot = derive_timeline_navigation_snapshot_with_read_state(
+        &room_key().kind,
         &items,
         Some("$server:test"),
         Some("$server:test"),
@@ -2065,6 +2072,7 @@ fn timeline_navigation_separates_local_viewed_and_server_confirmed_boundaries() 
             first_visible_event_id: Some("$local:test".to_owned()),
             last_visible_event_id: Some("$local:test".to_owned()),
             visible_gap_ids: Vec::new(),
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: true,
         },
         Some("@me:test"),
@@ -2099,12 +2107,14 @@ fn timeline_navigation_reports_unread_below_viewport_and_newer_count() {
     ];
 
     let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
         &items,
         Some("$visible:test"),
         &TimelineViewportObservation {
             first_visible_event_id: Some("$read:test".to_owned()),
             last_visible_event_id: Some("$visible:test".to_owned()),
             visible_gap_ids: Vec::new(),
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: false,
         },
         Some("@me:test"),
@@ -2137,12 +2147,14 @@ fn timeline_navigation_does_not_count_read_history_below_viewport_as_newer() {
     ];
 
     let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
         &items,
         Some("$read-marker:test"),
         &TimelineViewportObservation {
             first_visible_event_id: Some("$visible:test".to_owned()),
             last_visible_event_id: Some("$visible:test".to_owned()),
             visible_gap_ids: Vec::new(),
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: false,
         },
         Some("@me:test"),
@@ -2162,12 +2174,14 @@ fn timeline_navigation_does_not_count_newer_events_without_read_marker() {
     ];
 
     let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
         &items,
         None,
         &TimelineViewportObservation {
             first_visible_event_id: Some("$visible:test".to_owned()),
             last_visible_event_id: Some("$visible:test".to_owned()),
             visible_gap_ids: Vec::new(),
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: false,
         },
         Some("@me:test"),
@@ -2202,12 +2216,14 @@ fn timeline_navigation_ignores_own_local_and_synthetic_items_for_unread_counts()
     ];
 
     let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
         &items,
         Some("$read:test"),
         &TimelineViewportObservation {
             first_visible_event_id: Some("$read:test".to_owned()),
             last_visible_event_id: Some("$remote:test".to_owned()),
             visible_gap_ids: Vec::new(),
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: true,
         },
         Some("@me:test"),
@@ -2237,6 +2253,7 @@ fn unread_consistency_diagnostic_correlates_thread_receipt_with_latest_reply_pro
     reply.thread_root = Some("$root:test".to_owned());
     let canonical_items = vec![root.clone(), reply];
     let snapshot = derive_timeline_navigation_snapshot(
+        &thread_key().kind,
         &canonical_items,
         Some("$root:test"),
         &TimelineViewportObservation::default(),
@@ -2621,8 +2638,13 @@ fn navigation_display_anchor_advances_past_own_messages_after_marker() {
     let items = vec![other, own1, own2];
     let observation = TimelineViewportObservation::default();
 
-    let snapshot =
-        derive_timeline_navigation_snapshot(&items, Some("$other"), &observation, Some("@alice"));
+    let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
+        &items,
+        Some("$other"),
+        &observation,
+        Some("@alice"),
+    );
 
     assert_eq!(snapshot.read_marker_event_id, Some("$other".to_owned()));
     assert_eq!(snapshot.first_unread_event_id, None);
@@ -2639,8 +2661,13 @@ fn navigation_display_anchor_stays_at_marker_when_no_own_messages_after() {
     let items = vec![other, remote];
     let observation = TimelineViewportObservation::default();
 
-    let snapshot =
-        derive_timeline_navigation_snapshot(&items, Some("$other"), &observation, Some("@alice"));
+    let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
+        &items,
+        Some("$other"),
+        &observation,
+        Some("@alice"),
+    );
 
     assert_eq!(snapshot.first_unread_event_id, Some("$remote".to_owned()));
     assert_eq!(snapshot.read_marker_display_event_id, None);
@@ -2653,8 +2680,13 @@ fn navigation_display_anchor_advances_from_own_marker_to_later_own_message() {
     let items = vec![own1, own2];
     let observation = TimelineViewportObservation::default();
 
-    let snapshot =
-        derive_timeline_navigation_snapshot(&items, Some("$own1"), &observation, Some("@alice"));
+    let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
+        &items,
+        Some("$own1"),
+        &observation,
+        Some("@alice"),
+    );
 
     assert_eq!(snapshot.read_marker_event_id, Some("$own1".to_owned()));
     assert_eq!(snapshot.first_unread_event_id, None);
@@ -2662,4 +2694,274 @@ fn navigation_display_anchor_advances_from_own_marker_to_later_own_message() {
         snapshot.read_marker_display_event_id,
         Some("$own2".to_owned())
     );
+}
+
+#[test]
+fn room_navigation_does_not_recount_hidden_thread_replies() {
+    let marker = timeline_item("$read:test", Some("read"), "@other:test", false);
+    let mut items = vec![marker];
+    for index in 0..5 {
+        let mut reply = timeline_item(
+            &format!("$reply-{index}:test"),
+            Some("reply"),
+            "@other:test",
+            false,
+        );
+        reply.thread_root = Some("$root:test".to_owned());
+        items.push(reply);
+    }
+    let observation = TimelineViewportObservation {
+        first_visible_event_id: Some("$read:test".to_owned()),
+        last_visible_event_id: Some("$read:test".to_owned()),
+        at_bottom: false,
+        ..Default::default()
+    };
+    let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
+        &items,
+        Some("$read:test"),
+        &observation,
+        Some("@me:test"),
+    );
+    assert_eq!(snapshot.unread_event_count, 0);
+    assert_eq!(snapshot.newer_event_count, 0);
+    assert_eq!(snapshot.first_unread_event_id, None);
+}
+
+#[test]
+fn room_navigation_preserves_hidden_receipt_position_and_thread_scope() {
+    let first = timeline_item("$first:test", Some("first"), "@other:test", false);
+    let mut reply = timeline_item("$reply:test", Some("reply"), "@other:test", false);
+    reply.thread_root = Some("$root:test".to_owned());
+    let later = timeline_item("$later:test", Some("later"), "@other:test", false);
+    let mut own_reply = timeline_item("$own:test", Some("own reply"), "@me:test", false);
+    own_reply.thread_root = Some("$root:test".to_owned());
+    let items = vec![first, reply, later, own_reply];
+    let observation = TimelineViewportObservation {
+        first_visible_event_id: Some("$first:test".to_owned()),
+        last_visible_event_id: Some("$first:test".to_owned()),
+        at_bottom: false,
+        ..Default::default()
+    };
+    let room = derive_timeline_navigation_snapshot(
+        &room_key().kind,
+        &items,
+        Some("$reply:test"),
+        &observation,
+        Some("@me:test"),
+    );
+    assert_eq!(room.unread_event_count, 1);
+    assert_eq!(room.newer_event_count, 1);
+    assert_eq!(room.first_unread_event_id.as_deref(), Some("$later:test"));
+    let read_room = derive_timeline_navigation_snapshot(
+        &room_key().kind,
+        &items,
+        Some("$later:test"),
+        &observation,
+        Some("@me:test"),
+    );
+    assert_eq!(
+        read_room.read_marker_display_event_id, None,
+        "an own hidden reply must not move the room divider"
+    );
+    let thread = derive_timeline_navigation_snapshot(
+        &thread_key().kind,
+        &items[..2],
+        Some("$first:test"),
+        &observation,
+        Some("@me:test"),
+    );
+    assert_eq!(thread.unread_event_count, 1);
+    assert_eq!(thread.newer_event_count, 1);
+}
+
+
+#[test]
+fn confirmed_thread_receipt_cannot_display_before_an_older_local_boundary() {
+    let mut own = timeline_item("$own:test", Some("edited own reply"), "@me:test", false);
+    let mut latest = timeline_item("$latest:test", Some("latest reply"), "@other:test", false);
+    own.thread_root = Some("$root:test".into());
+    latest.thread_root = Some("$root:test".into());
+    let kind = koushi_protocol::TimelineKind::Thread {
+        room_id: "!room:test".into(),
+        root_event_id: "$root:test".into(),
+    };
+    for (server, local, expected) in [
+        ("$latest:test", "$own:test", "$latest:test"),
+        ("$own:test", "$latest:test", "$latest:test"),
+        ("$latest:test", "$latest:test", "$latest:test"),
+        ("$latest:test", "$missing:test", "$latest:test"),
+        ("$missing:test", "$own:test", "$own:test"),
+    ] {
+        let snapshot = derive_timeline_navigation_snapshot_with_read_state(
+            &kind,
+            &[own.clone(), latest.clone()],
+            Some(server),
+            Some(server),
+            Some(local),
+            TimelineReadStateSync::Synced,
+            &TimelineViewportObservation::default(),
+            Some("@me:test"),
+        );
+        assert_eq!(
+            snapshot
+                .read_marker_display_event_id
+                .as_deref()
+                .or(snapshot.read_marker_event_id.as_deref()),
+            Some(expected),
+            "the divider must use the newest proven boundary, whether local or confirmed"
+        );
+    }
+}
+
+#[test]
+fn confirmed_hidden_thread_boundary_uses_a_visible_divider() {
+    let mut own = timeline_item("$own:test", Some("own"), "@me:test", false);
+    let mut edit = timeline_item("$edit:test", Some("edit"), "@me:test", false);
+    own.thread_root = Some("$root:test".into());
+    edit.thread_root = Some("$root:test".into());
+    edit.is_hidden = true;
+    let kind = koushi_protocol::TimelineKind::Thread {
+        room_id: "!room:test".into(),
+        root_event_id: "$root:test".into(),
+    };
+    let snapshot = derive_timeline_navigation_snapshot_with_read_state(
+        &kind,
+        &[own, edit],
+        Some("$edit:test"),
+        Some("$edit:test"),
+        Some("$own:test"),
+        TimelineReadStateSync::Synced,
+        &TimelineViewportObservation::default(),
+        Some("@me:test"),
+    );
+    assert_eq!(snapshot.read_marker_event_id.as_deref(), Some("$edit:test"));
+    assert_eq!(
+        snapshot.read_marker_display_event_id.as_deref(),
+        Some("$own:test")
+    );
+}
+
+#[tokio::test]
+async fn replay_initial_items_republishes_unchanged_read_navigation() {
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    use matrix_sdk_test::{ALICE, JoinedRoomBuilder, event_factory::EventFactory};
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    client.event_cache().subscribe().unwrap();
+    let room_id = matrix_sdk::ruma::room_id!("!read-replay:example.org");
+    let latest = matrix_sdk::ruma::event_id!("$latest:example.org");
+    let room = server.sync_joined_room(&client, room_id).await;
+    let factory = EventFactory::new().room(room_id).sender(&ALICE);
+    server
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(room_id)
+                .add_timeline_event(factory.text_msg("latest").event_id(latest).into_raw_sync()),
+        )
+        .await;
+    server.mock_get_members().ok(vec![]).mount().await;
+    let timeline = Arc::new(
+        koushi_timeline_builder(
+            &room,
+            TimelineFocus::Live {
+                hide_threaded_events: false,
+            },
+        )
+        .build()
+        .await
+        .unwrap(),
+    );
+    let session = Arc::new(MatrixClientSession::from_client_for_testing(
+        client,
+        SessionInfo {
+            homeserver: "http://example.invalid".into(),
+            user_id: ALICE.to_string(),
+            device_id: "DEVICE".into(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        },
+    ));
+    let key = TimelineKey::room(AccountKey(ALICE.to_string()), room_id.to_string());
+    let mut manager = live_tail_test_manager(HashMap::new());
+    let (action_tx, mut action_rx) = mpsc::channel(8);
+    manager.action_tx = action_tx;
+    let _drain = executor::spawn(async move { while action_rx.recv().await.is_some() {} });
+    let mut events = manager.event_tx.subscribe();
+    let generation = manager
+        .timeline_actor_generations
+        .activate_after_quiescence(&key)
+        .await
+        .generation;
+    let actor = TimelineActor::spawn(
+        key.clone(),
+        timeline,
+        session,
+        fake_rid(80),
+        true,
+        manager.action_tx.clone(),
+        manager.event_tx.clone(),
+        None,
+        Default::default(),
+        None,
+        LinkPreviewContext::default(),
+        manager.account_work.clone(),
+        Arc::clone(&manager.thread_root_projection_service),
+        manager.thread_root_order,
+        Arc::clone(&manager.timeline_actor_generations),
+        generation,
+        None,
+        Default::default(),
+        manager.terminal_ingress.clone(),
+        manager.msg_tx.clone(),
+    )
+    .await;
+    assert!(
+        actor
+            .send_control(TimelineActorControl::ReadStateProjection {
+                local_viewed_event_id: Some(latest.to_string()),
+                server_confirmed_read_event_id: Some(latest.to_string()),
+                sync: TimelineReadStateSync::Synced,
+            })
+            .await
+    );
+    let expected = executor::timeout(Duration::from_secs(2), async {
+        loop {
+            if let CoreEvent::Timeline(TimelineEvent::NavigationUpdated { snapshot, .. }) =
+                events.recv().await.unwrap()
+            {
+                if snapshot.local_viewed_event_id.as_deref() == Some(latest.as_str()) {
+                    break snapshot;
+                }
+            }
+        }
+    })
+    .await
+    .expect("initial read projection");
+    // A new subscriber did not receive the old NavigationUpdated. Replaying
+    // just messages forces it to fall back to a different room read marker.
+    let mut reopened = manager.event_tx.subscribe();
+    assert!(
+        actor
+            .send_control(TimelineActorControl::ReplayInitialItems {
+                cause_request_id: fake_rid(81),
+            })
+            .await
+    );
+    let replayed = executor::timeout(Duration::from_secs(2), async {
+        let mut initial_seen = false;
+        loop {
+            match reopened.recv().await.unwrap() {
+                CoreEvent::Timeline(TimelineEvent::InitialItems { .. }) => initial_seen = true,
+                CoreEvent::Timeline(TimelineEvent::NavigationUpdated { snapshot, .. })
+                    if initial_seen =>
+                {
+                    break snapshot;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("replayed items must include unchanged read navigation for a new subscriber");
+    assert_eq!(replayed, expected);
 }

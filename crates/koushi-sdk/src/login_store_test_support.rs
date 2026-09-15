@@ -7,7 +7,7 @@ use matrix_sdk::{
     SqliteCryptoStore,
     ruma::{device_id, user_id},
 };
-use matrix_sdk_base::crypto::{OlmMachine, store::CryptoStore};
+use matrix_sdk_base::crypto::{OlmMachine, OlmMachineBuilder, store::CryptoStore};
 use std::{
     fs,
     path::PathBuf,
@@ -270,7 +270,9 @@ async fn seed_store(config: &MatrixClientStoreConfig, user: &str, device: &str) 
     let store = SqliteCryptoStore::open_with_key(config.path(), Some(config.sdk_store_key()))
         .await
         .map_err(|_| "store open failed".to_owned())?;
-    let machine = OlmMachine::with_store(&user_id, &device_id, store.clone(), None)
+    let machine = OlmMachineBuilder::new(&user_id, &device_id)
+        .with_crypto_store(store.clone())
+        .build()
         .await
         .map_err(|_| "store account creation failed".to_owned())?;
     drop(machine);

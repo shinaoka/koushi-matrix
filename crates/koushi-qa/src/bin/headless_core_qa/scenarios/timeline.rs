@@ -49,9 +49,9 @@ use super::{
     MentionIntent, MentionTarget, PaginationDirection, PaginationState, PresenceKind, RequestId,
     RoomCommand, RoomEvent, ScheduledSendCapability, SessionInfo, SessionState, SettingsPatch,
     StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, SyncCommand, SystemTime,
-    TimelineAnchorRestoreStatus, TimelineCommand, TimelineDiff, TimelineEvent, TimelineGapId,
-    TimelineGapPosition, TimelineItem, TimelineItemId, TimelineKey, TimelineKind,
-    TimelineMediaGalleryItem, TimelineMediaGalleryMedia, TimelineMediaGallerySource,
+    TimelineAnchorRestoreStatus, TimelineBottomArrival, TimelineCommand, TimelineDiff,
+    TimelineEvent, TimelineGapId, TimelineGapPosition, TimelineItem, TimelineItemId, TimelineKey,
+    TimelineKind, TimelineMediaGalleryItem, TimelineMediaGalleryMedia, TimelineMediaGallerySource,
     TimelineMediaKind, TimelineSendState, TimelineUnreadPosition, TimelineViewportObservation,
     UNIX_EPOCH, UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
     build_formatted_message_draft, reduce, resolve_composer_key_action,
@@ -2632,6 +2632,7 @@ pub(super) async fn run_timeline_reconnect_scenario_impl(config: &QaConfig) -> R
                     last_visible_event_id: visible_gap.last_visible_event_id.clone(),
                     visible_gap_ids: vec![visible_gap.id],
                     at_bottom: false,
+                    bottom_arrival: TimelineBottomArrival::User,
                 },
             }))
             .await

@@ -49,8 +49,8 @@ use super::scenario_timeline::{
 use super::{
     AccountCommand, AppCommand, AppState, AuthSecret, ComposerDocument, CoreCommand,
     CoreConnection, CoreFailure, CoreRuntime, PaginationDirection, ReplyQuoteState, RoomCommand,
-    SyncCommand, TimelineCommand, TimelineKey, TimelineKind, TimelineUnreadPosition,
-    TimelineViewportObservation,
+    SyncCommand, TimelineBottomArrival, TimelineCommand, TimelineKey, TimelineKind,
+    TimelineUnreadPosition, TimelineViewportObservation,
 };
 
 async fn wait_for_redact_edit_snapshot(
@@ -686,6 +686,7 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
                 last_visible_event_id: Some(event1_id.clone()),
                 visible_gap_ids: Vec::new(),
                 at_bottom: false,
+                bottom_arrival: TimelineBottomArrival::User,
             },
         }))
         .await

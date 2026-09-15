@@ -1,4 +1,9 @@
-import type { CoreEventPayload, TimelineKey, TimelineGapId } from "../../domain/coreEvents";
+import type {
+  CoreEventPayload,
+  TimelineBottomArrival,
+  TimelineGapId,
+  TimelineKey
+} from "../../domain/coreEvents";
 import type { ComposerDocument, TimelineScrollAnchor } from "../../domain/types";
 
 // ---------------------------------------------------------------------------
@@ -78,6 +83,11 @@ export interface TimelineTransport {
     lastVisibleEventId: string | null,
     visibleGapIds: TimelineGapId[],
     atBottom: boolean,
+    /**
+     * How the viewport reached its current position (#872): the renderer reports
+     * the fact, Rust decides whether it counts as reading.
+     */
+    bottomArrival: TimelineBottomArrival,
     threadRootEventId: string | null
   ): Promise<void>;
   /** Persist the current room-local read/scroll anchor. */

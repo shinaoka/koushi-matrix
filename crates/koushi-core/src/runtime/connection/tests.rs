@@ -973,6 +973,7 @@ async fn timeline_sender_label_and_reaction_sender_preview_follow_people_facing_
             media: None,
             link_previews: None,
             link_ranges: Vec::new(),
+            mentioned_user_ids: Vec::new(),
             reactions: vec![koushi_protocol::event::ReactionGroup {
                 key: "👍".to_owned(),
                 count: 1,
@@ -1050,6 +1051,7 @@ async fn timeline_sender_label_and_reaction_sender_preview_follow_people_facing_
                 media: None,
                 link_previews: None,
                 link_ranges: Vec::new(),
+                mentioned_user_ids: Vec::new(),
                 reactions: Vec::new(),
                 can_react: false,
                 is_redacted: false,
