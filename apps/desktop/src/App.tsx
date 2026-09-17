@@ -178,7 +178,10 @@ import type {
   ThreadOpenIntent,
   ThreadsListScope
 } from "./domain/types";
-import { stageAttachmentFiles } from "./domain/attachmentIngestion";
+import {
+  attachmentTransferHasFiles,
+  stageAttachmentFiles
+} from "./domain/attachmentIngestion";
 import { createLatestMutationOperationQueue } from "./domain/latestAsyncResult";
 import { createOrderedEventBatcher } from "./domain/orderedEventBatcher";
 import { createStateUpdateConsumer } from "./domain/stateUpdateConsumer";
@@ -2053,6 +2056,25 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
   }, []);
 
   useEffect(() => listenForAppShortcuts(handleShortcutAction), []);
+
+  useEffect(() => {
+    // A file dropped outside a Composer otherwise triggers the WebView's
+    // default navigation to that file, replacing the whole desktop window.
+    // Composer drop handlers still ingest the file; this guard only cancels
+    // the browser default for file-bearing transfers.
+    function preventUnhandledFileDropNavigation(event: globalThis.DragEvent) {
+      if (event.dataTransfer && attachmentTransferHasFiles(event.dataTransfer)) {
+        event.preventDefault();
+      }
+    }
+
+    window.addEventListener("dragover", preventUnhandledFileDropNavigation, true);
+    window.addEventListener("drop", preventUnhandledFileDropNavigation, true);
+    return () => {
+      window.removeEventListener("dragover", preventUnhandledFileDropNavigation, true);
+      window.removeEventListener("drop", preventUnhandledFileDropNavigation, true);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isTauriRuntime()) {

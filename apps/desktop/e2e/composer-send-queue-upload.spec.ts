@@ -1668,6 +1668,34 @@ test("paste/drop upload UX stages ordinary files for the captured main composer 
   await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0);
 });
 
+test("file drops outside the composer do not replace the desktop window", async ({ page }) => {
+  await gotoReadyShell(page);
+  const beforeUrl = page.url();
+
+  const defaultPrevented = await page.evaluate(() => {
+    const file = new File(["png fixture bytes"], "dropped-image.png", {
+      type: "image/png"
+    });
+    const data = new DataTransfer();
+    data.items.add(file);
+    const target = document.querySelector<HTMLElement>(".timeline-scroll");
+    if (!target) {
+      throw new Error("timeline scroll target not found");
+    }
+    const event = new DragEvent("drop", {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: data
+    });
+    target.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+
+  expect(defaultPrevented).toBe(true);
+  expect(page.url()).toBe(beforeUrl);
+  await expect(page.locator(".main-pane")).toBeVisible();
+});
+
 test("resize and format are chosen independently before the send action", async ({ page }) => {
   await gotoReadyShell(page);
   await page.evaluate(() => window.__harness.clearInvocations());
