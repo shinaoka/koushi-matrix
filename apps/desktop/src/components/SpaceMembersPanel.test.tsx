@@ -159,6 +159,11 @@ describe("SpaceMembersPanel space invite search (#508)", () => {
     );
     expect(onSearchInviteTargets).toHaveBeenCalledWith("new");
 
+    expect(screen.getByRole("heading", { name: "Invite people" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Invite New Person" }).textContent).toBe("Invite");
+    fireEvent.click(screen.getByText("New Person"));
+    expect(onInviteSearchCandidate).not.toHaveBeenCalled();
+
     fireEvent.click(screen.getByRole("button", { name: /New Person/ }));
     expect(onInviteSearchCandidate).toHaveBeenCalledWith("@new:example.invalid");
     expect(onInviteUser).not.toHaveBeenCalled();

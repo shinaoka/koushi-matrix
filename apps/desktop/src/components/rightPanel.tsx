@@ -608,6 +608,7 @@ export function ContextualRightPanel({
           <SpaceMembersPanel
             state={snapshot.state.domain.space_members}
             canInvite={canInviteToSpace}
+            spaceName={roomOrSpace && "space_id" in roomOrSpace ? roomOrSpace.display_name : undefined}
             startInInviteMode={startSpaceMembersInInviteMode}
             onClose={onClosePanel}
             profileUsers={snapshot.state.domain.profile.users}
