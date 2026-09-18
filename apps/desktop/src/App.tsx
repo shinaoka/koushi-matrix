@@ -5194,6 +5194,11 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     if (trigger === "search") {
       // Search candidates use the general Rust-owned invitation workflow. The
       // member-panel command below is deliberately restricted to child-only rows.
+      const workflowEpoch = inviteWorkflowLifetimeEpochRef.current;
+      const searchStillCurrent = (nextSnapshot: DesktopSnapshot) =>
+        inviteWorkflowLifetimeEpochRef.current === workflowEpoch &&
+        spaceMembersSnapshotMatches(snapshotRef.current, fence) &&
+        spaceMembersSnapshotMatches(nextSnapshot, fence);
       let nextSnapshot = currentSnapshot!;
       if (nextSnapshot.state.domain.invite_workflow?.query.room_id !== fence.spaceId) {
         throw new Error("Space invite destination changed");
@@ -5201,13 +5206,11 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
       for (const target of nextSnapshot.state.domain.invite_workflow?.selected_targets ?? []) {
         if (target.user_id !== userId) {
           nextSnapshot = await settleCommandSnapshot(api.removeInviteTarget(target.user_id));
-          if (!spaceMembersSnapshotMatches(snapshotRef.current, fence) ||
-              !spaceMembersSnapshotMatches(nextSnapshot, fence)) return;
+          if (!searchStillCurrent(nextSnapshot)) return;
         }
       }
       nextSnapshot = await settleCommandSnapshot(api.selectInviteTarget(fence.spaceId, userId));
-      if (!spaceMembersSnapshotMatches(snapshotRef.current, fence) ||
-          !spaceMembersSnapshotMatches(nextSnapshot, fence)) return;
+      if (!searchStillCurrent(nextSnapshot)) return;
       const workflow = nextSnapshot.state.domain.invite_workflow;
       if (!workflow || workflow.query.room_id !== fence.spaceId ||
           workflow.selected_targets.length !== 1 ||

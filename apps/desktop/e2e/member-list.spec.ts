@@ -424,13 +424,21 @@ test("Space Members can invite a brand-new user to the Space via the invite sear
       window.__harness.setSnapshot(next);
       return next;
     });
-    window.__harness.setCommandResponse("select_invite_target", () => {
+    let delayFirstSelection = true;
+    window.__harness.setCommandResponse("select_invite_target", async () => {
       const snapshot = window.__harness.currentSnapshot();
       const next = structuredClone(snapshot);
       next.state.domain.invite_workflow!.selected_targets = [{
         user_id: "@brand-new:example.invalid", display_label: "Brand New Person",
         avatar: null
       }];
+      if (delayFirstSelection) {
+        delayFirstSelection = false;
+        next.state.domain.space_members.space_joined[0]!.display_label = "Delayed selection member";
+        await new Promise<void>((resolve) => {
+          Object.assign(window, { releaseSpaceInviteSelection: resolve });
+        });
+      }
       window.__harness.setSnapshot(next);
       return next;
     });
@@ -449,6 +457,20 @@ test("Space Members can invite a brand-new user to the Space via the invite sear
   const panel = contextPanel(page);
   await panel.getByRole("button", { name: t("room.invitePeople") }).click();
   const search = panel.getByRole("searchbox", { name: t("dialog.inviteSearch") });
+  await search.fill("brand");
+  await expect(panel.getByRole("button", { name: /Brand New Person/ })).toBeVisible();
+  await panel.getByRole("button", { name: /Brand New Person/ }).click();
+
+  // A cancelled search must not send when an earlier selection receipt arrives late.
+  await expect.poll(() => invocationCount(page, "select_invite_target")).toBe(1);
+  await panel.getByRole("button", { name: t("action.cancel") }).click();
+  await expect.poll(() => invocationCount(page, "close_invite_workflow")).toBe(1);
+  await page.evaluate(() => {
+    (window as unknown as { releaseSpaceInviteSelection(): void }).releaseSpaceInviteSelection();
+  });
+  await expect(panel.getByRole("button", { name: "Open profile for Delayed selection member", exact: true })).toBeVisible();
+  expect(await invocationCount(page, "invite_targets")).toBe(0);
+  await panel.getByRole("button", { name: t("room.invitePeople") }).click();
   await search.fill("brand");
   await expect(panel.getByRole("button", { name: /Brand New Person/ })).toBeVisible();
   await panel.getByRole("button", { name: /Brand New Person/ }).click();
