@@ -350,6 +350,13 @@ export function TimelineItemRow({
   const eventId = contentEventId ?? itemEventId;
   const activityId = activityEventId ?? eventId;
   const isRedacted = item.is_redacted;
+  // Render only cards with content; pending requests still load through the effect below.
+  const visibleLinkPreviews = item.link_previews?.filter((preview) =>
+    preview.state === "ready" && (
+      preview.title?.trim() || preview.description?.trim() ||
+      (preview.image && thumbnailSourceUrl(preview.image.thumbnail))
+    )
+  ) ?? [];
   const sendState = item.send_state ?? null;
   const sendStateKind = sendState?.kind ?? null;
   const messageKind = item.message_kind ?? "text";
@@ -898,60 +905,47 @@ export function TimelineItemRow({
         ) : (
           bodyContent
         )}
-        {!isRedacted && eventId && item.link_previews && item.link_previews.length > 0 ? (
+        {!isRedacted && eventId && visibleLinkPreviews.length > 0 ? (
           <div className="link-preview-cards">
-            {item.link_previews.map((preview) => {
+            {visibleLinkPreviews.map((preview) => {
               const previewUrl = toExternalHttpUrl(preview.url);
-              const previewPending =
-                preview.state === "pending" || preview.state === "loading";
               return (
                 <div
                   key={preview.url}
                   className="link-preview-card"
                   data-link-preview-state={preview.state}
                 >
-                  {previewPending ? (
-                    <div className="link-preview-main link-preview-skeleton" aria-hidden="true">
-                      <span className="link-preview-skeleton-image" />
-                      <span className="link-preview-skeleton-text">
-                        <span />
-                        <span />
-                        <span />
-                      </span>
+                  <a
+                    className="link-preview-main"
+                    href={previewUrl || undefined}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      if (previewUrl) {
+                        void openExternalHttpUrl(previewUrl);
+                      }
+                    }}
+                  >
+                    {preview.image?.thumbnail && thumbnailSourceUrl(preview.image.thumbnail) ? (
+                      <img
+                        src={thumbnailSourceUrl(preview.image.thumbnail) ?? undefined}
+                        alt={""}
+                        className="link-preview-image"
+                      />
+                    ) : (
+                      <span className="link-preview-image-placeholder" aria-hidden="true" />
+                    )}
+                    <div className="link-preview-text">
+                      {preview.title ? (
+                        <div className="link-preview-title">{preview.title}</div>
+                      ) : null}
+                      {preview.description ? (
+                        <div className="link-preview-description">{preview.description}</div>
+                      ) : null}
+                      <div className="link-preview-url">{preview.url}</div>
                     </div>
-                  ) : (
-                    <a
-                      className="link-preview-main"
-                      href={previewUrl || undefined}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(event) => {
-                        event.preventDefault();
-                        if (previewUrl) {
-                          void openExternalHttpUrl(previewUrl);
-                        }
-                      }}
-                    >
-                      {preview.image?.thumbnail && thumbnailSourceUrl(preview.image.thumbnail) ? (
-                        <img
-                          src={thumbnailSourceUrl(preview.image.thumbnail) ?? undefined}
-                          alt={""}
-                          className="link-preview-image"
-                        />
-                      ) : (
-                        <span className="link-preview-image-placeholder" aria-hidden="true" />
-                      )}
-                      <div className="link-preview-text">
-                        {preview.title ? (
-                          <div className="link-preview-title">{preview.title}</div>
-                        ) : null}
-                        {preview.description ? (
-                          <div className="link-preview-description">{preview.description}</div>
-                        ) : null}
-                        <div className="link-preview-url">{preview.url}</div>
-                      </div>
-                    </a>
-                  )}
+                  </a>
                   <button
                     type="button"
                     className="link-preview-hide"
