@@ -26,6 +26,7 @@ export type {
 export interface SpaceMembersPanelProps {
   state: SpaceMembersState;
   canInvite: boolean;
+  startInInviteMode?: boolean;
   onClose?: () => void;
   profileUsers?: Record<string, UserProfile>;
   onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
@@ -180,6 +181,7 @@ function childRoomContext(
 export function SpaceMembersPanel({
   state,
   canInvite,
+  startInInviteMode = false,
   onClose = () => undefined,
   profileUsers = {},
   onRequestAvatarThumbnail,
@@ -203,7 +205,7 @@ export function SpaceMembersPanel({
   const [query, setQuery] = useState("");
   // #508: space-only invite search — inviting a brand-new user to the Space
   // room (space membership only, no child-room membership).
-  const [inviteMode, setInviteMode] = useState(false);
+  const [inviteMode, setInviteMode] = useState(startInInviteMode);
   const [inviteQuery, setInviteQuery] = useState("");
   const [inviteCandidates, setInviteCandidates] = useState<InviteTargetCandidate[]>([]);
   const [inviteSearching, setInviteSearching] = useState(false);

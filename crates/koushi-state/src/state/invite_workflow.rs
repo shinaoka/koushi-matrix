@@ -244,6 +244,35 @@ pub fn build_invite_target_query_state(
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
+    // People observed in any joined room/space or through an existing DM are
+    // the most useful invite targets. Keep this separate from the candidate
+    // source so a cached profile can still be ranked as a known person.
+    let mut known_user_ids = destination_members
+        .iter()
+        .map(|user_id| (*user_id).to_owned())
+        .collect::<BTreeSet<_>>();
+    known_user_ids.extend(
+        state
+            .profile
+            .room_users
+            .values()
+            .flat_map(|members| members.keys().cloned()),
+    );
+    known_user_ids.extend(
+        state
+            .rooms
+            .iter()
+            .flat_map(|room| room.dm_user_ids.iter().cloned()),
+    );
+    known_user_ids.extend(
+        state
+            .space_members
+            .space_joined
+            .iter()
+            .chain(state.space_members.space_invited.iter())
+            .chain(state.space_members.child_room_only.iter())
+            .map(|member| member.user_id.clone()),
+    );
 
     let mut candidates_by_user_id = BTreeMap::<String, InviteTargetCandidate>::new();
 
@@ -280,6 +309,70 @@ pub fn build_invite_target_query_state(
                         alias,
                         None,
                         InviteTargetCandidateSource::LocalAlias,
+                        &selected_user_ids,
+                        &destination_members,
+                    )
+                });
+        }
+    }
+
+    for members in state.profile.room_users.values() {
+        for (user_id, profile) in members {
+            if profile_matches_query(
+                user_id,
+                profile,
+                state.profile.local_aliases.get(user_id).map(String::as_str),
+                &lowered_query,
+            ) {
+                candidates_by_user_id
+                    .entry(user_id.clone())
+                    .or_insert_with(|| {
+                        candidate_from_profile(
+                            user_id,
+                            profile,
+                            state.profile.local_aliases.get(user_id).map(String::as_str),
+                            InviteTargetCandidateSource::RoomMember,
+                            &selected_user_ids,
+                            &destination_members,
+                        )
+                    });
+            }
+        }
+    }
+
+    for member in state
+        .space_members
+        .space_joined
+        .iter()
+        .chain(state.space_members.space_invited.iter())
+        .chain(state.space_members.child_room_only.iter())
+    {
+        let alias = state
+            .profile
+            .local_aliases
+            .get(&member.user_id)
+            .map(String::as_str);
+        if text_matches_query(&member.user_id, &lowered_query)
+            || text_matches_query(&member.display_label, &lowered_query)
+            || member
+                .display_name
+                .as_deref()
+                .is_some_and(|name| text_matches_query(name, &lowered_query))
+            || alias.is_some_and(|value| text_matches_query(value, &lowered_query))
+        {
+            candidates_by_user_id
+                .entry(member.user_id.clone())
+                .or_insert_with(|| {
+                    candidate_from_parts(
+                        &member.user_id,
+                        alias.unwrap_or(&member.display_label),
+                        if member.original_display_label.is_empty() {
+                            &member.display_label
+                        } else {
+                            &member.original_display_label
+                        },
+                        None,
+                        InviteTargetCandidateSource::RoomMember,
                         &selected_user_ids,
                         &destination_members,
                     )
@@ -366,9 +459,14 @@ pub fn build_invite_target_query_state(
 
     let mut candidates = candidates_by_user_id.into_values().collect::<Vec<_>>();
     candidates.sort_by(|left, right| {
-        left.display_label
-            .to_ascii_lowercase()
-            .cmp(&right.display_label.to_ascii_lowercase())
+        known_user_ids
+            .contains(&right.user_id)
+            .cmp(&known_user_ids.contains(&left.user_id))
+            .then_with(|| {
+                left.display_label
+                    .to_ascii_lowercase()
+                    .cmp(&right.display_label.to_ascii_lowercase())
+            })
             .then_with(|| left.user_id.cmp(&right.user_id))
     });
     candidates.truncate(8);

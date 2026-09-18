@@ -354,6 +354,38 @@ fn invite_target_query_matches_profiles_aliases_members_and_explicit_user_ids() 
 }
 
 #[test]
+fn invite_target_query_prioritizes_people_known_from_joined_rooms_and_dms() {
+    let mut state = ready_with_room(ROOM_A);
+    state.profile.users.insert(
+        ALICE.to_owned(),
+        user_profile(ALICE, "Amy Person", &["person"]),
+    );
+    state.profile.users.insert(
+        BOB.to_owned(),
+        user_profile(BOB, "Zed Person", &["person"]),
+    );
+    state
+        .profile
+        .room_users
+        .entry(ROOM_B.to_owned())
+        .or_default()
+        .insert(BOB.to_owned(), user_profile(BOB, "Zed Person", &["person"]));
+
+    reduce(
+        &mut state,
+        AppAction::InviteTargetQueryChanged {
+            room_id: ROOM_A.to_owned(),
+            query: "person".to_owned(),
+        },
+    );
+
+    let candidates = &state.invite_workflow.query.candidates;
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(candidates[0].user_id, BOB);
+    assert_eq!(candidates[1].user_id, ALICE);
+}
+
+#[test]
 fn invite_scope_plan_prefers_active_parent_space_for_room_invites() {
     let mut state = ready_room_with_parent_space();
 

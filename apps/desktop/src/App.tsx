@@ -1018,6 +1018,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
   const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("closed");
   const [selectedProfileUserId, setSelectedProfileUserId] = useState<string | null>(null);
   const [peoplePanelScope, setPeoplePanelScope] = useState<PeoplePanelScope | null>(null);
+  const [startSpaceMembersInInviteMode, setStartSpaceMembersInInviteMode] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_RIGHT_PANEL_WIDTH);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
@@ -5021,7 +5022,10 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     );
   }
 
-  async function openSpaceMembers(trigger: SpaceMembersOpenTrigger): Promise<void> {
+  async function openSpaceMembers(
+    trigger: SpaceMembersOpenTrigger,
+    startInInviteMode = false
+  ): Promise<void> {
     const fence = spaceMembersFenceForSnapshot(snapshotRef.current);
     if (!fence) {
       return;
@@ -5030,6 +5034,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     spaceSettingsLoadRef.current = null;
     appendSpaceMembersDiagnosticLog(`open trigger=${trigger}`);
     setPeoplePanelScope({ kind: "space", spaceId: fence.spaceId });
+    setStartSpaceMembersInInviteMode(startInInviteMode);
     setSelectedProfileUserId(null);
     await setRightPanelModeClosingFocusedContext(
       "people",
@@ -6260,11 +6265,12 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           onOpenContextMenu={openContextMenu}
           onOpenSpaceMembers={
             activeSpace
-              ? () => {
-                  runInBackground(openSpaceMembers("space_info"));
+              ? (startInInviteMode = false) => {
+                  runInBackground(openSpaceMembers("space_info", startInInviteMode));
                 }
               : undefined
           }
+          startSpaceMembersInInviteMode={startSpaceMembersInInviteMode}
           onDiagnostic={appendSpaceMembersDiagnosticLog}
           onInviteUserToSpace={(userId) => {
             runInBackground(inviteUserToSpace(userId, "inline"));
