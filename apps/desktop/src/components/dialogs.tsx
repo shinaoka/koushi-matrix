@@ -611,6 +611,7 @@ export function InviteTargetsDialog({
 }) {
   const overlayRef = useRef<HTMLDivElement>(null);
   const isPending = workflow.operation.kind === "pending";
+  const isCompleted = workflow.operation.kind === "completed";
   const canSubmit = workflow.selected_targets.length > 0 && !isBusy && !isPending;
   const historyPolicy = workflow.history_policy;
   const currentHistoryVisibility = historyPolicy?.current_visibility ?? "joined";
@@ -774,8 +775,13 @@ export function InviteTargetsDialog({
         ) : null}
         </div>
         <div className="dialog-actions">
-          <button className="dialog-button" type="button" aria-label={t("action.cancel")} onClick={onCancel}>
-            {t("action.cancel")}
+          <button
+            className="dialog-button"
+            type="button"
+            aria-label={isCompleted ? t("action.done") : t("action.cancel")}
+            onClick={onCancel}
+          >
+            {isCompleted ? t("action.done") : t("action.cancel")}
           </button>
           <button className="dialog-button is-primary" type="submit" disabled={!canSubmit}>
             {t("dialog.sendInvite")}
