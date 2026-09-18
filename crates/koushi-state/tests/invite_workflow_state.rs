@@ -1450,7 +1450,10 @@ fn invite_pending_cleanup_serializes_gate_logout_and_switch_before_late_settleme
 #[test]
 fn invite_workflow_close_is_unconditional_cleanup() {
     let mut ready = state_with_pending();
-    assert!(reduce(&mut ready, AppAction::InviteWorkflowClosed).is_empty());
+    assert_eq!(
+        reduce(&mut ready, AppAction::InviteWorkflowClosed),
+        vec![koushi_state::AppEffect::EmitUiEvent(koushi_state::UiEvent::InviteWorkflowChanged)]
+    );
     assert_eq!(ready.invite_workflow, InviteWorkflowState::default());
 
     let mut recovery = state_with_policy_session(SessionState::AwaitingVerification {
