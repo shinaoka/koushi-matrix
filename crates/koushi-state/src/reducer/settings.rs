@@ -264,6 +264,9 @@ pub(crate) fn handle_room_notification_mode_set(
     if !known {
         return Vec::new();
     }
+    state
+        .room_notification_awaiting_echo
+        .insert(room_id.clone(), (request_id, mode));
     {
         let entry = state.room_notification_settings.entry(room_id).or_default();
         entry.mode = mode;
@@ -398,6 +401,7 @@ pub(crate) fn handle_room_notification_mode_failed(
                 request_id: pending_id,
             } if pending_id == request_id
         ) {
+            state.room_notification_awaiting_echo.remove(&room_id);
             entry.operation = crate::state::RoomNotificationModeOperation::Failed {
                 request_id,
                 failure_kind: kind,
@@ -407,4 +411,122 @@ pub(crate) fn handle_room_notification_mode_failed(
     vec![AppEffect::EmitUiEvent(
         UiEvent::RoomNotificationSettingsChanged,
     )]
+}
+
+/// Reconcile server policy without replaying historical notification candidates.
+pub(crate) fn handle_room_notification_modes_observed(
+    state: &mut AppState,
+    generation: u64,
+    source: crate::RoomListSource,
+    modes: std::collections::BTreeMap<String, RoomNotificationMode>,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state)
+        || !super::room::room_list_provisional_matches_current(
+            &state.room_list.readiness,
+            generation,
+            source,
+        )
+    {
+        return Vec::new();
+    }
+    let mut changed = false;
+    for (room_id, mode) in modes {
+        if let Some(expected) = state.room_notification_awaiting_echo.get(&room_id) {
+            if expected.1 != mode {
+                continue;
+            }
+            state.room_notification_awaiting_echo.remove(&room_id);
+        }
+        let entry = state.room_notification_settings.entry(room_id).or_default();
+        if matches!(
+            entry.operation,
+            RoomNotificationModeOperation::Pending { .. }
+        ) {
+            continue;
+        }
+        if entry.mode != mode {
+            entry.mode = mode;
+            changed = true;
+        }
+    }
+    if !changed {
+        return Vec::new();
+    }
+    recompute_room_list_projection(state);
+    let (attention_changed, diagnostic) =
+        super::native_attention::recompute_native_attention_from_rooms(
+            state,
+            NativeAttentionObservationKind::InitialSync,
+        );
+    let mut effects = vec![
+        AppEffect::EmitUiEvent(UiEvent::RoomNotificationSettingsChanged),
+        AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+        diagnostic,
+    ];
+    if attention_changed {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged));
+    }
+    effects
+}
+
+pub(crate) fn handle_room_notification_policy_synced(
+    state: &mut AppState,
+    generation: u64,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state)
+        || !super::room::room_list_provisional_matches_current(
+            &state.room_list.readiness,
+            generation,
+            crate::RoomListSource::Live,
+        )
+    {
+        return Vec::new();
+    }
+    state.room_notification_awaiting_echo.retain(|room_id, _| {
+        state
+            .room_notification_settings
+            .get(room_id)
+            .is_some_and(|entry| {
+                matches!(
+                    entry.operation,
+                    RoomNotificationModeOperation::Pending { .. }
+                )
+            })
+    });
+    Vec::new()
+}
+
+pub(crate) fn handle_room_notification_mode_confirmed(
+    state: &mut AppState,
+    request_id: u64,
+    room_id: String,
+    mode: RoomNotificationMode,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state)
+        || !state
+            .room_notification_awaiting_echo
+            .get(&room_id)
+            .is_some_and(|(id, _)| *id == request_id)
+    {
+        return Vec::new();
+    }
+    state
+        .room_notification_awaiting_echo
+        .insert(room_id.clone(), (request_id, mode));
+    let (generation, source) = match state.room_list.readiness {
+        crate::RoomListReadiness::Ready { generation, source }
+        | crate::RoomListReadiness::Loading { generation, source } => (generation, source),
+        _ => (0, crate::RoomListSource::Cache),
+    };
+    let effects = handle_room_notification_modes_observed(
+        state,
+        generation,
+        source,
+        [(room_id.clone(), mode)].into(),
+    );
+    // Keep stale cached snapshots fenced until SDK account data catches up or a fresh sync arrives.
+    state
+        .room_notification_awaiting_echo
+        .insert(room_id, (request_id, mode));
+    effects
 }

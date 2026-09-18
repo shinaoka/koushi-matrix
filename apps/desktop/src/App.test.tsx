@@ -2075,8 +2075,8 @@ describe("desktop integration source guards", () => {
 
     expect(appSource).toContain("desktopAttentionWindowTitle");
     expect(hookSource).toContain("sendDesktopAttentionNotification");
-    expect(hookSource).toContain("createDesktopBadgeSoundDispatcher");
-    expect(hookSource).toContain("desktopBadgeSoundDispatcher.observe");
+    expect(hookSource).toContain("createDesktopCandidateSoundDispatcher");
+    expect(hookSource).toContain("desktopCandidateSoundDispatcher.observe");
     expect(hookSource).toContain("applyDesktopAttentionToWindow");
     expect(appSource).toContain("qaWindowTitle(");
     expect(appSource).toContain("effectiveRightPanelModeForSnapshot");

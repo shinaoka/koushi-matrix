@@ -1212,6 +1212,17 @@ default, and any future preview option requires an explicit settings design and
 new tests. Private-data-free QA title tokens may expose only aggregate values
 such as `unread=N`, `badge=N`, and `notify=<kind|none>`.
 
+Server room notification preferences enter through the SDK room-list snapshot
+and a generation-fenced Rust reducer observation. Cached `m.push_rules` is the
+source of cross-client mute state; unavailable data preserves existing policy.
+Local writes fence stale cached policies through HTTP settlement. A bounded direct
+server read reconciles the settled room mode; fresh push-rule sync observations
+release completed-write fences even when another client supersedes the requested
+mode. Failed writes release their fence. Neither a cache refresh nor HTTP success
+alone proves the requested policy is present in server push rules.
+Settings-only refreshes are silent, and pending room-setting commands reconcile
+after settlement. The existing `All` command retains its default-rule semantics.
+
 Native attention is Rust-owned candidate data plus a platform capability
 profile. The core decides whether a room, thread, mention, focus change, or
 read-marker transition creates, suppresses, updates, or clears an attention
@@ -1229,9 +1240,9 @@ platform, so React never sees a claimed tray that does not exist. Sound and acti
 they run only for a Rust-owned notification candidate and not for every later
 snapshot that still contains unread state. Until a native Core-owned
 notification dispatcher replaces the webview/window sound port,
-`createDesktopBadgeSoundDispatcher` is the explicit platform-mechanics
-exception: it may retain positive-edge, three-second cooldown and one in-flight
-call state, but receives Rust-owned count/candidate/capability/settings facts and
+`createDesktopCandidateSoundDispatcher` is the explicit platform-mechanics
+exception: it may retain candidate-dispatch, three-second cooldown and one in-flight
+call state, but receives Rust-owned candidate/capability/settings facts and
 must not classify Matrix attention or carry identifiers/content.
 Redacted events contribute no unread, notification, or mention count, even if
 cached push actions predate their redaction. They remain usable as receipt

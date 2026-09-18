@@ -473,6 +473,19 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             enabled,
         } => settings::handle_room_url_preview_override_set(state, request_id, room_id, enabled),
+        AppAction::RoomNotificationPolicySynced { generation } => {
+            settings::handle_room_notification_policy_synced(state, generation)
+        }
+        AppAction::RoomNotificationModeConfirmed {
+            request_id,
+            room_id,
+            mode,
+        } => settings::handle_room_notification_mode_confirmed(state, request_id, room_id, mode),
+        AppAction::RoomNotificationModesObserved {
+            generation,
+            source,
+            modes,
+        } => settings::handle_room_notification_modes_observed(state, generation, source, modes),
         AppAction::RoomPreferencesLoaded { preferences } => {
             settings::handle_room_preferences_loaded(state, preferences)
         }
@@ -1840,6 +1853,7 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.space_members = Default::default();
     state.basic_operation = Default::default();
     state.room_notification_settings.clear();
+    state.room_notification_awaiting_echo.clear();
 
     let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
     if had_invite_workflow {

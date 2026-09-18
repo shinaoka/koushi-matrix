@@ -5,7 +5,7 @@ import { desktopAttentionPort } from "../backend/desktopAttentionRuntime";
 import type { TimelineDiagnosticLogEntry } from "../components/TimelineView";
 import {
   applyDesktopAttentionToWindow,
-  createDesktopBadgeSoundDispatcher,
+  createDesktopCandidateSoundDispatcher,
   dispatchDesktopAttentionTransientEffects,
   desktopAttentionNotificationCandidate
 } from "../domain/desktopAttention";
@@ -23,7 +23,7 @@ type DesktopAttentionEffectsInput = {
   appendDiagnosticLog: (entry: TimelineDiagnosticLogEntry) => void;
 };
 
-const desktopBadgeSoundDispatcher = createDesktopBadgeSoundDispatcher();
+const desktopCandidateSoundDispatcher = createDesktopCandidateSoundDispatcher();
 
 export function useDesktopAttentionEffects({
   snapshot,
@@ -63,27 +63,13 @@ export function useDesktopAttentionEffects({
     );
 
     if (!snapshot || snapshot.state.domain.session.kind !== "ready") {
-      desktopBadgeSoundDispatcher.reset();
-      return;
+      desktopCandidateSoundDispatcher.reset();
     }
-
-    void desktopBadgeSoundDispatcher.observe(
-      desktopAttentionPort.sound,
-      safeAttentionSummary.badgeCount,
-      snapshot.state.domain.native_attention.summary.capabilities,
-      snapshot.state.domain.settings.values.notifications,
-      (token) => appendDiagnosticLog({
-        timestampMs: Date.now(),
-        source: "native.attention",
-        message: token
-      })
-    );
   }, [
     attentionCapabilities,
     attentionWindowTitle,
     safeAttentionSummary.badgeCount,
-    snapshot?.state.domain.session.kind,
-    snapshot?.state.domain.settings.values.notifications.sound
+    snapshot?.state.domain.session.kind
   ]);
 
   useEffect(() => {
@@ -98,6 +84,18 @@ export function useDesktopAttentionEffects({
     if (!candidate || !desktopAttentionPort) {
       return;
     }
+
+    void desktopCandidateSoundDispatcher.observe(
+      desktopAttentionPort.sound,
+      candidate,
+      snapshot.state.domain.native_attention.summary.capabilities,
+      snapshot.state.domain.settings.values.notifications,
+      (token) => appendDiagnosticLog({
+        timestampMs: Date.now(),
+        source: "native.attention",
+        message: token
+      })
+    );
 
     const currentWindow = desktopAttentionPort.currentWindow();
     void dispatchDesktopAttentionTransientEffects(

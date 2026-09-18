@@ -14,17 +14,15 @@ pub(crate) fn handle_dispatch_started(
     if !is_session_ready(state) {
         return Vec::new();
     }
-    // Sound dispatch is driven by a positive Dock-badge delta. A push-rule
-    // notification candidate is intentionally not required here: unread badge
-    // changes and banner candidates are separate projections.
-    if state.native_attention.summary.badge_count == 0 {
-        return Vec::new();
-    }
-    if matches!(
-        state.native_attention.dispatch,
-        crate::state::NativeAttentionDispatchState::Dispatching { .. }
-            | crate::state::NativeAttentionDispatchState::Suppressed { .. }
-    ) {
+    // Transient sound requires the same Rust-owned eligible candidate as banners.
+    // Raw unread/badge growth alone must never bypass room notification policy.
+    if state.native_attention.summary.candidate.is_none()
+        || !state.settings.values.notifications.sound
+        || !matches!(
+            state.native_attention.dispatch,
+            crate::state::NativeAttentionDispatchState::Idle
+        )
+    {
         return Vec::new();
     }
     state.native_attention.dispatch =

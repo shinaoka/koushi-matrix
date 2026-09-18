@@ -35,6 +35,7 @@ use thiserror::Error;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MatrixRoomListSnapshot {
+    pub room_notification_modes: BTreeMap<String, koushi_state::RoomNotificationMode>,
     pub spaces: Vec<MatrixRoomListSpace>,
     /// Space IDs whose direct JOIN-member input is authoritative.
     pub complete_space_member_ids: BTreeSet<String>,
@@ -2102,12 +2103,58 @@ async fn matrix_room_list_snapshot_from_rooms(
 ) -> MatrixRoomListSnapshot {
     let mut snapshot = MatrixRoomListSnapshot::default();
     let mut user_profiles = BTreeMap::new();
+    let rooms: Vec<_> = rooms.into_iter().collect();
+    // Absence/corruption of cached account data is not evidence of an unmute.
+    let notification_settings = if let Some(room) = rooms.first() {
+        room.client()
+            .account()
+            .account_data::<matrix_sdk::ruma::events::push_rules::PushRulesEventContent>()
+            .await
+            .ok()
+            .flatten()
+            .and_then(|raw| raw.deserialize().ok())
+            .map(|rules| (room.client(), rules.global))
+    } else {
+        None
+    };
+    let notification_settings = match notification_settings {
+        Some((client, rules)) => Some((client.notification_settings().await, rules)),
+        None => None,
+    };
     for room in rooms {
         if room.state() != matrix_sdk::RoomState::Joined {
             continue;
         }
 
         let room_id = room.room_id().to_string();
+        if let Some((settings, rules)) = &notification_settings {
+            use koushi_state::RoomNotificationMode as Mode;
+            use matrix_sdk::notification_settings::RoomNotificationMode as SdkMode;
+            let mode = match settings
+                .get_user_defined_room_notification_mode(room.room_id())
+                .await
+            {
+                Some(SdkMode::Mute) => Mode::Mute,
+                Some(SdkMode::MentionsAndKeywordsOnly) => Mode::Mentions,
+                Some(SdkMode::AllMessages) => Mode::All,
+                None => {
+                    // Older Koushi versions used an app-owned underride rule.
+                    let legacy_id = format!("org.matrix.desktop.notify.room.{room_id}");
+                    if rules.underride.iter().any(|rule| {
+                        rule.rule_id == legacy_id
+                            && rule.enabled
+                            && !rule.actions.iter().any(|a| a.should_notify())
+                    }) {
+                        Mode::Mentions
+                    } else {
+                        Mode::All
+                    }
+                }
+            };
+            snapshot
+                .room_notification_modes
+                .insert(room_id.clone(), mode);
+        }
         let display_name = room
             .cached_display_name()
             .map(|name| name.to_string())
@@ -2991,5 +3038,7 @@ async fn matrix_space_child_room_ids(room: &matrix_sdk::Room) -> Vec<String> {
     child_room_ids
 }
 
+#[cfg(test)]
+mod notification_mode_tests;
 #[cfg(test)]
 mod tests;

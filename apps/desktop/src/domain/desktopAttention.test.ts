@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import {
   applyDesktopAttentionToWindow,
-  createDesktopBadgeSoundDispatcher,
+  createDesktopCandidateSoundDispatcher,
   dispatchDesktopAttentionTransientEffects,
   desktopAttentionNotificationCandidate,
   desktopAttentionSummary,
@@ -511,25 +511,25 @@ describe("desktop notification candidate", () => {
     expect(windowMock.setTrayBadgeCount).not.toHaveBeenCalled();
   });
 
-  test("sounds only for positive Dock badge deltas and coalesces bursts", async () => {
+  test("sounds only for eligible candidates and coalesces bursts", async () => {
     let now = 1_000;
-    const dispatcher = createDesktopBadgeSoundDispatcher(() => now, 3_000);
+    const dispatcher = createDesktopCandidateSoundDispatcher(() => now, 3_000);
     const transport = { playAttentionSound: vi.fn().mockResolvedValue("played" as const) };
     const capabilities = {
       notifications: "available", badge: "available", overlay_icon: "unavailable",
       sound: "available", tray: "unavailable", activation: "unavailable"
     } as const;
-    await dispatcher.observe(transport, 7, capabilities, { sound: true });
+    await dispatcher.observe(transport, null, capabilities, { sound: true });
     expect(transport.playAttentionSound).not.toHaveBeenCalled();
-    await dispatcher.observe(transport, 8, capabilities, { sound: true });
+    await dispatcher.observe(transport, { roomDisplayName: "Room", kind: "message", unreadCount: 8, highlightCount: 0 }, capabilities, { sound: true });
     now += 100;
-    await dispatcher.observe(transport, 9, capabilities, { sound: true });
+    await dispatcher.observe(transport, { roomDisplayName: "Room", kind: "message", unreadCount: 9, highlightCount: 0 }, capabilities, { sound: true });
     expect(transport.playAttentionSound).toHaveBeenCalledOnce();
     now += 3_000;
-    await dispatcher.observe(transport, 10, capabilities, { sound: true });
+    await dispatcher.observe(transport, { roomDisplayName: "Room", kind: "message", unreadCount: 10, highlightCount: 0 }, capabilities, { sound: true });
     expect(transport.playAttentionSound).toHaveBeenCalledTimes(2);
-    await dispatcher.observe(transport, 4, capabilities, { sound: true });
-    await dispatcher.observe(transport, 4, capabilities, { sound: true });
+    await dispatcher.observe(transport, null, capabilities, { sound: true });
+    await dispatcher.observe(transport, null, capabilities, { sound: true });
     expect(transport.playAttentionSound).toHaveBeenCalledTimes(2);
   });
 
@@ -539,28 +539,28 @@ describe("desktop notification candidate", () => {
     const playAttentionSound = vi.fn()
       .mockReturnValueOnce(firstPlayback)
       .mockResolvedValueOnce("played" as const);
-    const dispatcher = createDesktopBadgeSoundDispatcher(() => 1_000, 3_000);
+    const dispatcher = createDesktopCandidateSoundDispatcher(() => 1_000, 3_000);
     const capabilities = {
       notifications: "available", badge: "available", overlay_icon: "unavailable",
       sound: "available", tray: "unavailable", activation: "unavailable"
     } as const;
-    await dispatcher.observe({ playAttentionSound }, 0, capabilities, { sound: true });
-    const first = dispatcher.observe({ playAttentionSound }, 1, capabilities, { sound: true });
-    const concurrent = dispatcher.observe({ playAttentionSound }, 2, capabilities, { sound: true });
+    await dispatcher.observe({ playAttentionSound }, null, capabilities, { sound: true });
+    const first = dispatcher.observe({ playAttentionSound }, { roomDisplayName: "Room", kind: "message", unreadCount: 1, highlightCount: 0 }, capabilities, { sound: true });
+    const concurrent = dispatcher.observe({ playAttentionSound }, { roomDisplayName: "Room", kind: "message", unreadCount: 2, highlightCount: 0 }, capabilities, { sound: true });
     expect(playAttentionSound).toHaveBeenCalledOnce();
 
     resolveFirst("failed");
     await Promise.all([first, concurrent]);
-    await dispatcher.observe({ playAttentionSound }, 3, capabilities, { sound: true });
+    await dispatcher.observe({ playAttentionSound }, { roomDisplayName: "Room", kind: "message", unreadCount: 3, highlightCount: 0 }, capabilities, { sound: true });
     expect(playAttentionSound).toHaveBeenCalledTimes(2);
-    await dispatcher.observe({ playAttentionSound }, 4, capabilities, { sound: true });
+    await dispatcher.observe({ playAttentionSound }, { roomDisplayName: "Room", kind: "message", unreadCount: 4, highlightCount: 0 }, capabilities, { sound: true });
     expect(playAttentionSound).toHaveBeenCalledTimes(2);
   });
 
   test.each(["failed", "unsupported"] as const)(
     "%s native outcome does not consume the sound cooldown",
     async (firstOutcome) => {
-      const dispatcher = createDesktopBadgeSoundDispatcher(() => 1_000, 3_000);
+      const dispatcher = createDesktopCandidateSoundDispatcher(() => 1_000, 3_000);
       const playAttentionSound = vi.fn()
         .mockResolvedValueOnce(firstOutcome)
         .mockResolvedValueOnce("played");
@@ -569,9 +569,9 @@ describe("desktop notification candidate", () => {
         notifications: "available", badge: "available", overlay_icon: "unavailable",
         sound: "available", tray: "unavailable", activation: "unavailable"
       } as const;
-      await dispatcher.observe({ playAttentionSound }, 0, capabilities, { sound: true }, diagnostic);
-      await dispatcher.observe({ playAttentionSound }, 1, capabilities, { sound: true }, diagnostic);
-      await dispatcher.observe({ playAttentionSound }, 2, capabilities, { sound: true }, diagnostic);
+      await dispatcher.observe({ playAttentionSound }, null, capabilities, { sound: true }, diagnostic);
+      await dispatcher.observe({ playAttentionSound }, { roomDisplayName: "Room", kind: "message", unreadCount: 1, highlightCount: 0 }, capabilities, { sound: true }, diagnostic);
+      await dispatcher.observe({ playAttentionSound }, { roomDisplayName: "Room", kind: "message", unreadCount: 2, highlightCount: 0 }, capabilities, { sound: true }, diagnostic);
       expect(playAttentionSound).toHaveBeenCalledTimes(2);
       if (firstOutcome === "failed") expect(diagnostic).toHaveBeenCalledWith("attention_sound_failed");
       expect(diagnostic).toHaveBeenCalledWith(`attention_sound_outcome outcome=${firstOutcome}`);
@@ -579,7 +579,7 @@ describe("desktop notification candidate", () => {
   );
 
   test("clears the in-flight reservation when native playback throws", async () => {
-    const dispatcher = createDesktopBadgeSoundDispatcher(() => 1_000, 3_000);
+    const dispatcher = createDesktopCandidateSoundDispatcher(() => 1_000, 3_000);
     const playAttentionSound = vi.fn()
       .mockRejectedValueOnce(new Error("private native error"))
       .mockResolvedValueOnce("played" as const);
@@ -588,32 +588,32 @@ describe("desktop notification candidate", () => {
       notifications: "available", badge: "available", overlay_icon: "unavailable",
       sound: "available", tray: "unavailable", activation: "unavailable"
     } as const;
-    await dispatcher.observe({ playAttentionSound }, 0, capabilities, { sound: true }, diagnostic);
-    await dispatcher.observe({ playAttentionSound }, 1, capabilities, { sound: true }, diagnostic);
-    await dispatcher.observe({ playAttentionSound }, 2, capabilities, { sound: true }, diagnostic);
+    await dispatcher.observe({ playAttentionSound }, null, capabilities, { sound: true }, diagnostic);
+    await dispatcher.observe({ playAttentionSound }, { roomDisplayName: "Room", kind: "message", unreadCount: 1, highlightCount: 0 }, capabilities, { sound: true }, diagnostic);
+    await dispatcher.observe({ playAttentionSound }, { roomDisplayName: "Room", kind: "message", unreadCount: 2, highlightCount: 0 }, capabilities, { sound: true }, diagnostic);
 
     expect(playAttentionSound).toHaveBeenCalledTimes(2);
     expect(diagnostic).toHaveBeenCalledWith("attention_sound_failed");
   });
 
-  test("reset establishes a fresh baseline without a login or startup sound", async () => {
-    const dispatcher = createDesktopBadgeSoundDispatcher(() => 1_000, 3_000);
+  test("reset clears the cooldown and suppressed startup candidates remain silent", async () => {
+    const dispatcher = createDesktopCandidateSoundDispatcher(() => 1_000, 3_000);
     const playAttentionSound = vi.fn().mockResolvedValue("played" as const);
     const capabilities = {
       notifications: "available", badge: "available", overlay_icon: "unavailable",
       sound: "available", tray: "unavailable", activation: "unavailable"
     } as const;
 
-    await dispatcher.observe({ playAttentionSound }, 2, capabilities, { sound: true });
-    await dispatcher.observe({ playAttentionSound }, 3, capabilities, { sound: true });
+    await dispatcher.observe({ playAttentionSound }, null, capabilities, { sound: true });
+    await dispatcher.observe({ playAttentionSound }, { roomDisplayName: "Room", kind: "message", unreadCount: 3, highlightCount: 0 }, capabilities, { sound: true });
     dispatcher.reset();
-    await dispatcher.observe({ playAttentionSound }, 9, capabilities, { sound: true });
+    await dispatcher.observe({ playAttentionSound }, null, capabilities, { sound: true });
 
     expect(playAttentionSound).toHaveBeenCalledOnce();
   });
 
-  test("respects the shared notification sound preference for badge increases", async () => {
-    const dispatcher = createDesktopBadgeSoundDispatcher(() => 1_000, 3_000);
+  test("respects the shared notification sound preference for candidates", async () => {
+    const dispatcher = createDesktopCandidateSoundDispatcher(() => 1_000, 3_000);
     const playAttentionSound = vi.fn().mockResolvedValue("played" as const);
     const diagnostic = vi.fn();
     const capabilities = {
@@ -621,8 +621,8 @@ describe("desktop notification candidate", () => {
       sound: "available", tray: "unavailable", activation: "unavailable"
     } as const;
 
-    await dispatcher.observe({ playAttentionSound }, 0, capabilities, { sound: false }, diagnostic);
-    await dispatcher.observe({ playAttentionSound }, 1, capabilities, { sound: false }, diagnostic);
+    await dispatcher.observe({ playAttentionSound }, null, capabilities, { sound: false }, diagnostic);
+    await dispatcher.observe({ playAttentionSound }, { roomDisplayName: "Room", kind: "message", unreadCount: 1, highlightCount: 0 }, capabilities, { sound: false }, diagnostic);
 
     expect(playAttentionSound).not.toHaveBeenCalled();
     expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining("policy_sound=false"));

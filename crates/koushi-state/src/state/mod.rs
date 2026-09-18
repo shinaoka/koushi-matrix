@@ -303,6 +303,9 @@ pub struct AppState {
     pub room_list: RoomListProjection,
     #[serde(default)]
     pub room_notification_settings: HashMap<String, RoomNotificationSettings>,
+    /// Local writes retain authority until the matching server policy is observed.
+    #[serde(skip)]
+    pub room_notification_awaiting_echo: HashMap<String, (u64, RoomNotificationMode)>,
     pub room_interactions: BTreeMap<String, RoomInteractionState>,
     #[serde(skip)]
     pub composer_drafts: ComposerDraftStore,
@@ -369,6 +372,7 @@ impl Default for AppState {
             invite_workflow: InviteWorkflowState::default(),
             room_list: RoomListProjection::default(),
             room_notification_settings: HashMap::new(),
+            room_notification_awaiting_echo: HashMap::new(),
             room_interactions: BTreeMap::new(),
             composer_drafts: ComposerDraftStore::default(),
             scheduled_sends: ScheduledSendStore::default(),

@@ -1,5 +1,6 @@
 use super::actor::{MissingSpaceChildLink, RoomActor};
 use super::list_observer::{record_residency_ack_failure, record_residency_admission_failure};
+use crate::executor;
 use crate::timeline::{
     RoomRemovalCause, TimelineSubscriptionResidencyHandle, TimelineSubscriptionResidencyPermit,
 };
@@ -22,7 +23,7 @@ use koushi_state::{
 use std::sync::Mutex;
 #[cfg(any(test, feature = "test-hooks"))]
 use std::sync::atomic::Ordering;
-use std::{future::Future, sync::Arc};
+use std::{future::Future, sync::Arc, time::Duration};
 #[cfg(any(test, feature = "test-hooks"))]
 use tokio::sync::oneshot;
 
@@ -1133,7 +1134,7 @@ impl RoomActor {
             Ok(()) => {
                 self.reduce_reliable(vec![AppAction::RoomNotificationModeCompleted {
                     request_id: request_id.sequence,
-                    room_id,
+                    room_id: room_id.clone(),
                 }])
                 .await;
             }
@@ -1141,13 +1142,28 @@ impl RoomActor {
                 let kind = classify_room_error(&error);
                 self.reduce_reliable(vec![AppAction::RoomNotificationModeFailed {
                     request_id: request_id.sequence,
-                    room_id,
+                    room_id: room_id.clone(),
                     kind: operation_failure_kind(kind),
                 }])
                 .await;
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
+        if let Ok(Ok(mode)) = executor::timeout(
+            Duration::from_secs(10),
+            koushi_sdk::fetch_room_notification_mode(session, &room_id),
+        )
+        .await
+        {
+            self.reduce_reliable(vec![AppAction::RoomNotificationModeConfirmed {
+                request_id: request_id.sequence,
+                room_id: room_id.clone(),
+                mode,
+            }])
+            .await;
+        }
+        // Reconcile a server observation that may have arrived while the write was pending.
+        self.refresh_room_list_for_room(&room_id);
     }
 
     pub(super) async fn handle_report_content(

@@ -3789,6 +3789,21 @@ stateDiagram-v2
     Dispatching --> Idle: AttentionCleared/RoomMarkedRead/NativeWindowFocusChanged
 ```
 
+- Room notification modes are hydrated from cached server `m.push_rules` in the
+  same generation-fenced room-list projection, before new room counts are applied.
+  Missing or malformed account data is unavailable, not an unmute. A valid
+  ruleset without a per-room override restores the default (`All` in the current
+  UI); legacy app-owned mentions-only rules remain recognized. Pending local
+  writes keep their optimistic mode through HTTP completion. A bounded direct
+  server read reconciles the effective policy after settlement, request-ID fenced;
+  stale cached snapshots cannot undo that policy. Fresh generation-fenced push
+  sync releases completed-write fences, even when a different client supersedes
+  the requested mode. Failed writes release the fence. If confirmation fetch
+  fails, retain the local policy until the next push sync. Completion/failure also
+  requests a room projection for observations skipped while pending. Settings-only
+  observations recompute badges/sidebar without creating transient candidates.
+  The live observer listens for push-rule changes as well as room changes and
+  reprojects without replacing its ordered VectorDiff accumulator.
 - Accepted inputs are Rust-owned room/timeline activity observations,
   notification settings changes, room muted/low-priority state changes, window
   focus changes, mark-read/read-receipt actions, platform capability updates,

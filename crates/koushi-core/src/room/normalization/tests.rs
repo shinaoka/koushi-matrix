@@ -543,6 +543,7 @@ fn normalize_rooms_carries_sdk_room_tags() {
     let snapshot = MatrixRoomListSnapshot {
         spaces: vec![],
         complete_space_member_ids: BTreeSet::new(),
+        room_notification_modes: Default::default(),
         rooms: vec![MatrixRoomListRoom {
             room_id: "!room1:example.test".to_owned(),
             display_name: "Room 1".to_owned(),

@@ -648,7 +648,7 @@ fn native_sound_dispatch_outcomes_are_correlated_and_stale_safe() {
 }
 
 #[test]
-fn native_sound_dispatch_accepts_badge_without_notification_candidate() {
+fn native_sound_dispatch_rejects_badge_without_notification_candidate() {
     let mut state = ready_state();
     state.native_attention.summary.badge_count = 1;
     state.native_attention.summary.candidate = None;
@@ -661,9 +661,59 @@ fn native_sound_dispatch_accepts_badge_without_notification_candidate() {
 
     assert_eq!(
         state.native_attention.dispatch,
-        NativeAttentionDispatchState::Dispatching { dispatch_id }
+        NativeAttentionDispatchState::Idle
     );
-    assert_eq!(effects.len(), 1);
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn native_sound_dispatch_requires_idle_candidate_and_enabled_sound_not_badges() {
+    let mut state = ready_state();
+    state.native_attention.summary.badge_count = 0;
+    state.native_attention.summary.candidate = Some(NativeAttentionCandidate {
+        room_display_name: "Room".to_owned(),
+        kind: RoomAttentionKind::Mention,
+        unread_count: 1,
+        highlight_count: 1,
+    });
+    let dispatch_id = NativeAttentionDispatchId::new(3, 2);
+    state.settings.values.notifications.sound = false;
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::NativeAttentionDispatchStarted { dispatch_id }
+        )
+        .is_empty()
+    );
+    state.settings.values.notifications.sound = true;
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::NativeAttentionDispatchStarted { dispatch_id }
+        )
+        .len(),
+        1
+    );
+    reduce(
+        &mut state,
+        AppAction::NativeAttentionDispatchSettled {
+            dispatch_id,
+            outcome: NativeAttentionSoundOutcome::Played,
+        },
+    );
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::NativeAttentionDispatchStarted {
+                dispatch_id: NativeAttentionDispatchId::new(3, 3),
+            }
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        state.native_attention.dispatch,
+        NativeAttentionDispatchState::Delivered { dispatch_id }
+    );
 }
 
 #[test]

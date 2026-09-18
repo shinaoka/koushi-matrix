@@ -255,10 +255,10 @@ export async function dispatchDesktopAttentionTransientEffects(
   await Promise.allSettled(operations);
 }
 
-export interface DesktopBadgeSoundDispatcher {
+export interface DesktopCandidateSoundDispatcher {
   observe(
     transport: DesktopAttentionTransientLike,
-    badgeCount: number,
+    candidate: DesktopAttentionNotificationCandidate | null,
     capabilities: NativeAttentionCapabilities,
     policy: DesktopAttentionTransientPolicy,
     diagnostic?: DesktopAttentionDiagnosticSink
@@ -266,43 +266,25 @@ export interface DesktopBadgeSoundDispatcher {
   reset(): void;
 }
 
-export function createDesktopBadgeSoundDispatcher(
+export function createDesktopCandidateSoundDispatcher(
   now: () => number = Date.now,
   cooldownMs = DESKTOP_ATTENTION_SOUND_COOLDOWN_MS
-): DesktopBadgeSoundDispatcher {
-  let previousBadgeCount: number | null = null;
+): DesktopCandidateSoundDispatcher {
   let lastSoundAt = Number.NEGATIVE_INFINITY;
   let soundInFlight = false;
   let generation = 0;
   return {
     reset() {
       generation += 1;
-      previousBadgeCount = null;
       lastSoundAt = Number.NEGATIVE_INFINITY;
       soundInFlight = false;
     },
-    async observe(transport, badgeCount, capabilities, policy, diagnostic) {
-      const currentBadgeCount = normalizeAttentionCount(badgeCount);
-      if (previousBadgeCount === null) {
-        previousBadgeCount = currentBadgeCount;
-        diagnostic?.(`attention_badge_sound_baseline count=${currentBadgeCount}`);
+    async observe(transport, candidate, capabilities, policy, diagnostic) {
+      if (!candidate) {
+        diagnostic?.("attention_sound_skipped reason=no_candidate");
         return;
       }
 
-      const priorBadgeCount = previousBadgeCount;
-      previousBadgeCount = currentBadgeCount;
-      if (currentBadgeCount <= priorBadgeCount) {
-        if (currentBadgeCount < priorBadgeCount) {
-          diagnostic?.(
-            `attention_badge_sound_decrease previous=${priorBadgeCount} current=${currentBadgeCount}`
-          );
-        }
-        return;
-      }
-
-      diagnostic?.(
-        `attention_badge_sound_delta previous=${priorBadgeCount} current=${currentBadgeCount} delta=${currentBadgeCount - priorBadgeCount}`
-      );
       const timestamp = now();
       const soundAllowed = !soundInFlight && timestamp - lastSoundAt >= cooldownMs;
       if (
