@@ -306,6 +306,16 @@ describe("SpaceMembersPanel space invite search (#508)", () => {
 });
 
 describe("SpaceMembersPanel", () => {
+  it("shows a search failure instead of reporting no members", async () => {
+    render(<SpaceMembersPanel state={state()} canInvite={true} startInInviteMode
+      onInviteUser={vi.fn()} onOpenProfile={vi.fn()}
+      onSearchInviteTargets={async () => { throw new Error("transport timeout"); }} />);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Name, alias, or Matrix ID" }), {
+      target: { value: "@new-person:example.invalid" }
+    });
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Could not search"));
+    expect(screen.queryByText(/No invite candidates found/)).toBeNull();
+  });
   it("renders cancellation only for invited rows and forwards the invited user", () => {
     const onCancelInvite = vi.fn();
     const diagnostics: string[] = [];

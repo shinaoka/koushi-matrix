@@ -980,6 +980,14 @@ stateDiagram-v2
 
 ### Invite Workflow Admission
 
+Accepted Open/Close/Query/Scope/Select/Remove actions emit `InviteWorkflowChanged`,
+including idempotent accepted edits. The core publishes that projection before
+emitting the request-correlated terminal `IntentLifecycle` outcome. Rejected
+edits settle as failed no-ops, without changing the projection. Consumers must
+report transport failures separately from an empty candidate search.
+An accepted idempotent edit may settle at the baseline generation, but only
+after its own correlated terminal arrives and the expected projection matches.
+
 The invite-user workflow is a Rust-owned reducer projection. Its destination may
 be either a joined room or a known Space; `InviteWorkflowState.query.room_id`
 retains its historical wire name for both kinds of destination.

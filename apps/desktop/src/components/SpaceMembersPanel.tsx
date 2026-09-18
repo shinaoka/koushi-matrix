@@ -211,6 +211,7 @@ export function SpaceMembersPanel({
   const [inviteQuery, setInviteQuery] = useState("");
   const [inviteCandidates, setInviteCandidates] = useState<InviteTargetCandidate[]>([]);
   const [inviteSearching, setInviteSearching] = useState(false);
+  const [inviteSearchFailed, setInviteSearchFailed] = useState(false);
   const [pendingRoleChange, setPendingRoleChange] = useState<{
     userId: string;
     option: SpaceMemberRoleOption;
@@ -317,6 +318,7 @@ export function SpaceMembersPanel({
   useEffect(() => {
     const requestId = ++inviteSearchRequestRef.current;
     const trimmed = inviteQuery.trim();
+    setInviteSearchFailed(false);
     if (!inviteMode) {
       setInviteCandidates([]);
       setInviteSearching(false);
@@ -335,6 +337,11 @@ export function SpaceMembersPanel({
         }
         setInviteCandidates(candidates);
         setInviteSearching(false);
+      }).catch(() => {
+        if (inviteSearchRequestRef.current !== requestId) return;
+        setInviteCandidates([]);
+        setInviteSearching(false);
+        setInviteSearchFailed(true);
       });
     }, 250);
     return () => {
@@ -422,7 +429,9 @@ export function SpaceMembersPanel({
       {inviteMode ? (
         <div className="space-members-invite-results" aria-label={t("dialog.inviteCandidates")}>
           <p className="space-members-empty">{t("dialog.inviteSearchHelp")}</p>
-          {inviteSearching && inviteCandidates.length === 0 ? (
+          {inviteSearchFailed ? (
+            <p className="space-members-empty" role="alert">{t("dialog.inviteSearchFailed")}</p>
+          ) : inviteSearching && inviteCandidates.length === 0 ? (
             <p className="space-members-empty" role="status">
               {t("dialog.inviteSearching")}
             </p>

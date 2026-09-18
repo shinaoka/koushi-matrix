@@ -5135,7 +5135,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           message: "surface=space operation=search outcome=transport_rejected"
         });
       }
-      return [];
+      throw new Error("Space invite search failed");
     }
   }, [appendDiagnosticLog, setSnapshot]);
 

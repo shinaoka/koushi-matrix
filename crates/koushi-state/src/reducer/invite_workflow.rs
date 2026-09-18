@@ -1,5 +1,5 @@
 use crate::{
-    effect::AppEffect,
+    effect::{AppEffect, UiEvent},
     state::{
         AppState, InviteDestinationResult, InviteOperationState, InviteScopeSelection,
         InviteWorkflowState, OperationFailureKind, SessionState, build_invite_history_policy,
@@ -72,12 +72,12 @@ pub(crate) fn handle_invite_workflow_opened(
 
     refresh_invite_projection(state, &room_id);
     state.invite_workflow.query.room_id = Some(room_id);
-    Vec::new()
+    vec![AppEffect::EmitUiEvent(UiEvent::InviteWorkflowChanged)]
 }
 
 pub(crate) fn handle_invite_workflow_closed(state: &mut AppState) -> Vec<AppEffect> {
     state.invite_workflow = InviteWorkflowState::default();
-    Vec::new()
+    vec![AppEffect::EmitUiEvent(UiEvent::InviteWorkflowChanged)]
 }
 
 pub(crate) fn handle_invite_target_query_changed(
@@ -95,7 +95,7 @@ pub(crate) fn handle_invite_target_query_changed(
 
     refresh_invite_projection(state, &room_id);
     state.invite_workflow.query = build_invite_target_query_state(state, room_id, query);
-    Vec::new()
+    vec![AppEffect::EmitUiEvent(UiEvent::InviteWorkflowChanged)]
 }
 
 pub(crate) fn handle_invite_scope_selected(
@@ -118,7 +118,7 @@ pub(crate) fn handle_invite_scope_selected(
     }
 
     state.invite_workflow.selected_scope = Some(scope);
-    Vec::new()
+    vec![AppEffect::EmitUiEvent(UiEvent::InviteWorkflowChanged)]
 }
 
 pub(crate) fn handle_invite_target_selected(
@@ -145,7 +145,7 @@ pub(crate) fn handle_invite_target_selected(
     state.invite_workflow.selected_targets.push(target);
     let query = state.invite_workflow.query.query.clone();
     state.invite_workflow.query = build_invite_target_query_state(state, room_id, query);
-    Vec::new()
+    vec![AppEffect::EmitUiEvent(UiEvent::InviteWorkflowChanged)]
 }
 
 pub(crate) fn handle_invite_target_removed(
@@ -174,7 +174,7 @@ pub(crate) fn handle_invite_target_removed(
         .retain(|target| target.user_id != user_id);
     let query = state.invite_workflow.query.query.clone();
     state.invite_workflow.query = build_invite_target_query_state(state, room_id, query);
-    Vec::new()
+    vec![AppEffect::EmitUiEvent(UiEvent::InviteWorkflowChanged)]
 }
 
 pub(crate) fn handle_invite_batch_requested(

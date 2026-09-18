@@ -200,6 +200,7 @@ export type MessageId =
   | "dialog.inviteSearching"
   | "dialog.inviteNoResults"
   | "dialog.invitePerson"
+  | "dialog.inviteSearchFailed"
   | "dialog.inviteSelectedTargets"
   | "dialog.openRoomInfo"
   | "dialog.matrixUserId"
@@ -1554,6 +1555,7 @@ const en: Catalog = {
   "dialog.inviteSearch": "Name, alias, or Matrix ID",
   "dialog.inviteSearchHelp": "Search people already loaded from your DMs, rooms, and spaces, or enter a full Matrix ID. Select Invite next to a person to send an invitation to this space.",
   "dialog.inviteSearching": "Searching for people to invite…",
+  "dialog.inviteSearchFailed": "Could not search for invite candidates. Please try again.",
   "dialog.invitePerson": "Invite {name}",
   "dialog.inviteNoResults": "No invite candidates found. Try another name or enter a full Matrix ID.",
   "dialog.inviteSelectedTargets": "Selected invite targets",
@@ -2819,6 +2821,7 @@ const ja: Catalog = {
   "dialog.inviteSearch": "名前、別名、Matrix ID",
   "dialog.inviteSearchHelp": "DM・ルーム・スペースから読み込み済みのユーザーを検索するか、完全なMatrix IDを入力してください。候補の「招待」を押すと、このスペースへの招待を送信します。",
   "dialog.inviteSearching": "招待候補を検索中…",
+  "dialog.inviteSearchFailed": "招待候補の検索に失敗しました。もう一度お試しください。",
   "dialog.invitePerson": "{name}を招待",
   "dialog.inviteNoResults": "招待候補が見つかりません。別の名前か、完全なMatrix IDで検索してください。",
   "dialog.inviteSelectedTargets": "選択中の招待先",

@@ -2837,17 +2837,19 @@ impl AppActor {
                             request_id,
                             room_id,
                         } => {
-                            let effects = self
-                                .reduce_app_action(AppAction::InviteWorkflowOpened { room_id })
-                                .await;
-                            self.handle_app_effects(request_id, effects).await;
+                            self.settle_invite_workflow_action(
+                                request_id,
+                                AppAction::InviteWorkflowOpened { room_id },
+                            )
+                            .await;
                             true
                         }
                         AppCommand::CloseInviteWorkflow { request_id } => {
-                            let effects = self
-                                .reduce_app_action(AppAction::InviteWorkflowClosed)
-                                .await;
-                            self.handle_app_effects(request_id, effects).await;
+                            self.settle_invite_workflow_action(
+                                request_id,
+                                AppAction::InviteWorkflowClosed,
+                            )
+                            .await;
                             true
                         }
                         AppCommand::SearchInviteTargets {
@@ -2855,13 +2857,11 @@ impl AppActor {
                             room_id,
                             query,
                         } => {
-                            let effects = self
-                                .reduce_app_action(AppAction::InviteTargetQueryChanged {
-                                    room_id,
-                                    query,
-                                })
-                                .await;
-                            self.handle_app_effects(request_id, effects).await;
+                            self.settle_invite_workflow_action(
+                                request_id,
+                                AppAction::InviteTargetQueryChanged { room_id, query },
+                            )
+                            .await;
                             true
                         }
                         AppCommand::SetInviteScope {
@@ -2869,13 +2869,11 @@ impl AppActor {
                             room_id,
                             scope,
                         } => {
-                            let effects = self
-                                .reduce_app_action(AppAction::InviteScopeSelected {
-                                    room_id,
-                                    scope,
-                                })
-                                .await;
-                            self.handle_app_effects(request_id, effects).await;
+                            self.settle_invite_workflow_action(
+                                request_id,
+                                AppAction::InviteScopeSelected { room_id, scope },
+                            )
+                            .await;
                             true
                         }
                         AppCommand::SelectInviteTarget {
@@ -2883,23 +2881,22 @@ impl AppActor {
                             room_id,
                             user_id,
                         } => {
-                            let effects = self
-                                .reduce_app_action(AppAction::InviteTargetSelected {
-                                    room_id,
-                                    user_id,
-                                })
-                                .await;
-                            self.handle_app_effects(request_id, effects).await;
+                            self.settle_invite_workflow_action(
+                                request_id,
+                                AppAction::InviteTargetSelected { room_id, user_id },
+                            )
+                            .await;
                             true
                         }
                         AppCommand::RemoveInviteTarget {
                             request_id,
                             user_id,
                         } => {
-                            let effects = self
-                                .reduce_app_action(AppAction::InviteTargetRemoved { user_id })
-                                .await;
-                            self.handle_app_effects(request_id, effects).await;
+                            self.settle_invite_workflow_action(
+                                request_id,
+                                AppAction::InviteTargetRemoved { user_id },
+                            )
+                            .await;
                             true
                         }
                         AppCommand::UpdateSettings { request_id, patch } => {
@@ -3724,6 +3721,24 @@ impl AppActor {
             }
             _ => false,
         }
+    }
+
+    async fn settle_invite_workflow_action(&mut self, request_id: RequestId, action: AppAction) {
+        // Include earlier commands coalesced in this actor turn in the delta.
+        let before = self.snapshot_tx.borrow().state.clone();
+        let effects = self.reduce_app_action(action).await;
+        let admitted = effects.contains(&AppEffect::EmitUiEvent(UiEvent::InviteWorkflowChanged));
+        let published_generation = self.publish_state_change(&before);
+        self.handle_app_effects(request_id, effects).await;
+        self.emit(CoreEvent::IntentLifecycle {
+            request_id,
+            outcome: if admitted {
+                IntentOutcome::Committed
+            } else {
+                IntentOutcome::FailedNoOp(IntentNoOpReason::Superseded)
+            },
+            published_generation,
+        });
     }
 
     async fn handle_app_effects(&mut self, request_id: RequestId, effects: Vec<AppEffect>) {
