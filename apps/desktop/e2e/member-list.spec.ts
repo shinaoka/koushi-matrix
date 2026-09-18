@@ -410,14 +410,37 @@ test("Space Members can invite a brand-new user to the Space via the invite sear
                 explicit_user_id: null
               },
               selected_targets: [],
-              scope_plan: null,
-              selected_scope: null,
+              scope_plan: {
+                room_id: spaceId, destination_kind: "space", default_scope: { kind: "roomOnly" },
+                options: [{ scope: { kind: "roomOnly" }, label: "Space only", detail: null }]
+              },
+              selected_scope: { kind: "roomOnly" },
               history_policy: null,
               operation: { kind: "idle" }
             }
           }
         }
       };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.setCommandResponse("select_invite_target", () => {
+      const snapshot = window.__harness.currentSnapshot();
+      const next = structuredClone(snapshot);
+      next.state.domain.invite_workflow!.selected_targets = [{
+        user_id: "@brand-new:example.invalid", display_label: "Brand New Person",
+        avatar: null
+      }];
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.setCommandResponse("invite_targets", () => {
+      const next = structuredClone(window.__harness.currentSnapshot());
+      next.state.domain.invite_workflow!.operation = {
+        kind: "completed", request_id: 42, room_id: spaceId, notice: null,
+        results: [{ user_id: "@brand-new:example.invalid", destination: { kind: "space", space_id: spaceId }, kind: "invited", message: null }]
+      };
+      next.state.domain.invite_workflow!.selected_targets = [];
       window.__harness.setSnapshot(next);
       return next;
     });
@@ -430,17 +453,20 @@ test("Space Members can invite a brand-new user to the Space via the invite sear
   await expect(panel.getByRole("button", { name: /Brand New Person/ })).toBeVisible();
   await panel.getByRole("button", { name: /Brand New Person/ }).click();
 
-  await expect.poll(() => invocationCount(page, "invite_user_to_space")).toBe(1);
+  await expect.poll(() => invocationCount(page, "invite_targets")).toBe(1);
   const args = await firstInvocationArgs<{
-    spaceId: string;
-    userId: string;
-    generation: number;
-  }>(page, "invite_user_to_space");
+    roomId: string;
+    userIds: string[];
+    scope: { kind: string };
+  }>(page, "invite_targets");
   expect(args).toEqual({
-    spaceId: HARNESS_SPACE_ID,
-    userId: "@brand-new:example.invalid",
-    generation: 2
+    roomId: HARNESS_SPACE_ID,
+    userIds: ["@brand-new:example.invalid"],
+    scope: { kind: "roomOnly" }
   });
+
+  await expect(panel.getByRole("button", { name: t("spaceMembers.invited"), exact: true })).toBeDisabled();
+  expect(await invocationCount(page, "invite_user_to_space")).toBe(0);
 
   // Leaving the invite search resets the shared invite workflow so a later
   // room invite dialog never inherits this space search.

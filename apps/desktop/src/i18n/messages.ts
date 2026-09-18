@@ -1190,6 +1190,9 @@ export type MessageId =
   | "spaceMembers.childRoomCountOne"
   | "spaceMembers.childRoomCount"
   | "spaceMembers.invite"
+  | "spaceMembers.inviting"
+  | "spaceMembers.invited"
+  | "spaceMembers.joined"
   | "spaceMembers.invitePending"
   | "spaceMembers.inviteFailed"
   | "spaceMembers.cancelInvite"
@@ -2570,6 +2573,9 @@ const en: Catalog = {
   "spaceMembers.childRoomCountOne": "In {count} child room",
   "spaceMembers.childRoomCount": "In {count} child rooms",
   "spaceMembers.invite": "Invite to Space",
+  "spaceMembers.inviting": "Inviting…",
+  "spaceMembers.invited": "Invited",
+  "spaceMembers.joined": "Joined",
   "spaceMembers.invitePending": "Invitation pending",
   "spaceMembers.inviteFailed": "Invite failed. Try again.",
   "spaceMembers.cancelInvite": "Cancel invitation",
@@ -3835,6 +3841,9 @@ const ja: Catalog = {
   "spaceMembers.childRoomCountOne": "参加中の子ルーム {count} 個",
   "spaceMembers.childRoomCount": "参加中の子ルーム {count} 個",
   "spaceMembers.invite": "スペースに招待",
+  "spaceMembers.inviting": "招待中…",
+  "spaceMembers.invited": "招待済み",
+  "spaceMembers.joined": "参加済み",
   "spaceMembers.invitePending": "招待保留",
   "spaceMembers.inviteFailed": "招待に失敗しました。もう一度お試しください。",
   "spaceMembers.cancelInvite": "招待を取り消す",
