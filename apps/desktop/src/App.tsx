@@ -3749,6 +3749,17 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
       const scope = workflow.selected_scope ?? inviteScopeFromWorkflow(workflow);
       const nextSnapshot = await settleCommandSnapshot(api.inviteTargets(dialog.roomId, userIds, scope));
       const operation = nextSnapshot.state.domain.invite_workflow?.operation;
+      const shouldRefreshRoomPeople =
+        operation?.kind === "completed" &&
+        operation.results.some(
+          (result) => result.kind === "invited" && result.destination.kind === "room"
+        );
+      if (shouldRefreshRoomPeople) {
+        // The invite event is not a joined-members sync update for the inviter.
+        // Reload the authoritative member projection while the dialog is still
+        // open so People shows the new invite immediately after it closes (#914).
+        await settleCommandSnapshot(api.loadRoomSettings(dialog.roomId));
+      }
       const hasNotice = operation?.kind === "completed" && operation.notice;
       const hasFailedResult =
         operation?.kind === "completed" &&

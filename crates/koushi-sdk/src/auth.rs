@@ -9,6 +9,7 @@ use thiserror::Error;
 use url::Url;
 
 const LOGIN_DISCOVERY_PATH: &str = "_matrix/client/v3/login";
+const AUTHORIZATION_SERVER_METADATA_PATH: &str = "_matrix/client/v1/auth_metadata";
 
 const WELL_KNOWN_CLIENT_PATH: &str = ".well-known/matrix/client";
 
@@ -180,6 +181,12 @@ impl Homeserver {
             .expect("login discovery path should be relative")
     }
 
+    pub fn authorization_server_metadata_url(&self) -> Url {
+        self.base_url
+            .join(AUTHORIZATION_SERVER_METADATA_PATH)
+            .expect("authorization server metadata path should be relative")
+    }
+
     /// `/.well-known/matrix/client` at the origin root (the homeserver
     /// scheme+host, not the client-server base path).
     pub fn well_known_client_url(&self) -> Url {
@@ -249,11 +256,12 @@ struct MatrixErrorResponse {
 
 pub fn discover_login_flows(homeserver: &str) -> Result<LoginDiscovery, LoginDiscoveryError> {
     let homeserver = Homeserver::parse(homeserver)?;
-    let response = reqwest::blocking::Client::builder()
+    let client = reqwest::blocking::Client::builder()
         .timeout(DISCOVERY_TIMEOUT)
         .user_agent("matrix-desktop-prelogin/0.1")
         .build()
-        .map_err(|error| LoginDiscoveryError::RequestFailed(error.to_string()))?
+        .map_err(|error| LoginDiscoveryError::RequestFailed(error.to_string()))?;
+    let response = client
         .get(homeserver.login_discovery_url())
         .send()
         .map_err(|error| LoginDiscoveryError::RequestFailed(error.to_string()))?;
@@ -262,7 +270,13 @@ pub fn discover_login_flows(homeserver: &str) -> Result<LoginDiscovery, LoginDis
     let body = response
         .text()
         .map_err(|error| LoginDiscoveryError::RequestFailed(error.to_string()))?;
-    let flows = parse_login_discovery_http_response(status, &body)?;
+    let flows = match parse_login_discovery_http_response(status, &body) {
+        Ok(flows) => flows,
+        Err(error @ LoginDiscoveryError::HttpStatus { status: 404, .. }) => {
+            discover_oauth_login_flow(&client, &homeserver).ok_or(error)?
+        }
+        Err(error) => return Err(error),
+    };
 
     Ok(LoginDiscovery {
         homeserver: homeserver.normalized(),
@@ -272,6 +286,39 @@ pub fn discover_login_flows(homeserver: &str) -> Result<LoginDiscovery, LoginDis
         // block login (the links are a nicety, so this fails open to empty).
         delegated: discover_delegated_auth_links(&homeserver),
     })
+}
+
+/// OAuth-only homeservers are allowed to reject the legacy `/login` flow
+/// discovery endpoint. Matrix's authorization-server metadata endpoint is the
+/// authoritative fallback in that case (#896).
+fn discover_oauth_login_flow(
+    client: &reqwest::blocking::Client,
+    homeserver: &Homeserver,
+) -> Option<Vec<LoginFlow>> {
+    let response = client
+        .get(homeserver.authorization_server_metadata_url())
+        .send()
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body = response.text().ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&body).ok()?;
+    let authorization_endpoint = value.get("authorization_endpoint")?.as_str()?;
+    let token_endpoint = value.get("token_endpoint")?.as_str()?;
+    if !is_discovered_http_url(authorization_endpoint) || !is_discovered_http_url(token_endpoint) {
+        return None;
+    }
+
+    Some(vec![LoginFlow {
+        kind: LoginFlowKind::Oidc,
+        delegated_oidc_compatibility: false,
+        display_name: None,
+    }])
+}
+
+fn is_discovered_http_url(value: &str) -> bool {
+    Url::parse(value).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
 }
 
 /// Fetch and parse the `/.well-known/matrix/client` delegated-auth metadata.

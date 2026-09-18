@@ -374,6 +374,17 @@ fn discovers_login_flows_over_http() {
 }
 
 #[test]
+fn discovers_oauth_only_homeserver_when_legacy_login_endpoint_is_unavailable() {
+    let homeserver = spawn_oauth_only_discovery_server();
+
+    let discovery =
+        koushi_sdk::discover_login_flows(&homeserver).expect("OAuth discovery should succeed");
+
+    assert_eq!(discovery.flows.len(), 1);
+    assert_eq!(discovery.flows[0].kind, LoginFlowKind::Oidc);
+}
+
+#[test]
 fn starts_legacy_sso_login_when_discovery_has_plain_sso_flow() {
     let homeserver = spawn_legacy_sso_server();
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -408,13 +419,38 @@ fn spawn_discovery_with_well_known_server(
     login_body: &'static str,
     well_known_body: Option<&'static str>,
 ) -> String {
+    spawn_discovery_with_well_known_server_and_auth(status, login_body, well_known_body, None)
+}
+
+fn spawn_oauth_only_discovery_server() -> String {
+    spawn_discovery_with_well_known_server_and_auth(
+        404,
+        r#"{"errcode":"M_UNRECOGNIZED","error":"OAuth 2.0 authentication is in use on this homeserver."}"#,
+        None,
+        Some(
+            r#"{"authorization_endpoint":"https://auth.example.test/authorize","token_endpoint":"https://auth.example.test/token"}"#,
+        ),
+    )
+}
+
+fn spawn_discovery_with_well_known_server_and_auth(
+    status: u16,
+    login_body: &'static str,
+    well_known_body: Option<&'static str>,
+    authorization_metadata_body: Option<&'static str>,
+) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
     let addr = listener
         .local_addr()
         .expect("test server should have an address");
 
     thread::spawn(move || {
-        for _ in 0..2 {
+        let request_count = if authorization_metadata_body.is_some() {
+            3
+        } else {
+            2
+        };
+        for _ in 0..request_count {
             let (mut stream, _) = listener
                 .accept()
                 .expect("test server should accept a request");
@@ -455,6 +491,14 @@ fn spawn_discovery_with_well_known_server(
                 } else if request.starts_with("GET /.well-known/matrix/client HTTP/1.1") {
                     match well_known_body {
                         Some(well_known) => (200, well_known.as_bytes().to_vec()),
+                        None => (
+                            404,
+                            b"{\"errcode\":\"M_NOT_FOUND\",\"error\":\"not found\"}".to_vec(),
+                        ),
+                    }
+                } else if request.starts_with("GET /_matrix/client/v1/auth_metadata HTTP/1.1") {
+                    match authorization_metadata_body {
+                        Some(metadata) => (200, metadata.as_bytes().to_vec()),
                         None => (
                             404,
                             b"{\"errcode\":\"M_NOT_FOUND\",\"error\":\"not found\"}".to_vec(),
