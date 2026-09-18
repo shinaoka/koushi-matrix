@@ -424,6 +424,17 @@ test("Space Members can invite a brand-new user to the Space via the invite sear
       window.__harness.setSnapshot(next);
       return next;
     });
+    window.__harness.setCommandResponse("load_space_members", () => {
+      const next = structuredClone(window.__harness.currentSnapshot());
+      const members = next.state.domain.space_members;
+      members.space_invited.push({
+        ...members.space_invited[0]!, user_id: "@brand-new:example.invalid",
+        display_name: "Brand New Person", display_label: "Brand New Person",
+        original_display_label: "Brand New Person", child_room_ids: [], invite_pending: false
+      });
+      window.__harness.setSnapshot(next);
+      return next;
+    });
     let delayFirstSelection = true;
     window.__harness.setCommandResponse("select_invite_target", async () => {
       const snapshot = window.__harness.currentSnapshot();
@@ -489,12 +500,15 @@ test("Space Members can invite a brand-new user to the Space via the invite sear
 
   await expect(panel.getByRole("button", { name: t("spaceMembers.invited"), exact: true })).toBeDisabled();
   expect(await invocationCount(page, "invite_user_to_space")).toBe(0);
+  await expect.poll(() => invocationCount(page, "load_space_members")).toBe(1);
 
   // Leaving the invite search resets the shared invite workflow so a later
   // room invite dialog never inherits this space search.
   await clearInvocations(page);
   await panel.getByRole("button", { name: t("action.cancel") }).click();
   await expect.poll(() => invocationCount(page, "close_invite_workflow")).toBe(1);
+  await expect(panel.getByRole("list", { name: t("spaceMembers.sectionInvited"), exact: true })
+    .getByRole("button", { name: "Open profile for Brand New Person", exact: true })).toBeVisible();
 });
 
 test("Space Members rows keep a long Japanese name and one compact role control on one line", async ({

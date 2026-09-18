@@ -5206,7 +5206,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
       // Search candidates use the general Rust-owned invitation workflow. The
       // member-panel command below is deliberately restricted to child-only rows.
       const workflowEpoch = inviteWorkflowLifetimeEpochRef.current;
-      const searchStillCurrent = (nextSnapshot: DesktopSnapshot) =>
+      const searchStillCurrent = (nextSnapshot: DesktopSnapshot | null) =>
         inviteWorkflowLifetimeEpochRef.current === workflowEpoch &&
         spaceMembersSnapshotMatches(snapshotRef.current, fence) &&
         spaceMembersSnapshotMatches(nextSnapshot, fence);
@@ -5228,7 +5228,21 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           workflow.selected_targets[0]?.user_id !== userId) {
         throw new Error("Space invite selection rejected");
       }
-      await settleCommandSnapshot(api.inviteTargets(fence.spaceId, [userId], { kind: "roomOnly" }));
+      nextSnapshot = await settleCommandSnapshot(api.inviteTargets(fence.spaceId, [userId], { kind: "roomOnly" }));
+      if (!searchStillCurrent(nextSnapshot)) return;
+      const operation = nextSnapshot.state.domain.invite_workflow?.operation;
+      if (operation?.kind === "completed" && operation.room_id === fence.spaceId &&
+          operation.results.some((result) => result.user_id === userId && result.kind === "invited")) {
+        // Sending an invitation does not guarantee a member-sync update for
+        // the inviter. Refresh the authoritative list without masking send success.
+        try {
+          await settleCommandSnapshot(api.loadSpaceMembers(fence.spaceId, fence.generation));
+        } catch {
+          if (searchStillCurrent(snapshotRef.current)) {
+            appendSpaceMembersDiagnosticLog("load trigger=invite_search outcome=failed");
+          }
+        }
+      }
       return;
     }
 
