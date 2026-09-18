@@ -217,6 +217,11 @@ export function SpaceMembersPanel({
   const panelRef = useRef<HTMLElement | null>(null);
   const roleSelectRefs = useRef(new Map<string, HTMLSelectElement>());
   const previousOperationRef = useRef(state.operation);
+
+  useEffect(() => {
+    setInviteMode(startInInviteMode);
+  }, [startInInviteMode]);
+
   const sections = useMemo<SpaceMembersSection[]>(
     () => [
       {
