@@ -11,8 +11,16 @@
     "active_space_id": "!space:example.invalid",
     "dm_highlight_count": 0,
     "dm_unread_count": 0,
+    "dms_collapsed": false,
+    "dms_sort": {
+      "kind": "activity"
+    },
     "global_dms": [],
     "not_joined_space_rooms": [],
+    "rooms_collapsed": false,
+    "rooms_sort": {
+      "kind": "activity"
+    },
     "sections": {
       "favourites": [],
       "low_priority": [],
