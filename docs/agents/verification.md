@@ -108,7 +108,7 @@ A subagent's "gates passed" claim is not evidence — re-run the gate yourself.
 | --- | --- |
 | `Frontend (typecheck / vitest / build / secret-scan)` | typecheck, vitest, build, secret scan, ESLint import boundaries, Tauri adapter boundary, domain-crate platform deps |
 | `Browser headless (Playwright DOM tier)` | `npx playwright test` — a red spec is a blocked merge |
-| `Rust (workspace / src-tauri / wasm)` | submodule guard, diagnostic-isolation guard, workspace tests, wasm build, `cargo-deny`, `cargo-machete`, and the CI-cache report; the workspace suite includes the `koushi-core-testkit` and `koushi-desktop` package tests |
+| `Rust (workspace / src-tauri / wasm)` | submodule guard, diagnostic-isolation guard, the workspace suite, explicit `koushi-core-testkit` and `koushi-desktop` package tests, wasm build, `cargo-deny`, `cargo-machete`, and the CI-cache report |
 | `macOS Tauri cargo check` | `cargo check --profile ci -p koushi-desktop` on macOS, including `#[cfg(target_os = "macos")]` paths excluded by Linux CI |
 | `Core invitations (tuwunel)` / `Core invitations (synapse)` | real homeserver `--core --scenario=invites_dm` per server |
 | `Core QA binary tests` | `cargo test -p koushi-qa --features qa-bin --bin headless-core-qa` |
@@ -131,12 +131,12 @@ fingerprint count, and representative vendored Matrix SDK artifacts; a claimed
 SDK cache hit fails closed if those artifacts are absent. This distinguishes a
 real artifact restore from a cache archive that merely restored dependencies.
 
-The workspace job no longer reruns `cargo test -p koushi-core-testkit` or
-`cargo test -p koushi-desktop` after the full workspace suite: both are
-workspace members and the standalone commands duplicated the same default
-feature test sets. QA binaries, wasm, macOS, Windows, and homeserver jobs stay
-separate because they provide distinct feature, platform, target, or runtime
-coverage.
+The workspace job excludes `koushi-core-testkit` and `koushi-desktop`, then runs
+each package exactly once with the explicit `ci` profile. This preserves the
+leaf-crate contract's required Core integration gate and the Tauri DTO/IPC gate
+without compiling either package twice. QA binaries, wasm, macOS, Windows, and
+homeserver jobs stay separate because they provide distinct feature, platform,
+target, or runtime coverage.
 
 Do not assume a green PR means a homeserver job passed — check the job
 explicitly, and confirm whether it is a required check before treating it as a

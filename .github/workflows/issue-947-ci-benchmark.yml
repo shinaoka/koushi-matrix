@@ -55,7 +55,7 @@ jobs:
           set -o pipefail
           set +e
           start=$(date +%s)
-          cargo test --profile ci --workspace --exclude sidebar-composition --exclude key-management 2>&1 | tee artifacts/issue-947-cold-cargo.log
+          cargo test --profile ci --workspace --exclude koushi-core-testkit --exclude koushi-desktop --exclude sidebar-composition --exclude key-management 2>&1 | tee artifacts/issue-947-cold-cargo.log
           status=${PIPESTATUS[0]}
           end=$(date +%s)
           set -e
@@ -119,7 +119,7 @@ jobs:
           set -o pipefail
           set +e
           start=$(date +%s)
-          cargo test --profile ci --workspace --exclude sidebar-composition --exclude key-management 2>&1 | tee artifacts/issue-947-warm-cargo.log
+          cargo test --profile ci --workspace --exclude koushi-core-testkit --exclude koushi-desktop --exclude sidebar-composition --exclude key-management 2>&1 | tee artifacts/issue-947-warm-cargo.log
           status=${PIPESTATUS[0]}
           end=$(date +%s)
           set -e

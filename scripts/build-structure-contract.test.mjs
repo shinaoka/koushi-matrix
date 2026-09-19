@@ -96,9 +96,12 @@ test("CI and npm scripts use the unified workspace contracts", () => {
   assert.doesNotMatch(packageJson, /--manifest-path src-tauri\/Cargo\.toml/);
   assert.match(packageJson, /cargo test -p koushi-desktop/);
   assert.doesNotMatch(ci, /apps\/desktop\/src-tauri\s*$/m);
-  assert.match(rustJob, /cargo test --profile ci --workspace --exclude sidebar-composition --exclude key-management/);
-  assert.doesNotMatch(rustJob, /cargo test -p koushi-core-testkit/);
-  assert.doesNotMatch(rustJob, /cargo test -p koushi-desktop/);
+  assert.match(
+    rustJob,
+    /cargo test --profile ci --workspace --exclude koushi-core-testkit --exclude koushi-desktop --exclude sidebar-composition --exclude key-management/,
+  );
+  assert.match(rustJob, /cargo test -p koushi-core-testkit --profile ci/);
+  assert.match(rustJob, /cargo test -p koushi-desktop --profile ci/);
   assert.match(rustJob, /node --test scripts\/ci-rust-cache-report\.test\.mjs/);
   assert.match(rustJob, /node scripts\/ci-rust-cache-report\.mjs/);
   assert.match(ci, /node --test scripts\/check-rust-test-structure\.test\.mjs/);
@@ -201,6 +204,9 @@ test("Rust CI cache paths match each job's explicit target directory", () => {
   assert.match(workflowJobSource(ci, "windows-overlay-acl"), /CARGO_TARGET_DIR: \$\{\{ github\.workspace \}\}\/target-windows-overlay[\s\S]*workspaces: \. -> target-windows-overlay/);
   assert.match(readRepoFile(".github/workflows/issue-738-flake-probe.yml"), /CARGO_TARGET_DIR: \$\{\{ github\.workspace \}\}\/target-ci[\s\S]*workspaces: \. -> target-ci/);
   assert.match(readRepoFile(".github/workflows/build-windows.yml"), /workspaces: \. -> target/);
-  assert.match(readRepoFile(".github/workflows/issue-947-ci-benchmark.yml"), /cargo test --profile ci --workspace --exclude sidebar-composition --exclude key-management/);
+  assert.match(
+    readRepoFile(".github/workflows/issue-947-ci-benchmark.yml"),
+    /cargo test --profile ci --workspace --exclude koushi-core-testkit --exclude koushi-desktop --exclude sidebar-composition --exclude key-management/,
+  );
   assert.match(readRepoFile(".github/workflows/issue-947-ci-benchmark.yml"), /actions\/cache\/(?:save|restore)@/);
 });

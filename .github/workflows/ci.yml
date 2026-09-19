@@ -197,7 +197,11 @@ jobs:
       - name: Rust cache report contract tests
         run: node --test scripts/ci-rust-cache-report.test.mjs scripts/ci-rust-cache-metrics.test.mjs
       - name: Workspace tests
-        run: cargo test --profile ci --workspace --exclude sidebar-composition --exclude key-management
+        run: cargo test --profile ci --workspace --exclude koushi-core-testkit --exclude koushi-desktop --exclude sidebar-composition --exclude key-management
+      - name: Core testkit integration tests
+        run: cargo test -p koushi-core-testkit --profile ci
+      - name: Tauri DTO + IPC contract tests
+        run: cargo test -p koushi-desktop --profile ci
       - name: wasm build check (state + search + protocol)
         run: cargo check --profile ci --target wasm32-unknown-unknown -p koushi-state -p koushi-search -p koushi-protocol
       # --- Dependency hygiene (#87 Phase 0) ---

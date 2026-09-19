@@ -10,9 +10,10 @@ Rust path explicit:
 
 - Rust cache mappings now match `target-ci`, `target-macos-check`,
   `target-windows-overlay`, and the non-required Issue #738 probe target.
-- The workspace job runs the `koushi-core-testkit` and `koushi-desktop` tests
-  once through `cargo test --profile ci --workspace`; their redundant package
-  commands were removed.
+- The workspace job excludes `koushi-core-testkit` and `koushi-desktop`, then
+  runs each package once through an explicit `cargo test -p ... --profile ci`
+  step. This satisfies the leaf-crate contract and preserves the Tauri DTO/IPC
+  gate without compiling either package twice.
 - `[profile.ci]` inherits `test`, keeps debug assertions and overflow checks,
   and disables debuginfo, incremental compilation, and symbols for hosted
   correctness CI. Local development and release profiles are unchanged.
