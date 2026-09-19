@@ -43,7 +43,7 @@ jobs:
       - name: Rust cache (Windows-specific key)
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: .
+          workspaces: . -> target
           shared-key: koushi-windows-build-ci
 
       - uses: actions/setup-node@v4

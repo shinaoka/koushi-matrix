@@ -1,0 +1,143 @@
+name: Issue 947 Rust cache benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit, branch, or tag to benchmark (defaults to the dispatched SHA)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  cold:
+    name: Cold cache population
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      cache-key: ${{ steps.cache-key.outputs.key }}
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target-ci
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          submodules: recursive
+      - name: Install Rust toolchain (1.96.0 + wasm target)
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Read benchmark revisions
+        id: revisions
+        run: |
+          echo "source=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "sdk=$(git -C vendor/matrix-rust-sdk rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Define compatible benchmark cache key
+        id: cache-key
+        run: echo "key=issue-947-rust-${{ runner.os }}-1.96.0-ci-${{ steps.revisions.outputs.source }}-${{ steps.revisions.outputs.sdk }}" >> "$GITHUB_OUTPUT"
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev
+      - name: Rust cache report contract tests
+        run: node --test scripts/ci-rust-cache-report.test.mjs scripts/ci-rust-cache-metrics.test.mjs
+      - name: Remove target directory for cold run
+        run: rm -rf "$CARGO_TARGET_DIR"
+      - name: Run cold workspace suite
+        id: cargo
+        continue-on-error: true
+        run: |
+          mkdir -p artifacts
+          set -o pipefail
+          set +e
+          start=$(date +%s)
+          cargo test --profile ci --workspace --exclude sidebar-composition --exclude key-management 2>&1 | tee artifacts/issue-947-cold-cargo.log
+          status=${PIPESTATUS[0]}
+          end=$(date +%s)
+          set -e
+          echo "elapsed_seconds=$((end - start))" >> "$GITHUB_OUTPUT"
+          exit "$status"
+      - name: Record cold-run measurements
+        if: always()
+        run: |
+          node scripts/ci-rust-cache-report.mjs --target-dir "$CARGO_TARGET_DIR" --profile ci --sdk-cache-hit false --label cold
+          node scripts/ci-rust-cache-metrics.mjs --log artifacts/issue-947-cold-cargo.log --target-dir "$CARGO_TARGET_DIR" --mode cold --cache-hit false --elapsed-seconds "${{ steps.cargo.outputs.elapsed_seconds }}" --output artifacts/issue-947-cold-metrics.json
+      - name: Save cold target artifacts for warm run
+        if: steps.cargo.outcome == 'success'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: target-ci
+          key: ${{ steps.cache-key.outputs.key }}
+      - name: Upload cold measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-947-cold-${{ github.run_id }}
+          path: artifacts/issue-947-cold-*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Fail if the cold workspace suite failed
+        if: steps.cargo.outcome != 'success'
+        run: exit 1
+
+  warm:
+    name: Compatible warm cache run
+    needs: cold
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target-ci
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          submodules: recursive
+      - name: Install Rust toolchain (1.96.0 + wasm target)
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Restore cold target artifacts
+        id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: target-ci
+          key: ${{ needs.cold.outputs.cache-key }}
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev
+      - name: Run warm workspace suite
+        id: cargo
+        continue-on-error: true
+        run: |
+          mkdir -p artifacts
+          set -o pipefail
+          set +e
+          start=$(date +%s)
+          cargo test --profile ci --workspace --exclude sidebar-composition --exclude key-management 2>&1 | tee artifacts/issue-947-warm-cargo.log
+          status=${PIPESTATUS[0]}
+          end=$(date +%s)
+          set -e
+          echo "elapsed_seconds=$((end - start))" >> "$GITHUB_OUTPUT"
+          exit "$status"
+      - name: Record warm-run measurements
+        if: always()
+        run: |
+          node scripts/ci-rust-cache-report.mjs --target-dir "$CARGO_TARGET_DIR" --profile ci --sdk-cache-hit "${{ steps.cache.outputs.cache-hit }}" --label warm
+          node scripts/ci-rust-cache-metrics.mjs --log artifacts/issue-947-warm-cargo.log --target-dir "$CARGO_TARGET_DIR" --mode warm --cache-hit "${{ steps.cache.outputs.cache-hit }}" --elapsed-seconds "${{ steps.cargo.outputs.elapsed_seconds }}" --output artifacts/issue-947-warm-metrics.json
+      - name: Upload warm measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-947-warm-${{ github.run_id }}
+          path: artifacts/issue-947-warm-*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Fail if the warm workspace suite failed
+        if: steps.cargo.outcome != 'success'
+        run: exit 1

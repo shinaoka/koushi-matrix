@@ -77,6 +77,12 @@ test("toolchain and dev dependency profile are pinned for stable incremental bui
   assert.match(toolchain, /targets = \["wasm32-unknown-unknown"\]/);
   assert.match(rootCargo, /^\[profile\.dev\.package\."\*"\]$/m);
   assert.match(rootCargo, /^debug = false$/m);
+  assert.match(rootCargo, /^\[profile\.ci\]$/m);
+  assert.match(rootCargo, /^inherits = "test"$/m);
+  assert.match(rootCargo, /^debug = 0$/m);
+  assert.match(rootCargo, /^debug-assertions = true$/m);
+  assert.match(rootCargo, /^overflow-checks = true$/m);
+  assert.match(rootCargo, /^incremental = false$/m);
   assert.equal(desktopPackage.overrides["deepmerge-ts"], "8.0.1");
   assert.equal(desktopLock.packages["node_modules/deepmerge-ts"].version, "8.0.1");
 });
@@ -84,13 +90,17 @@ test("toolchain and dev dependency profile are pinned for stable incremental bui
 test("CI and npm scripts use the unified workspace contracts", () => {
   const packageJson = readRepoFile("apps/desktop/package.json");
   const ci = readRepoFile(".github/workflows/ci.yml");
+  const rustJob = workflowJobSource(ci, "rust");
   const releaseGate = readRepoFile("scripts/desktop-release-gate-check.mjs");
 
   assert.doesNotMatch(packageJson, /--manifest-path src-tauri\/Cargo\.toml/);
   assert.match(packageJson, /cargo test -p koushi-desktop/);
   assert.doesNotMatch(ci, /apps\/desktop\/src-tauri\s*$/m);
-  assert.match(ci, /cargo test -p koushi-desktop/);
-  assert.match(ci, /cargo test -p koushi-core-testkit/);
+  assert.match(rustJob, /cargo test --profile ci --workspace --exclude sidebar-composition --exclude key-management/);
+  assert.doesNotMatch(rustJob, /cargo test -p koushi-core-testkit/);
+  assert.doesNotMatch(rustJob, /cargo test -p koushi-desktop/);
+  assert.match(rustJob, /node --test scripts\/ci-rust-cache-report\.test\.mjs/);
+  assert.match(rustJob, /node scripts\/ci-rust-cache-report\.mjs/);
   assert.match(ci, /node --test scripts\/check-rust-test-structure\.test\.mjs/);
   assert.match(ci, /node scripts\/check-rust-test-structure\.mjs/);
   assert.match(ci, /node --test[^\n]*check-leaf-crate-boundaries\.test\.mjs/);
@@ -136,7 +146,7 @@ test("CI gates positive invitations on exactly Tuwunel and Synapse", () => {
   }
 
   assert.match(binaryJob, /name: Core QA binary tests/);
-  assert.match(binaryJob, /cargo test -p koushi-qa --features qa-bin --bin headless-core-qa/);
+  assert.match(binaryJob, /cargo test --profile ci -p koushi-qa --features qa-bin --bin headless-core-qa/);
   assert.doesNotMatch(binaryJob, /Conduit|conduit|--server=/);
 });
 
@@ -164,7 +174,7 @@ test("headless core QA can run cargo binaries with the release profile", () => {
 
   assert.match(headless, /optionValue\("--cargo-profile"\)/);
   assert.match(headless, /cargoProfileArgs/);
-  assert.match(headless, /--cargo-profile=dev\|release/);
+  assert.match(headless, /--cargo-profile=dev\|ci\|release/);
   assert.match(headless, /--core-backend is obsolete/);
   assert.match(headless, /KOUSHI_QA_FORCE_SYNC_BACKEND is obsolete/);
   assert.doesNotMatch(headless, /explicitCoreBackendOption/);
@@ -180,4 +190,17 @@ test("headless core QA can run cargo binaries with the release profile", () => {
     packageJson,
     /"qa:headless-basic:local": "node \.\.\/\.\.\/scripts\/desktop-headless-local-qa\.mjs --run --server=both --core --scenario=login_sync,directory,timeline_reconnect,send_queue --timeout-ms=600000 --cargo-profile=release"/
   );
+});
+
+test("Rust CI cache paths match each job's explicit target directory", () => {
+  const ci = readRepoFile(".github/workflows/ci.yml");
+  assert.match(workflowJobSource(ci, "rust"), /CARGO_TARGET_DIR: \$\{\{ github\.workspace \}\}\/target-ci[\s\S]*workspaces: \. -> target-ci/);
+  assert.match(workflowJobSource(ci, "macos-cargo-check"), /CARGO_TARGET_DIR: \$\{\{ github\.workspace \}\}\/target-macos-check[\s\S]*workspaces: \. -> target-macos-check/);
+  assert.match(workflowJobSource(ci, "core-invites"), /CARGO_TARGET_DIR: \$\{\{ github\.workspace \}\}\/target-ci[\s\S]*workspaces: \. -> target-ci/);
+  assert.match(workflowJobSource(ci, "core-homeserver"), /CARGO_TARGET_DIR: \$\{\{ github\.workspace \}\}\/target-ci[\s\S]*workspaces: \. -> target-ci/);
+  assert.match(workflowJobSource(ci, "windows-overlay-acl"), /CARGO_TARGET_DIR: \$\{\{ github\.workspace \}\}\/target-windows-overlay[\s\S]*workspaces: \. -> target-windows-overlay/);
+  assert.match(readRepoFile(".github/workflows/issue-738-flake-probe.yml"), /CARGO_TARGET_DIR: \$\{\{ github\.workspace \}\}\/target-ci[\s\S]*workspaces: \. -> target-ci/);
+  assert.match(readRepoFile(".github/workflows/build-windows.yml"), /workspaces: \. -> target/);
+  assert.match(readRepoFile(".github/workflows/issue-947-ci-benchmark.yml"), /cargo test --profile ci --workspace --exclude sidebar-composition --exclude key-management/);
+  assert.match(readRepoFile(".github/workflows/issue-947-ci-benchmark.yml"), /actions\/cache\/(?:save|restore)@/);
 });

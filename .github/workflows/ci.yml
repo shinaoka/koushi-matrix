@@ -149,8 +149,25 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           # The root workspace owns the Tauri crate and the only Cargo.lock.
-          workspaces: .
+          workspaces: . -> target-ci
           shared-key: koushi-rust-ci
+      - name: Read vendored Matrix SDK revision
+        id: sdk-revision
+        run: echo "revision=$(git -C vendor/matrix-rust-sdk rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Cache vendored Matrix SDK CI artifacts
+        id: sdk-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            target-ci/ci/.fingerprint/matrix-sdk-*
+            target-ci/ci/.fingerprint/matrix-sdk-base-*
+            target-ci/ci/.fingerprint/matrix-sdk-search-*
+            target-ci/ci/.fingerprint/matrix-sdk-ui-*
+            target-ci/ci/deps/libmatrix_sdk*
+            target-ci/ci/deps/matrix_sdk*.d
+          key: koushi-sdk-artifacts-${{ runner.os }}-rust-1.96.0-ci-experimental-search-sqlite-e2ee-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/koushi-sdk/Cargo.toml', 'crates/koushi-core/Cargo.toml') }}-${{ steps.sdk-revision.outputs.revision }}
+      - name: Report Rust cache state
+        run: node scripts/ci-rust-cache-report.mjs --target-dir "$CARGO_TARGET_DIR" --profile ci --sdk-cache-hit "${{ steps.sdk-cache.outputs.cache-hit }}" --label rust
       - name: Install Tauri system dependencies
         run: |
           sudo apt-get update
@@ -177,14 +194,12 @@ jobs:
         run: node --test scripts/check-rust-test-structure.test.mjs
       - name: Rust test structure checker
         run: node scripts/check-rust-test-structure.mjs
+      - name: Rust cache report contract tests
+        run: node --test scripts/ci-rust-cache-report.test.mjs scripts/ci-rust-cache-metrics.test.mjs
       - name: Workspace tests
-        run: cargo test --workspace --exclude sidebar-composition --exclude key-management
-      - name: Core testkit integration tests
-        run: cargo test -p koushi-core-testkit
-      - name: Tauri DTO + IPC contract tests
-        run: cargo test -p koushi-desktop
+        run: cargo test --profile ci --workspace --exclude sidebar-composition --exclude key-management
       - name: wasm build check (state + search + protocol)
-        run: cargo check --target wasm32-unknown-unknown -p koushi-state -p koushi-search -p koushi-protocol
+        run: cargo check --profile ci --target wasm32-unknown-unknown -p koushi-state -p koushi-search -p koushi-protocol
       # --- Dependency hygiene (#87 Phase 0) ---
       # cargo-deny: license compliance + advisory check + bans.
       - name: Install cargo-deny
@@ -215,10 +230,10 @@ jobs:
         uses: dtolnay/rust-toolchain@1.96.0
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: .
+          workspaces: . -> target-macos-check
           shared-key: koushi-macos-cargo-check
       - name: Check the macOS Tauri crate
-        run: cargo check -p koushi-desktop
+        run: cargo check --profile ci -p koushi-desktop
 
   core-invites:
     # Prove invitation projection through the sole Simplified Sliding Sync
@@ -240,7 +255,7 @@ jobs:
         uses: dtolnay/rust-toolchain@191af2e1955bbe165f9bbacff2d2438002dff4d4 # 1.96.0
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          workspaces: .
+          workspaces: . -> target-ci
           shared-key: koushi-core-invites-ci
       - name: Install build dependencies
         run: |
@@ -280,7 +295,7 @@ jobs:
       - name: Simplified Sliding Sync invitation scenario
         run: |
           node scripts/desktop-headless-local-qa.mjs --run \
-            --server=${{ matrix.server }} --core --scenario=invites_dm \
+            --server=${{ matrix.server }} --core --scenario=invites_dm --cargo-profile=ci \
             --timeout-ms=240000
       - name: Upload server-specific core QA logs on failure
         if: failure()
@@ -308,7 +323,7 @@ jobs:
         uses: dtolnay/rust-toolchain@1.96.0
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: .
+          workspaces: . -> target-ci
           shared-key: koushi-core-homeserver-ci
       - name: Install build dependencies
         run: |
@@ -319,10 +334,10 @@ jobs:
         run: node scripts/check-sdk-submodule.mjs
       - name: QA binary unit tests
         # Also the only compile check for the QA binaries: a plain
-        # `cargo test --workspace` skips them because both bin targets set
+        # `cargo test --profile ci --workspace` skips them because both bin targets set
         # `required-features = ["qa-bin"]`, which is how a broken
         # `RoomCommand::SetSpaceChild` call sat on main undetected.
-        run: cargo test -p koushi-qa --features qa-bin --bin headless-core-qa
+        run: cargo test --profile ci -p koushi-qa --features qa-bin --bin headless-core-qa
       - name: Upload QA logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -349,9 +364,9 @@ jobs:
         uses: dtolnay/rust-toolchain@1.96.0
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: .
+          workspaces: . -> target-windows-overlay
           shared-key: koushi-windows-tauri-native
       - name: Prove overlay set and clear cross the Tauri ACL
-        run: cargo test -p koushi-windows-overlay-acl windows_overlay_ipc_is_authorized -- --nocapture
+        run: cargo test --profile ci -p koushi-windows-overlay-acl windows_overlay_ipc_is_authorized -- --nocapture
       - name: Prove OIDC native browser launch outcomes
-        run: cargo test -p koushi-desktop oidc_browser --lib -- --nocapture
+        run: cargo test --profile ci -p koushi-desktop oidc_browser --lib -- --nocapture

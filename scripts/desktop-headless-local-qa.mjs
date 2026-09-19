@@ -580,7 +580,10 @@ function cargoProfileArgs() {
   if (cargoProfileOption === "release") {
     return ["--release"];
   }
-  throw new Error("--cargo-profile must be dev or release");
+  if (cargoProfileOption === "ci") {
+    return ["--profile", "ci"];
+  }
+  throw new Error("--cargo-profile must be dev, ci, or release");
 }
 
 function optionValue(name) {
@@ -603,13 +606,13 @@ function safeTimestamp() {
 
 function printUsage() {
   console.log(
-    "Usage: desktop-headless-local-qa.mjs --run [--server=tuwunel|synapse|both] [--scenario=all|session_status|device_cleanup|timeline_reconnect|timeline_stress|encryption_debug|directory|room_management|room_people_projection|activity|composer|credential_health|native_attention|send_queue|live_signals|link_preview|read_state_convergence[,scenario...]] [--core] [--cargo-profile=dev|release] [--fixture-run=<local-run-dir>] [--e2ee-recipient-second-device] [--e2ee-pause-sync-before-multi-device-send]"
+    "Usage: desktop-headless-local-qa.mjs --run [--server=tuwunel|synapse|both] [--scenario=all|session_status|device_cleanup|timeline_reconnect|timeline_stress|encryption_debug|directory|room_management|room_people_projection|activity|composer|credential_health|native_attention|send_queue|live_signals|link_preview|read_state_convergence[,scenario...]] [--core] [--cargo-profile=dev|ci|release] [--fixture-run=<local-run-dir>] [--e2ee-recipient-second-device] [--e2ee-pause-sync-before-multi-device-send]"
   );
   console.log("Starts a disposable local homeserver and runs non-GUI Matrix SDK QA.");
   console.log("  --server=both  Runs the positive Sliding Sync fixtures: Tuwunel and Synapse.");
   console.log("  --server=synapse  Runs local Synapse in Docker.");
   console.log("  --core  Also run the headless-core-qa binary (Phase 2+ core runtime QA).");
-  console.log("  --cargo-profile  Cargo profile for headless QA binaries; release runs faster after build.");
+  console.log("  --cargo-profile  Cargo profile for headless QA binaries: dev, ci, or release.");
   console.log("  --fixture-run  Replay a saved local Synapse fixture by copying its data dir.");
   console.log(
     "  --e2ee-recipient-second-device  Require encrypted sends to decrypt on the recipient's second verified device."

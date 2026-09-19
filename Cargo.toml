@@ -44,3 +44,15 @@ heif-oxide = "0.1.0"
 
 [profile.dev.package."*"]
 debug = false
+
+# Hosted correctness CI should retain assertions and overflow checks while
+# avoiding debuginfo and incremental artifacts that are not useful across
+# ephemeral runners. Local development and release profiles remain unchanged.
+[profile.ci]
+inherits = "test"
+opt-level = 0
+debug = 0
+debug-assertions = true
+overflow-checks = true
+incremental = false
+strip = "symbols"
