@@ -137,9 +137,12 @@ describe("Rust-projected workspace shell", () => {
     expect(screen.getByText("Alpha")).toBeTruthy();
   });
 
-  it("dispatches typed sidebar category and sort settings", () => {
+  it("dispatches typed section collapse and sort settings", () => {
     const snapshot = readyDesktopSnapshotFixture();
-    snapshot.sidebar.sections.people = [room("!dm:example.invalid", "Alice")];
+    snapshot.state.ui.navigation.active_space_id = null;
+    snapshot.sidebar.active_space_id = null;
+    snapshot.sidebar.account_home.is_active = true;
+    snapshot.sidebar.space_rail.forEach((space) => { space.is_active = false; });
     const onUpdateSettings = vi.fn();
     render(
       <Sidebar
@@ -149,18 +152,40 @@ describe("Rust-projected workspace shell", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /^DMs,/i }));
+    fireEvent.click(within(screen.getByRole("region", { name: "DMs" })).getByRole("button", {
+      name: /options for dms/i
+    }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Name" }));
     expect(onUpdateSettings).toHaveBeenCalledWith({
-      sidebar: {
-        category: "people",
-        collapsed: { favourites: false, low_priority: false, not_joined: false }
+      sidebar_section: {
+        scope: "__home__",
+        section: "dms",
+        sort: { kind: "normalLocale" }
       }
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /name/i }));
+    fireEvent.click(within(screen.getByRole("region", { name: "Rooms" })).getByRole("button", {
+      name: "Rooms"
+    }));
     expect(onUpdateSettings).toHaveBeenCalledWith({
-      room_list_sort: { kind: "normalLocale" }
+      sidebar_section: {
+        scope: "__home__",
+        section: "rooms",
+        collapsed: true
+      }
     });
+  });
+
+  it("renders Rooms above DMs as independent sections", () => {
+    const snapshot = readyDesktopSnapshotFixture();
+
+    render(<Sidebar snapshot={snapshot} {...sidebarProps()} />);
+
+    const rooms = screen.getByRole("region", { name: "Rooms" });
+    const dms = screen.getByRole("region", { name: "DMs" });
+    expect(rooms.compareDocumentPosition(dms) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(rooms).getByRole("button", { name: /create room/i })).toBeTruthy();
+    expect(within(dms).getByRole("button", { name: /new dm/i })).toBeTruthy();
   });
 
   it("renders Home-owned account navigation and invite count", () => {

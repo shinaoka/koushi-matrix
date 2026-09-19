@@ -59,6 +59,7 @@ pub(crate) fn handle_settings_update_requested(
     let prev_crawler = state.settings.values.search_crawler.clone();
     let prev_room_list_sort = state.settings.values.room_list_sort;
     let prev_thread_list_order = state.settings.values.thread_list_order;
+    let prev_sidebar = state.settings.values.sidebar.clone();
 
     state.settings.values.apply_patch(patch);
     state.settings.persistence = SettingsPersistenceState::Saving { request_id };
@@ -75,7 +76,9 @@ pub(crate) fn handle_settings_update_requested(
         effects.push(AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged));
     }
 
-    if state.settings.values.room_list_sort != prev_room_list_sort {
+    if state.settings.values.room_list_sort != prev_room_list_sort
+        || state.settings.values.sidebar != prev_sidebar
+    {
         recompute_room_list_projection(state);
         effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
     }

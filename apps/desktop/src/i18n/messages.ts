@@ -492,13 +492,18 @@ export type MessageId =
   | "roomList.filterInvites"
   | "roomList.filterDmsPlaceholder"
   | "roomList.filterRoomsPlaceholder"
+  | "roomList.filterConversationsPlaceholder"
   | "roomList.clearFilter"
   | "roomList.noMatchingDms"
   | "roomList.noMatchingRooms"
+  | "roomList.noMatchingConversations"
   | "roomList.sort"
   | "roomList.sortLabel"
   | "roomList.sortActive"
+  | "roomList.sortAttention"
+  | "roomList.sortRecent"
   | "roomList.sortName"
+  | "roomList.sectionOptions"
   | "roomList.loading"
   | "roomList.failed"
   | "room.markAsRead"
@@ -1866,13 +1871,18 @@ const en: Catalog = {
   "roomList.filterInvites": "Invites",
   "roomList.filterDmsPlaceholder": "Filter direct messages",
   "roomList.filterRoomsPlaceholder": "Filter rooms",
+  "roomList.filterConversationsPlaceholder": "Filter conversations",
   "roomList.clearFilter": "Clear room list filter",
   "roomList.noMatchingDms": "No matching direct messages",
   "roomList.noMatchingRooms": "No matching rooms",
+  "roomList.noMatchingConversations": "No matching conversations",
   "roomList.sort": "Room list sort",
   "roomList.sortLabel": "Sort",
   "roomList.sortActive": "Active",
+  "roomList.sortAttention": "Unread & mentions first",
+  "roomList.sortRecent": "Recent messages",
   "roomList.sortName": "Name",
+  "roomList.sectionOptions": "Options for {section}",
   "roomList.loading": "Loading rooms…",
   "roomList.failed": "Rooms could not be loaded",
   "room.markAsRead": "Mark as read",
@@ -3144,13 +3154,18 @@ const ja: Catalog = {
   "roomList.filterInvites": "招待",
   "roomList.filterDmsPlaceholder": "DMを絞り込む",
   "roomList.filterRoomsPlaceholder": "ルームを絞り込む",
+  "roomList.filterConversationsPlaceholder": "会話を絞り込む",
   "roomList.clearFilter": "ルームリストの絞り込みをクリア",
   "roomList.noMatchingDms": "一致するDMがありません",
   "roomList.noMatchingRooms": "一致するルームがありません",
+  "roomList.noMatchingConversations": "一致する会話がありません",
   "roomList.sort": "ルームリストの並び順",
   "roomList.sortLabel": "並び順",
   "roomList.sortActive": "アクティブ",
+  "roomList.sortAttention": "未読・メンション優先",
+  "roomList.sortRecent": "新着メッセージ",
   "roomList.sortName": "名前",
+  "roomList.sectionOptions": "{section}のオプション",
   "roomList.loading": "ルームを読み込み中…",
   "roomList.failed": "ルームを読み込めませんでした",
   "room.markAsRead": "既読にする",

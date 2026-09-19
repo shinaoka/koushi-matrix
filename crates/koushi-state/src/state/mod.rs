@@ -86,7 +86,8 @@ pub use settings::{
     NotificationSettings, RoomNotificationMode, RoomNotificationModeOperation,
     RoomNotificationSettings, RoomPreference, RoomPreferencesState, RoomUrlPreviews, SettingsPatch,
     SettingsPersistenceState, SettingsState, SettingsValues, SidebarCategory,
-    SidebarCollapsedSections, SidebarSettings, TextDirectionPreference, ThemePreference,
+    SidebarCollapsedSections, SidebarScopeSettings, SidebarSectionKind, SidebarSectionPatch,
+    SidebarSectionSettings, SidebarSettings, TextDirectionPreference, ThemePreference,
     ThreadListOrder, TimelineSettings, TimelineThreadRootOrder, TypographySettings,
     UpdatesSettings, WindowSettings,
 };

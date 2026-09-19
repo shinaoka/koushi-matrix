@@ -436,6 +436,33 @@ function applySettingsPatch(
   values: DesktopSnapshot["state"]["domain"]["settings"]["values"],
   patch: SettingsPatch
 ): DesktopSnapshot["state"]["domain"]["settings"]["values"] {
+  const sidebar = patch.sidebar ?? values.sidebar;
+  const sidebarSection = patch.sidebar_section;
+  const nextSidebar = sidebarSection
+    ? (() => {
+        const scope = sidebar.scope_preferences?.[sidebarSection.scope] ?? {
+          rooms: { collapsed: false, sort: values.room_list_sort },
+          dms: { collapsed: false, sort: values.room_list_sort }
+        };
+        const currentSection = scope[sidebarSection.section];
+        return {
+          ...sidebar,
+          scope_preferences: {
+            ...sidebar.scope_preferences,
+            [sidebarSection.scope]: {
+              ...scope,
+              [sidebarSection.section]: {
+                ...currentSection,
+                ...(sidebarSection.collapsed === undefined
+                  ? {}
+                  : { collapsed: sidebarSection.collapsed }),
+                ...(sidebarSection.sort === undefined ? {} : { sort: sidebarSection.sort })
+              }
+            }
+          }
+        };
+      })()
+    : sidebar;
   return {
     locale: patch.locale ?? values.locale,
     appearance: patch.appearance ?? values.appearance,
@@ -451,7 +478,7 @@ function applySettingsPatch(
     search_crawler: patch.search_crawler ?? values.search_crawler,
     thread_list_order: patch.thread_list_order ?? values.thread_list_order,
     room_list_sort: patch.room_list_sort ?? values.room_list_sort,
-    sidebar: patch.sidebar ?? values.sidebar,
+    sidebar: nextSidebar,
     legacy_frontend_preferences_imported: values.legacy_frontend_preferences_imported
   };
 }
@@ -1604,8 +1631,29 @@ mock.setCommandResponse("import_legacy_settings", ({ patch }: { patch: SettingsP
 });
 mock.setCommandResponse("update_settings", ({ patch }: { patch: SettingsPatch }) => {
   const values = applySettingsPatch(currentSnapshot.state.domain.settings.values, patch);
+  const sidebarSection = patch.sidebar_section;
+  const appliesToVisibleSidebar =
+    sidebarSection && sidebarSection.scope === (currentSnapshot.sidebar.active_space_id ?? "__home__");
+  const sidebar =
+    appliesToVisibleSidebar
+      ? {
+          ...currentSnapshot.sidebar,
+          ...(sidebarSection.section === "rooms"
+            ? {
+                rooms_collapsed:
+                  sidebarSection.collapsed ?? currentSnapshot.sidebar.rooms_collapsed ?? false,
+                rooms_sort: sidebarSection.sort ?? currentSnapshot.sidebar.rooms_sort
+              }
+            : {
+                dms_collapsed:
+                  sidebarSection.collapsed ?? currentSnapshot.sidebar.dms_collapsed ?? false,
+                dms_sort: sidebarSection.sort ?? currentSnapshot.sidebar.dms_sort
+              })
+        }
+      : currentSnapshot.sidebar;
   return setCurrentSnapshot({
     ...currentSnapshot,
+    sidebar,
     state: {
       ...currentSnapshot.state,
       domain: {

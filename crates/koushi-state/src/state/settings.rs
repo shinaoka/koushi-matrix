@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::composer_shortcuts::ComposerFormattingOptions;
 
@@ -196,6 +197,9 @@ impl SettingsValues {
         if let Some(sidebar) = patch.sidebar {
             self.sidebar = sidebar;
         }
+        if let Some(sidebar_section) = patch.sidebar_section {
+            self.sidebar.apply_section_patch(sidebar_section);
+        }
         if let Some(window) = patch.window {
             self.window = window;
         }
@@ -290,6 +294,8 @@ pub struct SidebarSettings {
     pub category: SidebarCategory,
     #[serde(default)]
     pub collapsed: SidebarCollapsedSections,
+    #[serde(default)]
+    pub scope_preferences: BTreeMap<String, SidebarScopeSettings>,
 }
 
 impl Default for SidebarSettings {
@@ -297,6 +303,82 @@ impl Default for SidebarSettings {
         Self {
             category: SidebarCategory::default(),
             collapsed: SidebarCollapsedSections::default(),
+            scope_preferences: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SidebarSectionSettings {
+    #[serde(default)]
+    pub collapsed: bool,
+    #[serde(default)]
+    pub sort: RoomListSort,
+}
+
+impl Default for SidebarSectionSettings {
+    fn default() -> Self {
+        Self {
+            collapsed: false,
+            sort: RoomListSort::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SidebarScopeSettings {
+    #[serde(default)]
+    pub rooms: SidebarSectionSettings,
+    #[serde(default)]
+    pub dms: SidebarSectionSettings,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SidebarSectionKind {
+    Rooms,
+    Dms,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SidebarSectionPatch {
+    pub scope: String,
+    pub section: SidebarSectionKind,
+    #[serde(default)]
+    pub collapsed: Option<bool>,
+    #[serde(default)]
+    pub sort: Option<RoomListSort>,
+}
+
+impl SidebarSettings {
+    pub fn scope(&self, scope: Option<&str>, fallback_sort: RoomListSort) -> SidebarScopeSettings {
+        let scope = scope.unwrap_or("__home__");
+        self.scope_preferences
+            .get(scope)
+            .copied()
+            .unwrap_or_else(|| SidebarScopeSettings {
+                rooms: SidebarSectionSettings {
+                    sort: fallback_sort,
+                    ..SidebarSectionSettings::default()
+                },
+                dms: SidebarSectionSettings {
+                    sort: fallback_sort,
+                    ..SidebarSectionSettings::default()
+                },
+            })
+    }
+
+    pub fn apply_section_patch(&mut self, patch: SidebarSectionPatch) {
+        let settings = self.scope_preferences.entry(patch.scope).or_default();
+        let section = match patch.section {
+            SidebarSectionKind::Rooms => &mut settings.rooms,
+            SidebarSectionKind::Dms => &mut settings.dms,
+        };
+        if let Some(collapsed) = patch.collapsed {
+            section.collapsed = collapsed;
+        }
+        if let Some(sort) = patch.sort {
+            section.sort = sort;
         }
     }
 }
@@ -668,6 +750,8 @@ pub struct SettingsPatch {
     pub search_crawler: Option<SearchCrawlerSettings>,
     #[serde(default)]
     pub sidebar: Option<SidebarSettings>,
+    #[serde(default)]
+    pub sidebar_section: Option<SidebarSectionPatch>,
     #[serde(default)]
     pub window: Option<WindowSettings>,
     #[serde(default)]

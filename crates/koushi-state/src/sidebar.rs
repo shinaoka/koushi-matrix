@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{
     AppState, AvatarImage, RoomListSort, RoomNotificationMode, RoomNotificationSettings,
-    RoomSummary, RoomTags, SpaceLocalPresentations, SpaceSummary, compare_conversation_activity,
-    room_activity_unread_count, room_attention_projection,
+    RoomSummary, RoomTags, SidebarScopeSettings, SpaceLocalPresentations, SpaceSummary,
+    compare_conversation_activity, room_activity_unread_count, room_attention_projection,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -21,6 +21,14 @@ pub struct SidebarModel {
     pub dm_unread_count: u64,
     pub space_highlight_count: u64,
     pub dm_highlight_count: u64,
+    #[serde(default)]
+    pub rooms_sort: RoomListSort,
+    #[serde(default)]
+    pub dms_sort: RoomListSort,
+    #[serde(default)]
+    pub rooms_collapsed: bool,
+    #[serde(default)]
+    pub dms_collapsed: bool,
     pub sections: SidebarSections,
 }
 
@@ -113,18 +121,26 @@ pub fn compose_sidebar_with_account_facts(
         room_notification_settings,
         pending_invite_count,
         RoomListSort::Activity,
+        RoomListSort::Activity,
+        SidebarScopeSettings::default(),
         &SpaceLocalPresentations::default(),
     )
 }
 
 pub fn compose_sidebar_for_state(state: &AppState) -> SidebarModel {
+    let scope = state.settings.values.sidebar.scope(
+        state.navigation.active_space_id.as_deref(),
+        state.settings.values.room_list_sort,
+    );
     let mut sidebar = compose_sidebar_with_preferences(
         state.navigation.active_space_id.as_deref(),
         &state.spaces,
         &state.rooms,
         &state.room_notification_settings,
         state.invites.len() as u64,
-        state.settings.values.room_list_sort,
+        scope.rooms.sort,
+        scope.dms.sort,
+        scope,
         &state.navigation.space_local_presentations,
     );
     let preferred_positions: HashMap<&str, usize> = state
@@ -149,7 +165,9 @@ fn compose_sidebar_with_preferences(
     rooms: &[RoomSummary],
     room_notification_settings: &HashMap<String, RoomNotificationSettings>,
     pending_invite_count: u64,
-    sort: RoomListSort,
+    rooms_sort: RoomListSort,
+    dms_sort: RoomListSort,
+    section_settings: SidebarScopeSettings,
     local_presentations: &SpaceLocalPresentations,
 ) -> SidebarModel {
     let rooms_by_id: HashMap<&str, &RoomSummary> = rooms
@@ -209,7 +227,7 @@ fn compose_sidebar_with_preferences(
                 .collect()
         })
         .unwrap_or_else(|| rooms.iter().filter(|room| !room.is_dm).collect());
-    sort_room_summaries(&mut space_rooms, sort, room_notification_settings);
+    sort_room_summaries(&mut space_rooms, rooms_sort, room_notification_settings);
     let space_rooms: Vec<_> = space_rooms
         .into_iter()
         .map(|room| room_list_item(room, room_notification_settings))
@@ -228,7 +246,7 @@ fn compose_sidebar_with_preferences(
                         .any(|space_id| Some(space_id.as_str()) == active_space_id))
         })
         .collect();
-    sort_room_summaries(&mut global_dm_rooms, sort, room_notification_settings);
+    sort_room_summaries(&mut global_dm_rooms, dms_sort, room_notification_settings);
     let global_dms: Vec<_> = global_dm_rooms
         .into_iter()
         .map(|room| room_list_item(room, room_notification_settings))
@@ -260,6 +278,10 @@ fn compose_sidebar_with_preferences(
         dm_unread_count: unread_count(&global_dms, room_notification_settings),
         space_highlight_count: highlight_count(&space_rooms, room_notification_settings),
         dm_highlight_count: highlight_count(&global_dms, room_notification_settings),
+        rooms_sort,
+        dms_sort,
+        rooms_collapsed: section_settings.rooms.collapsed,
+        dms_collapsed: section_settings.dms.collapsed,
         sections,
         space_rail,
         space_rooms,

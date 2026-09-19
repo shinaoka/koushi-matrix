@@ -15,10 +15,9 @@ import {
   ChevronDown,
   Clock3,
   Compass,
-  Edit3,
   Home,
-  MessageCircle,
   MessageSquare,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   Search,
@@ -33,9 +32,11 @@ import type {
   DesktopSnapshot,
   DisplayPlatform,
   RoomListItem,
+  RoomListSort,
   RoomSummary,
   SearchScopeKind,
   SettingsPatch,
+  SidebarSectionKind,
   SessionStatusRefreshCommandTrigger
 } from "../domain/types";
 import { contextMenuItems } from "../domain/contextMenus";
@@ -55,8 +56,7 @@ import {
   elementAvatarInitial,
   EMPTY_ROOM_TAGS
 } from "../app/uiShared";
-type SidebarRoomCategory = "dms" | "rooms";
-type SidebarRoomSort = "active" | "name";
+const HOME_SCOPE_KEY = "__home__";
 
 export type RuntimeAlertKind = "secureBackup" | "sync" | "session";
 
@@ -866,22 +866,15 @@ export function Sidebar({
   const accountHomeActive = snapshot.sidebar.account_home.is_active && !activeSpace;
   const roomById = new Map(snapshot.state.domain.rooms.map((room) => [room.room_id, room]));
   const presence = snapshot.state.domain.live_signals.presence;
-  const roomCategory: SidebarRoomCategory =
-    sidebarSettings.category === "people" ? "dms" : "rooms";
-  const roomSort: SidebarRoomSort =
-    snapshot.state.domain.settings.values.room_list_sort.kind === "normalLocale"
-      ? "name"
-      : "active";
   const [roomFilter, setRoomFilter] = useState("");
   const activeSpaceId = snapshot.state.ui.navigation.active_space_id;
-  const roomCategoryRooms = roomCategory === "dms" ? sections.people : sections.rooms;
-  const visibleCategoryRooms = filterSidebarRooms(roomCategoryRooms, roomFilter);
-  const visibleNotJoinedRooms =
-    accountHomeActive || roomCategory !== "rooms" ? [] : sections.not_joined;
-  const visibleCategoryLabel =
-    roomCategory === "dms" ? t("workspace.people") : t("workspace.rooms");
-  const visibleCategoryKind = roomCategory === "dms" ? "dm" : "room";
-  const visibleCategoryId = roomCategory === "dms" ? "people" : "rooms";
+  const scopeKey = activeSpaceId ?? HOME_SCOPE_KEY;
+  const visibleRooms = filterSidebarRooms(snapshot.sidebar.space_rooms, roomFilter);
+  const visibleDms = filterSidebarRooms(snapshot.sidebar.global_dms, roomFilter);
+  const roomsSort = snapshot.sidebar.rooms_sort ?? snapshot.state.domain.settings.values.room_list_sort;
+  const dmsSort = snapshot.sidebar.dms_sort ?? snapshot.state.domain.settings.values.room_list_sort;
+  const roomsCollapsed = snapshot.sidebar.rooms_collapsed ?? false;
+  const dmsCollapsed = snapshot.sidebar.dms_collapsed ?? false;
   const resolvedSpaceMemberCounts = spaceMemberCounts ?? {
     joined: snapshot.state.domain.space_members.space_joined.length,
     childOnly: snapshot.state.domain.space_members.child_room_only.length
@@ -891,23 +884,12 @@ export function Sidebar({
     setRoomFilter("");
   }, [activeSpaceId]);
 
-  function selectRoomCategory(category: SidebarRoomCategory) {
-    setRoomFilter("");
+  function updateSectionPreference(
+    section: SidebarSectionKind,
+    patch: { collapsed?: boolean; sort?: RoomListSort }
+  ) {
     onUpdateSettings({
-      sidebar: { ...sidebarSettings, category: category === "dms" ? "people" : "rooms" }
-    });
-  }
-
-  function selectRoomSort(sort: SidebarRoomSort) {
-    onUpdateSettings({ room_list_sort: { kind: sort === "name" ? "normalLocale" : "activity" } });
-  }
-
-  function toggleSection(section: keyof typeof collapsedSections) {
-    onUpdateSettings({
-      sidebar: {
-        ...sidebarSettings,
-        collapsed: { ...collapsedSections, [section]: !collapsedSections[section] }
-      }
+      sidebar_section: { scope: scopeKey, section, ...patch }
     });
   }
 
@@ -930,14 +912,6 @@ export function Sidebar({
           <button
             className="icon-button"
             type="button"
-            aria-label={t("workspace.newDm")}
-            onClick={onNewDm}
-          >
-            <MessageCircle size={ICON_SIZE.control} />
-          </button>
-          <button
-            className="icon-button"
-            type="button"
             aria-label={t("threads.title")}
             onClick={onOpenThreads}
           >
@@ -950,14 +924,6 @@ export function Sidebar({
             onClick={onOpenSpaceInfo}
           >
             <Settings size={ICON_SIZE.control} />
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={t("action.createRoom")}
-            onClick={onCreateRoom}
-          >
-            <Edit3 size={ICON_SIZE.control} />
           </button>
         </div>
       </div>
@@ -996,26 +962,52 @@ export function Sidebar({
         ) : null}
         {roomListReady || hasProvisionalRoomList ? (
           <RoomListControls
-            dmTotal={snapshot.sidebar.global_dms.length}
-            dmUnread={snapshot.sidebar.dm_unread_count}
-            dmHighlights={snapshot.sidebar.dm_highlight_count}
-            roomTotal={snapshot.sidebar.space_rooms.length}
-            roomUnread={snapshot.sidebar.space_unread_count}
-            roomHighlights={snapshot.sidebar.space_highlight_count}
-            selectedCategory={roomCategory}
-            selectedSort={roomSort}
             filter={roomFilter}
-            filterPlaceholder={
-              roomCategory === "dms"
-                ? t("roomList.filterDmsPlaceholder")
-                : t("roomList.filterRoomsPlaceholder")
-            }
+            filterPlaceholder={t("roomList.filterConversationsPlaceholder")}
             onFilterChange={setRoomFilter}
-            onSelectCategory={selectRoomCategory}
-            onSelectSort={selectRoomSort}
           />
         ) : null}
-        {visibleNotJoinedRooms.length > 0 ? (
+        <RoomSection
+          activeRoomId={activeRoomId}
+          collapsed={roomsCollapsed}
+          id="rooms"
+          kind="room"
+          label={t("roomList.categoryRooms")}
+          presence={presence}
+          roomById={roomById}
+          rooms={visibleRooms}
+          emptyMessage={roomFilter ? t("roomList.noMatchingConversations") : undefined}
+          showWhenEmpty={true}
+          onCreate={onCreateRoom}
+          onOpenContextMenu={onOpenContextMenu}
+          onSelectRoom={onSelectRoom}
+          onSelectSort={(sort) => updateSectionPreference("rooms", { sort })}
+          onToggleCollapsed={() =>
+            updateSectionPreference("rooms", { collapsed: !roomsCollapsed })
+          }
+          selectedSort={roomsSort}
+          onRequestAvatarThumbnail={onRequestAvatarThumbnail}
+        />
+        <RoomSection
+          activeRoomId={activeRoomId}
+          collapsed={dmsCollapsed}
+          id="dms"
+          kind="dm"
+          label={t("roomList.categoryDms")}
+          presence={presence}
+          roomById={roomById}
+          rooms={visibleDms}
+          emptyMessage={roomFilter ? t("roomList.noMatchingConversations") : undefined}
+          showWhenEmpty={true}
+          onCreate={onNewDm}
+          onOpenContextMenu={onOpenContextMenu}
+          onSelectRoom={onSelectRoom}
+          onSelectSort={(sort) => updateSectionPreference("dms", { sort })}
+          onToggleCollapsed={() => updateSectionPreference("dms", { collapsed: !dmsCollapsed })}
+          selectedSort={dmsSort}
+          onRequestAvatarThumbnail={onRequestAvatarThumbnail}
+        />
+        {sections.not_joined.length > 0 ? (
           <RoomSection
             activeRoomId={activeRoomId}
             collapsed={Boolean(collapsedSections.not_joined)}
@@ -1024,167 +1016,45 @@ export function Sidebar({
             label={t("workspace.notJoined")}
             presence={presence}
             roomById={roomById}
-            rooms={visibleNotJoinedRooms}
+            rooms={sections.not_joined}
             onJoinRoom={onJoinRoom}
             onOpenContextMenu={onOpenContextMenu}
             onSelectRoom={onSelectRoom}
-            onToggleCollapsed={() => toggleSection("not_joined")}
+            onToggleCollapsed={() =>
+              onUpdateSettings({
+                sidebar: {
+                  ...sidebarSettings,
+                  collapsed: {
+                    ...collapsedSections,
+                    not_joined: !collapsedSections.not_joined
+                  }
+                }
+              })
+            }
             onRequestAvatarThumbnail={onRequestAvatarThumbnail}
           />
         ) : null}
-        {roomCategoryRooms.length > 0 && visibleCategoryRooms.length === 0 ? (
+        {roomFilter.trim().length > 0 && visibleRooms.length === 0 && visibleDms.length === 0 ? (
           <div className="room-list-no-matches" role="status">
-            {t(roomCategory === "dms" ? "roomList.noMatchingDms" : "roomList.noMatchingRooms")}
+            {t("roomList.noMatchingConversations")}
           </div>
         ) : null}
-        <RoomSection
-          activeRoomId={activeRoomId}
-          collapsed={false}
-          id={visibleCategoryId}
-          kind={visibleCategoryKind}
-          label={visibleCategoryLabel}
-          presence={presence}
-          roomById={roomById}
-          rooms={visibleCategoryRooms}
-          showHeader={false}
-          showWhenEmpty={true}
-          onOpenContextMenu={onOpenContextMenu}
-          onSelectRoom={onSelectRoom}
-          onRequestAvatarThumbnail={onRequestAvatarThumbnail}
-        />
-        {!accountHomeActive ? (
-          <RoomSection
-            activeRoomId={activeRoomId}
-            collapsed={Boolean(collapsedSections.favourites)}
-            id="favourites"
-            kind="room"
-            label={t("roomList.filterFavourites")}
-            presence={presence}
-            roomById={roomById}
-            rooms={sections.favourites}
-            onOpenContextMenu={onOpenContextMenu}
-            onSelectRoom={onSelectRoom}
-            onToggleCollapsed={() => toggleSection("favourites")}
-            onRequestAvatarThumbnail={onRequestAvatarThumbnail}
-          />
-        ) : null}
-        <RoomSection
-          activeRoomId={activeRoomId}
-          collapsed={Boolean(collapsedSections.low_priority)}
-          id="low-priority"
-          kind="room"
-          label={t("workspace.lowPriority")}
-          presence={presence}
-          roomById={roomById}
-          rooms={sections.low_priority}
-          onOpenContextMenu={onOpenContextMenu}
-          onSelectRoom={onSelectRoom}
-          onToggleCollapsed={() => toggleSection("low_priority")}
-          onRequestAvatarThumbnail={onRequestAvatarThumbnail}
-        />
       </div>
     </aside>
   );
 }
 
 function RoomListControls({
-  dmTotal,
-  dmUnread,
-  dmHighlights,
-  roomTotal,
-  roomUnread,
-  roomHighlights,
-  selectedCategory,
-  selectedSort,
   filter,
   filterPlaceholder,
-  onFilterChange,
-  onSelectCategory,
-  onSelectSort
+  onFilterChange
 }: {
-  dmTotal: number;
-  dmUnread: number;
-  dmHighlights: number;
-  roomTotal: number;
-  roomUnread: number;
-  roomHighlights: number;
-  selectedCategory: SidebarRoomCategory;
-  selectedSort: SidebarRoomSort;
   filter: string;
   filterPlaceholder: string;
   onFilterChange: (value: string) => void;
-  onSelectCategory: (category: SidebarRoomCategory) => void;
-  onSelectSort: (sort: SidebarRoomSort) => void;
 }) {
   return (
     <div className="room-list-controls">
-      <div className="room-list-category" role="group" aria-label={t("roomList.category")}>
-        <button
-          className={`room-list-chip ${selectedCategory === "dms" ? "is-selected" : ""}`}
-          type="button"
-          aria-label={roomListCategoryAccessibleLabel(
-            t("roomList.categoryDms"),
-            dmTotal,
-            dmUnread,
-            dmHighlights
-          )}
-          aria-pressed={selectedCategory === "dms"}
-          onClick={() => onSelectCategory("dms")}
-        >
-          <span>{t("roomList.categoryDms")}</span>
-          <span className="room-list-chip-total" aria-hidden="true">{dmTotal}</span>
-          {dmUnread > 0 ? (
-            <span
-              className={`room-list-chip-unread ${dmHighlights > 0 ? "is-highlight" : ""}`}
-              aria-hidden="true"
-            >
-              {compactAttentionCount(dmUnread)}
-            </span>
-          ) : null}
-        </button>
-        <button
-          className={`room-list-chip ${selectedCategory === "rooms" ? "is-selected" : ""}`}
-          type="button"
-          aria-label={roomListCategoryAccessibleLabel(
-            t("roomList.categoryRooms"),
-            roomTotal,
-            roomUnread,
-            roomHighlights
-          )}
-          aria-pressed={selectedCategory === "rooms"}
-          onClick={() => onSelectCategory("rooms")}
-        >
-          <span>{t("roomList.categoryRooms")}</span>
-          <span className="room-list-chip-total" aria-hidden="true">{roomTotal}</span>
-          {roomUnread > 0 ? (
-            <span
-              className={`room-list-chip-unread ${roomHighlights > 0 ? "is-highlight" : ""}`}
-              aria-hidden="true"
-            >
-              {compactAttentionCount(roomUnread)}
-            </span>
-          ) : null}
-        </button>
-      </div>
-      <div className="room-list-sort" role="group" aria-label={t("roomList.sort")}>
-        <span className="room-list-sort-label">{t("roomList.sortLabel")}</span>
-        <button
-          className={`room-list-sort-button ${selectedSort === "active" ? "is-selected" : ""}`}
-          type="button"
-          aria-pressed={selectedSort === "active"}
-          onClick={() => onSelectSort("active")}
-        >
-          {t("roomList.sortActive")}
-        </button>
-        <button
-          className={`room-list-sort-button ${selectedSort === "name" ? "is-selected" : ""}`}
-          type="button"
-          aria-pressed={selectedSort === "name"}
-          onClick={() => onSelectSort("name")}
-        >
-          {t("roomList.sortName")}
-        </button>
-      </div>
       <div className="room-list-filter">
         <Search size={ICON_SIZE.input} aria-hidden="true" />
         <ImeTextField
@@ -1216,26 +1086,6 @@ function RoomListControls({
   );
 }
 
-function compactAttentionCount(count: number): string {
-  return count > 99 ? "99+" : String(count);
-}
-
-function roomListCategoryAccessibleLabel(
-  category: string,
-  total: number,
-  unread: number,
-  highlights: number
-): string {
-  return highlights > 0
-    ? t("roomList.categorySummaryWithHighlights", {
-        category,
-        unread,
-        total,
-        highlights
-      })
-    : t("roomList.categorySummary", { category, unread, total });
-}
-
 function RoomSection({
   activeRoomId,
   collapsed,
@@ -1245,13 +1095,17 @@ function RoomSection({
   presence,
   roomById,
   rooms,
+  emptyMessage,
   showHeader = true,
   showWhenEmpty = false,
+  onCreate,
   onOpenContextMenu,
   onJoinRoom,
   onSelectInvite,
   onSelectRoom,
+  onSelectSort,
   onToggleCollapsed,
+  selectedSort,
   onRequestAvatarThumbnail
 }: {
   activeRoomId: string | null;
@@ -1259,16 +1113,20 @@ function RoomSection({
   id: string;
   kind: "room" | "dm" | "invite" | "notJoined";
   label: string;
+  emptyMessage?: string;
   presence: DesktopSnapshot["state"]["domain"]["live_signals"]["presence"];
   roomById: Map<string, RoomSummary>;
   rooms: RoomListItem[];
   showHeader?: boolean;
   showWhenEmpty?: boolean;
+  onCreate?: () => void;
   onOpenContextMenu: OpenContextMenu;
   onJoinRoom?: (roomId: string) => void;
   onSelectInvite?: () => void;
   onSelectRoom: (roomId: string) => void;
+  onSelectSort?: (sort: RoomListSort) => void;
   onToggleCollapsed?: () => void;
+  selectedSort?: RoomListSort;
   onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
 }) {
   if (!showWhenEmpty && rooms.length === 0) {
@@ -1276,31 +1134,40 @@ function RoomSection({
   }
 
   return (
-    <section className="room-section" data-room-section={id} aria-label={label}>
+    <section className="room-section" id={`${id}-room-list`} data-room-section={id} aria-label={label}>
       {showHeader ? (
         <SectionTitle
           collapsed={collapsed}
           count={rooms.length}
           label={label}
+          onCreate={onCreate}
+          createLabel={kind === "dm" ? t("workspace.newDm") : t("action.createRoom")}
+          onSelectSort={onSelectSort}
+          sectionId={id}
           onToggle={onToggleCollapsed ?? (() => undefined)}
+          selectedSort={selectedSort}
         />
       ) : null}
       {!collapsed
-        ? rooms.map((room) => (
-            <RoomButton
-              activeRoomId={activeRoomId}
-              kind={kind}
-              presence={presence}
-              roomById={roomById}
-              key={room.room_id}
-              room={room}
-              onJoinRoom={onJoinRoom}
-              onOpenContextMenu={onOpenContextMenu}
-              onSelectInvite={onSelectInvite}
-              onSelectRoom={onSelectRoom}
-              onRequestAvatarThumbnail={onRequestAvatarThumbnail}
-            />
-          ))
+        ? rooms.length > 0
+          ? rooms.map((room) => (
+              <RoomButton
+                activeRoomId={activeRoomId}
+                kind={kind}
+                presence={presence}
+                roomById={roomById}
+                key={room.room_id}
+                room={room}
+                onJoinRoom={onJoinRoom}
+                onOpenContextMenu={onOpenContextMenu}
+                onSelectInvite={onSelectInvite}
+                onSelectRoom={onSelectRoom}
+                onRequestAvatarThumbnail={onRequestAvatarThumbnail}
+              />
+            ))
+          : emptyMessage
+            ? <div className="room-list-empty">{emptyMessage}</div>
+            : null
         : null}
     </section>
   );
@@ -1372,27 +1239,109 @@ function SpaceMembersNavButton({
 function SectionTitle({
   collapsed,
   count,
+  createLabel,
   label,
-  onToggle
+  onCreate,
+  onSelectSort,
+  onToggle,
+  sectionId,
+  selectedSort
 }: {
   collapsed: boolean;
   count: number;
+  createLabel?: string;
   label: string;
+  onCreate?: () => void;
+  onSelectSort?: (sort: RoomListSort) => void;
   onToggle: () => void;
+  sectionId: string;
+  selectedSort?: RoomListSort;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMenuOpen(false);
+        menuTriggerRef.current?.focus();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [menuOpen]);
+
+  const sortOptions: Array<[RoomListSort, string]> = [
+    [{ kind: "recentFirst" }, t("roomList.sortRecent")],
+    [{ kind: "normalLocale" }, t("roomList.sortName")],
+    [{ kind: "activity" }, t("roomList.sortAttention")]
+  ];
+
   return (
-    <button
+    <div
       className="section-title"
-      type="button"
-      aria-expanded={!collapsed}
-      onClick={onToggle}
     >
-      <span className="section-title-label">{label}</span>
+      <button
+        className="section-title-toggle"
+        type="button"
+        aria-expanded={!collapsed}
+        aria-controls={`${sectionId}-room-list`}
+        onClick={onToggle}
+      >
+        <span className="section-title-label">{label}</span>
+        <ChevronDown size={ICON_SIZE.compact} aria-hidden="true" />
+      </button>
       <span className="section-title-meta">
         <span className="section-count">{count}</span>
-        <ChevronDown size={ICON_SIZE.compact} aria-hidden="true" />
+        {onCreate ? (
+          <button
+            className="section-title-action"
+            type="button"
+            aria-label={createLabel}
+            onClick={onCreate}
+          >
+            <Plus size={ICON_SIZE.compact} aria-hidden="true" />
+          </button>
+        ) : null}
+        {onSelectSort && selectedSort ? (
+          <span className="section-menu-wrap">
+            <button
+              ref={menuTriggerRef}
+              className="section-title-action"
+              type="button"
+              aria-label={t("roomList.sectionOptions", { section: label })}
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((open) => !open)}
+            >
+              <MoreHorizontal size={ICON_SIZE.compact} aria-hidden="true" />
+            </button>
+            {menuOpen ? (
+              <div className="section-menu" role="menu" aria-label={t("roomList.sort")}>
+                <div className="section-menu-title">{t("roomList.sort")}</div>
+                {sortOptions.map(([sort, sortLabel]) => (
+                  <button
+                    className="section-menu-item"
+                    key={sort.kind}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={selectedSort.kind === sort.kind}
+                    onClick={() => {
+                      onSelectSort(sort);
+                      setMenuOpen(false);
+                      menuTriggerRef.current?.focus();
+                    }}
+                  >
+                    <span aria-hidden="true">{selectedSort.kind === sort.kind ? "✓" : ""}</span>
+                    <span>{sortLabel}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </span>
+        ) : null}
       </span>
-    </button>
+    </div>
   );
 }
 

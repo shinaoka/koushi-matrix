@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use koushi_state::{
     AppState, AppearanceSettings, ConversationActivity, ConversationActivitySource, DisplayDensity,
     HomeSelection, NavigationState, RoomListSort, RoomSummary, RoomTagInfo, RoomTags,
-    SettingsPatch, SettingsValues, SidebarCategory, SidebarCollapsedSections, SidebarSettings,
-    SpaceLocalPresentation, SpaceLocalPresentations, SpaceSummary, compose_sidebar_for_state,
+    SettingsPatch, SettingsValues, SidebarCategory, SidebarCollapsedSections, SidebarScopeSettings,
+    SidebarSectionSettings, SidebarSettings, SpaceLocalPresentation, SpaceLocalPresentations,
+    SpaceSummary, compose_sidebar_for_state,
 };
 
 fn room(id: &str, label: &str, is_dm: bool, tags: RoomTags, timestamp_ms: u64) -> RoomSummary {
@@ -181,11 +182,19 @@ fn rust_sidebar_projects_complete_sections_order_and_local_space_presentation() 
             RoomTags::default(),
             50,
         ),
+        room(
+            "!dm-old:example.invalid",
+            "Zed",
+            true,
+            RoomTags::default(),
+            5,
+        ),
     ];
 
     state.settings.values.sidebar = SidebarSettings {
         category: SidebarCategory::Rooms,
         collapsed: SidebarCollapsedSections::default(),
+        scope_preferences: Default::default(),
     };
     state.settings.values.room_list_sort = RoomListSort::RecentFirst;
     let recent = compose_sidebar_for_state(&state);
@@ -202,7 +211,7 @@ fn rust_sidebar_projects_complete_sections_order_and_local_space_presentation() 
     );
     assert_eq!(recent.sections.favourites.len(), 1);
     assert_eq!(recent.sections.low_priority.len(), 1);
-    assert_eq!(recent.sections.people.len(), 1);
+    assert_eq!(recent.sections.people.len(), 2);
 
     state.settings.values.room_list_sort = RoomListSort::NormalLocale;
     let by_name = compose_sidebar_for_state(&state);
@@ -214,6 +223,40 @@ fn rust_sidebar_projects_complete_sections_order_and_local_space_presentation() 
             .map(|item| item.display_name.as_str())
             .collect::<Vec<_>>(),
         ["Alpha", "Beta"]
+    );
+
+    state.settings.values.room_list_sort = RoomListSort::Activity;
+    state.settings.values.sidebar.scope_preferences.insert(
+        "!space:example.invalid".to_owned(),
+        SidebarScopeSettings {
+            rooms: SidebarSectionSettings {
+                sort: RoomListSort::NormalLocale,
+                ..SidebarSectionSettings::default()
+            },
+            dms: SidebarSectionSettings {
+                sort: RoomListSort::RecentFirst,
+                ..SidebarSectionSettings::default()
+            },
+        },
+    );
+    let independently_sorted = compose_sidebar_for_state(&state);
+    assert_eq!(independently_sorted.rooms_sort, RoomListSort::NormalLocale);
+    assert_eq!(independently_sorted.dms_sort, RoomListSort::RecentFirst);
+    assert_eq!(
+        independently_sorted
+            .space_rooms
+            .iter()
+            .map(|item| item.display_name.as_str())
+            .collect::<Vec<_>>(),
+        ["Alpha", "Beta", "Favourite", "Low"]
+    );
+    assert_eq!(
+        independently_sorted
+            .global_dms
+            .iter()
+            .map(|item| item.display_name.as_str())
+            .collect::<Vec<_>>(),
+        ["Person", "Zed"]
     );
 
     state.spaces.push(SpaceSummary {

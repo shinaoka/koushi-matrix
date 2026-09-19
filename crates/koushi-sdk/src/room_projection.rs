@@ -2657,6 +2657,12 @@ async fn matrix_room_latest_remote_event_projection(
             source,
         })
     };
+    // `latest_event` is also used as the room's activity fallback. State and
+    // profile events (for example m.room.member display-name/avatar changes)
+    // must not replace a real conversation event there.
+    if !is_redacted && conversation_activity.is_none() {
+        return (None, cached_conversation_activity);
+    }
     let latest_event = MatrixRoomLatestEventSummary {
         event_id,
         sender_id: sender.map(|sender| sender.to_string()),
@@ -2749,6 +2755,9 @@ fn matrix_local_latest_event_projection(
                 source,
             }
         });
+    if conversation_activity.is_none() {
+        return (None, cached_conversation_activity);
+    }
     let Some(event_id) = event_id else {
         return (
             None,

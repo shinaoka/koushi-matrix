@@ -160,6 +160,7 @@ export interface SettingsPatch {
   media?: MediaSettings;
   timeline?: TimelineSettings;
   sidebar?: SidebarSettings;
+  sidebar_section?: SidebarSectionPatch;
   search_crawler?: SearchCrawlerSettings;
   thread_list_order?: ThreadListOrder;
   room_list_sort?: RoomListSort;
@@ -251,6 +252,26 @@ export interface SidebarCollapsedSections {
 export interface SidebarSettings {
   category: SidebarCategory;
   collapsed: SidebarCollapsedSections;
+  scope_preferences?: Record<string, SidebarScopeSettings>;
+}
+
+export interface SidebarScopeSettings {
+  rooms: SidebarSectionSettings;
+  dms: SidebarSectionSettings;
+}
+
+export interface SidebarSectionSettings {
+  collapsed: boolean;
+  sort: RoomListSort;
+}
+
+export type SidebarSectionKind = "rooms" | "dms";
+
+export interface SidebarSectionPatch {
+  scope: string;
+  section: SidebarSectionKind;
+  collapsed?: boolean;
+  sort?: RoomListSort;
 }
 
 export interface NotificationSettings {
@@ -2245,6 +2266,11 @@ export interface SidebarModel {
   dm_unread_count: number;
   space_highlight_count: number;
   dm_highlight_count: number;
+  /** Effective values for the active Home/Space scope. */
+  rooms_sort?: RoomListSort;
+  dms_sort?: RoomListSort;
+  rooms_collapsed?: boolean;
+  dms_collapsed?: boolean;
   sections: SidebarSections;
 }
 

@@ -133,7 +133,10 @@ fn activity_projection_ignores_plain_unread_count_for_activity_unread() {
         highlight_count: 0,
         marked_unread: false,
         recency_stamp: Some(42),
-        conversation_activity: None,
+        conversation_activity: Some(ConversationActivity {
+            timestamp_ms: 42,
+            source: ConversationActivitySource::Message,
+        }),
         latest_event: Some(RoomLatestEventSummary {
             event_id: "$latest:example.invalid".to_owned(),
             relation_type: None,
@@ -483,7 +486,10 @@ fn activity_projection_skips_recent_rows_for_mentions_mode_without_highlight() {
         highlight_count: 0,
         marked_unread: false,
         recency_stamp: Some(42),
-        conversation_activity: None,
+        conversation_activity: Some(ConversationActivity {
+            timestamp_ms: 42,
+            source: ConversationActivitySource::Message,
+        }),
         latest_event: Some(RoomLatestEventSummary {
             event_id: "$latest:example.invalid".to_owned(),
             relation_type: None,
@@ -549,7 +555,10 @@ fn activity_projection_context_label_uses_space_and_room_names() {
         highlight_count: 0,
         marked_unread: false,
         recency_stamp: Some(42),
-        conversation_activity: None,
+        conversation_activity: Some(ConversationActivity {
+            timestamp_ms: 42,
+            source: ConversationActivitySource::Message,
+        }),
         latest_event: Some(RoomLatestEventSummary {
             event_id: "$latest:example.invalid".to_owned(),
             relation_type: None,
@@ -571,6 +580,43 @@ fn activity_projection_context_label_uses_space_and_room_names() {
     let (recent, _unread, _excluded_room_ids) = projection.snapshot(&state);
 
     assert_eq!(recent.rows[0].context_label, "Science / Papers");
+}
+
+#[test]
+fn activity_projection_ignores_latest_profile_event_after_message() {
+    let mut state = AppState::default();
+    let mut room = super::super::tests::unread_diagnostic_room("!room:example.invalid");
+    room.unread_count = 0;
+    room.notification_count = 0;
+    room.highlight_count = 0;
+    room.marked_unread = false;
+    room.conversation_activity = Some(ConversationActivity {
+        timestamp_ms: 42,
+        source: ConversationActivitySource::Message,
+    });
+    room.latest_event = Some(RoomLatestEventSummary {
+        event_id: "$profile-update:example.invalid".to_owned(),
+        relation_type: None,
+        relation_event_id: None,
+        sender_id: Some("@sender:example.invalid".to_owned()),
+        sender_label: Some("Sender".to_owned()),
+        sender_avatar: None,
+        preview: None,
+        timestamp_ms: 99,
+        is_redacted: false,
+    });
+    state.rooms = vec![room];
+
+    let mut projection = ActivityProjection::default();
+    let (recent, unread, _excluded_room_ids) = projection.snapshot(&state);
+
+    assert!(recent.rows.is_empty());
+    assert!(unread.rows.is_empty());
+    assert!(
+        projection
+            .fully_read_marker_updates(&state, &ActivityMarkReadTarget::All)
+            .is_empty()
+    );
 }
 
 #[test]
