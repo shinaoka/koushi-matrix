@@ -44,7 +44,8 @@ fn commit(request_id: RequestId) -> CoreEvent {
     }
 }
 
-#[tokio::test]
+// Rejection is pending until the controlled deadline, regardless of CI scheduling.
+#[tokio::test(start_paused = true)]
 async fn authenticated_rejects_a_non_terminal_locked_session() {
     let (mut connection, control) = CoreConnection::new_for_testing(4);
     let request_id = request(1);
@@ -71,9 +72,11 @@ async fn authenticated_rejects_a_non_terminal_locked_session() {
     }));
     control.send_snapshot(versioned(state, 1));
     assert!(waiter.as_mut().now_or_never().is_none());
+    tokio::time::advance(Duration::from_millis(20)).await;
+    assert_eq!(waiter.await, Err(RequestOutcomeError::TimedOut));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn signed_out_rejects_a_foreign_account_event() {
     let (mut connection, control) = CoreConnection::new_for_testing(4);
     let request_id = request(2);
@@ -98,6 +101,8 @@ async fn signed_out_rejects_a_foreign_account_event() {
     }));
     control.send_snapshot(versioned(state, 1));
     assert!(waiter.as_mut().now_or_never().is_none());
+    tokio::time::advance(Duration::from_millis(20)).await;
+    assert_eq!(waiter.await, Err(RequestOutcomeError::TimedOut));
 }
 
 #[tokio::test]
