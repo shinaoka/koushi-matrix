@@ -12,8 +12,6 @@ use koushi_search::{AttachmentDocument, SensitiveString};
 use koushi_state::{
     AttachmentKind, SearchCrawlerFailureKind, SearchCrawlerSettings, SearchCrawlerSpeed,
 };
-use matrix_sdk::room::MessagesOptions;
-use matrix_sdk::ruma::api::Direction;
 use serde_json::Value;
 
 use crate::account_work::{AccountWorkKind, AccountWorkScheduler};
@@ -28,7 +26,6 @@ const BATCH_SIZE_SLOW: u32 = 50;
 #[derive(Clone)]
 pub(crate) struct HistoryCrawlCheckpoint {
     pub room_id: String,
-    pub from_token: Option<String>,
     pub processed: u64,
     pub indexed: u64,
     pub pending_redactions: HashSet<String>,
@@ -46,7 +43,6 @@ impl HistoryCrawlCheckpoint {
     ) -> Self {
         Self {
             room_id,
-            from_token: None,
             processed: 0,
             indexed: 0,
             pending_redactions: HashSet::new(),
@@ -82,6 +78,12 @@ fn trace_crawler_page(
     record(
         DiagnosticEvent::new(level, "core.startup", "crawler_page")
             .field(DiagnosticField::token("outcome", outcome))
+            .field(DiagnosticField::token("history_source", "sdk_event_cache"))
+            .field(DiagnosticField::token(
+                "timeline_reuse",
+                "shared_pagination",
+            ))
+            .field(DiagnosticField::token("persistence", "sdk_linked_chunks"))
             .field(DiagnosticField::count("processed", processed))
             .field(DiagnosticField::count("indexed", indexed))
             .field(DiagnosticField::count("page_items", page_items)),
@@ -130,10 +132,10 @@ async fn run_history_crawl_page(
     };
 
     let (batch_size, delay_ms) = crawl_batch_and_delay(checkpoint.settings.speed);
-    let mut options = MessagesOptions::new(Direction::Backward);
-    options.limit = batch_size.into();
-    options.from = checkpoint.from_token.clone();
-
+    // Search history must use the SDK-owned room event cache. Calling
+    // `Room::messages` here would populate only the search index and leave
+    // linked chunks untouched, forcing the normal timeline to fetch the same
+    // history again when the room is opened after restart.
     let messages = {
         let permit = account_work.acquire(AccountWorkKind::SearchCrawl).await;
         let page_started = Some(startup_trace::now());
@@ -145,7 +147,15 @@ async fn run_history_crawl_page(
                 startup_trace::trace_crawler_preempted();
                 return HistoryCrawlPageResult::Preempted { checkpoint };
             }
-            result = room.messages(options) => result,
+            result = async {
+                let (event_cache, _drop_handles) = room.event_cache().await
+                    .map_err(|_| ())?;
+                event_cache
+                    .pagination()
+                    .run_backwards_once(batch_size as u16)
+                    .await
+                    .map_err(|_| ())
+            } => result,
         };
         startup_trace::trace_phase(StartupPhase::CrawlerPage, page_started);
         match page_result {
@@ -166,11 +176,11 @@ async fn run_history_crawl_page(
         }
     };
 
-    let chunk_len = messages.chunk.len() as u64;
+    let chunk_len = messages.events.len() as u64;
     checkpoint.processed += chunk_len;
 
     let mut index_messages = Vec::new();
-    for timeline_event in &messages.chunk {
+    for timeline_event in &messages.events {
         if timeline_event.kind.is_utd() {
             continue;
         }
@@ -200,9 +210,7 @@ async fn run_history_crawl_page(
         index_messages.push(message);
     }
 
-    let completed = chunk_len == 0 || messages.end.is_none();
-    checkpoint.from_token = messages.end;
-
+    let completed = messages.reached_start || chunk_len == 0;
     trace_crawler_page(
         DiagnosticLevel::Debug,
         if completed { "completed" } else { "progress" },

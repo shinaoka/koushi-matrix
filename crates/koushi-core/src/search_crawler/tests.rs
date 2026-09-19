@@ -1,5 +1,15 @@
 use super::*;
 
+use std::sync::Arc;
+
+use koushi_sdk::MatrixClientSession;
+use koushi_state::{SessionAuthenticationMethod, SessionInfo};
+use matrix_sdk::{
+    ruma::{event_id, room_id, user_id},
+    test_utils::mocks::{MatrixMockServer, RoomMessagesResponseTemplate},
+};
+use matrix_sdk_test::{JoinedRoomBuilder, event_factory::EventFactory};
+
 #[test]
 fn crawler_page_producer_records_typed_progress_without_environment_switch() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
@@ -26,6 +36,102 @@ fn crawler_page_producer_records_typed_progress_without_environment_switch() {
             .iter()
             .any(|field| field.key == "indexed")
     );
+    for key in ["history_source", "timeline_reuse", "persistence"] {
+        assert!(
+            record.event.fields.iter().any(|field| field.key == key),
+            "crawler diagnostic must identify shared history persistence: {key}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn crawler_page_is_visible_to_the_normal_room_event_cache() {
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = room_id!("!crawler-reuse:example.invalid");
+    let event_factory = EventFactory::new()
+        .room(room_id)
+        .sender(user_id!("@crawler:test.invalid"));
+
+    // The sync timeline establishes the SDK-owned pagination boundary. The
+    // crawler must consume this boundary through RoomEventCache pagination so
+    // its result is available to an ordinary room subscription.
+    client
+        .event_cache()
+        .subscribe()
+        .expect("event cache subscription");
+    server
+        .mock_sync()
+        .ok_and_run(&client, |builder| {
+            builder.add_joined_room(
+                JoinedRoomBuilder::new(room_id)
+                    .set_timeline_limited()
+                    .set_timeline_prev_batch("crawler-prev")
+                    .add_timeline_event(
+                        event_factory
+                            .text_msg("latest")
+                            .event_id(event_id!("$crawler-latest")),
+                    ),
+            );
+        })
+        .await;
+
+    server
+        .mock_room_messages()
+        .match_from("crawler-prev")
+        .ok(RoomMessagesResponseTemplate::default()
+            .events(vec![
+                event_factory
+                    .text_msg("older second")
+                    .event_id(event_id!("$crawler-older-2")),
+                event_factory
+                    .text_msg("older first")
+                    .event_id(event_id!("$crawler-older-1")),
+            ])
+            .end_token("crawler-start"))
+        .mock_once()
+        .mount()
+        .await;
+
+    let session_info = SessionInfo {
+        homeserver: server.server().uri(),
+        user_id: client.user_id().expect("mock client user id").to_string(),
+        device_id: client
+            .device_id()
+            .expect("mock client device id")
+            .to_string(),
+        authentication_method: SessionAuthenticationMethod::Unknown,
+    };
+    let session = Arc::new(MatrixClientSession::from_client_for_testing(
+        client.clone(),
+        session_info,
+    ));
+    let checkpoint = HistoryCrawlCheckpoint::new(
+        room_id.to_string(),
+        SearchCrawlerSettings::default(),
+        1,
+        true,
+    );
+
+    let result = run_history_crawl_page(session, AccountWorkScheduler::default(), checkpoint).await;
+    let HistoryCrawlPageResult::Success { messages, .. } = result else {
+        panic!("crawler page should complete through SDK pagination");
+    };
+    assert_eq!(
+        messages.len(),
+        2,
+        "crawler should index both historical events"
+    );
+
+    let room = client.get_room(room_id).expect("joined room");
+    let (cache, _drop_handles) = room.event_cache().await.expect("room event cache");
+    let visible = cache.events().await.expect("cached timeline events");
+    let visible_ids = visible
+        .iter()
+        .filter_map(|event| event.event_id().map(ToString::to_string))
+        .collect::<Vec<_>>();
+    assert!(visible_ids.iter().any(|id| id == "$crawler-older-1"));
+    assert!(visible_ids.iter().any(|id| id == "$crawler-older-2"));
 }
 
 #[test]
