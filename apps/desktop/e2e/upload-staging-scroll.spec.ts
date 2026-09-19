@@ -201,15 +201,48 @@ for (const count of [1, 3]) {
     expect((await stagingGeometry(page))!.pageScrollY).toBe(0);
   });
 }
+test("a macOS snapshot reserves staging space in the first visible modal commit", async ({ page }) => {
+  await page.setViewportSize(STANDARD_VIEWPORT);
+  await gotoReadyShell(page);
+  await page.getByRole("button", { name: "Attach file", exact: true }).click();
+  await page.locator('input[type="file"][aria-label="Attach file input"]').setInputFiles(stagedPortraitImage());
+  const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle"), exact: true });
+  await expect(dialog).toBeVisible();
+  const staged = await page.evaluate(() => structuredClone(window.__harness.currentSnapshot()));
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator("html")).toHaveAttribute("data-platform", "linux");
+  const firstVisible = await page.evaluate((snapshot) => new Promise<{ platform: string | undefined; top: number }>((resolve) => {
+    const observer = new MutationObserver(() => {
+      const shell = document.querySelector<HTMLDialogElement>("dialog.upload-staging-overlay[open]");
+      const content = shell?.querySelector<HTMLElement>(".upload-staging-dialog");
+      if (!content) return;
+      observer.disconnect();
+      resolve({ platform: document.documentElement.dataset.platform, top: content.getBoundingClientRect().top });
+    });
+    observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
+    snapshot.state.domain.locale_profile.platform = "macos";
+    window.__harness.setSnapshot(snapshot);
+    window.__harness.pushStateUpdate();
+  }), staged);
+  expect(firstVisible.platform).toBe("macos");
+  expect(firstVisible.top).toBeGreaterThanOrEqual(44);
+});
+
 for (const height of [800, 520]) {
   test(`macOS attachment dialogs stay below the native titlebar at ${height}px`, async ({ page }) => {
     await page.setViewportSize({ width: 1200, height });
     await gotoReadyShell(page);
     await page.evaluate(() => {
-      const snapshot = window.__harness.currentSnapshot();
+      // An already-closed startup search must not accidentally deliver the
+      // platform fixture through a command settlement. Publish it explicitly.
+      window.__harness.setCommandResponse("close_search", { protocolVersion: 1, publishedGeneration: 0 });
+      const snapshot = structuredClone(window.__harness.currentSnapshot());
       snapshot.state.domain.locale_profile.platform = "macos";
       window.__harness.setSnapshot(snapshot);
+      window.__harness.pushStateUpdate();
     });
+    await expect(page.locator("html")).toHaveAttribute("data-platform", "macos");
     const titlebar = page.locator('.titlebar[data-platform="macos"]');
     await expect(titlebar).toBeVisible();
     const titlebarBottom = await titlebar.evaluate((element) => element.getBoundingClientRect().bottom);
@@ -218,7 +251,16 @@ for (const height of [800, 520]) {
     const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle"), exact: true });
     await expect(dialog).toBeVisible();
     // The native modal shell/backdrop covers the window; its content owns the inset.
-    expect((await dialog.locator(".upload-staging-dialog").boundingBox())!.y).toBeGreaterThanOrEqual(titlebarBottom);
+    const observed = await dialog.locator(".upload-staging-dialog").evaluate(element => ({
+      y: element.getBoundingClientRect().y,
+      root: document.documentElement.dataset.platform,
+      platform: window.__harness.currentSnapshot().state.domain.locale_profile.platform,
+      titlebar: document.querySelector(".titlebar")?.getAttribute("data-platform")
+    }));
+    expect(observed.root).toBe("macos");
+    expect(observed.platform).toBe("macos");
+    expect(observed.titlebar).toBe("macos");
+    expect(observed.y, JSON.stringify(observed)).toBeGreaterThanOrEqual(titlebarBottom);
     expectStagingBounded((await stagingGeometry(page))!, "macOS staging");
     await expect(dialog.getByRole("button", { name: t("upload.sendAttachments") })).toBeInViewport();
     await expect(dialog.locator(".upload-staging-preview")).toBeVisible();
