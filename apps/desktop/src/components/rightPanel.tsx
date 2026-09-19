@@ -257,7 +257,7 @@ export function ContextualRightPanel({
   onInviteUser?: (roomId: string, title: string) => void;
   onReturnToInvite?: () => void;
   onInviteUserToSpace?: (userId: string) => void;
-  onInviteSearchCandidateToSpace?: (userId: string) => void;
+  onInviteSearchCandidateToSpace?: (userId: string) => void | Promise<void>;
   onSearchSpaceInviteTargets?: (query: string) => Promise<InviteTargetCandidate[]>;
   onResetSpaceInviteSearch?: () => void;
   canInviteToSpace?: boolean;
@@ -607,6 +607,7 @@ export function ContextualRightPanel({
         ) : mode === "people" && peoplePanelScope?.kind === "space" ? (
           <SpaceMembersPanel
             state={snapshot.state.domain.space_members}
+            inviteOperation={snapshot.state.domain.invite_workflow?.operation}
             canInvite={canInviteToSpace}
             spaceName={roomOrSpace && "space_id" in roomOrSpace ? roomOrSpace.display_name : undefined}
             startInInviteMode={startSpaceMembersInInviteMode}

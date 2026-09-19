@@ -5164,6 +5164,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
       members?.space_joined.some((entry) => entry.user_id === userId) ||
       members?.space_invited.some((entry) => entry.user_id === userId);
     const operationPending =
+      currentSnapshot?.state.domain.invite_workflow?.operation.kind === "pending" ||
       members?.operation.kind === "loading" ||
       members?.operation.kind === "inviting" ||
       members?.operation.kind === "cancellingInvite";
@@ -5198,6 +5199,50 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
       operationPending ||
       inviteUpBlocked
     ) {
+      return;
+    }
+
+    if (trigger === "search") {
+      // Search candidates use the general Rust-owned invitation workflow. The
+      // member-panel command below is deliberately restricted to child-only rows.
+      const workflowEpoch = inviteWorkflowLifetimeEpochRef.current;
+      const searchStillCurrent = (nextSnapshot: DesktopSnapshot | null) =>
+        inviteWorkflowLifetimeEpochRef.current === workflowEpoch &&
+        spaceMembersSnapshotMatches(snapshotRef.current, fence) &&
+        spaceMembersSnapshotMatches(nextSnapshot, fence);
+      let nextSnapshot = currentSnapshot!;
+      if (nextSnapshot.state.domain.invite_workflow?.query.room_id !== fence.spaceId) {
+        throw new Error("Space invite destination changed");
+      }
+      for (const target of nextSnapshot.state.domain.invite_workflow?.selected_targets ?? []) {
+        if (target.user_id !== userId) {
+          nextSnapshot = await settleCommandSnapshot(api.removeInviteTarget(target.user_id));
+          if (!searchStillCurrent(nextSnapshot)) return;
+        }
+      }
+      nextSnapshot = await settleCommandSnapshot(api.selectInviteTarget(fence.spaceId, userId));
+      if (!searchStillCurrent(nextSnapshot)) return;
+      const workflow = nextSnapshot.state.domain.invite_workflow;
+      if (!workflow || workflow.query.room_id !== fence.spaceId ||
+          workflow.selected_targets.length !== 1 ||
+          workflow.selected_targets[0]?.user_id !== userId) {
+        throw new Error("Space invite selection rejected");
+      }
+      nextSnapshot = await settleCommandSnapshot(api.inviteTargets(fence.spaceId, [userId], { kind: "roomOnly" }));
+      if (!searchStillCurrent(nextSnapshot)) return;
+      const operation = nextSnapshot.state.domain.invite_workflow?.operation;
+      if (operation?.kind === "completed" && operation.room_id === fence.spaceId &&
+          operation.results.some((result) => result.user_id === userId && result.kind === "invited")) {
+        // Sending an invitation does not guarantee a member-sync update for
+        // the inviter. Refresh the authoritative list without masking send success.
+        try {
+          await settleCommandSnapshot(api.loadSpaceMembers(fence.spaceId, fence.generation));
+        } catch {
+          if (searchStillCurrent(snapshotRef.current)) {
+            appendSpaceMembersDiagnosticLog("load trigger=invite_search outcome=failed");
+          }
+        }
+      }
       return;
     }
 
@@ -6286,9 +6331,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           onInviteUserToSpace={(userId) => {
             runInBackground(inviteUserToSpace(userId, "inline"));
           }}
-          onInviteSearchCandidateToSpace={(userId) => {
-            runInBackground(inviteUserToSpace(userId, "search"));
-          }}
+          onInviteSearchCandidateToSpace={(userId) => inviteUserToSpace(userId, "search")}
           onSearchSpaceInviteTargets={searchSpaceInviteTargets}
           onResetSpaceInviteSearch={resetSpaceInviteSearch}
           canInviteToSpace={canInviteToSpace}

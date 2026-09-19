@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type MutableRefObject, type RefOb
 
 import type {
   InviteTargetCandidate,
+  InviteOperationState,
   SpaceInviteAvailabilityReason,
   SpaceInviteCancellationAvailabilityReason,
   SpaceMemberEntry,
@@ -12,7 +13,7 @@ import type {
 } from "../domain/types";
 import { contextMenuItems } from "../domain/contextMenus";
 import { t } from "../i18n/messages";
-import { ICON_SIZE, type OpenContextMenu } from "../app/uiShared";
+import { ICON_SIZE, operationFailureLabel, type OpenContextMenu } from "../app/uiShared";
 import { ImeTextField } from "./ImeTextControl";
 import { EntityAvatar } from "./Shell";
 
@@ -25,6 +26,7 @@ export type {
 
 export interface SpaceMembersPanelProps {
   state: SpaceMembersState;
+  inviteOperation?: InviteOperationState;
   canInvite: boolean;
   spaceName?: string;
   startInInviteMode?: boolean;
@@ -34,7 +36,7 @@ export interface SpaceMembersPanelProps {
   childRoomLabels?: ReadonlyMap<string, string>;
   onInviteUser: (userId: string) => void;
   /** Invite a brand-new user to the Space (space-only membership, #508). */
-  onInviteSearchCandidate?: (userId: string) => void;
+  onInviteSearchCandidate?: (userId: string) => void | Promise<void>;
   onSearchInviteTargets?: (query: string) => Promise<InviteTargetCandidate[]>;
   /** Resets the shared Rust-owned invite-workflow state the space search uses. */
   onResetInviteSearch?: () => void;
@@ -181,6 +183,7 @@ function childRoomContext(
 
 export function SpaceMembersPanel({
   state,
+  inviteOperation,
   canInvite,
   spaceName,
   startInInviteMode = false,
@@ -212,6 +215,17 @@ export function SpaceMembersPanel({
   const [inviteCandidates, setInviteCandidates] = useState<InviteTargetCandidate[]>([]);
   const [inviteSearching, setInviteSearching] = useState(false);
   const [inviteSearchFailed, setInviteSearchFailed] = useState(false);
+  const [inviteTransportFailed, setInviteTransportFailed] = useState(false);
+  const inviteTransportEpoch = useRef(0);
+  const operation = inviteOperation && inviteOperation.kind !== "idle" &&
+    inviteOperation.room_id === state.selected_space_id ? inviteOperation : null;
+  const invitePending = operation?.kind === "pending";
+  const inviteFailed = inviteTransportFailed || operation?.kind === "failed" ||
+    (operation?.kind === "completed" && operation.results.some((result) => result.kind === "failed"));
+  useEffect(() => {
+    setInviteTransportFailed(false);
+    return () => { inviteTransportEpoch.current += 1; };
+  }, [state.selected_space_id, inviteMode]);
   const [pendingRoleChange, setPendingRoleChange] = useState<{
     userId: string;
     option: SpaceMemberRoleOption;
@@ -395,6 +409,7 @@ export function SpaceMembersPanel({
             aria-label={t("dialog.inviteSearch")}
             placeholder={t("dialog.inviteSearch")}
             value={inviteQuery}
+            disabled={invitePending}
             onChange={(event) => setInviteQuery(event.target.value)}
           />
           <button
@@ -440,8 +455,25 @@ export function SpaceMembersPanel({
               {t("dialog.inviteNoResults")}
             </p>
           ) : null}
+          {inviteFailed ? (
+            <p role="alert">
+              {t("spaceMembers.inviteFailed")}
+              {operation?.kind === "failed" ? ` (${operationFailureLabel(operation.failureKind)})` : null}
+            </p>
+          ) : null}
           {inviteCandidates.map((candidate) => {
-            const selectable = candidate.status === "selectable";
+            const result = operation?.kind === "completed"
+              ? operation.results.find((result) => result.user_id === candidate.user_id &&
+                  ((result.destination.kind === "space" && result.destination.space_id === state.selected_space_id) ||
+                   (result.destination.kind === "room" && result.destination.room_id === state.selected_space_id)))
+              : undefined;
+            const pending = operation?.kind === "pending" && operation.user_ids.includes(candidate.user_id);
+            const joined = state.space_joined.some((entry) => entry.user_id === candidate.user_id);
+            const invited = result?.kind === "invited" ||
+              state.space_invited.some((entry) => entry.user_id === candidate.user_id && !entry.invite_pending);
+            const statusLabel = pending ? t("spaceMembers.inviting") : joined ? t("spaceMembers.joined") : invited ? t("spaceMembers.invited") : null;
+            const selectable = (candidate.status === "selectable" || candidate.status === "alreadySelected") &&
+              !invited && !joined && result?.kind !== "alreadyInSpace";
             return (
               <div
                 className="space-members-invite-candidate"
@@ -453,15 +485,22 @@ export function SpaceMembersPanel({
                 </div>
                 <button
                 type="button"
-                aria-label={t("dialog.invitePerson", { name: candidate.display_label })}
-                disabled={!canInvite || !selectable || hasPendingOperation(state)}
-                onClick={() => {
+                aria-label={statusLabel ?? t("dialog.invitePerson", { name: candidate.display_label })}
+                aria-live="polite"
+                disabled={!canInvite || !selectable || invitePending || hasPendingOperation(state)}
+                onClick={async () => {
                   if (selectable) {
-                    onInviteSearchCandidate(candidate.user_id);
+                    const epoch = ++inviteTransportEpoch.current;
+                    setInviteTransportFailed(false);
+                    try {
+                      await onInviteSearchCandidate(candidate.user_id);
+                    } catch {
+                      if (inviteTransportEpoch.current === epoch) setInviteTransportFailed(true);
+                    }
                   }
                 }}
               >
-                {t("space.invite")}
+                {statusLabel ?? t("space.invite")}
               </button>
               </div>
             );

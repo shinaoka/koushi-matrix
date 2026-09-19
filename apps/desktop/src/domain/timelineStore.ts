@@ -1108,6 +1108,18 @@ export function batchContainsPrepend(diffs: TimelineDiff[]): boolean {
   );
 }
 
+/**
+ * True if any diff in the batch can carry older items projected by a backward
+ * pagination. Room timelines prepend them with PushFront; a focused thread
+ * timeline keeps its root pinned at index 0, so older replies arrive as Insert
+ * at index >= 1 and never satisfy `batchContainsPrepend`.
+ */
+export function batchContainsBackfillProjection(diffs: TimelineDiff[]): boolean {
+  return diffs.some(
+    (diff) => diff !== "Clear" && ("PushFront" in diff || "Insert" in diff)
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Selector helpers
 // ---------------------------------------------------------------------------

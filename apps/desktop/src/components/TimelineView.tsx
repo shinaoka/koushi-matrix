@@ -174,6 +174,7 @@ import {
 applyGlobalResync,
 applyRoomKeyRequestStateChanged,
 applyTimelineEvent,
+batchContainsBackfillProjection,
 batchContainsPrepend,
 classifyTimelineItemsUpdatedApplication,
 createTimelineStore,
@@ -1482,11 +1483,15 @@ export const TimelineView = memo(function TimelineView({
         }
       }
 
-      // Prepend batches: capture the anchor BEFORE the diff is applied to
-      // React state, so the layout effect can restore it after commit.
+      // Backfill projections release the pending request epoch. This must
+      // accept Insert at any index: a thread timeline pins its root at index 0,
+      // so its older replies never arrive as a PushFront/Insert-at-0 prepend.
+      // Prepend batches additionally capture the anchor BEFORE the diff is
+      // applied to React state, so the layout effect can restore it after
+      // commit.
       if (
         "ItemsUpdated" in event &&
-        (batchContainsPrepend(event.ItemsUpdated.diffs) ||
+        (batchContainsBackfillProjection(event.ItemsUpdated.diffs) ||
           timelineDiffsContainReset(event.ItemsUpdated.diffs))
       ) {
         const epoch = backfillRequestEpochRef.current;
@@ -1851,6 +1856,32 @@ export const TimelineView = memo(function TimelineView({
   }, [timelineHeightModel, visibleRows]);
   const commitVirtualRangeForMetrics = useCallback(
     (metrics: TimelineViewportMetrics) => {
+      const transaction = viewportTransactionRef.current.active();
+      const anchor = transaction?.anchor;
+      if (
+        transaction?.rangePrepared && anchor &&
+        viewportIntentRef.current.kind !== "live-edge" &&
+        transaction.key === timelineKeyHash &&
+        transaction.generation === generation
+      ) {
+        const anchorIndex = visibleRows.findIndex((row) => row.row_id === anchor.itemId);
+        const requestedRange = calculateTimelineVirtualRange({
+          visibleItemsLength: visibleRows.length,
+          metrics,
+          model: timelineHeightModel
+        });
+        if (anchorIndex >= 0 && requestedRange.virtualized &&
+            (anchorIndex < requestedRange.startIndex || anchorIndex >= requestedRange.endIndex)) {
+          // Measurements can move the prepared window away from physical
+          // scrollTop before the transaction's final correction. Mount around
+          // its anchor until settlement, rather than evicting that anchor.
+          metrics = {
+            ...metrics,
+            scrollTop: Math.max(0, metrics.listOffsetTop +
+              (timelineHeightModel.offsets[anchorIndex] ?? 0) - anchor.offsetTop)
+          };
+        }
+      }
       const nextLinkPreviewRequestRange = calculateTimelineItemIndexRange({
         visibleItemsLength: visibleRows.length,
         metrics,
@@ -1880,7 +1911,7 @@ export const TimelineView = memo(function TimelineView({
       setVirtualRange(next);
       return next;
     },
-    [timelineHeightModel, updateScrollDiagnostics, visibleRows.length]
+    [generation, timelineHeightModel, timelineKeyHash, updateScrollDiagnostics, visibleRows]
   );
   const updateViewportMetrics = useCallback(() => {
     const metrics = readViewportMetrics();
