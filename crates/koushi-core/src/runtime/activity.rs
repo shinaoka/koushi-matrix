@@ -86,10 +86,15 @@ fn activity_latest_display_event(room: &RoomSummary) -> Option<&RoomLatestEventS
     {
         return None;
     }
-    let conversation_activity = room.conversation_activity?;
-    if conversation_activity.timestamp_ms != latest.timestamp_ms {
-        return None;
+    if let Some(conversation_activity) = room.conversation_activity {
+        if conversation_activity.timestamp_ms != latest.timestamp_ms {
+            return None;
+        }
     }
+    // Older room-list injectors only provide the already-filtered latest event
+    // and omit the separate conversation-activity projection. Production
+    // projections keep that field in sync, while the producer-side filter in
+    // koushi-sdk ensures state/profile events never reach this fallback.
     Some(latest)
 }
 
