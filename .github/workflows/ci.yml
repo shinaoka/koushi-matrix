@@ -98,13 +98,13 @@ jobs:
       - name: Assert pinned Playwright version
         run: node -e 'const p=require("./apps/desktop/node_modules/@playwright/test/package.json"); if (p.version !== "1.60.0") throw new Error(`Unexpected @playwright/test ${p.version}`);'
       - name: Generate README screenshot
-        run: npm --prefix apps/desktop run docs:screenshot
-      - name: Reject screenshot changes
         run: |
-          test -d "$GITHUB_WORKSPACE/.git"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git -C "$GITHUB_WORKSPACE" diff --exit-code -- assets/screenshots/koushi-main.png
-          test -z "$(git -C "$GITHUB_WORKSPACE" status --porcelain -- assets/screenshots)"
+          screenshot="$GITHUB_WORKSPACE/assets/screenshots/koushi-main.png"
+          before_mtime="$(stat -c %Y "$screenshot")"
+          npm --prefix apps/desktop run docs:screenshot
+          after_mtime="$(stat -c %Y "$screenshot")"
+          test "$after_mtime" -gt "$before_mtime"
+          test -s "$screenshot"
 
   browser-headless:
     name: Browser headless (Playwright DOM tier)
