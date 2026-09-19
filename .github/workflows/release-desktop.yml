@@ -95,6 +95,26 @@ jobs:
           cache-all-crates: true
           cache-workspace-crates: true
 
+      - name: Read vendored Matrix SDK revision
+        id: sdk-revision
+        run: echo "revision=$(git -C vendor/matrix-rust-sdk rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache vendored Matrix SDK release artifacts
+        id: sdk-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            target/${{ matrix.target }}/release/.fingerprint/matrix-sdk-*
+            target/${{ matrix.target }}/release/.fingerprint/matrix-sdk-base-*
+            target/${{ matrix.target }}/release/.fingerprint/matrix-sdk-search-*
+            target/${{ matrix.target }}/release/.fingerprint/matrix-sdk-ui-*
+            target/${{ matrix.target }}/release/deps/libmatrix_sdk*
+            target/${{ matrix.target }}/release/deps/matrix_sdk*.d
+          key: koushi-sdk-artifacts-${{ runner.os }}-${{ matrix.target }}-rust-1.96.0-release-experimental-search-sqlite-e2ee-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/koushi-sdk/Cargo.toml', 'crates/koushi-core/Cargo.toml') }}-${{ steps.sdk-revision.outputs.revision }}
+
+      - name: Report release Rust cache state
+        run: node scripts/ci-rust-cache-report.mjs --target-dir "target/${{ matrix.target }}" --profile release --sdk-cache-hit "${{ steps.sdk-cache.outputs.cache-hit }}" --label "release-macos-${{ matrix.arch }}"
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
@@ -257,6 +277,26 @@ jobs:
           cache-all-crates: true
           cache-workspace-crates: true
 
+      - name: Read vendored Matrix SDK revision
+        id: sdk-revision
+        run: echo "revision=$(git -C vendor/matrix-rust-sdk rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache vendored Matrix SDK release artifacts
+        id: sdk-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            target/x86_64-pc-windows-msvc/release/.fingerprint/matrix-sdk-*
+            target/x86_64-pc-windows-msvc/release/.fingerprint/matrix-sdk-base-*
+            target/x86_64-pc-windows-msvc/release/.fingerprint/matrix-sdk-search-*
+            target/x86_64-pc-windows-msvc/release/.fingerprint/matrix-sdk-ui-*
+            target/x86_64-pc-windows-msvc/release/deps/libmatrix_sdk*
+            target/x86_64-pc-windows-msvc/release/deps/matrix_sdk*.d
+          key: koushi-sdk-artifacts-${{ runner.os }}-x86_64-pc-windows-msvc-rust-1.96.0-release-experimental-search-sqlite-e2ee-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/koushi-sdk/Cargo.toml', 'crates/koushi-core/Cargo.toml') }}-${{ steps.sdk-revision.outputs.revision }}
+
+      - name: Report release Rust cache state
+        run: node scripts/ci-rust-cache-report.mjs --target-dir target/x86_64-pc-windows-msvc --profile release --sdk-cache-hit "${{ steps.sdk-cache.outputs.cache-hit }}" --label release-windows-x64
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
@@ -339,6 +379,26 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           cache-workspace-crates: true
+
+      - name: Read vendored Matrix SDK revision
+        id: sdk-revision
+        run: echo "revision=$(git -C vendor/matrix-rust-sdk rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache vendored Matrix SDK release artifacts
+        id: sdk-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            target/x86_64-unknown-linux-gnu/release/.fingerprint/matrix-sdk-*
+            target/x86_64-unknown-linux-gnu/release/.fingerprint/matrix-sdk-base-*
+            target/x86_64-unknown-linux-gnu/release/.fingerprint/matrix-sdk-search-*
+            target/x86_64-unknown-linux-gnu/release/.fingerprint/matrix-sdk-ui-*
+            target/x86_64-unknown-linux-gnu/release/deps/libmatrix_sdk*
+            target/x86_64-unknown-linux-gnu/release/deps/matrix_sdk*.d
+          key: koushi-sdk-artifacts-${{ runner.os }}-x86_64-unknown-linux-gnu-rust-1.96.0-release-experimental-search-sqlite-e2ee-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/koushi-sdk/Cargo.toml', 'crates/koushi-core/Cargo.toml') }}-${{ steps.sdk-revision.outputs.revision }}
+
+      - name: Report release Rust cache state
+        run: node scripts/ci-rust-cache-report.mjs --target-dir target/x86_64-unknown-linux-gnu --profile release --sdk-cache-hit "${{ steps.sdk-cache.outputs.cache-hit }}" --label release-linux-x64
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
