@@ -609,6 +609,45 @@ describe("InviteTargetsDialog history policy", () => {
     expect(onOpenRoomInfo).toHaveBeenCalledTimes(1);
     expect(onOpenRecovery).toHaveBeenCalledTimes(1);
   });
+
+  it("offers Done after a completed invite instead of leaving only Cancel", () => {
+    const onCancel = vi.fn();
+    render(
+      <InviteTargetsDialog
+        isBusy={false}
+        query=""
+        title={t("dialog.invitePeopleTitle")}
+        workflow={{
+          ...workflow(),
+          operation: {
+            kind: "completed",
+            request_id: 7,
+            room_id: "!room:example.invalid",
+            results: [
+              {
+                user_id: "@alice:example.invalid",
+                destination: { kind: "room", room_id: "!room:example.invalid" },
+                kind: "invited",
+                message: null
+              }
+            ],
+            notice: null
+          }
+        }}
+        onCancel={onCancel}
+        onQueryChange={vi.fn()}
+        onRemoveTarget={vi.fn()}
+        onScopeChange={vi.fn()}
+        onSelectCandidate={vi.fn()}
+        onSubmit={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Done" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
 });
 
 // --- #305: compact resize/format controls ---
