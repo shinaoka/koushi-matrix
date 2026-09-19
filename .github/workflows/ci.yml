@@ -66,6 +66,25 @@ jobs:
       - name: Domain-crate platform-dep check
         run: npm run lint:domain-deps
 
+  frontend-node-current:
+    name: Frontend unit tests on current Node (vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Node 25+ predefines Web Storage globals; keep the jsdom suite
+          # passing there as well as on the pinned LTS above.
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - run: npm ci
+      - name: Unit tests (vitest)
+        run: npm test
+
   readme-screenshot:
     name: README screenshot
     runs-on: ubuntu-latest
