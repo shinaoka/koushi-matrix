@@ -4,7 +4,7 @@ import { t } from "../src/i18n/messages";
 test("active space sidebar renders the Rust-projected DM scope", async ({ page }) => {
   await page.goto("/appHarness.html");
   await expect(page.getByRole("complementary", { name: t("workspace.rooms") })).toBeVisible();
-  const peopleSection = page.locator('[data-room-section="people"]');
+  const dmsSection = page.locator('[data-room-section="dms"]');
 
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
@@ -46,9 +46,8 @@ test("active space sidebar renders the Rust-projected DM scope", async ({ page }
     window.__harness.pushStateUpdate();
   });
 
-  await page.getByRole("button", { name: "DMs, 1 unread, 2 total" }).click();
-  await expect(peopleSection.getByRole("button", { name: "Member 1" })).toBeVisible();
-  await expect(peopleSection.getByRole("button", { name: "Member 2" })).toBeVisible();
+  await expect(dmsSection.getByRole("button", { name: "Member 1" })).toBeVisible();
+  await expect(dmsSection.getByRole("button", { name: "Member 2" })).toBeVisible();
 
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
@@ -107,7 +106,6 @@ test("active space sidebar renders the Rust-projected DM scope", async ({ page }
   });
 
   await expect(page.getByRole("button", { name: "matrix-sdk-search" })).toBeVisible();
-  await page.getByRole("button", { name: "DMs, 0 unread, 0 total" }).click();
-  await expect(peopleSection.getByRole("button", { name: "Member 1" })).toHaveCount(0);
-  await expect(peopleSection.getByRole("button", { name: "Member 2" })).toHaveCount(0);
+  await expect(dmsSection.getByRole("button", { name: "Member 1" })).toHaveCount(0);
+  await expect(dmsSection.getByRole("button", { name: "Member 2" })).toHaveCount(0);
 });

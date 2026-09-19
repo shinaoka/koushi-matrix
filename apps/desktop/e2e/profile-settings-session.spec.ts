@@ -376,8 +376,6 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
   await expect(
     page.locator(".channel-actions").getByRole("button", { name: "Threads", exact: true })
   ).toHaveCount(0);
-  await page.getByRole("button", { name: /^ルーム、/ }).click();
-  await page.getByRole("button", { name: /^(アクティブ|Active)$/ }).click();
   await expect
     .poll(async () =>
       page

@@ -842,10 +842,9 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
       page.evaluate(() => window.__harness.invocationsOf("start_direct_message")[0]?.args)
     )
     .toEqual({ userId: "@target:example.invalid" });
-  await page.getByRole("button", { name: /^DMs,/ }).click();
   await expect(
     page
-      .locator('[data-room-section="people"]')
+      .locator('[data-room-section="dms"]')
       .getByRole("button", { name: "@target:example.invalid" })
   ).toBeVisible();
 });
@@ -1483,8 +1482,7 @@ test("local aliases dispatch typed account command and render Rust-projected lab
     });
   await expect(profilePanel.getByRole("heading", { name: "Desk Alias" })).toBeVisible();
   await expect(profilePanel.getByText("Original: Target Member")).toBeVisible();
-  await page.getByRole("button", { name: /^DMs,/ }).click();
-  await expect(page.locator('[data-room-section="people"]').getByText("Desk Alias")).toBeVisible();
+  await expect(page.locator('[data-room-section="dms"]').getByText("Desk Alias")).toBeVisible();
 
   await seedTimelineItems(
     page,
@@ -1546,7 +1544,7 @@ test("local aliases dispatch typed account command and render Rust-projected lab
   await expect(timelineAliasRow.locator(".sender")).toHaveText("Timeline Alias");
   await expect(profilePanel.getByRole("heading", { name: "Timeline Alias" })).toBeVisible();
   await expect(
-    page.locator('[data-room-section="people"]').getByText("Timeline Alias")
+    page.locator('[data-room-section="dms"]').getByText("Timeline Alias")
   ).toBeVisible();
 
   await profilePanel.getByRole("button", { name: t("people.setAlias") }).click();
@@ -1565,9 +1563,9 @@ test("local aliases dispatch typed account command and render Rust-projected lab
     });
   await expect(profilePanel.getByRole("heading", { name: "Target Member" })).toBeVisible();
   await expect(
-    page.locator('[data-room-section="people"]').getByText("Target Member")
+    page.locator('[data-room-section="dms"]').getByText("Target Member")
   ).toBeVisible();
-  await expect(page.locator('[data-room-section="people"]').getByText("Desk Alias")).toHaveCount(0);
+  await expect(page.locator('[data-room-section="dms"]').getByText("Desk Alias")).toHaveCount(0);
 });
 
 test("room tag context menu dispatches typed commands and waits for Rust section state", async ({
@@ -1648,7 +1646,7 @@ test("room tag context menu dispatches typed commands and waits for Rust section
       )
     )
     .toEqual(["Harness Room"]);
-  await expect(roomsSection.getByRole("button", { name: "Harness Room" })).toHaveCount(0);
+  await expect(roomsSection.getByRole("button", { name: "Harness Room" })).toBeVisible();
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
     window.__harness.setSnapshot({
@@ -1666,9 +1664,9 @@ test("room tag context menu dispatches typed commands and waits for Rust section
     });
     window.__harness.pushStateUpdate();
   });
-  await expect(favouritesSection.getByRole("button", { name: "Harness Room" })).toBeVisible();
+  await expect(roomsSection.getByRole("button", { name: "Harness Room" })).toBeVisible();
 
-  await favouritesSection.getByRole("button", { name: "Harness Room" }).click({
+  await roomsSection.getByRole("button", { name: "Harness Room" }).click({
     button: "right"
   });
   await page.getByRole("menuitem", { name: "Remove from Favourites" }).click();
@@ -1682,7 +1680,7 @@ test("room tag context menu dispatches typed commands and waits for Rust section
       roomId: HARNESS_ROOM_ID,
       tag: "favourite"
     });
-  await expect(favouritesSection.getByRole("button", { name: "Harness Room" })).toBeVisible();
+  await expect(roomsSection.getByRole("button", { name: "Harness Room" })).toBeVisible();
 
   await page.evaluate((roomId) => {
     const snapshot = window.__harness.currentSnapshot();
@@ -1893,22 +1891,11 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
     window.__harness.pushStateUpdate();
   });
 
-  await expect(page.getByRole("button", { name: "DMs, 2 unread, 1 total" })).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Rooms, 1 unread, 3 total, 1 mentions" })
-  ).toBeVisible();
-
-  await page.getByRole("button", { name: "DMs, 2 unread, 1 total" }).click();
-  await expect(page.locator('[data-room-section="people"]')).toBeVisible();
-  await expect(
-    page.locator('[data-room-section="people"]').getByRole("button", { name: "Direct Person" })
-  ).toBeVisible();
-
-  await page.getByRole("button", { name: "Rooms, 1 unread, 3 total, 1 mentions" }).click();
-  await expect(page.locator('[data-room-section="people"]')).toHaveCount(0);
-  await expect(page.locator('[data-room-section="rooms"]')).toBeVisible();
-  await expect(page.locator('[data-room-section="favourites"]')).toBeVisible();
-  await expect(page.locator('[data-room-section="low-priority"]')).toBeVisible();
+  const dmsSection = page.locator('[data-room-section="dms"]');
+  const roomsSection = page.locator('[data-room-section="rooms"]');
+  await expect(dmsSection).toBeVisible();
+  await expect(roomsSection).toBeVisible();
+  await expect(dmsSection.getByRole("button", { name: "Direct Person" })).toBeVisible();
 
   await expect
     .poll(() =>
@@ -1916,17 +1903,15 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
         sections.map((section) => section.getAttribute("data-room-section"))
       )
     )
-    .toEqual(["rooms", "favourites", "low-priority"]);
+    .toEqual(["rooms", "dms"]);
 
-  await expect(page.locator('[data-room-section="favourites"] .section-count')).toHaveText("1");
-  await expect(page.locator('[data-room-section="low-priority"] .section-count')).toHaveText("1");
+  await expect(roomsSection.locator(".section-count")).toHaveText("3");
+  await expect(dmsSection.locator(".section-count")).toHaveText("1");
   await expect(
-    page.locator('[data-room-section="rooms"]').getByRole("button", { name: "Plain Room" })
+    roomsSection.getByRole("button", { name: "Plain Room" })
   ).toBeVisible();
 
-  const favouriteRoom = page
-    .locator('[data-room-section="favourites"]')
-    .getByRole("button", { name: "Favourite Room" });
+  const favouriteRoom = roomsSection.getByRole("button", { name: "Favourite Room" });
   await expect(favouriteRoom).toHaveAttribute("data-mention-count", "1");
   await expect(favouriteRoom.locator(".room-mention-dot")).toBeVisible();
   await expect(favouriteRoom.locator(".room-count")).toHaveText("1");
@@ -1950,8 +1935,7 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
     });
     window.__harness.pushStateUpdate();
   });
-  await expect(page.locator('[data-room-section="favourites"]')).toHaveCount(0);
-  await expect(page.locator('[data-room-section="low-priority"]')).toBeVisible();
+  await expect(roomsSection.getByRole("button", { name: "Low Priority Room" })).toBeVisible();
 });
 
 test("category unread badges keep DMs and Rooms attention visible from Rust sidebar counts", async ({
@@ -1992,28 +1976,12 @@ test("category unread badges keep DMs and Rooms attention visible from Rust side
     window.__harness.pushStateUpdate();
   });
 
-  const dms = page.getByRole("button", { name: "DMs, 3 unread, 58 total" });
-  const rooms = page.getByRole("button", {
-    name: "Rooms, 5 unread, 46 total, 2 mentions"
-  });
+  const dms = page.locator('[data-room-section="dms"]');
+  const rooms = page.locator('[data-room-section="rooms"]');
   await expect(dms).toBeVisible();
   await expect(rooms).toBeVisible();
-  await expect(dms.locator(".room-list-chip-total")).toHaveText("58");
-  await expect(dms.locator(".room-list-chip-unread")).toHaveText("3");
-  await expect(rooms.locator(".room-list-chip-total")).toHaveText("46");
-  await expect(rooms.locator(".room-list-chip-unread")).toHaveText("5");
-  await expect(rooms.locator(".room-list-chip-unread")).toHaveClass(/is-highlight/);
-
-  await dms.click();
-  await expect(dms).toHaveAttribute("aria-pressed", "true");
-  await expect(rooms).toBeVisible();
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () => window.__harness.currentSnapshot().state.domain.settings.values.sidebar.category
-      )
-    )
-    .toBe("people");
+  await expect(dms.locator(".section-count")).toHaveText("58");
+  await expect(rooms.locator(".section-count")).toHaveText("46");
 
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
@@ -2030,11 +1998,8 @@ test("category unread badges keep DMs and Rooms attention visible from Rust side
     window.__harness.pushStateUpdate();
   });
 
-  const clearedDms = page.getByRole("button", { name: "DMs, 0 unread, 58 total" });
-  const largeRooms = page.getByRole("button", { name: "Rooms, 120 unread, 46 total" });
-  await expect(clearedDms.locator(".room-list-chip-unread")).toHaveCount(0);
-  await expect(largeRooms.locator(".room-list-chip-unread")).toHaveText("99+");
-  await expect(largeRooms).toBeVisible();
+  await expect(dms.locator(".section-count")).toHaveText("58");
+  await expect(rooms.locator(".section-count")).toHaveText("46");
 });
 
 test("notification attention snapshot drives room, space, thread, and click routing headlessly", async ({
@@ -2214,7 +2179,9 @@ test("notification attention snapshot drives room, space, thread, and click rout
   });
 
   await expect(page.locator('[data-room-section="rooms"]')).toBeVisible();
-  await expect(page.locator('[data-room-section="low-priority"]')).toBeVisible();
+  await expect(
+    page.locator('[data-room-section="rooms"]').getByRole("button", { name: "Quiet Low Priority" })
+  ).toBeVisible();
   const attentionRoom = page.getByRole("button", { name: "Attention Room" });
   const lowPriorityRoom = page.getByRole("button", { name: "Quiet Low Priority" });
   await expect(attentionRoom.locator(".room-count")).toHaveText("4");
@@ -2407,7 +2374,6 @@ test("room selection keeps a delta that arrives before its command receipt", asy
     window.__harness.clearInvocations();
   });
 
-  await page.getByRole("button", { name: /^Rooms,/ }).click();
   const targetRoom = page.getByRole("button", { name: "Delta Selected Room" });
   await expect(targetRoom).toBeVisible();
   await targetRoom.click();
