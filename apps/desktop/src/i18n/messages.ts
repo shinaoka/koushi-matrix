@@ -613,6 +613,9 @@ export type MessageId =
   | "settings.includePrereleases"
   | "settings.includePrereleasesDescription"
   | "settings.updateIdle"
+  | "settings.updateTitle"
+  | "settings.updateUnsupported"
+  | "settings.updateCommandFailed"
   | "settings.updateCheck"
   | "settings.updateUpToDate"
   | "settings.updateChecking"
@@ -1994,7 +1997,10 @@ const en: Catalog = {
   "settings.includePrereleases": "Include pre-release versions",
   "settings.includePrereleasesDescription":
     "Also check releases whose SemVer contains a pre-release identifier such as -beta.1 or -rc.1.",
-  "settings.updateIdle": "Koushi will check for updates automatically.",
+  "settings.updateIdle": "Check for a new version of Koushi.",
+  "settings.updateTitle": "Software update",
+  "settings.updateUnsupported": "In-app updates are unavailable in this build.",
+  "settings.updateCommandFailed": "The update action could not be completed. Please try again.",
   "settings.updateCheck": "Check for updates",
   "settings.updateUpToDate": "Koushi is up to date (v{version}).",
   "settings.updateChecking": "Checking for updates…",
@@ -3276,7 +3282,10 @@ const ja: Catalog = {
   "settings.includePrereleases": "プレリリース版を含める",
   "settings.includePrereleasesDescription":
     "-beta.1 や -rc.1 など、SemVerのプレリリース識別子を含むリリースも確認します。",
-  "settings.updateIdle": "Koushiはアップデートを自動確認します。",
+  "settings.updateIdle": "Koushiの新しいバージョンを確認できます。",
+  "settings.updateTitle": "ソフトウェアアップデート",
+  "settings.updateUnsupported": "このビルドではアプリ内アップデートを利用できません。",
+  "settings.updateCommandFailed": "アップデートの操作を完了できませんでした。もう一度お試しください。",
   "settings.updateCheck": "アップデートを確認",
   "settings.updateUpToDate": "Koushiは最新です（v{version}）。",
   "settings.updateChecking": "アップデートを確認しています…",

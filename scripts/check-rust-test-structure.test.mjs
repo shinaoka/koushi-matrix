@@ -242,6 +242,28 @@ test("all desktop source-contract rules pass", () => {
   );
 });
 
+test("desktop shutdown guard rejects skipped acknowledgement and premature restart", () => {
+  const source = fs.readFileSync(new URL("../apps/desktop/src-tauri/src/lib.rs", import.meta.url), "utf8");
+  assert.deepEqual(checkDesktopNativeWindowLifecycleContract(source), []);
+  for (const [before, after] of [
+    ["runtime.wait_for_shutdown()", "runtime.submit_only()"],
+    ["updater.await;", "/* updater join removed */"],
+    ["restart_after_shutdown.swap(true", "restart_after_shutdown.load(/* no intent */"],
+    ["quit_stage.store(QuitStage::ForcedExit.repr()", "quit_stage.store(QuitStage::ShutdownComplete.repr()"],
+  ]) {
+    assert.ok(source.includes(before), `mutation target missing: ${before}`);
+    assert.ok(checkDesktopNativeWindowLifecycleContract(source.replace(before, after)).length > 0);
+  }
+  const start = source.indexOf("fn request_application_restart_with");
+  const end = source.indexOf("pub(crate) fn request_application_restart", start);
+  assert.ok(start >= 0 && end > start);
+  const premature = source.slice(0, start)
+    + source.slice(start, end).replace("exit.ordinary_exit()", "exit.final_restart()")
+    + source.slice(end);
+  assert.ok(checkDesktopNativeWindowLifecycleContract(premature).some(({ message }) =>
+    message === "restart bypasses ordinary shutdown admission"));
+});
+
 test("registers the complete account source-contract rule set", () => {
   assert.deepEqual(
     runSourceContractRules().filter(({ rule }) => rule?.startsWith("core.account.")),

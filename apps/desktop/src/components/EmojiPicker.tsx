@@ -134,10 +134,6 @@ export function EmojiPicker({
       .filter((entry): entry is EmojiEntry => entry != null);
   }, [recentEmojis]);
 
-  useLayoutEffect(() => {
-    searchRef.current?.focus();
-  }, []);
-
   const resolvedPlacement = useFloatingPlacement({
     align,
     anchorRef,
@@ -148,13 +144,15 @@ export function EmojiPicker({
     resolveBoundaryElement
   });
 
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        onClose();
-      }
+  const initiallyFocused = useRef(false);
+  useLayoutEffect(() => {
+    if (resolvedPlacement && searchRef.current && !initiallyFocused.current) {
+      searchRef.current.focus();
+      initiallyFocused.current = true;
     }
+  }, [resolvedPlacement]);
+
+  useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (
         panelRef.current &&
@@ -164,10 +162,8 @@ export function EmojiPicker({
         onClose();
       }
     }
-    document.addEventListener("keydown", handleKeyDown);
     document.addEventListener("mousedown", handleClickOutside);
     return () => {
-      document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("mousedown", handleClickOutside);
     };
   }, [onClose, anchorRef]);
@@ -211,6 +207,14 @@ export function EmojiPicker({
       role="dialog"
       aria-label={t("composer.emoji")}
       style={floatingPlacementStyle(resolvedPlacement)}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+          event.preventDefault();
+          event.stopPropagation();
+          onClose();
+          if (anchorRef?.current instanceof HTMLElement) anchorRef.current.focus();
+        }
+      }}
     >
       <div className="emoji-picker-header">
         <div className="emoji-picker-search">

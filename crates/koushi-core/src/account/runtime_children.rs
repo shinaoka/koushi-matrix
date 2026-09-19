@@ -135,7 +135,7 @@ async fn run_read_persistence_worker(
 }
 
 impl AccountActor {
-    pub(super) async fn shutdown_owned_runtime(&mut self) {
+    pub(super) async fn shutdown_owned_runtime(&mut self) -> bool {
         self.cancel_sliding_sync_discovery_task().await;
         self.discard_pending_sliding_sync_admission().await;
         self.pending_sliding_sync_retry = None;
@@ -147,23 +147,26 @@ impl AccountActor {
             let _ = task.await;
             self.record_lifecycle_probe("teardown_retry_terminated");
         }
-        self.stop_current_session_runtime().await;
+        let mut cleanup_ok = self.stop_current_session_runtime().await;
         if let Some(session) = self.session.take() {
-            let _ = koushi_sdk::close_session_stores(&session).await;
+            cleanup_ok &= koushi_sdk::close_session_stores(&session).await.is_ok();
             drop(session);
             self.record_lifecycle_probe("current_session_released");
         }
         if let Some(pending) = self.pending_session_teardown.take() {
-            let _ = koushi_sdk::close_session_stores(&pending.session).await;
+            cleanup_ok &= koushi_sdk::close_session_stores(&pending.session)
+                .await
+                .is_ok();
             drop(pending.session);
             if let SessionTeardownContinuation::InstallReplacement { session, .. } =
                 pending.continuation
             {
-                let _ = koushi_sdk::close_session_stores(&session).await;
+                cleanup_ok &= koushi_sdk::close_session_stores(&session).await.is_ok();
                 drop(session);
             }
             self.record_lifecycle_probe("pending_teardown_sessions_released");
         }
+        cleanup_ok
     }
 
     /// Ordered shutdown of the SearchActor (step 3 of the shutdown sequence,
@@ -438,8 +441,8 @@ impl AccountActor {
 
     /// Ordered shutdown of the RoomActor after the session runtime has stopped.
     /// The acknowledgement is the actor task join, including its observation.
-    pub(super) async fn stop_room_actor(&mut self) {
-        self.room_actor.shutdown().await;
+    pub(super) async fn stop_room_actor(&mut self) -> bool {
+        self.room_actor.shutdown().await
     }
 
     pub(super) async fn clear_room_actor_session(&mut self) -> bool {

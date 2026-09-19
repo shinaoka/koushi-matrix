@@ -1,4 +1,6 @@
 import { HelpDialog } from "./components/HelpDialog";
+import { DesktopUpdates } from "./components/DesktopUpdates";
+import { useModalFocusTracking } from "./components/ModalDialog";
 import {
   type FormEvent,
   type CSSProperties,
@@ -37,7 +39,6 @@ import {
 import type {
   ComposerDocument,
   ComposerDraftRevision,
-  DesktopUpdateState,
   TimelinePaneState
 } from "./domain/types";
 import {
@@ -783,9 +784,14 @@ function composerDraftApiAccount(scope: ComposerDraftScope): {
 }
 
 export function App() {
+  useModalFocusTracking();
   const [helpOpen, setHelpOpen] = useState(false);
   const showHelp = useCallback(() => setHelpOpen(true), []);
-  return <><AppContent onShowHelp={showHelp} />{helpOpen ? <HelpDialog onClose={() => setHelpOpen(false)} /> : null}</>;
+  return <>
+    <AppContent onShowHelp={showHelp} />
+    {helpOpen ? <HelpDialog onClose={() => setHelpOpen(false)} /> : null}
+    <DesktopUpdates />
+  </>;
 }
 
 function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
@@ -819,10 +825,6 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     submissionAccountOwnerRef.current
   );
   const [schemaMismatchVersion, setSchemaMismatchVersion] = useState<number | null>(null);
-  const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateState>({
-    kind: isTauriRuntime() ? "idle" : "unsupported"
-  });
-  const updateConfirmationVersionRef = useRef<string | null>(null);
   // #87 Phase 4 IPC contract guard (fail-closed at the data boundary): every snapshot enters
   // render state through this setter, so we reject one whose schema_version does not match the
   // renderer's SNAPSHOT_SCHEMA_VERSION — a stale flat (v1) snapshot or a mismatched Rust/TS
@@ -1055,32 +1057,6 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     }, 4000);
   }, []);
 
-  useEffect(() => {
-    if (!isTauriRuntime() || desktopUpdate.kind !== "available") {
-      return;
-    }
-    if (updateConfirmationVersionRef.current === desktopUpdate.version) {
-      return;
-    }
-    updateConfirmationVersionRef.current = desktopUpdate.version;
-    let disposed = false;
-    runInBackground(
-      windowDialogPort
-        .confirm(t("settings.updateAvailableConfirm", { version: desktopUpdate.version }), {
-          title: t("settings.updateAvailableTitle"),
-          kind: "warning"
-        })
-        .then((confirmed) => {
-          if (!disposed && confirmed) {
-            return api.downloadDesktopUpdate();
-          }
-          return undefined;
-        })
-    );
-    return () => {
-      disposed = true;
-    };
-  }, [desktopUpdate]);
   useEffect(() => {
     return () => {
       if (composerNoticeTimerRef.current !== null) {
@@ -1833,34 +1809,6 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     };
   }, [setSnapshot]);
 
-  useEffect(() => {
-    if (!isTauriRuntime()) {
-      return;
-    }
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    const listenerReady = desktopEventPort.listenDesktopUpdates((state) => {
-      if (!disposed) setDesktopUpdate(state);
-    });
-    runInBackground(
-      listenerReady
-        .then((dispose) => {
-          if (disposed) {
-            dispose();
-          } else {
-            unlisten = dispose;
-          }
-          return api.getDesktopUpdateState();
-        })
-        .then((state) => {
-          if (!disposed) setDesktopUpdate(state);
-        })
-    );
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
 
   useEffect(() => {
     return () => {
@@ -1914,11 +1862,13 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     document.documentElement.dir = profile.dir;
     document.documentElement.dataset.catalogLocale = profile.catalog_locale;
     document.documentElement.dataset.pseudoLocale = profile.pseudo_locale;
+    document.documentElement.dataset.platform = profile.platform;
   }, [
     snapshot?.state.domain.locale_profile.lang,
     snapshot?.state.domain.locale_profile.dir,
     snapshot?.state.domain.locale_profile.catalog_locale,
-    snapshot?.state.domain.locale_profile.pseudo_locale
+    snapshot?.state.domain.locale_profile.pseudo_locale,
+    snapshot?.state.domain.locale_profile.platform
   ]);
 
   useEffect(() => {
@@ -2152,15 +2102,6 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     runInBackground(
       desktopEventPort
         .listenMenuActions((payload) => {
-          if (payload === "checkForUpdates") {
-            runInBackground(
-              (async () => {
-                await setRightPanelModeClosingFocusedContext("userSettings");
-                await api.checkForDesktopUpdate();
-              })()
-            );
-            return;
-          }
           const shortcutId = shortcutActionFromMenuPayload(payload);
           if (shortcutId) {
             handleShortcutAction(shortcutId);
@@ -6352,7 +6293,6 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           activeSpaceName={activeSpaceName}
           accountManagementUrl={snapshot.state.domain.account_management_url}
           displayDensity={displayDensity}
-          desktopUpdate={desktopUpdate}
           encryptedComposerBlocked={encryptedComposerBlocked}
           isRecoveryBusy={isBusy}
           mode={effectiveRightPanelMode}
@@ -6609,15 +6549,6 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           }}
           onUpdateSettings={(patch) => {
             runInBackground(updateSettings(patch));
-          }}
-          onCheckDesktopUpdate={() => {
-            runInBackground(api.checkForDesktopUpdate());
-          }}
-          onDownloadDesktopUpdate={() => {
-            runInBackground(api.downloadDesktopUpdate());
-          }}
-          onRestartToInstallDesktopUpdate={() => {
-            runInBackground(api.restartToInstallDesktopUpdate());
           }}
           onSetRoomUrlPreviewOverride={(roomId, enabled) => {
             runInBackground(setRoomUrlPreviewOverride(roomId, enabled));

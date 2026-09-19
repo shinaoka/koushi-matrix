@@ -171,14 +171,14 @@ describe("SessionVerificationGate interactions", () => {
       />
     );
 
-    expect(screen.queryByRole("dialog", { name: "Try device verification?" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Try device verification?" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Verify with another device" }));
     expect(startOwnUserSas).not.toHaveBeenCalled();
-    const dialog = screen.getByRole("dialog", { name: "Try device verification?" });
+    const dialog = screen.getByRole("region", { name: "Try device verification?" });
     expect(within(dialog).getByText(/can be unreliable/)).toBeTruthy();
     expect(within(dialog).getByRole("button", { name: "Use recovery key" })).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByRole("dialog", { name: "Try device verification?" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Try device verification?" })).toBeNull();
     expect(startOwnUserSas).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Verify with another device" }));
@@ -346,9 +346,9 @@ describe("SessionVerificationGate interactions", () => {
     ).toBeTruthy();
     fireEvent.click(sas);
     expect(startOwnUserSas).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog", { name: "Try device verification?" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Try device verification?" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Use recovery key" }));
-    expect(screen.queryByRole("dialog", { name: "Try device verification?" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Try device verification?" })).toBeNull();
     expect(startOwnUserSas).not.toHaveBeenCalled();
     fireEvent.click(sas);
     fireEvent.click(screen.getByRole("button", { name: "Try device verification anyway" }));
@@ -407,7 +407,7 @@ describe("SessionVerificationGate interactions", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Verify with another device" }));
 
-    expect(screen.getByRole("dialog", { name: "Try device verification?" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Try device verification?" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Use recovery key" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Try device verification anyway" }));
     expect(startOwnUserSas).toHaveBeenCalledTimes(1);
@@ -788,7 +788,7 @@ describe("SessionVerificationGate interactions", () => {
 
     expect(screen.getByText(/other Matrix clients/i)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Re-enable secure backup" }));
-    let dialog = screen.getByRole("dialog", { name: "Re-enable secure backup" });
+    let dialog = screen.getByRole("region", { name: "Re-enable secure backup" });
     expect(dialog).toBeTruthy();
     expect(bootstrapSecureBackup).not.toHaveBeenCalled();
     fireEvent.click(
@@ -798,16 +798,16 @@ describe("SessionVerificationGate interactions", () => {
       expect(within(dialog).getByText("Recovery key destination selected.")).toBeTruthy()
     );
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByRole("dialog", { name: "Re-enable secure backup" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Re-enable secure backup" })).toBeNull();
     expect(bootstrapSecureBackup).not.toHaveBeenCalled();
 
     const changedGate = secureBackupSnapshot(structuredClone(snapshot), { kind: "setupRequired" });
     rerender(renderGate(changedGate));
     rerender(renderGate(snapshot));
-    expect(screen.queryByRole("dialog", { name: "Re-enable secure backup" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Re-enable secure backup" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Re-enable secure backup" }));
-    dialog = screen.getByRole("dialog", { name: "Re-enable secure backup" });
+    dialog = screen.getByRole("region", { name: "Re-enable secure backup" });
     expect(within(dialog).getByText("No recovery key destination selected.")).toBeTruthy();
     const passphrase = within(dialog).getByLabelText(
       "Secure backup passphrase"

@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState, type RefObject } from "react";
+import { FloatingLayer, floatingPlacementStyle, useFloatingPlacement } from "./floatingLayer";
 import { HelpCircle } from "lucide-react";
 
 import { t } from "../i18n/messages";
@@ -12,27 +13,47 @@ export function TrustHelpButton({
   title: string;
 }) {
   const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
 
   return (
     <span className="trust-help">
       <button
+        ref={trigger}
         className="trust-help-button"
         type="button"
         aria-label={t("help.userTrust.explain")}
         title={t("help.userTrust.explain")}
+        aria-expanded={open}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && open && !event.nativeEvent.isComposing) {
+            event.preventDefault(); event.stopPropagation(); setOpen(false);
+          }
+        }}
         onClick={() => setOpen((value) => !value)}
       >
         <HelpCircle size={13} aria-hidden="true" />
       </button>
       {open ? (
-        <span className="trust-help-popover" role="dialog" aria-label={title}>
-          <strong>{title}</strong>
-          <span>{body}</span>
-          <a href="docs/help/user-trust-model.md">{t("help.learnMore")}</a>
-        </span>
+        <TrustHelpPopup trigger={trigger} title={title} body={body} onClose={() => setOpen(false)} />
       ) : null}
     </span>
   );
+}
+
+function TrustHelpPopup({ trigger, title, body, onClose }: {
+  trigger: RefObject<HTMLButtonElement | null>; title: string; body: string; onClose: () => void;
+}) {
+  const placement = useFloatingPlacement({ anchorRef: trigger, placement: "below", align: "start", inlineSize: 300, blockSize: 220 });
+  return <FloatingLayer><span className="trust-help-popover" role="dialog" aria-label={title}
+    style={floatingPlacementStyle(placement)}
+    onKeyDown={(event) => {
+      if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+        event.preventDefault(); event.stopPropagation(); onClose(); trigger.current?.focus();
+      }
+    }}>
+    <strong>{title}</strong><span>{body}</span>
+    <a href="docs/help/user-trust-model.md">{t("help.learnMore")}</a>
+  </span></FloatingLayer>;
 }
 
 export function UserTrustChip({ state }: { state?: UserTrustState | null }) {

@@ -32,7 +32,6 @@ import type {
   AccountManagementCapabilities,
   AccountManagementState,
   CurrentSessionStatusState,
-  DesktopUpdateState,
   DisplaySettings,
   E2eeTrustState,
   DisplayPlatform,
@@ -46,7 +45,6 @@ import type {
   SecureBackupSetupIntent,
   ProfileState,
   TimelineSettings,
-  UpdatesSettings,
   WindowSettings
 } from "../domain/types";
 
@@ -55,7 +53,6 @@ export function UserSettingsPanel({
   currentSession,
   currentSessionStatus = { status: "idle" },
   displayDensity = "comfortable",
-  desktopUpdate = { kind: "unsupported" },
   savedSessions,
   settings,
   searchCrawlerState,
@@ -67,9 +64,6 @@ export function UserSettingsPanel({
   accountManagementCapabilities,
   keyboardLabelProfile,
   onUpdateSettings,
-  onCheckDesktopUpdate = () => undefined,
-  onDownloadDesktopUpdate = () => undefined,
-  onRestartToInstallDesktopUpdate = () => undefined,
   onRebuildSearchIndex,
   onSetDisplayName,
   onSetAvatar,
@@ -110,7 +104,6 @@ export function UserSettingsPanel({
   currentSession: SavedSessionInfo | null;
   currentSessionStatus?: CurrentSessionStatusState;
   displayDensity?: DisplayDensity;
-  desktopUpdate?: DesktopUpdateState;
   savedSessions: SavedSessionInfo[];
   settings: SettingsState;
   searchCrawlerState?: SearchCrawlerState;
@@ -122,9 +115,6 @@ export function UserSettingsPanel({
   accountManagementCapabilities: AccountManagementCapabilities;
   keyboardLabelProfile?: ShortcutLabelProfile;
   onUpdateSettings: (patch: SettingsPatch) => void;
-  onCheckDesktopUpdate?: () => void;
-  onDownloadDesktopUpdate?: () => void;
-  onRestartToInstallDesktopUpdate?: () => void;
   onRebuildSearchIndex?: () => void;
   onSetDisplayName: (displayName: string | null) => void;
   onSetAvatar: (file: File) => void;
@@ -192,7 +182,6 @@ export function UserSettingsPanel({
   const selectedNotifications = settings.values.notifications;
   const selectedDisplay = settings.values.display;
   const selectedWindow = settings.values.window;
-  const selectedUpdates = settings.values.updates;
   // macOS hides on close unconditionally (overview.md, "Desktop Window
   // Lifecycle And Tray"), so the setting has nothing to control there.
   const closeToTrayIsConfigurable = platform !== "macos";
@@ -472,16 +461,6 @@ export function UserSettingsPanel({
                   settingKey="close_to_tray"
                   current={selectedWindow}
                   onSelect={onUpdateSettings}
-                />
-              ) : null}
-              {platform === "macos" ? (
-                <DesktopUpdateControls
-                  current={selectedUpdates}
-                  state={desktopUpdate}
-                  onSelect={onUpdateSettings}
-                  onCheck={onCheckDesktopUpdate}
-                  onDownload={onDownloadDesktopUpdate}
-                  onRestart={onRestartToInstallDesktopUpdate}
                 />
               ) : null}
             </div>
@@ -932,116 +911,6 @@ function WindowToggle({
   );
 }
 
-export function DesktopUpdateControls({
-  current,
-  state,
-  onSelect,
-  onCheck,
-  onDownload,
-  onRestart
-}: {
-  current: UpdatesSettings;
-  state: DesktopUpdateState;
-  onSelect: (patch: SettingsPatch) => void;
-  onCheck: () => void;
-  onDownload: () => void;
-  onRestart: () => void;
-}) {
-  return (
-    <>
-      <button
-        className="settings-toggle-row"
-        type="button"
-        role="switch"
-        aria-checked={current.auto_check}
-        aria-label={t("settings.autoUpdate")}
-        onClick={() => onSelect({ updates: { ...current, auto_check: !current.auto_check } })}
-      >
-        <span className="settings-toggle-copy">
-          <span className="settings-toggle-label">
-            <RefreshCcw size={15} aria-hidden="true" />
-            <span>{t("settings.autoUpdate")}</span>
-          </span>
-          <span className="settings-toggle-description">
-            {t("settings.autoUpdateDescription")}
-          </span>
-        </span>
-        <span className="settings-switch-track" aria-hidden="true">
-          <span className="settings-switch-thumb" />
-        </span>
-      </button>
-      <button
-        className="settings-toggle-row"
-        type="button"
-        role="switch"
-        aria-checked={current.include_prereleases}
-        aria-label={t("settings.includePrereleases")}
-        onClick={() => onSelect({ updates: { ...current, include_prereleases: !current.include_prereleases } })}
-      >
-        <span className="settings-toggle-copy">
-          <span className="settings-toggle-label">
-            <RefreshCcw size={15} aria-hidden="true" />
-            <span>{t("settings.includePrereleases")}</span>
-          </span>
-          <span className="settings-toggle-description">
-            {t("settings.includePrereleasesDescription")}
-          </span>
-        </span>
-        <span className="settings-switch-track" aria-hidden="true">
-          <span className="settings-switch-thumb" />
-        </span>
-      </button>
-      {state.kind !== "unsupported" ? (
-        <div className="settings-update-status" aria-live="polite">
-          <p className="settings-status-text">{desktopUpdateStatusText(state)}</p>
-          {state.kind === "idle" || state.kind === "up_to_date" || state.kind === "failed" ? (
-            <button className="profile-settings-action" type="button" onClick={onCheck}>
-              <RefreshCcw size={14} aria-hidden="true" />
-              {t("settings.updateCheck")}
-            </button>
-          ) : null}
-          {state.kind === "available" ? (
-            <button className="profile-settings-action" type="button" onClick={onDownload}>
-              <RefreshCcw size={14} aria-hidden="true" />
-              {t("settings.updateDownload")}
-            </button>
-          ) : null}
-          {state.kind === "ready" ? (
-            <button className="profile-settings-action" type="button" onClick={onRestart}>
-              <RefreshCcw size={14} aria-hidden="true" />
-              {t("settings.updateRestart")}
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-    </>
-  );
-}
-
-function desktopUpdateStatusText(state: DesktopUpdateState): string {
-  switch (state.kind) {
-    case "idle":
-      return t("settings.updateIdle");
-    case "up_to_date":
-      return t("settings.updateUpToDate", { version: state.version });
-    case "checking":
-      return t("settings.updateChecking");
-    case "available":
-      return t("settings.updateAvailable", { version: state.version });
-    case "downloading":
-      return t("settings.updateDownloading", { version: state.version });
-    case "ready":
-      return t("settings.updateReady", { version: state.version });
-    case "installing":
-      return t("settings.updateInstalling", { version: state.version });
-    case "failed":
-      return state.stage === "install"
-        ? t("settings.updateInstallFailed")
-        : t("settings.updateCheckFailed");
-    case "unsupported":
-      return "";
-  }
-}
 
 function sessionMatches(left: SavedSessionInfo | null, right: SavedSessionInfo): boolean {
   return (

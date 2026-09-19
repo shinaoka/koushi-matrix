@@ -158,7 +158,7 @@ export function ReceiptReaders({
   useEffect(() => {
     if (!open) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape" && !event.defaultPrevented && !event.isComposing && event.keyCode !== 229) setOpen(false);
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
@@ -383,6 +383,9 @@ export function ReceiptReaders({
       }}
       onFocus={() => setOpen(true)}
       onKeyDown={(event) => {
+        if (event.key === "Escape" && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+          event.preventDefault(); event.stopPropagation(); setOpen(false); return;
+        }
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           setOpen(true);
@@ -432,7 +435,9 @@ export function ReceiptReaders({
             onMouseEnter={() => setOpen(true)}
             onMouseLeave={() => setOpen(false)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
+              if (event.key === "Escape" && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+                event.preventDefault();
+                event.stopPropagation();
                 setOpen(false);
                 return;
               }

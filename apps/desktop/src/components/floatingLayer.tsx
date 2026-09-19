@@ -14,12 +14,14 @@ import {
   type ReactNode,
   type RefObject,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { ModalPortalContext } from "./ModalDialog";
 
 /** Minimum distance kept between the panel and the boundary edges. */
 export const FLOATING_LAYER_VIEWPORT_MARGIN_PX = 16;
@@ -55,6 +57,7 @@ export interface FloatingPlacementInput {
   comfortableBlockSize?: number;
   margin?: number;
   gap?: number;
+  safeTop?: number;
 }
 
 export interface FloatingPlacementResult {
@@ -90,7 +93,7 @@ export function resolveFloatingPlacement(
   const comfortable = input.comfortableBlockSize ?? input.blockSize;
   const viewportBounds: FloatingRect = {
     left: margin,
-    top: margin,
+    top: Math.min(Math.max(margin, input.viewport.height - margin), margin + (input.safeTop ?? 0)),
     right: Math.max(margin, input.viewport.width - margin),
     bottom: Math.max(margin, input.viewport.height - margin),
   };
@@ -133,7 +136,7 @@ export function resolveFloatingPlacement(
     }
   }
   const availableBlock = placement === "above" ? availableAbove : availableBelow;
-  const blockSize = Math.min(input.blockSize, availableBlock);
+  const blockSize = Math.min(input.blockSize, availableBlock, bounds.bottom - bounds.top);
   const top =
     placement === "above" ? anchor.top - gap - blockSize : anchor.bottom + gap;
 
@@ -229,6 +232,7 @@ export function useFloatingPlacement(
         ? resolveBoundaryElement(anchorElement)
         : null;
     const next = resolveFloatingPlacement({
+      safeTop: nativeTitlebarSafeTop(),
       align,
       anchor: viewportRectOf(anchorElement),
       blockSize,
@@ -256,9 +260,12 @@ export function useFloatingPlacement(
   });
 
   useEffect(() => {
+    const observer = new MutationObserver(measure);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "data-platform", "dir"] });
     window.addEventListener("resize", measure);
     document.addEventListener("scroll", measure, true);
     return () => {
+      observer.disconnect();
       window.removeEventListener("resize", measure);
       document.removeEventListener("scroll", measure, true);
     };
@@ -281,9 +288,28 @@ export function floatingPlacementStyle(
     : { visibility: "hidden" };
 }
 
-/** Render children in the body-level floating layer. */
+/** Read the shared CSS length in CSS pixels (custom properties may be calc()). */
+function nativeTitlebarSafeTop(): number {
+  const probe = document.createElement("span");
+  probe.style.cssText = "position:fixed;visibility:hidden;pointer-events:none;height:var(--native-titlebar-safe-block, 0px)";
+  document.body.append(probe);
+  const height = probe.getBoundingClientRect().height;
+  probe.remove();
+  return height;
+}
+
+/** Keep modal descendants in their top layer, where they are not inert. */
 export function FloatingLayer({ children }: { children: ReactNode }) {
-  return createPortal(children, document.body);
+  const modal = useContext(ModalPortalContext);
+  const marker = useRef<HTMLSpanElement>(null);
+  // Conditional popups mount directly into the established host, preserving
+  // their caller's mount-time autofocus instead of delaying the portal.
+  const [host, setHost] = useState<Element | null>(() => modal ? modal.current : typeof document === "undefined" ? null : document.body);
+  useLayoutEffect(() => {
+    setHost(marker.current?.closest("dialog") ?? document.body);
+  }, []);
+  if (typeof document === "undefined") return <>{children}</>;
+  return <><span ref={marker} hidden />{host ? createPortal(children, host) : null}</>;
 }
 
 /**
@@ -310,7 +336,7 @@ export function useHoverFocusPopup(): {
       return;
     }
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && !event.defaultPrevented && !event.isComposing && event.keyCode !== 229) {
         setOpen(false);
       }
     }

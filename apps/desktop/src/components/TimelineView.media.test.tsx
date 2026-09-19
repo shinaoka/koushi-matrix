@@ -746,11 +746,16 @@ describe("TimelineView", () => {
       bubbles: true,
       cancelable: true
     });
-    document.dispatchEvent(tabEvent);
+    // Keyboard events originate at the focused control. jsdom has no layout;
+    // expose the mounted controls' rects for the shared visibility filter.
+    for (const control of viewer.querySelectorAll<HTMLElement>("button")) {
+      vi.spyOn(control, "getClientRects").mockReturnValue([{}] as unknown as DOMRectList);
+    }
+    closeButton.dispatchEvent(tabEvent);
     expect(tabEvent.defaultPrevented).toBe(true);
     expect(viewer.contains(document.activeElement)).toBe(true);
 
-    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: "Media viewer" })).toBeNull();
     });

@@ -21,6 +21,10 @@ export function createTauriWindowDialogPort(): WindowDialogPort {
           : Math.min(50, Math.max(1, zoomStep + (direction === "in" ? 1 : -1)));
         await getCurrentWebview().setZoom(next / 5);
         zoomStep = next;
+        // Native window buttons do not zoom with the WebView. Layout reads the
+        // successful scale to reserve enough CSS space below those controls.
+        document.documentElement.style.setProperty("--webview-zoom", String(next / 5));
+        window.dispatchEvent(new Event("resize"));
       });
       pendingZoom = change.catch(() => {});
       return change;

@@ -1165,8 +1165,12 @@ installer builds must not require the macOS updater signing secret.
 
 When automatic checks are enabled, the adapter checks after startup and at most
 once per 24-hour interval, and checks once when the setting changes from off to
-on. A manual check is available from the Help menu and User Settings regardless
-of `auto_check`; it reports `up_to_date` when the selected feeds have no newer
+on. A manual check is available directly from **Koushi → Check for Updates…**
+regardless of `auto_check`, including before sign-in. It opens one application-level
+update dialog, separate from account settings and contextual panes. That same
+dialog shows automatic discoveries, update policy controls, and explicit download
+and restart actions; Display settings and a second native confirmation are not
+alternate update owners. It reports `up_to_date` when the selected feeds have no newer
 candidate. When pre-releases are enabled, the adapter checks both stable and
 pre-release feeds and selects the greatest SemVer candidate. Checks, downloads, signature verification, and failures are non-blocking and
 must not delay Core startup, login, or ordinary application use. The Tauri
@@ -1177,6 +1181,16 @@ becomes `ready`; installation and relaunch occur only after an explicit user
 action so in-progress composer work is not discarded. Public failure state is coarse and never includes response
 bodies, release URLs, local paths, signatures, key material, or raw library
 errors.
+
+The update adapter owns one serialized lifecycle and one cancellable worker.
+Generation-fenced completions and candidate-specific download approval prevent
+overlapping triggers or channel changes from substituting an unapproved release.
+Successful installation requests an ordinary graceful shutdown first: join the
+updater worker, settle Core shutdown, and only then issue the native relaunch.
+Core exposes an event-based, cancellation-safe shutdown completion after its
+account and lifecycle cleanup. A failed/timed-out Core shutdown forces an
+explicitly diagnosed ordinary exit, suppressing relaunch; the bounded Core wait
+starts only after any active native installer has settled.
 
 ### Desktop Viewport Synchronization
 
@@ -1948,6 +1962,11 @@ and keeps the same QA hierarchy.
   platform credential-store evidence, signing/notarization, and release.
 
 ## User Settings And Help Presentation
+
+All of these surfaces follow the
+[macOS native window controls and overlay layout contract](../../REPOSITORY_RULES.md#macos-native-window-controls-and-overlay-layout).
+The shared presentation primitives own safe-area placement, including nested
+dialogs and pre-sign-in surfaces.
 
 User settings open as a modal in the browser top layer, above the three-pane
 workspace. They do not occupy or resize the contextual right pane. The dialog

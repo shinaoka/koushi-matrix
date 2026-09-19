@@ -17,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
 };
 use tokio::sync::Mutex as TokioMutex;
@@ -115,6 +115,8 @@ pub struct CoreRuntimeState {
     pub(crate) viewport_sync_generation: viewport_sync::ViewportSyncGeneration,
     /// Graceful-quit barrier; see [`quit_request_action`].
     pub(crate) quit_stage: AtomicU8,
+    /// Written by the updater before it leaves the owner joined by shutdown.
+    restart_after_shutdown: AtomicBool,
     pub(crate) reader_subscriptions: TokioMutex<HashMap<ViewScopeId, ReaderSubscriptionEntry>>,
 }
 
@@ -458,17 +460,20 @@ enum QuitStage {
     Idle,
     ShuttingDown,
     ShutdownComplete,
+    ForcedExit,
 }
 
 const QUIT_STAGE_IDLE: u8 = 0;
 const QUIT_STAGE_SHUTTING_DOWN: u8 = 1;
 const QUIT_STAGE_SHUTDOWN_COMPLETE: u8 = 2;
+const QUIT_STAGE_FORCED_EXIT: u8 = 3;
 
 impl QuitStage {
     fn from_repr(value: u8) -> Self {
         match value {
             QUIT_STAGE_SHUTTING_DOWN => Self::ShuttingDown,
             QUIT_STAGE_SHUTDOWN_COMPLETE => Self::ShutdownComplete,
+            QUIT_STAGE_FORCED_EXIT => Self::ForcedExit,
             _ => Self::Idle,
         }
     }
@@ -478,6 +483,7 @@ impl QuitStage {
             Self::Idle => QUIT_STAGE_IDLE,
             Self::ShuttingDown => QUIT_STAGE_SHUTTING_DOWN,
             Self::ShutdownComplete => QUIT_STAGE_SHUTDOWN_COMPLETE,
+            Self::ForcedExit => QUIT_STAGE_FORCED_EXIT,
         }
     }
 }
@@ -497,7 +503,7 @@ fn quit_request_action(stage: QuitStage) -> QuitRequestAction {
     match stage {
         QuitStage::Idle => QuitRequestAction::BeginShutdown,
         QuitStage::ShuttingDown => QuitRequestAction::AwaitShutdown,
-        QuitStage::ShutdownComplete => QuitRequestAction::Exit,
+        QuitStage::ShutdownComplete | QuitStage::ForcedExit => QuitRequestAction::Exit,
     }
 }
 
@@ -506,6 +512,122 @@ fn quit_request_action(stage: QuitStage) -> QuitRequestAction {
 /// owner.
 fn request_application_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     app.exit(0);
+}
+
+trait ApplicationExit {
+    fn ordinary_exit(&self);
+    fn final_restart(&self);
+}
+
+impl<R: tauri::Runtime> ApplicationExit for tauri::AppHandle<R> {
+    fn ordinary_exit(&self) {
+        self.exit(0);
+    }
+    fn final_restart(&self) {
+        self.request_restart();
+    }
+}
+
+fn request_application_restart_with(
+    quit_stage: &AtomicU8,
+    restart_after_shutdown: &AtomicBool,
+    exit: &impl ApplicationExit,
+) {
+    if matches!(
+        QuitStage::from_repr(quit_stage.load(Ordering::Acquire)),
+        QuitStage::ShutdownComplete | QuitStage::ForcedExit
+    ) {
+        return;
+    }
+    if !restart_after_shutdown.swap(true, Ordering::AcqRel) {
+        // Tauri's special restart exit cannot be prevented. First take the
+        // ordinary path so the single shutdown coordinator can await cleanup.
+        exit.ordinary_exit();
+    }
+}
+
+pub(crate) fn request_application_restart(app: &tauri::AppHandle) {
+    let core_state = app.state::<CoreRuntimeState>();
+    request_application_restart_with(
+        &core_state.quit_stage,
+        &core_state.restart_after_shutdown,
+        app,
+    );
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CoreExitOutcome {
+    Completed,
+    Failed,
+    TimedOut,
+}
+
+const CORE_EXIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+async fn stop_core_for_exit(runtime: &CoreRuntime) -> CoreExitOutcome {
+    stop_core_for_exit_with_timeout(runtime, CORE_EXIT_TIMEOUT).await
+}
+
+async fn stop_core_for_exit_with_timeout(
+    runtime: &CoreRuntime,
+    timeout: std::time::Duration,
+) -> CoreExitOutcome {
+    let connection = runtime.attach();
+    let request_id = connection.next_request_id();
+    await_core_exit(timeout, async {
+        connection
+            .command(CoreCommand::App(AppCommand::Shutdown { request_id }))
+            .await
+            .map_err(|_| ())?;
+        runtime.wait_for_shutdown().await.map_err(|_| ())
+    })
+    .await
+}
+
+async fn await_core_exit(
+    timeout: std::time::Duration,
+    shutdown: impl std::future::Future<Output = Result<(), ()>>,
+) -> CoreExitOutcome {
+    match tokio::time::timeout(timeout, shutdown).await {
+        Ok(Ok(())) => CoreExitOutcome::Completed,
+        Ok(Err(())) => CoreExitOutcome::Failed,
+        Err(_) => CoreExitOutcome::TimedOut,
+    }
+}
+
+async fn finish_application_shutdown(
+    quit_stage: &AtomicU8,
+    restart_after_shutdown: &AtomicBool,
+    updater: impl std::future::Future<Output = ()>,
+    core: impl std::future::Future<Output = CoreExitOutcome>,
+    exit: &impl ApplicationExit,
+) {
+    // Never apply the Core deadline to blocking native application replacement.
+    updater.await;
+    let outcome = core.await;
+    if outcome == CoreExitOutcome::Completed {
+        quit_stage.store(QuitStage::ShutdownComplete.repr(), Ordering::Release);
+        if restart_after_shutdown.load(Ordering::Acquire) {
+            exit.final_restart();
+        } else {
+            exit.ordinary_exit();
+        }
+    } else {
+        restart_after_shutdown.store(false, Ordering::Release);
+        quit_stage.store(QuitStage::ForcedExit.repr(), Ordering::Release);
+        koushi_diagnostics::record(
+            DiagnosticEvent::new(DiagnosticLevel::Warn, "desktop.lifecycle", "forced_exit").field(
+                DiagnosticField::token(
+                    "reason",
+                    match outcome {
+                        CoreExitOutcome::TimedOut => "core_shutdown_timeout",
+                        _ => "core_shutdown_failed",
+                    },
+                ),
+            ),
+        );
+        exit.ordinary_exit();
+    }
 }
 
 /// Move the barrier out of `Idle` and report whether this caller won the race.
@@ -527,28 +649,23 @@ fn claim_core_shutdown(quit_stage: &AtomicU8) -> bool {
 
 /// Hold the exit, shut the core runtime down, then exit for real.
 ///
-/// The awaited submit is bounded by `commands::CORE_COMMAND_SUBMIT_TIMEOUT`
-/// and its error is intentionally ignored, so `app.exit(0)` always runs and the
-/// held exit can never deadlock.
+/// After the updater/installer settles, Core submission and acknowledged cleanup
+/// share a deadline. Failure authorizes a diagnosed ordinary exit, never restart.
 fn begin_graceful_shutdown(app: tauri::AppHandle) {
     koushi_diagnostics::record(
         DiagnosticEvent::new(DiagnosticLevel::Info, "desktop.lifecycle", "quit_requested")
             .field(DiagnosticField::token("action", "graceful_shutdown")),
     );
     tauri::async_runtime::spawn(async move {
-        {
-            let core_state = app.state::<CoreRuntimeState>();
-            let request_id = core_state.connection.lock().await.next_request_id();
-            let _ = commands::submit_core_command(
-                &core_state,
-                CoreCommand::App(AppCommand::Shutdown { request_id }),
-            )
-            .await;
-            core_state
-                .quit_stage
-                .store(QuitStage::ShutdownComplete.repr(), Ordering::Release);
-        }
-        app.exit(0);
+        let core_state = app.state::<CoreRuntimeState>();
+        finish_application_shutdown(
+            &core_state.quit_stage,
+            &core_state.restart_after_shutdown,
+            app_updates::shutdown(&app),
+            stop_core_for_exit(&core_state.runtime),
+            &app,
+        )
+        .await;
     });
 }
 
@@ -701,6 +818,7 @@ pub fn run() {
                 native_window_focus_generation: AtomicU64::new(0),
                 viewport_sync_generation: viewport_sync::ViewportSyncGeneration::default(),
                 quit_stage: AtomicU8::new(QuitStage::Idle.repr()),
+                restart_after_shutdown: AtomicBool::new(false),
                 reader_subscriptions: TokioMutex::new(HashMap::new()),
             };
             app.manage(core_state);
@@ -1142,3 +1260,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "app_updates/restart_barrier_tests.rs"]
+mod restart_barrier_tests;

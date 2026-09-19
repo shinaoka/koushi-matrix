@@ -151,6 +151,18 @@ pub(super) struct PendingComposerDraftPersist {
     deadline: Instant,
 }
 
+#[cfg(test)]
+impl PendingComposerDraftPersist {
+    pub(super) fn for_shutdown_test(key_id: koushi_protocol::SessionKeyId) -> Self {
+        Self {
+            key_id,
+            drafts: persisted_composer_draft_projection(&Default::default(), &Default::default()),
+            permits: Vec::new(),
+            deadline: Instant::now() + Duration::from_secs(3600),
+        }
+    }
+}
+
 impl AppActor {
     fn reconcile_composer_draft_lifecycle(&mut self) {
         self.reconcile_composer_draft_lifecycle_with_active(active_composer_targets(&self.state));
@@ -326,9 +338,9 @@ impl AppActor {
             .as_ref()
             .map(|pending| pending.deadline.saturating_duration_since(Instant::now()))
     }
-    pub(super) async fn flush_pending_composer_drafts(&mut self) {
+    pub(super) async fn flush_pending_composer_drafts(&mut self) -> bool {
         let Some(pending) = self.pending_composer_draft_persist.take() else {
-            return;
+            return true;
         };
         let store = self.composer_draft_store_actor.clone();
         let PendingComposerDraftPersist {
@@ -337,11 +349,14 @@ impl AppActor {
             permits,
             deadline: _,
         } = pending;
-        let _ = executor::spawn_blocking(move || {
-            let _permits = permits;
-            store.save_composer_drafts(&key_id, &drafts)
-        })
-        .await;
+        matches!(
+            executor::spawn_blocking(move || {
+                let _permits = permits;
+                store.save_composer_drafts(&key_id, &drafts)
+            })
+            .await,
+            Ok(Ok(()))
+        )
     }
 }
 

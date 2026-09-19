@@ -28,6 +28,31 @@ function stagedPortraitImage() {
   };
 }
 
+test("Escape in the staging emoji picker preserves the attachment and its caption", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.getByRole("button", { name: "Attach file", exact: true }).click();
+  await page.locator('input[type="file"][aria-label="Attach file input"]').setInputFiles(stagedPortraitImage());
+  const staging = page.getByRole("dialog", { name: t("upload.dialogTitle"), exact: true });
+  const caption = staging.getByRole("textbox", { name: "Caption for portrait.png" });
+  await caption.fill("Synthetic preserved caption");
+  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("update_staged_upload_caption").length)).toBeGreaterThan(0);
+  const before = await page.evaluate(() => window.__harness.currentSnapshot().state.ui.timeline.staged_uploads);
+  expect(before).toHaveLength(1);
+  await page.evaluate(() => window.__harness.clearInvocations());
+  const opener = staging.getByRole("button", { name: t("composer.emoji"), exact: true });
+  await opener.click();
+  const picker = staging.locator(".emoji-picker");
+  await expect(picker.getByRole("searchbox")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(picker).toHaveCount(0);
+  await expect(staging).toBeVisible();
+  await expect(caption).toHaveText("Synthetic preserved caption");
+  await expect(staging.locator(".upload-staging-item")).toHaveCount(1);
+  expect(await page.evaluate(() => window.__harness.invocationsOf("clear_upload_staging"))).toHaveLength(0);
+  expect(await page.evaluate(() => window.__harness.currentSnapshot().state.ui.timeline.staged_uploads)).toEqual(before);
+  await expect(opener).toBeFocused();
+});
+
 /** Rendered geometry of the staging dialog, its scroll list, and its actions. */
 async function stagingGeometry(page: Page) {
   return page.evaluate(() => {
@@ -192,7 +217,8 @@ for (const height of [800, 520]) {
     await page.locator('input[type="file"][aria-label="Attach file input"]').setInputFiles(stagedPortraitImage());
     const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle"), exact: true });
     await expect(dialog).toBeVisible();
-    expect((await dialog.boundingBox())!.y).toBeGreaterThanOrEqual(titlebarBottom);
+    // The native modal shell/backdrop covers the window; its content owns the inset.
+    expect((await dialog.locator(".upload-staging-dialog").boundingBox())!.y).toBeGreaterThanOrEqual(titlebarBottom);
     expectStagingBounded((await stagingGeometry(page))!, "macOS staging");
     await expect(dialog.getByRole("button", { name: t("upload.sendAttachments") })).toBeInViewport();
     await expect(dialog.locator(".upload-staging-preview")).toBeVisible();

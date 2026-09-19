@@ -1508,14 +1508,24 @@ test("local aliases dispatch typed account command and render Rust-projected lab
     63
   );
   const timelineAliasRow = page.locator(".message").filter({ hasText: "Alias menu target" });
+  await page.evaluate(() => {
+    document.documentElement.dataset.platform = "macos";
+    document.documentElement.style.setProperty("--webview-zoom", "0.5");
+  });
   await timelineAliasRow.hover();
   await timelineAliasRow.getByRole("button", { name: "Message actions" }).click();
   await timelineAliasRow.getByRole("menuitem", { name: "Edit alias for Desk Alias" }).click();
   const timelineAliasInput = page.getByRole("textbox", { name: "Alias" });
+  const timelineAliasDialog = page.getByRole("dialog", { name: "Alias for Desk Alias" });
+  await expect(timelineAliasDialog).toBeVisible();
+  expect(await timelineAliasDialog.evaluate(element => element.matches(":modal"))).toBe(true);
+  expect((await timelineAliasDialog.locator(".dialog-box").boundingBox())!.y).toBeGreaterThanOrEqual(88);
   await timelineAliasInput.fill("");
   await timelineAliasInput.pressSequentially("Timeline Alias");
   expect(await invocationCount(page, "set_local_user_alias")).toBe(1);
   await timelineAliasInput.press("Enter");
+  await expect(timelineAliasDialog).toHaveCount(0);
+  await expect(timelineAliasRow.getByRole("button", { name: "Message actions" })).toBeFocused();
   await expect.poll(() => invocationCount(page, "set_local_user_alias")).toBe(2);
   await expect
     .poll(async () =>

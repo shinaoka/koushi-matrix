@@ -13,7 +13,10 @@ const capability = JSON.parse(readFileSync(
   new NodeURL("../../../src-tauri/capabilities/default.json", import.meta.url), "utf8"
 )) as { permissions: string[] };
 
-afterEach(clearMocks);
+afterEach(() => {
+  clearMocks();
+  document.documentElement.style.removeProperty("--webview-zoom");
+});
 
 test("Cmd+Ctrl+F can enter and leave fullscreen through the permitted window IPC", async () => {
   mockWindows("main");
@@ -96,8 +99,11 @@ test("a failed native zoom propagates the error without advancing the scale or b
   });
   const port = createTauriWindowDialogPort();
   await expect(port.changeZoom("in")).rejects.toThrow("zoom failed");
+  expect(document.documentElement.style.getPropertyValue("--webview-zoom")).toBe("");
   await port.changeZoom("in");
+  expect(document.documentElement.style.getPropertyValue("--webview-zoom")).toBe("1.2");
   await port.changeZoom("out");
+  expect(document.documentElement.style.getPropertyValue("--webview-zoom")).toBe("1");
   expect(values).toEqual([1.2, 1.2, 1]);
 });
 

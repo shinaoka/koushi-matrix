@@ -45,6 +45,7 @@ import {
   type ComposerMode,
   type ComposerSurface,
   type DesktopSnapshot,
+  type DesktopUpdateState,
   type E2eeTrustState,
   type LocaleDisplayProfile,
   type LocaleSettings,
@@ -110,6 +111,7 @@ interface AppHarnessControl {
   setSnapshot(snapshot: DesktopSnapshot): void;
   pushCoreEvent(event: CoreEventPayload): Promise<void>;
   pushDesktopMenu(action: string): Promise<void>;
+  pushDesktopUpdate(state: DesktopUpdateState): Promise<void>;
   pushStateUpdate(envelope?: StateUpdateEnvelope): void;
   currentSnapshot(): DesktopSnapshot;
   e2eeTrustSnapshot(): DesktopSnapshot;
@@ -1217,6 +1219,11 @@ function rejectDeferredCommand(command: string, index: number): void {
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
 // any unanticipated snapshot read still renders the shell.
 mock.setCommandResponse("get_snapshot", () => currentSnapshot);
+// Explicit adapter projections: tests publish later states rather than emulate the updater.
+mock.setCommandResponse("get_desktop_update_state", () => ({ kind: "idle" }));
+mock.setCommandResponse("check_for_desktop_update", () => null);
+mock.setCommandResponse("download_desktop_update", () => null);
+mock.setCommandResponse("restart_to_install_desktop_update", () => null);
 mock.setCommandResponse("subscribe_receipt_reader", ({
   source,
 }: {
@@ -3739,6 +3746,7 @@ const harnessControl: AppHarnessControl = {
     mock.setCommandResponse("get_snapshot", () => currentSnapshot);
   },
   pushDesktopMenu: (action) => emit("koushi-desktop://menu", action),
+  pushDesktopUpdate: (state) => emit("koushi-desktop://update", state),
   pushCoreEvent: (event) => {
     // Records that a test now owns the CoreEvent stream so the boot seed
     // loop below stops re-emitting its generation-1 timeline over test data.

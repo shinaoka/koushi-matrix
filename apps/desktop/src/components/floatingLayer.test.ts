@@ -22,6 +22,18 @@ function input(overrides: Partial<FloatingPlacementInput> = {}): FloatingPlaceme
 }
 
 describe("resolveFloatingPlacement", () => {
+  it("intersects the native safe area with caller bounds even for an offscreen anchor", () => {
+    const placement = resolveFloatingPlacement(input({
+      safeTop: 88,
+      viewport: { width: 700, height: 320 },
+      boundary: { left: 100, right: 650, top: 30, bottom: 300 },
+      anchor: { left: 200, right: 240, top: 900, bottom: 920 },
+      blockSize: 700,
+    }));
+    expect(placement.top).toBeGreaterThanOrEqual(88 + MARGIN);
+    expect(placement.top + placement.blockSize).toBeLessThanOrEqual(300);
+    expect(placement.left).toBeGreaterThanOrEqual(100);
+  });
   it("keeps the preferred side and alignment when the anchor has room", () => {
     const placement = resolveFloatingPlacement(input());
 

@@ -1,3 +1,4 @@
+import { NativeModal } from "./ModalDialog";
 import {
 ThreadRootStatusPlaceholder,
 TimelineItemRow,
@@ -3656,7 +3657,9 @@ export const TimelineView = memo(function TimelineView({
         />
       ) : null}
       {aliasTarget ? (
-        <div className="dialog-overlay" role="presentation" onMouseDown={closeAliasDialog}>
+        <NativeModal className="dialog-overlay" onDismiss={closeAliasDialog}
+          aria-label={t("room.aliasDialogTitle", { name: aliasTarget.displayLabel })}
+          onMouseDown={event => { if (event.target === event.currentTarget) closeAliasDialog(); }}>
           <ImeSafeForm
             className="dialog-box timeline-alias-dialog"
             aria-label={t("room.aliasDialogTitle", { name: aliasTarget.displayLabel })}
@@ -3687,7 +3690,7 @@ export const TimelineView = memo(function TimelineView({
               </button>
             </div>
           </ImeSafeForm>
-        </div>
+        </NativeModal>
       ) : null}
       </div>
     </ProjectionSnapshotBoundary>

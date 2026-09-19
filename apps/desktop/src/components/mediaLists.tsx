@@ -1,4 +1,5 @@
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useState } from "react";
+import { NativeModal } from "./ModalDialog";
 import {
   ChevronLeft,
   ChevronRight,
@@ -129,20 +130,8 @@ function MediaViewer({
   onSelectIndex: (index: number) => void;
 }) {
   const [zoom, setZoom] = useState(1);
-  const dialogRef = useRef<HTMLDivElement>(null);
   // #163: a viewer opened from a single timeline image hides prev/next.
   const showNavigation = items.length > 1;
-  useEffect(() => {
-    dialogRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
   const item = items[index];
   const previousIndex = (index + items.length - 1) % items.length;
   const nextIndex = (index + 1) % items.length;
@@ -154,8 +143,7 @@ function MediaViewer({
       : null;
 
   return (
-    <div
-      ref={dialogRef}
+    <NativeModal onDismiss={onClose}
       tabIndex={-1}
       className="media-viewer-backdrop"
       role="dialog"
@@ -238,7 +226,7 @@ function MediaViewer({
           ) : null}
         </footer>
       </div>
-    </div>
+    </NativeModal>
   );
 }
 

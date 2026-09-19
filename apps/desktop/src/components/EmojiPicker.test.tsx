@@ -104,9 +104,16 @@ describe("EmojiPicker", () => {
     const onClose = vi.fn();
     render(<EmojiPicker onSelect={vi.fn()} onClose={onClose} />);
 
-    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.keyDown(screen.getByRole("searchbox"), { key: "Escape" });
 
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("leaves composition Escape to the IME", () => {
+    const onClose = vi.fn();
+    render(<EmojiPicker onSelect={vi.fn()} onClose={onClose} />);
+    fireEvent.keyDown(screen.getByRole("searchbox"), { key: "Escape", isComposing: true });
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("closes when clicking outside", () => {

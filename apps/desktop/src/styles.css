@@ -633,8 +633,11 @@ button:disabled {
 
 /* Native macOS window buttons sit above the WebView, including its top layer.
    Body-portaled overlays reserve the same vertical space as the shell titlebar. */
-:root:has(.titlebar[data-platform="macos"]) {
-  --native-titlebar-safe-block: var(--shell-titlebar-block-size);
+:root {
+  --native-titlebar-safe-block: 0px;
+}
+:root[data-platform="macos"] {
+  --native-titlebar-safe-block: max(44px, calc(44px / var(--webview-zoom, 1)));
 }
 
 .titlebar[data-platform="macos"] {
@@ -840,12 +843,9 @@ button:disabled {
 }
 
 .session-status-popover {
-  position: absolute;
+  position: fixed;
   z-index: 80;
-  inset-block-start: calc(100% + 8px);
-  inset-inline-end: 0;
   width: min(380px, calc(100vw - 24px));
-  max-height: min(620px, calc(100vh - 64px));
   padding: 16px;
   overflow: auto;
   border: 1px solid var(--line);
@@ -3221,7 +3221,7 @@ button:disabled {
   display: grid;
   gap: 14px;
   width: min(920px, calc(100% - 32px));
-  max-block-size: min(72vh, 760px);
+  max-block-size: min(72vh, 760px, calc(100dvh - 48px - var(--native-titlebar-safe-block)));
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -4582,12 +4582,11 @@ button:disabled {
 }
 
 .message-media-details-popover {
-  position: absolute;
-  inset-block-end: 8px;
-  inset-inline-start: 8px;
-  z-index: 1;
+  position: fixed;
+  z-index: 150;
   display: grid;
-  max-inline-size: min(260px, calc(100% - 16px));
+  overflow: auto;
+  align-content: start;
   gap: 4px;
   padding: 8px 34px 8px 9px;
   border: 1px solid rgb(255 255 255 / 24%);
@@ -4651,6 +4650,7 @@ button:disabled {
 }
 
 .timeline-media-viewer-overlay {
+  padding: 0;
   padding-block-start: var(--native-titlebar-safe-block, 0px);
   position: fixed;
   inset: 0;
@@ -4804,6 +4804,7 @@ button:disabled {
 
 .timeline-media-viewer-stage {
   display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   place-items: center;
   min-inline-size: 0;
   min-block-size: 0;
@@ -4813,8 +4814,8 @@ button:disabled {
 
 .timeline-media-viewer-image {
   display: block;
-  max-inline-size: calc(100vw - 36px);
-  max-block-size: calc(100dvh - 94px);
+  max-inline-size: 100%;
+  max-block-size: 100%;
   object-fit: contain;
 }
 
@@ -5749,6 +5750,7 @@ mark {
   display: grid;
   place-items: center;
   padding: 24px;
+  padding-block-start: calc(24px + var(--native-titlebar-safe-block));
   background: rgb(15 27 45 / 55%);
 }
 
@@ -5757,7 +5759,8 @@ mark {
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 12px;
   width: min(720px, calc(100vw - 48px));
-  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px - var(--native-titlebar-safe-block));
+  overflow: auto;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -5768,7 +5771,8 @@ mark {
 .media-viewer-stage {
   display: grid;
   place-items: center;
-  min-height: 280px;
+  min-height: 0;
+  height: min(400px, 50dvh);
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -5802,6 +5806,32 @@ mark {
   display: grid;
   place-items: center;
   background: rgb(15 27 45 / 45%);
+  padding: 16px;
+  padding-block-start: calc(16px + var(--native-titlebar-safe-block));
+}
+
+/* Full-window native shells keep existing content layout and use one inset.
+   Their backdrop still covers the complete WebView. */
+dialog.dialog-overlay,
+dialog.media-viewer-backdrop,
+dialog.timeline-media-viewer-overlay {
+  margin: 0;
+  border: 0;
+  color: var(--text);
+  inline-size: 100vw;
+  block-size: 100dvh;
+  max-inline-size: none;
+  max-block-size: none;
+}
+dialog.dialog-overlay:not([open]),
+dialog.media-viewer-backdrop:not([open]),
+dialog.timeline-media-viewer-overlay:not([open]) { display: none; }
+dialog.dialog-overlay::backdrop,
+dialog.media-viewer-backdrop::backdrop,
+dialog.timeline-media-viewer-overlay::backdrop { background: transparent; }
+.dialog-overlay.upload-staging-overlay {
+  padding: 12px;
+  padding-block-start: calc(12px + var(--native-titlebar-safe-block));
 }
 
 .dialog-box {
@@ -5813,6 +5843,9 @@ mark {
   border-radius: 10px;
   background: var(--surface);
   box-shadow: 0 24px 56px rgb(15 27 45 / 28%);
+  min-block-size: 0;
+  max-block-size: calc(100dvh - 32px - var(--native-titlebar-safe-block));
+  overflow: auto;
 }
 
 .dialog-title {
@@ -5866,8 +5899,7 @@ mark {
   display: flex;
   flex-direction: column;
   width: min(460px, calc(100vw - 48px));
-  max-height: calc(100vh - 48px);
-  max-height: calc(100dvh - 48px);
+  max-height: calc(100dvh - 48px - var(--native-titlebar-safe-block));
 }
 
 .invite-dialog-body {
@@ -7993,10 +8025,10 @@ kbd {
 }
 
 .trust-help-popover {
-  position: absolute;
+  position: fixed;
   z-index: 30;
-  top: 22px;
-  inset-inline-start: 0;
+  overflow: auto;
+  align-content: start;
   display: grid;
   width: min(300px, 70vw);
   gap: 6px;
@@ -8803,7 +8835,8 @@ kbd {
   border-radius: 14px;
   padding: 0;
   max-inline-size: calc(100vw - 32px);
-  max-block-size: calc(100dvh - 32px);
+  inset-block-start: var(--native-titlebar-safe-block);
+  max-block-size: calc(100dvh - 32px - var(--native-titlebar-safe-block));
   box-shadow: 0 24px 64px rgb(0 0 0 / 28%);
 }
 .app-modal::backdrop { background: rgb(15 27 45 / 45%); }
@@ -8818,6 +8851,8 @@ kbd {
   border-block-end: 1px solid var(--line);
 }
 .app-modal-header h2 { margin: 0; font-size: 18px; }
+.desktop-update-modal { inline-size: 540px; }
+.desktop-update-content { min-block-size: 0; padding: 20px; overflow: auto; }
 .user-settings-modal { inline-size: 1040px; block-size: 760px; overflow: hidden; }
 .user-settings-modal .user-settings-panel {
   flex: 1 1 auto;

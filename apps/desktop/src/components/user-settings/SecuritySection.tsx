@@ -1,4 +1,5 @@
 import { type FormEvent, type ReactNode, useRef, useState } from "react";
+import { NativeModal } from "../ModalDialog";
 import {
   Download,
   KeyRound,
@@ -314,12 +315,9 @@ export function SecuritySection({
         </div>
       </section>
       {roomKeyPassphraseRequest ? (
-        <div className="dialog-overlay" role="presentation">
+        <NativeModal className="dialog-overlay" aria-labelledby="room-key-passphrase-title" onDismiss={closeRoomKeyPassphraseDialog}>
           <ImeSafeForm
             className="dialog-box"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="room-key-passphrase-title"
             onSubmit={submitRoomKeyPassphrase}
           >
             <h3 className="dialog-title" id="room-key-passphrase-title">
@@ -347,7 +345,7 @@ export function SecuritySection({
               </button>
             </div>
           </ImeSafeForm>
-        </div>
+        </NativeModal>
       ) : null}
     </>
   );

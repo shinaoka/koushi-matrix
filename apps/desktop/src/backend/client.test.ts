@@ -48,9 +48,9 @@ describe("TauriDesktopApi", () => {
   test("starts the desktop update download only after confirmation", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 
-    await new TauriDesktopApi().downloadDesktopUpdate();
+    await new TauriDesktopApi().downloadDesktopUpdate(7);
 
-    expect(invoke).toHaveBeenCalledWith("download_desktop_update");
+    expect(invoke).toHaveBeenCalledWith("download_desktop_update", { expectedGeneration: 7 });
   });
 
   test("checks for desktop updates on demand", async () => {

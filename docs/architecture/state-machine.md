@@ -4363,8 +4363,9 @@ stateDiagram-v2
     [*] --> Unsupported: platform is not enabled
     [*] --> Idle: platform is enabled
     Idle --> Checking: startup/24h/setting enabled/manual check
-    Checking --> Idle: automatic check has no newer release
-    Checking --> UpToDate: manual check has no newer release
+    Checking --> UpToDate: check has no newer release
+    Checking --> Idle: update channel changes
+    Available --> Idle: update channel changes before download approval
     Checking --> Available: newer release found
     Available --> Downloading: DownloadUpdate confirmed
     Checking --> Failed: check failed
@@ -4374,24 +4375,53 @@ stateDiagram-v2
     Installing --> Failed: installation failed
 ```
 
-- `up_to_date` is produced only by a manual check and carries the current
-  public version so the user can distinguish a completed check from an idle
-  background state.
+- `up_to_date` carries the current public version after either automatic or
+  manual checks. It does not automatically open the update dialog. A manual
+  request joining an active automatic check observes that check's completion.
 - A disabled `auto_check` preference issues no network request. Turning it off
   suppresses later scheduled checks; turning it on triggers one check.
 - `include_prereleases` is independent of `auto_check`. When enabled, stable
   and pre-release feeds are both checked and the greatest SemVer candidate is
   selected. A pre-release identifier such as `-alpha.1`, `-beta.1`, or `-rc.1`
   marks a pre-release; build metadata does not.
-- Manual checks are available from the Help menu and User Settings even when
-  `auto_check` is disabled. A manual check never downloads or installs by
-  itself.
+- Manual checks are available directly from **Koushi → Check for Updates…**,
+  even before sign-in and when `auto_check` is disabled. This opens the one
+  process-wide Software update dialog, containing status, preferences, explicit
+  download, and explicit restart actions. Updates are not buried in account
+  settings and do not open a second native confirmation dialog.
+- Changing the release channel invalidates unapproved candidates and in-flight
+  results. When automatic checks are disabled this performs no network request;
+  otherwise the new channel is checked. Explicitly approved downloads and
+  verified artifacts remain fixed; the channel control is disabled while
+  downloading, ready, or installing, and any external policy change applies to
+  future checks only.
 - Duplicate triggers while checking, available, downloading, ready, or installing are
-  ignored. There is one verified pending artifact slot.
-- `available` and `ready` expose only the release version. `failed` exposes only a coarse
+  coalesced. There is one verified pending artifact slot. Admission, lifecycle,
+  artifact ownership, policies, and operation generation share one serialized
+  transition boundary. Stale settings revisions and late operation completions
+  cannot replace newer state. Events preserve transition order; network,
+  installation, and asynchronous waits never run under the lifecycle mutex.
+- Download approval identifies the displayed candidate generation; stale clicks
+  cannot approve a replacement candidate. Updater-owned work is canceled and
+  joined on owner shutdown rather than detached.
+- `available` exposes the release version and an opaque candidate generation;
+  `ready` exposes the release version. `failed` exposes only a coarse
   stage/kind and is recoverable; it never blocks startup or login.
 - Installation and relaunch require explicit user intent. macOS is the only
   enabled platform in this phase; Windows and Linux remain `unsupported`.
+- A successful installation records relaunch intent and enters the ordinary
+  graceful-shutdown barrier. The updater owner must finish and Core shutdown
+  must settle before the final native restart request. A native restart event
+  that cannot be prevented is not itself a shutdown barrier.
+- Core completion acknowledges AccountActor cleanup, not merely submission of
+  its shutdown message. Waiters may cancel without losing the completion signal;
+  abnormal owner termination is a failure, never a successful acknowledgement.
+- After the updater (including any active native installer) settles, Core command
+  submission and acknowledged cleanup share a ten-second deadline. On timeout or
+  failure, record a coarse forced-exit diagnostic and authorize ordinary exit,
+  never automatic restart. This fallback does not assert persistence succeeded;
+  late completion cannot upgrade it to restart. Native installation is not
+  interrupted by this Core deadline.
 
 ### UI readability #130
 

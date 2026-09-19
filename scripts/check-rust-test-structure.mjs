@@ -876,9 +876,9 @@ export function checkDesktopQaControlPipeContract() {
   return failures;
 }
 
-export function checkDesktopNativeWindowLifecycleContract() {
+export function checkDesktopNativeWindowLifecycleContract(sourceOverride) {
   const rule = "desktop.native.window_lifecycle_contract";
-  const source = productionOnly(readTauriSource("lib.rs"), "apps/desktop/src-tauri/src/lib.rs");
+  const source = productionOnly(sourceOverride ?? readTauriSource("lib.rs"), "apps/desktop/src-tauri/src/lib.rs");
   const failures = [];
   // A destroyed product window means the process is ending, so it must enter
   // the shared quit barrier rather than submit a shutdown of its own ahead of
@@ -887,10 +887,19 @@ export function checkDesktopNativeWindowLifecycleContract() {
   for (const marker of ["claim_core_shutdown", "begin_graceful_shutdown"]) if (!destroyed?.includes(marker)) failures.push(sourceContractFailure(rule, `window destruction path lacks ${marker}`));
   failures.push(...orderedMarkers(rule, destroyed ?? "", ["claim_core_shutdown", "begin_graceful_shutdown"]));
   if (destroyed?.includes("AppCommand::Shutdown {")) failures.push(sourceContractFailure(rule, "window destruction path submits shutdown outside the quit barrier"));
-  // Exactly one owner submits the shutdown, awaits it, and only then exits.
+  // Exactly one coordinator joins the updater, awaits Core cleanup, and then
+  // authorizes exit. Submission alone is not a cleanup acknowledgement.
   const shutdown = rustItemBody(source, "fn begin_graceful_shutdown");
-  for (const marker of ["AppCommand::Shutdown { request_id }", "QuitStage::ShutdownComplete", "app.exit(0)"]) if (!shutdown?.includes(marker)) failures.push(sourceContractFailure(rule, `graceful shutdown lacks ${marker}`));
-  failures.push(...orderedMarkers(rule, shutdown ?? "", ["AppCommand::Shutdown { request_id }", "QuitStage::ShutdownComplete", "app.exit(0)"]));
+  for (const marker of ["finish_application_shutdown", "app_updates::shutdown", "stop_core_for_exit"]) if (!shutdown?.includes(marker)) failures.push(sourceContractFailure(rule, `graceful shutdown lacks ${marker}`));
+  const coreShutdown = rustItemBody(source, "async fn stop_core_for_exit_with_timeout");
+  failures.push(...orderedMarkers(rule, coreShutdown ?? "", ["AppCommand::Shutdown { request_id }", "runtime.wait_for_shutdown()"]));
+  if (!coreShutdown?.includes("await_core_exit")) failures.push(sourceContractFailure(rule, "Core cleanup lacks bounded completion wait"));
+  const finish = rustItemBody(source, "async fn finish_application_shutdown");
+  failures.push(...orderedMarkers(rule, finish ?? "", ["updater.await", "core.await", "QuitStage::ShutdownComplete", "exit.final_restart()"]));
+  for (const marker of ["CoreExitOutcome::Completed", "QuitStage::ForcedExit", "restart_after_shutdown.store(false", "exit.ordinary_exit()"]) if (!finish?.includes(marker)) failures.push(sourceContractFailure(rule, `shutdown completion lacks ${marker}`));
+  const restart = rustItemBody(source, "fn request_application_restart_with");
+  failures.push(...orderedMarkers(rule, restart ?? "", ["restart_after_shutdown.swap(true", "exit.ordinary_exit()"]));
+  if (restart?.includes("exit.final_restart()")) failures.push(sourceContractFailure(rule, "restart bypasses ordinary shutdown admission"));
   if (source.split("AppCommand::Shutdown { request_id }").length - 1 !== 1) failures.push(sourceContractFailure(rule, "shutdown is submitted from more than one place"));
   // The barrier holds every exit request, whatever its code, until the single
   // claimant has finished shutting core down.

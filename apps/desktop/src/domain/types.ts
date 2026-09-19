@@ -303,7 +303,7 @@ export type DesktopUpdateState =
   | { kind: "idle" }
   | { kind: "up_to_date"; version: string }
   | { kind: "checking" }
-  | { kind: "available"; version: string }
+  | { kind: "available"; version: string; generation: number }
   | { kind: "downloading"; version: string }
   | { kind: "ready"; version: string }
   | { kind: "failed"; stage: "check" | "download_or_verify" | "install" }

@@ -198,7 +198,8 @@ impl SettingsValues {
             self.sidebar = sidebar;
         }
         if let Some(sidebar_section) = patch.sidebar_section {
-            self.sidebar.apply_section_patch(sidebar_section);
+            self.sidebar
+                .apply_section_patch(sidebar_section, self.room_list_sort);
         }
         if let Some(window) = patch.window {
             self.window = window;
@@ -368,8 +369,12 @@ impl SidebarSettings {
             })
     }
 
-    pub fn apply_section_patch(&mut self, patch: SidebarSectionPatch) {
-        let settings = self.scope_preferences.entry(patch.scope).or_default();
+    pub fn apply_section_patch(&mut self, patch: SidebarSectionPatch, fallback_sort: RoomListSort) {
+        let inherited = self.scope(Some(&patch.scope), fallback_sort);
+        let settings = self
+            .scope_preferences
+            .entry(patch.scope)
+            .or_insert(inherited);
         let section = match patch.section {
             SidebarSectionKind::Rooms => &mut settings.rooms,
             SidebarSectionKind::Dms => &mut settings.dms,

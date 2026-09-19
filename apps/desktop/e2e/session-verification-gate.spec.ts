@@ -11,7 +11,7 @@ const nonReady = [
 
 async function startDeviceVerificationAnyway(page: Page) {
   await page.getByRole("button", { name: "Verify with another device" }).click();
-  await expect(page.getByRole("dialog", { name: "Try device verification?" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Try device verification?" })).toBeVisible();
   await page.getByRole("button", { name: "Try device verification anyway" }).click();
 }
 

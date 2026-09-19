@@ -3,6 +3,7 @@ import { useCallback } from "react";
 import { t } from "../../i18n/messages";
 import type { TimelineMegolmSessionReason, TimelineMessageSource } from "../../domain/coreEvents";
 import { writeClipboardText } from "./TimelineMessageBody";
+import { FloatingLayer } from "../floatingLayer";
 
 export function MessageSourceDialog({
   source,
@@ -26,10 +27,15 @@ export function MessageSourceDialog({
   }, [source.megolm_session_fingerprint]);
 
   return (
-    <div
+    <FloatingLayer><div
       className="message-source-dialog"
       role="dialog"
       aria-label={t("timeline.messageSource")}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+          event.preventDefault(); event.stopPropagation(); onClose();
+        }
+      }}
     >
       <div className="message-source-dialog-header">
         <span>{t("timeline.messageSource")}</span>
@@ -102,7 +108,7 @@ export function MessageSourceDialog({
       <pre className="message-source-json">
         <code>{sourceText}</code>
       </pre>
-    </div>
+    </div></FloatingLayer>
   );
 }
 

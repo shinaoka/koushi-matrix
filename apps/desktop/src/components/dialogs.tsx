@@ -1,9 +1,8 @@
-import { ModalDialog } from "./ModalDialog";
+import { ModalDialog, NativeModal } from "./ModalDialog";
 // Dialog components extracted from App.tsx.
 // Imports: React, lucide-react, i18n, domain types, uiShared.
 
 import {
-  type KeyboardEvent,
   type RefObject,
   useEffect,
   useRef,
@@ -141,13 +140,6 @@ export function CreateEntityDialog({
       (addressPreview !== null && addressPreview.error === null)) &&
     !isBusy;
 
-  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onCancel();
-    }
-  }
-
   function updateRoomOptions(patch: Partial<CreateRoomDialogOptions>) {
     const next = {
       ...effectiveRoomOptions,
@@ -160,12 +152,11 @@ export function CreateEntityDialog({
   }
 
   return (
-    <div
+    <NativeModal onDismiss={onCancel} dismissible={!isBusy}
       className="dialog-overlay"
       role="dialog"
       aria-modal="true"
       aria-label={title}
-      onKeyDown={onDialogKeyDown}
     >
       <ImeSafeForm
         className="dialog-box"
@@ -306,7 +297,7 @@ export function CreateEntityDialog({
           </button>
         </div>
       </ImeSafeForm>
-    </div>
+    </NativeModal>
   );
 }
 
@@ -323,20 +314,12 @@ export function ImageCompressionDialog({
 }) {
   const [saveDefault, setSaveDefault] = useState(false);
 
-  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onCancel();
-    }
-  }
-
   return (
-    <div
+    <NativeModal onDismiss={onCancel}
       className="dialog-overlay"
       role="dialog"
       aria-modal="true"
       aria-label={t("composer.imageCompressionTitle")}
-      onKeyDown={onDialogKeyDown}
     >
       <div className="dialog-box image-compression-dialog">
         <div className="dialog-title">{t("composer.imageCompressionTitle")}</div>
@@ -380,7 +363,7 @@ export function ImageCompressionDialog({
           </button>
         </div>
       </div>
-    </div>
+    </NativeModal>
   );
 }
 
@@ -393,20 +376,13 @@ export function DiagnosticDialog({
   report: string;
   onClose: () => void;
 }) {
-  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onClose();
-    }
-  }
 
   return (
-    <div
+    <NativeModal onDismiss={onClose}
       className="dialog-overlay"
       role="dialog"
       aria-modal="true"
       aria-label={t("diagnostics.title")}
-      onKeyDown={onDialogKeyDown}
     >
       <div className="dialog-box diagnostics-dialog">
         <div className="dialog-title-row">
@@ -435,7 +411,7 @@ export function DiagnosticDialog({
           </button>
         </div>
       </div>
-    </div>
+    </NativeModal>
   );
 }
 
@@ -462,20 +438,12 @@ export function UserIdDialog({
 }) {
   const canSubmit = value.trim().length > 0 && !isBusy;
 
-  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onCancel();
-    }
-  }
-
   return (
-    <div
+    <NativeModal onDismiss={onCancel} dismissible={!isBusy}
       className="dialog-overlay"
       role="dialog"
       aria-modal="true"
       aria-label={title}
-      onKeyDown={onDialogKeyDown}
     >
       <ImeSafeForm
         className="dialog-box"
@@ -517,69 +485,8 @@ export function UserIdDialog({
           </button>
         </div>
       </ImeSafeForm>
-    </div>
+    </NativeModal>
   );
-}
-
-// ===== InviteTargetsDialog =====
-
-/**
- * Modal focus containment for dialogs: remembers the element focused when the
- * dialog opened, wraps Tab/Shift+Tab at the edges of the overlay, and restores
- * focus to the trigger when the dialog unmounts (#488).
- */
-function useDialogFocusTrap(overlayRef: RefObject<HTMLDivElement | null>): void {
-  // Captured during the first render, before the dialog's own autoFocus runs,
-  // so it is the trigger element rather than the freshly-focused search field.
-  const triggerRef = useRef<HTMLElement | null>(null);
-  if (triggerRef.current === null) {
-    triggerRef.current = document.activeElement as HTMLElement | null;
-  }
-
-  useEffect(() => {
-    const overlay = overlayRef.current;
-    if (!overlay) {
-      return;
-    }
-    function onKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.key !== "Tab" || event.defaultPrevented) {
-        return;
-      }
-      const currentOverlay = overlayRef.current;
-      if (!currentOverlay) {
-        return;
-      }
-      const focusables = Array.from(
-        currentOverlay.querySelectorAll<HTMLElement>(
-          'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
-        )
-      );
-      if (focusables.length === 0) {
-        return;
-      }
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      // Only restore the trigger when the overlay really unmounted: React
-      // StrictMode rehearses effects with the overlay still connected, and a
-      // return-to-invite flow can close the panel that held the trigger, so
-      // restoring focus while the dialog is open (or to a detached element)
-      // would drop focus onto the body.
-      if (!overlay.isConnected && triggerRef.current?.isConnected) {
-        triggerRef.current.focus();
-      }
-    };
-  }, [overlayRef]);
 }
 
 export function InviteTargetsDialog({
@@ -609,7 +516,7 @@ export function InviteTargetsDialog({
   onSelectCandidate: (userId: string) => void;
   onSubmit: () => void;
 }) {
-  const overlayRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const isPending = workflow.operation.kind === "pending";
   const isCompleted = workflow.operation.kind === "completed";
   const canSubmit = workflow.selected_targets.length > 0 && !isBusy && !isPending;
@@ -619,23 +526,12 @@ export function InviteTargetsDialog({
     kind: "roomOnly" as const
   };
 
-  useDialogFocusTrap(overlayRef);
-
-  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onCancel();
-    }
-  }
-
   return (
-    <div
+    <NativeModal onDismiss={onCancel} dismissible={!isBusy} initialFocusRef={searchRef}
       className="dialog-overlay"
-      ref={overlayRef}
       role="dialog"
       aria-modal="true"
       aria-label={title}
-      onKeyDown={onDialogKeyDown}
     >
       <ImeSafeForm
         className="dialog-box invite-target-dialog"
@@ -672,6 +568,7 @@ export function InviteTargetsDialog({
           type="text"
           autoFocus
           aria-label={t("dialog.inviteSearch")}
+          ref={searchRef}
           placeholder={t("dialog.inviteSearch")}
           spellCheck={false}
           value={query}
@@ -788,7 +685,7 @@ export function InviteTargetsDialog({
           </button>
         </div>
       </ImeSafeForm>
-    </div>
+    </NativeModal>
   );
 }
 
@@ -837,20 +734,12 @@ export function ReportReasonDialog({
 }) {
   const canSubmit = reason.trim().length > 0;
 
-  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onCancel();
-    }
-  }
-
   return (
-    <div
+    <NativeModal onDismiss={onCancel}
       className="dialog-overlay"
       role="dialog"
       aria-modal="true"
       aria-label={title}
-      onKeyDown={onDialogKeyDown}
     >
       <ImeSafeForm
         className="dialog-box"
@@ -894,7 +783,7 @@ export function ReportReasonDialog({
           </button>
         </div>
       </ImeSafeForm>
-    </div>
+    </NativeModal>
   );
 }
 
@@ -947,9 +836,7 @@ export function UploadStagingDialog({
   onRecentEmojisChange?: (emojis: string[]) => void | Promise<void>;
   roomName?: string;
 }) {
-  const overlayRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  useDialogFocusTrap(overlayRef);
   useEffect(() => {
     closeButtonRef.current?.focus();
   }, []);
@@ -970,12 +857,9 @@ export function UploadStagingDialog({
 
   return (
     <FloatingLayer>
-      <div ref={overlayRef} className="dialog-overlay upload-staging-overlay">
+      <NativeModal onDismiss={onClear} aria-label={t("upload.dialogTitle")} className="dialog-overlay upload-staging-overlay">
         <section
           className="upload-staging-dialog"
-          role="dialog"
-          aria-modal="true"
-          aria-label={t("upload.dialogTitle")}
         >
           <div className="upload-staging-header">
             <h2>{t("upload.dialogTitle")}</h2>
@@ -1090,7 +974,7 @@ export function UploadStagingDialog({
             </button>
           </div>
         </section>
-      </div>
+      </NativeModal>
     </FloatingLayer>
   );
 }
@@ -1337,6 +1221,7 @@ function PreparedUploadPreview({
       </div>
       {actualSizeOpen && previewUrl ? (
         <UploadActualSizePreview
+          returnFocusRef={previewButtonRef}
           url={previewUrl}
           filename={item.filename}
           onClose={() => {
@@ -1351,47 +1236,30 @@ function PreparedUploadPreview({
   );
 }
 
-function UploadActualSizePreview({ url, filename, onClose }: {
+function UploadActualSizePreview({ url, filename, onClose, returnFocusRef }: {
   url: string;
   filename: string;
   onClose: () => void;
+  returnFocusRef: RefObject<HTMLButtonElement | null>;
 }) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    dialog?.showModal();
-    return () => dialog?.close();
-  }, []);
-
-  const close = () => {
-    // Close while connected so the browser restores focus to the image trigger.
-    dialogRef.current?.close();
-    onClose();
-  };
-
   return (
     <FloatingLayer>
-      <dialog
-        ref={dialogRef}
+      <NativeModal
+        returnFocusRef={returnFocusRef}
+        onDismiss={onClose}
         className="upload-actual-size-dialog"
         aria-label={t("upload.previewActualSize")}
-        onCancel={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          close();
-        }}
-        onKeyDown={(event) => event.stopPropagation()}
       >
         <div className="upload-staging-header">
           <h2 dir="auto">{filename}</h2>
-          <button type="button" className="icon-button" aria-label={t("action.close", { title: t("upload.previewActualSize") })} onClick={close}>
+          <button type="button" className="icon-button" aria-label={t("action.close", { title: t("upload.previewActualSize") })} onClick={onClose}>
             <X size={ICON_SIZE.small} />
           </button>
         </div>
         <div className="upload-actual-size-viewport" tabIndex={0}>
           <img src={url} alt={t("upload.previewAlt")} />
         </div>
-      </dialog>
+      </NativeModal>
     </FloatingLayer>
   );
 }
@@ -1418,13 +1286,6 @@ export function DirectoryPreviewDialog({
 }) {
   const title = t("directory.previewTitle");
 
-  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onCancel();
-    }
-  }
-
   const room = preview.kind === "ready" ? preview.room : null;
   const isSpace = room?.room_type === "m.space";
   const alias = room?.canonical_alias?.trim() || null;
@@ -1450,12 +1311,11 @@ export function DirectoryPreviewDialog({
   const canConfirm = room !== null && !isBusy;
 
   return (
-    <div
+    <NativeModal onDismiss={onCancel} dismissible={!isBusy}
       className="dialog-overlay"
       role="dialog"
       aria-modal="true"
       aria-label={title}
-      onKeyDown={onDialogKeyDown}
     >
       <div className="dialog-box directory-preview">
         <div className="dialog-title">{title}</div>
@@ -1503,6 +1363,6 @@ export function DirectoryPreviewDialog({
           ) : null}
         </div>
       </div>
-    </div>
+    </NativeModal>
   );
 }

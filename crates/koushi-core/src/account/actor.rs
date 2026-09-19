@@ -444,7 +444,7 @@ pub(crate) enum AccountMessage {
     },
     #[cfg(any(test, feature = "test-hooks"))]
     ResidencyTestShutdown {
-        acknowledged: oneshot::Sender<()>,
+        acknowledged: oneshot::Sender<bool>,
     },
     #[cfg(test)]
     ConfigureSyntheticRecoveryTask {
@@ -496,8 +496,16 @@ pub(crate) enum AccountMessage {
         results: Vec<Result<koushi_sdk::MatrixDeviceCleanupOutcome, DeviceCleanupFailureKind>>,
     },
     #[cfg(test)]
-    ShutdownWithAck {
+    StopRoomActorForTesting {
         acknowledged: oneshot::Sender<()>,
+    },
+    #[cfg(test)]
+    ConfigureShutdownGate {
+        entered: oneshot::Sender<()>,
+        release: oneshot::Receiver<()>,
+    },
+    ShutdownWithAck {
+        acknowledged: oneshot::Sender<bool>,
     },
     /// Forward `AppEffect::InvalidateSearchCrawlerCache` to the actor so it
     /// drops its completed-room cache before the subsequent re-enqueue.
@@ -810,7 +818,7 @@ impl AccountActorHandle {
         {
             return false;
         }
-        completion.await.is_ok()
+        completion.await.unwrap_or(false)
     }
 
     pub(crate) fn admit_navigation_projection(&self, intent: NavigationProjectionIntent) -> bool {
@@ -1348,8 +1356,9 @@ impl AccountActor {
     }
 
     async fn run(mut self) {
-        #[cfg(any(test, feature = "test-hooks"))]
-        let mut shutdown_ack: Option<oneshot::Sender<()>> = None;
+        #[cfg(test)]
+        let mut shutdown_gate = None;
+        let mut shutdown_ack: Option<oneshot::Sender<bool>> = None;
         let mut demand_channel_open = true;
         loop {
             // Fair selection prevents a busy publisher from starving commands;
@@ -1375,8 +1384,16 @@ impl AccountActor {
                 self.accept_avatar_demand().await;
             }
             match msg {
-                AccountMessage::Shutdown => break,
                 #[cfg(test)]
+                AccountMessage::StopRoomActorForTesting { acknowledged } => {
+                    let _ = self.stop_room_actor().await;
+                    let _ = acknowledged.send(());
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureShutdownGate { entered, release } => {
+                    shutdown_gate = Some((entered, release));
+                }
+                AccountMessage::Shutdown => break,
                 AccountMessage::ShutdownWithAck { acknowledged } => {
                     shutdown_ack = Some(acknowledged);
                     break;
@@ -2482,11 +2499,16 @@ impl AccountActor {
             }
             self.flush_pending_crawler_notification();
         }
-        self.shutdown_owned_runtime().await;
-        self.stop_room_actor().await;
-        #[cfg(any(test, feature = "test-hooks"))]
+        #[cfg(test)]
+        if let Some((entered, release)) = shutdown_gate {
+            let _ = entered.send(());
+            let _ = release.await;
+        }
+        let runtime_ok = self.shutdown_owned_runtime().await;
+        // Always attempt RoomActor cleanup, even when session teardown failed.
+        let room_ok = self.stop_room_actor().await;
         if let Some(acknowledged) = shutdown_ack {
-            let _ = acknowledged.send(());
+            let _ = acknowledged.send(runtime_ok && room_ok);
         }
     }
 

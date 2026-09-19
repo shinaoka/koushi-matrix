@@ -3,11 +3,29 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { DesktopUpdateControls } from "./UserSettingsPanel";
+import { DesktopUpdateControls } from "./DesktopUpdates";
 
 afterEach(cleanup);
 
 describe("DesktopUpdateControls", () => {
+  test.each(["downloading", "ready", "installing"] as const)("freezes the release channel after download consent (%s)", (kind) => {
+    const onSelect = vi.fn();
+    render(
+      <DesktopUpdateControls
+        current={{ auto_check: true, include_prereleases: true }}
+        state={{ kind, version: "1.2.3-beta.1" }}
+        onSelect={onSelect}
+        onCheck={() => undefined}
+        onDownload={() => undefined}
+        onRestart={() => undefined}
+      />
+    );
+    const channel = screen.getByRole("switch", { name: "Include pre-release versions" }) as HTMLButtonElement;
+    expect(channel.disabled).toBe(true);
+    fireEvent.click(channel);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
   test("dispatches the Rust-shaped automatic update setting", () => {
     const onSelect = vi.fn();
     render(
@@ -79,7 +97,7 @@ describe("DesktopUpdateControls", () => {
     render(
       <DesktopUpdateControls
         current={{ auto_check: true, include_prereleases: false }}
-        state={{ kind: "available", version: "1.2.3" }}
+        state={{ kind: "available", version: "1.2.3", generation: 7 }}
         onSelect={() => undefined}
         onCheck={() => undefined}
         onDownload={onDownload}

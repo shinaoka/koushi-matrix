@@ -1,4 +1,5 @@
 import { UserPlus, X } from "lucide-react";
+import { NativeModal } from "./ModalDialog";
 import { useEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from "react";
 
 import type {
@@ -586,7 +587,7 @@ export function SpaceMembersPanel({
       ) : null}
 
       {pendingRoleChange ? (
-        <div
+        <NativeModal onDismiss={() => setPendingRoleChange(null)}
           className="dialog-overlay"
           role="dialog"
           aria-modal="true"
@@ -629,7 +630,7 @@ export function SpaceMembersPanel({
               </button>
             </div>
           </div>
-        </div>
+        </NativeModal>
       ) : null}
     </section>
   );

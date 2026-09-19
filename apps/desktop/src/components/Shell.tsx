@@ -26,6 +26,7 @@ import {
   X
 } from "lucide-react";
 import { t } from "../i18n/messages";
+import { FloatingLayer, floatingPlacementStyle, useFloatingPlacement } from "./floatingLayer";
 import type {
   AccountHomeItem,
   CurrentSessionStatusState,
@@ -213,6 +214,7 @@ export function TopBar({
     sessionStatusTriggerRef.current?.focus();
   }
 
+  const sessionStatusPopupRef = useRef<HTMLElement>(null);
   function openSessionStatus() {
     setSessionStatusOpen(true);
     onRefreshCurrentSessionStatus("open");
@@ -223,7 +225,7 @@ export function TopBar({
       return undefined;
     }
     function onKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && !event.defaultPrevented && !event.isComposing && event.keyCode !== 229) {
         event.preventDefault();
         closeSessionStatus();
       }
@@ -231,7 +233,8 @@ export function TopBar({
     function onPointerDown(event: PointerEvent) {
       if (
         event.target instanceof Node &&
-        !sessionStatusHostRef.current?.contains(event.target)
+        !sessionStatusHostRef.current?.contains(event.target) &&
+        !sessionStatusPopupRef.current?.contains(event.target)
       ) {
         closeSessionStatus();
       }
@@ -325,6 +328,9 @@ export function TopBar({
           </button>
           {sessionStatusOpen ? (
             <SessionStatusPopover
+              anchorRef={sessionStatusTriggerRef}
+              dialogRef={sessionStatusPopupRef}
+              onClose={closeSessionStatus}
               accountManagementUrl={safeAccountManagementUrl}
               currentSessionStatus={currentSessionStatus}
               deviceId={deviceId}
@@ -365,6 +371,9 @@ export function TopBar({
 }
 
 function SessionStatusPopover({
+  anchorRef,
+  dialogRef,
+  onClose,
   accountManagementUrl,
   currentSessionStatus,
   deviceId,
@@ -378,6 +387,9 @@ function SessionStatusPopover({
   onRetryRuntimeAlert,
   runtimeAlerts
 }: {
+  anchorRef: RefObject<HTMLButtonElement | null>;
+  dialogRef: RefObject<HTMLElement | null>;
+  onClose: () => void;
   accountManagementUrl: string | null;
   currentSessionStatus: CurrentSessionStatusState;
   deviceId: string | null;
@@ -391,7 +403,8 @@ function SessionStatusPopover({
   onRetryRuntimeAlert: (kind: RuntimeAlertKind) => void;
   runtimeAlerts: RuntimeAlert[];
 }) {
-  const dialogRef = useRef<HTMLElement>(null);
+  const placement = useFloatingPlacement({ anchorRef, placement: "below", align: "end", inlineSize: 380, blockSize: 620 });
+  const positioned = placement !== null;
   const [copyState, setCopyState] = useState<"idle" | "copying" | "copied" | "failed">("idle");
   const details = currentSessionStatusDetails(currentSessionStatus);
   const displayedDeviceId = details?.device_id ?? deviceId;
@@ -402,8 +415,8 @@ function SessionStatusPopover({
       : t("sessionStatus.recheck");
 
   useEffect(() => {
-    dialogRef.current?.focus();
-  }, []);
+    if (positioned) dialogRef.current?.focus();
+  }, [positioned, dialogRef]);
 
   async function copyDiagnostics() {
     setCopyState("copying");
@@ -416,12 +429,19 @@ function SessionStatusPopover({
   }
 
   return (
-    <section
+    <FloatingLayer><section
       ref={dialogRef}
       className="session-status-popover"
+      style={floatingPlacementStyle(placement)}
       role="dialog"
       aria-label={t("sessionStatus.title")}
       tabIndex={-1}
+      onMouseDown={event => event.stopPropagation()}
+      onKeyDown={event => {
+        if (event.key === "Escape" && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+          event.preventDefault(); event.stopPropagation(); onClose();
+        }
+      }}
     >
       <div className="session-status-heading">
         <strong>{t("sessionStatus.title")}</strong>
@@ -544,7 +564,7 @@ function SessionStatusPopover({
           {copyState === "copied" ? t("diagnostics.copied") : t("diagnostics.copyFailed")}
         </p>
       ) : null}
-    </section>
+    </section></FloatingLayer>
   );
 }
 

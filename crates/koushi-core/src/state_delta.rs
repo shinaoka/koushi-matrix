@@ -414,6 +414,8 @@ pub fn build_state_delta(
         || previous.navigation.space_local_presentations
             != next.navigation.space_local_presentations
         || previous.settings.values.room_list_sort != next.settings.values.room_list_sort
+        || previous.settings.values.sidebar.scope_preferences
+            != next.settings.values.sidebar.scope_preferences
         || previous.spaces != next.spaces
         || previous.rooms != next.rooms
         || previous.invites != next.invites
@@ -587,3 +589,6 @@ fn audit_app_state_delta_slices(state: &AppState) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod sidebar_preferences_tests;

@@ -114,7 +114,7 @@ export interface DesktopApi {
   getSnapshot(): Promise<DesktopSnapshot>;
   getDesktopUpdateState(): Promise<DesktopUpdateState>;
   checkForDesktopUpdate(): Promise<void>;
-  downloadDesktopUpdate(): Promise<void>;
+  downloadDesktopUpdate(expectedGeneration: number): Promise<void>;
   restartToInstallDesktopUpdate(): Promise<void>;
   settlementSnapshot(): Promise<DesktopSnapshot>;
   resyncSnapshot(): Promise<DesktopSnapshot>;

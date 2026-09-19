@@ -474,8 +474,7 @@ export function SessionVerificationGate({
         {confirmSecureBackupReenable && (
           <div
             className="trust-verification-dialog"
-            role="dialog"
-            aria-modal="true"
+            role="region"
             aria-label={t("gate.secureBackupReenable")}
           >
             <p>{t("gate.secureBackupExplicitDisabledCopy")}</p>
@@ -541,7 +540,7 @@ export function SessionVerificationGate({
       <p>{t("gate.noRecoveryKeyCopy")}</p>
     </div>}
     {awaiting && deviceVerificationAvailable && <button className="dialog-button" disabled={gateOperations.has("sas")} onClick={() => setConfirmDeviceVerification(true)}>{t("gate.otherDevice")}</button>}
-    {awaiting && deviceVerificationAvailable && confirmDeviceVerification && <div className="trust-verification-dialog" role="dialog" aria-modal="true" aria-labelledby="device-verification-confirm-title">
+    {awaiting && deviceVerificationAvailable && confirmDeviceVerification && <div className="trust-verification-dialog" role="region" aria-labelledby="device-verification-confirm-title">
       <h2 id="device-verification-confirm-title">{t("gate.deviceVerificationDialogTitle")}</h2>
       <p>{t("gate.deviceVerificationDialogCopy")}</p>
       <div className="dialog-actions">

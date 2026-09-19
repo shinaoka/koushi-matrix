@@ -184,6 +184,10 @@ pub struct RoomActorHandle {
     task: Option<executor::JoinHandle<()>>,
 }
 
+#[cfg(test)]
+#[path = "shutdown_result_tests.rs"]
+mod shutdown_result_tests;
+
 impl RoomActorHandle {
     pub(crate) fn spawn_with_account_work(
         action_tx: mpsc::Sender<Vec<AppAction>>,
@@ -353,8 +357,13 @@ impl RoomActorHandle {
         let Some(mut task) = self.task.take() else {
             return sent;
         };
-        if sent && executor::timeout(join_timeout, &mut task).await.is_ok() {
-            return true;
+        if sent {
+            match executor::timeout(join_timeout, &mut task).await {
+                Ok(Ok(())) => return true,
+                // The task has already been joined; do not poll it again.
+                Ok(Err(_)) => return false,
+                Err(_) => {}
+            }
         }
         task.abort();
         let _ = task.await;

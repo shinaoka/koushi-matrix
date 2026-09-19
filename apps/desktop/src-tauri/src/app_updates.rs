@@ -1,8 +1,14 @@
-use std::sync::Mutex;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+};
 
 use koushi_core::CoreConnection;
+use koushi_state::UpdatesSettings;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::sync::{Notify, watch};
 #[cfg(target_os = "macos")]
 use url::Url;
 
@@ -23,7 +29,7 @@ pub enum DesktopUpdateState {
     Idle,
     UpToDate { version: String },
     Checking,
-    Available { version: String },
+    Available { version: String, generation: u64 },
     Downloading { version: String },
     Ready { version: String },
     Failed { stage: DesktopUpdateFailureStage },
@@ -38,46 +44,495 @@ pub enum DesktopUpdateFailureStage {
     Install,
 }
 
-#[cfg(target_os = "macos")]
-struct PendingUpdate {
-    update: Update,
+struct PendingUpdate<C> {
+    version: String,
+    update: C,
     bytes: Option<Vec<u8>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Phase {
+    Check,
+    Download,
+    Install,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Operation {
+    generation: u64,
+    phase: Phase,
+}
+
+#[derive(Clone)]
+struct PolicySnapshot {
+    generation: u64,
+    settings: UpdatesSettings,
+}
+
+struct Lifecycle<C> {
+    state: DesktopUpdateState,
+    pending: Option<PendingUpdate<C>>,
+    generation: u64,
+    settings_generation: Option<u64>,
+    settings: UpdatesSettings,
+    claimed: bool,
+    stopping: bool,
+    owner: Option<tauri::async_runtime::JoinHandle<()>>,
+    owner_started: bool,
+}
+
+impl<C> Lifecycle<C> {
+    fn new(state: DesktopUpdateState) -> Self {
+        Self {
+            state,
+            pending: None,
+            generation: 0,
+            settings_generation: None,
+            settings: UpdatesSettings {
+                auto_check: false,
+                include_prereleases: false,
+            },
+            claimed: false,
+            stopping: false,
+            owner: None,
+            owner_started: false,
+        }
+    }
+
+    fn advance(&mut self) {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("updater generation exhausted");
+        self.claimed = false;
+    }
+
+    fn operation(&self) -> Option<Operation> {
+        let phase = match self.state {
+            DesktopUpdateState::Checking => Phase::Check,
+            DesktopUpdateState::Downloading { .. } => Phase::Download,
+            DesktopUpdateState::Installing { .. } => Phase::Install,
+            _ => return None,
+        };
+        (!self.stopping).then_some(Operation {
+            generation: self.generation,
+            phase,
+        })
+    }
+
+    fn begin_check(&mut self) -> bool {
+        if self.stopping
+            || !matches!(
+                self.state,
+                DesktopUpdateState::Idle
+                    | DesktopUpdateState::UpToDate { .. }
+                    | DesktopUpdateState::Failed { .. }
+            )
+        {
+            return false;
+        }
+        self.advance();
+        self.pending = None;
+        self.state = DesktopUpdateState::Checking;
+        true
+    }
+
+    fn observe(&mut self, snapshot: PolicySnapshot) -> bool {
+        if self.stopping {
+            return false;
+        }
+        if let Some(watermark) = self.settings_generation {
+            if snapshot.generation < watermark {
+                return false;
+            }
+            if snapshot.generation == watermark {
+                return snapshot.settings == self.settings;
+            }
+        }
+        let channel_changed =
+            snapshot.settings.include_prereleases != self.settings.include_prereleases;
+        let enable_check = snapshot.settings.auto_check
+            && (self.settings_generation.is_none() || !self.settings.auto_check);
+        self.settings_generation = Some(snapshot.generation);
+        self.settings = snapshot.settings;
+        if channel_changed
+            && !matches!(
+                self.state,
+                DesktopUpdateState::Unsupported
+                    | DesktopUpdateState::Downloading { .. }
+                    | DesktopUpdateState::Ready { .. }
+                    | DesktopUpdateState::Installing { .. }
+            )
+        {
+            self.advance();
+            self.pending = None;
+            self.state = DesktopUpdateState::Idle;
+            if self.settings.auto_check {
+                self.begin_check();
+            }
+        } else if enable_check {
+            self.begin_check();
+        }
+        true
+    }
+
+    fn request_check(&mut self, snapshot: PolicySnapshot) -> bool {
+        // An older command snapshot must not roll policy back, but it does not
+        // invalidate the user's intent. Admit against the latest owned state.
+        self.observe(snapshot);
+        self.begin_check()
+    }
+
+    fn request_download(
+        &mut self,
+        snapshot: PolicySnapshot,
+        expected_generation: u64,
+    ) -> Result<(), ()> {
+        self.observe(snapshot);
+        self.begin_download(expected_generation)
+    }
+
+    fn begin_download(&mut self, expected_generation: u64) -> Result<(), ()> {
+        if self.stopping {
+            return Err(());
+        }
+        let DesktopUpdateState::Available {
+            version,
+            generation,
+        } = &self.state
+        else {
+            return Err(());
+        };
+        if *generation != expected_generation || self.pending.is_none() {
+            return Err(());
+        }
+        let version = version.clone();
+        self.advance();
+        self.state = DesktopUpdateState::Downloading { version };
+        Ok(())
+    }
+
+    fn begin_install(&mut self) -> Result<(), ()> {
+        if self.stopping {
+            return Err(());
+        }
+        let DesktopUpdateState::Ready { version } = &self.state else {
+            return Err(());
+        };
+        if self
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.bytes.as_ref())
+            .is_none()
+        {
+            return Err(());
+        }
+        let version = version.clone();
+        self.advance();
+        self.state = DesktopUpdateState::Installing { version };
+        Ok(())
+    }
+
+    fn claim_work(&mut self) -> Option<(Operation, Work<C>)> {
+        let operation = self.operation()?;
+        if self.claimed {
+            return None;
+        }
+        let work = match operation.phase {
+            Phase::Check => Work::Check(self.settings.include_prereleases),
+            Phase::Download => Work::Download(self.pending.take()?),
+            Phase::Install => Work::Install(self.pending.take()?),
+        };
+        self.claimed = true;
+        Some((operation, work))
+    }
+
+    fn complete(
+        &mut self,
+        operation: Operation,
+        completion: Completion<C>,
+        current_version: &str,
+    ) -> bool {
+        if self.operation() != Some(operation) || !self.claimed {
+            return false;
+        }
+        if !matches!(
+            (&completion, operation.phase),
+            (Completion::Check(_), Phase::Check)
+                | (Completion::Download(_), Phase::Download)
+                | (Completion::Install(_), Phase::Install)
+        ) {
+            return false;
+        }
+        self.claimed = false;
+        match (operation.phase, completion) {
+            (Phase::Check, Completion::Check(Ok(Some(pending)))) => {
+                self.state = DesktopUpdateState::Available {
+                    version: pending.version.clone(),
+                    generation: operation.generation,
+                };
+                self.pending = Some(pending);
+            }
+            (Phase::Check, Completion::Check(Ok(None))) => {
+                self.state = no_update_state(current_version.to_owned());
+            }
+            (Phase::Check, Completion::Check(Err(()))) => {
+                self.state = DesktopUpdateState::Failed {
+                    stage: DesktopUpdateFailureStage::Check,
+                };
+            }
+            (Phase::Download, Completion::Download(Ok(pending))) => {
+                self.state = DesktopUpdateState::Ready {
+                    version: pending.version.clone(),
+                };
+                self.pending = Some(pending);
+            }
+            (Phase::Download, Completion::Download(Err(()))) => {
+                self.state = DesktopUpdateState::Failed {
+                    stage: DesktopUpdateFailureStage::DownloadOrVerify,
+                };
+            }
+            (Phase::Install, Completion::Install(Ok(()))) => return true,
+            (Phase::Install, Completion::Install(Err(()))) => {
+                self.state = DesktopUpdateState::Failed {
+                    stage: DesktopUpdateFailureStage::Install,
+                };
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn stop(&mut self) {
+        if !self.stopping {
+            self.stopping = true;
+            self.advance();
+            self.pending = None;
+        }
+    }
+}
+
+struct Shared<C> {
+    lifecycle: Mutex<Lifecycle<C>>,
+    wake: Notify,
+    joined: watch::Sender<bool>,
+}
+
+impl<C> Shared<C> {
+    fn new(state: DesktopUpdateState) -> Self {
+        Self {
+            lifecycle: Mutex::new(Lifecycle::new(state)),
+            wake: Notify::new(),
+            joined: watch::channel(true).0,
+        }
+    }
+
+    fn state(&self) -> DesktopUpdateState {
+        self.lifecycle
+            .lock()
+            .expect("desktop update lifecycle mutex")
+            .state
+            .clone()
+    }
+
+    // Emission is synchronous and ordered with the mutation. The emitter must not
+    // re-enter the lifecycle; no network, installation or await runs in this lock.
+    fn transition<R>(
+        &self,
+        emit: impl FnOnce(DesktopUpdateState),
+        action: impl FnOnce(&mut Lifecycle<C>) -> R,
+    ) -> R {
+        let mut lifecycle = self
+            .lifecycle
+            .lock()
+            .expect("desktop update lifecycle mutex");
+        let previous = lifecycle.state.clone();
+        let generation = lifecycle.generation;
+        let result = action(&mut lifecycle);
+        if previous != lifecycle.state {
+            emit(lifecycle.state.clone());
+        }
+        if previous != lifecycle.state || generation != lifecycle.generation {
+            self.wake.notify_one();
+        }
+        result
+    }
+
+    async fn shutdown(&self) {
+        let mut joined = self.joined.subscribe();
+        self.transition(
+            |_| {},
+            |lifecycle| {
+                lifecycle.stop();
+            },
+        );
+        while !*joined.borrow_and_update() {
+            tokio::select! {
+                _ = joined.changed() => {}
+                _ = std::future::poll_fn(|cx| {
+                    // Poll only the join handle, never its work, while locked.
+                    // Keep it retained if this shutdown waiter is cancelled.
+                    let mut lifecycle = self.lifecycle.lock().expect("desktop update lifecycle mutex");
+                    let ready = lifecycle.owner.as_mut().is_none_or(|owner| Pin::new(owner).poll(cx).is_ready());
+                    if ready {
+                        lifecycle.owner = None;
+                        self.joined.send_replace(true);
+                        std::task::Poll::Ready(())
+                    } else {
+                        std::task::Poll::Pending
+                    }
+                }) => {}
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+type Candidate = Update;
+#[cfg(not(target_os = "macos"))]
+type Candidate = ();
+
 pub struct DesktopUpdateManager {
-    state: Mutex<DesktopUpdateState>,
-    #[cfg(target_os = "macos")]
-    pending: Mutex<Option<PendingUpdate>>,
+    shared: Arc<Shared<Candidate>>,
 }
 
 impl DesktopUpdateManager {
     pub fn new() -> Self {
         Self {
-            state: Mutex::new(initial_state()),
-            #[cfg(target_os = "macos")]
-            pending: Mutex::new(None),
+            shared: Arc::new(Shared::new(initial_state())),
         }
     }
 
     pub fn state(&self) -> DesktopUpdateState {
-        self.state
-            .lock()
-            .expect("desktop update state mutex")
-            .clone()
+        self.shared.state()
     }
+}
 
-    fn publish(&self, app: &AppHandle, state: DesktopUpdateState) {
-        *self.state.lock().expect("desktop update state mutex") = state.clone();
-        let _ = app.emit(DESKTOP_UPDATE_EVENT_NAME, state);
+enum Work<C> {
+    Check(bool),
+    Download(PendingUpdate<C>),
+    Install(PendingUpdate<C>),
+}
+enum Completion<C> {
+    Check(Result<Option<PendingUpdate<C>>, ()>),
+    Download(Result<PendingUpdate<C>, ()>),
+    Install(Result<(), ()>),
+}
+type UpdateFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+trait Backend<C>: Send + Sync + 'static {
+    fn start(&self, work: Work<C>) -> UpdateFuture<'static, Completion<C>>;
+    fn emit(&self, state: DesktopUpdateState);
+    fn current_version(&self) -> &str;
+    fn restart(&self);
+}
+
+trait SettingsSource: Send + 'static {
+    fn next(&mut self) -> UpdateFuture<'_, Option<PolicySnapshot>>;
+}
+
+impl SettingsSource for CoreConnection {
+    fn next(&mut self) -> UpdateFuture<'_, Option<PolicySnapshot>> {
+        Box::pin(async move {
+            self.next_versioned_snapshot()
+                .await
+                .map(|snapshot| PolicySnapshot {
+                    generation: snapshot.generation,
+                    settings: snapshot.state.settings.values.updates,
+                })
+        })
     }
+}
 
-    fn check_is_admissible(&self) -> bool {
-        matches!(
-            self.state(),
-            DesktopUpdateState::Idle
-                | DesktopUpdateState::UpToDate { .. }
-                | DesktopUpdateState::Failed { .. }
-        )
+fn start_owner<C: Send + 'static>(
+    shared: Arc<Shared<C>>,
+    backend: impl Backend<C>,
+    source: impl SettingsSource,
+) {
+    let mut lifecycle = shared
+        .lifecycle
+        .lock()
+        .expect("desktop update lifecycle mutex");
+    if lifecycle.owner_started || lifecycle.stopping {
+        return;
+    }
+    lifecycle.owner_started = true;
+    shared.joined.send_replace(false);
+    lifecycle.owner = Some(tauri::async_runtime::spawn(run_owner(
+        shared.clone(),
+        backend,
+        source,
+    )));
+}
+
+async fn run_owner<C: Send + 'static>(
+    shared: Arc<Shared<C>>,
+    backend: impl Backend<C>,
+    mut source: impl SettingsSource,
+) {
+    let mut active: Option<(Operation, UpdateFuture<'static, Completion<C>>)> = None;
+    let mut interval = tokio::time::interval_at(
+        tokio::time::Instant::now() + UPDATE_INTERVAL,
+        UPDATE_INTERVAL,
+    );
+    loop {
+        let (stopping, operation) = {
+            let lifecycle = shared
+                .lifecycle
+                .lock()
+                .expect("desktop update lifecycle mutex");
+            (lifecycle.stopping, lifecycle.operation())
+        };
+        if active
+            .as_ref()
+            .is_some_and(|(token, _)| Some(*token) != operation)
+        {
+            let (token, future) = active.take().expect("active operation");
+            if token.phase == Phase::Install {
+                let _ = future.await;
+            }
+            // Dropping a check/download future cancels its network work.
+        }
+        if stopping {
+            break;
+        }
+        if active.is_none() {
+            let claimed = shared
+                .lifecycle
+                .lock()
+                .expect("desktop update lifecycle mutex")
+                .claim_work();
+            if let Some((operation, work)) = claimed {
+                active = Some((operation, backend.start(work)));
+            }
+        }
+        tokio::select! {
+            biased;
+            _ = shared.wake.notified() => {}
+            snapshot = source.next() => {
+                shared.transition(|state| backend.emit(state), |lifecycle| {
+                    match snapshot {
+                        Some(snapshot) => { lifecycle.observe(snapshot); }
+                        None => lifecycle.stop(),
+                    }
+                });
+            }
+            _ = interval.tick() => {
+                shared.transition(|state| backend.emit(state), |lifecycle| {
+                    if lifecycle.settings.auto_check { lifecycle.begin_check(); }
+                });
+            }
+            completion = async { active.as_mut().expect("guarded active operation").1.as_mut().await }, if active.is_some() => {
+                let (operation, _) = active.take().expect("completed active operation");
+                let restart = shared.transition(|state| backend.emit(state), |lifecycle| {
+                    lifecycle.complete(operation, completion, backend.current_version())
+                });
+                if restart {
+                    backend.restart();
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -93,109 +548,128 @@ pub(crate) fn configured_updater_public_key() -> Option<&'static str> {
     option_env!("KOUSHI_UPDATER_PUBLIC_KEY").filter(|key| !key.trim().is_empty())
 }
 
-pub fn spawn_auto_update_loop(app: AppHandle, mut connection: CoreConnection) {
+pub fn spawn_auto_update_loop(app: AppHandle, connection: CoreConnection) {
     #[cfg(target_os = "macos")]
-    tauri::async_runtime::spawn(async move {
+    {
         if configured_updater_public_key().is_none() {
             return;
         }
-        let settings = connection.snapshot().settings.values.updates;
-        let mut auto_check = settings.auto_check;
-        let mut include_prereleases = settings.include_prereleases;
-        if auto_check {
-            check_for_update(&app, include_prereleases, false).await;
-        }
-
-        let mut interval = tokio::time::interval_at(
-            tokio::time::Instant::now() + UPDATE_INTERVAL,
-            UPDATE_INTERVAL,
+        let snapshot = connection.versioned_snapshot();
+        let shared = app.state::<DesktopUpdateManager>().shared.clone();
+        shared.transition(
+            |state| {
+                let _ = app.emit(DESKTOP_UPDATE_EVENT_NAME, state);
+            },
+            |lifecycle| {
+                lifecycle.observe(PolicySnapshot {
+                    generation: snapshot.generation,
+                    settings: snapshot.state.settings.values.updates,
+                });
+            },
         );
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    if auto_check {
-                        check_for_update(&app, include_prereleases, false).await;
-                    }
-                }
-                snapshot = connection.next_versioned_snapshot() => {
-                    let Some(snapshot) = snapshot else { break };
-                    let next = snapshot.state.settings.values.updates.auto_check;
-                    let next_include_prereleases =
-                        snapshot.state.settings.values.updates.include_prereleases;
-                    if next && (!auto_check || next_include_prereleases != include_prereleases) {
-                        check_for_update(&app, next_include_prereleases, false).await;
-                    }
-                    auto_check = next;
-                    include_prereleases = next_include_prereleases;
-                }
-            }
-        }
-    });
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (app, &mut connection);
+        let current_version = app.package_info().version.to_string();
+        start_owner(
+            shared,
+            NativeBackend {
+                app,
+                current_version,
+            },
+            connection,
+        );
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, connection);
 }
 
-pub async fn check_for_update(app: &AppHandle, include_prereleases: bool, manual: bool) {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (app, include_prereleases, manual);
-        return;
-    }
+pub async fn shutdown(app: &AppHandle) {
+    let shared = app.state::<DesktopUpdateManager>().shared.clone();
+    shared.shutdown().await;
+}
 
-    #[cfg(target_os = "macos")]
-    {
-        let manager = app.state::<DesktopUpdateManager>();
-        if !manager.check_is_admissible() {
-            return;
-        }
-        manager.publish(app, DesktopUpdateState::Checking);
+pub async fn check_for_update(
+    app: &AppHandle,
+    snapshot: koushi_protocol::state_update::VersionedAppStateSnapshot,
+) {
+    app.state::<DesktopUpdateManager>().shared.transition(
+        |state| {
+            let _ = app.emit(DESKTOP_UPDATE_EVENT_NAME, state);
+        },
+        |lifecycle| {
+            lifecycle.request_check(PolicySnapshot {
+                generation: snapshot.generation,
+                settings: snapshot.state.settings.values.updates,
+            });
+        },
+    );
+}
 
-        let mut endpoints = vec![STABLE_UPDATE_ENDPOINT];
-        if include_prereleases {
-            endpoints.push(BETA_UPDATE_ENDPOINT);
-        }
-        let mut update = None;
-        for endpoint in endpoints {
-            match check_update_endpoint(app, endpoint).await {
-                Ok(Some(candidate)) => {
-                    update = Some(select_newer_update(update, candidate));
+fn no_update_state(version: String) -> DesktopUpdateState {
+    DesktopUpdateState::UpToDate { version }
+}
+
+#[cfg(target_os = "macos")]
+struct NativeBackend {
+    app: AppHandle,
+    current_version: String,
+}
+
+#[cfg(target_os = "macos")]
+impl Backend<Update> for NativeBackend {
+    fn start(&self, work: Work<Update>) -> UpdateFuture<'static, Completion<Update>> {
+        let app = self.app.clone();
+        match work {
+            Work::Check(include_prereleases) => Box::pin(async move {
+                let mut update = None;
+                let endpoints = if include_prereleases {
+                    vec![STABLE_UPDATE_ENDPOINT, BETA_UPDATE_ENDPOINT]
+                } else {
+                    vec![STABLE_UPDATE_ENDPOINT]
+                };
+                for endpoint in endpoints {
+                    match check_update_endpoint(&app, endpoint).await {
+                        Ok(Some(candidate)) => {
+                            update = Some(select_newer_update(update, candidate))
+                        }
+                        Ok(None) => {}
+                        Err(()) => return Completion::Check(Err(())),
+                    }
                 }
-                Ok(None) => {}
-                Err(()) => {
-                    manager.publish(
-                        app,
-                        DesktopUpdateState::Failed {
-                            stage: DesktopUpdateFailureStage::Check,
-                        },
-                    );
-                    return;
+                Completion::Check(Ok(update.map(|update| PendingUpdate {
+                    version: update.version.clone(),
+                    update,
+                    bytes: None,
+                })))
+            }),
+            Work::Download(mut pending) => Box::pin(async move {
+                match pending.update.download(|_, _| {}, || {}).await {
+                    Ok(bytes) => {
+                        pending.bytes = Some(bytes);
+                        Completion::Download(Ok(pending))
+                    }
+                    Err(_) => Completion::Download(Err(())),
                 }
+            }),
+            Work::Install(pending) => {
+                // Retain the blocking handle inside an owner-polled future. The
+                // owner joins this future, even on shutdown, instead of aborting it.
+                let install = tauri::async_runtime::spawn_blocking(move || {
+                    let bytes = pending.bytes.ok_or(())?;
+                    pending.update.install(&bytes).map_err(|_| ())
+                });
+                Box::pin(async move { Completion::Install(install.await.unwrap_or(Err(()))) })
             }
         }
-
-        let Some(update) = update else {
-            let state = if manual {
-                DesktopUpdateState::UpToDate {
-                    version: app.package_info().version.to_string(),
-                }
-            } else {
-                DesktopUpdateState::Idle
-            };
-            manager.publish(app, state);
-            return;
-        };
-        let version = update.version.clone();
-        *manager
-            .pending
-            .lock()
-            .expect("desktop pending update mutex") = Some(PendingUpdate {
-            update,
-            bytes: None,
-        });
-        manager.publish(app, DesktopUpdateState::Available { version });
+    }
+    fn emit(&self, state: DesktopUpdateState) {
+        let _ = self.app.emit(DESKTOP_UPDATE_EVENT_NAME, state);
+    }
+    fn current_version(&self) -> &str {
+        &self.current_version
+    }
+    fn restart(&self) {
+        // restart() blocks its calling thread, which would deadlock the graceful
+        // shutdown barrier waiting to join this owner. Request exit and return.
+        crate::request_application_restart(&self.app);
     }
 }
 
@@ -301,167 +775,35 @@ fn compare_prerelease_identifier(left: &str, right: &str) -> std::cmp::Ordering 
     }
 }
 
-#[cfg(target_os = "macos")]
-pub async fn download_and_prepare(app: &AppHandle) -> Result<(), ()> {
-    let manager = app.state::<DesktopUpdateManager>();
-    if !matches!(manager.state(), DesktopUpdateState::Available { .. }) {
-        return Err(());
-    }
-    let pending = manager
-        .pending
-        .lock()
-        .expect("desktop pending update mutex")
-        .take()
-        .ok_or(())?;
-    let version = pending.update.version.clone();
-    manager.publish(
-        app,
-        DesktopUpdateState::Downloading {
-            version: version.clone(),
+pub async fn download_and_prepare(
+    app: &AppHandle,
+    snapshot: koushi_protocol::state_update::VersionedAppStateSnapshot,
+    expected_generation: u64,
+) -> Result<(), ()> {
+    app.state::<DesktopUpdateManager>().shared.transition(
+        |state| {
+            let _ = app.emit(DESKTOP_UPDATE_EVENT_NAME, state);
         },
-    );
-    match pending.update.download(|_, _| {}, || {}).await {
-        Ok(bytes) => {
-            *manager
-                .pending
-                .lock()
-                .expect("desktop pending update mutex") = Some(PendingUpdate {
-                update: pending.update,
-                bytes: Some(bytes),
-            });
-            manager.publish(app, DesktopUpdateState::Ready { version });
-            Ok(())
-        }
-        Err(_) => {
-            manager.publish(
-                app,
-                DesktopUpdateState::Failed {
-                    stage: DesktopUpdateFailureStage::DownloadOrVerify,
+        |lifecycle| {
+            lifecycle.request_download(
+                PolicySnapshot {
+                    generation: snapshot.generation,
+                    settings: snapshot.state.settings.values.updates,
                 },
-            );
-            Err(())
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub async fn download_and_prepare(_app: &AppHandle) -> Result<(), ()> {
-    Err(())
-}
-
-#[cfg(target_os = "macos")]
-pub fn install_and_restart(app: &AppHandle) -> Result<(), ()> {
-    let manager = app.state::<DesktopUpdateManager>();
-    let pending = manager
-        .pending
-        .lock()
-        .expect("desktop pending update mutex")
-        .take()
-        .ok_or(())?;
-    let bytes = pending.bytes.ok_or(())?;
-    manager.publish(
-        app,
-        DesktopUpdateState::Installing {
-            version: pending.update.version.clone(),
+                expected_generation,
+            )
         },
-    );
-    if pending.update.install(&bytes).is_err() {
-        manager.publish(
-            app,
-            DesktopUpdateState::Failed {
-                stage: DesktopUpdateFailureStage::Install,
-            },
-        );
-        return Err(());
-    }
-    app.restart();
+    )
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn install_and_restart(_app: &AppHandle) -> Result<(), ()> {
-    Err(())
+pub fn install_and_restart(app: &AppHandle) -> Result<(), ()> {
+    app.state::<DesktopUpdateManager>().shared.transition(
+        |state| {
+            let _ = app.emit(DESKTOP_UPDATE_EVENT_NAME, state);
+        },
+        |lifecycle| lifecycle.begin_install(),
+    )
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn active_work_and_ready_states_reject_duplicate_checks() {
-        let manager = DesktopUpdateManager::new();
-        for state in [
-            DesktopUpdateState::Checking,
-            DesktopUpdateState::Downloading {
-                version: "1.2.3".to_owned(),
-            },
-            DesktopUpdateState::Available {
-                version: "1.2.3".to_owned(),
-            },
-            DesktopUpdateState::Ready {
-                version: "1.2.3".to_owned(),
-            },
-            DesktopUpdateState::Installing {
-                version: "1.2.3".to_owned(),
-            },
-        ] {
-            *manager.state.lock().expect("desktop update state mutex") = state;
-            assert!(!manager.check_is_admissible());
-        }
-    }
-
-    #[test]
-    fn idle_and_failure_states_allow_a_later_check() {
-        let manager = DesktopUpdateManager::new();
-        *manager.state.lock().expect("desktop update state mutex") = DesktopUpdateState::Idle;
-        assert!(manager.check_is_admissible());
-        *manager.state.lock().expect("desktop update state mutex") = DesktopUpdateState::Failed {
-            stage: DesktopUpdateFailureStage::Check,
-        };
-        assert!(manager.check_is_admissible());
-        *manager.state.lock().expect("desktop update state mutex") = DesktopUpdateState::UpToDate {
-            version: "1.2.3".to_owned(),
-        };
-        assert!(manager.check_is_admissible());
-    }
-
-    #[test]
-    fn update_state_wire_shape_matches_the_frontend_contract() {
-        assert_eq!(
-            serde_json::to_value(DesktopUpdateState::Ready {
-                version: "1.2.3".to_owned(),
-            })
-            .expect("serialize update state"),
-            serde_json::json!({ "kind": "ready", "version": "1.2.3" })
-        );
-        assert_eq!(
-            serde_json::to_value(DesktopUpdateState::Available {
-                version: "1.2.3".to_owned(),
-            })
-            .expect("serialize available update"),
-            serde_json::json!({ "kind": "available", "version": "1.2.3" })
-        );
-        assert_eq!(
-            serde_json::to_value(DesktopUpdateState::UpToDate {
-                version: "1.2.3".to_owned(),
-            })
-            .expect("serialize up-to-date state"),
-            serde_json::json!({ "kind": "up_to_date", "version": "1.2.3" })
-        );
-        assert_eq!(
-            serde_json::to_value(DesktopUpdateState::Failed {
-                stage: DesktopUpdateFailureStage::DownloadOrVerify,
-            })
-            .expect("serialize update failure"),
-            serde_json::json!({ "kind": "failed", "stage": "download_or_verify" })
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn semver_candidate_selection_handles_prerelease_ordering() {
-        assert!(candidate_version_is_newer("1.2.0-beta.2", "1.2.0-beta.10"));
-        assert!(candidate_version_is_newer("1.2.0-beta.10", "1.2.0"));
-        assert!(!candidate_version_is_newer("1.2.0", "1.2.0+build.1"));
-        assert!(!candidate_version_is_newer("1.3.0", "1.2.0-rc.1"));
-    }
-}
+mod regression_tests;

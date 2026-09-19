@@ -6,7 +6,7 @@ glue. Vendored upstream code must keep its original license and copyright
 notices; local changes to vendored code must remain easy to upstream or
 revert.
 
-Last amended: 2026-09-19.
+Last amended: 2026-09-20.
 
 ## Read Order And Authority
 
@@ -100,6 +100,26 @@ conflict is being resolved.
   `Cancel edit`). Keep a descriptive accessible name when the visible context
   is insufficient for assistive technology; concise visible text must not
   remove necessary accessibility context.
+
+## macOS Native Window Controls And Overlay Layout
+
+- Preserve the standard macOS close, minimize, and fullscreen buttons. Reserve
+  a safe area above application content instead of hiding, replacing, or
+  attempting to cover the native buttons to resolve an overlap.
+- All in-app dialogs, confirmations, media viewers, and floating popovers must
+  keep their content and interactive controls below the native-button area.
+  This includes nested dialogs and surfaces shown before sign-in or during
+  verification and recovery. A backdrop may cover the window, but the browser
+  top layer and CSS z-index must not be treated as covering native controls.
+- Shared layout primitives own the safe-area boundary and available viewport
+  height. New surfaces must inherit that contract rather than add independent
+  offsets. Platform detection must not depend on whether the signed-in shell's
+  titlebar DOM is mounted; nested content must not add the same inset twice.
+- Keep content and close, cancel, and confirm actions reachable after resizing
+  or zooming, including short windows, display-scale changes, and fullscreen
+  transitions. Verify computed placement and scrolling with headless tests;
+  confirm native-button clearance separately on macOS. Do not impose the
+  macOS inset on Windows or Linux.
 
 ## Architecture And Ownership
 

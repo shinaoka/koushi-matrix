@@ -344,6 +344,7 @@ impl<T> Drop for AbortOnDrop<T> {
 
 /// Owns the actor tree and creates [`CoreConnection`] handles.
 pub struct CoreRuntime {
+    shutdown_completion: watch::Receiver<Option<Result<(), CoreShutdownError>>>,
     view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry,
     command_tx: mpsc::Sender<CoreCommandEnvelope>,
     event_tx: broadcast::Sender<CoreEvent>,
@@ -667,9 +668,13 @@ impl CoreRuntime {
             pending_date_navigation_request_id: None,
         };
         let view_lifetime = crate::view_scope_lifecycle::ViewRuntimeLifetime(view_scopes.clone());
+        let (actor_completion_tx, actor_completion_rx) = watch::channel(None);
+        let (shutdown_completion_tx, shutdown_completion) = watch::channel(None);
         let actor = executor::spawn(async move {
             let _view_lifetime = view_lifetime;
-            actor.run().await;
+            let result = actor.run().await;
+            drop(_view_lifetime);
+            actor_completion_tx.send_replace(Some(result));
         });
         let media_preparation =
             Arc::new(crate::media_preparation::MediaPreparationService::default());
@@ -678,7 +683,7 @@ impl CoreRuntime {
         )));
         let media_preparation_for_lifecycle = Arc::clone(&media_preparation);
         let mut media_snapshot_rx = snapshot_rx.clone();
-        let media_lifecycle = executor::spawn(async move {
+        let media_cleanup = async move {
             loop {
                 let snapshot = media_snapshot_rx.borrow().state.clone();
                 media_preparation_for_lifecycle
@@ -688,9 +693,17 @@ impl CoreRuntime {
                     break;
                 }
             }
-        });
+            drop(media_snapshot_rx);
+            drop(media_preparation_for_lifecycle);
+        };
+        let media_lifecycle = executor::spawn(publish_shutdown_completion(
+            media_cleanup,
+            actor_completion_rx,
+            shutdown_completion_tx,
+        ));
 
         Self {
+            shutdown_completion,
             view_scopes,
             command_tx,
             event_tx,
@@ -744,6 +757,8 @@ impl CoreRuntime {
         let (completion_tx, completion_rx) = oneshot::channel();
         self.composer_draft_test_tx
             .send(ComposerDraftTestMutation {
+                #[cfg(test)]
+                pending_shutdown_persist: None,
                 drafts,
                 completion: completion_tx,
             })
@@ -837,10 +852,18 @@ impl CoreRuntime {
         self.actor.get()
     }
 
+    /// Observe ordered shutdown without consuming the runtime or owning its tasks.
+    /// Cancelling this waiter does not cancel shutdown. A shutdown command (or
+    /// closing the command inbox) must initiate shutdown separately.
+    pub async fn wait_for_shutdown(&self) -> Result<(), CoreShutdownError> {
+        await_shutdown_completion(self.shutdown_completion.clone()).await
+    }
+
     /// Close the command inbox and wait until AppActor has completed its
     /// ordered AccountActor/store shutdown barrier.
     pub async fn shutdown(self) {
         let Self {
+            shutdown_completion: _,
             view_scopes: _,
             command_tx,
             event_tx: _,
@@ -868,6 +891,41 @@ impl CoreRuntime {
         let _ = media_lifecycle.take().await;
     }
 }
+
+/// Core could not confirm that every shutdown owner completed normally.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum CoreShutdownError {
+    #[error("a Core shutdown owner ended without confirming cleanup")]
+    Incomplete,
+}
+
+async fn await_shutdown_completion(
+    mut completion: watch::Receiver<Option<Result<(), CoreShutdownError>>>,
+) -> Result<(), CoreShutdownError> {
+    loop {
+        if let Some(result) = *completion.borrow_and_update() {
+            return result;
+        }
+        completion
+            .changed()
+            .await
+            .map_err(|_| CoreShutdownError::Incomplete)?;
+    }
+}
+
+async fn publish_shutdown_completion(
+    lifecycle: impl std::future::Future<Output = ()>,
+    actor_completion: watch::Receiver<Option<Result<(), CoreShutdownError>>>,
+    completion: watch::Sender<Option<Result<(), CoreShutdownError>>>,
+) {
+    lifecycle.await;
+    let result = await_shutdown_completion(actor_completion).await;
+    completion.send_replace(Some(result));
+}
+
+#[cfg(test)]
+#[path = "runtime/shutdown_completion_tests.rs"]
+mod shutdown_completion_tests;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SettingsLoadStatus {
@@ -1041,6 +1099,8 @@ async fn receive_action_batch(
 
 #[cfg(any(test, feature = "test-hooks"))]
 struct ComposerDraftTestMutation {
+    #[cfg(test)]
+    pending_shutdown_persist: Option<PendingComposerDraftPersist>,
     drafts: ComposerDraftStore,
     completion: oneshot::Sender<AppState>,
 }
@@ -1071,7 +1131,7 @@ impl AppActor {
         }
     }
 
-    async fn run(mut self) {
+    async fn run(mut self) -> Result<(), CoreShutdownError> {
         loop {
             let composer_draft_persist_delay = self.composer_draft_persist_delay();
             let scheduled_send_delay = self.scheduled_send_delay();
@@ -1656,9 +1716,30 @@ impl AppActor {
                 }
             }
         }
-        // Shutdown: tell AccountActor to stop.
-        self.flush_pending_composer_drafts().await;
-        let _ = self.account_actor.send(AccountMessage::Shutdown).await;
+        // Finish owned work before publishing completion, not merely enqueueing
+        // AccountActor shutdown. Its acknowledgment follows child/store cleanup.
+        let draft_flush_ok = self.flush_pending_composer_drafts().await;
+        for task in [
+            &mut self.event_navigation_task,
+            &mut self.event_navigation_deadline_task,
+        ] {
+            if let Some(mut task) = task.take() {
+                task.abort();
+                let _ = task.take().await;
+            }
+        }
+        let (acknowledged, completion) = oneshot::channel();
+        if !self
+            .account_actor
+            .send(AccountMessage::ShutdownWithAck { acknowledged })
+            .await
+        {
+            return Err(CoreShutdownError::Incomplete);
+        }
+        match completion.await {
+            Ok(true) if draft_flush_ok => Ok(()),
+            Ok(_) | Err(_) => Err(CoreShutdownError::Incomplete),
+        }
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
@@ -1667,6 +1748,12 @@ impl AppActor {
     ) -> Vec<oneshot::Sender<AppState>> {
         let mut completions = Vec::new();
         while let Ok(mutation) = self.composer_draft_test_rx.try_recv() {
+            #[cfg(test)]
+            if let Some(pending) = mutation.pending_shutdown_persist {
+                self.pending_composer_draft_persist = Some(pending);
+                completions.push(mutation.completion);
+                continue;
+            }
             self.flush_pending_composer_drafts().await;
             let before_state = self.state.clone();
             let effects = self

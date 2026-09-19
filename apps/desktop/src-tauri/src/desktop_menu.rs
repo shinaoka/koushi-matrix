@@ -42,7 +42,7 @@ pub(crate) fn desktop_menu_items() -> Vec<DesktopMenuItem> {
         },
         DesktopMenuItem {
             id: MENU_ID_OPEN_USER_SETTINGS,
-            label: "User Settings",
+            label: "Settings…",
             menu: "app",
             accelerator: "CmdOrCtrl+,",
         },
@@ -67,7 +67,7 @@ pub(crate) fn desktop_menu_items() -> Vec<DesktopMenuItem> {
         DesktopMenuItem {
             id: MENU_ID_CHECK_FOR_UPDATES,
             label: "Check for Updates…",
-            menu: "help",
+            menu: "app",
             accelerator: "",
         },
         DesktopMenuItem {
@@ -164,6 +164,7 @@ pub(super) fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
     };
     let app_menu = SubmenuBuilder::new(manager, "Koushi")
         .about_with_text("About Koushi", Some(about_metadata))
+        .item(&check_for_updates)
         .separator()
         .item(&open_user_settings)
         .item(&sign_out)
@@ -196,7 +197,6 @@ pub(super) fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
     };
     let help_menu = SubmenuBuilder::new(manager, "Help")
         .item(&show_help)
-        .item(&check_for_updates)
         .build()?;
 
     MenuBuilder::new(manager)
@@ -265,6 +265,7 @@ mod tests {
             .find(|item| item.id == "check_for_updates")
             .unwrap();
         assert_eq!(check.label, "Check for Updates…");
+        assert_eq!(check.menu, "app");
         assert_eq!(desktop_menu_action_id(check.id), Some("checkForUpdates"));
     }
 }

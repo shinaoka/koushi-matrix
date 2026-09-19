@@ -1,3 +1,5 @@
+import { NativeModal } from "../ModalDialog";
+import { FloatingLayer, floatingPlacementStyle, useFloatingPlacement } from "../floatingLayer";
 import {
   Download,
   FileCode2,
@@ -11,7 +13,7 @@ import {
   Trash2,
   XCircle
 } from "lucide-react";
-import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 import { t } from "../../i18n/messages";
 import { onMenuKeyDown } from "../ContextMenuSurface";
@@ -122,6 +124,7 @@ export function TimelineMediaAttachment({
   viewerActions: TimelineMediaViewerActions;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const detailsTrigger = useRef<HTMLButtonElement>(null);
   const metadata = [
     media.mimetype,
     formatBytes(media.size),
@@ -190,7 +193,7 @@ export function TimelineMediaAttachment({
       return;
     }
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && !event.defaultPrevented && !event.isComposing && event.keyCode !== 229) {
         event.preventDefault();
         setDetailsOpen(false);
       }
@@ -265,6 +268,7 @@ export function TimelineMediaAttachment({
           ) : null}
           <div className="message-media-hover-actions">
             <button
+              ref={detailsTrigger}
               className="message-media-hover-action"
               type="button"
               aria-label={t("timeline.mediaDetails", { filename: media.filename })}
@@ -322,11 +326,7 @@ export function TimelineMediaAttachment({
             ) : null}
           </div>
           {detailsOpen ? (
-            <div
-              className="message-media-details-popover"
-              role="dialog"
-              aria-label={t("timeline.mediaDetailsTitle")}
-            >
+            <MediaDetailsPopup anchor={detailsTrigger} onClose={() => setDetailsOpen(false)}>
               <div className="message-media-details-title" dir="auto">
                 {media.filename}
               </div>
@@ -344,7 +344,7 @@ export function TimelineMediaAttachment({
               >
                 <XCircle size={16} />
               </button>
-            </div>
+            </MediaDetailsPopup>
           ) : null}
           {progressPercent !== null ? (
             <div
@@ -445,6 +445,19 @@ export function TimelineMediaAttachment({
   );
 }
 
+function MediaDetailsPopup({ anchor, onClose, children }: {
+  anchor: RefObject<HTMLButtonElement | null>; onClose: () => void; children: ReactNode;
+}) {
+  const placement = useFloatingPlacement({ anchorRef: anchor, placement: "below", align: "end", inlineSize: 260, blockSize: 180 });
+  return <FloatingLayer><div className="message-media-details-popover" role="dialog"
+    aria-label={t("timeline.mediaDetailsTitle")} style={floatingPlacementStyle(placement)}
+    onKeyDown={event => {
+      if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+        event.preventDefault(); event.stopPropagation(); onClose(); anchor.current?.focus();
+      }
+    }}>{children}</div></FloatingLayer>;
+}
+
 export function TimelineMediaViewer({
   item,
   onClose
@@ -467,45 +480,6 @@ export function TimelineMediaViewer({
   useEffect(() => {
     closeButtonRef.current?.focus();
   }, []);
-
-  useEffect(() => {
-    function onKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.key === "Escape") {
-        if (isActionMenuOpen) {
-          closeActionMenu();
-          return;
-        }
-        onClose();
-      }
-      if (event.key === "Tab") {
-        const dialog = dialogRef.current;
-        if (!dialog) {
-          return;
-        }
-        const focusable = Array.from(
-          dialog.querySelectorAll<HTMLElement>(
-            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-          )
-        ).filter((element) => !element.hasAttribute("aria-hidden"));
-        if (focusable.length === 0) {
-          event.preventDefault();
-          dialog.focus();
-          return;
-        }
-        const first = focusable[0]!;
-        const last = focusable[focusable.length - 1]!;
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
-        }
-      }
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [closeActionMenu, isActionMenuOpen, onClose]);
 
   useEffect(() => {
     if (!isActionMenuOpen) {
@@ -540,9 +514,8 @@ export function TimelineMediaViewer({
   const hasActionMenu = canForward || item.actions.canViewSource || item.actions.canRedact;
 
   return (
-    <div
+    <NativeModal onDismiss={() => { if (isActionMenuOpen) closeActionMenu(); else onClose(); }} aria-label={t("timeline.mediaViewer")}
       className="timeline-media-viewer-overlay"
-      role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           onClose();
@@ -552,9 +525,6 @@ export function TimelineMediaViewer({
       <section
         ref={dialogRef}
         className="timeline-media-viewer"
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("timeline.mediaViewer")}
         tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
       >
@@ -607,7 +577,7 @@ export function TimelineMediaViewer({
                     role="menu"
                     aria-label={t("timeline.messageActions")}
                     onKeyDown={(event) => {
-                      if (event.key === "Escape") {
+                      if (event.key === "Escape" && !event.nativeEvent.isComposing && event.keyCode !== 229) {
                         event.preventDefault();
                         closeActionMenu();
                         return;
@@ -710,7 +680,7 @@ export function TimelineMediaViewer({
           />
         </div>
       </section>
-    </div>
+    </NativeModal>
   );
 }
 
@@ -767,4 +737,3 @@ function uploadProgressPercent(progress: MediaTransferProgress | null): number |
   }
   return Math.max(0, Math.min(100, Math.round((progress.current / progress.total) * 100)));
 }
-
