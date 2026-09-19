@@ -372,7 +372,7 @@ export type MentionTarget =
   | { kind: "room"; room_id: string; display_label: string }
   | { kind: "roomMention"; display_label: string };
 
-export type MentionSurface = "main" | "thread";
+export type MentionSurface = "main" | "thread" | "edit";
 export type MentionCandidatesCompleteness = "loading" | "partial" | "complete" | "failed";
 export type RoomMentionPermission = "allowed" | "denied" | "unknown";
 export type MentionCandidateMembership = "joined";

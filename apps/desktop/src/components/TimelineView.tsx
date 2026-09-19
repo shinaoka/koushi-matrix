@@ -193,9 +193,10 @@ recordTimelineKeyMismatch,
 recordTimelineResync
 } from "../domain/timelineTransportStats";
 import type {
-DisplayDensity,
-LiveSignalsState,
-ResolveComposerKeyAction,
+  DisplayDensity,
+  LiveSignalsState,
+  MentionSurface,
+  ResolveComposerKeyAction,
 RoomLatestEventSummary,
 TimelineContinuityState,
 TimelineMediaDownloadState,
@@ -354,8 +355,8 @@ export const TimelineView = memo(function TimelineView({
   listRefCallback,
   onRegisterJumpToLatest,
   threadAttention = null,
-  mentionCandidates = [],
-  mentionCandidatesLoading = false,
+  editMentionCandidates = [],
+  editMentionCandidatesLoading = false,
   onMentionQueryChange
 }: {
   timelineKey: TimelineKey;
@@ -442,9 +443,13 @@ export const TimelineView = memo(function TimelineView({
   onRegisterJumpToLatest?: (handler: (() => void) | null) => void;
   /** Thread attention counters for the root row in the currently selected room. */
   threadAttention?: TimelineThreadAttention | null;
-  mentionCandidates?: MentionCandidate[];
-  mentionCandidatesLoading?: boolean;
-  onMentionQueryChange?: (roomId: string, query: string | null) => void;
+  editMentionCandidates?: MentionCandidate[];
+  editMentionCandidatesLoading?: boolean;
+  onMentionQueryChange?: (
+    roomId: string,
+    surface: MentionSurface,
+    query: string | null
+  ) => void;
 }) {
   // Persisted restart anchors are intentionally ignored for restoration:
   // first entry after app startup goes to live edge, while in-session room
@@ -3581,8 +3586,8 @@ export const TimelineView = memo(function TimelineView({
                 ignoredUserIds={ignoredUserIds}
                 onOpenContextMenu={onOpenContextMenu}
                 mentionProfileUsers={profileUsers}
-                mentionCandidates={mentionCandidates}
-                mentionCandidatesLoading={mentionCandidatesLoading}
+                mentionCandidates={editMentionCandidates}
+                mentionCandidatesLoading={editMentionCandidatesLoading}
                 onMentionQueryChange={onMentionQueryChange}
                 threadAttention={threadAttention}
                 showThreadSummary={presentationContext !== "thread"}

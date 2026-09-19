@@ -263,6 +263,12 @@ describe("styles.css token system", () => {
     expect(spacerBlock).toContain("overflow-anchor: none;");
   });
 
+  test("composer mentions stay slightly smaller without changing editor text size", () => {
+    const mentionBlock = selectorBlock(".composer-inline-mention");
+    expect(mentionBlock).toContain("font-size: 0.92em;");
+    expect(mentionBlock).toContain("line-height: 1.2;");
+  });
+
   test("defines fixed-format sizing tokens for shared GUI controls", () => {
     expectTokens([
       "--icon-button-size",

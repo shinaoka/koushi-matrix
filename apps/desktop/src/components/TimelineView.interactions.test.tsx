@@ -209,6 +209,7 @@ describe("TimelineView", () => {
     ["media caption", { ...imageMessage("$edit-mention"), body: "old body" }]
   ])("opens shared mention autocomplete in %s edit and submits a structured document", async (_surface, item) => {
     const editMessage = vi.fn(async () => undefined);
+    const onMentionQueryChange = vi.fn();
     const mentionCandidates: MentionCandidate[] = [
       {
         key: "@alice:example.invalid",
@@ -246,7 +247,8 @@ describe("TimelineView", () => {
           timelineKey={KEY}
           roomId="!room:example.invalid"
           transport={baseTransport({ editMessage })}
-          mentionCandidates={mentionCandidates}
+          editMentionCandidates={mentionCandidates}
+          onMentionQueryChange={onMentionQueryChange}
           onReply={vi.fn()}
         />
       </TimelineStoreContext.Provider>
@@ -255,6 +257,13 @@ describe("TimelineView", () => {
     fireEvent.click(screen.getByRole("button", { name: /edit message/i }));
     const textarea = screen.getByRole("textbox", { name: /edit.*body/i }) as HTMLDivElement;
     changeInlineEditorText(textarea, "@");
+    await waitFor(() =>
+      expect(onMentionQueryChange).toHaveBeenCalledWith(
+        "!room:example.invalid",
+        "edit",
+        ""
+      )
+    );
     expect(await screen.findByRole("option", { name: "Alice @alice:example.invalid" })).toBeTruthy();
     fireEvent.click(screen.getByRole("option", { name: "Alice @alice:example.invalid" }));
     // #875: the pill carries a zero-width caret anchor on its outside so the

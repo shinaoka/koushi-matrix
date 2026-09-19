@@ -11,6 +11,7 @@ pub const MAX_MENTION_CANDIDATE_TARGETS: usize = 6;
 pub enum MentionSurface {
     Main,
     Thread,
+    Edit,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -9,6 +9,7 @@ import type {
   DesktopSnapshot,
   DesktopUpdateState,
   DisplayDensity,
+  MentionSurface,
   FilesViewScope,
   ComposerDocument,
   ResolveComposerKeyAction,
@@ -352,6 +353,7 @@ export function ContextualRightPanel({
   ) => Promise<number[]>;
   onThreadMentionQueryChange?: (
     roomId: string,
+    surface: MentionSurface,
     query: string | null
   ) => void;
   onThreadRetryStagedUploadPreparation?: (
@@ -765,6 +767,17 @@ export function ContextualRightPanel({
     const focusedPinnedEventIds = pinnedEventsForRoom(snapshot, focusedRoomId).map(
       (event) => event.event_id
     );
+    const focusedEditMentionCandidates = selectMentionCandidates(
+      { snapshot },
+      focusedRoomId,
+      "edit"
+    );
+    const focusedEditMentionCandidateTarget = snapshot.state.domain.mention_candidates.targets.find(
+      (target) => target.room_id === focusedRoomId && target.surface === "edit"
+    );
+    const focusedEditMentionCandidatesLoading =
+      focusedEditMentionCandidateTarget?.completeness === "loading" ||
+      focusedEditMentionCandidateTarget?.completeness === "partial";
 
     return (
       <aside
@@ -803,6 +816,9 @@ export function ContextualRightPanel({
               onRecentEmojisChange={onRecentEmojisChange}
               searchHighlightsByEventId={searchHighlightsByEventId}
               mediaDownloads={mediaDownloads}
+              editMentionCandidates={focusedEditMentionCandidates}
+              editMentionCandidatesLoading={focusedEditMentionCandidatesLoading}
+              onMentionQueryChange={onThreadMentionQueryChange}
             />
           </section>
         ) : null}
@@ -847,6 +863,17 @@ export function ContextualRightPanel({
   const threadMentionCandidatesLoading =
     threadMentionCandidateTarget?.completeness === "loading" ||
     threadMentionCandidateTarget?.completeness === "partial";
+  const threadEditMentionCandidates = selectMentionCandidates(
+    { snapshot },
+    threadRoomId ?? null,
+    "edit"
+  );
+  const threadEditMentionCandidateTarget = snapshot.state.domain.mention_candidates.targets.find(
+    (target) => target.room_id === threadRoomId && target.surface === "edit"
+  );
+  const threadEditMentionCandidatesLoading =
+    threadEditMentionCandidateTarget?.completeness === "loading" ||
+    threadEditMentionCandidateTarget?.completeness === "partial";
   const threadTimelineKeyValue =
     currentUserId && timelineTransport && threadRoomId && rootEventId
       ? threadTimelineKey(currentUserId, threadRoomId, rootEventId)
@@ -903,8 +930,8 @@ export function ContextualRightPanel({
             onRecentEmojisChange={onRecentEmojisChange}
             searchHighlightsByEventId={searchHighlightsByEventId}
             mediaDownloads={mediaDownloads}
-            mentionCandidates={threadMentionCandidates}
-            mentionCandidatesLoading={threadMentionCandidatesLoading}
+            editMentionCandidates={threadEditMentionCandidates}
+            editMentionCandidatesLoading={threadEditMentionCandidatesLoading}
             onMentionQueryChange={onThreadMentionQueryChange}
             onDiagnosticLogEntry={onTimelineDiagnosticLogEntry}
           />
@@ -967,7 +994,7 @@ export function ContextualRightPanel({
           mentionCandidates={threadMentionCandidates}
           mentionCandidatesLoading={threadMentionCandidatesLoading}
           onMentionQueryChange={(query) => {
-            if (threadRoomId) onThreadMentionQueryChange(threadRoomId, query);
+            if (threadRoomId) onThreadMentionQueryChange(threadRoomId, "thread", query);
           }}
           mathModeEnabled={composerSettings.math_mode}
           recentEmojis={composerSettings.recent_emojis}
@@ -1023,7 +1050,7 @@ export function ContextualRightPanel({
         }}
         onMentionQueryChange={(query) => {
           if (threadRoomId) {
-            onThreadMentionQueryChange(threadRoomId, query);
+            onThreadMentionQueryChange(threadRoomId, "thread", query);
           }
         }}
         onScheduleSend={

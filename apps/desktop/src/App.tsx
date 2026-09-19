@@ -6282,9 +6282,9 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
                 })
               );
             }}
-            onMentionQueryChange={(roomId, query) => {
+            onMentionQueryChange={(roomId, surface, query) => {
               if (query !== null) {
-                runInBackground(api.queryMentionCandidates(roomId, "main", query));
+                runInBackground(api.queryMentionCandidates(roomId, surface, query));
               }
             }}
             onOpenThread={openThread}
@@ -6514,9 +6514,9 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
               ? composerNotice.message
               : null
           }
-          onThreadMentionQueryChange={(roomId, query) => {
+          onThreadMentionQueryChange={(roomId, surface, query) => {
             if (query !== null) {
-              runInBackground(api.queryMentionCandidates(roomId, "thread", query));
+              runInBackground(api.queryMentionCandidates(roomId, surface, query));
             }
           }}
           onThreadAttachFiles={(roomId, rootEventId, files) => {

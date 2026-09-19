@@ -5299,7 +5299,9 @@ mark {
   border-radius: 999px;
   color: var(--brand);
   background: color-mix(in srgb, var(--brand) 12%, var(--surface));
+  font-size: 0.92em;
   font-weight: 650;
+  line-height: 1.2;
   text-overflow: ellipsis;
   vertical-align: text-bottom;
   white-space: nowrap;

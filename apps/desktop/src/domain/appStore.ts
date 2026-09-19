@@ -26,8 +26,10 @@ const ROOM_MENTION_CANDIDATE: MentionCandidate = {
 
 let cachedForwardRooms: DesktopSnapshot["state"]["domain"]["rooms"] | null = null;
 let cachedForwardDestinations: TimelineForwardDestination[] = EMPTY_FORWARD_DESTINATIONS;
-let cachedMentionTarget: MentionCandidatesTarget | null = null;
-let cachedMentionCandidates: MentionCandidate[] = EMPTY_MENTION_CANDIDATES;
+const cachedMentionCandidatesByKey = new Map<
+  string,
+  { target: MentionCandidatesTarget; candidates: MentionCandidate[] }
+>();
 
 export const useAppStore = create<AppStoreState>()(
   subscribeWithSelector((): AppStoreState => ({
@@ -501,21 +503,21 @@ export function selectMentionCandidates(
   roomId: string | null,
   surface: MentionSurface
 ): MentionCandidate[] {
+  const cacheKey = `${roomId ?? ""}\u0000${surface}`;
   const target =
     state.snapshot?.state.domain.mention_candidates.targets.find(
       (candidateTarget) =>
         candidateTarget.room_id === roomId && candidateTarget.surface === surface
     ) ?? null;
   if (target === null) {
-    cachedMentionTarget = null;
-    cachedMentionCandidates = EMPTY_MENTION_CANDIDATES;
-    return cachedMentionCandidates;
+    cachedMentionCandidatesByKey.delete(cacheKey);
+    return EMPTY_MENTION_CANDIDATES;
   }
-  if (target === cachedMentionTarget) {
-    return cachedMentionCandidates;
+  const cached = cachedMentionCandidatesByKey.get(cacheKey);
+  if (cached?.target === target) {
+    return cached.candidates;
   }
-  cachedMentionTarget = target;
-  cachedMentionCandidates = [
+  const candidates = [
     ...target.candidates.map((candidate) => ({
       key: candidate.user_id,
       label: candidate.display_label?.trim() ?? "",
@@ -528,7 +530,8 @@ export function selectMentionCandidates(
     })),
     ...(target.room_mention_allowed === "allowed" ? [ROOM_MENTION_CANDIDATE] : [])
   ];
-  return cachedMentionCandidates;
+  cachedMentionCandidatesByKey.set(cacheKey, { target, candidates });
+  return candidates;
 }
 
 function reconcileJsonValue<T>(previous: T, next: T): T {

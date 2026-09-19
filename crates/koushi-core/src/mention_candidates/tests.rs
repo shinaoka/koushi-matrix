@@ -427,6 +427,7 @@ async fn room_actor_shares_refresh_and_settles_main_and_thread_demands() {
     for (sequence, surface) in [
         (43, koushi_state::MentionSurface::Main),
         (44, koushi_state::MentionSurface::Thread),
+        (45, koushi_state::MentionSurface::Edit),
     ] {
         assert!(
             handle
@@ -446,7 +447,8 @@ async fn room_actor_shares_refresh_and_settles_main_and_thread_demands() {
 
     let mut main_complete = false;
     let mut thread_complete = false;
-    for _ in 0..8 {
+    let mut edit_complete = false;
+    for _ in 0..12 {
         let actions = tokio::time::timeout(Duration::from_secs(2), action_rx.recv())
             .await
             .expect("mention lifecycle timeout")
@@ -463,14 +465,15 @@ async fn room_actor_shares_refresh_and_settles_main_and_thread_demands() {
                 match surface {
                     koushi_state::MentionSurface::Main => main_complete = true,
                     koushi_state::MentionSurface::Thread => thread_complete = true,
+                    koushi_state::MentionSurface::Edit => edit_complete = true,
                 }
             }
         }
-        if main_complete && thread_complete {
+        if main_complete && thread_complete && edit_complete {
             break;
         }
     }
-    assert!(main_complete && thread_complete);
+    assert!(main_complete && thread_complete && edit_complete);
 
     assert!(handle.send(RoomMessage::Shutdown).await);
     handle.join().await;

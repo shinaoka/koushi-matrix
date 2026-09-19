@@ -52,7 +52,7 @@ fn projection(
 }
 
 #[test]
-fn main_and_thread_targets_are_independent_and_replace_only_their_exact_key() {
+fn main_thread_and_edit_targets_are_independent_and_replace_only_their_exact_key() {
     let mut state = AppState::default();
 
     reduce(
@@ -65,15 +65,19 @@ fn main_and_thread_targets_are_independent_and_replace_only_their_exact_key() {
     );
     reduce(
         &mut state,
-        demand(3, 2, "!room:test", MentionSurface::Main, "alice"),
+        demand(3, 1, "!room:test", MentionSurface::Edit, "carol"),
+    );
+    reduce(
+        &mut state,
+        demand(4, 2, "!room:test", MentionSurface::Main, "alice"),
     );
 
-    assert_eq!(state.mention_candidates.targets.len(), 2);
+    assert_eq!(state.mention_candidates.targets.len(), 3);
     let main = state
         .mention_candidates
         .target("!room:test", MentionSurface::Main)
         .unwrap();
-    assert_eq!(main.request_id, 3);
+    assert_eq!(main.request_id, 4);
     assert_eq!(main.generation, 2);
     assert_eq!(main.query, "alice");
     assert_eq!(main.completeness, MentionCandidatesCompleteness::Loading);
@@ -83,6 +87,12 @@ fn main_and_thread_targets_are_independent_and_replace_only_their_exact_key() {
         .unwrap();
     assert_eq!(thread.request_id, 2);
     assert_eq!(thread.query, "bob");
+    let edit = state
+        .mention_candidates
+        .target("!room:test", MentionSurface::Edit)
+        .unwrap();
+    assert_eq!(edit.request_id, 3);
+    assert_eq!(edit.query, "carol");
 }
 
 #[test]

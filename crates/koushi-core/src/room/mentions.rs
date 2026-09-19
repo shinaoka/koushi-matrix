@@ -62,6 +62,7 @@ fn record_mention_candidate_event(
     let surface = match surface {
         MentionSurface::Main => "main",
         MentionSurface::Thread => "thread",
+        MentionSurface::Edit => "edit",
     };
     let completeness = match completeness {
         MentionCandidatesCompleteness::Loading => "loading",

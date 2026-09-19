@@ -1312,7 +1312,7 @@ mock.setCommandResponse(
     query
   }: {
     roomId: string;
-    surface: "main" | "thread";
+    surface: "main" | "thread" | "edit";
     query: string;
   }) => {
     const members =
@@ -1326,6 +1326,16 @@ mock.setCommandResponse(
               membership: "joined" as const
             }
           ]
+        : surface === "edit"
+          ? [
+              {
+                user_id: "@edit:example.invalid",
+                display_label: "Edit Candidate",
+                original_display_label: "Edit Candidate",
+                avatar: null,
+                membership: "joined" as const
+              }
+            ]
         : [
             {
               user_id: "@alice:example.invalid",
@@ -1367,6 +1377,7 @@ mock.setCommandResponse(
         }
       }
     };
+    harnessControl.pushStateUpdate();
   }
 );
 mock.setCommandResponse("get_diagnostic_snapshot", () => ({

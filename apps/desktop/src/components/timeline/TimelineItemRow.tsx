@@ -63,6 +63,7 @@ import type {
   ComposerDocument,
   DisplayDensity,
   LiveReadReceipt,
+  MentionSurface,
   PresenceKind,
   ResolveComposerKeyAction,
   ThreadOpenIntent,
@@ -307,7 +308,11 @@ export function TimelineItemRow({
   mentionProfileUsers?: Record<string, UserProfile>;
   mentionCandidates?: MentionCandidate[];
   mentionCandidatesLoading?: boolean;
-  onMentionQueryChange?: (roomId: string, query: string | null) => void;
+  onMentionQueryChange?: (
+    roomId: string,
+    surface: MentionSurface,
+    query: string | null
+  ) => void;
   receipts?: LiveReadReceipt[];
   receiptSource?: ReceiptSourceRef;
   receiptTotalCount?: number;
@@ -462,7 +467,7 @@ export function TimelineItemRow({
   const closeEditForm = useCallback(() => {
     setEditing(false);
     setEditDocument(item.actions?.editable_document ?? documentFromText(item.body ?? ""));
-    onMentionQueryChange?.(roomId, null);
+    onMentionQueryChange?.(roomId, "edit", null);
   }, [item.actions?.editable_document, item.body, onMentionQueryChange, roomId]);
 
   const submitEditDocument = useCallback(
@@ -757,7 +762,7 @@ export function TimelineItemRow({
         onCancel={closeEditForm}
         onCancelReply={closeEditForm}
         onDocumentChange={setEditDocument}
-        onMentionQueryChange={(query) => onMentionQueryChange?.(roomId, query)}
+        onMentionQueryChange={(query) => onMentionQueryChange?.(roomId, "edit", query)}
         onSend={submitEditDocument}
       />
       <div className="message-edit-actions">

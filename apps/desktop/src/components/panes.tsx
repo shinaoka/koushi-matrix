@@ -29,6 +29,7 @@ import type {
   DesktopSnapshot,
   DirectoryRoomSummary,
   ComposerDocument,
+  MentionSurface,
   ResolveComposerKeyAction,
   SearchResult
 } from "../domain/types";
@@ -778,7 +779,11 @@ export function TimelinePane({
   onComposerDocumentChange: (document: ComposerDocument) => void;
   onComposerMathModeChange: (enabled: boolean) => void | Promise<void>;
   onRecentEmojisChange?: (emojis: string[]) => void | Promise<void>;
-  onMentionQueryChange?: (roomId: string, query: string | null) => void;
+  onMentionQueryChange?: (
+    roomId: string,
+    surface: MentionSurface,
+    query: string | null
+  ) => void;
   onEditMessage: (message: { body: string | null; room_id: string; event_id: string }) => void;
   onOpenContextMenu: OpenContextMenu;
   onOpenThread: TimelineRowActionHandlers["onOpenThread"];
@@ -891,6 +896,15 @@ export function TimelinePane({
   const mentionCandidatesLoading =
     mentionCandidateTarget?.completeness === "loading" ||
     mentionCandidateTarget?.completeness === "partial";
+  const editMentionCandidates = useAppStore((state) =>
+    selectMentionCandidates(state, timelineRoomId, "edit")
+  );
+  const editMentionCandidateTarget = snapshot.state.domain.mention_candidates.targets.find(
+    (target) => target.room_id === timelineRoomId && target.surface === "edit"
+  );
+  const editMentionCandidatesLoading =
+    editMentionCandidateTarget?.completeness === "loading" ||
+    editMentionCandidateTarget?.completeness === "partial";
   const resolveComposerKeyActionStable = useStableEvent(resolveComposerKeyAction);
   const onCancelReplyStable = useStableEvent(onCancelReply);
   const onCancelScheduledSendStable = useStableEvent(onCancelScheduledSend);
@@ -905,9 +919,14 @@ export function TimelinePane({
   const onComposerDocumentChangeStable = useStableEvent(onComposerDocumentChange);
   const onComposerMathModeChangeStable = useStableEvent(onComposerMathModeChange);
   const onRecentEmojisChangeStable = useStableEvent(onRecentEmojisChange);
-  const onMentionQueryChangeStable = useStableEvent((query: string | null) => {
+  const onMentionQueryChangeStable = useStableEvent(
+    (roomId: string, surface: MentionSurface, query: string | null) => {
+      onMentionQueryChange?.(roomId, surface, query);
+    }
+  );
+  const onComposerMentionQueryChangeStable = useStableEvent((query: string | null) => {
     if (timelineRoomId) {
-      onMentionQueryChange?.(timelineRoomId, query);
+      onMentionQueryChangeStable(timelineRoomId, "main", query);
     }
   });
   const onEditMessageStable = useStableEvent(onEditMessage);
@@ -1080,8 +1099,8 @@ export function TimelinePane({
               onRecentEmojisChange={onRecentEmojisChangeStable}
               searchHighlightsByEventId={searchHighlightsByEventId}
               mediaDownloads={mediaDownloads}
-              mentionCandidates={mentionCandidates}
-              mentionCandidatesLoading={mentionCandidatesLoading}
+              editMentionCandidates={editMentionCandidates}
+              editMentionCandidatesLoading={editMentionCandidatesLoading}
               onMentionQueryChange={onMentionQueryChangeStable}
               onRequestAvatarThumbnail={onRequestAvatarThumbnail}
               continuity={snapshot.state.ui.timeline.continuity ?? { kind: "unknown" }}
@@ -1141,7 +1160,7 @@ export function TimelinePane({
           resolveComposerKeyAction={resolveComposerKeyActionStable}
           mentionCandidates={mentionCandidates}
           mentionCandidatesLoading={mentionCandidatesLoading}
-          onMentionQueryChange={onMentionQueryChangeStable}
+          onMentionQueryChange={onComposerMentionQueryChangeStable}
           mathModeEnabled={snapshot.state.domain.settings.values.composer.math_mode}
           recentEmojis={snapshot.state.domain.settings.values.composer.recent_emojis}
           onMathModeChange={onComposerMathModeChangeStable}
@@ -1171,7 +1190,7 @@ export function TimelinePane({
         onAttachFiles={onAttachFilesStable}
         onDocumentChange={onComposerDocumentChangeStable}
         onMathModeChange={onComposerMathModeChangeStable}
-        onMentionQueryChange={onMentionQueryChangeStable}
+        onMentionQueryChange={onComposerMentionQueryChangeStable}
         onScheduleSend={onScheduleSendStable}
         onSend={onSendTextStable}
         onDiagnosticLogEntry={onTimelineDiagnosticLogEntryStable}
