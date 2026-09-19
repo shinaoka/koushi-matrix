@@ -1954,7 +1954,9 @@ export function checkCoreSearchPageSingleFetch() {
   const rule = "core.search.page_single_fetch";
   const body = coreItemBody("search_crawler.rs", "async fn run_history_crawl_page");
   const failures = [];
-  if (!body?.includes("result = room.messages(options)")) failures.push(sourceContractFailure(rule, "crawler page does not fetch one messages page"));
+  const fetchesOnePage = body?.includes("result = room.messages(options)")
+    || /event_cache\s*\.pagination\(\)[\s\S]*run_backwards_once\(/.test(body ?? "");
+  if (!fetchesOnePage) failures.push(sourceContractFailure(rule, "crawler page does not fetch one paginated history page"));
   if (body?.includes("loop {")) failures.push(sourceContractFailure(rule, "crawler page loops through room history"));
   return failures;
 }
@@ -1963,8 +1965,14 @@ export function checkCoreSearchPageWorkKind() {
   const rule = "core.search.page_work_kind";
   const body = coreItemBody("search_crawler.rs", "async fn run_history_crawl_page");
   const acquire = body?.indexOf("AccountWorkKind::SearchCrawl") ?? -1;
-  const messages = body?.indexOf("result = room.messages(options)") ?? -1;
-  return acquire >= 0 && messages >= 0 && acquire < messages ? [] : [sourceContractFailure(rule, "crawler page acquires search-crawl work after room.messages")];
+  const fetches = [
+    body?.indexOf("result = room.messages(options)") ?? -1,
+    body?.indexOf("room.event_cache()") ?? -1,
+  ].filter((index) => index >= 0);
+  const pageFetch = fetches.length > 0 ? Math.min(...fetches) : -1;
+  return acquire >= 0 && pageFetch >= 0 && acquire < pageFetch
+    ? []
+    : [sourceContractFailure(rule, "crawler page acquires search-crawl work after its paginated history fetch")];
 }
 
 export function checkCoreSearchPageStartupTrace() {
