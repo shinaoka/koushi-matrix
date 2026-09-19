@@ -24,7 +24,7 @@ console.log(`rust_cache_sdk_artifacts=${sdkArtifactCount}`);
 console.log(`rust_cache_target_bytes=${targetBytes}`);
 
 if (sdkCacheHit === "true" && (sdkFingerprintCount === 0 || sdkArtifactCount === 0)) {
-  throw new Error("vendored Matrix SDK cache reported a hit but no CI-profile artifacts were restored");
+  throw new Error(`vendored Matrix SDK cache reported a hit but no ${profile}-profile artifacts were restored`);
 }
 
 const summaryPath = process.env.GITHUB_STEP_SUMMARY;
@@ -46,8 +46,11 @@ if (summaryPath) {
 
 function optionValue(name) {
   const prefix = `${name}=`;
-  const inline = process.argv.slice(2).find((arg) => arg.startsWith(prefix));
-  return inline ? inline.slice(prefix.length) : undefined;
+  const args = process.argv.slice(2);
+  const inline = args.find((arg) => arg.startsWith(prefix));
+  if (inline) return inline.slice(prefix.length);
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : undefined;
 }
 
 function countMatchingEntries(directory, predicate) {

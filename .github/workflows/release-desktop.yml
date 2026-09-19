@@ -97,6 +97,7 @@ jobs:
 
       - name: Read vendored Matrix SDK revision
         id: sdk-revision
+        shell: bash
         run: echo "revision=$(git -C vendor/matrix-rust-sdk rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Cache vendored Matrix SDK release artifacts
@@ -279,6 +280,7 @@ jobs:
 
       - name: Read vendored Matrix SDK revision
         id: sdk-revision
+        shell: bash
         run: echo "revision=$(git -C vendor/matrix-rust-sdk rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Cache vendored Matrix SDK release artifacts
@@ -382,6 +384,7 @@ jobs:
 
       - name: Read vendored Matrix SDK revision
         id: sdk-revision
+        shell: bash
         run: echo "revision=$(git -C vendor/matrix-rust-sdk rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Cache vendored Matrix SDK release artifacts

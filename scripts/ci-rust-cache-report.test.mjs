@@ -25,7 +25,7 @@ test("cache report rejects a claimed SDK hit without representative artifacts", 
     encoding: "utf8"
   });
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /no CI-profile artifacts were restored/);
+  assert.match(result.stderr, /no ci-profile artifacts were restored/);
 });
 
 test("cache report counts SDK fingerprints and artifacts in the selected profile", () => {
@@ -39,6 +39,25 @@ test("cache report counts SDK fingerprints and artifacts in the selected profile
     encoding: "utf8"
   });
   assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /rust_cache_sdk_fingerprints=1/);
+  assert.match(result.stdout, /rust_cache_sdk_artifacts=1/);
+});
+
+test("cache report accepts space-separated options", () => {
+  const target = mkdtempSync(join(tmpdir(), "koushi-ci-cache-"));
+  const profile = join(target, "target-release", "release");
+  mkdirSync(join(profile, ".fingerprint", "matrix-sdk-example"), { recursive: true });
+  mkdirSync(join(profile, "deps"), { recursive: true });
+  writeFileSync(join(profile, ".fingerprint", "matrix-sdk-example", "lib-matrix-sdk.json"), "{}");
+  writeFileSync(join(profile, "deps", "libmatrix_sdk_example.rlib"), "artifact");
+  const result = spawnSync(
+    process.execPath,
+    [script, "--target-dir", join(target, "target-release"), "--profile", "release", "--sdk-cache-hit", "true", "--label", "release"],
+    { encoding: "utf8" }
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /rust_cache_profile=release/);
+  assert.match(result.stdout, /rust_cache_sdk_cache_hit=true/);
   assert.match(result.stdout, /rust_cache_sdk_fingerprints=1/);
   assert.match(result.stdout, /rust_cache_sdk_artifacts=1/);
 });
