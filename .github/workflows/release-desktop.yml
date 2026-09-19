@@ -423,6 +423,15 @@ jobs:
             --signature-file release-assets/Koushi-macos-arm64.app.tar.gz.sig \
             --output release-assets/latest.json
 
+      - name: Create beta updater manifest
+        run: |
+          node scripts/desktop-updater-manifest.mjs \
+            --version "$RELEASE_VERSION" \
+            --target darwin-aarch64 \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/latest-beta/Koushi-macos-arm64.app.tar.gz" \
+            --signature-file release-assets/Koushi-macos-arm64.app.tar.gz.sig \
+            --output release-assets/latest-beta.json
+
       - name: Create hidden draft with all assets
         run: |
           node scripts/user-help.mjs --release-notes "$GITHUB_REPOSITORY" "$RELEASE_TAG" > release-notes.md
@@ -445,3 +454,27 @@ jobs:
           gh release edit "$RELEASE_TAG"
           --repo "$GITHUB_REPOSITORY"
           --draft=false
+
+      - name: Publish moving beta channel
+        run: |
+          if gh release view latest-beta --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload latest-beta \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber \
+              release-assets/Koushi-macos-arm64.app.tar.gz \
+              release-assets/Koushi-macos-arm64.app.tar.gz.sig \
+              release-assets/latest-beta.json
+            gh release edit latest-beta \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Koushi beta channel" \
+              --prerelease
+          else
+            gh release create latest-beta \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$RELEASE_TARGET" \
+              --title "Koushi beta channel" \
+              --prerelease \
+              release-assets/Koushi-macos-arm64.app.tar.gz \
+              release-assets/Koushi-macos-arm64.app.tar.gz.sig \
+              release-assets/latest-beta.json
+          fi

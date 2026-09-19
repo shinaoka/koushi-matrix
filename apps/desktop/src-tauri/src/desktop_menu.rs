@@ -8,6 +8,7 @@ const MENU_ID_ABOUT: &str = "about_koushi";
 const MENU_ID_OPEN_USER_SETTINGS: &str = "open_user_settings";
 const MENU_ID_SIGN_OUT: &str = "sign_out";
 const MENU_ID_SHOW_HELP: &str = "show_help";
+const MENU_ID_CHECK_FOR_UPDATES: &str = "check_for_updates";
 const MENU_ID_TOGGLE_RIGHT_PANEL: &str = "toggle_right_panel";
 const MENU_ID_ZOOM_IN: &str = "zoom_in";
 const MENU_ID_ZOOM_OUT: &str = "zoom_out";
@@ -60,6 +61,12 @@ pub(crate) fn desktop_menu_items() -> Vec<DesktopMenuItem> {
         DesktopMenuItem {
             id: MENU_ID_SHOW_HELP,
             label: "Koushi Help",
+            menu: "help",
+            accelerator: "",
+        },
+        DesktopMenuItem {
+            id: MENU_ID_CHECK_FOR_UPDATES,
+            label: "Check for Updates…",
             menu: "help",
             accelerator: "",
         },
@@ -117,6 +124,7 @@ pub(super) fn desktop_menu_action_id(menu_id: &str) -> Option<&'static str> {
         MENU_ID_SIGN_OUT => Some("logout"),
         MENU_ID_TOGGLE_RIGHT_PANEL => Some("toggleRightPanel"),
         MENU_ID_SHOW_HELP => Some("showHelp"),
+        MENU_ID_CHECK_FOR_UPDATES => Some("checkForUpdates"),
         MENU_ID_TOGGLE_FULLSCREEN => Some("toggleFullscreen"),
         MENU_ID_ZOOM_IN => Some("zoomIn"),
         MENU_ID_ZOOM_OUT => Some("zoomOut"),
@@ -132,6 +140,7 @@ pub(super) fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
     let sign_out = menu_item(manager, MENU_ID_SIGN_OUT)?;
     let toggle_right_panel = menu_item(manager, MENU_ID_TOGGLE_RIGHT_PANEL)?;
     let show_help = menu_item(manager, MENU_ID_SHOW_HELP)?;
+    let check_for_updates = menu_item(manager, MENU_ID_CHECK_FOR_UPDATES)?;
     let zoom_in = menu_item(manager, MENU_ID_ZOOM_IN)?;
     let zoom_out = menu_item(manager, MENU_ID_ZOOM_OUT)?;
     let reset_zoom = menu_item(manager, MENU_ID_RESET_ZOOM)?;
@@ -187,6 +196,7 @@ pub(super) fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
     };
     let help_menu = SubmenuBuilder::new(manager, "Help")
         .item(&show_help)
+        .item(&check_for_updates)
         .build()?;
 
     MenuBuilder::new(manager)
@@ -250,5 +260,11 @@ mod tests {
         assert!(help.accelerator.is_empty());
         assert_eq!(desktop_menu_action_id(help.id), Some("showHelp"));
         assert_eq!(desktop_menu_action_id("show_keyboard_settings"), None);
+        let check = items
+            .iter()
+            .find(|item| item.id == "check_for_updates")
+            .unwrap();
+        assert_eq!(check.label, "Check for Updates…");
+        assert_eq!(desktop_menu_action_id(check.id), Some("checkForUpdates"));
     }
 }

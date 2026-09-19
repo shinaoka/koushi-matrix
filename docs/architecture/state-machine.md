@@ -4332,14 +4332,16 @@ stateDiagram-v2
 
 The desktop adapter owns one process-wide update lifecycle. It is independent
 of account/session readiness and consumes the Rust-owned
-`SettingsValues.updates.auto_check` preference.
+`SettingsValues.updates.auto_check` and `SettingsValues.updates.include_prereleases`
+preferences.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Unsupported: platform is not enabled
     [*] --> Idle: platform is enabled
-    Idle --> Checking: startup/24h/setting enabled
-    Checking --> Idle: no newer release
+    Idle --> Checking: startup/24h/setting enabled/manual check
+    Checking --> Idle: automatic check has no newer release
+    Checking --> UpToDate: manual check has no newer release
     Checking --> Available: newer release found
     Available --> Downloading: DownloadUpdate confirmed
     Checking --> Failed: check failed
@@ -4349,8 +4351,18 @@ stateDiagram-v2
     Installing --> Failed: installation failed
 ```
 
+- `up_to_date` is produced only by a manual check and carries the current
+  public version so the user can distinguish a completed check from an idle
+  background state.
 - A disabled `auto_check` preference issues no network request. Turning it off
   suppresses later scheduled checks; turning it on triggers one check.
+- `include_prereleases` is independent of `auto_check`. When enabled, stable
+  and pre-release feeds are both checked and the greatest SemVer candidate is
+  selected. A pre-release identifier such as `-alpha.1`, `-beta.1`, or `-rc.1`
+  marks a pre-release; build metadata does not.
+- Manual checks are available from the Help menu and User Settings even when
+  `auto_check` is disabled. A manual check never downloads or installs by
+  itself.
 - Duplicate triggers while checking, available, downloading, ready, or installing are
   ignored. There is one verified pending artifact slot.
 - `available` and `ready` expose only the release version. `failed` exposes only a coarse

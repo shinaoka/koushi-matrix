@@ -1150,21 +1150,25 @@ held forever.
 
 Desktop application updates are a platform-adapter lifecycle, separate from
 Matrix/Core state. Persisted policy is Rust-owned
-`SettingsValues.updates.auto_check`; the Tauri adapter owns the updater plugin,
+`SettingsValues.updates.auto_check` and
+`SettingsValues.updates.include_prereleases`; the Tauri adapter owns the updater plugin,
 the current check/download/install state, and the verified pending artifact.
 React renders the typed adapter projection and dispatches only the settings,
 download, or restart-to-install intent. It must not fetch manifests, compare
 versions, verify signatures, retain update bytes, or replace an application.
 
-The projection is platform-neutral (`unsupported`, `idle`, `checking`,
-`available`, `downloading`, `ready`, `failed`, or `installing`). Only macOS arm64 is enabled
+The projection is platform-neutral (`unsupported`, `idle`, `up_to_date`,
+`checking`, `available`, `downloading`, `ready`, `failed`, or `installing`). Only macOS arm64 is enabled
 for the first release. Windows and Linux report `unsupported` until a separate
 change provides signed artifacts and an approved install contract; their normal
 installer builds must not require the macOS updater signing secret.
 
 When automatic checks are enabled, the adapter checks after startup and at most
 once per 24-hour interval, and checks once when the setting changes from off to
-on. Checks, downloads, signature verification, and failures are non-blocking and
+on. A manual check is available from the Help menu and User Settings regardless
+of `auto_check`; it reports `up_to_date` when the selected feeds have no newer
+candidate. When pre-releases are enabled, the adapter checks both stable and
+pre-release feeds and selects the greatest SemVer candidate. Checks, downloads, signature verification, and failures are non-blocking and
 must not delay Core startup, login, or ordinary application use. The Tauri
 updater plugin performs version comparison, download, signature verification,
 and installation. A detected release becomes `available` and is presented to

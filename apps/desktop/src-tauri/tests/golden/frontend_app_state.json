@@ -731,7 +731,8 @@
             "font": "system"
           },
           "updates": {
-            "auto_check": true
+            "auto_check": true,
+            "include_prereleases": false
           },
           "window": {
             "close_to_tray": true

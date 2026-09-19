@@ -596,7 +596,11 @@ export type MessageId =
   | "settings.closeToTrayDescription"
   | "settings.autoUpdate"
   | "settings.autoUpdateDescription"
+  | "settings.includePrereleases"
+  | "settings.includePrereleasesDescription"
   | "settings.updateIdle"
+  | "settings.updateCheck"
+  | "settings.updateUpToDate"
   | "settings.updateChecking"
   | "settings.updateAvailable"
   | "settings.updateAvailableTitle"
@@ -1956,7 +1960,12 @@ const en: Catalog = {
   "settings.autoUpdate": "Automatically check for updates",
   "settings.autoUpdateDescription":
     "Notify you about verified macOS updates. You choose whether to download and restart.",
+  "settings.includePrereleases": "Include pre-release versions",
+  "settings.includePrereleasesDescription":
+    "Also check releases whose SemVer contains a pre-release identifier such as -beta.1 or -rc.1.",
   "settings.updateIdle": "Koushi will check for updates automatically.",
+  "settings.updateCheck": "Check for updates",
+  "settings.updateUpToDate": "Koushi is up to date (v{version}).",
   "settings.updateChecking": "Checking for updates…",
   "settings.updateAvailable": "Koushi {version} is available.",
   "settings.updateAvailableTitle": "Update available",
@@ -3216,7 +3225,12 @@ const ja: Catalog = {
   "settings.autoUpdate": "アップデートを自動確認",
   "settings.autoUpdateDescription":
     "検証済みのmacOSアップデートを通知します。ダウンロードと再起動は選択できます。",
+  "settings.includePrereleases": "プレリリース版を含める",
+  "settings.includePrereleasesDescription":
+    "-beta.1 や -rc.1 など、SemVerのプレリリース識別子を含むリリースも確認します。",
   "settings.updateIdle": "Koushiはアップデートを自動確認します。",
+  "settings.updateCheck": "アップデートを確認",
+  "settings.updateUpToDate": "Koushiは最新です（v{version}）。",
   "settings.updateChecking": "アップデートを確認しています…",
   "settings.updateAvailable": "Koushi {version}が利用可能です。",
   "settings.updateAvailableTitle": "アップデートがあります",

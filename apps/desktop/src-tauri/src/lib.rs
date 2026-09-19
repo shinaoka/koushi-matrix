@@ -906,6 +906,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::app_updates::check_for_desktop_update,
             commands::app_updates::get_desktop_update_state,
             commands::app_updates::download_desktop_update,
             commands::app_updates::restart_to_install_desktop_update,

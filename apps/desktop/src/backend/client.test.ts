@@ -53,6 +53,14 @@ describe("TauriDesktopApi", () => {
     expect(invoke).toHaveBeenCalledWith("download_desktop_update");
   });
 
+  test("checks for desktop updates on demand", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    await new TauriDesktopApi().checkForDesktopUpdate();
+
+    expect(invoke).toHaveBeenCalledWith("check_for_desktop_update");
+  });
+
   test("uses distinct state-only and state-plus-timeline resync commands", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 

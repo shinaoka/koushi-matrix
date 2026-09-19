@@ -4,17 +4,23 @@ use koushi_state::{SettingsPatch, SettingsValues, UpdatesSettings};
 fn updates_default_on_patch_round_trip_and_legacy_backfill() {
     let mut values = SettingsValues::default();
     assert!(values.updates.auto_check);
+    assert!(!values.updates.include_prereleases);
 
     values.apply_patch(SettingsPatch {
-        updates: Some(UpdatesSettings { auto_check: false }),
+        updates: Some(UpdatesSettings {
+            auto_check: false,
+            include_prereleases: true,
+        }),
         ..SettingsPatch::default()
     });
     assert!(!values.updates.auto_check);
+    assert!(values.updates.include_prereleases);
 
     let encoded = serde_json::to_value(&values).expect("serialize settings");
     let restored: SettingsValues =
         serde_json::from_value(encoded.clone()).expect("restore settings");
     assert!(!restored.updates.auto_check);
+    assert!(restored.updates.include_prereleases);
 
     let mut legacy = encoded;
     legacy
@@ -23,4 +29,5 @@ fn updates_default_on_patch_round_trip_and_legacy_backfill() {
         .remove("updates");
     let backfilled: SettingsValues = serde_json::from_value(legacy).expect("backfill settings");
     assert!(backfilled.updates.auto_check);
+    assert!(!backfilled.updates.include_prereleases);
 }

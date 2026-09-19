@@ -97,7 +97,10 @@ The workflow:
 7. builds the unsigned Linux x64 AppImage, deb, and RPM packages;
 8. creates SHA-256 files for every installer and updater archive;
 9. creates `latest.json` from the verified archive signature;
-10. waits for all platform jobs, verifies the downloaded checksums, creates a
+10. creates `latest-beta.json` and updates the moving `latest-beta` Release
+    used by clients that include pre-release versions; stable releases keep
+    that channel usable until the first pre-release is published;
+11. waits for all platform jobs, verifies the downloaded checksums, creates a
     hidden draft Release, uploads every artifact, and finally publishes it.
 
 No public partial release is created when a platform build or verification gate
@@ -141,7 +144,11 @@ Stable download links:
 - <https://github.com/shinaoka/koushi-matrix/releases/latest/download/Koushi-linux-x64.rpm>
 
 GitHub's `releases/latest` links select the latest full release, not a
-prerelease. Inspect a prerelease through its versioned Release page.
+prerelease. The desktop pre-release setting uses the moving `latest-beta`
+Release, which is updated for every release. A release is a pre-release for
+this purpose when its SemVer prerelease field is non-empty, such as
+`0.10.0-alpha.1`, `0.10.0-beta.1`, or `0.10.0-rc.1`. Build metadata alone,
+such as `0.10.0+nightly.1`, does not make a release a beta.
 
 ## Failure recovery
 

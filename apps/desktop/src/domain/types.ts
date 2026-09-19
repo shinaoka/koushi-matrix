@@ -274,11 +274,13 @@ export interface WindowSettings {
 
 export interface UpdatesSettings {
   auto_check: boolean;
+  include_prereleases: boolean;
 }
 
 export type DesktopUpdateState =
   | { kind: "unsupported" }
   | { kind: "idle" }
+  | { kind: "up_to_date"; version: string }
   | { kind: "checking" }
   | { kind: "available"; version: string }
   | { kind: "downloading"; version: string }

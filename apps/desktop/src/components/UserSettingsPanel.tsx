@@ -67,6 +67,7 @@ export function UserSettingsPanel({
   accountManagementCapabilities,
   keyboardLabelProfile,
   onUpdateSettings,
+  onCheckDesktopUpdate = () => undefined,
   onDownloadDesktopUpdate = () => undefined,
   onRestartToInstallDesktopUpdate = () => undefined,
   onRebuildSearchIndex,
@@ -121,6 +122,7 @@ export function UserSettingsPanel({
   accountManagementCapabilities: AccountManagementCapabilities;
   keyboardLabelProfile?: ShortcutLabelProfile;
   onUpdateSettings: (patch: SettingsPatch) => void;
+  onCheckDesktopUpdate?: () => void;
   onDownloadDesktopUpdate?: () => void;
   onRestartToInstallDesktopUpdate?: () => void;
   onRebuildSearchIndex?: () => void;
@@ -477,6 +479,7 @@ export function UserSettingsPanel({
                   current={selectedUpdates}
                   state={desktopUpdate}
                   onSelect={onUpdateSettings}
+                  onCheck={onCheckDesktopUpdate}
                   onDownload={onDownloadDesktopUpdate}
                   onRestart={onRestartToInstallDesktopUpdate}
                 />
@@ -933,12 +936,14 @@ export function DesktopUpdateControls({
   current,
   state,
   onSelect,
+  onCheck,
   onDownload,
   onRestart
 }: {
   current: UpdatesSettings;
   state: DesktopUpdateState;
   onSelect: (patch: SettingsPatch) => void;
+  onCheck: () => void;
   onDownload: () => void;
   onRestart: () => void;
 }) {
@@ -950,7 +955,7 @@ export function DesktopUpdateControls({
         role="switch"
         aria-checked={current.auto_check}
         aria-label={t("settings.autoUpdate")}
-        onClick={() => onSelect({ updates: { auto_check: !current.auto_check } })}
+        onClick={() => onSelect({ updates: { ...current, auto_check: !current.auto_check } })}
       >
         <span className="settings-toggle-copy">
           <span className="settings-toggle-label">
@@ -965,9 +970,36 @@ export function DesktopUpdateControls({
           <span className="settings-switch-thumb" />
         </span>
       </button>
+      <button
+        className="settings-toggle-row"
+        type="button"
+        role="switch"
+        aria-checked={current.include_prereleases}
+        aria-label={t("settings.includePrereleases")}
+        onClick={() => onSelect({ updates: { ...current, include_prereleases: !current.include_prereleases } })}
+      >
+        <span className="settings-toggle-copy">
+          <span className="settings-toggle-label">
+            <RefreshCcw size={15} aria-hidden="true" />
+            <span>{t("settings.includePrereleases")}</span>
+          </span>
+          <span className="settings-toggle-description">
+            {t("settings.includePrereleasesDescription")}
+          </span>
+        </span>
+        <span className="settings-switch-track" aria-hidden="true">
+          <span className="settings-switch-thumb" />
+        </span>
+      </button>
       {state.kind !== "unsupported" ? (
         <div className="settings-update-status" aria-live="polite">
           <p className="settings-status-text">{desktopUpdateStatusText(state)}</p>
+          {state.kind === "idle" || state.kind === "up_to_date" || state.kind === "failed" ? (
+            <button className="profile-settings-action" type="button" onClick={onCheck}>
+              <RefreshCcw size={14} aria-hidden="true" />
+              {t("settings.updateCheck")}
+            </button>
+          ) : null}
           {state.kind === "available" ? (
             <button className="profile-settings-action" type="button" onClick={onDownload}>
               <RefreshCcw size={14} aria-hidden="true" />
@@ -990,6 +1022,8 @@ function desktopUpdateStatusText(state: DesktopUpdateState): string {
   switch (state.kind) {
     case "idle":
       return t("settings.updateIdle");
+    case "up_to_date":
+      return t("settings.updateUpToDate", { version: state.version });
     case "checking":
       return t("settings.updateChecking");
     case "available":

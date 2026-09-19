@@ -523,11 +523,16 @@ impl Default for WindowSettings {
 pub struct UpdatesSettings {
     #[serde(default = "default_true")]
     pub auto_check: bool,
+    #[serde(default)]
+    pub include_prereleases: bool,
 }
 
 impl Default for UpdatesSettings {
     fn default() -> Self {
-        Self { auto_check: true }
+        Self {
+            auto_check: true,
+            include_prereleases: false,
+        }
     }
 }
 
