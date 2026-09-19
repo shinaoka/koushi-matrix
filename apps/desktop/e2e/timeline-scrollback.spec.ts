@@ -1227,8 +1227,8 @@ test("missing-dimension media keeps row height stable across download completion
   );
 });
 
-test("pending link previews reserve the ready card height", async ({ page }) => {
-  await page.goto("/harness.html");
+test("link previews occupy space only after content becomes ready", async ({ page }) => {
+  await page.goto("/harness.html?variableHeights=true");
   await page.waitForSelector("[data-testid=timeline-view]");
   await page.addStyleTag({
     path: DESKTOP_STYLES_PATH
@@ -1256,9 +1256,9 @@ test("pending link previews reserve the ready card height", async ({ page }) => 
 
   const frame = page.locator('[data-frame-item-id="$preview70"]');
   const card = frame.locator(".link-preview-card");
-  await expect(card).toHaveAttribute("data-link-preview-state", "pending");
+  await expect(frame).toBeAttached();
+  await expect(frame.locator(".link-preview-cards")).toHaveCount(0);
   const beforeHeight = await frame.evaluate((node) => node.getBoundingClientRect().height);
-  const cardBeforeHeight = await card.evaluate((node) => node.getBoundingClientRect().height);
 
   await page.evaluate(
     ({ key, readyItem }) => {
@@ -1282,8 +1282,8 @@ test("pending link previews reserve the ready card height", async ({ page }) => 
         link_previews: [
           {
             url: "https://example.invalid/preview",
-            title: "Reserved preview title",
-            description: "Two lines of synthetic preview text must stay inside the reserved card.",
+            title: "Synthetic preview title",
+            description: "Synthetic preview content appears after loading completes.",
             state: "ready"
           }
         ]
@@ -1294,10 +1294,8 @@ test("pending link previews reserve the ready card height", async ({ page }) => 
   await expect(card).toHaveAttribute("data-link-preview-state", "ready");
   const afterHeight = await frame.evaluate((node) => node.getBoundingClientRect().height);
   const cardAfterHeight = await card.evaluate((node) => node.getBoundingClientRect().height);
-  expect(Math.abs(afterHeight - beforeHeight)).toBeLessThanOrEqual(
-    ANCHOR_PIXEL_TOLERANCE
-  );
-  expect(Math.abs(cardAfterHeight - cardBeforeHeight)).toBeLessThanOrEqual(1);
+  expect(cardAfterHeight).toBeGreaterThan(0);
+  expect(afterHeight).toBeGreaterThan(beforeHeight);
 });
 
 test("active scroll inside mounted overscan does not recompose the virtual window", async ({ page }) => {

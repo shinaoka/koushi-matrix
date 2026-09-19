@@ -103,6 +103,7 @@ export function ContextualRightPanel({
   onOpenPinnedEvent = () => undefined,
   onUnpinPinnedEvent = () => undefined,
   onOpenSpaceMembers,
+  startSpaceMembersInInviteMode = false,
   onOpenContextMenu,
   onDiagnostic,
   onRequestMemberAvatarThumbnail,
@@ -232,7 +233,8 @@ export function ContextualRightPanel({
   onOpenFiles: (scope: FilesViewScope) => void;
   onOpenPinnedEvent?: (roomId: string, eventId: string, threadRootEventId: string | null) => void;
   onUnpinPinnedEvent?: (roomId: string, eventId: string) => void;
-  onOpenSpaceMembers?: () => void;
+  onOpenSpaceMembers?: (startInInviteMode?: boolean) => void;
+  startSpaceMembersInInviteMode?: boolean;
   onOpenContextMenu?: OpenContextMenu;
   onDiagnostic?: (message: string) => void;
   spaceInviteAvailabilityReason?: SpaceInviteAvailabilityReason;
@@ -256,7 +258,7 @@ export function ContextualRightPanel({
   onInviteUser?: (roomId: string, title: string) => void;
   onReturnToInvite?: () => void;
   onInviteUserToSpace?: (userId: string) => void;
-  onInviteSearchCandidateToSpace?: (userId: string) => void;
+  onInviteSearchCandidateToSpace?: (userId: string) => void | Promise<void>;
   onSearchSpaceInviteTargets?: (query: string) => Promise<InviteTargetCandidate[]>;
   onResetSpaceInviteSearch?: () => void;
   canInviteToSpace?: boolean;
@@ -608,7 +610,10 @@ export function ContextualRightPanel({
         ) : mode === "people" && peoplePanelScope?.kind === "space" ? (
           <SpaceMembersPanel
             state={snapshot.state.domain.space_members}
+            inviteOperation={snapshot.state.domain.invite_workflow?.operation}
             canInvite={canInviteToSpace}
+            spaceName={roomOrSpace && "space_id" in roomOrSpace ? roomOrSpace.display_name : undefined}
+            startInInviteMode={startSpaceMembersInInviteMode}
             onClose={onClosePanel}
             profileUsers={snapshot.state.domain.profile.users}
             onRequestAvatarThumbnail={onRequestMemberAvatarThumbnail}
@@ -670,11 +675,7 @@ export function ContextualRightPanel({
           space={activeSpace}
           onInvitePeople={
             activeSpace
-              ? () =>
-                  onInviteUser(
-                    activeSpace.space_id,
-                    t("dialog.invitePeopleTitle", { name: activeSpace.display_name })
-                  )
+              ? () => onOpenSpaceMembers?.(true)
               : undefined
           }
           onOpenFiles={

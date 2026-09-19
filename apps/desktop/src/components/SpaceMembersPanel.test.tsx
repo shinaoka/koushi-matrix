@@ -135,6 +135,64 @@ describe("SpaceMembersPanel space invite search (#508)", () => {
     status_message: null
   });
 
+  it.each(["room", "space"] as const)("shows pending, invited and failed outcomes for a %s destination", async (destinationKind) => {
+    const props = {
+      state: state(), canInvite: true, startInInviteMode: true,
+      onInviteUser: vi.fn(), onOpenProfile: vi.fn(),
+      onSearchInviteTargets: vi.fn(async () => [candidate()])
+    };
+    const { rerender } = render(<SpaceMembersPanel {...props} />);
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "new" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Invite New Person" })).toBeTruthy());
+    rerender(<SpaceMembersPanel {...props} inviteOperation={{
+      kind: "pending", request_id: 1, room_id: props.state.selected_space_id!,
+      user_ids: [candidate().user_id], scope: { kind: "roomOnly" }
+    }} />);
+    expect(screen.getByRole("button", { name: "Inviting…" })).toHaveProperty("disabled", true);
+    rerender(<SpaceMembersPanel {...props} inviteOperation={{
+      kind: "completed", request_id: 1, room_id: props.state.selected_space_id!, notice: null,
+      results: [{ user_id: candidate().user_id, destination: destinationKind === "space"
+        ? { kind: "space", space_id: props.state.selected_space_id! }
+        : { kind: "room", room_id: props.state.selected_space_id! }, kind: "invited", message: null }]
+    }} />);
+    expect(screen.getByRole("button", { name: "Invited" })).toHaveProperty("disabled", true);
+    rerender(<SpaceMembersPanel {...props} inviteOperation={{
+      kind: "completed", request_id: 2, room_id: props.state.selected_space_id!, notice: null,
+      results: [{ user_id: candidate().user_id, destination: { kind: "room", room_id: props.state.selected_space_id! }, kind: "failed", message: null }]
+    }} />);
+    expect(screen.getByRole("alert").textContent).toContain("Invite failed");
+    expect(screen.getByRole("button", { name: "Invite New Person" })).toHaveProperty("disabled", false);
+    rerender(<SpaceMembersPanel {...props} inviteOperation={{
+      kind: "failed", request_id: 2, room_id: props.state.selected_space_id!, failureKind: "network"
+    }} />);
+    expect(screen.getByRole("alert").textContent).toContain("Invite failed");
+    expect(screen.getByRole("button", { name: "Invite New Person" })).toHaveProperty("disabled", false);
+  });
+
+  it("shows transport rejection and allows retry without claiming success", async () => {
+    const onInviteSearchCandidate = vi.fn().mockRejectedValue(new Error("transport"));
+    render(<SpaceMembersPanel state={state()} canInvite startInInviteMode
+      onInviteUser={vi.fn()} onOpenProfile={vi.fn()}
+      onSearchInviteTargets={async () => [candidate()]}
+      onInviteSearchCandidate={onInviteSearchCandidate} />);
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "new" } });
+    const button = await screen.findByRole("button", { name: "Invite New Person" });
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Invite failed"));
+    expect(screen.queryByRole("button", { name: "Invited" })).toBeNull();
+    expect(button).toHaveProperty("disabled", false);
+    fireEvent.click(button);
+    await waitFor(() => expect(onInviteSearchCandidate).toHaveBeenCalledTimes(2));
+  });
+
+  it("does not show outcomes from a different Space", async () => {
+    render(<SpaceMembersPanel state={state()} canInvite startInInviteMode
+      onInviteUser={vi.fn()} onOpenProfile={vi.fn()}
+      onSearchInviteTargets={async () => [candidate()]}
+      inviteOperation={{ kind: "failed", request_id: 1, room_id: "!other:example.invalid", failureKind: "network" }} />);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("opens the invite search, resolves candidates, and invites a brand-new user", async () => {
     const onInviteUser = vi.fn();
     const onInviteSearchCandidate = vi.fn();
@@ -158,6 +216,11 @@ describe("SpaceMembersPanel space invite search (#508)", () => {
       expect(screen.getByRole("button", { name: /New Person/ })).toBeTruthy()
     );
     expect(onSearchInviteTargets).toHaveBeenCalledWith("new");
+
+    expect(screen.getByRole("heading", { name: "Invite people" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Invite New Person" }).textContent).toBe("Invite");
+    fireEvent.click(screen.getByText("New Person"));
+    expect(onInviteSearchCandidate).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: /New Person/ }));
     expect(onInviteSearchCandidate).toHaveBeenCalledWith("@new:example.invalid");
@@ -301,6 +364,16 @@ describe("SpaceMembersPanel space invite search (#508)", () => {
 });
 
 describe("SpaceMembersPanel", () => {
+  it("shows a search failure instead of reporting no members", async () => {
+    render(<SpaceMembersPanel state={state()} canInvite={true} startInInviteMode
+      onInviteUser={vi.fn()} onOpenProfile={vi.fn()}
+      onSearchInviteTargets={async () => { throw new Error("transport timeout"); }} />);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Name, alias, or Matrix ID" }), {
+      target: { value: "@new-person:example.invalid" }
+    });
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Could not search"));
+    expect(screen.queryByText(/No invite candidates found/)).toBeNull();
+  });
   it("renders cancellation only for invited rows and forwards the invited user", () => {
     const onCancelInvite = vi.fn();
     const diagnostics: string[] = [];

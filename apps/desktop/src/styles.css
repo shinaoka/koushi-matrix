@@ -6197,6 +6197,42 @@ mark {
   line-height: 1.4;
 }
 
+.room-name-header-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.room-name-header-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.room-name-header-field input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.room-name-header-field input:focus {
+  border-color: var(--line);
+  background: var(--surface);
+}
+
+.room-name-header-field input:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
 .people-panel {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;

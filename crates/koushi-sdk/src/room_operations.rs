@@ -1510,6 +1510,46 @@ pub async fn set_room_notification_mode(
     Ok(())
 }
 
+/// Read settled policy directly from the homeserver, independent of sync cache latency.
+pub async fn fetch_room_notification_mode(
+    session: &MatrixClientSession,
+    room_id: &str,
+) -> Result<koushi_state::RoomNotificationMode, MatrixRoomOperationError> {
+    use koushi_state::RoomNotificationMode as Mode;
+    use matrix_sdk::ruma::{
+        api::client::push::get_pushrules_all,
+        push::{PushCondition, RuleKind},
+    };
+    let rules = session
+        .client()
+        .send(get_pushrules_all::v3::Request::new())
+        .await
+        .map_err(|error| {
+            MatrixRoomOperationError::from_sdk_error(matrix_sdk::Error::Http(Box::new(error)))
+        })?
+        .global;
+    if rules.override_.iter().any(|rule| rule.enabled && rule.conditions.iter().any(|condition| matches!(condition, PushCondition::EventMatch(data) if data.key == "room_id" && data.pattern == room_id)) && !rule.actions.iter().any(|action| action.should_notify())) { return Ok(Mode::Mute); }
+    if let Some(rule) = rules.get(RuleKind::Room, room_id) {
+        return Ok(if rule.triggers_notification() {
+            Mode::All
+        } else {
+            Mode::Mentions
+        });
+    }
+    let legacy_id = format!("org.matrix.desktop.notify.room.{room_id}");
+    Ok(
+        if rules.underride.iter().any(|rule| {
+            rule.rule_id == legacy_id
+                && rule.enabled
+                && !rule.actions.iter().any(|a| a.should_notify())
+        }) {
+            Mode::Mentions
+        } else {
+            Mode::All
+        },
+    )
+}
+
 pub async fn load_pinned_event_ids(
     session: &MatrixClientSession,
     room_id: &str,

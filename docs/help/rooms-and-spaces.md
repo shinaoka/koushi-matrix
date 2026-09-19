@@ -67,3 +67,7 @@ Open **Room info** to find members, files, room notification options, and settin
 available to your role. Room notification choices include **All messages**,
 **Mentions only**, and **Mute**. Device notification permission and global
 notification settings can also affect whether a desktop notification appears.
+**Mute** suppresses desktop notifications and sounds and excludes that room from
+notification badge totals, even if it still has unread messages or mentions.
+Muting does not mark messages as read. Room notification changes made in another
+Matrix client are reflected after synchronization.

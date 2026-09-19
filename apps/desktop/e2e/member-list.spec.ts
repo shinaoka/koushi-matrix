@@ -410,14 +410,56 @@ test("Space Members can invite a brand-new user to the Space via the invite sear
                 explicit_user_id: null
               },
               selected_targets: [],
-              scope_plan: null,
-              selected_scope: null,
+              scope_plan: {
+                room_id: spaceId, destination_kind: "space", default_scope: { kind: "roomOnly" },
+                options: [{ scope: { kind: "roomOnly" }, label: "Space only", detail: null }]
+              },
+              selected_scope: { kind: "roomOnly" },
               history_policy: null,
               operation: { kind: "idle" }
             }
           }
         }
       };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.setCommandResponse("load_space_members", () => {
+      const next = structuredClone(window.__harness.currentSnapshot());
+      const members = next.state.domain.space_members;
+      members.space_invited.push({
+        ...members.space_invited[0]!, user_id: "@brand-new:example.invalid",
+        display_name: "Brand New Person", display_label: "Brand New Person",
+        original_display_label: "Brand New Person", child_room_ids: [], invite_pending: false
+      });
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    let delayFirstSelection = true;
+    window.__harness.setCommandResponse("select_invite_target", async () => {
+      const snapshot = window.__harness.currentSnapshot();
+      const next = structuredClone(snapshot);
+      next.state.domain.invite_workflow!.selected_targets = [{
+        user_id: "@brand-new:example.invalid", display_label: "Brand New Person",
+        avatar: null
+      }];
+      if (delayFirstSelection) {
+        delayFirstSelection = false;
+        next.state.domain.space_members.space_joined[0]!.display_label = "Delayed selection member";
+        await new Promise<void>((resolve) => {
+          Object.assign(window, { releaseSpaceInviteSelection: resolve });
+        });
+      }
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.setCommandResponse("invite_targets", () => {
+      const next = structuredClone(window.__harness.currentSnapshot());
+      next.state.domain.invite_workflow!.operation = {
+        kind: "completed", request_id: 42, room_id: spaceId, notice: null,
+        results: [{ user_id: "@brand-new:example.invalid", destination: { kind: "space", space_id: spaceId }, kind: "invited", message: null }]
+      };
+      next.state.domain.invite_workflow!.selected_targets = [];
       window.__harness.setSnapshot(next);
       return next;
     });
@@ -430,23 +472,43 @@ test("Space Members can invite a brand-new user to the Space via the invite sear
   await expect(panel.getByRole("button", { name: /Brand New Person/ })).toBeVisible();
   await panel.getByRole("button", { name: /Brand New Person/ }).click();
 
-  await expect.poll(() => invocationCount(page, "invite_user_to_space")).toBe(1);
-  const args = await firstInvocationArgs<{
-    spaceId: string;
-    userId: string;
-    generation: number;
-  }>(page, "invite_user_to_space");
-  expect(args).toEqual({
-    spaceId: HARNESS_SPACE_ID,
-    userId: "@brand-new:example.invalid",
-    generation: 2
+  // A cancelled search must not send when an earlier selection receipt arrives late.
+  await expect.poll(() => invocationCount(page, "select_invite_target")).toBe(1);
+  await panel.getByRole("button", { name: t("action.cancel") }).click();
+  await expect.poll(() => invocationCount(page, "close_invite_workflow")).toBe(1);
+  await page.evaluate(() => {
+    (window as unknown as { releaseSpaceInviteSelection(): void }).releaseSpaceInviteSelection();
   });
+  await expect(panel.getByRole("button", { name: "Open profile for Delayed selection member", exact: true })).toBeVisible();
+  expect(await invocationCount(page, "invite_targets")).toBe(0);
+  await panel.getByRole("button", { name: t("room.invitePeople") }).click();
+  await search.fill("brand");
+  await expect(panel.getByRole("button", { name: /Brand New Person/ })).toBeVisible();
+  await panel.getByRole("button", { name: /Brand New Person/ }).click();
+
+  await expect.poll(() => invocationCount(page, "invite_targets")).toBe(1);
+  const args = await firstInvocationArgs<{
+    roomId: string;
+    userIds: string[];
+    scope: { kind: string };
+  }>(page, "invite_targets");
+  expect(args).toEqual({
+    roomId: HARNESS_SPACE_ID,
+    userIds: ["@brand-new:example.invalid"],
+    scope: { kind: "roomOnly" }
+  });
+
+  await expect(panel.getByRole("button", { name: t("spaceMembers.invited"), exact: true })).toBeDisabled();
+  expect(await invocationCount(page, "invite_user_to_space")).toBe(0);
+  await expect.poll(() => invocationCount(page, "load_space_members")).toBe(1);
 
   // Leaving the invite search resets the shared invite workflow so a later
   // room invite dialog never inherits this space search.
   await clearInvocations(page);
   await panel.getByRole("button", { name: t("action.cancel") }).click();
   await expect.poll(() => invocationCount(page, "close_invite_workflow")).toBe(1);
+  await expect(panel.getByRole("list", { name: t("spaceMembers.sectionInvited"), exact: true })
+    .getByRole("button", { name: "Open profile for Brand New Person", exact: true })).toBeVisible();
 });
 
 test("Space Members rows keep a long Japanese name and one compact role control on one line", async ({

@@ -288,6 +288,7 @@ async fn project_room_list_snapshot_updates_user_profiles() {
         matches!(
             actions.as_slice(),
             [
+                AppAction::RoomNotificationModesObserved { .. },
                 AppAction::RoomListSnapshotAuthoritative { .. },
                 AppAction::UserProfilesUpdated { profiles },
             ] if *profiles == vec![UserProfile {
@@ -331,7 +332,8 @@ async fn project_room_list_snapshot_holds_unproven_empty_and_preserves_known_roo
     let actions = action_rx.recv().await.expect("provisional actions");
     assert!(matches!(
         actions.as_slice(),
-        [AppAction::RoomListSnapshotProvisional { rooms, invites, .. },
+        [AppAction::RoomNotificationModesObserved { .. },
+            AppAction::RoomListSnapshotProvisional { rooms, invites, .. },
             AppAction::UserProfilesUpdated { .. }]
             if rooms.is_empty() && invites.is_empty()
     ));
@@ -553,6 +555,7 @@ async fn live_room_list_observer_reclassifies_dm_from_direct_event_without_timel
     assert!(matches!(
         projected.as_slice(),
         [
+            AppAction::RoomNotificationModesObserved { .. },
             AppAction::RoomListSnapshotProvisional { .. }
                 | AppAction::RoomListSnapshotAuthoritative { .. },
             AppAction::UserProfilesUpdated { .. }
@@ -653,6 +656,7 @@ async fn live_room_list_observer_defers_direct_event_projection_until_first_serv
     assert!(matches!(
         projected.as_slice(),
         [
+            AppAction::RoomNotificationModesObserved { .. },
             AppAction::RoomListSnapshotProvisional { rooms, .. }
                 | AppAction::RoomListSnapshotAuthoritative { rooms, .. },
             AppAction::UserProfilesUpdated { .. }
@@ -793,7 +797,8 @@ async fn normalize_and_project_entries_uses_cached_direct_map_before_timeline_up
     let actions = action_rx.recv().await.expect("room projection");
     assert!(matches!(
         actions.as_slice(),
-        [AppAction::RoomListSnapshotProvisional { rooms, .. },
+        [AppAction::RoomNotificationModesObserved { .. },
+         AppAction::RoomListSnapshotProvisional { rooms, .. },
          AppAction::UserProfilesUpdated { .. }]
             if rooms.first().is_some_and(|room| room.is_dm)
     ));
@@ -1106,4 +1111,56 @@ async fn project_room_list_snapshot_updates_known_rooms_before_action_delivery()
             .contains("!room:example.test"),
         "authoritative validators must fail closed before reducer delivery"
     );
+}
+
+#[tokio::test]
+async fn live_push_rules_reproject_notification_modes_without_room_updates() {
+    use koushi_state::RoomNotificationMode;
+    use matrix_sdk::{
+        ruma::{push::Ruleset, room_id},
+        test_utils::mocks::MatrixMockServer,
+    };
+    use matrix_sdk_test::{JoinedRoomBuilder, event_factory::EventFactory};
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = room_id!("!push-policy:example.invalid");
+    server
+        .sync_room(&client, JoinedRoomBuilder::new(room_id))
+        .await;
+    let updates = client.subscribe_to_all_room_updates();
+    let mut harness = spawn_live_observer_test_harness(
+        client.clone(),
+        server.uri(),
+        2,
+        updates,
+        LiveDirectEventTestSource::SdkAndInjected,
+        None,
+    )
+    .await;
+    harness.next_actions("initial rooms").await;
+    let muted: Ruleset = serde_json::from_value(serde_json::json!({
+        "override": [{"rule_id":room_id,"default":false,"enabled":true,
+        "conditions":[{"kind":"event_match","key":"room_id","pattern":room_id}],"actions":[]}]
+    }))
+    .unwrap();
+    for (rules, expected) in [
+        (muted, RoomNotificationMode::Mute),
+        (Ruleset::new(), RoomNotificationMode::All),
+    ] {
+        server
+            .mock_sync()
+            .ok_and_run(&client, |b| {
+                b.add_global_account_data(EventFactory::new().push_rules(rules.clone()));
+            })
+            .await;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let actions = harness.action_rx.recv().await.expect("observer running");
+                if actions.iter().any(|a| matches!(a, AppAction::RoomNotificationModesObserved { modes, .. } if modes.get(room_id.as_str()) == Some(&expected))) {
+                    break;
+                }
+            }
+        }).await.expect("push policy update projected without a room diff");
+    }
+    harness.stop().await;
 }

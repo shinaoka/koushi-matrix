@@ -197,7 +197,12 @@ async fn command_helper_crosses_core_runtime_and_settles_the_matching_dispatch()
                     unread_count: 1,
                     highlight_count: 0,
                     badge_count: 1,
-                    candidate: None,
+                    candidate: Some(NativeAttentionCandidate {
+                        room_display_name: "Room".to_owned(),
+                        kind: RoomAttentionKind::Message,
+                        unread_count: 1,
+                        highlight_count: 0,
+                    }),
                     capabilities: NativeAttentionCapabilities::default(),
                 },
                 dispatch: NativeAttentionDispatchState::Idle,

@@ -98,7 +98,7 @@ pub async fn open_invite_workflow(
                 request_id,
                 account_key,
                 room_id,
-                query: String::new(),
+                query: baseline.state.invite_workflow.query.query.clone(),
                 closed: false,
             },
             baseline.generation,

@@ -8,6 +8,153 @@ use koushi_state::{
     SpaceMemberMembership, SpaceMembersProjection, UserProfile,
 };
 
+#[tokio::test]
+async fn space_invite_explicit_id_search_settles_after_publishing_candidate() {
+    let runtime = CoreRuntime::start_with_event_capacity(64);
+    let mut connection = runtime.attach();
+    let space_id = "!invite-space:example.invalid";
+    runtime
+        .inject_actions(vec![
+            AppAction::AppStarted,
+            AppAction::RestoreSessionSucceeded(SessionInfo {
+                homeserver: "https://example.invalid".into(),
+                user_id: "@me:example.invalid".into(),
+                device_id: "DEVICE".into(),
+                authentication_method: Default::default(),
+            }),
+            AppAction::CurrentDeviceTrustChanged(koushi_state::CurrentDeviceTrustState::Verified),
+            AppAction::RoomListUpdated {
+                rooms: vec![],
+                spaces: vec![koushi_state::SpaceSummary {
+                    space_id: space_id.into(),
+                    display_name: "Invite test".into(),
+                    avatar: None,
+                    child_room_ids: vec![],
+                }],
+            },
+        ])
+        .await;
+    wait_for_runtime_snapshot(&mut connection, |s| !s.spaces.is_empty()).await;
+    let baseline = connection.versioned_snapshot().generation;
+    let request_id = connection.next_request_id();
+    let query = "@new-person:example.invalid";
+    connection
+        .command(CoreCommand::App(AppCommand::SearchInviteTargets {
+            request_id,
+            room_id: space_id.into(),
+            query: query.into(),
+        }))
+        .await
+        .unwrap();
+    let outcome = connection
+        .wait_for_request_outcome(
+            OutcomeCorrelation::Request(request_id),
+            RequestOutcomeExpectation::InviteWorkflow {
+                request_id,
+                account_key: AccountKey("@me:example.invalid".into()),
+                room_id: space_id.into(),
+                query: query.into(),
+                closed: false,
+            },
+            baseline,
+            tokio::time::Instant::now() + Duration::from_secs(1),
+        )
+        .await;
+    assert!(outcome.is_ok(), "search must settle: {outcome:?}");
+    assert_eq!(
+        connection
+            .snapshot()
+            .invite_workflow
+            .query
+            .explicit_user_id
+            .as_ref()
+            .unwrap()
+            .user_id,
+        query
+    );
+    // Exercise the complete editing lifecycle, including an unchanged query and
+    // reopening an existing query. Every adapter call waits for a terminal.
+    for operation in 0..6 {
+        let baseline = connection.versioned_snapshot().generation;
+        let request_id = connection.next_request_id();
+        let command = match operation {
+            0 => AppCommand::SearchInviteTargets {
+                request_id,
+                room_id: space_id.into(),
+                query: query.into(),
+            },
+            1 => AppCommand::OpenInviteWorkflow {
+                request_id,
+                room_id: space_id.into(),
+            },
+            2 => AppCommand::SetInviteScope {
+                request_id,
+                room_id: space_id.into(),
+                scope: connection
+                    .snapshot()
+                    .invite_workflow
+                    .selected_scope
+                    .clone()
+                    .unwrap(),
+            },
+            3 => AppCommand::SelectInviteTarget {
+                request_id,
+                room_id: space_id.into(),
+                user_id: query.into(),
+            },
+            4 => AppCommand::RemoveInviteTarget {
+                request_id,
+                user_id: query.into(),
+            },
+            _ => AppCommand::CloseInviteWorkflow { request_id },
+        };
+        connection.command(CoreCommand::App(command)).await.unwrap();
+        let outcome = connection
+            .wait_for_request_outcome(
+                OutcomeCorrelation::Request(request_id),
+                RequestOutcomeExpectation::InviteWorkflow {
+                    request_id,
+                    account_key: AccountKey("@me:example.invalid".into()),
+                    room_id: space_id.into(),
+                    query: query.into(),
+                    closed: operation == 5,
+                },
+                baseline,
+                tokio::time::Instant::now() + Duration::from_secs(1),
+            )
+            .await;
+        assert!(outcome.is_ok(), "edit {operation} must settle: {outcome:?}");
+    }
+    let baseline = connection.versioned_snapshot().generation;
+    let request_id = connection.next_request_id();
+    connection
+        .command(CoreCommand::App(AppCommand::SearchInviteTargets {
+            request_id,
+            room_id: "!unknown:example.invalid".into(),
+            query: query.into(),
+        }))
+        .await
+        .unwrap();
+    let outcome = connection
+        .wait_for_request_outcome(
+            OutcomeCorrelation::Request(request_id),
+            RequestOutcomeExpectation::InviteWorkflow {
+                request_id,
+                account_key: AccountKey("@me:example.invalid".into()),
+                room_id: "!unknown:example.invalid".into(),
+                query: query.into(),
+                closed: false,
+            },
+            baseline,
+            tokio::time::Instant::now() + Duration::from_secs(1),
+        )
+        .await;
+    runtime.shutdown_handle().abort();
+    assert!(outcome.is_err());
+    assert!(!matches!(outcome, Err(RequestOutcomeError::TimedOut)));
+    assert_eq!(connection.snapshot().invite_workflow, Default::default());
+}
+
 #[test]
 fn persisted_read_receipt_policy_seeds_account_runtime_before_session_spawn() {
     let mut state = AppState::default();

@@ -355,7 +355,7 @@ fn room_list_generation(readiness: &RoomListReadiness) -> u64 {
     }
 }
 
-fn room_list_provisional_matches_current(
+pub(super) fn room_list_provisional_matches_current(
     readiness: &RoomListReadiness,
     generation: u64,
     source: RoomListSource,

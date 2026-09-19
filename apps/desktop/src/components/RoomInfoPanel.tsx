@@ -189,7 +189,39 @@ export function RoomInfoPanel({
     <section className="settings-panel room-info-panel" aria-labelledby="room-info-title">
       <header className="settings-panel-header">
         <div>
-          <h2 id="room-info-title" dir="auto">{room.display_label}</h2>
+          <h2 id="room-info-title" className="sr-only" dir="auto">
+            {room.display_label}
+          </h2>
+          <ImeSafeForm
+            className="room-name-header-form"
+            aria-label={t("dialog.roomName")}
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (canEditSettings) {
+                onUpdateRoomSetting?.(room.room_id, {
+                  name: nameDraft.trim() || null
+                });
+              }
+            }}
+          >
+            <label className="room-name-header-field">
+              <span className="sr-only">{t("dialog.roomName")}</span>
+              <ImeTextField
+                value={nameDraft}
+                syncKey={`${roomId}:name`}
+                aria-label={t("dialog.roomName")}
+                disabled={!canEditSettings}
+                onChange={(event) => setNameDraft(event.currentTarget.value)}
+              />
+            </label>
+            <button
+              className="profile-settings-action"
+              type="submit"
+              disabled={!canEditSettings || nameDraft.trim() === (settings?.name ?? roomName)}
+            >
+              {t("room.saveName")}
+            </button>
+          </ImeSafeForm>
           <p dir="auto">{room.room_id}</p>
         </div>
       </header>
@@ -509,35 +541,6 @@ export function RoomInfoPanel({
                 value={settings.avatar_url?.trim() || t("room.noAvatar")}
               />
             </div>
-            <ImeSafeForm
-              className="room-management-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (canEditSettings) {
-                  onUpdateRoomSetting?.(room.room_id, {
-                    name: nameDraft.trim() || null
-                  });
-                }
-              }}
-            >
-              <label className="profile-settings-field">
-                <span>{t("dialog.roomName")}</span>
-                <ImeTextField
-                  value={nameDraft}
-                  syncKey={`${roomId}:name`}
-                  aria-label={t("dialog.roomName")}
-                  disabled={!canEditSettings}
-                  onChange={(event) => setNameDraft(event.currentTarget.value)}
-                />
-              </label>
-              <button
-                className="profile-settings-action"
-                type="submit"
-                disabled={!canEditSettings || nameDraft.trim() === (settings.name ?? "")}
-              >
-                {t("room.saveName")}
-              </button>
-            </ImeSafeForm>
             <ImeSafeForm
               className="room-management-form"
               onSubmit={(event) => {

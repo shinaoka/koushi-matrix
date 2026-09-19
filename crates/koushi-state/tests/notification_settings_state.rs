@@ -553,3 +553,165 @@ fn settings_loaded_event_populates_privacy_defaults() {
             .send_typing_notifications
     );
 }
+
+#[test]
+fn server_mute_suppresses_existing_highlights_without_marking_read() {
+    let mut state = ready_state();
+    state.rooms[0].unread_count = 5;
+    state.rooms[0].notification_count = 5;
+    state.rooms[0].highlight_count = 2;
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomNotificationModesObserved {
+            generation: 0,
+            source: koushi_state::RoomListSource::Cache,
+            modes: [(
+                "!known:example.invalid".to_owned(),
+                RoomNotificationMode::Mute,
+            )]
+            .into(),
+        },
+    );
+    assert_eq!(
+        state
+            .room_notification_settings
+            .get("!known:example.invalid")
+            .map(|s| s.mode),
+        Some(RoomNotificationMode::Mute)
+    );
+    assert_eq!(state.rooms[0].unread_count, 5);
+    assert_eq!(state.rooms[0].highlight_count, 2);
+    assert_eq!(state.native_attention.summary.badge_count, 0);
+    assert!(state.native_attention.summary.candidate.is_none());
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, AppEffect::EmitUiEvent(UiEvent::RoomListChanged)))
+    );
+}
+
+#[test]
+fn server_modes_ignore_stale_generations_and_pending_writes_then_reconcile_silently() {
+    let mut state = ready_state();
+    state.rooms[0].unread_count = 5;
+    state.rooms[0].notification_count = 5;
+    state.room_list.readiness = koushi_state::RoomListReadiness::Ready {
+        generation: 3,
+        source: koushi_state::RoomListSource::Live,
+    };
+    let observe = |generation, mode| AppAction::RoomNotificationModesObserved {
+        generation,
+        source: koushi_state::RoomListSource::Live,
+        modes: [("!known:example.invalid".to_owned(), mode)].into(),
+    };
+    reduce(&mut state, observe(2, RoomNotificationMode::Mute));
+    assert!(state.room_notification_settings.is_empty());
+    reduce(
+        &mut state,
+        AppAction::RoomNotificationModeSet {
+            request_id: 42,
+            room_id: "!known:example.invalid".into(),
+            mode: RoomNotificationMode::Mute,
+        },
+    );
+    reduce(&mut state, observe(3, RoomNotificationMode::All));
+    assert_eq!(
+        state.room_notification_settings["!known:example.invalid"].mode,
+        RoomNotificationMode::Mute
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomNotificationModeCompleted {
+            request_id: 42,
+            room_id: "!known:example.invalid".into(),
+        },
+    );
+    reduce(&mut state, observe(3, RoomNotificationMode::All));
+    assert_eq!(
+        state.room_notification_settings["!known:example.invalid"].mode,
+        RoomNotificationMode::Mute
+    );
+    assert_eq!(state.native_attention.summary.badge_count, 0);
+    reduce(&mut state, observe(3, RoomNotificationMode::Mute));
+    reduce(&mut state, observe(3, RoomNotificationMode::All));
+    assert_eq!(
+        state.room_notification_settings["!known:example.invalid"].mode,
+        RoomNotificationMode::All
+    );
+    assert!(state.native_attention.summary.candidate.is_none());
+    assert_eq!(state.rooms[0].unread_count, 5);
+}
+
+#[test]
+fn authoritative_policy_resolves_conflicting_rule_and_fresh_sync_releases_echo_fence() {
+    let mut state = ready_state();
+    let room_id = "!known:example.invalid".to_owned();
+    state.room_list.readiness = koushi_state::RoomListReadiness::Ready {
+        generation: 3,
+        source: koushi_state::RoomListSource::Live,
+    };
+    reduce(
+        &mut state,
+        AppAction::RoomNotificationModeSet {
+            request_id: 42,
+            room_id: room_id.clone(),
+            mode: RoomNotificationMode::All,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomNotificationModeCompleted {
+            request_id: 42,
+            room_id: room_id.clone(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomNotificationModeConfirmed {
+            request_id: 41,
+            room_id: room_id.clone(),
+            mode: RoomNotificationMode::Mute,
+        },
+    );
+    assert_eq!(
+        state.room_notification_settings[&room_id].mode,
+        RoomNotificationMode::All
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomNotificationModeConfirmed {
+            request_id: 42,
+            room_id: room_id.clone(),
+            mode: RoomNotificationMode::Mute,
+        },
+    );
+    assert_eq!(
+        state.room_notification_settings[&room_id].mode,
+        RoomNotificationMode::Mute
+    );
+    let observe = || AppAction::RoomNotificationModesObserved {
+        generation: 3,
+        source: koushi_state::RoomListSource::Live,
+        modes: [(room_id.clone(), RoomNotificationMode::All)].into(),
+    };
+    reduce(&mut state, observe());
+    assert_eq!(
+        state.room_notification_settings[&room_id].mode,
+        RoomNotificationMode::Mute
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomNotificationPolicySynced { generation: 2 },
+    );
+    assert!(!state.room_notification_awaiting_echo.is_empty());
+    reduce(
+        &mut state,
+        AppAction::RoomNotificationPolicySynced { generation: 3 },
+    );
+    reduce(&mut state, observe());
+    assert_eq!(
+        state.room_notification_settings[&room_id].mode,
+        RoomNotificationMode::All
+    );
+    assert!(state.native_attention.summary.candidate.is_none());
+}

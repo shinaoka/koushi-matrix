@@ -196,6 +196,11 @@ export type MessageId =
   | "dialog.invitePeopleTitle"
   | "dialog.inviteScope"
   | "dialog.inviteSearch"
+  | "dialog.inviteSearchHelp"
+  | "dialog.inviteSearching"
+  | "dialog.inviteNoResults"
+  | "dialog.invitePerson"
+  | "dialog.inviteSearchFailed"
   | "dialog.inviteSelectedTargets"
   | "dialog.openRoomInfo"
   | "dialog.matrixUserId"
@@ -1189,6 +1194,9 @@ export type MessageId =
   | "spaceMembers.childRoomCountOne"
   | "spaceMembers.childRoomCount"
   | "spaceMembers.invite"
+  | "spaceMembers.inviting"
+  | "spaceMembers.invited"
+  | "spaceMembers.joined"
   | "spaceMembers.invitePending"
   | "spaceMembers.inviteFailed"
   | "spaceMembers.cancelInvite"
@@ -1552,6 +1560,11 @@ const en: Catalog = {
   "dialog.invitePeopleTitle": "Invite people to {name}",
   "dialog.inviteScope": "Invite scope",
   "dialog.inviteSearch": "Name, alias, or Matrix ID",
+  "dialog.inviteSearchHelp": "Search people already loaded from your DMs, rooms, and spaces, or enter a full Matrix ID. Select Invite next to a person to send an invitation to this space.",
+  "dialog.inviteSearching": "Searching for people to invite…",
+  "dialog.inviteSearchFailed": "Could not search for invite candidates. Please try again.",
+  "dialog.invitePerson": "Invite {name}",
+  "dialog.inviteNoResults": "No invite candidates found. Try another name or enter a full Matrix ID.",
   "dialog.inviteSelectedTargets": "Selected invite targets",
   "dialog.openRoomInfo": "Open Room Info",
   "dialog.matrixUserId": "Matrix user ID",
@@ -2569,6 +2582,9 @@ const en: Catalog = {
   "spaceMembers.childRoomCountOne": "In {count} child room",
   "spaceMembers.childRoomCount": "In {count} child rooms",
   "spaceMembers.invite": "Invite to Space",
+  "spaceMembers.inviting": "Inviting…",
+  "spaceMembers.invited": "Invited",
+  "spaceMembers.joined": "Joined",
   "spaceMembers.invitePending": "Invitation pending",
   "spaceMembers.inviteFailed": "Invite failed. Try again.",
   "spaceMembers.cancelInvite": "Cancel invitation",
@@ -2818,6 +2834,11 @@ const ja: Catalog = {
   "dialog.invitePeopleTitle": "{name}に招待",
   "dialog.inviteScope": "招待範囲",
   "dialog.inviteSearch": "名前、別名、Matrix ID",
+  "dialog.inviteSearchHelp": "DM・ルーム・スペースから読み込み済みのユーザーを検索するか、完全なMatrix IDを入力してください。候補の「招待」を押すと、このスペースへの招待を送信します。",
+  "dialog.inviteSearching": "招待候補を検索中…",
+  "dialog.inviteSearchFailed": "招待候補の検索に失敗しました。もう一度お試しください。",
+  "dialog.invitePerson": "{name}を招待",
+  "dialog.inviteNoResults": "招待候補が見つかりません。別の名前か、完全なMatrix IDで検索してください。",
   "dialog.inviteSelectedTargets": "選択中の招待先",
   "dialog.openRoomInfo": "Room Infoを開く",
   "dialog.matrixUserId": "MatrixユーザーID",
@@ -3834,6 +3855,9 @@ const ja: Catalog = {
   "spaceMembers.childRoomCountOne": "参加中の子ルーム {count} 個",
   "spaceMembers.childRoomCount": "参加中の子ルーム {count} 個",
   "spaceMembers.invite": "スペースに招待",
+  "spaceMembers.inviting": "招待中…",
+  "spaceMembers.invited": "招待済み",
+  "spaceMembers.joined": "参加済み",
   "spaceMembers.invitePending": "招待保留",
   "spaceMembers.inviteFailed": "招待に失敗しました。もう一度お試しください。",
   "spaceMembers.cancelInvite": "招待を取り消す",

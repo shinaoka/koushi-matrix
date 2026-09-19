@@ -101,6 +101,50 @@ afterEach(() => {
 });
 
 describe("RoomInfoPanel", () => {
+  test("saves the room name from the panel header", () => {
+    const onUpdateRoomSetting = vi.fn();
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={{
+          selected_room_id: baseRoom.room_id,
+          settings: {
+            room_id: baseRoom.room_id,
+            name: "Alpha Room",
+            topic: null,
+            avatar_url: null,
+            join_rule: "invite",
+            history_visibility: "shared",
+            permissions: {
+              can_edit_settings: true,
+              can_edit_roles: true,
+              can_invite: true,
+              can_kick: true,
+              can_ban: true,
+              can_unban: true
+            },
+            members: []
+          },
+          operation: { kind: "idle" }
+        }}
+        onUpdateRoomSetting={onUpdateRoomSetting}
+      />
+    );
+
+    const name = screen.getByRole("textbox", { name: "Room name" });
+    fireEvent.change(name, { target: { value: "Beta Room" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save room name" }));
+
+    expect(onUpdateRoomSetting).toHaveBeenCalledWith(baseRoom.room_id, {
+      name: "Beta Room"
+    });
+    expect(screen.getByRole("textbox", { name: "Room name" }).compareDocumentPosition(
+      screen.getByRole("region", { name: "Room management" })
+    ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   test("saves join rule and history visibility independently", () => {
     const onUpdateRoomSetting = vi.fn();
     render(

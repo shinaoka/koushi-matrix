@@ -454,6 +454,11 @@ async fn project_room_list_snapshot(
     };
     let delivered = action_tx
         .send(vec![
+            AppAction::RoomNotificationModesObserved {
+                generation,
+                source,
+                modes: snapshot.room_notification_modes.clone(),
+            },
             snapshot_action,
             AppAction::UserProfilesUpdated {
                 profiles: user_profiles,
@@ -689,6 +694,12 @@ async fn run_live_room_list_observation_with_sources(
 ) {
     use futures_util::StreamExt as _;
 
+    // Install before reading initial entries; guard lives with this cancellable observer.
+    let push_rules_observer = session
+        .client()
+        .observe_events::<matrix_sdk::ruma::events::push_rules::PushRulesEvent, ()>();
+    let mut push_rules_events = Box::pin(push_rules_observer.subscribe());
+    let mut push_rules_closed = false;
     let sdk_direct_events = direct_events.map(|(event, ())| event.content);
     #[cfg(test)]
     let injected_direct_events =
@@ -1246,6 +1257,19 @@ async fn run_live_room_list_observation_with_sources(
                             room_ids: pinned_event_room_ids,
                         })
                         .await;
+                }
+            }
+            next_rules = push_rules_events.next(), if !push_rules_closed => {
+                if next_rules.is_none() { push_rules_closed = true; }
+                else {
+                    if action_tx.send(vec![AppAction::RoomNotificationPolicySynced { generation }]).await.is_err() { break; }
+
+                    project_live_entries_and_ack_if_reconciled(
+                        &mut reconciliation, &session, &current, &direct_state,
+                        &known_room_ids, &known_dm_rooms, &room_tx, &action_tx, &event_tx,
+                        generation, source, &authoritative, &sliding_sync_diagnostics,
+                        timeline_residency.as_ref(),
+                    ).await;
                 }
             }
             next_direct = direct_events.next(), if !direct_events_closed => {

@@ -162,6 +162,20 @@ pub enum AppAction {
         room_id: String,
         enabled: bool,
     },
+    /// Cached server push rules for rooms in a generation-fenced projection.
+    RoomNotificationModesObserved {
+        generation: u64,
+        source: RoomListSource,
+        modes: std::collections::BTreeMap<String, crate::RoomNotificationMode>,
+    },
+    RoomNotificationPolicySynced {
+        generation: u64,
+    },
+    RoomNotificationModeConfirmed {
+        request_id: u64,
+        room_id: String,
+        mode: crate::RoomNotificationMode,
+    },
     RoomPreferencesLoaded {
         preferences: RoomPreferencesState,
     },

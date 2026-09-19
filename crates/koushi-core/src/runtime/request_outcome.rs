@@ -1792,6 +1792,9 @@ pub(super) fn progress_generation_is_eligible(
     baseline_generation: u64,
 ) -> bool {
     snapshot_generation > baseline_generation
+        || (snapshot_generation == baseline_generation
+            && expectation.request_id() == progress_request_id
+            && matches!(expectation, RequestOutcomeExpectation::InviteWorkflow { .. }))
         || (expectation.request_id() == progress_request_id
             && matches!(
                 expectation,

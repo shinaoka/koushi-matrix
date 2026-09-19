@@ -28,6 +28,7 @@ import {
   applyGlobalResync,
   applyRoomKeyRequestStateChanged,
   applyTimelineEvent,
+  batchContainsBackfillProjection,
   batchContainsPrepend,
   classifyTimelineItemsUpdatedApplication,
   createTimelineStore,
@@ -1288,6 +1289,22 @@ describe("scroll anchoring — prepend keeps anchor stable", () => {
       false
     );
     expect(batchContainsPrepend(["Clear"])).toBe(false);
+  });
+
+  test("batchContainsBackfillProjection also accepts Insert below a pinned first item", () => {
+    expect(
+      batchContainsBackfillProjection([{ Insert: { index: 1, item: makeMsg("$x", "x") } }])
+    ).toBe(true);
+    expect(batchContainsBackfillProjection([{ PushFront: { item: makeMsg("$x", "x") } }])).toBe(
+      true
+    );
+    expect(batchContainsBackfillProjection([{ PushBack: { item: makeMsg("$x", "x") } }])).toBe(
+      false
+    );
+    expect(
+      batchContainsBackfillProjection([{ Set: { index: 0, item: makeMsg("$x", "x") } }])
+    ).toBe(false);
+    expect(batchContainsBackfillProjection(["Clear"])).toBe(false);
   });
 
   test("prepend places new items before the anchor; anchor id stays findable", () => {
