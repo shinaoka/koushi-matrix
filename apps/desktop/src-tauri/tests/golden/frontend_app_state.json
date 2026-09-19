@@ -724,7 +724,8 @@
               "favourites": false,
               "low_priority": false,
               "not_joined": false
-            }
+            },
+            "scope_preferences": {}
           },
           "thread_list_order": {
             "kind": "latestReply"
