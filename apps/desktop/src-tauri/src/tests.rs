@@ -10,6 +10,9 @@ use crate::commands::diagnostics::parse_qa_login_pipe_payload;
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
+#[path = "thumbnail_protocol_test_support.rs"]
+mod thumbnail_protocol_test_support;
+
 #[test]
 fn main_window_overlay_permission_contract() {
     let capability: serde_json::Value = serde_json::from_str(include_str!(concat!(
@@ -77,6 +80,10 @@ fn renderable_asset_cache_scope_is_limited_to_media_cache_dirs() {
 
 #[test]
 fn renderable_thumbnail_protocol_serves_known_cached_bytes() {
+    if !thumbnail_protocol_test_support::is_child() {
+        thumbnail_protocol_test_support::run_isolated();
+        return;
+    }
     let ready = koushi_core::renderable_thumbnail::store_renderable_thumbnail(
         koushi_core::renderable_thumbnail::RenderableThumbnailKind::Avatar,
         "mxc://example.test/avatar",
@@ -87,6 +94,7 @@ fn renderable_thumbnail_protocol_serves_known_cached_bytes() {
         koushi_state::AvatarThumbnailState::Ready { source_ref, .. } => source_ref,
         other => panic!("unexpected thumbnail state: {other:?}"),
     };
+    thumbnail_protocol_test_support::after_thumbnail_stored();
     let response = super::renderable_thumbnail_protocol_response(
         tauri::http::Request::builder()
             .uri(format!("koushi-thumbnail://localhost/{source_ref}"))
