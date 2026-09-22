@@ -23,8 +23,9 @@ use super::{
     method_discovery_is_current, own_user_sas_recheck_is_current,
     record_verification_admission_event, record_verification_method_discovery_event,
     recovery_sync_should_resume, retry_should_restart_method_discovery,
-    run_recovery_state_observation, should_discover_verification_methods, trust_lifecycle_decision,
-    trust_projection_ack_matches, unknown_verification_gate, verification_method_discovery_event,
+    run_recovery_state_observation, should_defer_unknown_trust_observation,
+    should_discover_verification_methods, trust_lifecycle_decision, trust_projection_ack_matches,
+    unknown_verification_gate, verification_method_discovery_event,
     wait_for_verification_method_discovery,
 };
 use crate::account::actor::AccountMessage;
@@ -102,6 +103,22 @@ fn session_status_non_verified_observation_routes_to_the_trust_gate() {
         current_session_status_observed_non_verified_trust(&Ok(verified_session_inspection())),
         None
     );
+}
+
+#[test]
+fn unknown_observation_is_deferred_for_promoted_sessions_independent_of_connectivity() {
+    use koushi_state::CurrentDeviceTrustState::Unknown;
+
+    assert!(should_defer_unknown_trust_observation(true, Unknown));
+    assert!(!should_defer_unknown_trust_observation(false, Unknown));
+}
+
+#[test]
+fn promoted_session_defers_only_unknown_trust_observations() {
+    use koushi_state::CurrentDeviceTrustState::{Unverified, Verified};
+
+    assert!(!should_defer_unknown_trust_observation(true, Unverified));
+    assert!(!should_defer_unknown_trust_observation(true, Verified));
 }
 
 #[test]
@@ -767,6 +784,49 @@ async fn authoritative_trust_recheck_stale_generation_cannot_promote_session() {
         );
     }
     assert_eq!(runtime, (true, false, false, true));
+    let _ = handle.send(AccountMessage::Shutdown).await;
+}
+
+#[tokio::test]
+async fn stale_unknown_observation_does_not_trigger_recheck_after_promotion() {
+    let (homeserver, query_control) = spawn_counting_quarantine_password_server();
+    let (handle, mut action_rx) = login_gated_actor_at(homeserver).await;
+    consume_initial_unknown_trust_projection(&mut action_rx).await;
+    handle
+        .send(AccountMessage::CurrentDeviceTrustChanged {
+            generation: 2,
+            trust: koushi_state::CurrentDeviceTrustState::Verified,
+        })
+        .await;
+    acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+
+    let baseline = query_control
+        .count
+        .load(std::sync::atomic::Ordering::SeqCst);
+    handle
+        .send(AccountMessage::CurrentDeviceTrustChanged {
+            generation: 1,
+            trust: koushi_state::CurrentDeviceTrustState::Unknown,
+        })
+        .await;
+    executor::sleep(Duration::from_millis(100)).await;
+
+    assert_eq!(
+        query_control
+            .count
+            .load(std::sync::atomic::Ordering::SeqCst),
+        baseline,
+        "a stale Unknown observation must not start a trust recheck"
+    );
+    while let Ok(actions) = action_rx.try_recv() {
+        assert!(!matches!(
+            actions.as_slice(),
+            [AppAction::AuthoritativeDeviceTrustChanged {
+                trust: koushi_state::CurrentDeviceTrustState::Unknown,
+                ..
+            }]
+        ));
+    }
     let _ = handle.send(AccountMessage::Shutdown).await;
 }
 

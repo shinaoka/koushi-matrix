@@ -37,6 +37,8 @@ const VERIFICATION_METHOD_DISCOVERY_ADMISSION_TIMEOUT: Duration = Duration::from
 
 const CURRENT_SESSION_STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 
+const CURRENT_DEVICE_TRUST_RECHECK_TIMEOUT: Duration = Duration::from_secs(15);
+
 fn current_session_status_connectivity_proven(
     sync_state: koushi_state::CurrentSessionSyncState,
 ) -> bool {
@@ -297,6 +299,13 @@ fn current_session_status_observed_non_verified_trust(
         (inspection.verification != koushi_state::CurrentDeviceTrustState::Verified)
             .then_some(inspection.verification)
     })
+}
+
+fn should_defer_unknown_trust_observation(
+    session_promoted: bool,
+    trust: koushi_state::CurrentDeviceTrustState,
+) -> bool {
+    session_promoted && trust == koushi_state::CurrentDeviceTrustState::Unknown
 }
 
 fn current_session_status_settled_event(action: &AppAction, elapsed: Duration) -> DiagnosticEvent {
@@ -724,7 +733,15 @@ impl AccountActor {
         ));
         let tx = self.self_tx.clone();
         self.trust_recheck_task = Some(executor::spawn(async move {
-            let result = session.recheck_current_device_trust().await;
+            let result = match executor::timeout(
+                CURRENT_DEVICE_TRUST_RECHECK_TIMEOUT,
+                session.recheck_current_device_trust(),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(koushi_sdk::CurrentDeviceTrustRecheckError::Network),
+            };
             let _ = tx
                 .send(AccountMessage::CurrentDeviceTrustRecheckFinished { generation, result })
                 .await;
@@ -831,12 +848,21 @@ impl AccountActor {
             && self.trust_generation == generation
             && self.session_promoted
             && let Some(trust) = current_session_status_observed_non_verified_trust(&result)
+            && trust == koushi_state::CurrentDeviceTrustState::Unverified
         {
             self.current_session_status_request = None;
             self.current_session_status_task = None;
             self.handle_current_device_trust(generation, trust).await;
             return;
         }
+        let should_recheck_unknown = self.session_promoted
+            && matches!(
+                result.as_ref(),
+                Ok(koushi_sdk::MatrixCurrentSessionInspection {
+                    verification: koushi_state::CurrentDeviceTrustState::Unknown,
+                    ..
+                })
+            );
         let checked_at_ms = crate::time::current_epoch_ms();
         let Some(action) = current_session_status_completion_action(
             self.current_session_status_request,
@@ -858,6 +884,30 @@ impl AccountActor {
             started_at.elapsed(),
         ));
         self.send_actions(vec![action]).await;
+        if should_recheck_unknown {
+            self.request_authoritative_trust_recheck();
+        }
+    }
+
+    /// Settle an in-flight status inspection when sync loses its proof of
+    /// connectivity. The inspection task may otherwise remain aborted without
+    /// a completion message, leaving the reducer in `Checking` forever.
+    pub(super) async fn cancel_current_session_status_for_connectivity_loss(&mut self) {
+        let request_id = self.current_session_status_request.take();
+        if let Some(task) = self.current_session_status_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+
+        let Some(request_id) = request_id else {
+            return;
+        };
+        self.send_actions(vec![AppAction::CurrentSessionStatusRefreshFailed {
+            request_id,
+            kind: koushi_state::CurrentSessionStatusFailureKind::ConnectivityUnavailable,
+            checked_at_ms: crate::time::current_epoch_ms(),
+        }])
+        .await;
     }
 
     pub(super) async fn cancel_current_session_status_refresh(&mut self) {
@@ -991,6 +1041,26 @@ impl AccountActor {
                 .provisional_encryption_stopped();
             self.record_lifecycle_probe("provisional_encryption_sync_terminated");
         }
+    }
+
+    pub(super) async fn handle_observed_current_device_trust(
+        &mut self,
+        generation: u64,
+        trust: koushi_state::CurrentDeviceTrustState,
+    ) {
+        if generation != self.trust_generation {
+            return;
+        }
+        if should_defer_unknown_trust_observation(self.session_promoted, trust) {
+            record_verification_admission_event(
+                verification_admission_event("trust_observation_deferred", generation, 0).field(
+                    DiagnosticField::token("reason", "non_authoritative_unknown"),
+                ),
+            );
+            self.request_authoritative_trust_recheck();
+            return;
+        }
+        self.handle_current_device_trust(generation, trust).await;
     }
 
     pub(super) async fn handle_current_device_trust(

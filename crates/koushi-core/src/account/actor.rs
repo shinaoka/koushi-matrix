@@ -1724,7 +1724,8 @@ impl AccountActor {
                     self.flush_pending_crawler_notification();
                 }
                 AccountMessage::CurrentDeviceTrustChanged { generation, trust } => {
-                    self.handle_current_device_trust(generation, trust).await;
+                    self.handle_observed_current_device_trust(generation, trust)
+                        .await;
                 }
                 AccountMessage::ActiveSessionAccountManagementUrlResolved {
                     generation,

@@ -333,6 +333,124 @@ fn connectivity_recovery_refreshes_once_and_coalesces_a_later_manual_retry() {
 }
 
 #[test]
+fn connectivity_recovery_replaces_checking_request_before_late_failure_arrives() {
+    let mut state = ready_state();
+    state.sync = SyncState::Running;
+    state.current_session_status = CurrentSessionStatusState::Checking {
+        request_id: 42,
+        trigger: SessionStatusRefreshTrigger::Manual,
+        last_known_details: Some(details(true, OwnIdentityVerification::Verified)),
+    };
+
+    reduce(
+        &mut state,
+        AppAction::SyncStatusChanged {
+            generation: 41,
+            status: SyncLifecycleStatus::Reconnecting {
+                reason: "transport".to_owned(),
+            },
+        },
+    );
+    let effects = reduce(
+        &mut state,
+        AppAction::SyncStatusChanged {
+            generation: 42,
+            status: SyncLifecycleStatus::Running,
+        },
+    );
+
+    assert!(effects.contains(&AppEffect::SyncConnectivityChanged { proven: true }));
+    assert!(effects.contains(&AppEffect::RefreshCurrentSessionStatus {
+        request_id: 43,
+        trigger: SessionStatusRefreshTrigger::Recovery,
+    }));
+    assert!(matches!(
+        state.current_session_status,
+        CurrentSessionStatusState::Checking { request_id: 43, .. }
+    ));
+
+    // The actor may settle the request that was cancelled on the outage after
+    // the reducer has already projected the recovery request.
+    reduce(
+        &mut state,
+        AppAction::CurrentSessionStatusRefreshFailed {
+            request_id: 42,
+            kind: CurrentSessionStatusFailureKind::ConnectivityUnavailable,
+            checked_at_ms: 2_001,
+        },
+    );
+    assert!(matches!(
+        state.current_session_status,
+        CurrentSessionStatusState::Checking { request_id: 43, .. }
+    ));
+
+    reduce(
+        &mut state,
+        AppAction::CurrentSessionStatusRefreshed {
+            request_id: 43,
+            details: details(true, OwnIdentityVerification::Verified),
+        },
+    );
+    assert!(matches!(
+        state.current_session_status,
+        CurrentSessionStatusState::Ready { request_id: 43, .. }
+    ));
+}
+
+#[test]
+fn connectivity_recovery_reissues_after_cancelled_request_fails_first() {
+    let mut state = ready_state();
+    state.sync = SyncState::Running;
+    state.current_session_status = CurrentSessionStatusState::Checking {
+        request_id: 40,
+        trigger: SessionStatusRefreshTrigger::Manual,
+        last_known_details: None,
+    };
+
+    reduce(
+        &mut state,
+        AppAction::SyncStatusChanged {
+            generation: 41,
+            status: SyncLifecycleStatus::Reconnecting {
+                reason: "transport".to_owned(),
+            },
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::CurrentSessionStatusRefreshFailed {
+            request_id: 40,
+            kind: CurrentSessionStatusFailureKind::ConnectivityUnavailable,
+            checked_at_ms: 2_001,
+        },
+    );
+    assert!(matches!(
+        state.current_session_status,
+        CurrentSessionStatusState::Failed {
+            request_id: 40,
+            kind: CurrentSessionStatusFailureKind::ConnectivityUnavailable,
+            ..
+        }
+    ));
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SyncStatusChanged {
+            generation: 42,
+            status: SyncLifecycleStatus::Running,
+        },
+    );
+    assert!(effects.contains(&AppEffect::RefreshCurrentSessionStatus {
+        request_id: 42,
+        trigger: SessionStatusRefreshTrigger::Recovery,
+    }));
+    assert!(matches!(
+        state.current_session_status,
+        CurrentSessionStatusState::Checking { request_id: 42, .. }
+    ));
+}
+
+#[test]
 fn timeout_preserves_last_known_session_facts() {
     let mut state = ready_state();
     state.sync = SyncState::Running;

@@ -8,6 +8,19 @@ use crate::{
 
 use super::{current_session_info, is_session_ready};
 
+fn recovery_session_status_request_id(status: &CurrentSessionStatusState, generation: u64) -> u64 {
+    let previous = match status {
+        CurrentSessionStatusState::Checking { request_id, .. }
+        | CurrentSessionStatusState::Failed { request_id, .. } => Some(*request_id),
+        CurrentSessionStatusState::Idle | CurrentSessionStatusState::Ready { .. } => None,
+    };
+    if previous == Some(generation) {
+        generation.wrapping_add(1).max(1)
+    } else {
+        generation
+    }
+}
+
 pub(crate) fn handle_sync_status_changed(
     state: &mut AppState,
     generation: u64,
@@ -37,6 +50,9 @@ pub(crate) fn handle_sync_status_changed(
     }
     if !was_proven && is_proven {
         let last_known_details = match &state.current_session_status {
+            CurrentSessionStatusState::Checking {
+                last_known_details, ..
+            } => Some(last_known_details.clone()),
             CurrentSessionStatusState::Failed {
                 kind:
                     CurrentSessionStatusFailureKind::TimedOut
@@ -48,13 +64,15 @@ pub(crate) fn handle_sync_status_changed(
             _ => None,
         };
         if let Some(last_known_details) = last_known_details {
+            let request_id =
+                recovery_session_status_request_id(&state.current_session_status, generation);
             state.current_session_status = CurrentSessionStatusState::Checking {
-                request_id: generation,
+                request_id,
                 trigger: SessionStatusRefreshTrigger::Recovery,
                 last_known_details,
             };
             effects.push(AppEffect::RefreshCurrentSessionStatus {
-                request_id: generation,
+                request_id,
                 trigger: SessionStatusRefreshTrigger::Recovery,
             });
         }

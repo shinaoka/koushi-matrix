@@ -1929,7 +1929,7 @@ impl AccountActor {
                 }
             }
         }));
-        self.handle_current_device_trust(generation, current_trust)
+        self.handle_observed_current_device_trust(generation, current_trust)
             .await;
     }
 

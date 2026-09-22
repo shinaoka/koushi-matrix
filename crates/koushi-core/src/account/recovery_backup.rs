@@ -1747,6 +1747,8 @@ impl AccountActor {
             &mut self.secure_backup_recovery_reset_consumed,
         );
         if !proven {
+            self.cancel_current_session_status_for_connectivity_loss()
+                .await;
             self.secure_backup_inspection_pending |= self.session_promoted
                 || self.secure_backup_inspection_task.is_some()
                 || self.secure_backup_monitor_task.is_some();
@@ -1767,6 +1769,11 @@ impl AccountActor {
             return;
         }
         if self.session_promoted {
+            // A transport outage can leave the SDK trust subscriber at
+            // Unknown. Recheck it only after sync has proved connectivity;
+            // otherwise a transient cache/transport edge would gate the
+            // session and clear its room and Space projections.
+            self.request_authoritative_trust_recheck();
             self.secure_backup_inspection_pending = false;
             self.disarm_secure_backup_defer_deadline();
             if !self.secure_backup_recovery_epoch || recovery_reset {
