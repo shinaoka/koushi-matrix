@@ -1911,7 +1911,14 @@ fn snapshot_outcome_for_progress(
                 .state
                 .rooms
                 .iter()
-                .any(|room| room.room_id == *room_id) =>
+                .any(|room| room.room_id == *room_id)
+            // The creation settles after its parent-Space linking step was
+            // recorded (#1007), so the settled snapshot carries that result.
+            && !matches!(
+                snapshot.state.basic_operation,
+                koushi_state::BasicOperationState::CreatingRoom { request_id: pending, .. }
+                    if pending == request_id.sequence
+            ) =>
         {
             Some(RequestOutcome::RoomCreated {
                 request_id: *request_id,

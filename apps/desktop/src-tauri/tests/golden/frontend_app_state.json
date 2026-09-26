@@ -130,6 +130,45 @@
         }
       ]
     },
+    "space_add_rooms": {
+      "candidates": [
+        {
+          "avatar": null,
+          "display_name": "Fixture Low Priority Room",
+          "room_id": "!low-priority-room:example.invalid",
+          "status": {
+            "kind": "added"
+          }
+        },
+        {
+          "avatar": {
+            "mxc_uri": "mxc://example.invalid/fixture-avatar",
+            "thumbnail": {
+              "height": 64,
+              "kind": "ready",
+              "mime_type": "image/png",
+              "source_ref": "avatar/2222222222222222",
+              "width": 64
+            }
+          },
+          "display_name": "Fixture Room",
+          "room_id": "!room:example.invalid",
+          "status": {
+            "kind": "added"
+          }
+        },
+        {
+          "avatar": null,
+          "display_name": "Redacted Fixture Room",
+          "room_id": "!redacted-room:example.invalid",
+          "status": {
+            "kind": "failed",
+            "reason": "network"
+          }
+        }
+      ],
+      "space_id": "!space:example.invalid"
+    },
     "space_highlight_count": 1,
     "space_rail": [
       {

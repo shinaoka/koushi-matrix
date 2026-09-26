@@ -124,6 +124,17 @@ impl FrontendCommandSettlement {
     }
 }
 
+/// Room creation settles as created even when its parent-Space linking step
+/// failed (#1007); that failure is reported here so the renderer can offer
+/// the Add existing room recovery path without inferring it.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendCreateRoomSettlement {
+    #[serde(flatten)]
+    pub settlement: FrontendCommandSettlement,
+    pub space_link_failure: Option<koushi_state::OperationFailureKind>,
+}
+
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StateUpdateSnapshotReason {

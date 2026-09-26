@@ -1289,7 +1289,6 @@ fn tauri_command_routes_build_expected_core_commands() {
             visibility: CreateRoomVisibility::Public,
             parent_space: Some(CreateRoomParentSpace {
                 space_id: "!space:example.org".to_owned(),
-                via_server: "example.org".to_owned(),
             }),
         },
     ) {
@@ -1310,13 +1309,6 @@ fn tauri_command_routes_build_expected_core_commands() {
                     .map(|parent| parent.space_id.as_str()),
                 Some("!space:example.org")
             );
-            assert_eq!(
-                options
-                    .parent_space
-                    .as_ref()
-                    .map(|parent| parent.via_server.as_str()),
-                Some("example.org")
-            );
         }
         other => panic!("unexpected command: {other:?}"),
     }
@@ -1333,18 +1325,15 @@ fn tauri_command_routes_build_expected_core_commands() {
         fake_request_id(18),
         "!space:example.org".to_owned(),
         "!room:example.org".to_owned(),
-        "example.org".to_owned(),
     ) {
         CoreCommand::Room(RoomCommand::SetSpaceChild {
             request_id,
             space_id,
             child_room_id,
-            via_server,
         }) => {
             assert_eq!(request_id, fake_request_id(18));
             assert_eq!(space_id, "!space:example.org");
             assert_eq!(child_room_id, "!room:example.org");
-            assert_eq!(via_server, "example.org");
         }
         other => panic!("unexpected command: {other:?}"),
     }

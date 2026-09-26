@@ -20,9 +20,9 @@ export interface CreateRoomRequest {
 
 export type CreateRoomVisibility = "private" | "public";
 
+/** Core derives both relationship events' routing from the SDK (#1007). */
 export interface CreateRoomParentSpace {
   spaceId: string;
-  viaServer: string;
 }
 
 export interface DesktopSnapshot {
@@ -455,6 +455,11 @@ export interface CommandAdmission {
 export interface CommandSettlement {
   protocolVersion: 1;
   publishedGeneration: number;
+}
+
+/** `create_room` settlement; a failed parent-Space link does not fail creation (#1007). */
+export interface CreateRoomSettlement extends CommandSettlement {
+  spaceLinkFailure: OperationFailureKind | null;
 }
 
 export interface CommandResult<T> {
@@ -2565,7 +2570,27 @@ export interface SidebarModel {
   dms_collapsed?: boolean;
   low_priority_collapsed?: boolean;
   sections: SidebarSections;
+  /** Rust-projected Add existing room rows for the active Space (#1007). */
+  space_add_rooms?: SpaceAddRoomsModel | null;
 }
+
+export interface SpaceAddRoomsModel {
+  space_id: string;
+  candidates: SpaceAddRoomCandidate[];
+}
+
+export interface SpaceAddRoomCandidate {
+  room_id: string;
+  display_name: string;
+  avatar: AvatarImage | null;
+  status: SpaceAddRoomStatus;
+}
+
+export type SpaceAddRoomStatus =
+  | { kind: "available" }
+  | { kind: "adding" }
+  | { kind: "added" }
+  | { kind: "failed"; reason: OperationFailureKind };
 
 /**
  * `rooms`, `people`, and `low_priority` are the mutually exclusive visible

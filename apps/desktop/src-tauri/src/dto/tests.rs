@@ -2,8 +2,8 @@ use serde_json::json;
 
 use super::{
     FrontendCommandAdmission, FrontendCommandResult, FrontendCommandSettlement,
-    FrontendDesktopSnapshot, FrontendDesktopSnapshotDelta, FrontendSyncState,
-    frontend_display_platform,
+    FrontendCreateRoomSettlement, FrontendDesktopSnapshot, FrontendDesktopSnapshotDelta,
+    FrontendSyncState, frontend_display_platform,
 };
 use koushi_state::{
     AppState, AvatarImage, AvatarThumbnailState, EmojiPreference, FontPreference, InvitePreview,
@@ -1966,9 +1966,30 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
         request_id: 1,
         name: "Fixture New Room".to_owned(),
     };
+    // #1007: a failed Space link makes the sidebar's add-rooms projection
+    // carry a `failed` row beside the `available`/`added` ones.
+    state.space_child_links.entries = vec![koushi_state::SpaceChildLinkResult {
+        request_id: 2,
+        space_id: "!space:example.invalid".to_owned(),
+        // Joined, not a DM, and not a parent-side child of the Space.
+        child_room_id: "!redacted-room:example.invalid".to_owned(),
+        outcome: koushi_state::SpaceChildLinkOutcome::Failed {
+            reason: koushi_state::OperationFailureKind::Network,
+        },
+    }];
 
     // Serialize
     let sidebar = koushi_state::compose_sidebar_for_state(&state);
+    assert!(
+        sidebar
+            .space_add_rooms
+            .as_ref()
+            .is_some_and(|model| model.candidates.iter().any(|candidate| matches!(
+                candidate.status,
+                koushi_state::SpaceAddRoomStatus::Failed { .. }
+            ))),
+        "the golden must exercise a populated Space add-rooms projection"
+    );
     let value = serde_json::to_value(FrontendDesktopSnapshot {
         state_generation: None,
         state: super::frontend_app_state_for_platform(state, koushi_state::DisplayPlatform::Linux),
@@ -2089,6 +2110,26 @@ fn command_result_nests_the_typed_result_and_v1_settlement() {
                 "protocolVersion": 1,
                 "publishedGeneration": 43,
             },
+        })
+    );
+}
+
+#[test]
+fn create_room_settlement_carries_the_space_link_failure_in_camel_case() {
+    let value = serde_json::to_value(FrontendCreateRoomSettlement {
+        settlement: FrontendCommandSettlement {
+            protocol_version: 1,
+            published_generation: 44,
+        },
+        space_link_failure: Some(koushi_state::OperationFailureKind::Forbidden),
+    })
+    .expect("create-room settlement should serialize");
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "protocolVersion": 1,
+            "publishedGeneration": 44,
+            "spaceLinkFailure": "forbidden"
         })
     );
 }

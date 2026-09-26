@@ -599,6 +599,16 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   reported from `AppState.invites`, not from the server summary. A child the
   server did not describe is `unknown` with no join action — the permission model
   is never worked around.
+- Add existing room (#1007) renders `SidebarModel.space_add_rooms`, projected
+  by `space_add_rooms_for_state` from the active Space's parent-side
+  `child_room_ids`, the in-flight `LinkingSpaceChild` pair, and
+  `AppState.space_child_links` (Core-owned, not a delta slice; the sidebar is
+  recomputed when it or `basic_operation` changes). React may text-filter the
+  rows and dispatch `set_space_child(spaceId, childRoomId)`; it must not classify
+  eligibility from `parent_space_ids`, derive a row status, or pass routing:
+  Core derives `via` from the SDK. `create_room` returns
+  `spaceLinkFailure` because a failed link does not fail creation. Browser tests
+  push Rust-shaped `space_add_rooms` snapshots after the command receipt.
 - Room-tag GUI tests should stub `set_room_tag` / `remove_room_tag` to return the
   current snapshot first, assert the row does not move immediately, then push a
   Rust-shaped snapshot with updated `RoomSummary.tags` / sidebar room tags and

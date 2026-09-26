@@ -81,6 +81,7 @@ room_settings=ok
 moderation=ok
 permission_guard=ok
 space_access=ok
+space_add_existing=ok
 timeline=ok
 hide_redacted=ok
 activity_recent=ok
@@ -143,7 +144,12 @@ errors as success output.
 
 `room_settings=ok`, `moderation=ok`, and `permission_guard=ok` are the Phase A
 room-management proof; `space_access=ok` adds a Space's join-rule change and
-its member-side refusal and sync (#935). The core lane creates a disposable management room,
+its member-side refusal and sync (#935). `space_add_existing=ok` adds an
+existing room version 12 room that only claims the Space as its parent through
+Core `SetSpaceChild`, then reads the Space's `m.space.child` from the
+homeserver with a disposable auditor device of the same user and requires
+nonempty routing; a room created inside the Space must be linked the same way
+(#1007). The core lane creates a disposable management room,
 loads Rust-owned settings/permission facts, updates a setting through
 `RoomCommand`, rejects an unauthorized moderation command before SDK mutation,
 and performs an authorized moderation action. The lane must not print room IDs,

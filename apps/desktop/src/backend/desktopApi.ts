@@ -13,6 +13,7 @@ import type {
   AttachmentSort,
   CommandAdmission,
   CommandSettlement,
+  CreateRoomSettlement,
   ComposerDocument,
   ComposerDraftAcceptanceResponse,
   ComposerDraftRevision,
@@ -450,9 +451,9 @@ export interface DesktopApi {
     confirmed: boolean
   ): Promise<CommandSettlement>;
   previewRoomAddress(name: string, aliasLocalpart: string | null): Promise<RoomAddressPreview>;
-  createRoom(request: CreateRoomRequest): Promise<CommandSettlement>;
+  createRoom(request: CreateRoomRequest): Promise<CreateRoomSettlement>;
   createSpace(name: string): Promise<CommandSettlement>;
-  setSpaceChild(spaceId: string, childRoomId: string, viaServer: string): Promise<CommandAdmission>;
+  setSpaceChild(spaceId: string, childRoomId: string): Promise<CommandAdmission>;
   acceptInvite(roomId: string): Promise<CommandSettlement>;
   declineInvite(roomId: string): Promise<CommandSettlement>;
   startDirectMessage(userId: string): Promise<CommandSettlement>;

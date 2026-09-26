@@ -840,6 +840,7 @@ export function Sidebar({
   activeView,
   snapshot,
   onCreateRoom,
+  onAddExistingRoom,
   onNewDm,
   onOpenContextMenu,
   onOpenActivity,
@@ -858,6 +859,8 @@ export function Sidebar({
   activeView: PrimaryView;
   snapshot: DesktopSnapshot;
   onCreateRoom: () => void;
+  /** #1007: open Add existing room for the active Space. */
+  onAddExistingRoom?: (spaceId: string) => void;
   onNewDm: () => void;
   onOpenContextMenu: OpenContextMenu;
   onOpenActivity: () => void;
@@ -1004,6 +1007,11 @@ export function Sidebar({
           emptyMessage={roomFilter ? t("roomList.noMatchingConversations") : undefined}
           showWhenEmpty={true}
           onCreate={onCreateRoom}
+          onAddExisting={
+            activeSpace && onAddExistingRoom
+              ? () => onAddExistingRoom(activeSpace.space_id)
+              : undefined
+          }
           onOpenContextMenu={onOpenContextMenu}
           onSelectRoom={onSelectRoom}
           onSelectSort={(sort) => updateSectionPreference("rooms", { sort })}
@@ -1150,6 +1158,7 @@ function RoomSection({
   showWhenEmpty = false,
   unreadCount,
   onCreate,
+  onAddExisting,
   onOpenContextMenu,
   onJoinRoom,
   onOpenInvites,
@@ -1178,6 +1187,7 @@ function RoomSection({
    */
   unreadCount?: number;
   onCreate?: () => void;
+  onAddExisting?: () => void;
   onOpenContextMenu: OpenContextMenu;
   onJoinRoom?: (roomId: string) => void;
   onOpenInvites?: () => void;
@@ -1201,6 +1211,7 @@ function RoomSection({
           unreadCount={unreadCount}
           label={label}
           onCreate={onCreate}
+          onAddExisting={onAddExisting}
           createLabel={kind === "dm" ? t("workspace.newDm") : t("action.createRoom")}
           onSelectSort={onSelectSort}
           sectionId={id}
@@ -1303,6 +1314,7 @@ function SectionTitle({
   createLabel,
   label,
   onCreate,
+  onAddExisting,
   onSelectSort,
   onToggle,
   sectionId,
@@ -1315,6 +1327,7 @@ function SectionTitle({
   label: string;
   unreadCount?: number;
   onCreate?: () => void;
+  onAddExisting?: () => void;
   onSelectSort?: (sort: RoomListSort) => void;
   onToggle: () => void;
   sectionId: string;
@@ -1392,7 +1405,24 @@ function SectionTitle({
               <MoreHorizontal size={ICON_SIZE.compact} aria-hidden="true" />
             </button>
             {menuOpen ? (
-              <div className="section-menu" role="menu" aria-label={t("roomList.sort")}>
+              <div className="section-menu" role="menu" aria-label={t("roomList.sectionOptions", { section: label })}>
+                {onAddExisting ? (
+                  <>
+                    <button
+                      className="section-menu-item"
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onAddExisting();
+                      }}
+                    >
+                      <span aria-hidden="true" />
+                      <span>{t("spaceAddRooms.action")}</span>
+                    </button>
+                    <div className="section-menu-separator" role="separator" />
+                  </>
+                ) : null}
                 <div className="section-menu-title">{t("roomList.sort")}</div>
                 {sortOptions.map(([sort, sortLabel]) => (
                   <button

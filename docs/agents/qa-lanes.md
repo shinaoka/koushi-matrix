@@ -103,7 +103,7 @@ qa-bin`; plain `cargo test` does not compile that binary.
 | `invites_dm` | invite receipt/accept/decline and DM start | `invite_recv=ok`, `invite_accept=ok`, `invite_decline=ok`, `dm_start=ok` |
 | `room_space` | room and space classification | — |
 | `directory` | public directory query, alias join, Rust address preview/create/share-link join and collision | `directory_query=ok`, `directory_join=ok`, `room_address_preview_create_share=ok`, `room_address_collision=ok` |
-| `room_management` | settings edit, permission guard, moderation, and a Space's join-rule change (#935), using a disposable management room and Space so they cannot disturb other stages | `room_settings=ok`, `permission_guard=ok`, `moderation=ok`, `space_access=ok`, plus cleanup tokens |
+| `room_management` | settings edit, permission guard, moderation, a Space's join-rule change (#935), and adding an existing (room version 12) room to a Space (#1007), using a disposable management room and Space so they cannot disturb other stages | `room_settings=ok`, `permission_guard=ok`, `moderation=ok`, `space_access=ok`, `space_add_existing=ok`, plus cleanup tokens |
 | `room_people_projection` | member projection | — |
 | `timeline` | timeline projection and navigation | `timeline_nav=ok` |
 | `timeline_reconnect` | unsubscribes, sends 21 offline events past the room-subscription limit, reopens the room | `live_catchup_checkpoint=ok`, `live_catchup_gap_repaired=ok` |

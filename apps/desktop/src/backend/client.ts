@@ -45,6 +45,7 @@ import type {
   AttachmentFilter,
   AttachmentSort,
   CreateRoomRequest,
+  CreateRoomSettlement,
   RoomAddressPreview,
   HistoryExportLabels,
   HistoryExportRangeInput,
@@ -1114,16 +1115,16 @@ export class TauriDesktopApi implements DesktopApi {
     return this.invokeCommand<RoomAddressPreview>("preview_room_address", { name, aliasLocalpart });
   }
 
-  async createRoom(request: CreateRoomRequest): Promise<CommandSettlement> {
-    return this.invokeCommand<CommandSettlement>("create_room", { options: request });
+  async createRoom(request: CreateRoomRequest): Promise<CreateRoomSettlement> {
+    return this.invokeCommand<CreateRoomSettlement>("create_room", { options: request });
   }
 
   async createSpace(name: string): Promise<CommandSettlement> {
     return this.invokeCommand<CommandSettlement>("create_space", { name });
   }
 
-  async setSpaceChild(spaceId: string, childRoomId: string, viaServer: string): Promise<CommandAdmission> {
-    return this.invokeCommand<CommandAdmission>("set_space_child", { spaceId, childRoomId, viaServer });
+  async setSpaceChild(spaceId: string, childRoomId: string): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("set_space_child", { spaceId, childRoomId });
   }
 
   async acceptInvite(roomId: string): Promise<CommandSettlement> {

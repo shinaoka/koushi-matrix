@@ -424,6 +424,8 @@ pub fn build_state_delta(
         || previous.invites != next.invites
         || previous.room_notification_settings != next.room_notification_settings
         || previous.space_children != next.space_children
+        || previous.basic_operation != next.basic_operation
+        || previous.space_child_links != next.space_child_links
     {
         let previous_sidebar = compose_sidebar_for_state(previous);
         let next_sidebar = compose_sidebar_for_state(next);
@@ -584,6 +586,9 @@ fn audit_app_state_delta_slices(state: &AppState) {
         files_view: _,
         history_export: _,
         basic_operation: _,
+        // Core-owned; its only frontend projection is the sidebar's
+        // `space_add_rooms`, recomputed below when it changes.
+        space_child_links: _,
         live_signals: _,
         e2ee_trust: _,
         local_encryption: _,

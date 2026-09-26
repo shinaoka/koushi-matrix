@@ -23,7 +23,8 @@ use crate::state::{
     RoomModerationAction, RoomPreferencesState, RoomSettingChange, RoomSettingsSnapshot,
     RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability,
     ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope, SessionInfo,
-    SessionStatusRefreshTrigger, SettingsPatch, SettingsValues, SpaceChildSummary,
+    SessionStatusRefreshTrigger, SettingsPatch, SettingsValues, SpaceChildLinkOutcome,
+    SpaceChildSummary,
     SpaceMemberInviteOutcome, SpaceMemberRoleUpdateOutcome, SpaceMembersProjection, SpaceSummary,
     StagedUploadCompressionChoice, StagedUploadItem, StagedUploadOutputSelection,
     SyncLifecycleStatus, TimelineContinuityInspection, TimelineGapRepairFailureKind,
@@ -1565,6 +1566,14 @@ pub enum AppAction {
     BasicOperationFailed {
         request_id: u64,
         message: String,
+    },
+    /// The parent-Space linking step of the in-flight basic operation settled
+    /// (#1007). Admitted only while `request_id` is in flight.
+    SpaceChildLinkSettled {
+        request_id: u64,
+        space_id: String,
+        child_room_id: String,
+        outcome: SpaceChildLinkOutcome,
     },
     LiveRoomReceiptSummariesUpdated {
         room_id: String,

@@ -159,18 +159,11 @@ pub(super) async fn run_async_inner(
         transcript.push(line.clone());
         println!("{line}");
 
-        let via_server = creds
-            .user_id
-            .split_once(':')
-            .map(|(_, server)| server.to_owned())
-            .ok_or_else(|| "cannot derive space via_server from user_id".to_owned())?;
-
         let set_child_id = conn.next_request_id();
         conn.command(CoreCommand::Room(RoomCommand::SetSpaceChild {
             request_id: set_child_id,
             space_id: qa_space_id.clone(),
             child_room_id: qa_room_id.clone(),
-            via_server,
         }))
         .await
         .map_err(|e| format!("set QA space child command submit failed: {e}"))?;

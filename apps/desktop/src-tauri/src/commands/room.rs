@@ -740,11 +740,15 @@ pub async fn create_room(
     options: koushi_protocol::CreateRoomOptions,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendCommandSettlement, CreateRoomInvokeError> {
+) -> Result<FrontendCreateRoomSettlement, CreateRoomInvokeError> {
     let mut event_conn = state.runtime.attach();
     let baseline = event_conn.versioned_snapshot();
     let account_key = account_key_from_app_state(&baseline.state);
     let request_id = event_conn.next_request_id();
+    let parent_space_id = options
+        .parent_space
+        .as_ref()
+        .map(|parent| parent.space_id.clone());
     event_conn
         .command(build_create_room_command(request_id, options))
         .await
@@ -763,13 +767,37 @@ pub async fn create_room(
         )
         .await
         .map_err(CreateRoomInvokeError::from)?;
-    let RequestOutcome::RoomCreated { generation, .. } = outcome else {
+    let RequestOutcome::RoomCreated {
+        generation,
+        room_id,
+        ..
+    } = outcome
+    else {
         return Err(CreateRoomInvokeError::Failed {
             message: "room creation returned an invalid outcome".to_owned(),
         });
     };
+    // The RoomCreated outcome waits for the creation to settle, which Core
+    // does only after recording the parent-Space linking result.
+    let space_link_failure = parent_space_id.and_then(|space_id| {
+        create_room_space_link_failure(&event_conn.versioned_snapshot().state, &space_id, &room_id)
+    });
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(generation))
+    Ok(FrontendCreateRoomSettlement {
+        settlement: command_settlement(generation),
+        space_link_failure,
+    })
+}
+
+pub(super) fn create_room_space_link_failure(
+    state: &koushi_state::AppState,
+    space_id: &str,
+    room_id: &str,
+) -> Option<koushi_state::OperationFailureKind> {
+    match state.space_child_links.latest(space_id, room_id)?.outcome {
+        koushi_state::SpaceChildLinkOutcome::Failed { reason } => Some(reason),
+        koushi_state::SpaceChildLinkOutcome::Linked => None,
+    }
 }
 
 #[tauri::command]
@@ -809,14 +837,13 @@ pub async fn create_space(
 pub async fn set_space_child(
     space_id: String,
     child_room_id: String,
-    via_server: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
-        build_set_space_child_command(request_id, space_id, child_room_id, via_server),
+        build_set_space_child_command(request_id, space_id, child_room_id),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;

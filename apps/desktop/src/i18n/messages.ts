@@ -517,6 +517,23 @@ export type MessageId =
   | "roomList.sortRecent"
   | "roomList.sortName"
   | "roomList.sectionOptions"
+  | "spaceAddRooms.action"
+  | "spaceAddRooms.title"
+  | "spaceAddRooms.scope"
+  | "spaceAddRooms.search"
+  | "spaceAddRooms.listLabel"
+  | "spaceAddRooms.empty"
+  | "spaceAddRooms.noMatches"
+  | "spaceAddRooms.addAccessible"
+  | "spaceAddRooms.adding"
+  | "spaceAddRooms.added"
+  | "spaceAddRooms.retry"
+  | "spaceAddRooms.retryAccessible"
+  | "spaceAddRooms.failed"
+  | "spaceAddRooms.failedForbidden"
+  | "spaceAddRooms.createdLinkFailedTitle"
+  | "spaceAddRooms.createdLinkFailed"
+  | "spaceAddRooms.createdLinkFailedForbidden"
   | "roomList.sectionUnreadAccessible"
   | "roomList.loading"
   | "roomList.failed"
@@ -2094,6 +2111,23 @@ const en: Catalog = {
   "roomList.sortRecent": "Recent messages",
   "roomList.sortName": "Name",
   "roomList.sectionOptions": "Options for {section}",
+  "spaceAddRooms.action": "Add existing room",
+  "spaceAddRooms.title": "Add existing rooms to {spaceName}",
+  "spaceAddRooms.scope": "Rooms you have joined are listed. Adding a room lists it in this space for its members; it does not change who can join the room. You need permission to manage this space's rooms.",
+  "spaceAddRooms.search": "Search rooms",
+  "spaceAddRooms.listLabel": "Rooms you can add",
+  "spaceAddRooms.empty": "You have no joined rooms to add.",
+  "spaceAddRooms.noMatches": "No rooms match your search.",
+  "spaceAddRooms.addAccessible": "Add {roomName} to {spaceName}",
+  "spaceAddRooms.adding": "Adding…",
+  "spaceAddRooms.added": "Added",
+  "spaceAddRooms.retry": "Retry",
+  "spaceAddRooms.retryAccessible": "Retry adding {roomName}",
+  "spaceAddRooms.failed": "Couldn't add this room ({reason}). Try again.",
+  "spaceAddRooms.failedForbidden": "You don't have permission to add rooms to this space.",
+  "spaceAddRooms.createdLinkFailedTitle": "Room created",
+  "spaceAddRooms.createdLinkFailed": "“{roomName}” was created, but it couldn't be added to {spaceName} ({reason}). You can add it again from Add existing room.",
+  "spaceAddRooms.createdLinkFailedForbidden": "“{roomName}” was created, but you don't have permission to add rooms to {spaceName}.",
   "roomList.sectionUnreadAccessible": "{section} unread: {count}",
   "roomList.loading": "Loading rooms…",
   "roomList.failed": "Rooms could not be loaded",
@@ -3577,6 +3611,23 @@ const ja: Catalog = {
   "roomList.sortRecent": "新着メッセージ",
   "roomList.sortName": "名前",
   "roomList.sectionOptions": "{section}のオプション",
+  "spaceAddRooms.action": "既存のルームを追加",
+  "spaceAddRooms.title": "{spaceName}に既存のルームを追加",
+  "spaceAddRooms.scope": "参加中のルームが表示されます。追加すると、このスペースのメンバーに表示されます。ルームに参加できる人は変わりません。このスペースのルームを管理する権限が必要です。",
+  "spaceAddRooms.search": "ルームを検索",
+  "spaceAddRooms.listLabel": "追加できるルーム",
+  "spaceAddRooms.empty": "追加できる参加中のルームはありません。",
+  "spaceAddRooms.noMatches": "検索に一致するルームはありません。",
+  "spaceAddRooms.addAccessible": "{roomName}を{spaceName}に追加",
+  "spaceAddRooms.adding": "追加中…",
+  "spaceAddRooms.added": "追加済み",
+  "spaceAddRooms.retry": "再試行",
+  "spaceAddRooms.retryAccessible": "{roomName}の追加を再試行",
+  "spaceAddRooms.failed": "このルームを追加できませんでした（{reason}）。もう一度お試しください。",
+  "spaceAddRooms.failedForbidden": "このスペースにルームを追加する権限がありません。",
+  "spaceAddRooms.createdLinkFailedTitle": "ルームを作成しました",
+  "spaceAddRooms.createdLinkFailed": "「{roomName}」は作成されましたが、{spaceName}に追加できませんでした（{reason}）。「既存のルームを追加」からもう一度追加できます。",
+  "spaceAddRooms.createdLinkFailedForbidden": "「{roomName}」は作成されましたが、{spaceName}にルームを追加する権限がありません。",
   "roomList.sectionUnreadAccessible": "{section}の未読 {count} 件",
   "roomList.loading": "ルームを読み込み中…",
   "roomList.failed": "ルームを読み込めませんでした",

@@ -100,6 +100,11 @@ function normalizeCommandResponse(command: string, value: unknown, generation = 
   }
   if (!isSnapshot(value)) return value;
   const snapshotGeneration = value.state_generation ?? 0;
+  // Mirrors `FrontendCreateRoomSettlement`: creation settles with its
+  // parent-Space link result (#1007).
+  if (command === "create_room") {
+    return { protocolVersion: 1, publishedGeneration: snapshotGeneration, spaceLinkFailure: null };
+  }
   return ADMISSION_COMMANDS.has(command)
     ? { protocolVersion: 1, admittedGeneration: snapshotGeneration }
     : { protocolVersion: 1, publishedGeneration: snapshotGeneration };

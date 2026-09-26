@@ -1662,13 +1662,12 @@ fn missing_space_child_links(snapshot: &MatrixRoomListSnapshot) -> Vec<MissingSp
     let mut links = Vec::new();
     for room in &snapshot.rooms {
         for space in &snapshot.spaces {
-            if room_has_parent_without_space_child(room, space)
-                && let Ok(via_server) = koushi_sdk::room_id_server_name(&room.room_id)
-            {
+            // Routing is derived by the SDK when the link is written; a room
+            // version 12 ID has no server component to extract here (#1007).
+            if room_has_parent_without_space_child(room, space) {
                 links.push(MissingSpaceChildLink {
                     space_id: space.space_id.clone(),
                     child_room_id: room.room_id.clone(),
-                    via_server,
                 });
             }
         }

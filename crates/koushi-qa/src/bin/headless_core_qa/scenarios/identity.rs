@@ -1410,7 +1410,7 @@ pub(super) async fn audit_removed_device_absent_from_server(
     Ok(())
 }
 
-async fn cleanup_qa_auditor_device(
+pub(super) async fn cleanup_qa_auditor_device(
     auditor: &koushi_sdk::MatrixClientSession,
     password: &str,
 ) -> Result<(), String> {

@@ -1,6 +1,7 @@
 import { HelpDialog } from "./components/HelpDialog";
 import { DesktopUpdates } from "./components/DesktopUpdates";
-import { useModalFocusTracking } from "./components/ModalDialog";
+import { ModalDialog, useModalFocusTracking } from "./components/ModalDialog";
+import { AddExistingRoomDialog } from "./components/AddExistingRoomDialog";
 import {
   type FormEvent,
   type CSSProperties,
@@ -39,6 +40,7 @@ import {
 import type {
   ComposerDocument,
   ComposerDraftRevision,
+  OperationFailureKind,
   TimelinePaneState
 } from "./domain/types";
 import {
@@ -231,7 +233,7 @@ import { getTimelineTransportStats } from "./domain/timelineTransportStats";
 import {
   ICON_SIZE,
   composerModeProp,
-  serverNameFromRoomId,
+  operationFailureLabel,
   syncStatePresentation,
   type ActiveContextMenu,
   type ContextMenuTarget,
@@ -456,7 +458,6 @@ function createRoomRequestFromDraft(
   activeSpaceId: string | null
 ): CreateRoomRequest {
   const visibility = options.visibility;
-  const parentViaServer = activeSpaceId ? serverNameFromRoomId(activeSpaceId) : null;
   return {
     name,
     topic: options.topic.trim() || null,
@@ -464,13 +465,9 @@ function createRoomRequestFromDraft(
     encrypted: visibility === "private" ? options.encrypted : false,
     invitedOnly: visibility === "private" ? options.invitedOnly : false,
     visibility,
-    parentSpace:
-      activeSpaceId && parentViaServer
-        ? {
-            spaceId: activeSpaceId,
-            viaServer: parentViaServer
-          }
-        : null
+    // Core derives the relationship routing (#1007); a room version 12 Space
+    // ID has no server name to extract here.
+    parentSpace: activeSpaceId ? { spaceId: activeSpaceId } : null
   };
 }
 
@@ -1185,6 +1182,16 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
   const [createRoomDraftOptions, setCreateRoomDraftOptions] =
     useState<CreateRoomDialogOptions>(defaultCreateRoomDialogOptions);
   const [createRoomManualAlias, setCreateRoomManualAlias] = useState<string | null>(null);
+  // #1007: which Space the Add existing room dialog targets, and the notice
+  // for a room whose creation settled but whose Space link failed (both
+  // presentation-only; the rows and outcomes are Rust-projected).
+  const [addExistingRoomSpaceId, setAddExistingRoomSpaceId] = useState<string | null>(null);
+  const [createdRoomLinkFailure, setCreatedRoomLinkFailure] = useState<{
+    spaceId: string;
+    spaceName: string;
+    roomName: string;
+    reason: OperationFailureKind;
+  } | null>(null);
   const createRoomAddressPreview = useRoomAddressPreview(
     api, createDraftName, createRoomManualAlias,
     snapshot?.state.domain.session.user_id ?? null, createDialog === "room"
@@ -3895,6 +3902,9 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     const name = createDraftName.trim();
     const activeSpaceIdForCreatedRoom =
       kind === "room" ? snapshot?.state.ui.navigation.active_space_id ?? null : null;
+    const activeSpaceNameForCreatedRoom =
+      snapshot?.sidebar.space_rail.find((space) => space.space_id === activeSpaceIdForCreatedRoom)
+        ?.display_name ?? "";
     // Guard against double-submit: a create already in flight (isBusy) or a
     // pending basic_operation (Rust-owned) must block re-entry.
     if (
@@ -3914,10 +3924,21 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
         kind === "room"
           ? createRoomRequestFromDraft(name, displayedCreateRoomOptions, activeSpaceIdForCreatedRoom)
           : null;
-      await settleCommand(
-        kind === "space" ? api.createSpace(name) : api.createRoom(createRoomRequest!)
-      );
+      let spaceLinkFailure: OperationFailureKind | null = null;
+      if (kind === "space") {
+        await settleCommand(api.createSpace(name));
+      } else {
+        spaceLinkFailure = (await settleCommand(api.createRoom(createRoomRequest!))).spaceLinkFailure ?? null;
+      }
       if (epoch === createDialogEpochRef.current) closeCreateDialog();
+      if (spaceLinkFailure && activeSpaceIdForCreatedRoom) {
+        setCreatedRoomLinkFailure({
+          spaceId: activeSpaceIdForCreatedRoom,
+          spaceName: activeSpaceNameForCreatedRoom,
+          roomName: name,
+          reason: spaceLinkFailure
+        });
+      }
     } catch (error) {
       if (kind === "room" && typeof error === "object" && error !== null && "kind" in error && error.kind === "aliasInUse") {
         if (epoch === createDialogEpochRef.current) {
@@ -3936,6 +3957,12 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
 
   async function setComposerReplyTarget(roomId: string, eventId: string) {
     await settleCommand(api.setComposerReplyTarget(roomId, eventId));
+  }
+
+  async function addExistingRoomToSpace(spaceId: string, roomId: string) {
+    // The pending/added/failed row comes from the Rust snapshot; the command
+    // returns at admission.
+    await settleCommand(api.setSpaceChild(spaceId, roomId));
   }
 
   async function cancelComposerReply() {
@@ -6177,6 +6204,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           activeView={primaryView}
           snapshot={snapshot}
           onCreateRoom={() => openCreateDialog("room")}
+          onAddExistingRoom={(spaceId) => setAddExistingRoomSpaceId(spaceId)}
           onNewDm={openNewDmDialog}
           onOpenContextMenu={openContextMenu}
           onOpenActivity={() => {
@@ -6794,6 +6822,65 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           }}
           onValueChange={setCreateDraftName}
         />
+      ) : null}
+      {addExistingRoomSpaceId ? (
+        <AddExistingRoomDialog
+          model={
+            snapshot.sidebar.space_add_rooms?.space_id === addExistingRoomSpaceId
+              ? snapshot.sidebar.space_add_rooms
+              : null
+          }
+          spaceName={
+            snapshot.sidebar.space_rail.find((space) => space.space_id === addExistingRoomSpaceId)
+              ?.display_name ?? ""
+          }
+          busy={
+            snapshot.state.ui.basic_operation.kind !== "idle" &&
+            snapshot.state.ui.basic_operation.kind !== "linkingSpaceChild"
+          }
+          onAdd={(roomId) => {
+            runInBackground(addExistingRoomToSpace(addExistingRoomSpaceId, roomId));
+          }}
+          onClose={() => setAddExistingRoomSpaceId(null)}
+        />
+      ) : null}
+      {createdRoomLinkFailure ? (
+        <ModalDialog
+          title={t("spaceAddRooms.createdLinkFailedTitle")}
+          className="confirmation-modal"
+          onClose={() => setCreatedRoomLinkFailure(null)}
+        >
+          <div className="confirmation-content">
+            <p role="alert">
+              {createdRoomLinkFailure.reason === "forbidden"
+                ? t("spaceAddRooms.createdLinkFailedForbidden", {
+                    roomName: createdRoomLinkFailure.roomName,
+                    spaceName: createdRoomLinkFailure.spaceName
+                  })
+                : t("spaceAddRooms.createdLinkFailed", {
+                    roomName: createdRoomLinkFailure.roomName,
+                    spaceName: createdRoomLinkFailure.spaceName,
+                    reason: operationFailureLabel(createdRoomLinkFailure.reason)
+                  })}
+            </p>
+            <div className="dialog-actions">
+              <button type="button" className="dialog-button" onClick={() => setCreatedRoomLinkFailure(null)}>
+                {t("action.cancel")}
+              </button>
+              <button
+                type="button"
+                className="dialog-button is-primary"
+                onClick={() => {
+                  const spaceId = createdRoomLinkFailure.spaceId;
+                  setCreatedRoomLinkFailure(null);
+                  setAddExistingRoomSpaceId(spaceId);
+                }}
+              >
+                {t("spaceAddRooms.action")}
+              </button>
+            </div>
+          </div>
+        </ModalDialog>
       ) : null}
       {newDmDialogOpen ? (
         <UserIdDialog

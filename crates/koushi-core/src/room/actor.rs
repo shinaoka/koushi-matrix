@@ -41,7 +41,6 @@ pub(super) const ROOM_OBSERVATION_SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::fr
 pub struct MissingSpaceChildLink {
     pub(super) space_id: String,
     pub(super) child_room_id: String,
-    pub(super) via_server: String,
 }
 
 /// Messages sent to the RoomActor from AccountActor / SyncActor.
@@ -818,9 +817,8 @@ impl RoomActor {
                 request_id,
                 space_id,
                 child_room_id,
-                via_server,
             } => {
-                self.handle_set_space_child(request_id, space_id, child_room_id, via_server)
+                self.handle_set_space_child(request_id, space_id, child_room_id)
                     .await;
             }
             RoomCommand::InviteUser {

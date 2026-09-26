@@ -209,13 +209,11 @@ pub(super) fn build_set_space_child_command(
     request_id: koushi_protocol::RequestId,
     space_id: String,
     child_room_id: String,
-    via_server: String,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::SetSpaceChild {
         request_id,
         space_id,
         child_room_id,
-        via_server,
     })
 }
 

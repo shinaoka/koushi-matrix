@@ -20,14 +20,7 @@ pub(super) async fn verify(
     wait_for_space_in_space_list(conn_a, &space_id, "space_access A space list").await?;
     let child_id =
         create_room_for_qa(conn_a, "QA Space Access Child", false, "space_access child").await?;
-    set_space_child_for_qa(
-        conn_a,
-        &space_id,
-        &child_id,
-        &config.server_name,
-        "space_access set child",
-    )
-    .await?;
+    set_space_child_for_qa(conn_a, &space_id, &child_id, "space_access set child").await?;
     wait_for_space_child_projection(
         conn_a,
         &space_id,

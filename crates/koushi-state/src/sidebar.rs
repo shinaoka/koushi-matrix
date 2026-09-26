@@ -33,6 +33,9 @@ pub struct SidebarModel {
     #[serde(default)]
     pub low_priority_collapsed: bool,
     pub sections: SidebarSections,
+    /// The active Space's add-existing-room rows (#1007); `None` at Home.
+    #[serde(default)]
+    pub space_add_rooms: Option<crate::space_add_rooms::SpaceAddRoomsModel>,
 }
 
 /// The Rust-owned visible sidebar sections.
@@ -173,6 +176,7 @@ pub fn compose_sidebar_for_state(state: &AppState) -> SidebarModel {
         .enumerate()
         .map(|(position, space_id)| (space_id.as_str(), position))
         .collect();
+    sidebar.space_add_rooms = crate::space_add_rooms::space_add_rooms_for_state(state);
     sidebar.space_rail.sort_by_key(|space| {
         preferred_positions
             .get(space.space_id.as_str())
@@ -373,6 +377,7 @@ fn compose_sidebar_with_preferences(
         space_rooms,
         not_joined_space_rooms,
         global_dms,
+        space_add_rooms: None,
     }
 }
 

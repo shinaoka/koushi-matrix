@@ -95,7 +95,7 @@ fn create_room_request_projects_space_room_options() {
         visibility: MatrixCreateRoomVisibility::Private,
         parent_space: Some(MatrixCreateRoomParentSpace {
             space_id: "!space:example.invalid".to_owned(),
-            via_server: "example.invalid".to_owned(),
+            via_servers: vec!["example.invalid".to_owned()],
         }),
     })
     .expect("request should build");
@@ -181,7 +181,7 @@ fn create_room_request_projects_invited_only_space_room() {
         visibility: MatrixCreateRoomVisibility::Private,
         parent_space: Some(MatrixCreateRoomParentSpace {
             space_id: "!space:example.invalid".to_owned(),
-            via_server: "example.invalid".to_owned(),
+            via_servers: vec!["example.invalid".to_owned()],
         }),
     })
     .expect("request should build");

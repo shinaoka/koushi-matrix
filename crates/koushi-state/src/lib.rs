@@ -11,6 +11,7 @@ mod locale_profile;
 mod reducer;
 mod room_address;
 mod sidebar;
+mod space_add_rooms;
 mod state;
 mod submission;
 mod typography_profile;
@@ -159,6 +160,11 @@ pub use state::{
     SlidingSyncCapabilityFailureKind, SlidingSyncCapabilityResult, SlidingSyncCapabilityState,
     SlidingSyncPositiveEvidence, SlidingSyncRevalidationState,
 };
+// Space add-existing-room projection and linking settlements (#1007).
+pub use space_add_rooms::{
+    SpaceAddRoomCandidate, SpaceAddRoomStatus, SpaceAddRoomsModel, space_add_rooms_for_state,
+};
+pub use state::{SpaceChildLinkOutcome, SpaceChildLinkResult, SpaceChildLinkResults};
 // History export keeps its own block so the feature does not edit the shared
 // list above.
 pub use state::{

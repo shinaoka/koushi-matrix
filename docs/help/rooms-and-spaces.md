@@ -40,6 +40,28 @@ than assuming every new room is encrypted.
 Use **Create space**, the plus button near the bottom of the left rail, to
 create a Space. Room and Space administration actions depend on your role.
 
+## Add an existing room to a Space
+
+1. Select the Space in the left rail.
+2. Open the **Rooms** heading's menu (**Options for Rooms**) and choose
+   **Add existing room**.
+3. Search by room name and choose **Add** next to the room.
+
+The list contains the rooms you have joined, without direct messages. Rooms the
+Space already lists show **Added**. A room that appears in the Space only
+because the room names the Space as its parent still shows **Add**: other
+Matrix clients list a room under a Space only after the Space lists it, so add
+it to make the relationship visible everywhere. Adding a room lists it for the
+Space's members; it does not change who can join the room.
+
+Adding needs permission to manage the Space's rooms. Without it, the row says
+that you do not have permission. If adding fails for another reason, the row
+explains why and offers **Retry**. Rooms are added one at a time; rooms you
+have not joined and subspaces are not offered here.
+
+If a room you create inside a Space cannot be added to it, Koushi still creates
+the room, tells you, and offers **Add existing room** to try again.
+
 ## Start a direct message
 
 Select **New DM** in the sidebar header. Enter the person's full Matrix ID in

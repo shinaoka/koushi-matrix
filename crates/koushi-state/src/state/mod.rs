@@ -263,7 +263,10 @@ pub use history_export::{
 
 
 // ── Re-exports: basic_operation ─────────────────────────────────────────────
-pub use basic_operation::{BasicOperationRequest, BasicOperationState};
+pub use basic_operation::{
+    BasicOperationRequest, BasicOperationState, SpaceChildLinkOutcome, SpaceChildLinkResult,
+    SpaceChildLinkResults,
+};
 
 // ── Re-exports: live_signals ────────────────────────────────────────────────
 pub use live_signals::{
@@ -372,6 +375,9 @@ pub struct AppState {
     #[serde(default)]
     pub history_export: HistoryExportState,
     pub basic_operation: BasicOperationState,
+    /// Core-owned; the frontend reads the sidebar's Space add-rooms projection.
+    #[serde(default)]
+    pub space_child_links: SpaceChildLinkResults,
     pub live_signals: LiveSignalsState,
     pub e2ee_trust: E2eeTrustState,
     pub local_encryption: LocalEncryptionState,
@@ -436,6 +442,7 @@ impl Default for AppState {
             files_view: FilesViewState::Closed,
             history_export: HistoryExportState::Idle,
             basic_operation: BasicOperationState::Idle,
+            space_child_links: SpaceChildLinkResults::default(),
             live_signals: LiveSignalsState::default(),
             e2ee_trust: E2eeTrustState::default(),
             local_encryption: LocalEncryptionState::Unknown,

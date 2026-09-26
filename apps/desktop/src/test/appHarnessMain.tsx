@@ -234,6 +234,7 @@ function readySnapshot(
     space_rail: railItems,
     space_rooms: [sidebarRoom],
     not_joined_space_rooms: [],
+    space_add_rooms: null,
     global_dms: [],
     space_unread_count: 0,
     dm_unread_count: 0,
