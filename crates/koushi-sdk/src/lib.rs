@@ -1,7 +1,17 @@
 // SDK-backed room projection futures exceed the default layout-query depth.
 #![recursion_limit = "256"]
 
+mod account_notifications;
 mod auth;
+
+pub use account_notifications::{
+    AddNotificationEmailError, EMAIL_PUSHER_APP_ID, RuleActions, RuleWrite,
+    add_notification_email, build_account_notifications_snapshot, disable_email_notifications,
+    email_notifications_active, fetch_push_ruleset, load_account_notifications,
+    plan_account_push_writes, plan_category_writes, request_notification_email_token,
+    set_account_push_enabled, set_email_notification_target, set_notification_category,
+    summarize_categories,
+};
 
 mod client_session;
 

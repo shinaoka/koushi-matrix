@@ -2010,7 +2010,7 @@ pub async fn deactivate_account(
     }
 }
 
-fn account_management_auth_data(
+pub(crate) fn account_management_auth_data(
     session: &MatrixClientSession,
     auth: Option<&IdentityResetAuthRequest>,
     uiaa_session: Option<&str>,
