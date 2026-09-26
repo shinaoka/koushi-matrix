@@ -22,6 +22,7 @@ import { SearchHistorySection } from "./user-settings/SearchHistorySection";
 import { AccountManagementSection } from "./user-settings/AccountManagementSection";
 import {
   type AccountNotificationActions,
+  AccountNotificationsLoadStatus,
   EmailNotificationsSection,
   NotificationCategoriesSection,
   noopAccountNotificationActions
@@ -450,6 +451,10 @@ export function UserSettingsPanel({
           </section>
           {currentSession ? (
             <>
+              <AccountNotificationsLoadStatus
+                state={accountNotifications}
+                onRetry={accountNotificationActions.load}
+              />
               <EmailNotificationsSection
                 state={accountNotifications}
                 actions={accountNotificationActions}

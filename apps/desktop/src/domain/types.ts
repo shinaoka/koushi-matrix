@@ -515,7 +515,7 @@ export type NotificationCategory =
   | "mentionsAndReplies"
   | "invites";
 
-export type NotificationCategoryState = "on" | "off" | "mixed";
+export type NotificationCategoryState = "on" | "off" | "mixed" | "unavailable";
 
 export interface NotificationCategoryStates {
   direct_messages: NotificationCategoryState;
@@ -536,6 +536,7 @@ export interface NotificationEmailAddress {
 
 export interface AccountNotificationsSnapshot {
   account_push_enabled: boolean;
+  encrypted_event_push: boolean;
   categories: NotificationCategoryStates;
   email_management: NotificationEmailManagement;
   emails: NotificationEmailAddress[];
@@ -550,6 +551,7 @@ export type AccountNotificationsFailureKind =
   | "emailNotVerified"
   | "emailNotRegistered"
   | "authRejected"
+  | "forbidden"
   | "rateLimited"
   | "network"
   | "server"

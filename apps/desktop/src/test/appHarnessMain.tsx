@@ -1993,6 +1993,7 @@ mock.setCommandResponse("load_account_notifications", () =>
           load: { kind: "loaded" },
           snapshot: {
             account_push_enabled: true,
+            encrypted_event_push: false,
             categories: {
               direct_messages: "on",
               group_messages: "mixed",

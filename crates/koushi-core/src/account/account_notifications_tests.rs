@@ -86,6 +86,7 @@ async fn next_notifications_action(
                     | AppAction::AccountNotificationsUiaRequired { .. }
                     | AppAction::AccountNotificationsOperationSucceeded { .. }
                     | AppAction::AccountNotificationsOperationFailed { .. }
+                    | AppAction::AccountNotificationsPendingEmailVerified
             ) {
                 return action;
             }
@@ -308,7 +309,8 @@ async fn email_verification_with_uia_moves_an_active_target_to_the_new_address()
         }
     ));
 
-    // A stale flow id is rejected without contacting the server.
+    // A stale flow id is rejected without contacting the server, and the
+    // flow the reducer resumed is settled instead of left Working.
     send(
         &handle,
         request(13),
@@ -320,6 +322,15 @@ async fn email_verification_with_uia_moves_an_active_target_to_the_new_address()
         },
     )
     .await;
+    assert!(matches!(
+        next_notifications_action(&mut action_rx).await,
+        AppAction::AccountNotificationsOperationFailed {
+            request_id: 99,
+            operation: AccountNotificationsOperation::ConfirmEmail,
+            failure_kind: AccountNotificationsFailureKind::Server,
+            ..
+        }
+    ));
     send(
         &handle,
         request(14),
@@ -331,6 +342,11 @@ async fn email_verification_with_uia_moves_an_active_target_to_the_new_address()
         },
     )
     .await;
+    assert_eq!(
+        next_notifications_action(&mut action_rx).await,
+        AppAction::AccountNotificationsPendingEmailVerified,
+        "the reducer learns the pending address is gone before the follow-up"
+    );
     match next_notifications_action(&mut action_rx).await {
         AppAction::AccountNotificationsOperationSucceeded {
             request_id,

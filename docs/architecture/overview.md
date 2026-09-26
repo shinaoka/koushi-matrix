@@ -1351,7 +1351,10 @@ UIA continuation; loads are read-only, writes happen only for an explicit
 toggle and touch only rules not already in the requested state, and every
 completion carries an authoritative post-write re-read. React renders that
 snapshot and dispatches `AccountCommand::AccountNotifications`; it never
-decides ON/OFF, email target, or verification state.
+decides ON/OFF, email target, or verification state. Server-side push rules
+cannot see mentions inside encrypted events, so the snapshot also carries the
+MSC4028 `encrypted_event_push` fact and the UI states the encrypted-room
+limitation of Group OFF (state-machine.md, "Account Notification Settings").
 Message formatting is also projected before it reaches React:
 `TimelineItem.formatted` is sanitized in Rust from Matrix `formatted_body` and
 carries sanitized HTML plus plain-text/code-block metadata. Message type

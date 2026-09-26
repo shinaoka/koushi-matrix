@@ -554,6 +554,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::AccountNotificationsPendingEmailCancelled => {
             account_notifications::handle_pending_email_cancelled(state)
         }
+        AppAction::AccountNotificationsPendingEmailVerified => {
+            account_notifications::handle_pending_email_verified(state)
+        }
         AppAction::CurrentSessionStatusRefreshRequested {
             request_id,
             trigger,

@@ -39,6 +39,9 @@ pub enum NotificationCategoryState {
     On,
     Off,
     Mixed,
+    /// The homeserver has none of the category's rules; the switch cannot
+    /// change anything and is shown disabled.
+    Unavailable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -96,6 +99,14 @@ pub struct AccountNotificationsSnapshot {
     /// `false` when another client enabled `.m.rule.master`, which silences
     /// every pusher (email included) regardless of the category switches.
     pub account_push_enabled: bool,
+    /// MSC4028: `.m.rule.encrypted_event` (or its unstable id) is enabled, so
+    /// the server pushes every encrypted event and devices decide locally.
+    /// When `false`, the server cannot see mentions inside encrypted events:
+    /// with Group messages OFF, mentions in encrypted group rooms reach no
+    /// pusher (email or other devices); this app still evaluates them after
+    /// decryption. When `true`, Group OFF does not silence encrypted rooms at
+    /// the server.
+    pub encrypted_event_push: bool,
     pub categories: NotificationCategoryStates,
     pub email_management: NotificationEmailManagement,
     /// Validated email 3PIDs in server order.
@@ -120,6 +131,7 @@ impl std::fmt::Debug for AccountNotificationsSnapshot {
         formatter
             .debug_struct("AccountNotificationsSnapshot")
             .field("account_push_enabled", &self.account_push_enabled)
+            .field("encrypted_event_push", &self.encrypted_event_push)
             .field("categories", &self.categories)
             .field("email_management", &self.email_management)
             .field("email_count", &self.emails.len())
@@ -155,8 +167,11 @@ pub enum AccountNotificationsFailureKind {
     EmailNotVerified,
     /// The target address is not a validated 3PID of this account.
     EmailNotRegistered,
-    /// Re-authentication was rejected.
+    /// Re-authentication (password step) was rejected.
     AuthRejected,
+    /// The server refused the operation (`M_FORBIDDEN` outside the password
+    /// step), e.g. a permission or policy restriction.
+    Forbidden,
     RateLimited,
     Network,
     Server,
@@ -317,6 +332,7 @@ mod tests {
     fn debug_redacts_addresses() {
         let snapshot = AccountNotificationsSnapshot {
             account_push_enabled: true,
+            encrypted_event_push: false,
             categories: NotificationCategoryStates {
                 direct_messages: NotificationCategoryState::On,
                 group_messages: NotificationCategoryState::Off,

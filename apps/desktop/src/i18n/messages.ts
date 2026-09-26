@@ -688,6 +688,11 @@ export type MessageId =
   | "settings.notificationFailureRateLimited"
   | "settings.notificationFailureNetwork"
   | "settings.notificationFailureServer"
+  | "settings.notificationFailureForbidden"
+  | "settings.notificationCategoryUnavailable"
+  | "settings.notificationEncryptedMentionsCaveat"
+  | "settings.notificationEncryptedEventPushCaveat"
+  | "settings.emailNotificationsOn"
   | "settings.notificationBadges"
   | "settings.notificationDesktop"
   | "settings.notificationMessagePreviews"
@@ -2237,7 +2242,7 @@ const en: Catalog = {
   "settings.notificationRetry": "Retry",
   "settings.notificationLoading": "Loading notification settings…",
   "settings.notificationCategories": "What to notify about",
-  "settings.notificationCategoriesDescription": "Shared by app notifications, email notifications, and your other Matrix apps. Mentions and replies still notify when group messages are off. Mute a single room from that room's settings.",
+  "settings.notificationCategoriesDescription": "Shared by app notifications, email notifications, and your other Matrix apps. Mentions and replies in unencrypted rooms still notify when group messages are off. Mute a single room from that room's settings.",
   "settings.notificationCategoryDirectMessages": "Direct messages",
   "settings.notificationCategoryGroupMessages": "Group messages",
   "settings.notificationCategoryMentions": "Mentions and replies",
@@ -2277,6 +2282,11 @@ const en: Catalog = {
   "settings.notificationFailureRateLimited": "Too many attempts. Wait a moment and try again.",
   "settings.notificationFailureNetwork": "Could not reach your homeserver.",
   "settings.notificationFailureServer": "Your homeserver could not complete this. The settings shown are the current server state.",
+  "settings.notificationFailureForbidden": "Your homeserver does not allow this change.",
+  "settings.notificationCategoryUnavailable": "Not available on this server.",
+  "settings.notificationEncryptedMentionsCaveat": "In encrypted group rooms your server cannot see mentions, so with group messages off, mentions and replies there reach only this app, not email or your other devices.",
+  "settings.notificationEncryptedEventPushCaveat": "Your server pushes every encrypted message to your devices, so turning group messages off may not silence encrypted rooms on other devices or in email.",
+  "settings.emailNotificationsOn": "On",
   "settings.notificationBadges": "Badges",
   "settings.notificationDesktop": "Desktop notifications",
   "settings.notificationMessagePreviews": "Show message content in notifications",
@@ -3714,7 +3724,7 @@ const ja: Catalog = {
   "settings.notificationRetry": "再試行",
   "settings.notificationLoading": "通知設定を読み込み中…",
   "settings.notificationCategories": "通知する内容",
-  "settings.notificationCategoriesDescription": "アプリ通知・メール通知・他のMatrixアプリで共通です。グループのメッセージがオフでも、メンション・返信は通知されます。個別のルームはルーム設定でミュートできます。",
+  "settings.notificationCategoriesDescription": "アプリ通知・メール通知・他のMatrixアプリで共通です。グループのメッセージがオフでも、暗号化されていないルームのメンション・返信は通知されます。個別のルームはルーム設定でミュートできます。",
   "settings.notificationCategoryDirectMessages": "ダイレクトメッセージ",
   "settings.notificationCategoryGroupMessages": "グループのメッセージ",
   "settings.notificationCategoryMentions": "メンション・返信",
@@ -3754,6 +3764,11 @@ const ja: Catalog = {
   "settings.notificationFailureRateLimited": "試行回数が多すぎます。少し待ってからお試しください。",
   "settings.notificationFailureNetwork": "ホームサーバーに接続できませんでした。",
   "settings.notificationFailureServer": "ホームサーバーで処理できませんでした。表示中の設定がサーバーの現在の状態です。",
+  "settings.notificationFailureForbidden": "ホームサーバーがこの変更を許可していません。",
+  "settings.notificationCategoryUnavailable": "このサーバーでは利用できません。",
+  "settings.notificationEncryptedMentionsCaveat": "暗号化されたグループではサーバーがメンションを読めないため、グループのメッセージがオフの間、そこでのメンション・返信はこのアプリにだけ届き、メールや他の端末には届きません。",
+  "settings.notificationEncryptedEventPushCaveat": "このサーバーは暗号化されたメッセージをすべて端末へ送るため、グループのメッセージをオフにしても、他の端末やメールでは暗号化ルームの通知が止まらない場合があります。",
+  "settings.emailNotificationsOn": "オン",
   "settings.notificationBadges": "バッジ",
   "settings.notificationDesktop": "デスクトップ通知",
   "settings.notificationMessagePreviews": "通知にメッセージ本文を表示",

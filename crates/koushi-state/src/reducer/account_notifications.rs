@@ -234,6 +234,13 @@ pub(crate) fn handle_pending_email_cancelled(state: &mut AppState) -> Vec<AppEff
     changed()
 }
 
+pub(crate) fn handle_pending_email_verified(state: &mut AppState) -> Vec<AppEffect> {
+    if state.account_notifications.pending_email.take().is_none() {
+        return Vec::new();
+    }
+    changed()
+}
+
 fn apply_snapshot(state: &mut AppState, snapshot: Option<AccountNotificationsSnapshot>) {
     if let Some(snapshot) = snapshot {
         clear_pending_if_verified(state, &snapshot);

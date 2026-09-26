@@ -237,6 +237,7 @@
               "notifications_active": true
             }
           ],
+          "encrypted_event_push": false,
           "unverified_email_pusher_count": 0
         }
       },

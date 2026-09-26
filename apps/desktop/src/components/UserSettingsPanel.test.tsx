@@ -1488,6 +1488,6 @@ describe("UserSettingsPanel", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Notifications" }));
     expect(load).toHaveBeenCalledTimes(1);
     expect(setCategory).not.toHaveBeenCalled();
-    expect(screen.getAllByText("Loading notification settings…").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Loading notification settings…")).toHaveLength(1);
   });
 });

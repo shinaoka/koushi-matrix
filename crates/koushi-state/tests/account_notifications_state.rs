@@ -22,6 +22,7 @@ fn ready_state() -> AppState {
 fn snapshot(email_active: bool, group: NotificationCategoryState) -> AccountNotificationsSnapshot {
     AccountNotificationsSnapshot {
         account_push_enabled: true,
+        encrypted_event_push: false,
         categories: NotificationCategoryStates {
             direct_messages: NotificationCategoryState::On,
             group_messages: group,
@@ -476,4 +477,57 @@ fn cancel_pending_email_and_logout_reset_the_slice() {
     );
     reduce(&mut state, AppAction::LogoutRequested);
     assert_eq!(state.account_notifications, Default::default());
+}
+
+#[test]
+fn verified_signal_clears_pending_even_when_the_follow_up_fails_without_a_reread() {
+    let mut state = ready_state();
+    let request = AccountNotificationsOperation::RequestEmailToken;
+    reduce(
+        &mut state,
+        AppAction::AccountNotificationsOperationRequested {
+            request_id: 1,
+            operation: request,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::AccountNotificationsEmailTokenSent {
+            request_id: 1,
+            operation: request,
+            address: "new@example.invalid".to_owned(),
+            resend_count: 0,
+        },
+    );
+    let confirm = AccountNotificationsOperation::ConfirmEmail;
+    reduce(
+        &mut state,
+        AppAction::AccountNotificationsOperationRequested {
+            request_id: 2,
+            operation: confirm,
+        },
+    );
+    // The actor bound the address, then the target change and the re-read
+    // both failed: no stale pending address may remain.
+    reduce(
+        &mut state,
+        AppAction::AccountNotificationsPendingEmailVerified,
+    );
+    reduce(
+        &mut state,
+        AppAction::AccountNotificationsOperationFailed {
+            request_id: 2,
+            operation: confirm,
+            failure_kind: AccountNotificationsFailureKind::Network,
+            snapshot: None,
+        },
+    );
+    assert!(state.account_notifications.pending_email.is_none());
+    assert!(matches!(
+        state.account_notifications.operation,
+        AccountNotificationsOperationState::Failed {
+            failure_kind: AccountNotificationsFailureKind::Network,
+            ..
+        }
+    ));
 }

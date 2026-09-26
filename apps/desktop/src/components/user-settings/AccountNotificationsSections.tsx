@@ -84,6 +84,7 @@ const failureMessages: Record<AccountNotificationsFailureKind, MessageId> = {
   emailNotVerified: "settings.notificationFailureEmailNotVerified",
   emailNotRegistered: "settings.notificationFailureEmailNotRegistered",
   authRejected: "settings.notificationFailureAuthRejected",
+  forbidden: "settings.notificationFailureForbidden",
   rateLimited: "settings.notificationFailureRateLimited",
   network: "settings.notificationFailureNetwork",
   server: "settings.notificationFailureServer",
@@ -98,7 +99,8 @@ function isBusy(state: AccountNotificationsState): boolean {
   return state.operation.kind === "working" || state.operation.kind === "awaitingUia";
 }
 
-function LoadStatus({
+/** Load progress/failure for the account notification sections, shown once. */
+export function AccountNotificationsLoadStatus({
   state,
   onRetry
 }: {
@@ -150,7 +152,6 @@ export function NotificationCategoriesSection({
           <p>{t("settings.notificationCategoriesDescription")}</p>
         </div>
       </div>
-      <LoadStatus state={state} onRetry={actions.load} />
       {snapshot && !snapshot.account_push_enabled ? (
         <div className="session-actions" data-testid="account-push-disabled">
           <p className="settings-status-text">{t("settings.notificationAccountMuted")}</p>
@@ -183,6 +184,13 @@ export function NotificationCategoriesSection({
           ))}
         </div>
       ) : null}
+      {snapshot && snapshot.categories.group_messages !== "on" ? (
+        <p className="settings-status-text" data-testid="encrypted-group-caveat">
+          {snapshot.encrypted_event_push
+            ? t("settings.notificationEncryptedEventPushCaveat")
+            : t("settings.notificationEncryptedMentionsCaveat")}
+        </p>
+      ) : null}
       {failedCategory ? (
         <p className="settings-status-text" data-testid="notification-category-error">
           {t(failureMessages[failedCategory])}
@@ -210,6 +218,7 @@ function CategoryToggle({
   // A mixed category (set differently by another client) is shown as not
   // fully ON; toggling it applies ON to every rule of the category.
   const checked = value === "on";
+  const unavailable = value === "unavailable";
   return (
     <button
       className="settings-toggle-row"
@@ -218,7 +227,7 @@ function CategoryToggle({
       aria-checked={checked}
       aria-label={label}
       data-state={value}
-      disabled={disabled}
+      disabled={disabled || unavailable}
       onClick={() => onToggle(!checked)}
     >
       <span className="settings-toggle-copy">
@@ -229,6 +238,11 @@ function CategoryToggle({
         {value === "mixed" ? (
           <span className="settings-toggle-description">
             {t("settings.notificationCategoryMixed")}
+          </span>
+        ) : null}
+        {unavailable ? (
+          <span className="settings-toggle-description">
+            {t("settings.notificationCategoryUnavailable")}
           </span>
         ) : null}
         {pending ? (
@@ -315,7 +329,6 @@ export function EmailNotificationsSection({
           <p>{t("settings.emailNotificationsDescription")}</p>
         </div>
       </div>
-      <LoadStatus state={state} onRetry={actions.load} />
       {snapshot ? (
         <div className="settings-toggle-list">
           <button
@@ -341,7 +354,9 @@ export function EmailNotificationsSection({
               </span>
               <span className="settings-toggle-description">
                 {emailOn
-                  ? active.length > 0
+                  ? active.length > 0 && verified.length > 1
+                    ? t("settings.emailNotificationsOn")
+                    : active.length > 0
                     ? t("settings.emailNotificationsSendingTo", {
                         address: active.map((email) => email.address).join(", ")
                       })
@@ -371,11 +386,7 @@ export function EmailNotificationsSection({
           {verified.map((email) => (
             <div className="settings-detail-row" key={email.address}>
               <span>{email.address}</span>
-              <span>
-                {email.notifications_active
-                  ? t("settings.emailVerifiedActive")
-                  : t("settings.emailVerified")}
-              </span>
+              <span>{t("settings.emailVerified")}</span>
             </div>
           ))}
         </div>

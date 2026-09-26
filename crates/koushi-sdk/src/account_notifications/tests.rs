@@ -132,7 +132,7 @@ fn reapplying_the_current_value_plans_no_writes() {
             match states.get(category) {
                 S::On => assert!(plan_category_writes(&ruleset, category, true).is_empty()),
                 S::Off => assert!(plan_category_writes(&ruleset, category, false).is_empty()),
-                S::Mixed => {}
+                S::Mixed | S::Unavailable => {}
             }
         }
     }
@@ -819,4 +819,135 @@ async fn email_notifications_end_to_end_with_local_synapse() {
     let snapshot = load_account_notifications(&session).await.expect("load");
     assert!(!snapshot.email_notifications_active());
     println!("email_e2e_pusher_off=ok");
+}
+
+// ── Review follow-ups: encrypted events, MSC4028, unavailable categories ────
+
+async fn evaluate_encrypted(ruleset: &Ruleset, member_count: u32) -> bool {
+    // The server sees only the ciphertext: no `m.mentions`, no body.
+    let event = Raw::new(&json!({
+        "type": "m.room.encrypted",
+        "event_id": "$encrypted:example.invalid",
+        "room_id": "!room:example.invalid",
+        "sender": "@bob:example.invalid",
+        "origin_server_ts": 1,
+        "content": {
+            "algorithm": "m.megolm.v1.aes-sha2",
+            "ciphertext": "synthetic-ciphertext",
+            "session_id": "synthetic-session",
+            "device_id": "SYNTHETIC"
+        },
+    }))
+    .unwrap()
+    .cast_unchecked::<matrix_sdk::ruma::events::AnySyncTimelineEvent>();
+    let context = PushConditionRoomCtx::new(
+        owned_room_id!("!room:example.invalid"),
+        member_count.into(),
+        owned_user_id!("@alice:example.invalid"),
+        "Alice".to_owned(),
+    );
+    ruleset
+        .get_actions(&event, &context)
+        .await
+        .iter()
+        .any(Action::should_notify)
+}
+
+fn with_msc4028(ruleset: &Ruleset, rule_id: &str, enabled: bool) -> Ruleset {
+    let mut value = ruleset_json(ruleset);
+    let rule = json!({
+        "rule_id": rule_id, "default": true, "enabled": enabled,
+        "conditions": [{"kind": "event_match", "key": "type", "pattern": "m.room.encrypted"}],
+        "actions": ["notify"]
+    });
+    value["override"].as_array_mut().unwrap().insert(1, rule);
+    serde_json::from_value(value).unwrap()
+}
+
+#[tokio::test]
+async fn group_off_silences_encrypted_group_events_at_the_server_without_msc4028() {
+    let mut ruleset = defaults();
+    assert!(!encrypted_event_push_enabled(&ruleset));
+    assert!(
+        evaluate_encrypted(&ruleset, 5).await,
+        "defaults push encrypted groups"
+    );
+    toggle(&mut ruleset, NotificationCategory::GroupMessages, false);
+    // A mention inside the ciphertext is invisible to the server, so with
+    // Group OFF nothing reaches email/other pushers for encrypted groups.
+    assert!(!evaluate_encrypted(&ruleset, 5).await);
+    // Encrypted DMs are governed by the DM rule and still notify.
+    assert!(evaluate_encrypted(&ruleset, 2).await);
+    let snapshot = build_account_notifications_snapshot(
+        &ruleset,
+        koushi_state::NotificationEmailManagement::Available,
+        &[],
+        &[],
+    );
+    assert!(!snapshot.encrypted_event_push);
+}
+
+#[tokio::test]
+async fn msc4028_rule_keeps_pushing_encrypted_events_even_with_group_off() {
+    for rule_id in [
+        ".m.rule.encrypted_event",
+        ".org.matrix.msc4028.encrypted_event",
+    ] {
+        let mut ruleset = with_msc4028(&defaults(), rule_id, true);
+        assert!(encrypted_event_push_enabled(&ruleset), "{rule_id}");
+        toggle(&mut ruleset, NotificationCategory::GroupMessages, false);
+        assert_eq!(summarize_categories(&ruleset).group_messages, S::Off);
+        assert!(evaluate_encrypted(&ruleset, 5).await, "{rule_id}");
+    }
+    let disabled = with_msc4028(&defaults(), ".m.rule.encrypted_event", false);
+    assert!(!encrypted_event_push_enabled(&disabled));
+}
+
+#[test]
+fn categories_without_any_server_rule_are_unavailable() {
+    let ruleset: Ruleset = serde_json::from_value(json!({
+        "underride": [
+            {"rule_id": ".m.rule.message", "default": true, "enabled": true,
+             "conditions": [{"kind": "event_match", "key": "type", "pattern": "m.room.message"}],
+             "actions": ["notify"]}
+        ]
+    }))
+    .unwrap();
+    let states = summarize_categories(&ruleset);
+    assert_eq!(states.group_messages, S::On);
+    assert_eq!(states.direct_messages, S::Unavailable);
+    assert_eq!(states.mentions_and_replies, S::Unavailable);
+    assert_eq!(states.invites, S::Unavailable);
+    assert!(plan_category_writes(&ruleset, NotificationCategory::Invites, true).is_empty());
+}
+
+#[tokio::test]
+async fn toggling_an_unavailable_category_reports_unsupported_without_writing() {
+    let server = MatrixMockServer::new().await;
+    let session = mock_session(&server).await;
+    forbid_writes(&server).await;
+    mount_reads(&server, json!({}), json!([]), json!([])).await;
+    assert_eq!(
+        set_notification_category(&session, NotificationCategory::Invites, true).await,
+        Err(AccountNotificationsFailureKind::Unsupported)
+    );
+    server.server().verify().await;
+}
+
+#[tokio::test]
+async fn plain_forbidden_is_not_reported_as_a_rejected_password() {
+    let server = MatrixMockServer::new().await;
+    let session = mock_session(&server).await;
+    mount_reads(&server, ruleset_json(&defaults()), json!([]), json!([])).await;
+    Mock::given(method("PUT"))
+        .and(path_regex(r"^/_matrix/client/v3/pushrules/.*"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "errcode": "M_FORBIDDEN", "error": "synthetic policy refusal"
+        })))
+        .mount(server.server())
+        .await;
+    assert_eq!(
+        set_notification_category(&session, NotificationCategory::GroupMessages, false).await,
+        Err(AccountNotificationsFailureKind::Forbidden)
+    );
 }

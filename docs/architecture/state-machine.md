@@ -4683,6 +4683,7 @@ stateDiagram-v2
     [*] --> None
     None --> Pending: AccountNotificationsEmailTokenSent
     Pending --> Pending: AccountNotificationsEmailTokenSent [resend or replacement address]
+    Pending --> None: AccountNotificationsPendingEmailVerified [actor bound the address]
     Pending --> None: AccountNotificationsOperationSucceeded [ConfirmEmail]
     Pending --> None: snapshot lists the pending address as a validated 3PID
     Pending --> None: AccountNotificationsPendingEmailCancelled
@@ -4713,7 +4714,17 @@ stateDiagram-v2
   failed resend keeps the pending address. A resubmitted password that the
   server challenges again settles `AuthRejected` and restarts UIA on the next
   confirm. The UIA flow id is the original confirm request id; the actor
-  rejects a submit whose flow id does not match its continuation.
+  rejects a submit whose flow id does not match its continuation and settles
+  that flow with `OperationFailed` (`Server`) so the reducer never stays
+  `Working`.
+- As soon as `/account/3pid/add` succeeds the actor drops its secret
+  continuation and sends `AccountNotificationsPendingEmailVerified`, before any
+  follow-up target change; a failing follow-up (even without a re-read)
+  therefore cannot leave a pending address the actor no longer holds. Any
+  server read that lists the pending address as a validated 3PID drops both
+  the reducer display fact and the actor continuation.
+- Failure kinds distinguish a rejected password (`AuthRejected`, only from the
+  UIA step) from a plain server refusal (`Forbidden`, `M_FORBIDDEN`).
 - Pending verification does not survive restart: the client secret and
   validation session id are never persisted. After restart `GET /account/3pid`
   is the truth and the user adds or resends again.
@@ -4731,19 +4742,44 @@ Category mapping (Element X / SDK compatible):
   `Mixed` when its read rules disagree (for example encrypted vs. unencrypted,
   or `@room` disabled while user mentions are enabled); it is shown as not ON
   and toggling it applies ON to every rule in the category. Missing rules are
-  never created.
+  never created; a category with none of its rules on the server is
+  `Unavailable`, its switch is disabled with an explanation, and a toggle
+  request settles `Unsupported` instead of a no-op success.
 - Rules that already match the requested state are not written, so re-applying
-  the current value is a no-op, and re-enabling a disabled rule that still has
+  the current value is a no-op for DMs, Group messages, and Invites. Mentions
+  is the exception: its read uses the MSC3952 rules when present, but writing
+  ON also enables any present legacy rule (`contains_display_name`,
+  `contains_user_name`, `roomnotif`) that another client disabled, exactly as
+  the SDK/Element X mention toggles do. Re-enabling a disabled rule that still has
   notifying actions keeps its custom sound tweak. Turning an underride
   category OFF writes `actions: []`, which does drop a custom tweak on those
   rules; turning it back ON restores the spec default actions. Toggling one
   category never touches another category's rules.
 - **Overlap.** Standard push-rule precedence evaluates override rules before
-  underride rules, so Group OFF (or DM OFF) with Mentions ON still notifies a
-  mention or reply that mentions the user, and Mentions OFF with Group ON still
-  notifies the message as a group message. Replies notify through the MSC3952
-  mention the reply carries; there is no separate reply rule. Per-room
-  exceptions stay in room notification mode (Room Management).
+  underride rules, so in **unencrypted** rooms Group OFF (or DM OFF) with
+  Mentions ON still notifies a mention or reply that mentions the user, and
+  Mentions OFF with Group ON still notifies the message as a group message.
+  Replies notify through the MSC3952 mention the reply carries; there is no
+  separate reply rule. Per-room exceptions stay in room notification mode
+  (Room Management).
+- **Encrypted rooms.** The homeserver evaluates push rules on the ciphertext
+  and cannot see `m.mentions`, so `.m.rule.is_user_mention` never matches an
+  `m.room.encrypted` event server-side. With Group OFF, `.m.rule.encrypted`
+  has `actions: []` and a mention in an encrypted group room reaches **no
+  pusher** (email digest or other devices). Koushi's own app notifications
+  still evaluate the rules after decryption and notify the mention. Encrypted
+  DMs follow the DM rule. The snapshot exposes MSC4028 as
+  `encrypted_event_push` (Element X `can_push_encrypted_event_to_device`: the
+  stable `.m.rule.encrypted_event` override when present, otherwise
+  `.org.matrix.msc4028.encrypted_event`, enabled), and the UI shows a caveat
+  whenever Group is not ON: without MSC4028 it warns that encrypted-group
+  mentions reach only this app.
+- **MSC4028 enabled.** That override pushes every encrypted event before the
+  underride rules run, so Group reads OFF (its rules are silent) while
+  encrypted messages are still pushed to devices and counted by the server;
+  the caveat says Group OFF may not silence encrypted rooms elsewhere. This is
+  inherited from Element's rule model; Koushi does not toggle the MSC4028
+  rule.
 - `.m.rule.master` enabled by another client is projected as
   `account_push_enabled = false` with an explicit "Turn on" action; Koushi never
   maps its app or email switch to the master rule.

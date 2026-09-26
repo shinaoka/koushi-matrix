@@ -90,6 +90,18 @@ impl AccountActor {
                     .is_some_and(|uia| uia.flow_id == flow_id);
                 if !matches {
                     drop(auth);
+                    // The reducer moved this flow back to Working when it
+                    // accepted the submit; settle it so it cannot stay
+                    // stuck. The user can press Continue to start over.
+                    self.send_notifications_failure(
+                        RequestId {
+                            connection_id: request_id.connection_id,
+                            sequence: flow_id,
+                        },
+                        AccountNotificationsOperation::ConfirmEmail,
+                        AccountNotificationsFailureKind::Server,
+                    )
+                    .await;
                     self.emit_failure(
                         request_id,
                         CoreFailure::AccountOperationFailed {
@@ -146,7 +158,11 @@ impl AccountActor {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
-        let action = match koushi_sdk::load_account_notifications(&session).await {
+        let result = koushi_sdk::load_account_notifications(&session).await;
+        if let Ok(snapshot) = &result {
+            self.drop_pending_email_if_verified(snapshot);
+        }
+        let action = match result {
             Ok(snapshot) => AppAction::AccountNotificationsLoaded {
                 request_id: request_id.sequence,
                 snapshot,
@@ -193,6 +209,9 @@ impl AccountActor {
             Some(session) => koushi_sdk::load_account_notifications(session).await.ok(),
             None => None,
         };
+        if let Some(snapshot) = &snapshot {
+            self.drop_pending_email_if_verified(snapshot);
+        }
         let action = match result {
             Ok(()) => AppAction::AccountNotificationsOperationSucceeded {
                 request_id: request_id.sequence,
@@ -350,6 +369,11 @@ impl AccountActor {
                 let Some(pending) = self.pending_notification_email.take() else {
                     return;
                 };
+                // The secret continuation is gone; tell the reducer now so a
+                // failing follow-up (and re-read) cannot leave a pending
+                // address that no longer exists.
+                self.send_actions(vec![AppAction::AccountNotificationsPendingEmailVerified])
+                    .await;
                 // "Change": if email notifications were active, move the
                 // single target to the newly verified address (add, then
                 // remove the old pusher). Otherwise the user turns email
@@ -405,6 +429,27 @@ impl AccountActor {
                 self.send_notifications_failure(request_id, operation, failure_kind)
                     .await;
             }
+        }
+    }
+
+    /// A pending address the server now lists as a validated 3PID (confirmed
+    /// here or in another client) no longer needs its secret continuation;
+    /// the reducer applies the same rule to its display fact.
+    fn drop_pending_email_if_verified(
+        &mut self,
+        snapshot: &koushi_state::AccountNotificationsSnapshot,
+    ) {
+        let verified = self
+            .pending_notification_email
+            .as_ref()
+            .is_some_and(|pending| {
+                snapshot
+                    .emails
+                    .iter()
+                    .any(|email| email.address.eq_ignore_ascii_case(&pending.address))
+            });
+        if verified {
+            self.pending_notification_email = None;
         }
     }
 

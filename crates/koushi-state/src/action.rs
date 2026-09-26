@@ -160,6 +160,11 @@ pub enum AppAction {
         snapshot: Option<crate::state::AccountNotificationsSnapshot>,
     },
     AccountNotificationsPendingEmailCancelled,
+    /// The account actor bound the pending address (`/3pid/add` succeeded)
+    /// and dropped its secret continuation. Sent before any follow-up target
+    /// change so the reducer never shows a pending address the actor no
+    /// longer holds.
+    AccountNotificationsPendingEmailVerified,
     AccountManagementCapabilitiesLoaded {
         change_password: bool,
     },

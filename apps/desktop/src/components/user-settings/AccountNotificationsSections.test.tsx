@@ -28,6 +28,7 @@ function actions(): AccountNotificationActions {
 function snapshot(overrides: Partial<AccountNotificationsSnapshot> = {}): AccountNotificationsSnapshot {
   return {
     account_push_enabled: true,
+    encrypted_event_push: false,
     categories: {
       direct_messages: "on",
       group_messages: "mixed",
@@ -118,6 +119,76 @@ describe("NotificationCategoriesSection", () => {
   });
 });
 
+describe("NotificationCategoriesSection caveats", () => {
+  test("warns that encrypted-group mentions reach only this app while group is off", () => {
+    render(
+      <NotificationCategoriesSection
+        state={loaded(
+          snapshot({
+            categories: {
+              direct_messages: "on",
+              group_messages: "off",
+              mentions_and_replies: "on",
+              invites: "on"
+            }
+          })
+        )}
+        actions={actions()}
+      />
+    );
+    expect(screen.getByTestId("encrypted-group-caveat").textContent).toMatch(
+      /encrypted group rooms your server cannot see mentions/
+    );
+  });
+
+  test("warns that MSC4028 servers still push encrypted messages", () => {
+    render(
+      <NotificationCategoriesSection
+        state={loaded(
+          snapshot({
+            encrypted_event_push: true,
+            categories: {
+              direct_messages: "on",
+              group_messages: "off",
+              mentions_and_replies: "on",
+              invites: "on"
+            }
+          })
+        )}
+        actions={actions()}
+      />
+    );
+    expect(screen.getByTestId("encrypted-group-caveat").textContent).toMatch(
+      /pushes every encrypted message/
+    );
+  });
+
+  test("no caveat while group messages are on; unavailable categories are disabled", () => {
+    const handlers = actions();
+    render(
+      <NotificationCategoriesSection
+        state={loaded(
+          snapshot({
+            categories: {
+              direct_messages: "on",
+              group_messages: "on",
+              mentions_and_replies: "on",
+              invites: "unavailable"
+            }
+          })
+        )}
+        actions={handlers}
+      />
+    );
+    expect(screen.queryByTestId("encrypted-group-caveat")).toBeNull();
+    const invites = screen.getByRole("switch", { name: "Room invites" }) as HTMLButtonElement;
+    expect(invites.disabled).toBe(true);
+    expect(within(invites).getByText("Not available on this server.")).toBeTruthy();
+    fireEvent.click(invites);
+    expect(handlers.setCategory).not.toHaveBeenCalled();
+  });
+});
+
 describe("EmailNotificationsSection", () => {
   test("cannot enable email notifications before an address is verified", () => {
     renderEmail(loaded(snapshot()));
@@ -140,7 +211,8 @@ describe("EmailNotificationsSection", () => {
     );
     const toggle = screen.getByRole("switch", { name: "Email notifications" });
     expect(toggle.getAttribute("aria-checked")).toBe("true");
-    expect(within(toggle).getByText("Sending to two@example.invalid")).toBeTruthy();
+    // With several addresses the picker shows the target; the switch only says On.
+    expect(within(toggle).getByText("On")).toBeTruthy();
     const select = screen.getByTestId("email-notifications-target") as HTMLSelectElement;
     expect(select.value).toBe("two@example.invalid");
     fireEvent.change(select, { target: { value: "one@example.invalid" } });

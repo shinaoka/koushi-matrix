@@ -1469,6 +1469,7 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
         load: koushi_state::AccountNotificationsLoadState::Loaded,
         snapshot: Some(koushi_state::AccountNotificationsSnapshot {
             account_push_enabled: true,
+            encrypted_event_push: false,
             categories: koushi_state::NotificationCategoryStates {
                 direct_messages: koushi_state::NotificationCategoryState::On,
                 group_messages: koushi_state::NotificationCategoryState::Mixed,

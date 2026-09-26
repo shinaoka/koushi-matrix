@@ -216,16 +216,19 @@ fn rule_notifies(ruleset: &Ruleset, spec: &RuleSpec) -> Option<bool> {
 fn combine(states: impl IntoIterator<Item = Option<bool>>) -> NotificationCategoryState {
     let mut any_on = false;
     let mut any_off = false;
+    let mut any_present = false;
     for state in states.into_iter().flatten() {
+        any_present = true;
         if state {
             any_on = true;
         } else {
             any_off = true;
         }
     }
-    match (any_on, any_off) {
-        (true, true) => NotificationCategoryState::Mixed,
-        (true, false) => NotificationCategoryState::On,
+    match (any_present, any_on, any_off) {
+        (false, _, _) => NotificationCategoryState::Unavailable,
+        (_, true, true) => NotificationCategoryState::Mixed,
+        (_, true, false) => NotificationCategoryState::On,
         _ => NotificationCategoryState::Off,
     }
 }
@@ -265,6 +268,16 @@ pub fn summarize_categories(ruleset: &Ruleset) -> NotificationCategoryStates {
 }
 
 /// `false` when `.m.rule.master` is enabled (all notifications suppressed).
+/// MSC4028: mirrors Element X's `can_push_encrypted_event_to_device` — the
+/// stable `.m.rule.encrypted_event` override when present, otherwise the
+/// unstable `.org.matrix.msc4028.encrypted_event`; absent means `false`.
+pub fn encrypted_event_push_enabled(ruleset: &Ruleset) -> bool {
+    ruleset
+        .get(RuleKind::Override, ".m.rule.encrypted_event")
+        .or_else(|| ruleset.get(RuleKind::Override, ".org.matrix.msc4028.encrypted_event"))
+        .is_some_and(|rule| rule.enabled())
+}
+
 pub fn account_push_enabled(ruleset: &Ruleset) -> bool {
     !ruleset
         .get(RuleKind::Override, MASTER_RULE_ID)
@@ -393,6 +406,7 @@ pub fn build_account_notifications_snapshot(
         .unwrap_or(u32::MAX);
     AccountNotificationsSnapshot {
         account_push_enabled: account_push_enabled(ruleset),
+        encrypted_event_push: encrypted_event_push_enabled(ruleset),
         categories: summarize_categories(ruleset),
         email_management,
         emails,
@@ -440,7 +454,9 @@ pub fn classify_http_error(error: &matrix_sdk::HttpError) -> AccountNotification
             return AccountNotificationsFailureKind::EmailNotRegistered;
         }
         Some(ErrorKind::LimitExceeded(_)) => return AccountNotificationsFailureKind::RateLimited,
-        Some(ErrorKind::Forbidden) => return AccountNotificationsFailureKind::AuthRejected,
+        // A rejected password arrives as a UIAA response and is classified in
+        // `add_notification_email`; a plain M_FORBIDDEN is a server refusal.
+        Some(ErrorKind::Forbidden) => return AccountNotificationsFailureKind::Forbidden,
         Some(ErrorKind::InvalidParam) | Some(ErrorKind::BadJson) => {
             return AccountNotificationsFailureKind::InvalidEmail;
         }
@@ -593,6 +609,11 @@ pub async fn set_notification_category(
     enabled: bool,
 ) -> Result<(), AccountNotificationsFailureKind> {
     let ruleset = fetch_push_ruleset(session).await?;
+    if summarize_categories(&ruleset).get(category) == NotificationCategoryState::Unavailable {
+        // None of the category's rules exist on this server: report it
+        // instead of a no-op success.
+        return Err(AccountNotificationsFailureKind::Unsupported);
+    }
     apply_rule_writes(session, plan_category_writes(&ruleset, category, enabled)).await
 }
 
