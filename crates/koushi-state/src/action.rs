@@ -113,6 +113,53 @@ pub enum AppAction {
         flow_id: u64,
     },
     AccountManagementCapabilitiesLoadRequested,
+    /// Account notification settings (#981): read-only server load.
+    AccountNotificationsLoadRequested {
+        request_id: u64,
+    },
+    AccountNotificationsLoaded {
+        request_id: u64,
+        snapshot: crate::state::AccountNotificationsSnapshot,
+    },
+    AccountNotificationsLoadFailed {
+        request_id: u64,
+        failure_kind: crate::state::AccountNotificationsFailureKind,
+    },
+    AccountNotificationsOperationRequested {
+        request_id: u64,
+        operation: crate::state::AccountNotificationsOperation,
+    },
+    /// The homeserver accepted a verification-email request (first send or
+    /// resend). The client secret and session id stay in the account actor.
+    AccountNotificationsEmailTokenSent {
+        request_id: u64,
+        operation: crate::state::AccountNotificationsOperation,
+        address: String,
+        resend_count: u32,
+    },
+    AccountNotificationsUiaRequired {
+        request_id: u64,
+        flow_id: u64,
+        operation: crate::state::AccountNotificationsOperation,
+    },
+    AccountNotificationsUiaSubmitted {
+        request_id: u64,
+        flow_id: u64,
+    },
+    /// A mutating operation finished. `snapshot` is the authoritative re-read
+    /// taken after the write; `None` only when that re-read itself failed.
+    AccountNotificationsOperationSucceeded {
+        request_id: u64,
+        operation: crate::state::AccountNotificationsOperation,
+        snapshot: Option<crate::state::AccountNotificationsSnapshot>,
+    },
+    AccountNotificationsOperationFailed {
+        request_id: u64,
+        operation: crate::state::AccountNotificationsOperation,
+        failure_kind: crate::state::AccountNotificationsFailureKind,
+        snapshot: Option<crate::state::AccountNotificationsSnapshot>,
+    },
+    AccountNotificationsPendingEmailCancelled,
     AccountManagementCapabilitiesLoaded {
         change_password: bool,
     },
