@@ -507,9 +507,11 @@ stateDiagram-v2
   `Running` is dropped without starting work; the next Running edge re-arms.
   A not-yet-due notification re-arms for the remaining time. A due
   notification admits one check with trigger `Recovery` when it was armed by a
-  Running edge, otherwise `Scheduled`, using a reducer-minted request id in a
+  Running edge for an already-checked slice, otherwise `Scheduled` (including
+  the first check of an `Idle` slice), using a reducer-minted request id in a
   namespace disjoint from command sequences. Periodic rechecks therefore run
-  during a stable connection with no panel interaction.
+  during a stable connection with no panel interaction. The legacy
+  `SyncStarted` action is not produced by the runtime and arms nothing.
 - A reconnect is a connectivity change, not a reason to check. The Running edge
   never shortens or resets the due time and never overrides `Checking`; it only
   re-arms the timer. Offline past one or more due times yields exactly one check
