@@ -206,6 +206,40 @@
         }
       },
       "account_management_url": "https://account.example.invalid/devices",
+      "account_notifications": {
+        "load": {
+          "kind": "loaded"
+        },
+        "operation": {
+          "flow_id": 81,
+          "kind": "awaitingUia",
+          "operation": {
+            "kind": "confirmEmail"
+          },
+          "request_id": 81
+        },
+        "pending_email": {
+          "address": "pending@example.invalid",
+          "resend_count": 1
+        },
+        "snapshot": {
+          "account_push_enabled": true,
+          "categories": {
+            "direct_messages": "on",
+            "group_messages": "mixed",
+            "invites": "off",
+            "mentions_and_replies": "on"
+          },
+          "email_management": "available",
+          "emails": [
+            {
+              "address": "fixture@example.invalid",
+              "notifications_active": true
+            }
+          ],
+          "unverified_email_pusher_count": 0
+        }
+      },
       "activity": {
         "active_tab": "recent",
         "kind": "open",

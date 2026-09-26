@@ -94,6 +94,171 @@ pub async fn submit_account_management_uia(
     Ok(admission)
 }
 
+// ── Account notification settings (#981) ────────────────────────────────────
+
+async fn submit_account_notifications(
+    state: &CoreRuntimeState,
+    request: koushi_protocol::command::AccountNotificationsRequest,
+) -> Result<FrontendCommandAdmission, String> {
+    let request_id = next_request_id(state).await;
+    submit_core_command_with_admission(
+        state,
+        build_account_notifications_command(request_id, request),
+    )
+    .await
+}
+
+pub(super) fn build_account_notifications_command(
+    request_id: koushi_protocol::RequestId,
+    request: koushi_protocol::command::AccountNotificationsRequest,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::AccountNotifications {
+        request_id,
+        request,
+    })
+}
+
+/// Read-only load of the account's notification rules, emails and pushers.
+#[tauri::command]
+pub async fn load_account_notifications(
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    submit_account_notifications(
+        state.inner(),
+        koushi_protocol::command::AccountNotificationsRequest::Load,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn set_notification_category(
+    category: koushi_state::NotificationCategory,
+    enabled: bool,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    submit_account_notifications(
+        state.inner(),
+        koushi_protocol::command::AccountNotificationsRequest::SetCategory { category, enabled },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn set_account_push_enabled(
+    enabled: bool,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    submit_account_notifications(
+        state.inner(),
+        koushi_protocol::command::AccountNotificationsRequest::SetAccountPush { enabled },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn request_notification_email_token(
+    address: String,
+    lang: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    submit_account_notifications(
+        state.inner(),
+        koushi_protocol::command::AccountNotificationsRequest::RequestEmailToken {
+            address,
+            lang: admit_notification_lang(lang),
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn resend_notification_email_token(
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    submit_account_notifications(
+        state.inner(),
+        koushi_protocol::command::AccountNotificationsRequest::ResendEmailToken,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn confirm_notification_email(
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    submit_account_notifications(
+        state.inner(),
+        koushi_protocol::command::AccountNotificationsRequest::ConfirmEmail,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn submit_notification_email_uia(
+    flow_id: u64,
+    password: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    submit_account_notifications(
+        state.inner(),
+        koushi_protocol::command::AccountNotificationsRequest::SubmitUia {
+            flow_id,
+            auth: IdentityResetAuthRequest::UiaaPassword {
+                password: AuthSecret::new(password),
+            },
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn cancel_notification_email(
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    submit_account_notifications(
+        state.inner(),
+        koushi_protocol::command::AccountNotificationsRequest::CancelPendingEmail,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn enable_email_notifications(
+    address: String,
+    lang: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    submit_account_notifications(
+        state.inner(),
+        koushi_protocol::command::AccountNotificationsRequest::EnableEmailNotifications {
+            address,
+            lang: admit_notification_lang(lang),
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn disable_email_notifications(
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    submit_account_notifications(
+        state.inner(),
+        koushi_protocol::command::AccountNotificationsRequest::DisableEmailNotifications,
+    )
+    .await
+}
+
+/// Digest language hint for the email pusher: a short BCP 47-ish tag only.
+fn admit_notification_lang(lang: String) -> String {
+    let valid = !lang.is_empty()
+        && lang.len() <= 16
+        && lang
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-');
+    if valid { lang } else { "en".to_owned() }
+}
+
 pub(super) fn build_start_device_cleanup_command(
     request_id: koushi_protocol::RequestId,
 ) -> CoreCommand {
