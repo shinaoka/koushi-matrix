@@ -464,10 +464,12 @@ stateDiagram-v2
     Idle --> Checking: RefreshRequested(open/manual) / CheckDue(due, sync Running)
     Ready --> Checking: RefreshRequested(manual, or open when due) / CheckDue(due, sync Running) / retain details
     Failed --> Checking: RefreshRequested(manual, or open when backoff elapsed) / CheckDue(due, sync Running) / retain last-known details
-    Ready --> Ready: RefreshRequested(open, not due) / CheckDue(not due) / re-arm
-    Failed --> Failed: RefreshRequested(open, backoff pending) / CheckDue(not due) / re-arm
-    Checking --> Ready: Refreshed(matching request) / arm next due
-    Checking --> Failed: RefreshFailed(matching request) / failures+1, arm backoff due
+    Ready --> Ready: RefreshRequested(open, not due) / serve last status
+    Ready --> Ready: CheckDue(not due) / re-arm
+    Failed --> Failed: RefreshRequested(open, backoff pending) / serve last status
+    Failed --> Failed: CheckDue(not due) / re-arm
+    Checking --> Ready: Refreshed(matching request) / arm next due if sync Running
+    Checking --> Failed: RefreshFailed(matching request) / failures+1, arm backoff due if sync Running
     Checking --> Checking: any request, CheckDue, or connectivity edge / join in-flight
     Checking --> Checking: stale request ignored
     Ready --> Ready: stale completion or stale CheckDue token ignored
@@ -496,7 +498,8 @@ stateDiagram-v2
   `checked_at_ms` (wall clock moved backwards), the recorded time is treated as
   unreliable and the state is due, so a clock regression can neither suppress
   checks indefinitely nor cause a burst (the check re-stamps `checked_at_ms`).
-- Automatic triggers are time-driven. After each settlement, and on every
+- Automatic triggers are time-driven. After each settlement while sync is
+  `Running`, and on every
   unproven→Running sync edge, the reducer emits
   `ArmCurrentSessionStatusCheck { token, due_at_ms }` with a fresh token. The
   AccountActor owns a single timer for it, replaced on every arm and aborted on
