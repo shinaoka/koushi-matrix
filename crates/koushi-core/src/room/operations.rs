@@ -300,10 +300,15 @@ impl RoomActor {
                 }
                 Err(error) => {
                     // Background repair has no user request to settle; record
-                    // only the coarse kind. The Add existing room action
-                    // remains the explicit, visible retry path.
+                    // only the coarse kind, and do not retry this pair on
+                    // every room-list snapshot for the rest of the session.
+                    // The Add existing room action remains the explicit,
+                    // visible retry path.
                     let kind = classify_room_error(&error);
                     trace_space_child_link("repair", room_failure_token(kind), None);
+                    if let Ok(mut attempts) = self.attempted_space_child_repairs.write() {
+                        attempts.insert(key);
+                    }
                 }
             }
         }

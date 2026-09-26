@@ -176,3 +176,38 @@ async fn a_newer_check_cancels_the_slow_lookup_it_replaces() {
         "a cancelled lookup must not settle"
     );
 }
+
+/// A lookup the server never answers settles `unknown` at the 8-second bound,
+/// never `available`. Time is paused, so the bound elapses without waiting.
+#[tokio::test(start_paused = true)]
+async fn an_unanswered_lookup_settles_unknown_at_the_bound() {
+    let server = MatrixMockServer::new().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/_matrix/client/v3/directory/room/.*"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(
+                    serde_json::json!({ "room_id": "!r:example.invalid", "servers": [] }),
+                )
+                .set_delay(Duration::from_secs(3600)),
+        )
+        .mount(server.server())
+        .await;
+    let (handle, mut action_rx, _) = actor(&server).await;
+    check(&handle, 11, "silent").await;
+    assert!(matches!(
+        next_actions(&mut action_rx).await.as_slice(),
+        [AppAction::RoomAddressAvailabilityRequested { request_id: 11, .. }]
+    ));
+    let started = tokio::time::Instant::now();
+    assert!(matches!(
+        next_actions(&mut action_rx).await.as_slice(),
+        [AppAction::RoomAddressAvailabilitySettled {
+            request_id: 11,
+            availability: RoomAddressAvailability::Unknown,
+            suggestion: None,
+            ..
+        }]
+    ));
+    assert!(started.elapsed() >= Duration::from_secs(8));
+}

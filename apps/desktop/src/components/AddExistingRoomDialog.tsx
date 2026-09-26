@@ -7,7 +7,7 @@
 // dispatch `set_space_child`, and the visible status changes only when a new
 // Rust snapshot arrives.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { t } from "../i18n/messages";
 import type { SpaceAddRoomCandidate, SpaceAddRoomsModel } from "../domain/types";
 import { operationFailureLabel } from "../app/uiShared";
@@ -25,10 +25,31 @@ export function AddExistingRoomDialog({
   spaceName: string;
   /** Another basic operation (e.g. room creation) is in flight. */
   busy: boolean;
-  onAdd: (roomId: string) => void;
+  /** Resolves at command admission; rejects when the command is refused. */
+  onAdd: (roomId: string) => Promise<unknown>;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
+  // Presentation-only double-click fence: a clicked row stays busy until the
+  // Rust snapshot moves it away from the status it had when clicked.
+  const [submitted, setSubmitted] = useState<{ roomId: string; statusKind: string } | null>(null);
+  const submittedCandidate = submitted
+    ? model.candidates.find((candidate) => candidate.room_id === submitted.roomId)
+    : undefined;
+  const submittedPending = Boolean(
+    submitted && submittedCandidate && submittedCandidate.status.kind === submitted.statusKind
+  );
+  useEffect(() => {
+    if (submitted && !submittedPending) setSubmitted(null);
+  }, [submitted, submittedPending]);
+  function add(candidate: SpaceAddRoomCandidate) {
+    if (submittedPending) return;
+    const marker = { roomId: candidate.room_id, statusKind: candidate.status.kind };
+    setSubmitted(marker);
+    void Promise.resolve(onAdd(candidate.room_id)).catch(() => {
+      setSubmitted((current) => (current === marker ? null : current));
+    });
+  }
   const title = t("spaceAddRooms.title", { spaceName });
   const candidates = model.candidates;
   const normalized = query.trim().toLocaleLowerCase();
@@ -60,8 +81,8 @@ export function AddExistingRoomDialog({
               key={candidate.room_id}
               candidate={candidate}
               spaceName={spaceName}
-              disabled={busy || anyAdding}
-              onAdd={onAdd}
+              disabled={busy || anyAdding || submittedPending}
+              onAdd={() => add(candidate)}
             />
           ))}
         </ul>
@@ -84,7 +105,7 @@ function SpaceAddRoomRow({
   candidate: SpaceAddRoomCandidate;
   spaceName: string;
   disabled: boolean;
-  onAdd: (roomId: string) => void;
+  onAdd: () => void;
 }) {
   const roomName = candidate.display_name;
   const status = candidate.status;
@@ -112,7 +133,7 @@ function SpaceAddRoomRow({
               ? t("spaceAddRooms.retryAccessible", { roomName })
               : t("spaceAddRooms.addAccessible", { roomName, spaceName })
           }
-          onClick={() => onAdd(candidate.room_id)}
+          onClick={onAdd}
         >
           {status.kind === "failed" ? t("spaceAddRooms.retry") : t("action.add")}
         </button>

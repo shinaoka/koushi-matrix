@@ -123,3 +123,22 @@ test("a room created in a Space whose link failed offers Add existing room", asy
   await notice.getByRole("button", { name: "Add existing room" }).click();
   await expect(page.getByRole("dialog", { name: "Add existing rooms to Synthetic Workspace" })).toBeVisible();
 });
+
+test("leaving the Space closes the dialog instead of showing another Space's rows", async ({ page }) => {
+  await gotoReadyShell(page);
+  await showSpaceWithCandidates(page, { kind: "available" });
+  const dialog = await openAddExistingRoom(page);
+  await expect(dialog).toBeVisible();
+  await page.evaluate(() => {
+    const next = structuredClone(window.__harness.currentSnapshot());
+    next.state_generation = (next.state_generation ?? 0) + 1;
+    next.state.ui.navigation.active_space_id = null;
+    next.sidebar.active_space_id = null;
+    next.sidebar.account_home.is_active = true;
+    next.sidebar.space_rail = next.sidebar.space_rail.map((space) => ({ ...space, is_active: false }));
+    next.sidebar.space_add_rooms = null;
+    window.__harness.setSnapshot(next);
+    window.__harness.pushStateUpdate();
+  });
+  await expect(dialog).toBeHidden();
+});

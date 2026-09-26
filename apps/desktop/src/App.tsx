@@ -1221,10 +1221,14 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
       ? createRoomAddressPreview.localpart
       : null;
   const roomAddressAvailability = snapshot?.state.ui.room_address_availability ?? null;
-  const roomAddressAvailabilityIdle = !roomAddressAvailability || roomAddressAvailability.kind === "idle";
+  const previousRoomAddressCheckTargetRef = useRef<string | null>(null);
   useEffect(() => {
+    const previousTarget = previousRoomAddressCheckTargetRef.current;
+    previousRoomAddressCheckTargetRef.current = createRoomAvailabilityTarget;
     if (createRoomAvailabilityTarget === null) {
-      if (!roomAddressAvailabilityIdle) {
+      // The dialog closed or the address stopped being checkable: always
+      // cancel, so no lookup keeps running (Rust ignores a clear when idle).
+      if (previousTarget !== null) {
         void api.clearRoomAddressAvailability().catch(() => undefined);
       }
       return;
@@ -6896,9 +6900,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
             snapshot.state.ui.basic_operation.kind !== "idle" &&
             snapshot.state.ui.basic_operation.kind !== "linkingSpaceChild"
           }
-          onAdd={(roomId) => {
-            runInBackground(addExistingRoomToSpace(addExistingRoomSpaceId, roomId));
-          }}
+          onAdd={(roomId) => addExistingRoomToSpace(addExistingRoomSpaceId, roomId)}
           onClose={() => setAddExistingRoomSpaceId(null)}
         />
       ) : null}

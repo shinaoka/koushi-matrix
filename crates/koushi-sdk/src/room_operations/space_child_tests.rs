@@ -357,3 +357,57 @@ fn an_empty_route_falls_back_to_the_session_server_only() {
         vec![remote]
     );
 }
+
+/// A child event with an empty `via` (how a child is removed) cannot route:
+/// it is not projected as a child, and adding the room writes a routed one.
+#[tokio::test]
+async fn an_empty_via_child_is_not_a_child_and_is_rewritten() {
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let own_server = client.user_id().unwrap().server_name().to_string();
+    server.mock_room_state_encryption().plain().mount().await;
+    let space_id = RoomId::parse("!space:example.org").unwrap();
+    let child_id = RoomId::parse(DOMAINLESS_ROOM_ID).unwrap();
+    sync_fixture(
+        &server,
+        &client,
+        RoomFixture {
+            child_event: Some((&child_id, Vec::new())),
+            ..space(space_id.as_str())
+        },
+    )
+    .await;
+    sync_fixture(&server, &client, plain_room(DOMAINLESS_ROOM_ID)).await;
+
+    let space_room = client.get_room(&space_id).unwrap();
+    assert!(
+        crate::room_projection::matrix_space_child_room_ids(&space_room)
+            .await
+            .is_empty()
+    );
+
+    expect_state_put(
+        &server,
+        "m.space.child",
+        serde_json::json!({ "via": [own_server] }),
+        1,
+    )
+    .await;
+    Mock::given(method("PUT"))
+        .and(path_regex(
+            r"^/_matrix/client/v3/rooms/.*/state/m\.space\.parent/",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "event_id": "$p" })),
+        )
+        .mount(server.server())
+        .await;
+    let outcome = set_space_child(
+        &session(&server, client),
+        space_id.as_str(),
+        DOMAINLESS_ROOM_ID,
+    )
+    .await
+    .unwrap();
+    assert!(outcome.child_written);
+}

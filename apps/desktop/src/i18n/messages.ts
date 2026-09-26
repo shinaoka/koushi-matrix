@@ -3325,7 +3325,7 @@ const ja: Catalog = {
   "dialog.roomAddressCheckUnknown": "このアドレスが使われているか確認できませんでした。ルームは作成でき、アドレスは作成時にサーバーで確定します。",
   "dialog.roomAddressSuggestion": "候補（未確認）: {address}",
   "dialog.roomAddressUseSuggestion": "このアドレスを使う",
-  "dialog.roomAddressScope": "ルーム名は重複してもかまいませんが、このアドレスは {server} 上のすべての Space を通じて一意である必要があります。Space 名で始めると重複しにくくなりますが、予約されるわけではありません。",
+  "dialog.roomAddressScope": "ルーム名は重複してもかまいませんが、このアドレスは {server} 上のすべてのスペースを通じて一意である必要があります。スペース名で始めると重複しにくくなりますが、予約されるわけではありません。",
   "dialog.publicRoomInSpace": "{spaceName}内の公開ルーム：公開ルームディレクトリに掲載され、スペース外の人を含め誰でも見つけて参加できます。スペースのメンバーかどうかで参加できる人は制限されません。",
   "dialog.roomAddressAbout": "ルームアドレスについて ↗",
   "dialog.roomAddressHelp": "このアドレスでルームを見つけたり共有したりできます。# やサーバー名を付けず、ルーム固有の名前だけ入力してください。使用可能かどうかは作成時に確認されます。",

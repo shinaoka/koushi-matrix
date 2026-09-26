@@ -58,15 +58,29 @@ async fn projection_uses_local_join_and_invite_filters_and_unions_child_joins() 
                             .into_raw_sync_state(),
                     )
                     .add_state_event(
+                        // A routed child: an empty `via` is not a child.
                         EventFactory::new()
+                            .room(space_id)
                             .sender(own_user)
-                            .space_child(space_id.to_owned(), child_a.to_owned())
+                            .event(
+                                matrix_sdk::ruma::events::space::child::SpaceChildEventContent::new(
+                                    vec![matrix_sdk::ruma::owned_server_name!("example.org")],
+                                ),
+                            )
+                            .state_key(child_a.as_str())
                             .into_raw_sync_state(),
                     )
                     .add_state_event(
+                        // A routed child: an empty `via` is not a child.
                         EventFactory::new()
+                            .room(space_id)
                             .sender(own_user)
-                            .space_child(space_id.to_owned(), child_b.to_owned())
+                            .event(
+                                matrix_sdk::ruma::events::space::child::SpaceChildEventContent::new(
+                                    vec![matrix_sdk::ruma::owned_server_name!("example.org")],
+                                ),
+                            )
+                            .state_key(child_b.as_str())
                             .into_raw_sync_state(),
                     )
                     .add_state_event(

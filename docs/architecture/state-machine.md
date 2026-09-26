@@ -3159,7 +3159,11 @@ stateDiagram-v2
   and may text-filter them; it does not classify rooms or derive status.
 - Background repair of parent-only relationships (`missing_space_child_links`)
   uses the same routing but has no request to settle; its failures are
-  diagnostic only.
+  diagnostic only, and a pair that failed is not retried automatically again in
+  that session (Add existing room is the explicit retry).
+- A parent-side `m.space.child` with an empty `via` cannot route and is how a
+  child is removed, so it does not count as a child: the room is offered as
+  `available` and can be repaired or added again.
 
 ### Advisory room address availability (#1006)
 

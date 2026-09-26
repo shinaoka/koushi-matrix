@@ -8,7 +8,7 @@
 //! remains addable. React renders these rows and may text-filter them; it
 //! must not classify rooms or derive their status.
 
-use std::fmt;
+use std::{collections::HashSet, fmt};
 
 use serde::{Deserialize, Serialize};
 
@@ -81,18 +81,19 @@ pub fn space_add_rooms_for_state(state: &AppState) -> Option<SpaceAddRoomsModel>
         } if linking_space_id == space_id => Some(child_room_id.as_str()),
         _ => None,
     };
+    let space_ids: HashSet<&str> = state
+        .spaces
+        .iter()
+        .map(|space| space.space_id.as_str())
+        .collect();
+    let child_room_ids: HashSet<&str> = space.child_room_ids.iter().map(String::as_str).collect();
     let mut candidates: Vec<SpaceAddRoomCandidate> = state
         .rooms
         .iter()
         .filter(|room| !room.is_dm && room.room_id != space_id)
-        .filter(|room| {
-            !state
-                .spaces
-                .iter()
-                .any(|candidate| candidate.space_id == room.room_id)
-        })
+        .filter(|room| !space_ids.contains(room.room_id.as_str()))
         .map(|room| {
-            let is_child = space.child_room_ids.contains(&room.room_id);
+            let is_child = child_room_ids.contains(room.room_id.as_str());
             let status = if in_flight == Some(room.room_id.as_str()) {
                 SpaceAddRoomStatus::Adding
             } else {
@@ -117,11 +118,11 @@ pub fn space_add_rooms_for_state(state: &AppState) -> Option<SpaceAddRoomsModel>
             }
         })
         .collect();
-    candidates.sort_by(|left, right| {
-        left.display_name
-            .to_lowercase()
-            .cmp(&right.display_name.to_lowercase())
-            .then_with(|| left.room_id.cmp(&right.room_id))
+    candidates.sort_by_cached_key(|candidate| {
+        (
+            candidate.display_name.to_lowercase(),
+            candidate.room_id.clone(),
+        )
     });
     Some(SpaceAddRoomsModel {
         space_id: space_id.to_owned(),

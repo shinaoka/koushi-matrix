@@ -3083,13 +3083,24 @@ pub(crate) async fn matrix_space_child_room_ids(room: &matrix_sdk::Room) -> Vec<
 
     let mut child_room_ids: Vec<String> = child_events
         .into_iter()
+        // A child event without `via` cannot route and is how a child is
+        // removed (`{}`), so it is not a child (#1007).
         .filter_map(|child_event| match child_event.deserialize() {
-            Ok(SyncOrStrippedState::Sync(SyncStateEvent::Original(event))) => {
+            Ok(SyncOrStrippedState::Sync(SyncStateEvent::Original(event)))
+                if !event.content.via.is_empty() =>
+            {
                 Some(event.state_key.to_string())
             }
-            Ok(SyncOrStrippedState::Sync(SyncStateEvent::Redacted(_))) => None,
-            Ok(SyncOrStrippedState::Stripped(event)) => Some(event.state_key.to_string()),
-            Err(_) => None,
+            Ok(SyncOrStrippedState::Stripped(event))
+                if event
+                    .content
+                    .via
+                    .as_ref()
+                    .is_some_and(|via| !via.is_empty()) =>
+            {
+                Some(event.state_key.to_string())
+            }
+            _ => None,
         })
         .collect();
     child_room_ids.sort();

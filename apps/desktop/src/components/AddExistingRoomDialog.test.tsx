@@ -89,3 +89,34 @@ test("an empty projection explains that no joined rooms can be added", () => {
   render(<AddExistingRoomDialog model={{ space_id: "!space:example.invalid", candidates: [] }} spaceName="Synthetic Workspace" busy={false} onAdd={vi.fn()} onClose={vi.fn()} />);
   expect(screen.getByRole("status").textContent).toBe(t("spaceAddRooms.empty"));
 });
+
+test("a double click dispatches one add until Rust moves the row", () => {
+  const onAdd = vi.fn(() => new Promise(() => undefined));
+  const { rerender } = render(
+    <AddExistingRoomDialog model={model()} spaceName="Synthetic Workspace" busy={false} onAdd={onAdd} onClose={vi.fn()} />
+  );
+  const add = screen.getByRole("button", {
+    name: t("spaceAddRooms.addAccessible", { roomName: "設計レビュー", spaceName: "Synthetic Workspace" })
+  }) as HTMLButtonElement;
+  fireEvent.click(add);
+  fireEvent.click(add);
+  expect(onAdd).toHaveBeenCalledTimes(1);
+  expect(add.disabled).toBe(true);
+  // Rust settles the row; other rows can be added again.
+  rerender(
+    <AddExistingRoomDialog model={model({ domainless: { kind: "added" } })} spaceName="Synthetic Workspace" busy={false} onAdd={onAdd} onClose={vi.fn()} />
+  );
+  expect((screen.getByRole("button", {
+    name: t("spaceAddRooms.addAccessible", { roomName: "Alpha notes", spaceName: "Synthetic Workspace" })
+  }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("a refused command releases the row", async () => {
+  const onAdd = vi.fn(() => Promise.reject(new Error("refused")));
+  render(<AddExistingRoomDialog model={model()} spaceName="Synthetic Workspace" busy={false} onAdd={onAdd} onClose={vi.fn()} />);
+  const add = screen.getByRole("button", {
+    name: t("spaceAddRooms.addAccessible", { roomName: "設計レビュー", spaceName: "Synthetic Workspace" })
+  }) as HTMLButtonElement;
+  fireEvent.click(add);
+  await vi.waitFor(() => expect(add.disabled).toBe(false));
+});
