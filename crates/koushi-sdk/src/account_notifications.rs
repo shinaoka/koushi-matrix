@@ -8,8 +8,10 @@
 //!   from `GET /pushrules/` (not the sync cache). Reading never writes.
 //! - A write happens only for an explicit user toggle, and only touches the
 //!   rules of that category that are not already in the requested state.
-//!   Rules outside the category, custom rules, keywords, room rules, and the
-//!   sound tweaks of rules that already notify are left untouched.
+//!   Rules outside the category, custom rules, keywords, and room rules are
+//!   left untouched; re-enabling a disabled rule keeps its actions. Turning an
+//!   underride category OFF writes `actions: []` (dropping any custom tweak on
+//!   those rules), and ON restores the spec default actions.
 //! - Email pushers use Element Web's shape: `kind: email`, `app_id: m.email`,
 //!   `pushkey: <validated 3PID address>`, `append: true`.
 

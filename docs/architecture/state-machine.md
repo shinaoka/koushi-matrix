@@ -4644,8 +4644,12 @@ stateDiagram-v2
     NotLoaded --> Loading: AccountNotificationsLoadRequested [Ready]
     Loaded --> Loading: AccountNotificationsLoadRequested [Ready]
     Failed --> Loading: AccountNotificationsLoadRequested [Ready]
+    Loading --> Loading: AccountNotificationsLoadRequested [Ready, replacement]
     Loading --> Loaded: AccountNotificationsLoaded [matching request_id]
     Loading --> Failed: AccountNotificationsLoadFailed [matching request_id]
+    NotLoaded --> Loaded: AccountNotificationsOperationSucceeded/Failed [with snapshot]
+    Loading --> Loaded: AccountNotificationsOperationSucceeded/Failed [with snapshot]
+    Failed --> Loaded: AccountNotificationsOperationSucceeded/Failed [with snapshot]
     Loaded --> NotLoaded: logout/lock/switch/session clear
     Failed --> NotLoaded: logout/lock/switch/session clear
 ```
@@ -4664,6 +4668,7 @@ stateDiagram-v2
     Working --> Failed: AccountNotificationsOperationFailed [matching request_id, operation]
     Working --> AwaitingUia: AccountNotificationsUiaRequired [matching request_id, operation]
     AwaitingUia --> Working: AccountNotificationsUiaSubmitted [matching request_id, flow_id]
+    AwaitingUia --> Working: AccountNotificationsOperationRequested [Ready, abandons UIA prompt]
     AwaitingUia --> Succeeded: AccountNotificationsOperationSucceeded [matching request_id]
     AwaitingUia --> Failed: AccountNotificationsOperationFailed [matching request_id]
     AwaitingUia --> Idle: AccountNotificationsPendingEmailCancelled
@@ -4694,6 +4699,11 @@ stateDiagram-v2
   completion (success or failure) carries the actor's post-write server
   re-read, so a failed or partial write is shown as the server state it left.
   `OperationFailed` with a snapshot replaces the snapshot as well.
+- Any operation completion that carries a server re-read also marks the load
+  as `Loaded`; a newer load request replaces an in-flight one.
+- A new operation request while `AwaitingUia` abandons the password prompt in
+  the reducer; the actor keeps the pending email (and its UIA continuation,
+  which is replaced on the next confirm), so the user can confirm again.
 - **Latest wins.** A new request replaces an in-flight one; the AccountActor
   executes writes in order and the newest completion carries the newest
   server read. Stale request ids, mismatched operations, duplicate
@@ -4723,8 +4733,11 @@ Category mapping (Element X / SDK compatible):
   and toggling it applies ON to every rule in the category. Missing rules are
   never created.
 - Rules that already match the requested state are not written, so re-applying
-  the current value is a no-op and a custom sound tweak on a rule that already
-  notifies survives.
+  the current value is a no-op, and re-enabling a disabled rule that still has
+  notifying actions keeps its custom sound tweak. Turning an underride
+  category OFF writes `actions: []`, which does drop a custom tweak on those
+  rules; turning it back ON restores the spec default actions. Toggling one
+  category never touches another category's rules.
 - **Overlap.** Standard push-rule precedence evaluates override rules before
   underride rules, so Group OFF (or DM OFF) with Mentions ON still notifies a
   mention or reply that mentions the user, and Mentions OFF with Group ON still
