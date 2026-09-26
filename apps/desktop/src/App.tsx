@@ -248,6 +248,7 @@ import {
 import { AuthScreen, SlidingSyncCapabilityBlockedScreen } from "./components/auth";
 import {
   CreateEntityDialog,
+  type CreateRoomAddressConflict,
   type CreateRoomDialogOptions,
   DiagnosticDialog,
   DirectoryPreviewDialog,
@@ -1178,7 +1179,11 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
   const [createDialog, setCreateDialog] = useState<"room" | "space" | null>(null);
   const [createDraftName, setCreateDraftName] = useState("");
   const createDialogEpochRef = useRef(0);
-  const [createRoomAliasCollision, setCreateRoomAliasCollision] = useState<string | null>(null);
+  // The attempted address of a create that failed with AliasInUse (#1006),
+  // kept with the localpart it applies to so an edit retires it.
+  const [createRoomAliasCollision, setCreateRoomAliasCollision] = useState<
+    (CreateRoomAddressConflict & { localpart: string }) | null
+  >(null);
   const [createRoomDraftOptions, setCreateRoomDraftOptions] =
     useState<CreateRoomDialogOptions>(defaultCreateRoomDialogOptions);
   const [createRoomManualAlias, setCreateRoomManualAlias] = useState<string | null>(null);
@@ -3942,7 +3947,14 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     } catch (error) {
       if (kind === "room" && typeof error === "object" && error !== null && "kind" in error && error.kind === "aliasInUse") {
         if (epoch === createDialogEpochRef.current) {
-          setCreateRoomAliasCollision(displayedCreateRoomOptions.aliasLocalpart);
+          const localpart = displayedCreateRoomOptions.aliasLocalpart;
+          const server = createRoomAddressPreview?.server_name ?? "";
+          setCreateRoomAliasCollision({
+            localpart,
+            fullAddress: createRoomAddressPreview?.full_alias ?? `#${localpart}:${server}`,
+            server,
+            roomName: name
+          });
         }
         return;
       }
@@ -6807,7 +6819,12 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           kind={createDialog}
           roomOptions={displayedCreateRoomOptions}
           addressPreview={createRoomAddressPreview}
-          addressFailure={createRoomAliasCollision === displayedCreateRoomOptions.aliasLocalpart ? "aliasInUse" : null}
+          targetSpaceName={activeSpace ? activeSpaceName : null}
+          addressConflict={
+            createRoomAliasCollision?.localpart === displayedCreateRoomOptions.aliasLocalpart
+              ? createRoomAliasCollision
+              : null
+          }
           onOpenAddressHelp={(url) => runInBackground(openExternalHttpUrl(url))}
           value={createDraftName}
           onCancel={closeCreateDialog}

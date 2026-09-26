@@ -215,6 +215,8 @@ export type MessageId =
   | "room.shareLinkCopied"
   | "room.shareLinkCopyFailed"
   | "dialog.roomAddressInUse"
+  | "dialog.roomAddressScope"
+  | "dialog.publicRoomInSpace"
   | "dialog.roomAddressAbout"
   | "dialog.roomAddressHelp"
   | "dialog.roomAddressPreview"
@@ -1802,7 +1804,9 @@ const en: Catalog = {
   "room.shareLinkCopied": "Room link copied.",
   "room.shareLinkCopyFailed": "Could not copy the link. Select and copy the URL instead.",
   "dialog.roomAddress": "Room address",
-  "dialog.roomAddressInUse": "This address is already in use. Choose a different room-specific name and try again.",
+  "dialog.roomAddressInUse": "The address {fullAddress} is already in use. Addresses are shared across all Spaces on {server}. You can keep the room name ‘{roomName}’; change only the room address, for example by adding a project name or number.",
+  "dialog.roomAddressScope": "The room name can repeat, but this address must be unique on {server}, across all Spaces. Starting it with the Space name makes a conflict less likely but does not reserve it.",
+  "dialog.publicRoomInSpace": "Public room in {spaceName}: it is listed in the public room directory, and anyone, including people outside the space, can find and join it. Space membership does not limit who can join.",
   "dialog.roomAddressAbout": "About room addresses ↗",
   "dialog.roomAddressHelp": "This address lets people find and share this room. Enter only the room-specific name, without # or a server name. Availability is confirmed when you create the room.",
   "dialog.roomAddressPreview": "Full address: {address}",
@@ -3302,7 +3306,9 @@ const ja: Catalog = {
   "room.shareLinkCopied": "ルームのリンクをコピーしました。",
   "room.shareLinkCopyFailed": "リンクをコピーできませんでした。URLを選択してコピーしてください。",
   "dialog.roomAddress": "ルームアドレス",
-  "dialog.roomAddressInUse": "このアドレスは使用済みです。別のルーム固有の名前に変更して、もう一度作成してください。",
+  "dialog.roomAddressInUse": "アドレス {fullAddress} はすでに使われています。アドレスは {server} 上のすべての Space で共通です。ルーム名『{roomName}』はそのままで、ルームアドレスにプロジェクト名や数字などを追加してください。",
+  "dialog.roomAddressScope": "ルーム名は重複してもかまいませんが、このアドレスは {server} 上のすべての Space を通じて一意である必要があります。Space 名で始めると重複しにくくなりますが、予約されるわけではありません。",
+  "dialog.publicRoomInSpace": "{spaceName}内の公開ルーム：公開ルームディレクトリに掲載され、スペース外の人を含め誰でも見つけて参加できます。スペースのメンバーかどうかで参加できる人は制限されません。",
   "dialog.roomAddressAbout": "ルームアドレスについて ↗",
   "dialog.roomAddressHelp": "このアドレスでルームを見つけたり共有したりできます。# やサーバー名を付けず、ルーム固有の名前だけ入力してください。使用可能かどうかは作成時に確認されます。",
   "dialog.roomAddressPreview": "完全なアドレス: {address}",

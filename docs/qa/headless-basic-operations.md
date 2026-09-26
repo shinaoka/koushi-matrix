@@ -50,10 +50,14 @@ npm --prefix apps/desktop run qa:headless-basic:local
 This lane runs against disposable local homeservers and must prove the full
 basic-operations scenario set.
 
-The `directory` lane additionally requires `room_address_preview_create_share=ok`
-and `room_address_collision=ok`: ordinary Core room creation must match the Rust
-preview, its SDK sharing URL must join the intended room, and duplicate creation
-must retain the typed alias-collision failure. The `live_signals` lane additionally
+The `directory` lane additionally requires `room_address_preview_create_share=ok`,
+`room_address_collision=ok`, and `room_address_space_prefix=ok`: ordinary Core
+room creation must match the Rust preview, its SDK sharing URL must join the
+intended room, and duplicate creation must retain the typed alias-collision
+failure. From a Space, the unedited suggestion must be `<space>-<room>`; reusing
+the room-only address taken outside the Space must fail as `AliasInUse`, and the
+Space-prefixed address must create a room with the same display name that is
+linked to the Space (#1006). The `live_signals` lane additionally
 requires `ignored_user_history_recovery=ok`: both ignore and unignore must show a
 Clear followed by the existing event's return, without a new message, restart or
 viewport request. Both additions are also mandatory for `all`. The shared Node

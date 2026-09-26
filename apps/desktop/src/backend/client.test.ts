@@ -29,7 +29,7 @@ describe("TauriDesktopApi", () => {
 
   test("passes raw room address drafts to Rust and returns its preview unchanged", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
-    const preview = { localpart: "設計", full_alias: "#設計:example.invalid", error: null };
+    const preview = { localpart: "設計", full_alias: "#設計:example.invalid", error: null, server_name: "example.invalid" };
     vi.mocked(invoke).mockResolvedValueOnce(preview);
     const api = new TauriDesktopApi();
     expect(await api.previewRoomAddress("設計", null)).toEqual(preview);

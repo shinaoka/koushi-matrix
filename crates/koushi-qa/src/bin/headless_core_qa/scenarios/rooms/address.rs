@@ -1,5 +1,6 @@
 use super::*;
-use koushi_core::{CreateRoomOptions, CreateRoomVisibility};
+use koushi_core::{CreateRoomOptions, CreateRoomParentSpace, CreateRoomVisibility};
+use koushi_state::SpaceChildLinkOutcome;
 use matrix_sdk::ruma::{MatrixToUri, matrix_uri::MatrixId};
 
 pub(super) async fn verify(
@@ -8,12 +9,14 @@ pub(super) async fn verify(
     conn_b: &mut CoreConnection,
 ) -> Result<(), String> {
     let name = format!("Koushi Address QA {}", std::process::id());
+    // Suggest from Home: no Space prefix for this unrelated room.
+    select_space_for_address_qa(conn_a, None).await?;
     let preview = conn_a.preview_room_address(&name, None);
     let expected_alias = preview
         .full_alias
         .ok_or("address: suggestion was invalid")?;
     let options = CreateRoomOptions {
-        name,
+        name: name.clone(),
         topic: None,
         alias_localpart: Some(preview.localpart),
         encrypted: false,
@@ -101,5 +104,162 @@ pub(super) async fn verify(
         }
     }
     println!("room_address_collision=ok");
+
+    verify_space_prefixed_address(conn_a, &name, &expected_alias).await?;
+    println!("room_address_space_prefix=ok");
+    Ok(())
+}
+
+/// #1006: the unrelated room above owns the room-only address. Creating a
+/// public room with the same display name from a Space conflicts at that
+/// address (Spaces share the server's alias namespace), while the default
+/// `<space>-<room>` suggestion creates it, keeps the display name, and links
+/// it to the Space.
+async fn verify_space_prefixed_address(
+    conn_a: &mut CoreConnection,
+    name: &str,
+    taken_alias: &str,
+) -> Result<(), String> {
+    let space_id =
+        create_space_for_qa(conn_a, "Koushi Address Space", "address space create").await?;
+    wait_for_space_in_space_list(conn_a, &space_id, "address space list").await?;
+    select_space_for_address_qa(conn_a, Some(&space_id)).await?;
+
+    let prefixed = conn_a.preview_room_address(name, None);
+    let prefixed_alias = prefixed
+        .full_alias
+        .clone()
+        .ok_or("address: Space suggestion was invalid")?;
+    if !prefixed.localpart.starts_with("koushi-address-space-") || prefixed_alias == taken_alias {
+        return Err("address: Space suggestion did not carry the Space prefix".into());
+    }
+    let taken_localpart = taken_alias
+        .trim_start_matches('#')
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let options = |alias_localpart: String| CreateRoomOptions {
+        name: name.to_owned(),
+        topic: None,
+        alias_localpart: Some(alias_localpart),
+        encrypted: false,
+        invited_only: false,
+        visibility: CreateRoomVisibility::Public,
+        parent_space: Some(CreateRoomParentSpace {
+            space_id: space_id.clone(),
+        }),
+    };
+
+    let conflict_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(RoomCommand::CreateRoom {
+            request_id: conflict_id,
+            options: options(taken_localpart),
+        }))
+        .await
+        .map_err(|_| "address: Space conflict submission failed")?;
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
+    loop {
+        match deadline
+            .recv(conn_a)
+            .await
+            .map_err(|_| "address: Space conflict outcome timeout")?
+            .map_err(|_| "address: Space conflict event stream lagged")?
+        {
+            CoreEvent::OperationFailed {
+                request_id,
+                failure:
+                    CoreFailure::RoomOperationFailed {
+                        kind: RoomFailureKind::AliasInUse,
+                    },
+            } if request_id == conflict_id => break,
+            CoreEvent::OperationFailed { request_id, .. } if request_id == conflict_id => {
+                return Err("address: Space conflict did not report AliasInUse".into());
+            }
+            CoreEvent::Room(RoomEvent::RoomCreated { request_id, .. })
+                if request_id == conflict_id =>
+            {
+                return Err("address: an address taken outside the Space was reused".into());
+            }
+            _ => {}
+        }
+    }
+
+    let create_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(RoomCommand::CreateRoom {
+            request_id: create_id,
+            options: options(prefixed.localpart.clone()),
+        }))
+        .await
+        .map_err(|_| "address: Space room submission failed")?;
+    let room_id = wait_for_room_created(conn_a, create_id, "address Space room").await?;
+    wait_for_room_in_room_list(conn_a, &room_id, "address Space room list").await?;
+    // The room list can show a computed name until the name event syncs.
+    let named = |state: &AppState| {
+        state
+            .rooms
+            .iter()
+            .any(|room| room.room_id == room_id && room.display_name == name)
+    };
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    while !named(&conn_a.snapshot()) {
+        tokio::time::timeout_at(deadline, conn_a.recv_event())
+            .await
+            .map_err(|_| "address: the Space room did not keep its display name")?
+            .map_err(|_| "address: Space room name event stream lagged")?;
+    }
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    loop {
+        let linked = conn_a
+            .snapshot()
+            .space_child_links
+            .latest(&space_id, &room_id)
+            .map(|result| result.outcome);
+        match linked {
+            Some(SpaceChildLinkOutcome::Linked) => break,
+            Some(SpaceChildLinkOutcome::Failed { .. }) => {
+                return Err("address: the Space room was not linked to its Space".into());
+            }
+            None => {
+                tokio::time::timeout_at(deadline, conn_a.recv_event())
+                    .await
+                    .map_err(|_| "address: Space link settlement timeout")?
+                    .map_err(|_| "address: Space link event stream lagged")?;
+            }
+        }
+    }
+    let settings =
+        load_room_settings_for_qa(conn_a, &room_id, "address Space room settings").await?;
+    if settings
+        .canonical_alias
+        .as_deref()
+        .is_some_and(|alias| alias != prefixed_alias)
+    {
+        return Err("address: the Space room's alias differs from its preview".into());
+    }
+    select_space_for_address_qa(conn_a, None).await
+}
+
+async fn select_space_for_address_qa(
+    conn: &mut CoreConnection,
+    space_id: Option<&str>,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::SelectSpace {
+        request_id,
+        space_id: space_id.map(str::to_owned),
+    }))
+    .await
+    .map_err(|_| "address: select Space submission failed")?;
+    let selected = |state: &AppState| state.navigation.active_space_id.as_deref() == space_id;
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    while !selected(&conn.snapshot()) {
+        tokio::time::timeout_at(deadline, conn.recv_event())
+            .await
+            .map_err(|_| "address: select Space timeout")?
+            .map_err(|_| "address: select Space event stream lagged")?;
+    }
     Ok(())
 }

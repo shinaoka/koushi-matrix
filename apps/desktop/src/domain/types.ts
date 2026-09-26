@@ -6,6 +6,8 @@ export interface RoomAddressPreview {
   localpart: string;
   full_alias: string | null;
   error: "empty" | "invalid" | "notReady" | null;
+  /** The server whose alias namespace every Space on it shares (#1006). */
+  server_name: string | null;
 }
 
 export interface CreateRoomRequest {

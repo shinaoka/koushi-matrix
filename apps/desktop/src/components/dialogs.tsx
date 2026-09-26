@@ -93,10 +93,18 @@ export interface CreateRoomDialogOptions {
   visibility: CreateRoomVisibility;
 }
 
+/** The attempted address of a create that failed with an alias conflict. */
+export interface CreateRoomAddressConflict {
+  fullAddress: string;
+  server: string;
+  roomName: string;
+}
+
 export function CreateEntityDialog({
   activeSpaceName = null,
+  targetSpaceName = null,
   addressPreview = null,
-  addressFailure = null,
+  addressConflict = null,
   isBusy,
   kind,
   roomOptions,
@@ -108,8 +116,10 @@ export function CreateEntityDialog({
   onValueChange
 }: {
   activeSpaceName?: string | null;
+  /** The Space the room is created in (#1006); `null` at Home. */
+  targetSpaceName?: string | null;
   addressPreview?: RoomAddressPreview | null;
-  addressFailure?: "aliasInUse" | null;
+  addressConflict?: CreateRoomAddressConflict | null;
   isBusy: boolean;
   kind: "room" | "space";
   roomOptions?: CreateRoomDialogOptions;
@@ -121,6 +131,12 @@ export function CreateEntityDialog({
   onValueChange: (value: string) => void;
 }) {
   const isSpace = kind === "space";
+  const addressInputRef = useRef<HTMLInputElement>(null);
+  // Correction happens at the address field: focus it when a conflict for the
+  // attempted address is shown. The draft itself is never cleared.
+  useEffect(() => {
+    if (addressConflict) addressInputRef.current?.focus();
+  }, [addressConflict]);
   const effectiveRoomOptions =
     roomOptions ??
     ({
@@ -268,8 +284,18 @@ export function CreateEntityDialog({
             />
             {effectiveRoomOptions.visibility === "public" ? (
               <div>
+              {targetSpaceName ? (
+                <div className="create-room-space-note">
+                  {t("dialog.publicRoomInSpace", { spaceName: targetSpaceName })}
+                </div>
+              ) : null}
               <label htmlFor="create-room-address">{t("dialog.roomAddress")}</label>
-              <p id="create-room-address-help">{t("dialog.roomAddressHelp")}</p>
+              <p id="create-room-address-help">
+                {t("dialog.roomAddressHelp")}
+                {addressPreview?.server_name
+                  ? ` ${t("dialog.roomAddressScope", { server: addressPreview.server_name })}`
+                  : null}
+              </p>
               <a href="https://matrix.org/docs/chat_basics/public-rooms/" target="_blank" rel="noreferrer" onClick={(event) => {
                 if (onOpenAddressHelp) {
                   event.preventDefault();
@@ -278,8 +304,17 @@ export function CreateEntityDialog({
               }}>{t("dialog.roomAddressAbout")}</a>
               <ImeTextField
                 id="create-room-address"
-                aria-describedby="create-room-address-help create-room-address-preview"
-                aria-invalid={addressPreview?.error === "invalid" || addressPreview?.error === "empty"}
+                ref={addressInputRef}
+                aria-describedby={
+                  addressConflict
+                    ? "create-room-address-conflict create-room-address-help create-room-address-preview"
+                    : "create-room-address-help create-room-address-preview"
+                }
+                aria-invalid={
+                  addressConflict !== null ||
+                  addressPreview?.error === "invalid" ||
+                  addressPreview?.error === "empty"
+                }
                 className="dialog-input"
                 type="text"
                 aria-label={t("dialog.roomAddress")}
@@ -292,7 +327,15 @@ export function CreateEntityDialog({
                   })
                 }
               />
-              {addressFailure === "aliasInUse" ? <p role="alert">{t("dialog.roomAddressInUse")}</p> : null}
+              {addressConflict ? (
+                <p id="create-room-address-conflict" role="alert">
+                  {t("dialog.roomAddressInUse", {
+                    fullAddress: addressConflict.fullAddress,
+                    server: addressConflict.server,
+                    roomName: addressConflict.roomName
+                  })}
+                </p>
+              ) : null}
               <p id="create-room-address-preview" role="status">
                 {addressPreview?.full_alias
                   ? t("dialog.roomAddressPreview", { address: addressPreview.full_alias })

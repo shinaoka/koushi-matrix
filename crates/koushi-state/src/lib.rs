@@ -38,7 +38,10 @@ pub use locale_profile::{
     resolve_locale_display_profile,
 };
 pub use reducer::reduce;
-pub use room_address::{RoomAddressError, RoomAddressPreview, suggest_room_alias_localpart};
+pub use room_address::{
+    RoomAddressError, RoomAddressPreview, suggest_room_alias_localpart,
+    suggest_space_room_alias_localpart,
+};
 pub use sidebar::{
     AccountHomeItem, RoomListItem, SidebarModel, SidebarSections, SpaceRailItem, compose_sidebar,
     compose_sidebar_for_state, compose_sidebar_with_account_facts,

@@ -1122,17 +1122,31 @@ impl CoreConnection {
 
     /// Preview an unsent room address against the current Ready Matrix account.
     /// This borrows only the session; it neither clones AppState nor probes availability.
+    /// A room created from the selected Space is suggested as `<space>-<room>`
+    /// (#1006), from the Space's Matrix name, never a local presentation name.
     pub fn preview_room_address(
         &self,
         name: &str,
         alias_localpart: Option<&str>,
     ) -> koushi_state::RoomAddressPreview {
         let snapshot = self.snapshot_rx.borrow();
-        let user_id = match &snapshot.state.session {
+        let state = &snapshot.state;
+        let user_id = match &state.session {
             koushi_state::SessionState::Ready(session) => Some(session.user_id.as_str()),
             _ => None,
         };
-        koushi_sdk::preview_room_address(name, alias_localpart, user_id)
+        let space_name = state
+            .navigation
+            .active_space_id
+            .as_deref()
+            .and_then(|space_id| {
+                state
+                    .spaces
+                    .iter()
+                    .find(|space| space.space_id == space_id)
+                    .map(|space| space.raw_name.as_deref().unwrap_or(&space.display_name))
+            });
+        koushi_sdk::preview_room_address(name, alias_localpart, space_name, user_id)
     }
 
     /// Latest state snapshot (latest-wins watch semantics).

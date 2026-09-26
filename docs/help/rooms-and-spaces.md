@@ -37,6 +37,23 @@ and encryption choices before creating it. In the current creation dialog,
 choosing a public room turns encryption off. Review the final options rather
 than assuming every new room is encrypted.
 
+A public room also needs a **Room address**, shown in full (for example
+`#research-group-papers:example.org`) before you create it. The room name may
+repeat, but the address must be unique on your server, and every Space on that
+server shares the same addresses: a Space does not have addresses of its own.
+When you create a public room while a Space is selected, Koushi suggests an
+address that starts with the Space name, such as `research-group-papers` for
+the room `papers` in the Space `research-group`. This makes a conflict less
+likely but does not reserve the address. The suggestion follows the room name
+until you edit the address yourself. A public room created in a Space is listed
+in the public room directory, and anyone, including people outside the Space,
+can find and join it.
+
+If the address is already in use, the dialog keeps everything you entered,
+names the address that was taken, and moves you to the address field. Keep the
+room name and change only the address, for example by adding a project name or
+a number. Availability is decided when the room is created.
+
 Use **Create space**, the plus button near the bottom of the left rail, to
 create a Space. Room and Space administration actions depend on your role.
 

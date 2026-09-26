@@ -763,6 +763,7 @@ pub async fn create_room(
         && preview_room_address(
             &options.name,
             Some(options.alias_localpart.as_deref().unwrap_or("")),
+            None,
             session.client().user_id().map(|id| id.as_str()),
         )
         .error
@@ -928,17 +929,44 @@ pub(super) fn create_room_request(
 }
 
 /// Resolve a draft against the account's Matrix server; this never probes availability.
+///
+/// An unedited address (`alias_localpart == None`) is suggested from the room
+/// name, prefixed with `space_name` when the room is created from a Space
+/// (#1006). The Space prefix is dropped rather than truncated when it alone
+/// would push the alias past Matrix's 255-byte limit.
 pub fn preview_room_address(
     name: &str,
     alias_localpart: Option<&str>,
+    space_name: Option<&str>,
     user_id: Option<&str>,
 ) -> koushi_state::RoomAddressPreview {
-    use koushi_state::{RoomAddressError, RoomAddressPreview, suggest_room_alias_localpart};
-    let localpart = alias_localpart
-        .map(|value| value.trim().to_owned())
-        .unwrap_or_else(|| suggest_room_alias_localpart(name));
+    use koushi_state::{suggest_room_alias_localpart, suggest_space_room_alias_localpart};
     let user = user_id.and_then(|id| matrix_sdk::ruma::UserId::parse(id).ok());
-    let error = if user.is_none() {
+    let server_name = user.as_ref().map(|user| user.server_name().to_string());
+    match alias_localpart {
+        Some(value) => resolve_room_address(value.trim().to_owned(), server_name),
+        None => {
+            let suggested = resolve_room_address(
+                suggest_space_room_alias_localpart(space_name, name),
+                server_name.clone(),
+            );
+            if space_name.is_some()
+                && suggested.error == Some(koushi_state::RoomAddressError::Invalid)
+            {
+                resolve_room_address(suggest_room_alias_localpart(name), server_name)
+            } else {
+                suggested
+            }
+        }
+    }
+}
+
+fn resolve_room_address(
+    localpart: String,
+    server_name: Option<String>,
+) -> koushi_state::RoomAddressPreview {
+    use koushi_state::{RoomAddressError, RoomAddressPreview};
+    let error = if server_name.is_none() {
         Some(RoomAddressError::NotReady)
     } else if localpart.is_empty() {
         Some(RoomAddressError::Empty)
@@ -951,12 +979,13 @@ pub fn preview_room_address(
         localpart,
         full_alias: None,
         error,
+        server_name,
     };
     if preview.error.is_none() {
         let alias = format!(
             "#{}:{}",
             preview.localpart,
-            user.expect("validated user").server_name()
+            preview.server_name.as_deref().expect("validated server")
         );
         // The SDK enables Ruma's arbitrary-length compatibility feature; new
         // aliases still obey Matrix's 255-byte identifier limit.
