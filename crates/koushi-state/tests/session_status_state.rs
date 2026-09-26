@@ -275,7 +275,7 @@ fn logout_resets_current_session_status() {
 }
 
 #[test]
-fn connectivity_recovery_refreshes_once_and_coalesces_a_later_manual_retry() {
+fn connectivity_recovery_rearms_and_a_due_recovery_check_coalesces_a_later_manual_retry() {
     let mut state = ready_state();
     state.sync = SyncState::Reconnecting {
         reason: "transport".to_owned(),
@@ -296,26 +296,48 @@ fn connectivity_recovery_refreshes_once_and_coalesces_a_later_manual_retry() {
         },
     );
 
+    // #1009: the Running edge only re-arms the Core timer; it never issues a
+    // check or mints a request id itself.
+    let token = state.current_session_status_schedule.token;
     assert_eq!(
         effects,
         vec![
             AppEffect::EmitUiEvent(koushi_state::UiEvent::RoomListChanged),
             AppEffect::SyncConnectivityChanged { proven: true },
-            AppEffect::RefreshCurrentSessionStatus {
-                request_id: 41,
-                trigger: SessionStatusRefreshTrigger::Recovery,
+            AppEffect::ArmCurrentSessionStatusCheck {
+                token,
+                due_at_ms: 62_000,
             },
         ]
     );
     assert!(matches!(
         state.current_session_status,
-        CurrentSessionStatusState::Checking {
-            request_id: 41,
-            trigger: SessionStatusRefreshTrigger::Recovery,
-            last_known_details: Some(_),
-            consecutive_failures: 0,
-        }
+        CurrentSessionStatusState::Failed { request_id: 40, .. }
     ));
+
+    let effects = reduce(
+        &mut state,
+        AppAction::CurrentSessionStatusCheckDue {
+            token,
+            now_ms: 62_000,
+        },
+    );
+    let CurrentSessionStatusState::Checking {
+        request_id: recovery_request,
+        trigger: SessionStatusRefreshTrigger::Recovery,
+        last_known_details: Some(_),
+        consecutive_failures: 0,
+    } = state.current_session_status
+    else {
+        panic!("a due recovery check must enter Checking");
+    };
+    assert_eq!(
+        effects,
+        vec![AppEffect::RefreshCurrentSessionStatus {
+            request_id: recovery_request,
+            trigger: SessionStatusRefreshTrigger::Recovery,
+        }]
+    );
 
     let duplicate_effects = reduce(
         &mut state,
@@ -328,24 +350,24 @@ fn connectivity_recovery_refreshes_once_and_coalesces_a_later_manual_retry() {
     assert!(duplicate_effects.is_empty());
     assert!(matches!(
         state.current_session_status,
-        CurrentSessionStatusState::Checking { request_id: 41, .. }
+        CurrentSessionStatusState::Checking { request_id, .. } if request_id == recovery_request
     ));
 
     reduce(
         &mut state,
         AppAction::CurrentSessionStatusRefreshed {
-            request_id: 41,
+            request_id: recovery_request,
             details: details(true, OwnIdentityVerification::Verified),
         },
     );
     assert!(matches!(
         state.current_session_status,
-        CurrentSessionStatusState::Ready { request_id: 41, .. }
+        CurrentSessionStatusState::Ready { request_id, .. } if request_id == recovery_request
     ));
 }
 
 #[test]
-fn connectivity_recovery_replaces_checking_request_before_late_failure_arrives() {
+fn connectivity_recovery_keeps_checking_request_and_counts_its_late_failure() {
     let mut state = ready_state();
     state.sync = SyncState::Running;
     state.current_session_status = CurrentSessionStatusState::Checking {
@@ -372,19 +394,21 @@ fn connectivity_recovery_replaces_checking_request_before_late_failure_arrives()
         },
     );
 
+    // #1009: the in-flight request is joined, never replaced.
     assert!(effects.contains(&AppEffect::SyncConnectivityChanged { proven: true }));
-    assert!(effects.contains(&AppEffect::RefreshCurrentSessionStatus {
-        request_id: 43,
-        trigger: SessionStatusRefreshTrigger::Recovery,
-    }));
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::RefreshCurrentSessionStatus { .. }))
+    );
     assert!(matches!(
         state.current_session_status,
-        CurrentSessionStatusState::Checking { request_id: 43, .. }
+        CurrentSessionStatusState::Checking { request_id: 42, .. }
     ));
 
-    // The actor may settle the request that was cancelled on the outage after
-    // the reducer has already projected the recovery request.
-    reduce(
+    // The actor settles the request it cancelled on the outage after the
+    // Running edge; the failure is current and counts toward the backoff.
+    let effects = reduce(
         &mut state,
         AppAction::CurrentSessionStatusRefreshFailed {
             request_id: 42,
@@ -394,24 +418,24 @@ fn connectivity_recovery_replaces_checking_request_before_late_failure_arrives()
     );
     assert!(matches!(
         state.current_session_status,
-        CurrentSessionStatusState::Checking { request_id: 43, .. }
+        CurrentSessionStatusState::Failed {
+            request_id: 42,
+            consecutive_failures: 1,
+            ..
+        }
     ));
-
-    reduce(
-        &mut state,
-        AppAction::CurrentSessionStatusRefreshed {
-            request_id: 43,
-            details: details(true, OwnIdentityVerification::Verified),
-        },
+    let token = state.current_session_status_schedule.token;
+    assert_eq!(
+        effects,
+        vec![AppEffect::ArmCurrentSessionStatusCheck {
+            token,
+            due_at_ms: 2_001 + 60_000,
+        }]
     );
-    assert!(matches!(
-        state.current_session_status,
-        CurrentSessionStatusState::Ready { request_id: 43, .. }
-    ));
 }
 
 #[test]
-fn connectivity_recovery_reissues_after_cancelled_request_fails_first() {
+fn connectivity_recovery_after_cancelled_request_fails_first_waits_for_backoff() {
     let mut state = ready_state();
     state.sync = SyncState::Running;
     state.current_session_status = CurrentSessionStatusState::Checking {
@@ -454,13 +478,30 @@ fn connectivity_recovery_reissues_after_cancelled_request_fails_first() {
             status: SyncLifecycleStatus::Running,
         },
     );
-    assert!(effects.contains(&AppEffect::RefreshCurrentSessionStatus {
-        request_id: 42,
-        trigger: SessionStatusRefreshTrigger::Recovery,
+    let token = state.current_session_status_schedule.token;
+    assert!(effects.contains(&AppEffect::ArmCurrentSessionStatusCheck {
+        token,
+        due_at_ms: 2_001 + 60_000,
     }));
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::RefreshCurrentSessionStatus { .. }))
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::CurrentSessionStatusCheckDue {
+            token,
+            now_ms: 2_001 + 60_000,
+        },
+    );
     assert!(matches!(
-        state.current_session_status,
-        CurrentSessionStatusState::Checking { request_id: 42, .. }
+        effects.as_slice(),
+        [AppEffect::RefreshCurrentSessionStatus {
+            trigger: SessionStatusRefreshTrigger::Recovery,
+            ..
+        }]
     ));
 }
 
@@ -768,22 +809,22 @@ fn consecutive_failures_accumulate_and_reset_on_success() {
     );
 }
 
-/// #982: a flapping connection re-issued a full inspection on every reconnect.
-/// Automatic recovery retries must stop after a bounded number of consecutive
-/// failures; manual refresh still works.
+/// #982/#1009: a flapping connection must not re-issue a full inspection per
+/// reconnect, and repeated failures must not stop automatic checks forever:
+/// reconnects issue nothing by themselves, and the timer retries at the
+/// (capped) backoff.
 #[test]
-fn repeated_reconnects_stop_re_inspecting_after_bounded_consecutive_failures() {
+fn repeated_reconnects_do_not_re_inspect_and_the_backoff_keeps_retrying() {
     let mut state = ready_state();
     state.current_session_status = CurrentSessionStatusState::Failed {
         request_id: 1,
         kind: CurrentSessionStatusFailureKind::Network,
         checked_at_ms: 0,
         last_known_details: Some(details(true, OwnIdentityVerification::Verified)),
-        consecutive_failures: 0,
+        consecutive_failures: 3,
     };
-    let mut automatic_inspections = 0;
 
-    for generation in 0..8u64 {
+    for generation in 1..=8u64 {
         state.sync = SyncState::Reconnecting {
             reason: "transport".to_owned(),
         };
@@ -794,47 +835,44 @@ fn repeated_reconnects_stop_re_inspecting_after_bounded_consecutive_failures() {
                 status: SyncLifecycleStatus::Running,
             },
         );
-        let refreshed = effects.iter().any(|effect| {
-            matches!(
-                effect,
-                AppEffect::RefreshCurrentSessionStatus {
-                    trigger: SessionStatusRefreshTrigger::Recovery,
-                    ..
-                }
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, AppEffect::RefreshCurrentSessionStatus { .. })),
+            "reconnect {generation} must not issue an inspection"
+        );
+        let token = state.current_session_status_schedule.token;
+        assert!(
+            reduce(
+                &mut state,
+                AppAction::CurrentSessionStatusCheckDue {
+                    token,
+                    now_ms: 1_000 * generation,
+                },
             )
-        });
-        if !refreshed {
-            continue;
-        }
-        automatic_inspections += 1;
-        let CurrentSessionStatusState::Checking { request_id, .. } = state.current_session_status
-        else {
-            panic!("a recovery refresh must enter Checking");
-        };
-        reduce(
-            &mut state,
-            AppAction::CurrentSessionStatusRefreshFailed {
-                request_id,
-                kind: CurrentSessionStatusFailureKind::Network,
-                checked_at_ms: 1_000 * generation,
-            },
+            .iter()
+            .all(|effect| matches!(effect, AppEffect::ArmCurrentSessionStatusCheck { .. })),
+            "a due notification inside the backoff only re-arms"
         );
     }
 
-    assert!(
-        automatic_inspections <= 3,
-        "8 reconnects caused {automatic_inspections} automatic inspections; repeated \
-         reconnect-driven refreshes must back off"
+    let token = state.current_session_status_schedule.token;
+    let effects = reduce(
+        &mut state,
+        AppAction::CurrentSessionStatusCheckDue {
+            token,
+            now_ms: 4 * MINUTE_MS,
+        },
     );
     assert!(
-        automatic_inspections >= 1,
-        "the first reconnect after an outage must still re-check"
-    );
-
-    let manual = request(&mut state, 900, SessionStatusRefreshTrigger::Manual, 0);
-    assert!(
-        !manual.is_empty(),
-        "manual refresh must bypass the reconnect backoff"
+        effects.iter().any(|effect| matches!(
+            effect,
+            AppEffect::RefreshCurrentSessionStatus {
+                trigger: SessionStatusRefreshTrigger::Recovery,
+                ..
+            }
+        )),
+        "time passing alone must retry after three failures"
     );
 }
 

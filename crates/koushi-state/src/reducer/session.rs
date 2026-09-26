@@ -19,8 +19,13 @@ use super::{
 
 fn reset_app_state_preserving_account_epoch(state: &mut AppState) {
     let account_epoch = state.sliding_sync_account_epoch;
+    // #1009: keep the schedule token monotonic (and the cumulative counters)
+    // so a due notification of the previous session stays stale.
+    let mut schedule = state.current_session_status_schedule;
+    schedule.retire();
     *state = AppState::default();
     state.sliding_sync_account_epoch = account_epoch;
+    state.current_session_status_schedule = schedule;
 }
 
 pub(crate) fn handle_app_started(state: &mut AppState) -> Vec<AppEffect> {
