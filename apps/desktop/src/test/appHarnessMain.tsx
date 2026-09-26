@@ -1979,6 +1979,37 @@ mock.setCommandResponse("load_account_management_capabilities", () =>
     }
   })
 );
+// Account notification settings (#981): the harness returns a fixed
+// Rust-shaped snapshot for the read-only load and only records writes, so
+// the browser tier cannot pass against a second rule state machine.
+mock.setCommandResponse("load_account_notifications", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
+        account_notifications: {
+          load: { kind: "loaded" },
+          snapshot: {
+            account_push_enabled: true,
+            categories: {
+              direct_messages: "on",
+              group_messages: "mixed",
+              mentions_and_replies: "on",
+              invites: "off"
+            },
+            email_management: "available",
+            emails: [{ address: "harness@example.invalid", notifications_active: false }],
+            unverified_email_pusher_count: 0
+          },
+          pending_email: null,
+          operation: { kind: "idle" }
+        }
+      }
+    }
+  })
+);
 mock.setCommandResponse(
   "change_password",
   ({ newPassword }: { newPassword: string }) => {
