@@ -729,6 +729,14 @@ To reduce conflicts on these files:
   only synthetic fixture data; real account credentials, room IDs, event IDs,
   message bodies, raw SDK errors, and local paths must never appear in it.
 
+## GitHub Issue Language
+
+Write GitHub issue titles, descriptions, and agent-authored comments in English,
+including research findings and follow-up updates, unless the user explicitly
+requests another language. Preserve exact UI labels, quotations, and other
+source text in their original language when needed; explain them in English.
+This policy does not change the language used to converse with the user.
+
 ## Documentation And Work Records
 
 - Before opening or updating a PR that changes user-visible behavior, check the
