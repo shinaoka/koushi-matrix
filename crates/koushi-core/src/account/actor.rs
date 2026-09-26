@@ -339,6 +339,10 @@ pub(crate) enum AccountMessage {
     ConfigureSessionCheckClock {
         base_epoch_ms: u64,
     },
+    #[cfg(test)]
+    InspectSessionCheckTimer {
+        response: oneshot::Sender<Option<u64>>,
+    },
     CurrentSessionStatusRefreshFinished {
         request_id: u64,
         generation: u64,
@@ -1835,6 +1839,15 @@ impl AccountActor {
                     self.handle_trust_recheck_retry_due(serial);
                 }
                 #[cfg(test)]
+                AccountMessage::InspectSessionCheckTimer { response } => {
+                    let _ = response.send(
+                        self.session_check
+                            .timer
+                            .as_ref()
+                            .map(|(token, _)| *token),
+                    );
+                }
+                #[cfg(test)]
                 AccountMessage::ConfigureSessionCheckClock { base_epoch_ms } => {
                     self.session_check.clock = super::session_check::SessionCheckClock::Virtual {
                         base_epoch_ms,
@@ -1905,11 +1918,13 @@ impl AccountActor {
                     // #1009: a failure on a promoted session keeps the demand
                     // pending behind the shared failure backoff.
                     self.record_trust_recheck_settlement(recheck_succeeded);
+                    // The waiting inspection starts first, so a replayed demand
+                    // joins its own-identity query instead of overlapping it.
+                    self.start_waiting_current_session_inspection(recheck_succeeded);
                     if replay_after_settlement {
                         self.trust_recheck_pending = true;
                         self.start_authoritative_trust_recheck_if_idle(true);
                     }
-                    self.start_waiting_current_session_inspection(recheck_succeeded);
                 }
                 AccountMessage::FirstProvisionalEncryptionSyncFinished {
                     generation,

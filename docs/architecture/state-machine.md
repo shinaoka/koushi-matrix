@@ -498,10 +498,12 @@ stateDiagram-v2
   `checked_at_ms` (wall clock moved backwards), the recorded time is treated as
   unreliable and the state is due, so a clock regression can neither suppress
   checks indefinitely nor cause a burst (the check re-stamps `checked_at_ms`).
-- Automatic triggers are time-driven. After each settlement while sync is
-  `Running`, and on every
+- Automatic triggers are time-driven. After a settlement, and on an
   unproven→Running sync edge, the reducer emits
-  `ArmCurrentSessionStatusCheck { token, due_at_ms }` with a fresh token. The
+  `ArmCurrentSessionStatusCheck { token, due_at_ms }` with a fresh token only
+  when the session is Ready, sync is `Running`, and no check is in flight
+  (a check in flight re-arms at its settlement; a non-Ready session arms
+  nothing). The
   AccountActor owns a single timer for it, replaced on every arm and aborted on
   session teardown; it compares the wall clock in bounded chunks so a suspended
   machine re-evaluates promptly on wake. When the timer fires it projects
@@ -557,15 +559,21 @@ stateDiagram-v2
   that needs a check correlated to its own request id waits for the slice to
   leave `Checking` first.
 - Own-identity queries are coordinated in the AccountActor. The full inspection
-  and the authoritative trust recheck both query the own identity. While an
-  inspection is in flight on a promoted session, a trust-recheck request joins
-  it: a successful inspection settles the recheck with the verification it
-  observed after its own identity query, and an unsuccessful one releases the
-  recheck to run standalone. An inspection that succeeds while observing
-  `Unknown` settles the recheck the same way instead of issuing a second query.
-  Both paths run the same SDK `/keys/query` for the own user and then read the
-  same current-device verification subscriber, so the inspection's reading is
-  exactly as authoritative (and exactly as fresh) as a standalone recheck's.
+  and the authoritative trust recheck both query the own identity. On a
+  promoted session a trust-recheck request joins an in-flight inspection only
+  while that inspection's own-identity query has not yet returned (the SDK
+  inspection reports the moment it returns); the inspection then reads the
+  current-device verification subscriber after a query that completed after
+  the demand arrived, which is the same observation a standalone recheck makes.
+  A successful joined inspection settles the demand with the verification it
+  observed; an unsuccessful or stale one releases it to run standalone, and a
+  connectivity loss leaves it pending for the next proven edge. A demand that
+  arrives after the inspection's query returned (including an `Unknown`
+  observation racing an already-read `Verified`) never joins and runs its own
+  recheck. An inspection that succeeds while observing non-Verified trust
+  settles through the authoritative gate with its own reading, since it ran the
+  same own-user `/keys/query` and then read the same subscriber as a recheck;
+  it does not issue a second query.
   An inspection requested while a trust recheck is in flight waits for it and
   then reads the identity the recheck just fetched from the local crypto store
   instead of querying again (after a failed recheck it queries normally); its

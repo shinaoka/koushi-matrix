@@ -850,10 +850,12 @@ impl AccountActor {
         // The timeout covers the SDK inspection only, not a wait for a trust
         // recheck that preceded it.
         let started_at = Instant::now();
+        let identity_returned = Arc::new(AtomicBool::new(false));
+        self.session_check.inspection_identity_returned = Some(Arc::clone(&identity_returned));
         self.current_session_status_task = Some(executor::spawn(async move {
             let result = match executor::timeout(
                 CURRENT_SESSION_STATUS_TIMEOUT,
-                session.inspect_current_session_with(own_identity_source),
+                session.inspect_current_session_tracked(own_identity_source, identity_returned),
             )
             .await
             {
@@ -978,7 +980,10 @@ impl AccountActor {
                     self.handle_current_device_trust(generation, trust).await;
                 }
             }
-            None => self.release_joined_trust_recheck(),
+            // A stale completion must not release (and so duplicate) a demand
+            // that the current request still carries.
+            None if is_current => self.release_joined_trust_recheck(),
+            None => {}
         }
     }
 

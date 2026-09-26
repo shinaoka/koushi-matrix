@@ -5,6 +5,10 @@
 //! the coordination that keeps the full inspection and the authoritative trust
 //! recheck from issuing duplicate own-identity queries.
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 use koushi_state::{AppAction, SESSION_STATUS_FRESHNESS_MS, session_status_failure_backoff_ms};
@@ -57,7 +61,12 @@ pub(super) struct WaitingInspection {
 #[derive(Debug, Default)]
 pub(super) struct SessionCheckCoordinator {
     pub(super) clock: SessionCheckClock,
-    pub(super) timer: Option<executor::JoinHandle<()>>,
+    /// The armed timer and the token it will report (#1009 L1: a stale
+    /// notification must not drop a newer timer's handle).
+    pub(super) timer: Option<(u64, executor::JoinHandle<()>)>,
+    /// Set by the in-flight SDK inspection once its own-identity query has
+    /// returned. A trust demand may join the inspection only before that.
+    pub(super) inspection_identity_returned: Option<Arc<AtomicBool>>,
     /// Consecutive failed authoritative rechecks on a promoted session.
     pub(super) trust_failures: u32,
     pub(super) trust_failed_at_ms: u64,
@@ -82,9 +91,10 @@ impl SessionCheckCoordinator {
     }
 
     pub(super) fn retire(&mut self) {
-        if let Some(task) = self.timer.take() {
+        if let Some((_, task)) = self.timer.take() {
             task.abort();
         }
+        self.inspection_identity_returned = None;
         if let Some(task) = self.trust_retry.take() {
             task.abort();
         }
@@ -129,21 +139,29 @@ impl AccountActor {
     /// Replace the single session-status timer (reducer
     /// `ArmCurrentSessionStatusCheck`).
     pub(super) fn arm_current_session_status_timer(&mut self, token: u64, due_at_ms: u64) {
-        if let Some(task) = self.session_check.timer.take() {
+        if let Some((_, task)) = self.session_check.timer.take() {
             task.abort();
         }
         let clock = self.session_check.clock.clone();
         let tx = self.self_tx.clone();
-        self.session_check.timer = Some(executor::spawn(async move {
+        let task = executor::spawn(async move {
             sleep_until_due(&clock, due_at_ms).await;
             let _ = tx
                 .send(AccountMessage::CurrentSessionStatusTimerFired { token })
                 .await;
-        }));
+        });
+        self.session_check.timer = Some((token, task));
     }
 
     pub(super) async fn handle_current_session_status_timer_fired(&mut self, token: u64) {
-        self.session_check.timer = None;
+        if self
+            .session_check
+            .timer
+            .as_ref()
+            .is_some_and(|(armed, _)| *armed == token)
+        {
+            self.session_check.timer = None;
+        }
         let now_ms = self.session_check_now_ms();
         self.send_actions(vec![AppAction::CurrentSessionStatusCheckDue {
             token,
@@ -166,9 +184,16 @@ impl AccountActor {
         if self.current_session_status_task.is_some()
             && self.current_session_status_request.is_some()
             && self.session_check.waiting_inspection.is_none()
+            && self
+                .session_check
+                .inspection_identity_returned
+                .as_ref()
+                .is_some_and(|returned| !returned.load(Ordering::SeqCst))
         {
-            // The in-flight full inspection queries the own identity and reads
-            // the same verification subscriber; its result settles this demand.
+            // The in-flight full inspection's own-identity query has not
+            // returned yet, and the inspection reads the verification
+            // subscriber after it returns: its result is at least as fresh as
+            // this demand, so it settles it without a second query.
             self.session_check.trust_joined_inspection = true;
             record_trust_recheck(TrustRecheckOutcome::Joined);
             return true;

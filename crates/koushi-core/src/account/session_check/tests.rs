@@ -264,3 +264,183 @@ async fn a_failed_trust_recheck_defers_the_next_request_behind_the_backoff() {
     );
     shutdown_and_ack(&handle).await;
 }
+
+/// Drain actions for `window`, returning the trust projections and
+/// session-status settlements observed (as coarse tokens).
+async fn observe_actions(
+    action_rx: &mut mpsc::Receiver<Vec<AppAction>>,
+    window: Duration,
+) -> Vec<&'static str> {
+    let mut seen = Vec::new();
+    let deadline = executor::Instant::now() + window;
+    while let Ok(Some(actions)) = executor::timeout_at(deadline, action_rx.recv()).await {
+        for action in actions {
+            seen.push(match action {
+                AppAction::CurrentSessionStatusRefreshed { details, .. } => {
+                    match details.verification {
+                        koushi_state::CurrentDeviceTrustState::Verified => "refreshed_verified",
+                        koushi_state::CurrentDeviceTrustState::Unverified => "refreshed_unverified",
+                        koushi_state::CurrentDeviceTrustState::Unknown => "refreshed_unknown",
+                    }
+                }
+                AppAction::CurrentSessionStatusRefreshFailed { .. } => "refresh_failed",
+                AppAction::AuthoritativeDeviceTrustChanged { trust, .. } => match trust {
+                    koushi_state::CurrentDeviceTrustState::Verified => "trust_verified",
+                    koushi_state::CurrentDeviceTrustState::Unverified => "trust_unverified",
+                    koushi_state::CurrentDeviceTrustState::Unknown => "trust_unknown",
+                },
+                _ => "other",
+            });
+        }
+    }
+    seen
+}
+
+#[tokio::test]
+async fn inspection_observing_non_verified_trust_gates_with_exactly_one_identity_query() {
+    let (handle, mut action_rx, control) = promoted_actor().await;
+    let baseline = settled_query_count(&control).await;
+    drain(&mut action_rx);
+
+    handle
+        .send(AccountMessage::RefreshCurrentSessionStatus {
+            request_id: 79,
+            trigger: koushi_state::SessionStatusRefreshTrigger::Manual,
+            sync_state: koushi_state::CurrentSessionSyncState::Running,
+        })
+        .await;
+    let seen = observe_actions(&mut action_rx, Duration::from_millis(1_500)).await;
+    // The fixture account has no cross-signing identity, so the SDK does not
+    // report Verified; the inspection's own reading routes through the gate.
+    assert!(
+        seen.iter()
+            .any(|token| matches!(*token, "trust_unknown" | "trust_unverified")),
+        "the inspection must settle trust through the gate: {seen:?}"
+    );
+    assert_eq!(
+        control.count.load(Ordering::SeqCst),
+        baseline + 1,
+        "no second own-identity query after the inspection's own"
+    );
+    shutdown_and_ack(&handle).await;
+}
+
+#[tokio::test]
+async fn a_joined_demand_runs_standalone_when_the_inspection_fails() {
+    let (handle, mut action_rx, control) = promoted_actor().await;
+    handle
+        .send(AccountMessage::SyncConnectivityChanged { proven: true })
+        .await;
+    let baseline = settled_query_count(&control).await;
+    drain(&mut action_rx);
+
+    control.hold.store(true, Ordering::SeqCst);
+    handle
+        .send(AccountMessage::RefreshCurrentSessionStatus {
+            request_id: 80,
+            trigger: koushi_state::SessionStatusRefreshTrigger::Manual,
+            sync_state: koushi_state::CurrentSessionSyncState::Running,
+        })
+        .await;
+    wait_for_query_count(&control, baseline + 1).await;
+    handle.send(AccountMessage::CheckCurrentDeviceTrust).await;
+    executor::sleep(Duration::from_millis(150)).await;
+    assert_eq!(control.count.load(Ordering::SeqCst), baseline + 1, "joined");
+
+    // The inspection's own-identity query fails; the joined demand must not be
+    // lost with it.
+    control.fail.store(true, Ordering::SeqCst);
+    control.hold.store(false, Ordering::SeqCst);
+    wait_for_query_count(&control, baseline + 2).await;
+    executor::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        control.count.load(Ordering::SeqCst),
+        baseline + 2,
+        "exactly one standalone recheck"
+    );
+    shutdown_and_ack(&handle).await;
+}
+
+#[tokio::test]
+async fn a_joined_demand_interrupted_by_connectivity_loss_runs_once_on_the_next_proven_edge() {
+    let (handle, mut action_rx, control) = promoted_actor().await;
+    handle
+        .send(AccountMessage::SyncConnectivityChanged { proven: true })
+        .await;
+    let baseline = settled_query_count(&control).await;
+    drain(&mut action_rx);
+
+    control.hold.store(true, Ordering::SeqCst);
+    handle
+        .send(AccountMessage::RefreshCurrentSessionStatus {
+            request_id: 81,
+            trigger: koushi_state::SessionStatusRefreshTrigger::Manual,
+            sync_state: koushi_state::CurrentSessionSyncState::Running,
+        })
+        .await;
+    wait_for_query_count(&control, baseline + 1).await;
+    handle.send(AccountMessage::CheckCurrentDeviceTrust).await;
+    handle
+        .send(AccountMessage::SyncConnectivityChanged { proven: false })
+        .await;
+    control.hold.store(false, Ordering::SeqCst);
+    executor::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        control.count.load(Ordering::SeqCst),
+        baseline + 1,
+        "nothing runs while connectivity is unproven"
+    );
+
+    handle
+        .send(AccountMessage::SyncConnectivityChanged { proven: true })
+        .await;
+    wait_for_query_count(&control, baseline + 2).await;
+    executor::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        control.count.load(Ordering::SeqCst),
+        baseline + 2,
+        "the pending demand runs exactly once on the proven edge"
+    );
+    shutdown_and_ack(&handle).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stale_timer_notification_keeps_the_newer_timer_owned() {
+    let cred_dir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    let (handle, mut action_rx, _events) = spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    let base = 5_000_000;
+    handle
+        .send(AccountMessage::ConfigureSessionCheckClock {
+            base_epoch_ms: base,
+        })
+        .await;
+    handle
+        .send(AccountMessage::ArmCurrentSessionStatusCheck {
+            token: 1,
+            due_at_ms: base + 1_000,
+        })
+        .await;
+    handle
+        .send(AccountMessage::ArmCurrentSessionStatusCheck {
+            token: 2,
+            due_at_ms: base + HOUR.as_millis() as u64,
+        })
+        .await;
+    // A late notification for the replaced arm is forwarded (the reducer
+    // fences it by token) but must not release the newer timer.
+    handle
+        .send(AccountMessage::CurrentSessionStatusTimerFired { token: 1 })
+        .await;
+    let stale = action_rx.recv().await.expect("actions");
+    assert!(matches!(
+        stale.as_slice(),
+        [AppAction::CurrentSessionStatusCheckDue { token: 1, .. }]
+    ));
+    let (response, owned) = tokio::sync::oneshot::channel();
+    handle
+        .send(AccountMessage::InspectSessionCheckTimer { response })
+        .await;
+    assert_eq!(owned.await.expect("timer probe"), Some(2));
+    shutdown_and_ack(&handle).await;
+}
