@@ -112,10 +112,11 @@ pub(crate) fn handle_settings_update_requested(
         effects.push(AppEffect::InvalidateSearchCrawlerCache);
         // Re-enqueue all currently-known joined rooms so the actor
         // starts fresh crawls with the new content settings.
-        let room_ids: Vec<String> = state.rooms.iter().map(|r| r.room_id.clone()).collect();
+        let (room_ids, latest_event_ids) = super::search::search_crawler_rooms(state);
         if !room_ids.is_empty() {
             effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
                 room_ids,
+                latest_event_ids,
                 settings: new_crawler.clone(),
             });
         }
@@ -127,10 +128,11 @@ pub(crate) fn handle_settings_update_requested(
     if prev_crawler.speed == SearchCrawlerSpeed::Paused
         && new_crawler.speed != SearchCrawlerSpeed::Paused
     {
-        let room_ids: Vec<String> = state.rooms.iter().map(|r| r.room_id.clone()).collect();
+        let (room_ids, latest_event_ids) = super::search::search_crawler_rooms(state);
         if !room_ids.is_empty() {
             effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
                 room_ids,
+                latest_event_ids,
                 settings: new_crawler.clone(),
             });
         }
@@ -138,9 +140,10 @@ pub(crate) fn handle_settings_update_requested(
     if prev_crawler.speed != SearchCrawlerSpeed::Paused
         && new_crawler.speed == SearchCrawlerSpeed::Paused
     {
-        let room_ids: Vec<String> = state.rooms.iter().map(|r| r.room_id.clone()).collect();
+        let (room_ids, latest_event_ids) = super::search::search_crawler_rooms(state);
         effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
             room_ids,
+            latest_event_ids,
             settings: new_crawler.clone(),
         });
     }

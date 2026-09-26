@@ -112,6 +112,8 @@ mod scenario_read_state;
 mod scenario_rooms;
 #[path = "headless_core_qa/scenarios/search.rs"]
 mod scenario_search;
+#[path = "headless_core_qa/scenarios/search_catchup.rs"]
+mod scenario_search_catchup;
 #[path = "headless_core_qa/scenarios/thread_late_joiner.rs"]
 mod scenario_thread_late_joiner;
 #[path = "headless_core_qa/scenarios/timeline.rs"]

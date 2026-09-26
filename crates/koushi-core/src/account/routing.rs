@@ -294,11 +294,11 @@ impl AccountActor {
         let Some(handle) = &self.search_actor else {
             return;
         };
-        let Some((room_ids, settings)) = self.pending_crawler_notification.take() else {
+        let Some(notification) = self.pending_crawler_notification.take() else {
             return;
         };
-        if let Err((room_ids, settings)) = handle.try_notify_rooms_available(room_ids, settings) {
-            self.pending_crawler_notification = Some((room_ids, settings));
+        if let Err(notification) = handle.try_notify_rooms_available(notification) {
+            self.pending_crawler_notification = Some(notification);
         }
     }
 

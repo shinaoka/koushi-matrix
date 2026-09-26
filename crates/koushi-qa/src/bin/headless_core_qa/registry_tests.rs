@@ -191,6 +191,30 @@ fn read_state_convergence_is_registered_with_private_safe_final_token() {
 }
 
 #[test]
+fn search_crawler_catchup_is_registered_with_private_safe_final_tokens() {
+    let scenario = QaScenario::from_env_value("search_crawler_catchup").unwrap();
+    assert_eq!(scenario, QaScenario::SearchCrawlerCatchup);
+    assert_eq!(
+        stages_for_scenario(scenario),
+        [QaStage::Safety, QaStage::SearchCrawlerCatchup]
+    );
+    assert_eq!(
+        final_tokens_for_scenario(scenario),
+        [
+            "safety=ok",
+            "crawl_catchup_live=ok",
+            "crawl_catchup_restart=ok",
+            "search_crawler_catchup=ok"
+        ]
+    );
+    assert!(!QaScenario::All.should_run_stage(QaStage::SearchCrawlerCatchup));
+    let report = scenario_report("local", scenario);
+    assert!(!report.contains('@'));
+    assert!(!report.contains('!'));
+    assert!(!report.contains('$'));
+}
+
+#[test]
 fn thread_late_joiner_is_registered_with_private_safe_final_tokens() {
     let scenario = QaScenario::ThreadLateJoiner;
     assert_eq!(

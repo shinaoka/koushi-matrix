@@ -32,6 +32,15 @@ pub(crate) struct HistoryCrawlCheckpoint {
     pub settings: SearchCrawlerSettings,
     pub settings_generation: u64,
     pub manual: bool,
+    /// True until the crawl's first page has run.
+    pub first_page: bool,
+    /// Catch-up crawl of a completed room (#996): the latest event id recorded
+    /// when the room last completed. The crawl indexes only what is newer and
+    /// completes once it reaches this event.
+    pub catch_up_after: Option<String>,
+    /// The room's latest event id (from the room list) when the first page
+    /// started; recorded as the room's catch-up boundary on completion.
+    pub latest_event_id_at_start: Option<String>,
 }
 
 impl HistoryCrawlCheckpoint {
@@ -49,6 +58,27 @@ impl HistoryCrawlCheckpoint {
             settings,
             settings_generation,
             manual,
+            first_page: true,
+            catch_up_after: None,
+            latest_event_id_at_start: None,
+        }
+    }
+
+    /// Catch-up checkpoint for a completed room whose latest event changed
+    /// (#996). Counts carry over so the room row keeps its totals.
+    pub fn catch_up(
+        room_id: String,
+        settings: SearchCrawlerSettings,
+        settings_generation: u64,
+        after_event_id: String,
+        processed: u64,
+        indexed: u64,
+    ) -> Self {
+        Self {
+            processed,
+            indexed,
+            catch_up_after: Some(after_event_id),
+            ..Self::new(room_id, settings, settings_generation, false)
         }
     }
 }
@@ -132,7 +162,10 @@ async fn run_history_crawl_page(
     };
 
     let (batch_size, delay_ms) = crawl_batch_and_delay(checkpoint.settings.speed);
-    let first_page = checkpoint.processed == 0;
+    // Cleared only once a page succeeds: a preempted or failed page must run
+    // its first-page work (cached events, catch-up boundary) again.
+    let first_page = checkpoint.first_page;
+    let catch_up_after = checkpoint.catch_up_after.clone();
     // Search history must use the SDK-owned room event cache. Calling
     // `Room::messages` here would populate only the search index and leave
     // linked chunks untouched, forcing the normal timeline to fetch the same
@@ -154,17 +187,27 @@ async fn run_history_crawl_page(
                 // #996: events that sync already put in the cache (at least the
                 // newest one) are never returned by backward pagination, so the
                 // first page of a crawl indexes them too.
-                let cached = if first_page {
+                let mut cached = if first_page {
                     event_cache.events().await.map_err(|_| ())?
                 } else {
                     Vec::new()
                 };
+                // #996 catch-up: when the cache still holds the boundary event,
+                // everything newer is already local; no pagination needed.
+                if let Some(boundary) = catch_up_after.as_deref()
+                    && let Some(position) = cached.iter().position(|event| {
+                        event.event_id().is_some_and(|id| id.as_str() == boundary)
+                    })
+                {
+                    cached.drain(..=position);
+                    return Ok::<_, ()>((cached, None));
+                }
                 let page = event_cache
                     .pagination()
                     .run_backwards_once(batch_size as u16)
                     .await
                     .map_err(|_| ())?;
-                Ok::<_, ()>((cached, page))
+                Ok::<_, ()>((cached, Some(page)))
             } => result,
         };
         startup_trace::trace_phase(StartupPhase::CrawlerPage, page_started);
@@ -187,11 +230,31 @@ async fn run_history_crawl_page(
     };
 
     let (cached, messages) = messages;
-    let chunk_len = messages.events.len() as u64;
+    checkpoint.first_page = false;
+    let page_events = messages
+        .as_ref()
+        .map(|page| page.events.as_slice())
+        .unwrap_or_default();
+    let chunk_len = page_events.len() as u64;
+    // Catch-up completes when it reaches the boundary: found in the cache
+    // (no page was fetched) or inside the fetched page. Page events are newest
+    // first, so the boundary and everything older were indexed before.
+    let boundary_in_page = catch_up_after.as_deref().and_then(|boundary| {
+        page_events
+            .iter()
+            .position(|event| event.event_id().is_some_and(|id| id.as_str() == boundary))
+    });
+    let reached_catch_up_boundary =
+        catch_up_after.is_some() && (messages.is_none() || boundary_in_page.is_some());
+    let page_events = match boundary_in_page {
+        Some(position) => &page_events[..position],
+        None => page_events,
+    };
+    let reached_start = messages.as_ref().is_some_and(|page| page.reached_start);
     let mut seen_event_ids = HashSet::new();
     let events = cached
         .iter()
-        .chain(messages.events.iter())
+        .chain(page_events.iter())
         .filter(|event| {
             event
                 .event_id()
@@ -231,7 +294,8 @@ async fn run_history_crawl_page(
         index_messages.push(message);
     }
 
-    let completed = messages.reached_start || chunk_len == 0;
+    let completed =
+        reached_catch_up_boundary || reached_start || (messages.is_some() && chunk_len == 0);
     trace_crawler_page(
         DiagnosticLevel::Debug,
         if completed { "completed" } else { "progress" },

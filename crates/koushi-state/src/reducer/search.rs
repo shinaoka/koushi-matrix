@@ -10,6 +10,28 @@ use crate::{
 
 use super::{is_session_ready, session_user_id};
 
+/// Joined room ids plus each room's latest event id, the payload of
+/// `AppEffect::NotifySearchCrawlerRoomsAvailable` (#996 catch-up).
+pub(crate) fn search_crawler_rooms(
+    state: &AppState,
+) -> (Vec<String>, std::collections::BTreeMap<String, String>) {
+    let room_ids = state
+        .rooms
+        .iter()
+        .map(|room| room.room_id.clone())
+        .collect();
+    let latest_event_ids = state
+        .rooms
+        .iter()
+        .filter_map(|room| {
+            room.latest_event
+                .as_ref()
+                .map(|latest| (room.room_id.clone(), latest.event_id.clone()))
+        })
+        .collect();
+    (room_ids, latest_event_ids)
+}
+
 pub(crate) fn handle_search_edited(
     state: &mut AppState,
     query: String,
@@ -169,13 +191,13 @@ pub(crate) fn handle_search_index_rebuild_requested(state: &mut AppState) -> Vec
 
     let settings = state.settings.values.search_crawler.clone();
     if settings.speed != SearchCrawlerSpeed::Paused {
-        let room_ids: Vec<String> = state
-            .rooms
-            .iter()
-            .map(|room| room.room_id.clone())
-            .collect();
+        let (room_ids, latest_event_ids) = search_crawler_rooms(state);
         if !room_ids.is_empty() {
-            effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable { room_ids, settings });
+            effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids,
+                latest_event_ids,
+                settings,
+            });
         }
     }
 

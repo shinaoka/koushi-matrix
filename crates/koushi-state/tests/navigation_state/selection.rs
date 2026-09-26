@@ -228,6 +228,7 @@ fn room_list_update_keeps_empty_selected_space_empty() {
                     "dm-a".to_owned(),
                     "global-room".to_owned(),
                 ],
+                latest_event_ids: Default::default(),
                 settings: search_crawler_settings_standard(),
             },
         ]

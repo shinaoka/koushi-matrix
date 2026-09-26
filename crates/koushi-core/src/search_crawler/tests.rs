@@ -146,6 +146,243 @@ async fn crawler_page_is_visible_to_the_normal_room_event_cache() {
     assert!(visible_ids.iter().any(|id| id == "$crawler-older-2"));
 }
 
+fn session_for(client: &matrix_sdk::Client, server: &MatrixMockServer) -> Arc<MatrixClientSession> {
+    let session_info = SessionInfo {
+        homeserver: server.server().uri(),
+        user_id: client.user_id().expect("mock client user id").to_string(),
+        device_id: client
+            .device_id()
+            .expect("mock client device id")
+            .to_string(),
+        authentication_method: SessionAuthenticationMethod::Unknown,
+    };
+    Arc::new(MatrixClientSession::from_client_for_testing(
+        client.clone(),
+        session_info,
+    ))
+}
+
+fn upserted_ids(messages: &[SearchIndexMessage]) -> Vec<&str> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            SearchIndexMessage::Upsert { event_id, .. } => Some(event_id.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// #996: a completed room whose cache still holds the recorded boundary is
+/// caught up from the cache alone: only newer events, no `/messages` page.
+#[tokio::test]
+async fn catch_up_page_indexes_only_events_newer_than_the_boundary_from_the_cache() {
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = room_id!("!catchup-cache:example.invalid");
+    let f = EventFactory::new()
+        .room(room_id)
+        .sender(user_id!("@catchup:test.invalid"));
+    client
+        .event_cache()
+        .subscribe()
+        .expect("event cache subscription");
+    server
+        .mock_sync()
+        .ok_and_run(&client, |builder| {
+            builder.add_joined_room(
+                JoinedRoomBuilder::new(room_id)
+                    .add_timeline_event(f.text_msg("old").event_id(event_id!("$catchup-old")))
+                    .add_timeline_event(
+                        f.text_msg("boundary")
+                            .event_id(event_id!("$catchup-boundary")),
+                    )
+                    .add_timeline_event(f.text_msg("new").event_id(event_id!("$catchup-new"))),
+            );
+        })
+        .await;
+    // No `/messages` mock is mounted: a page request would fail the crawl.
+    let checkpoint = HistoryCrawlCheckpoint::catch_up(
+        room_id.to_string(),
+        SearchCrawlerSettings::default(),
+        1,
+        "$catchup-boundary".to_owned(),
+        10,
+        7,
+    );
+
+    let result = run_history_crawl_page(
+        session_for(&client, &server),
+        AccountWorkScheduler::default(),
+        checkpoint,
+    )
+    .await;
+    let HistoryCrawlPageResult::Success {
+        checkpoint,
+        messages,
+        completed,
+    } = result
+    else {
+        panic!("catch-up should complete from the cache");
+    };
+    assert!(completed, "the boundary was in the cache");
+    assert_eq!(upserted_ids(&messages), ["$catchup-new"]);
+    assert_eq!((checkpoint.processed, checkpoint.indexed), (11, 8));
+}
+
+/// #996: after a limited sync the cache holds only the newest event behind a
+/// gap; the catch-up pages backwards and stops at the page holding the
+/// boundary instead of walking the whole room.
+#[tokio::test]
+async fn catch_up_page_resolves_a_limited_sync_gap_and_stops_at_the_boundary() {
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = room_id!("!catchup-gap:example.invalid");
+    let f = EventFactory::new()
+        .room(room_id)
+        .sender(user_id!("@catchup:test.invalid"));
+    client
+        .event_cache()
+        .subscribe()
+        .expect("event cache subscription");
+    server
+        .mock_sync()
+        .ok_and_run(&client, |builder| {
+            builder.add_joined_room(
+                JoinedRoomBuilder::new(room_id).add_timeline_event(
+                    f.text_msg("boundary").event_id(event_id!("$gap-boundary")),
+                ),
+            );
+        })
+        .await;
+    server
+        .mock_sync()
+        .ok_and_run(&client, |builder| {
+            builder.add_joined_room(
+                JoinedRoomBuilder::new(room_id)
+                    .set_timeline_limited()
+                    .set_timeline_prev_batch("gap-token")
+                    .add_timeline_event(f.text_msg("newest").event_id(event_id!("$gap-newest"))),
+            );
+        })
+        .await;
+    server
+        .mock_room_messages()
+        .match_from("gap-token")
+        .ok(RoomMessagesResponseTemplate::default()
+            .events(vec![
+                f.text_msg("middle").event_id(event_id!("$gap-middle")),
+                f.text_msg("boundary").event_id(event_id!("$gap-boundary")),
+            ])
+            .end_token("gap-older"))
+        .mock_once()
+        .mount()
+        .await;
+
+    let checkpoint = HistoryCrawlCheckpoint::catch_up(
+        room_id.to_string(),
+        SearchCrawlerSettings::default(),
+        1,
+        "$gap-boundary".to_owned(),
+        0,
+        0,
+    );
+    let result = run_history_crawl_page(
+        session_for(&client, &server),
+        AccountWorkScheduler::default(),
+        checkpoint,
+    )
+    .await;
+    let HistoryCrawlPageResult::Success {
+        messages,
+        completed,
+        ..
+    } = result
+    else {
+        panic!("catch-up should page through the gap");
+    };
+    assert!(completed, "the page reached the boundary");
+    let mut ids = upserted_ids(&messages);
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        ["$gap-middle", "$gap-newest"],
+        "boundary is not re-indexed"
+    );
+}
+
+/// A page preempted by user-visible pagination keeps its first-page work, so
+/// the re-run still indexes cached events and honours the catch-up boundary.
+#[tokio::test]
+async fn preempted_first_page_keeps_its_first_page_work() {
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = room_id!("!catchup-preempt:example.invalid");
+    let f = EventFactory::new()
+        .room(room_id)
+        .sender(user_id!("@catchup:test.invalid"));
+    client
+        .event_cache()
+        .subscribe()
+        .expect("event cache subscription");
+    server
+        .mock_sync()
+        .ok_and_run(&client, |builder| {
+            builder.add_joined_room(
+                JoinedRoomBuilder::new(room_id)
+                    .set_timeline_limited()
+                    .set_timeline_prev_batch("slow-token")
+                    .add_timeline_event(f.text_msg("newest").event_id(event_id!("$slow-newest"))),
+            );
+        })
+        .await;
+    server
+        .mock_room_messages()
+        .match_from("slow-token")
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(10))
+                .set_body_json(serde_json::json!({ "start": "slow-token", "chunk": [] })),
+        )
+        .mount()
+        .await;
+
+    let scheduler = AccountWorkScheduler::default();
+    let checkpoint = HistoryCrawlCheckpoint::catch_up(
+        room_id.to_string(),
+        SearchCrawlerSettings::default(),
+        1,
+        "$slow-boundary".to_owned(),
+        0,
+        0,
+    );
+    let page = tokio::spawn(run_history_crawl_page(
+        session_for(&client, &server),
+        scheduler.clone(),
+        checkpoint,
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let waiting_pagination = {
+        let scheduler = scheduler.clone();
+        tokio::spawn(async move {
+            let _permit = scheduler.acquire(AccountWorkKind::ExplicitPagination).await;
+        })
+    };
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), page)
+        .await
+        .expect("preemption must end the page promptly")
+        .expect("page task");
+    let HistoryCrawlPageResult::Preempted { checkpoint } = result else {
+        panic!("a waiting timeline pagination should preempt the crawler page");
+    };
+    assert!(
+        checkpoint.first_page,
+        "preemption must not consume the first page"
+    );
+    assert_eq!(checkpoint.catch_up_after.as_deref(), Some("$slow-boundary"));
+    waiting_pagination.await.expect("pagination admitted");
+}
+
 #[test]
 fn crawler_indexes_text_message_without_attachment_bytes() {
     let json = r#"{

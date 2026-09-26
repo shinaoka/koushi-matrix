@@ -268,6 +268,7 @@ pub(crate) enum AccountMessage {
     /// background crawler notification and try to flush it to SearchActor.
     NotifySearchCrawlerRoomsAvailable {
         room_ids: Vec<String>,
+        latest_event_ids: std::collections::BTreeMap<String, String>,
         settings: koushi_state::SearchCrawlerSettings,
     },
     CurrentDeviceTrustChanged {
@@ -1072,8 +1073,7 @@ pub struct AccountActor {
     /// `SearchActor` was spawned.  Replayed into the actor immediately after
     /// it is created so rooms that were already known to the reducer at
     /// session-restore time are not missed by the auto-start logic.
-    pub(super) pending_crawler_notification:
-        Option<(Vec<String>, koushi_state::SearchCrawlerSettings)>,
+    pub(super) pending_crawler_notification: Option<crate::search::CrawlerRoomsNotification>,
     /// Actor-owned avatar thumbnail cache: mxc_uri -> last resolved state.
     /// Mutated only from the actor loop; no shared lock needed.
     pub(super) avatar_cache: HashMap<String, AvatarThumbnailState>,
@@ -1754,13 +1754,22 @@ impl AccountActor {
                 AccountMessage::SearchCommand(search_command) => {
                     self.route_search_command(search_command).await;
                 }
-                AccountMessage::NotifySearchCrawlerRoomsAvailable { room_ids, settings } => {
+                AccountMessage::NotifySearchCrawlerRoomsAvailable {
+                    room_ids,
+                    latest_event_ids,
+                    settings,
+                } => {
                     // Background lane: crawler room availability is
                     // latest-wins/coalesced/recoverable state. Store it first,
                     // then try a non-blocking flush so AccountActor never stalls
                     // user-intent or foreground room/timeline commands behind
                     // crawler mailbox pressure.
-                    self.pending_crawler_notification = Some((room_ids, settings));
+                    let notification = crate::search::CrawlerRoomsNotification {
+                        room_ids,
+                        latest_event_ids,
+                        settings,
+                    };
+                    self.pending_crawler_notification = Some(notification);
                     self.flush_pending_crawler_notification();
                 }
                 AccountMessage::CurrentDeviceTrustChanged { generation, trust } => {

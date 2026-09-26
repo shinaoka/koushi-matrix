@@ -68,6 +68,7 @@ const checks = [
   "scenario edit_redact_search",
   "scenario redact_edit_convergence",
   "scenario search_crawler",
+  "scenario search_crawler_catchup",
   "scenario room_history_export",
   "scenario scheduled_send",
   "scenario send_queue",
@@ -169,6 +170,9 @@ async function run() {
   }
   if (scenarios.includes("read_state_convergence") && !runCoreQa) {
     throw new Error("--scenario=read_state_convergence requires --core because it validates Core state");
+  }
+  if (scenarios.includes("search_crawler_catchup") && !runCoreQa) {
+    throw new Error("--scenario=search_crawler_catchup requires --core because it validates Core state");
   }
   if (scenarios.includes("thread_late_joiner") && !runCoreQa) {
     throw new Error("--scenario=thread_late_joiner requires --core because it validates Core state");
@@ -611,7 +615,7 @@ function safeTimestamp() {
 
 function printUsage() {
   console.log(
-    "Usage: desktop-headless-local-qa.mjs --run [--server=tuwunel|synapse|both] [--scenario=all|session_status|device_cleanup|timeline_reconnect|timeline_stress|encryption_debug|directory|room_management|room_people_projection|activity|composer|credential_health|native_attention|send_queue|live_signals|link_preview|read_state_convergence|thread_late_joiner[,scenario...]] [--core] [--cargo-profile=dev|ci|release] [--fixture-run=<local-run-dir>] [--e2ee-recipient-second-device] [--e2ee-pause-sync-before-multi-device-send]"
+    "Usage: desktop-headless-local-qa.mjs --run [--server=tuwunel|synapse|both] [--scenario=all|session_status|device_cleanup|timeline_reconnect|timeline_stress|encryption_debug|directory|room_management|room_people_projection|activity|composer|credential_health|native_attention|send_queue|live_signals|link_preview|search_crawler|search_crawler_catchup|read_state_convergence|thread_late_joiner[,scenario...]] [--core] [--cargo-profile=dev|ci|release] [--fixture-run=<local-run-dir>] [--e2ee-recipient-second-device] [--e2ee-pause-sync-before-multi-device-send]"
   );
   console.log("Starts a disposable local homeserver and runs non-GUI Matrix SDK QA.");
   console.log("  --server=both  Runs the positive Sliding Sync fixtures: Tuwunel and Synapse.");

@@ -4173,12 +4173,17 @@ impl AppActor {
                         ))
                         .await;
                 }
-                AppEffect::NotifySearchCrawlerRoomsAvailable { room_ids, settings } => {
+                AppEffect::NotifySearchCrawlerRoomsAvailable {
+                    room_ids,
+                    latest_event_ids,
+                    settings,
+                } => {
                     let _ = self
                         .account_actor
                         .send(
                             crate::account::AccountMessage::NotifySearchCrawlerRoomsAvailable {
                                 room_ids,
+                                latest_event_ids,
                                 settings,
                             },
                         )
@@ -4508,8 +4513,11 @@ impl AppActor {
         for effect in effects {
             if let AppEffect::EmitUiEvent(ui_event) = effect {
                 self.handle_ui_event_effect(ui_event).await;
-            } else if let AppEffect::NotifySearchCrawlerRoomsAvailable { room_ids, settings } =
-                effect
+            } else if let AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids,
+                latest_event_ids,
+                settings,
+            } = effect
             {
                 // Route from actor-projection path: forward to SearchActor via
                 // AccountActor (fire-and-forget, idempotent).
@@ -4518,6 +4526,7 @@ impl AppActor {
                     .send(
                         crate::account::AccountMessage::NotifySearchCrawlerRoomsAvailable {
                             room_ids: room_ids.clone(),
+                            latest_event_ids: latest_event_ids.clone(),
                             settings: settings.clone(),
                         },
                     )

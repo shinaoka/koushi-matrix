@@ -248,6 +248,26 @@ impl std::fmt::Debug for SearchIndexMessage {
 // Handle
 // ---------------------------------------------------------------------------
 
+/// Latest-wins snapshot of the joined rooms the crawler may index, from
+/// `AppEffect::NotifySearchCrawlerRoomsAvailable`.
+pub struct CrawlerRoomsNotification {
+    pub room_ids: Vec<String>,
+    /// Room id to the room's latest event id, for rooms that have one. A
+    /// completed room whose latest event changed gets a catch-up crawl (#996).
+    pub latest_event_ids: std::collections::BTreeMap<String, String>,
+    pub settings: SearchCrawlerSettings,
+}
+
+impl std::fmt::Debug for CrawlerRoomsNotification {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CrawlerRoomsNotification")
+            .field("room_count", &self.room_ids.len())
+            .field("latest_count", &self.latest_event_ids.len())
+            .field("settings", &self.settings)
+            .finish()
+    }
+}
+
 /// Messages routed to the `SearchActor`.
 pub(crate) enum SearchActorMessage {
     /// A `SearchCommand::Query` from the command boundary.
@@ -278,10 +298,7 @@ pub(crate) enum SearchActorMessage {
     /// The actor starts an idempotent background crawl for each newly-observed
     /// room when `settings.speed != Paused` and the room is not already
     /// `Running` or `Completed`.
-    RoomsAvailable {
-        room_ids: Vec<String>,
-        settings: SearchCrawlerSettings,
-    },
+    RoomsAvailable(CrawlerRoomsNotification),
     /// Content-indexing settings changed (include_media_captions or
     /// include_filenames toggled). The actor must drop all rooms from
     /// `completed_rooms` so the next `RoomsAvailable` notification re-crawls
@@ -366,10 +383,11 @@ impl std::fmt::Debug for SearchActorMessage {
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
                 .finish(),
-            Self::RoomsAvailable { room_ids, settings } => f
+            Self::RoomsAvailable(notification) => f
                 .debug_struct("SearchActorMessage::RoomsAvailable")
-                .field("room_count", &room_ids.len())
-                .field("settings", settings)
+                .field("room_count", &notification.room_ids.len())
+                .field("latest_count", &notification.latest_event_ids.len())
+                .field("settings", &notification.settings)
                 .finish(),
             Self::InvalidateCrawlerCache => {
                 write!(f, "SearchActorMessage::InvalidateCrawlerCache")
@@ -378,6 +396,15 @@ impl std::fmt::Debug for SearchActorMessage {
             Self::Shutdown => write!(f, "SearchActorMessage::Shutdown"),
         }
     }
+}
+
+/// What the actor remembers about a room whose crawl completed this session.
+struct CompletedHistoryCrawl {
+    /// Latest event id when the completed crawl started; a catch-up crawl
+    /// stops at this event (#996).
+    latest_event_id: Option<String>,
+    processed: u64,
+    indexed: u64,
 }
 
 /// Handle to the `SearchActor` background task.
@@ -469,20 +496,19 @@ impl SearchActorHandle {
     /// user-visible commands on crawler work.
     pub fn try_notify_rooms_available(
         &self,
-        room_ids: Vec<String>,
-        settings: SearchCrawlerSettings,
-    ) -> Result<(), (Vec<String>, SearchCrawlerSettings)> {
+        notification: CrawlerRoomsNotification,
+    ) -> Result<(), CrawlerRoomsNotification> {
         match self
             .tx
-            .try_send(SearchActorMessage::RoomsAvailable { room_ids, settings })
+            .try_send(SearchActorMessage::RoomsAvailable(notification))
         {
             Ok(()) => Ok(()),
             Err(tokio::sync::mpsc::error::TrySendError::Full(
-                SearchActorMessage::RoomsAvailable { room_ids, settings },
-            )) => Err((room_ids, settings)),
+                SearchActorMessage::RoomsAvailable(notification),
+            )) => Err(notification),
             Err(tokio::sync::mpsc::error::TrySendError::Closed(
-                SearchActorMessage::RoomsAvailable { room_ids, settings },
-            )) => Err((room_ids, settings)),
+                SearchActorMessage::RoomsAvailable(notification),
+            )) => Err(notification),
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                 unreachable!("try_notify_rooms_available only sends RoomsAvailable messages")
             }
@@ -563,10 +589,12 @@ pub(crate) struct SearchActor {
     /// room-list update can abort a page whose room disappeared before the task
     /// returns stale progress.
     active_crawl_checkpoint: Option<HistoryCrawlCheckpoint>,
-    /// Room ids whose history has been fully crawled at least once. Used by
-    /// `handle_rooms_available` to skip idempotent auto-start for completed
-    /// rooms.
-    completed_rooms: HashSet<String>,
+    /// Rooms whose history has been fully crawled at least once this session.
+    /// `handle_rooms_available` skips their auto-start unless their latest
+    /// event changed since completion, which queues a catch-up (#996).
+    completed_rooms: HashMap<String, CompletedHistoryCrawl>,
+    /// Room id to latest event id from the newest `RoomsAvailable` snapshot.
+    latest_event_ids: std::collections::BTreeMap<String, String>,
     /// Monotonically increasing generation counter. Incremented each time
     /// content-indexing settings change (via `InvalidateCrawlerCache`). Every
     /// queued checkpoint records the current generation, and stale page results
@@ -605,7 +633,8 @@ impl SearchActor {
             available_crawl_rooms: HashSet::new(),
             active_crawl_page: None,
             active_crawl_checkpoint: None,
-            completed_rooms: HashSet::new(),
+            completed_rooms: HashMap::new(),
+            latest_event_ids: std::collections::BTreeMap::new(),
             crawl_settings_generation: 0,
             crawl_delay_elapsed: false,
             crawl_delay_timer: None,
@@ -758,8 +787,8 @@ impl SearchActor {
                 self.handle_stop_history_crawl(request_id, room_id).await;
                 true
             }
-            SearchActorMessage::RoomsAvailable { room_ids, settings } => {
-                self.handle_rooms_available(room_ids, settings).await;
+            SearchActorMessage::RoomsAvailable(notification) => {
+                self.handle_rooms_available(notification).await;
                 true
             }
             SearchActorMessage::InvalidateCrawlerCache => {
@@ -1101,12 +1130,14 @@ impl SearchActor {
     /// This mirrors Element's Seshat crawler shape: maintain a checkpoint queue
     /// and process one `/messages` page at a time. If a page has a continuation
     /// token, push_back(next_checkpoint) so other rooms get a turn first.
-    async fn handle_rooms_available(
-        &mut self,
-        room_ids: Vec<String>,
-        settings: SearchCrawlerSettings,
-    ) {
+    async fn handle_rooms_available(&mut self, notification: CrawlerRoomsNotification) {
+        let CrawlerRoomsNotification {
+            room_ids,
+            latest_event_ids,
+            settings,
+        } = notification;
         self.available_crawl_rooms = room_ids.iter().cloned().collect();
+        self.latest_event_ids = latest_event_ids;
 
         if settings.speed == SearchCrawlerSpeed::Paused {
             self.stop_all_history_crawls().await;
@@ -1122,6 +1153,10 @@ impl SearchActor {
         }
 
         for room_id in room_ids {
+            if let Some(checkpoint) = self.catch_up_checkpoint(&room_id, &settings) {
+                self.enqueue_history_crawl(checkpoint, 0).await;
+                continue;
+            }
             if self.history_crawl_room_is_known(&room_id) {
                 continue;
             }
@@ -1163,8 +1198,49 @@ impl SearchActor {
             .await;
     }
 
+    /// #996: a completed room whose latest event changed since completion, and
+    /// whose latest event is not already indexed (an open room's timeline
+    /// indexes live), gets a catch-up crawl bounded by the recorded event.
+    fn catch_up_checkpoint(
+        &self,
+        room_id: &str,
+        settings: &SearchCrawlerSettings,
+    ) -> Option<HistoryCrawlCheckpoint> {
+        let completed = self.completed_rooms.get(room_id)?;
+        let latest = self.latest_event_ids.get(room_id)?;
+        if completed.latest_event_id.as_deref() == Some(latest.as_str())
+            || self.indexed_rooms.contains_key(latest)
+            || self.queued_crawl_rooms.contains(room_id)
+            || self
+                .active_crawl_checkpoint
+                .as_ref()
+                .is_some_and(|checkpoint| checkpoint.room_id == room_id)
+        {
+            return None;
+        }
+        let checkpoint = match &completed.latest_event_id {
+            Some(after_event_id) => HistoryCrawlCheckpoint::catch_up(
+                room_id.to_owned(),
+                settings.clone(),
+                self.crawl_settings_generation,
+                after_event_id.clone(),
+                completed.processed,
+                completed.indexed,
+            ),
+            // No boundary was known when the room completed (it had no latest
+            // event), so the only safe catch-up is a fresh crawl.
+            None => HistoryCrawlCheckpoint::new(
+                room_id.to_owned(),
+                settings.clone(),
+                self.crawl_settings_generation,
+                false,
+            ),
+        };
+        Some(checkpoint)
+    }
+
     fn history_crawl_room_is_known(&self, room_id: &str) -> bool {
-        self.completed_rooms.contains(room_id)
+        self.completed_rooms.contains_key(room_id)
             || self.queued_crawl_rooms.contains(room_id)
             || self
                 .active_crawl_checkpoint
@@ -1198,9 +1274,13 @@ impl SearchActor {
                 }
             }
         }
-        let Some(checkpoint) = self.crawl_queue.pop_front() else {
+        let Some(mut checkpoint) = self.crawl_queue.pop_front() else {
             return;
         };
+        if checkpoint.first_page {
+            checkpoint.latest_event_id_at_start =
+                self.latest_event_ids.get(&checkpoint.room_id).cloned();
+        }
         self.queued_crawl_rooms.remove(&checkpoint.room_id);
         if !checkpoint.manual && !self.available_crawl_rooms.contains(&checkpoint.room_id) {
             self.start_next_history_crawl_page();
@@ -1241,7 +1321,14 @@ impl SearchActor {
                     }])
                     .await;
                 if completed {
-                    self.completed_rooms.insert(checkpoint.room_id.clone());
+                    self.completed_rooms.insert(
+                        checkpoint.room_id.clone(),
+                        CompletedHistoryCrawl {
+                            latest_event_id: checkpoint.latest_event_id_at_start.clone(),
+                            processed: checkpoint.processed,
+                            indexed: checkpoint.indexed,
+                        },
+                    );
                     let _ = self
                         .action_tx
                         .send(vec![AppAction::HistoryCrawlCompleted {
@@ -1251,9 +1338,17 @@ impl SearchActor {
                         }])
                         .await;
                     self.emit(CoreEvent::Search(SearchEvent::HistoryCrawlCompleted {
-                        room_id: checkpoint.room_id,
+                        room_id: checkpoint.room_id.clone(),
                         indexed: checkpoint.indexed,
                     }));
+                    // An event that arrived while this crawl ran has no later
+                    // notification to trigger its catch-up; check now.
+                    if self.available_crawl_rooms.contains(&checkpoint.room_id)
+                        && let Some(catch_up) =
+                            self.catch_up_checkpoint(&checkpoint.room_id, &checkpoint.settings)
+                    {
+                        self.enqueue_history_crawl(catch_up, 0).await;
+                    }
                 } else {
                     let next_checkpoint = checkpoint;
                     self.queued_crawl_rooms
@@ -1295,7 +1390,7 @@ impl SearchActor {
 
     fn retain_history_crawl_rooms(&mut self) -> Vec<String> {
         let mut stopped_room_ids = std::collections::BTreeSet::new();
-        for room_id in &self.completed_rooms {
+        for room_id in self.completed_rooms.keys() {
             if !self.available_crawl_rooms.contains(room_id) {
                 stopped_room_ids.insert(room_id.clone());
             }
@@ -1306,7 +1401,7 @@ impl SearchActor {
             }
         }
         self.completed_rooms
-            .retain(|room_id| self.available_crawl_rooms.contains(room_id));
+            .retain(|room_id, _| self.available_crawl_rooms.contains(room_id));
         self.crawl_queue.retain(|checkpoint| {
             checkpoint.manual || self.available_crawl_rooms.contains(&checkpoint.room_id)
         });

@@ -104,6 +104,11 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         run_read_state_convergence_scenario(&config).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
+    if scenario == QaScenario::SearchCrawlerCatchup {
+        println!("safety=ok");
+        super::scenario_search_catchup::run_search_crawler_catchup_scenario(&config).await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
     if scenario == QaScenario::ThreadLateJoiner {
         println!("safety=ok");
         run_thread_late_joiner_scenario(&config).await?;
