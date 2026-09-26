@@ -8,6 +8,7 @@ mod dto;
 pub mod keyring_backend;
 mod media_save;
 mod oidc_browser;
+mod spell_checking;
 mod tray;
 mod viewport_sync;
 mod window_state;
@@ -834,6 +835,7 @@ pub fn run() {
             tray::install_tray_icon(app);
             let _ = restore_main_window_state(app);
             ensure_main_window_visible(app);
+            spell_checking::enable_for_main_window(app.handle());
             app.on_menu_event(|app, event| {
                 #[cfg(target_os = "macos")]
                 if event.id().as_ref() == MENU_ID_TOGGLE_FULLSCREEN {

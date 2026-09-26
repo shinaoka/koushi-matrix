@@ -438,14 +438,30 @@ export const ImeInlineMentionEditor = forwardRef<
             mutation = deleteDocumentForward(documentRef.current, range.start, range.end);
             break;
           case "insertText":
-          case "insertReplacementText":
-            mutation = pasteDocumentText(
-              documentRef.current,
-              range.start,
-              range.end,
-              event.data ?? ""
-            );
+          case "insertReplacementText": {
+            // Issue #1010: WebKit spelling corrections carry the word in
+            // `dataTransfer` with `data` null and aim at `getTargetRanges()`.
+            // WebKitGTK's context menu sends them as `insertText`, macOS as
+            // `insertReplacementText`, and autocorrect targets a word behind
+            // the caret. Without a word or a way to cancel, the engine applies
+            // the edit and `input` reads the DOM back.
+            const text = event.data ?? (event.dataTransfer?.getData("text/plain") || null);
+            const control = controlRef.current;
+            if (text === null || !event.cancelable || !control) return;
+            const target = inputTargetRange(control, event) ?? range;
+            mutation = pasteDocumentText(documentRef.current, target.start, target.end, text);
+            // A selection clear of the target stays on the same text.
+            const shift = text.length - (target.end - target.start);
+            if (range.end <= target.start && range.start !== target.start) {
+              mutation = { ...mutation, selection: range };
+            } else if (range.start >= target.end && range.end !== target.end) {
+              mutation = {
+                ...mutation,
+                selection: { start: range.start + shift, end: range.end + shift }
+              };
+            }
             break;
+          }
           case "insertLineBreak":
           case "insertParagraph":
             mutation = pasteDocumentText(documentRef.current, range.start, range.end, "\n");
@@ -803,6 +819,19 @@ function documentSelectionFromDom(control: HTMLDivElement): DocumentSelection {
   }
   const start = documentOffsetFromDomPoint(control, range.startContainer, range.startOffset);
   const end = documentOffsetFromDomPoint(control, range.endContainer, range.endOffset);
+  return { start: Math.min(start, end), end: Math.max(start, end) };
+}
+
+function inputTargetRange(
+  control: HTMLDivElement,
+  event: InputEvent
+): DocumentSelection | null {
+  const target = event.getTargetRanges?.()[0];
+  if (!target || !control.contains(target.startContainer) || !control.contains(target.endContainer)) {
+    return null;
+  }
+  const start = documentOffsetFromDomPoint(control, target.startContainer, target.startOffset);
+  const end = documentOffsetFromDomPoint(control, target.endContainer, target.endOffset);
   return { start: Math.min(start, end), end: Math.max(start, end) };
 }
 

@@ -41,6 +41,9 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 # Same GTK 3 binding Tauri already links; used for the clipboard image read
 # and shared-mime-info lookups.
 gtk = "0.18"
+# Same WebKitGTK binding wry already links; used to enable spell checking,
+# which WebKitGTK leaves off by default.
+webkit2gtk = "2.0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

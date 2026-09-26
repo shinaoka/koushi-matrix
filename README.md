@@ -206,7 +206,10 @@ build completes. Bundling requires the Tauri Linux system dependencies
 `librsvg2-dev`, `libssl-dev`, `libdbus-1-dev`, `libxdo-dev`, `patchelf`, and
 `pkg-config` on Debian/Ubuntu). Installed-app data is stored under
 `~/.local/share/koushi-desktop`; credentials use the freedesktop Secret
-Service (GNOME Keyring / KWallet) with the service name `koushi-desktop`.
+Service (GNOME Keyring / KWallet) with the service name `koushi-desktop`. Composer
+spell checking uses WebKitGTK's Enchant backend and checks the system locale
+plus US English; it needs a Hunspell dictionary for each language, such as
+`hunspell-en-us` on Debian/Ubuntu or `hunspell-en_us` on Arch.
 
 ### Windows users
 

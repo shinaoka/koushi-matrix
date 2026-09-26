@@ -651,3 +651,199 @@ describe("trailing newline rendering (#471)", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 });
+
+// Issue #1010: WebKit spelling corrections carry the word in `dataTransfer`
+// with `data === null`, aimed at `getTargetRanges()`. macOS sends them as
+// `insertReplacementText`; WebKitGTK 2.52's context menu sends `insertText`.
+describe("spelling replacement (#1010)", () => {
+  const misspelled: ComposerDocument = {
+    version: 2,
+    inlines: [{ kind: "text", text: "Check regulaly today." }]
+  };
+
+  function textNodeContaining(control: HTMLElement, needle: string): Text {
+    const walker = document.createTreeWalker(control, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.textContent?.includes(needle)) return node as Text;
+    }
+    throw new Error(`no text node contains ${needle}`);
+  }
+
+  function replaceText(
+    control: HTMLElement,
+    {
+      data = null,
+      inputType = "insertReplacementText",
+      transfer,
+      target
+    }: {
+      data?: string | null;
+      inputType?: string;
+      transfer?: string;
+      target?: { node: Node; start: number; end: number };
+    }
+  ): InputEvent {
+    const event = new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      inputType,
+      data
+    });
+    if (transfer !== undefined) {
+      Object.defineProperty(event, "dataTransfer", {
+        value: { getData: (type: string) => (type === "text/plain" ? transfer : "") }
+      });
+    }
+    if (target) {
+      const range = document.createRange();
+      range.setStart(target.node, target.start);
+      range.setEnd(target.node, target.end);
+      Object.defineProperty(event, "getTargetRanges", { value: () => [range] });
+    }
+    fireEvent(control, event);
+    return event;
+  }
+
+  function renderMisspelled(initial = misspelled) {
+    const onChange = vi.fn();
+    const ref = createRef<ImeInlineMentionEditorHandle>();
+    function Harness() {
+      const [document, setDocument] = useState(initial);
+      return (
+        <ImeInlineMentionEditor
+          aria-label={EDITOR_LABEL}
+          ref={ref}
+          document={document}
+          syncKey="message-a"
+          onDocumentChange={(next) => {
+            setDocument(next);
+            onChange(next);
+          }}
+        />
+      );
+    }
+    render(<Harness />);
+    const control = screen.getByRole("textbox", { name: EDITOR_LABEL }) as HTMLDivElement;
+    control.focus();
+    return { control, onChange, ref };
+  }
+
+  it("replaces the selected word with a correction carried in dataTransfer", () => {
+    const { control, ref } = renderMisspelled();
+    setInlineMentionEditorSelection(control, 6, 14);
+
+    const event = replaceText(control, { transfer: "regularly" });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(control.textContent).toBe("Check regularly today.");
+    expect(ref.current?.selection()).toEqual({ start: 15, end: 15 });
+  });
+
+  it("applies a WebKitGTK context-menu correction sent as insertText", () => {
+    // Shape recorded from WebKitGTK 2.52.6 choosing "the" for "teh".
+    const { control, ref } = renderMisspelled({
+      version: 2,
+      inlines: [{ kind: "text", text: "Check teh today." }]
+    });
+    setInlineMentionEditorSelection(control, 6, 9);
+    const text = textNodeContaining(control, "teh");
+
+    const event = replaceText(control, {
+      inputType: "insertText",
+      transfer: "the",
+      target: { node: text, start: 6, end: 9 }
+    });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(control.textContent).toBe("Check the today.");
+    expect(ref.current?.selection()).toEqual({ start: 9, end: 9 });
+  });
+
+  it("leaves an insertText without any text to the engine", () => {
+    const { control, onChange } = renderMisspelled();
+    setInlineMentionEditorSelection(control, 6, 14);
+
+    const event = replaceText(control, { inputType: "insertText" });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(control.textContent).toBe("Check regulaly today.");
+  });
+
+  it("still accepts a correction carried in data", () => {
+    const { control } = renderMisspelled();
+    setInlineMentionEditorSelection(control, 6, 14);
+
+    replaceText(control, { data: "regularly" });
+
+    expect(control.textContent).toBe("Check regularly today.");
+  });
+
+  it("replaces the target range rather than the selection and keeps a later caret in place", () => {
+    const { control, ref } = renderMisspelled();
+    // macOS autocorrect: the caret has moved past the word it corrects.
+    setInlineMentionEditorSelection(control, 21);
+    const text = textNodeContaining(control, "regulaly");
+
+    replaceText(control, { transfer: "regularly", target: { node: text, start: 6, end: 14 } });
+
+    expect(control.textContent).toBe("Check regularly today.");
+    expect(ref.current?.selection()).toEqual({ start: 22, end: 22 });
+  });
+
+  it("leaves a replacement without a payload to the engine instead of deleting the word", () => {
+    const { control, onChange } = renderMisspelled();
+    setInlineMentionEditorSelection(control, 6, 14);
+
+    const event = replaceText(control, { transfer: "" });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(control.textContent).toBe("Check regulaly today.");
+  });
+
+  it("ignores a target range outside the editor and falls back to the selection", () => {
+    const { control } = renderMisspelled();
+    setInlineMentionEditorSelection(control, 6, 14);
+    const outside = document.createTextNode("elsewhere");
+    document.body.append(outside);
+
+    replaceText(control, { transfer: "regularly", target: { node: outside, start: 0, end: 4 } });
+
+    expect(control.textContent).toBe("Check regularly today.");
+    outside.remove();
+  });
+
+  it("corrects a word beside a mention without touching the mention", () => {
+    const { control, onChange } = renderMisspelled({
+      version: 2,
+      inlines: [
+        {
+          kind: "mention",
+          target: { kind: "user", user_id: "@alice:example.invalid", display_label: "Alice" },
+          display_label: "Alice"
+        },
+        { kind: "text", text: " teh" }
+      ]
+    });
+    const text = textNodeContaining(control, "teh");
+
+    replaceText(control, { transfer: "the", target: { node: text, start: 1, end: 4 } });
+
+    const published = onChange.mock.lastCall?.[0] as ComposerDocument;
+    expect(published.inlines).toEqual([
+      expect.objectContaining({ kind: "mention", display_label: "Alice" }),
+      { kind: "text", text: " the" }
+    ]);
+  });
+
+  it("undoes a correction back to the misspelled word", () => {
+    const { control } = renderMisspelled();
+    setInlineMentionEditorSelection(control, 6, 14);
+    replaceText(control, { transfer: "regularly" });
+
+    beforeInput(control, "historyUndo");
+
+    expect(control.textContent).toBe("Check regulaly today.");
+  });
+});
