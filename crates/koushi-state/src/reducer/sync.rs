@@ -1,25 +1,9 @@
 use crate::{
     effect::{AppEffect, UiEvent},
-    state::{
-        AppError, AppState, CurrentSessionStatusFailureKind, CurrentSessionStatusState,
-        SessionState, SessionStatusRefreshTrigger, SyncLifecycleStatus, SyncState,
-    },
+    state::{AppError, AppState, SessionState, SyncLifecycleStatus, SyncState},
 };
 
 use super::{current_session_info, is_session_ready};
-
-fn recovery_session_status_request_id(status: &CurrentSessionStatusState, generation: u64) -> u64 {
-    let previous = match status {
-        CurrentSessionStatusState::Checking { request_id, .. }
-        | CurrentSessionStatusState::Failed { request_id, .. } => Some(*request_id),
-        CurrentSessionStatusState::Idle | CurrentSessionStatusState::Ready { .. } => None,
-    };
-    if previous == Some(generation) {
-        generation.wrapping_add(1).max(1)
-    } else {
-        generation
-    }
-}
 
 pub(crate) fn handle_sync_status_changed(
     state: &mut AppState,
@@ -49,41 +33,10 @@ pub(crate) fn handle_sync_status_changed(
         effects.push(AppEffect::SyncConnectivityChanged { proven: is_proven });
     }
     if !was_proven && is_proven {
-        let last_known_details = match &state.current_session_status {
-            CurrentSessionStatusState::Checking {
-                last_known_details, ..
-            } => Some(last_known_details.clone()),
-            CurrentSessionStatusState::Failed {
-                kind:
-                    CurrentSessionStatusFailureKind::TimedOut
-                    | CurrentSessionStatusFailureKind::ConnectivityUnavailable
-                    | CurrentSessionStatusFailureKind::Network,
-                last_known_details,
-                ..
-            } => Some(last_known_details.clone()),
-            _ => None,
-        };
-        // #982: a flapping connection must not produce an unbounded sequence of
-        // full inspections. Stop retrying automatically once the checks have
-        // failed repeatedly; manual refresh still bypasses this.
-        let consecutive_failures =
-            super::session_status::consecutive_failures(&state.current_session_status);
-        let retries_exhausted =
-            consecutive_failures >= crate::state::MAX_AUTOMATIC_SESSION_STATUS_RETRIES;
-        if let Some(last_known_details) = last_known_details.filter(|_| !retries_exhausted) {
-            let request_id =
-                recovery_session_status_request_id(&state.current_session_status, generation);
-            state.current_session_status = CurrentSessionStatusState::Checking {
-                request_id,
-                trigger: SessionStatusRefreshTrigger::Recovery,
-                last_known_details,
-                consecutive_failures,
-            };
-            effects.push(AppEffect::RefreshCurrentSessionStatus {
-                request_id,
-                trigger: SessionStatusRefreshTrigger::Recovery,
-            });
-        }
+        // #1009: connectivity only lets pending or due session-status work
+        // run. The session-status owner re-arms its timer for the unchanged
+        // due time; it never overrides an in-flight check from here.
+        effects.extend(super::session_status::handle_connectivity_proven(state));
     }
     effects
 }

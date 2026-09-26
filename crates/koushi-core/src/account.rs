@@ -22,6 +22,7 @@ mod recovery_backup;
 mod routing;
 mod runtime_children;
 mod scheduled_send;
+mod session_check;
 mod session_lifecycle;
 mod sliding_sync;
 #[cfg(test)]

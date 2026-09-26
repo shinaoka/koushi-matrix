@@ -176,6 +176,12 @@ pub enum AppAction {
         /// portable reducer instead of reaching for a platform clock (#982).
         now_ms: u64,
     },
+    /// #1009: the Core timer for the armed due time fired. `token` fences
+    /// notifications of superseded arms and of previous sessions.
+    CurrentSessionStatusCheckDue {
+        token: u64,
+        now_ms: u64,
+    },
     CurrentSessionStatusRefreshed {
         request_id: u64,
         details: CurrentSessionStatusDetails,

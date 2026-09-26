@@ -461,27 +461,74 @@ not promote, demote, unlock, or otherwise alter `SessionState`.
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> Checking: RefreshRequested(open/manual)
-    Ready --> Checking: RefreshRequested(open/manual) / retain details
-    Failed --> Checking: RefreshRequested(open/manual) / retain last-known details
-    Failed --> Checking: accepted SyncStatusChanged(unproven→Running) and transport failure / Recovery
-    Checking --> Ready: Refreshed(matching request)
-    Checking --> Failed: RefreshFailed(matching request) / retain last-known details
-    Checking --> Checking: duplicate manual request / correlated benign-no-op
+    Idle --> Checking: RefreshRequested(open/manual) / CheckDue(due, sync Running)
+    Ready --> Checking: RefreshRequested(manual, or open when due) / CheckDue(due, sync Running) / retain details
+    Failed --> Checking: RefreshRequested(manual, or open when backoff elapsed) / CheckDue(due, sync Running) / retain last-known details
+    Ready --> Ready: RefreshRequested(open, not due) / serve last status
+    Ready --> Ready: CheckDue(not due) / re-arm
+    Failed --> Failed: RefreshRequested(open, backoff pending) / serve last status
+    Failed --> Failed: CheckDue(not due) / re-arm
+    Checking --> Ready: Refreshed(matching request) / arm next due if sync Running
+    Checking --> Failed: RefreshFailed(matching request) / failures+1, arm backoff due if sync Running
+    Checking --> Checking: any request, CheckDue, or connectivity edge / join in-flight
     Checking --> Checking: stale request ignored
-    Ready --> Ready: stale completion ignored
-    Failed --> Failed: stale completion ignored
+    Ready --> Ready: stale completion or stale CheckDue token ignored
+    Failed --> Failed: stale completion or stale CheckDue token ignored
     Checking --> Idle: LogoutRequested/session clear
     Ready --> Idle: LogoutRequested/session clear
     Failed --> Idle: LogoutRequested/session clear
 ```
 
-- Only a Ready session admits a refresh, and only one network refresh may be
-  active. Open/manual work admitted while sync connectivity is unproven settles
-  as coarse `ConnectivityUnavailable` without starting an SDK probe. A manual
-  request coalesced behind `Checking(Recovery)` receives a full-request-id
-  `IntentLifecycle::BenignNoOp(AlreadyActive)`; it never replaces the automatic
-  request or waits opaquely.
+- The reducer is the single owner of check admission, due time, failure
+  backoff, and in-flight deduplication (#1009). Every trigger (`Open`,
+  `Manual`, `Scheduled`, `Recovery`) passes through one admission function.
+  Only a Ready session admits a refresh, and only one network refresh may be
+  active: while `Checking`, every request, due notification, and connectivity
+  edge joins the in-flight request and never replaces its request id. A manual
+  request joined behind an automatic request receives a full-request-id
+  `IntentLifecycle::BenignNoOp(AlreadyActive)`; it never waits opaquely.
+- Due time is derived from the settled state: `Idle` (no check yet on this
+  session, including right after admission or account switch) is due
+  immediately; `Ready` is due `SESSION_STATUS_FRESHNESS_MS` (6 h) after its
+  `checked_at_ms`; `Failed` is due after the failure backoff (1 min doubling per
+  consecutive failure, capped at 30 min). There is no retry ceiling: after any
+  number of failures an automatic retry still happens at the capped backoff, and
+  a success returns to the 6 h period. `Manual` bypasses due time but still
+  joins an in-flight request. When `now_ms` is earlier than the recorded
+  `checked_at_ms` (wall clock moved backwards), the recorded time is treated as
+  unreliable and the state is due, so a clock regression can neither suppress
+  checks indefinitely nor cause a burst (the check re-stamps `checked_at_ms`).
+- Automatic triggers are time-driven. After a settlement, and on an
+  unproven→Running sync edge, the reducer emits
+  `ArmCurrentSessionStatusCheck { token, due_at_ms }` with a fresh token only
+  when the session is Ready, sync is `Running`, and no check is in flight
+  (a check in flight re-arms at its settlement; a non-Ready session arms
+  nothing). The
+  AccountActor owns a single timer for it, replaced on every arm and aborted on
+  session teardown; it compares the wall clock in bounded chunks so a suspended
+  machine re-evaluates promptly on wake. When the timer fires it projects
+  `CurrentSessionStatusCheckDue { token, now_ms }`. A stale token, a non-Ready
+  session, or an in-flight check is inert. A due notification while sync is not
+  `Running` is dropped without starting work; the next Running edge re-arms.
+  A not-yet-due notification re-arms for the remaining time. A due
+  notification admits one check with trigger `Recovery` when it was armed by a
+  Running edge for an already-checked slice, otherwise `Scheduled` (including
+  the first check of an `Idle` slice), using a reducer-minted request id in a
+  namespace disjoint from command sequences. Periodic rechecks therefore run
+  during a stable connection with no panel interaction. The legacy
+  `SyncStarted` action is not produced by the runtime and arms nothing.
+- A reconnect is a connectivity change, not a reason to check. The Running edge
+  never shortens or resets the due time and never overrides `Checking`; it only
+  re-arms the timer. Offline past one or more due times yields exactly one check
+  on return, not one per missed period. An in-flight check that loses
+  connectivity is cancelled by Core and settles through `RefreshFailed(
+  ConnectivityUnavailable)`; that settlement counts toward the backoff whether
+  it arrives before or after the next Running edge, so a flapping connection
+  cannot keep re-issuing inspections.
+- `Open` keeps its request-time behavior: when due, it is admitted even while
+  sync connectivity is unproven and settles as coarse `ConnectivityUnavailable`
+  without starting an SDK probe. `Scheduled` and `Recovery` are Core-owned and
+  rejected from the frontend command surface, like `Recovery` before.
 - `Ready.details.verification` is the app-owned three-state mapping of the same
   SDK current-device `VerificationState` used by admission. It is never derived
   from cross-signing, own-identity, backup, or sync facts. Those facts remain
@@ -499,6 +546,53 @@ stateDiagram-v2
   are classified into coarse `Authentication`, `Network`, `Server`, or `Sdk`
   before crossing into app state. `Unavailable` remains reserved for a missing
   active session/current device required by the inspection.
+- Authoritative trust loss, authentication invalidation, logout, and account
+  switch never wait for a due time: they reset the slice to `Idle` in the same
+  reducer action and bump the schedule token, so late completions and timer
+  notifications of the previous session are inert. A reset that leaves a Ready
+  session with sync `Running` (a cached status invalidated by a disagreeing
+  trust observation) arms an immediate due time in the same action, so the
+  `Idle` slice does not wait for the next connectivity edge.
+- Because `Idle` is due, every newly admitted Ready session runs one automatic
+  `Scheduled` inspection once sync first reaches `Running`. A manual request
+  issued while it is in flight joins it (`BenignNoOp(AlreadyActive)`); a caller
+  that needs a check correlated to its own request id waits for the slice to
+  leave `Checking` first.
+- Own-identity queries are coordinated in the AccountActor. The full inspection
+  and the authoritative trust recheck both query the own identity. On a
+  promoted session a trust-recheck request joins an in-flight inspection only
+  while that inspection's own-identity query has not yet returned (the SDK
+  inspection reports the moment it returns); the inspection then reads the
+  current-device verification subscriber after a query that completed after
+  the demand arrived, which is the same observation a standalone recheck makes.
+  A successful joined inspection settles the demand with the verification it
+  observed; an unsuccessful or stale one releases it to run standalone, and a
+  connectivity loss leaves it pending for the next proven edge. A demand that
+  arrives after the inspection's query returned (including an `Unknown`
+  observation racing an already-read `Verified`) never joins and runs its own
+  recheck. An inspection that succeeds while observing non-Verified trust
+  settles through the authoritative gate with its own reading, since it ran the
+  same own-user `/keys/query` and then read the same subscriber as a recheck;
+  it does not issue a second query.
+  An inspection requested while a trust recheck is in flight waits for it and
+  then reads the identity the recheck just fetched from the local crypto store
+  instead of querying again (after a failed recheck it queries normally); its
+  timeout starts when the SDK inspection starts, not while waiting. A trust-only
+  result never refreshes the full inspection's `checked_at_ms`.
+- On a promoted session a failed trust recheck arms a Core-owned retry at the
+  same failure backoff; requests arriving during that backoff, including the
+  one issued on a Running edge while SDK trust is `Unknown`, join the pending
+  retry instead of querying immediately. The retry follows the inspection
+  timer's connectivity rule: firing while sync connectivity is unproven starts
+  nothing and leaves the recheck pending, and the next proven edge runs it once
+  if its backoff has elapsed. A successful recheck clears the backoff. Initial
+  admission and interactive verification/recovery rechecks (session not yet
+  promoted) are never delayed.
+- A private-safe diagnostic summary records, per check, the trigger and the
+  decision (started, joined, deferred, dropped), cumulative started/succeeded/
+  failed counts, the age bucket since the last success, and the bucket until the
+  next due time; trust rechecks are counted separately (started, joined,
+  deferred, succeeded, failed). It contains no identifiers, keys, or tokens.
 
 ```mermaid
 stateDiagram-v2
@@ -509,7 +603,7 @@ stateDiagram-v2
     Running --> Reconnecting: accepted SyncStatusChanged(Reconnecting) / connectivity unproven
     Running --> Failed: accepted SyncStatusChanged(Failed) / connectivity unproven
     Failed --> Reconnecting: accepted SyncStatusChanged(Reconnecting)
-    Reconnecting --> Running: accepted SyncStatusChanged(Running) / one Recovery refresh if stale transport failure
+    Reconnecting --> Running: accepted SyncStatusChanged(Running) / re-arm session-status due timer
     Running --> Stopped: accepted SyncStatusChanged(Stopped) / connectivity unproven
     Failed --> Stopped: LogoutRequested
     Reconnecting --> Stopped: LogoutRequested

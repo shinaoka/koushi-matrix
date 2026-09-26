@@ -71,7 +71,7 @@ pub use e2ee::{
     CurrentDeviceTrustRecheckError, CurrentDeviceTrustStream, E2eeRecoveryError,
     E2eeRecoveryStateStream, E2eeTrustError, E2eeTrustFailureKind, IdentityResetOutcome,
     KeyBackupRestoreScope, KeyBackupRestoreSummary, MatrixCrossSigningStatus,
-    MatrixCurrentSessionInspection, MatrixCurrentSessionInspectionError,
+    MatrixCurrentSessionInspection, MatrixCurrentSessionInspectionError, OwnIdentitySource,
     MatrixDeviceCleanupOutcome, MatrixDeviceNameOutcome, MatrixIdentityResetAuthType,
     MatrixIdentityResetHandle, MatrixIncomingVerificationRequest,
     MatrixIncomingVerificationRequestObserver, MatrixOwnUserVerificationHandle,

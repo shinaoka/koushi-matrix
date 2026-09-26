@@ -103,6 +103,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             session::handle_login_succeeded(state, attempt_id, info)
         }
         AppAction::CurrentDeviceTrustChanged(trust) => {
+            let mut invalidated = false;
             if matches!(state.session, SessionState::Ready(_)) {
                 if matches!(
                     trust,
@@ -111,15 +112,20 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 ) {
                     session_status::reset(state);
                 } else {
-                    session_status::invalidate_if_trust_disagrees(state, trust);
+                    invalidated = session_status::invalidate_if_trust_disagrees(state, trust);
                 }
             }
-            session::handle_current_device_trust_changed(state, trust)
+            let mut effects = session::handle_current_device_trust_changed(state, trust);
+            if invalidated {
+                effects.extend(session_status::arm_after_reset(state));
+            }
+            effects
         }
         AppAction::SecureBackupGateChanged(gate) => {
             session::handle_secure_backup_gate_changed(state, gate)
         }
         AppAction::AuthoritativeDeviceTrustChanged { trust, .. } => {
+            let mut invalidated = false;
             if matches!(state.session, SessionState::Ready(_)) {
                 if matches!(
                     trust,
@@ -128,10 +134,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 ) {
                     session_status::reset(state);
                 } else {
-                    session_status::invalidate_if_trust_disagrees(state, trust);
+                    invalidated = session_status::invalidate_if_trust_disagrees(state, trust);
                 }
             }
-            session::handle_authoritative_device_trust_changed(state, trust)
+            let mut effects = session::handle_authoritative_device_trust_changed(state, trust);
+            if invalidated {
+                effects.extend(session_status::arm_after_reset(state));
+            }
+            effects
         }
         AppAction::VerificationMethodsDiscovered(gate) => {
             session::handle_verification_methods_discovered(state, gate)
@@ -562,6 +572,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             trigger,
             now_ms,
         } => session_status::handle_refresh_requested(state, request_id, trigger, now_ms),
+        AppAction::CurrentSessionStatusCheckDue { token, now_ms } => {
+            session_status::handle_check_due(state, token, now_ms)
+        }
         AppAction::CurrentSessionStatusRefreshed {
             request_id,
             details,

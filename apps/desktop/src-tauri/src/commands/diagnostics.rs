@@ -51,6 +51,7 @@ fn snapshot_with_media_memory_summaries(
 ) -> FrontendDiagnosticLogSnapshot {
     koushi_core::renderable_thumbnail::record_renderable_thumbnail_summary(thumbnail_stats);
     koushi_core::media_preparation::record_media_preparation_summary(media_stats);
+    koushi_core::session_check_diagnostics::record_session_check_summary();
     map_snapshot(koushi_diagnostics::snapshot(), sliding_sync)
 }
 

@@ -46,6 +46,13 @@ pub enum AppEffect {
         request_id: u64,
         trigger: crate::SessionStatusRefreshTrigger,
     },
+    /// #1009: (re)place the single Core-owned session-status timer. When the
+    /// wall clock reaches `due_at_ms` Core projects
+    /// `CurrentSessionStatusCheckDue { token, .. }`.
+    ArmCurrentSessionStatusCheck {
+        token: u64,
+        due_at_ms: u64,
+    },
     DiscoverVerificationMethods,
     BeginSessionVerification {
         method: VerificationMethod,

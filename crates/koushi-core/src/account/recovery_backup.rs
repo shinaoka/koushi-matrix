@@ -1811,9 +1811,13 @@ impl AccountActor {
             // Unknown. Recheck it only after sync has proved connectivity;
             // otherwise a transient cache/transport edge would gate the
             // session and clear its room and Space projections.
-            if self.session.as_ref().is_some_and(|session| {
-                session.current_device_trust() == koushi_state::CurrentDeviceTrustState::Unknown
-            }) {
+            // #1009: a recheck left pending by a failure or an outage runs
+            // once here, subject to the shared failure backoff.
+            if self.trust_recheck_pending
+                || self.session.as_ref().is_some_and(|session| {
+                    session.current_device_trust() == koushi_state::CurrentDeviceTrustState::Unknown
+                })
+            {
                 self.request_authoritative_trust_recheck();
             }
             self.secure_backup_inspection_pending = false;

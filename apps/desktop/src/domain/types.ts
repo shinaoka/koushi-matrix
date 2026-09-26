@@ -771,8 +771,8 @@ export type SessionState =
     >
   | ExactSessionState<"loggingOut">;
 
-export type SessionStatusRefreshTrigger = "open" | "manual" | "recovery";
-export type SessionStatusRefreshCommandTrigger = Exclude<SessionStatusRefreshTrigger, "recovery">;
+export type SessionStatusRefreshTrigger = "open" | "manual" | "scheduled" | "recovery";
+export type SessionStatusRefreshCommandTrigger = Exclude<SessionStatusRefreshTrigger, "scheduled" | "recovery">;
 export type SessionAuthenticationMethod = "password" | "sso" | "oauth" | "token" | "unknown";
 export type CurrentSessionSyncState = "stopped" | "starting" | "running" | "error";
 export type OwnIdentityVerification = "missing" | "unverified" | "verified";

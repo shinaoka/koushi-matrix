@@ -81,9 +81,11 @@ pub use session::{
 };
 pub use session_status::{
     CurrentSessionBackupState, CurrentSessionStatusDetails, CurrentSessionStatusFailureKind,
-    CurrentSessionStatusState, CurrentSessionSyncState, MAX_AUTOMATIC_SESSION_STATUS_RETRIES,
-    OwnIdentityVerification, SESSION_STATUS_FRESHNESS_MS, SessionStatusRefreshTrigger,
-    session_status_failure_backoff_ms,
+    ArmedSessionStatusCheck, CurrentSessionStatusState, CurrentSessionSyncState,
+    OwnIdentityVerification, SESSION_STATUS_FAILURE_BACKOFF_BASE_MS,
+    SESSION_STATUS_FAILURE_BACKOFF_CAP_MS, SESSION_STATUS_FRESHNESS_MS,
+    SESSION_STATUS_SCHEDULED_REQUEST_ID_BASE, SessionStatusCheckDecision, SessionStatusCheckStats,
+    SessionStatusRefreshTrigger, SessionStatusSchedule, session_status_failure_backoff_ms,
 };
 pub use sliding_sync::{
     SlidingSyncAdmission, SlidingSyncAdmissionKind, SlidingSyncAdmissionSource,
@@ -299,6 +301,9 @@ pub struct AppState {
     pub device_cleanup: DeviceCleanupState,
     #[serde(default)]
     pub current_session_status: CurrentSessionStatusState,
+    /// #1009: reducer-owned check scheduling; not rendered.
+    #[serde(skip)]
+    pub current_session_status_schedule: SessionStatusSchedule,
     pub auth: AuthDiscoveryState,
     #[serde(default)]
     pub account_management_url: Option<AccountManagementUrl>,
@@ -387,6 +392,7 @@ impl Default for AppState {
             sliding_sync_capability: SlidingSyncCapabilityState::Unknown,
             device_cleanup: DeviceCleanupState::Idle,
             current_session_status: CurrentSessionStatusState::Idle,
+            current_session_status_schedule: SessionStatusSchedule::default(),
             auth: AuthDiscoveryState::Unknown,
             account_management_url: None,
             account_management: AccountManagementState::Idle,

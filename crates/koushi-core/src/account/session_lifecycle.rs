@@ -1937,6 +1937,8 @@ impl AccountActor {
     pub(super) async fn stop_provisional_runtime(&mut self) {
         self.trust_generation = self.trust_generation.wrapping_add(1);
         self.trust_recheck_pending = false;
+        // #1009: timers and backoff never outlive the session generation.
+        self.session_check.retire();
         self.pending_device_cleanup = None;
         self.cancel_pending_trust_promotion().await;
         if let Some(task) = self.trust_observer.take() {

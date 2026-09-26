@@ -265,6 +265,14 @@ pub(super) fn spawn_quarantine_password_server() -> String {
 pub(super) struct KeyQueryControl {
     pub(super) count: std::sync::atomic::AtomicUsize,
     pub(super) hold: std::sync::atomic::AtomicBool,
+    /// Answer `/keys/query` with an undecodable body (a failed query).
+    pub(super) fail: std::sync::atomic::AtomicBool,
+    /// Account device-list requests (one per full current-session inspection).
+    pub(super) devices_count: std::sync::atomic::AtomicUsize,
+    /// Server key-backup version probes (after the inspection's identity step).
+    pub(super) backup_probe_count: std::sync::atomic::AtomicUsize,
+    /// Hold the key-backup version probe until cleared.
+    pub(super) backup_hold: std::sync::atomic::AtomicBool,
 }
 
 pub(super) fn spawn_named_quarantine_password_server(
@@ -300,6 +308,7 @@ pub(super) fn spawn_named_quarantine_password_server_with_controls(
     let addr = listener.local_addr().expect("address");
     let uploaded_device_keys = std::sync::Arc::new(std::sync::Mutex::new(None));
     let uploaded_device_keys_for_server = uploaded_device_keys.clone();
+    let mut login_device_id: Option<String> = None;
     std::thread::spawn(move || {
         'accept: while let Ok((mut stream, _)) = listener.accept() {
             let mut request = Vec::new();
@@ -353,9 +362,11 @@ pub(super) fn spawn_named_quarantine_password_server_with_controls(
                     .and_then(|(_, body)| serde_json::from_str::<serde_json::Value>(body).ok())
                     .and_then(|body| body["device_id"].as_str().map(str::to_owned))
                     .unwrap_or_else(|| device_id.to_owned());
-                format!(
+                let body = format!(
                     r#"{{"access_token":"fixture-token","device_id":"{requested_device_id}","user_id":"{user_id}"}}"#
-                )
+                );
+                login_device_id = Some(requested_device_id);
+                body
             } else if text.contains("/_matrix/client/") && text.contains("/keys/upload") {
                 if let Some((_, request_body)) = text.split_once("\r\n\r\n")
                     && let Ok(request) = serde_json::from_str::<serde_json::Value>(request_body)
@@ -375,11 +386,16 @@ pub(super) fn spawn_named_quarantine_password_server_with_controls(
                         std::thread::sleep(Duration::from_millis(5));
                     }
                 }
+                let failing = key_query_control
+                    .as_ref()
+                    .is_some_and(|control| control.fail.load(std::sync::atomic::Ordering::SeqCst));
                 let uploaded = uploaded_device_keys_for_server
                     .lock()
                     .expect("uploaded device keys lock")
                     .clone();
-                if let Some(keys) = uploaded {
+                if failing {
+                    "not json".to_owned()
+                } else if let Some(keys) = uploaded {
                     let user = keys["user_id"].as_str().unwrap_or(user_id).to_owned();
                     let device = keys["device_id"].as_str().unwrap_or(device_id).to_owned();
                     let mut devices = serde_json::Map::new();
@@ -394,6 +410,46 @@ pub(super) fn spawn_named_quarantine_password_server_with_controls(
                 } else {
                     r#"{"device_keys":{},"failures":{}}"#.to_owned()
                 }
+            } else if text.starts_with("GET /_matrix/client/")
+                && text.contains("/room_keys/version")
+                && let Some(control) = key_query_control.as_ref()
+            {
+                control
+                    .backup_probe_count
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let body = r#"{"errcode":"M_NOT_FOUND","error":"No current backup version"}"#;
+                if control.backup_hold.load(std::sync::atomic::Ordering::SeqCst) {
+                    // Answer from a side thread so other requests keep flowing
+                    // while this probe is held.
+                    let control = std::sync::Arc::clone(control);
+                    std::thread::spawn(move || {
+                        while control.backup_hold.load(std::sync::atomic::Ordering::SeqCst) {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    });
+                    continue 'accept;
+                }
+                body.to_owned()
+            } else if text.starts_with("GET /_matrix/client/") && text.contains("/devices HTTP/1.1")
+            {
+                // Account device list for the current-session inspection.
+                if let Some(control) = key_query_control.as_ref() {
+                    control
+                        .devices_count
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                let current_device_id = login_device_id
+                    .clone()
+                    .unwrap_or_else(|| device_id.to_owned());
+                format!(
+                    r#"{{"devices":[{{"device_id":"{current_device_id}","display_name":"Fixture"}}]}}"#
+                )
             } else if text.contains("/_matrix/client/") && text.contains("/sync") {
                 std::thread::sleep(Duration::from_millis(20));
                 r#"{"next_batch":"batch","device_lists":{"changed":[],"left":[]},"rooms":{"invite":{},"join":{},"leave":{},"knock":{}},"to_device":{"events":[]},"presence":{"events":[]},"account_data":{"events":[]},"device_one_time_keys_count":{}}"#.to_owned()

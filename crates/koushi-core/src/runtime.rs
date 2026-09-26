@@ -4260,6 +4260,12 @@ impl AppActor {
                         .send(AccountMessage::SyncConnectivityChanged { proven })
                         .await;
                 }
+                AppEffect::ArmCurrentSessionStatusCheck { token, due_at_ms } => {
+                    let _ = self
+                        .account_actor
+                        .send(AccountMessage::ArmCurrentSessionStatusCheck { token, due_at_ms })
+                        .await;
+                }
                 AppEffect::RefreshCurrentSessionStatus {
                     request_id,
                     trigger,
@@ -4459,6 +4465,15 @@ impl AppActor {
                     let _ = self
                         .account_actor
                         .send(AccountMessage::SyncConnectivityChanged { proven: *proven })
+                        .await;
+                }
+                AppEffect::ArmCurrentSessionStatusCheck { token, due_at_ms } => {
+                    let _ = self
+                        .account_actor
+                        .send(AccountMessage::ArmCurrentSessionStatusCheck {
+                            token: *token,
+                            due_at_ms: *due_at_ms,
+                        })
                         .await;
                 }
                 AppEffect::RefreshCurrentSessionStatus {

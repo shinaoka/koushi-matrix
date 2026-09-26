@@ -39,6 +39,11 @@ fn sync_status_projection_converges_from_stopped_to_running() {
         vec![
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
             AppEffect::SyncConnectivityChanged { proven: true },
+            // #1009: an unchecked Ready session arms its initial status check.
+            AppEffect::ArmCurrentSessionStatusCheck {
+                token: 1,
+                due_at_ms: 0,
+            },
         ]
     );
 }

@@ -178,6 +178,18 @@ impl std::fmt::Debug for MatrixCurrentSessionInspection {
     }
 }
 
+/// Where the current-session inspection reads the own cross-signing identity
+/// from (#1009).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OwnIdentitySource {
+    /// Query the homeserver (`/keys/query` for the own user).
+    Query,
+    /// Read the local crypto store because an own-identity query settled
+    /// successfully immediately before this inspection; querying again would
+    /// duplicate it.
+    FreshLocal,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, thiserror::Error)]
 #[serde(rename_all = "snake_case")]
 #[error("current-session inspection failed")]
@@ -2545,6 +2557,43 @@ impl MatrixClientSession {
     pub async fn inspect_current_session(
         &self,
     ) -> Result<MatrixCurrentSessionInspection, MatrixCurrentSessionInspectionError> {
+        self.inspect_current_session_with(OwnIdentitySource::Query)
+            .await
+    }
+    pub async fn inspect_current_session_with(
+        &self,
+        own_identity_source: OwnIdentitySource,
+    ) -> Result<MatrixCurrentSessionInspection, MatrixCurrentSessionInspectionError> {
+        self.inspect_current_session_tracked(
+            own_identity_source,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await
+    }
+    /// Like [`Self::inspect_current_session_with`], and sets
+    /// `identity_query_returned` once the own-identity step has returned
+    /// (successfully or not), so a caller can tell whether a trust demand that
+    /// arrives now would still be covered by this inspection's own query
+    /// (#1009). A `FreshLocal` inspection issues no query and sets it at once.
+    pub async fn inspect_current_session_tracked(
+        &self,
+        own_identity_source: OwnIdentitySource,
+        identity_query_returned: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<MatrixCurrentSessionInspection, MatrixCurrentSessionInspectionError> {
+        if own_identity_source == OwnIdentitySource::FreshLocal {
+            identity_query_returned.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let result = self
+            .inspect_current_session_inner(own_identity_source, &identity_query_returned)
+            .await;
+        identity_query_returned.store(true, std::sync::atomic::Ordering::SeqCst);
+        result
+    }
+    async fn inspect_current_session_inner(
+        &self,
+        own_identity_source: OwnIdentitySource,
+        identity_query_returned: &std::sync::atomic::AtomicBool,
+    ) -> Result<MatrixCurrentSessionInspection, MatrixCurrentSessionInspectionError> {
         let client = self.client();
         let verification = client.encryption().verification_state();
         let user_id = client
@@ -2567,10 +2616,22 @@ impl MatrixClientSession {
             .ok_or(MatrixCurrentSessionInspectionError::CurrentDeviceMissing)?;
 
         let encryption = client.encryption();
-        let own_identity = encryption
-            .request_user_identity(user_id)
-            .await
-            .map_err(|_| MatrixCurrentSessionInspectionError::IdentityRequest)?;
+        let own_identity = match own_identity_source {
+            OwnIdentitySource::Query => encryption
+                .request_user_identity(user_id)
+                .await
+                .map_err(|_| MatrixCurrentSessionInspectionError::IdentityRequest),
+            OwnIdentitySource::FreshLocal => encryption
+                .get_user_identity(user_id)
+                .await
+                .map_err(|_| MatrixCurrentSessionInspectionError::IdentityRequest),
+        };
+        identity_query_returned.store(true, std::sync::atomic::Ordering::SeqCst);
+        let own_identity = own_identity?;
+        // #1009: the trust verdict is the subscriber reading right after the
+        // own-identity step, like a standalone recheck; later local store or
+        // backup-probe work must not move it.
+        let verification = map_sdk_verification_state(verification.get());
         let current_crypto_device = encryption
             .get_device(user_id, device_id)
             .await
@@ -2596,7 +2657,7 @@ impl MatrixClientSession {
 
         Ok(MatrixCurrentSessionInspection {
             device_display_name: current_device.display_name,
-            verification: map_sdk_verification_state(verification.get()),
+            verification,
             is_cross_signed_by_owner,
             own_identity_verification,
             key_backup: classify_current_session_backup(local_backup_state, server_probe),

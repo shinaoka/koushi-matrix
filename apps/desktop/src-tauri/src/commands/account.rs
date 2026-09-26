@@ -5,10 +5,10 @@ use crate::commands::contracts::fake_request_id;
 fn admit_frontend_session_status_trigger(
     trigger: koushi_state::SessionStatusRefreshTrigger,
 ) -> Result<koushi_state::SessionStatusRefreshTrigger, String> {
-    if trigger == koushi_state::SessionStatusRefreshTrigger::Recovery {
-        Err("recovery refresh is core-owned".to_owned())
-    } else {
+    if trigger.is_frontend_submittable() {
         Ok(trigger)
+    } else {
+        Err("scheduled and recovery refreshes are core-owned".to_owned())
     }
 }
 
@@ -300,7 +300,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frontend_cannot_forge_the_core_owned_recovery_trigger() {
+    fn frontend_cannot_forge_the_core_owned_scheduler_triggers() {
         assert!(
             admit_frontend_session_status_trigger(koushi_state::SessionStatusRefreshTrigger::Open)
                 .is_ok()
@@ -314,6 +314,12 @@ mod tests {
         assert!(
             admit_frontend_session_status_trigger(
                 koushi_state::SessionStatusRefreshTrigger::Recovery
+            )
+            .is_err()
+        );
+        assert!(
+            admit_frontend_session_status_trigger(
+                koushi_state::SessionStatusRefreshTrigger::Scheduled
             )
             .is_err()
         );
