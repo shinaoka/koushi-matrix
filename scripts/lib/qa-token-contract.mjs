@@ -28,6 +28,16 @@ export const HEADLESS_LOCAL_QA_SCENARIO_TOKENS = Object.freeze({
     "crawl_catchup_restart=ok",
     "search_crawler_catchup=ok"
   ]),
+  account_notifications: Object.freeze([
+    "account_notifications_load=ok",
+    "account_notifications_no_write_on_open=ok",
+    "account_notifications_category_write=ok",
+    "account_notifications_overlap=ok",
+    "account_notifications_category_restore=ok",
+    "account_notifications_email_unsupported=ok",
+    "account_notifications_email_requires_verified=ok",
+    "account_notifications=ok"
+  ]),
   thread_late_joiner: Object.freeze([
     "thread_late_joiner_root_not_visible=ok",
     "thread_late_joiner_thread_panel=ok",

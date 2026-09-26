@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use koushi_core::executor;
 use koushi_core::runtime::CoreRuntime;
-use koushi_protocol::command::{AppCommand, CoreCommand, TimelineCommand};
+use koushi_protocol::command::{AccountCommand, AppCommand, CoreCommand, TimelineCommand};
 use koushi_protocol::event::CoreEvent;
 use koushi_protocol::ids::{AccountKey, TimelineKey, TimelineKind};
 use koushi_state::{
@@ -303,4 +303,73 @@ async fn privacy_settings_patch_gates_typing_dispatch() {
         suppressed,
         "typing notice should be suppressed when disabled"
     );
+}
+
+/// #981: account-notification commands cross the production runtime route
+/// (command admission → reducer projection → AccountActor) and settle the
+/// matching request without a session instead of hanging or projecting ON.
+#[tokio::test]
+async fn account_notification_commands_project_and_settle_through_the_runtime() {
+    use koushi_protocol::command::AccountNotificationsRequest;
+    use koushi_state::{
+        AccountNotificationsFailureKind, AccountNotificationsLoadState,
+        AccountNotificationsOperation, AccountNotificationsOperationState,
+        NotificationCategory,
+    };
+
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    runtime.inject_actions(restore_ready_actions![]).await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_))
+    })
+    .await;
+
+    let load_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::AccountNotifications {
+        request_id: load_id,
+        request: AccountNotificationsRequest::Load,
+    }))
+    .await
+    .expect("submit load");
+    let sequence = load_id.sequence;
+    wait_for_state(&mut conn, |state| {
+        state.account_notifications.load
+            == AccountNotificationsLoadState::Failed {
+                request_id: sequence,
+                failure_kind: AccountNotificationsFailureKind::SessionRequired,
+            }
+    })
+    .await;
+
+    let toggle_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::AccountNotifications {
+        request_id: toggle_id,
+        request: AccountNotificationsRequest::SetCategory {
+            category: NotificationCategory::GroupMessages,
+            enabled: false,
+        },
+    }))
+    .await
+    .expect("submit toggle");
+    let sequence = toggle_id.sequence;
+    let snapshot = wait_for_state(&mut conn, |state| {
+        matches!(
+            state.account_notifications.operation,
+            AccountNotificationsOperationState::Failed { request_id, .. } if request_id == sequence
+        )
+    })
+    .await;
+    assert_eq!(
+        snapshot.account_notifications.operation,
+        AccountNotificationsOperationState::Failed {
+            request_id: sequence,
+            operation: AccountNotificationsOperation::SetCategory {
+                category: NotificationCategory::GroupMessages,
+                enabled: false,
+            },
+            failure_kind: AccountNotificationsFailureKind::SessionRequired,
+        }
+    );
+    assert!(snapshot.account_notifications.snapshot.is_none());
 }

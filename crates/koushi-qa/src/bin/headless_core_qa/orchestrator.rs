@@ -22,6 +22,7 @@ use super::registry::{
     TimelineStressConfig, scenario_report, should_run_focused_send_queue_route,
     should_run_normal_secondary_participant,
 };
+use super::scenario_account_notifications::run_account_notifications_stage;
 use super::scenario_history_export::run_room_history_export_stage;
 use super::scenario_identity::{
     run_credential_health_stage, run_e2ee_login_store_scenario, run_e2ee_trust_stage,
@@ -275,6 +276,10 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
 
     if scenario.should_run_stage(QaStage::NativeAttention) {
         run_native_attention_stage(&mut conn_a).await?;
+    }
+
+    if scenario.should_run_stage(QaStage::AccountNotifications) {
+        run_account_notifications_stage(&config, &mut conn_a).await?;
     }
 
     if scenario == QaScenario::DeviceCleanup {
