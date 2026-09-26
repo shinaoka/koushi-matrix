@@ -4,21 +4,39 @@
   <img src="assets/branding/koushi-wordmark.svg" alt="Koushi logo: a bright photon node on a lattice with light running through the grid" width="372">
 </p>
 
-<img src="assets/screenshots/koushi-main.png" alt="Koushi desktop client showing a three-pane Matrix room with spaces, rooms, messages, replies, reactions, and an empty composer" width="800">
+**Koushi is a desktop Matrix client for conversations in many languages.**
 
-A desktop client for [Matrix](https://matrix.org), the open protocol for
-secure, decentralized communication.
+It began with scientists who wanted to discuss equations, share files, and
+find past conversations, and it is open to everyone. Koushi uses
+[Matrix](https://matrix.org), the open protocol for secure, decentralized
+communication.
+
+<img src="assets/screenshots/koushi-main.png" alt="Koushi desktop client showing a three-pane Matrix room with spaces, rooms, messages, replies, reactions, and an empty composer" width="800">
 
 Join our public Matrix room:
 [#koushi-matrix:matrix.org](https://matrix.to/#/#koushi-matrix:matrix.org).
 
-**Koushi** (コウシ) is a deliberate double pun in Japanese:
+## Why Koushi?
 
-- **光子** — *photon*: light, signal, speed, communication.
-- **格子** — *lattice / grid*: a direct conceptual bridge to Matrix.
+- **Desktop first.** A three-pane workspace keeps Spaces, conversations, and
+  threads or search results close at hand. Keyboard shortcuts, a system tray,
+  and native notifications fit the way you work at a computer.
+- **Multilingual by design.** Language support extends to typing, reading, and
+  finding messages, with special care for Japanese, Chinese, and Korean text.
+  IME candidate confirmation is separate from sending;
+  history search supports text without spaces between words and folds
+  full-width and half-width variants. The interface is available in English
+  and Japanese.
+- **Made for scientific conversation.** Write LaTeX-style inline and display
+  equations, use Markdown and code blocks, share figures and files, and follow
+  discussions in threads. You do not need to be a scientist to use Koushi.
+- **Find the conversation again.** Search locally indexed message history,
+  including encrypted conversations, across all rooms, a Space, or one
+  conversation, then open a result in context.
 
-The logo reflects both: a photon (the bright node) resting on a lattice, with
-light running through the grid.
+Koushi uses the Matrix Rust SDK for Matrix communication and encryption, with
+a Rust application core and a Tauri desktop shell. It is open source, and you
+can use it with a compatible Matrix homeserver of your choice.
 
 ## Features
 
@@ -27,13 +45,24 @@ light running through the grid.
 - Sign in through your normal browser (OIDC)
 - A familiar three-pane layout: Spaces, rooms, and direct messages
 - Room timelines with threads, replies, reactions, edits, and read receipts
+- Markdown, code blocks, and LaTeX-style math rendering
 - Image and file uploads with captions
-- Full-text search across your encrypted history, including Japanese and other
-  CJK text
+- Full-text search across your encrypted history, including Japanese, Chinese,
+  and Korean text
 - Desktop conveniences: system tray, close-to-hide, and native notifications
 
 Not included yet: voice and video calls, screen sharing, bots, widgets, and
 third-party app integrations.
+
+## The name
+
+**Koushi** (コウシ) is a deliberate double pun in Japanese:
+
+- **光子** — *photon*: light, signal, speed, communication.
+- **格子** — *lattice / grid*: a direct conceptual bridge to Matrix.
+
+The logo reflects both: a photon (the bright node) resting on a lattice, with
+light running through the grid.
 
 ## Platform Support
 
