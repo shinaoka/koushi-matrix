@@ -126,6 +126,7 @@ pub(super) const CACHE_RESTORE_SHALLOW_DEPTH: usize = 30;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum QaScenario {
     AvatarDemand,
+    AccountNotifications,
     All,
     Safety,
     LoginSync,
@@ -169,6 +170,7 @@ pub(super) enum QaScenario {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum QaStage {
     AvatarDemand,
+    AccountNotifications,
     Safety,
     LoginSync,
     SessionStatus,
@@ -287,8 +289,9 @@ impl QaScenario {
             "read_state_convergence" => Ok(Self::ReadStateConvergence),
             "thread_late_joiner" => Ok(Self::ThreadLateJoiner),
             "avatar_demand" => Ok(Self::AvatarDemand),
+            "account_notifications" => Ok(Self::AccountNotifications),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, e2ee_trust, e2ee_login_store, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, redact_edit_convergence, search_crawler, search_crawler_catchup, room_history_export, scheduled_send, restore_cleanup, link_preview, cache_restore, read_state_convergence, thread_late_joiner, avatar_demand; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, e2ee_trust, e2ee_login_store, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, redact_edit_convergence, search_crawler, search_crawler_catchup, room_history_export, scheduled_send, restore_cleanup, link_preview, cache_restore, read_state_convergence, thread_late_joiner, avatar_demand, account_notifications; got {other}"
             )),
         }
     }
@@ -304,8 +307,13 @@ impl QaScenario {
                     | QaStage::SearchCrawlerCatchup
                     | QaStage::ThreadLateJoiner
                     | QaStage::AvatarDemand
+                    | QaStage::AccountNotifications
             ),
             Self::Safety => matches!(stage, QaStage::Safety),
+            Self::AccountNotifications => matches!(
+                stage,
+                QaStage::Safety | QaStage::LoginSync | QaStage::AccountNotifications
+            ),
             Self::LoginSync => matches!(stage, QaStage::Safety | QaStage::LoginSync),
             Self::SessionStatus => matches!(
                 stage,
@@ -722,6 +730,16 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "thread_late_joiner=ok",
         ],
         QaStage::AvatarDemand => &["avatar_window_requests=ok"],
+        QaStage::AccountNotifications => &[
+            "account_notifications_load=ok",
+            "account_notifications_no_write_on_open=ok",
+            "account_notifications_category_write=ok",
+            "account_notifications_overlap=ok",
+            "account_notifications_category_restore=ok",
+            "account_notifications_email_unsupported=ok",
+            "account_notifications_email_requires_verified=ok",
+            "account_notifications=ok",
+        ],
     }
 }
 
@@ -830,6 +848,11 @@ pub(super) fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
         QaScenario::SessionStatus => {
             vec![QaStage::Safety, QaStage::LoginSync, QaStage::SessionStatus]
         }
+        QaScenario::AccountNotifications => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::AccountNotifications,
+        ],
         QaScenario::CredentialHealth => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -1043,6 +1066,7 @@ pub(super) fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static st
         | QaScenario::RoomManagement
         | QaScenario::RoomPeopleProjection
         | QaScenario::SessionStatus
+        | QaScenario::AccountNotifications
         | QaScenario::CredentialHealth
         | QaScenario::NativeAttention
         | QaScenario::E2eeTrust

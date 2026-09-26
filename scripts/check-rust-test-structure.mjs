@@ -1323,6 +1323,7 @@ export function checkSdkSlidingSyncInviteProbeContract() {
 }
 
 const sdkLibrarySourcePaths = [
+  "src/account_notifications.rs",
   "src/auth.rs",
   "src/client_session.rs",
   "src/e2ee.rs",

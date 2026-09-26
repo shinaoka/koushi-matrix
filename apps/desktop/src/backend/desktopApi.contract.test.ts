@@ -65,7 +65,17 @@ describe("DesktopApi command contract", () => {
         "exportHistory",
         "stopHistoryExport",
         "retryHistoryExport",
-        "openNotificationEvent"
+        "openNotificationEvent",
+        "loadAccountNotifications",
+        "setNotificationCategory",
+        "setAccountPushEnabled",
+        "requestNotificationEmailToken",
+        "resendNotificationEmailToken",
+        "confirmNotificationEmail",
+        "submitNotificationEmailUia",
+        "cancelNotificationEmail",
+        "enableEmailNotifications",
+        "disableEmailNotifications"
       )
       .sort();
     expect(new Set(current).size).toBe(current.length);

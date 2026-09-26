@@ -44,6 +44,11 @@ pub use sidebar::{
 };
 pub use state::{
     AccountManagementCapabilities, AccountManagementOperation, AccountManagementState,
+    AccountNotificationsFailureKind, AccountNotificationsLoadState, AccountNotificationsOperation,
+    AccountNotificationsOperationState, AccountNotificationsSnapshot, AccountNotificationsState,
+    MAX_NOTIFICATION_EMAIL_LEN, NotificationCategory, NotificationCategoryState,
+    NotificationCategoryStates, NotificationEmailAddress, NotificationEmailManagement,
+    PendingNotificationEmail, normalize_notification_email,
     AccountManagementUrl, ActivityMarkReadState, ActivityMarkReadTarget, ActivityResolutionState,
     ActivityRow, ActivityRowKind, ActivityState, ActivityStream, ActivityTab, AppError, AppState,
     AppearanceSettings, AttachmentFilter, AttachmentKind, AttachmentResult, AttachmentScope,

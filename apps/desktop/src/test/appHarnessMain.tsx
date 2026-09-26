@@ -279,6 +279,12 @@ function readySnapshot(
           room_notification_settings: {}, room_interactions: {},
           account_management_url: "https://account.example.test/devices",
           account_management: { kind: "idle" },
+          account_notifications: {
+            load: { kind: "notLoaded" },
+            snapshot: null,
+            pending_email: null,
+            operation: { kind: "idle" }
+          },
           account_management_capabilities: { change_password: { kind: "unknown" } },
           soft_logout_reauth: { kind: "idle" }, qr_login: { kind: "idle" },
           directory: {
@@ -1970,6 +1976,38 @@ mock.setCommandResponse("load_account_management_capabilities", () =>
         change_password: { kind: "enabled" }
       }
       },
+    }
+  })
+);
+// Account notification settings (#981): the harness returns a fixed
+// Rust-shaped snapshot for the read-only load and only records writes, so
+// the browser tier cannot pass against a second rule state machine.
+mock.setCommandResponse("load_account_notifications", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
+        account_notifications: {
+          load: { kind: "loaded" },
+          snapshot: {
+            account_push_enabled: true,
+            encrypted_event_push: false,
+            categories: {
+              direct_messages: "on",
+              group_messages: "mixed",
+              mentions_and_replies: "on",
+              invites: "off"
+            },
+            email_management: "available",
+            emails: [{ address: "harness@example.invalid", notifications_active: false }],
+            unverified_email_pusher_count: 0
+          },
+          pending_email: null,
+          operation: { kind: "idle" }
+        }
+      }
     }
   })
 );

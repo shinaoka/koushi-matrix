@@ -643,6 +643,56 @@ export type MessageId =
   | "settings.updateInstalling"
   | "settings.updateCheckFailed"
   | "settings.updateInstallFailed"
+  | "settings.notificationDesktopDescription"
+  | "settings.notificationsThisDevice"
+  | "settings.notificationRetry"
+  | "settings.notificationLoading"
+  | "settings.notificationCategories"
+  | "settings.notificationCategoriesDescription"
+  | "settings.notificationCategoryDirectMessages"
+  | "settings.notificationCategoryGroupMessages"
+  | "settings.notificationCategoryMentions"
+  | "settings.notificationCategoryInvites"
+  | "settings.notificationCategoryMixed"
+  | "settings.notificationAccountMuted"
+  | "settings.notificationAccountUnmute"
+  | "settings.emailNotifications"
+  | "settings.emailNotificationsDescription"
+  | "settings.emailNotificationsToggle"
+  | "settings.emailNotificationsSendingTo"
+  | "settings.emailNotificationsUnverifiedTarget"
+  | "settings.emailNotificationsOff"
+  | "settings.emailNotificationsNeedsEmail"
+  | "settings.emailNotificationsUnverifiedPushers"
+  | "settings.emailNotificationsTarget"
+  | "settings.emailVerified"
+  | "settings.emailVerifiedActive"
+  | "settings.emailManagedByAccount"
+  | "settings.emailUnsupported"
+  | "settings.emailPending"
+  | "settings.emailResent"
+  | "settings.emailResend"
+  | "settings.emailConfirm"
+  | "settings.emailAdd"
+  | "settings.emailChange"
+  | "settings.emailAddressLabel"
+  | "settings.emailAddHint"
+  | "settings.emailSendVerification"
+  | "settings.notificationFailureUnsupported"
+  | "settings.notificationFailureEmailInUse"
+  | "settings.notificationFailureEmailDenied"
+  | "settings.notificationFailureInvalidEmail"
+  | "settings.notificationFailureEmailNotVerified"
+  | "settings.notificationFailureEmailNotRegistered"
+  | "settings.notificationFailureAuthRejected"
+  | "settings.notificationFailureRateLimited"
+  | "settings.notificationFailureNetwork"
+  | "settings.notificationFailureServer"
+  | "settings.notificationFailureForbidden"
+  | "settings.notificationCategoryUnavailable"
+  | "settings.notificationEncryptedMentionsCaveat"
+  | "settings.notificationEncryptedEventPushCaveat"
+  | "settings.emailNotificationsOn"
   | "settings.notificationBadges"
   | "settings.notificationDesktop"
   | "settings.notificationMessagePreviews"
@@ -2187,6 +2237,56 @@ const en: Catalog = {
   "timeline.linkPreviewHide": "Hide preview",
   "timeline.linkPreviewFailed": "Could not load preview",
   "timeline.linkPreviewLoading": "Loading preview…",
+  "settings.notificationDesktopDescription": "Only on this device. Email notifications are not affected.",
+  "settings.notificationsThisDevice": "This device",
+  "settings.notificationRetry": "Retry",
+  "settings.notificationLoading": "Loading notification settings…",
+  "settings.notificationCategories": "What to notify about",
+  "settings.notificationCategoriesDescription": "Shared by app notifications, email notifications, and your other Matrix apps. Mentions and replies in unencrypted rooms still notify when group messages are off. Mute a single room from that room's settings.",
+  "settings.notificationCategoryDirectMessages": "Direct messages",
+  "settings.notificationCategoryGroupMessages": "Group messages",
+  "settings.notificationCategoryMentions": "Mentions and replies",
+  "settings.notificationCategoryInvites": "Room invites",
+  "settings.notificationCategoryMixed": "Set differently in another app. Turning this on applies it everywhere.",
+  "settings.notificationAccountMuted": "Notifications for this account were turned off in another app, so no app or email notifications are sent.",
+  "settings.notificationAccountUnmute": "Turn on",
+  "settings.emailNotifications": "Email notifications",
+  "settings.emailNotificationsDescription": "Your homeserver emails a summary of unread notifications after a delay. It is not instant, and it follows the rules below.",
+  "settings.emailNotificationsToggle": "Email notifications",
+  "settings.emailNotificationsSendingTo": "Sending to {address}",
+  "settings.emailNotificationsUnverifiedTarget": "Sending to an address that is not verified on this account",
+  "settings.emailNotificationsOff": "Off",
+  "settings.emailNotificationsNeedsEmail": "Add and verify an email address first",
+  "settings.emailNotificationsUnverifiedPushers": "{count} email targets use addresses that are not verified on this account. Turning email notifications off removes them.",
+  "settings.emailNotificationsTarget": "Send to",
+  "settings.emailVerified": "Verified",
+  "settings.emailVerifiedActive": "Verified · receiving notifications",
+  "settings.emailManagedByAccount": "Email addresses for this account are managed on your account page.",
+  "settings.emailUnsupported": "This server does not support adding an email address.",
+  "settings.emailPending": "We sent a verification email to {address}. Open the link in it, then press Continue.",
+  "settings.emailResent": "Verification email sent again.",
+  "settings.emailResend": "Resend",
+  "settings.emailConfirm": "Continue",
+  "settings.emailAdd": "Add email address",
+  "settings.emailChange": "Change",
+  "settings.emailAddressLabel": "Email address",
+  "settings.emailAddHint": "Email notifications start only after you confirm you own this address.",
+  "settings.emailSendVerification": "Send verification email",
+  "settings.notificationFailureUnsupported": "This server does not support this.",
+  "settings.notificationFailureEmailInUse": "This email address is already in use.",
+  "settings.notificationFailureEmailDenied": "This server does not allow this email address.",
+  "settings.notificationFailureInvalidEmail": "Enter a valid email address.",
+  "settings.notificationFailureEmailNotVerified": "The address is not verified yet. Open the link in the email, then try again.",
+  "settings.notificationFailureEmailNotRegistered": "This address is not verified on your account.",
+  "settings.notificationFailureAuthRejected": "Your password was not accepted.",
+  "settings.notificationFailureRateLimited": "Too many attempts. Wait a moment and try again.",
+  "settings.notificationFailureNetwork": "Could not reach your homeserver.",
+  "settings.notificationFailureServer": "Your homeserver could not complete this. The settings shown are the current server state.",
+  "settings.notificationFailureForbidden": "Your homeserver does not allow this change.",
+  "settings.notificationCategoryUnavailable": "Not available on this server.",
+  "settings.notificationEncryptedMentionsCaveat": "In encrypted group rooms your server cannot see mentions, so with group messages off, mentions and replies there reach only this app, not email or your other devices.",
+  "settings.notificationEncryptedEventPushCaveat": "Your server pushes every encrypted message to your devices, so turning group messages off may not silence encrypted rooms on other devices or in email.",
+  "settings.emailNotificationsOn": "On",
   "settings.notificationBadges": "Badges",
   "settings.notificationDesktop": "Desktop notifications",
   "settings.notificationMessagePreviews": "Show message content in notifications",
@@ -3619,6 +3719,56 @@ const ja: Catalog = {
   "timeline.linkPreviewHide": "プレビューを非表示",
   "timeline.linkPreviewFailed": "プレビューを読み込めませんでした",
   "timeline.linkPreviewLoading": "プレビューを読み込み中…",
+  "settings.notificationDesktopDescription": "この端末だけの設定です。メール通知には影響しません。",
+  "settings.notificationsThisDevice": "この端末",
+  "settings.notificationRetry": "再試行",
+  "settings.notificationLoading": "通知設定を読み込み中…",
+  "settings.notificationCategories": "通知する内容",
+  "settings.notificationCategoriesDescription": "アプリ通知・メール通知・他のMatrixアプリで共通です。グループのメッセージがオフでも、暗号化されていないルームのメンション・返信は通知されます。個別のルームはルーム設定でミュートできます。",
+  "settings.notificationCategoryDirectMessages": "ダイレクトメッセージ",
+  "settings.notificationCategoryGroupMessages": "グループのメッセージ",
+  "settings.notificationCategoryMentions": "メンション・返信",
+  "settings.notificationCategoryInvites": "ルームへの招待",
+  "settings.notificationCategoryMixed": "他のアプリで個別に設定されています。オンにするとすべてに適用されます。",
+  "settings.notificationAccountMuted": "他のアプリでこのアカウントの通知がオフにされているため、アプリ通知もメール通知も届きません。",
+  "settings.notificationAccountUnmute": "オンにする",
+  "settings.emailNotifications": "メール通知",
+  "settings.emailNotificationsDescription": "未読の通知をホームサーバーが時間をおいてメールでまとめて送ります。即時には届きません。下の通知ルールに従います。",
+  "settings.emailNotificationsToggle": "メール通知",
+  "settings.emailNotificationsSendingTo": "{address} に送信",
+  "settings.emailNotificationsUnverifiedTarget": "このアカウントで確認されていないアドレスに送信しています",
+  "settings.emailNotificationsOff": "オフ",
+  "settings.emailNotificationsNeedsEmail": "先にメールアドレスを追加して確認してください",
+  "settings.emailNotificationsUnverifiedPushers": "このアカウントで確認されていないアドレス宛ての送信先が{count}件あります。メール通知をオフにすると削除されます。",
+  "settings.emailNotificationsTarget": "送信先",
+  "settings.emailVerified": "確認済み",
+  "settings.emailVerifiedActive": "確認済み・通知を受信中",
+  "settings.emailManagedByAccount": "このアカウントのメールアドレスはアカウントページで管理します。",
+  "settings.emailUnsupported": "このサーバーはメールアドレスの追加に対応していません。",
+  "settings.emailPending": "{address} に確認メールを送りました。メール内のリンクを開いてから「続行」を押してください。",
+  "settings.emailResent": "確認メールを再送しました。",
+  "settings.emailResend": "再送",
+  "settings.emailConfirm": "続行",
+  "settings.emailAdd": "メールアドレスを追加",
+  "settings.emailChange": "変更",
+  "settings.emailAddressLabel": "メールアドレス",
+  "settings.emailAddHint": "メールアドレスの所有を確認するまでメール通知は始まりません。",
+  "settings.emailSendVerification": "確認メールを送信",
+  "settings.notificationFailureUnsupported": "このサーバーは対応していません。",
+  "settings.notificationFailureEmailInUse": "このメールアドレスは既に使われています。",
+  "settings.notificationFailureEmailDenied": "このサーバーではこのメールアドレスを使えません。",
+  "settings.notificationFailureInvalidEmail": "正しいメールアドレスを入力してください。",
+  "settings.notificationFailureEmailNotVerified": "まだ確認されていません。メール内のリンクを開いてから、もう一度お試しください。",
+  "settings.notificationFailureEmailNotRegistered": "このアドレスはアカウントで確認されていません。",
+  "settings.notificationFailureAuthRejected": "パスワードが受け付けられませんでした。",
+  "settings.notificationFailureRateLimited": "試行回数が多すぎます。少し待ってからお試しください。",
+  "settings.notificationFailureNetwork": "ホームサーバーに接続できませんでした。",
+  "settings.notificationFailureServer": "ホームサーバーで処理できませんでした。表示中の設定がサーバーの現在の状態です。",
+  "settings.notificationFailureForbidden": "ホームサーバーがこの変更を許可していません。",
+  "settings.notificationCategoryUnavailable": "このサーバーでは利用できません。",
+  "settings.notificationEncryptedMentionsCaveat": "暗号化されたグループではサーバーがメンションを読めないため、グループのメッセージがオフの間、そこでのメンション・返信はこのアプリにだけ届き、メールや他の端末には届きません。",
+  "settings.notificationEncryptedEventPushCaveat": "このサーバーは暗号化されたメッセージをすべて端末へ送るため、グループのメッセージをオフにしても、他の端末やメールでは暗号化ルームの通知が止まらない場合があります。",
+  "settings.emailNotificationsOn": "オン",
   "settings.notificationBadges": "バッジ",
   "settings.notificationDesktop": "デスクトップ通知",
   "settings.notificationMessagePreviews": "通知にメッセージ本文を表示",

@@ -7,6 +7,7 @@ pub mod media_download;
 pub mod search_crawler;
 
 // ── New per-feature submodules (#87 Phase 2) ────────────────────────────────
+mod account_notifications;
 mod activity;
 mod basic_operation;
 mod cjk;
@@ -51,6 +52,15 @@ pub use composer_draft::{
     ComposerDraftProtection, MAX_LIVE_COMPOSER_ROOM_TOMBSTONES, MAX_LIVE_COMPOSER_THREAD_TOMBSTONES,
 };
 pub use errors::{AppError, OperationFailureKind};
+
+// ── Re-exports: account notifications ───────────────────────────────────────
+pub use account_notifications::{
+    AccountNotificationsFailureKind, AccountNotificationsLoadState, AccountNotificationsOperation,
+    AccountNotificationsOperationState, AccountNotificationsSnapshot, AccountNotificationsState,
+    MAX_NOTIFICATION_EMAIL_LEN, NotificationCategory, NotificationCategoryState,
+    NotificationCategoryStates, NotificationEmailAddress, NotificationEmailManagement,
+    PendingNotificationEmail, normalize_notification_email,
+};
 
 // ── Re-exports: sync ────────────────────────────────────────────────────────
 pub use sync::{SyncLifecycleStatus, SyncState};
@@ -296,6 +306,9 @@ pub struct AppState {
     pub account_management: AccountManagementState,
     #[serde(default)]
     pub account_management_capabilities: AccountManagementCapabilities,
+    /// Server-owned account notification settings (#981).
+    #[serde(default)]
+    pub account_notifications: AccountNotificationsState,
     #[serde(default)]
     pub soft_logout_reauth: SoftLogoutReauthState,
     #[serde(default)]
@@ -378,6 +391,7 @@ impl Default for AppState {
             account_management_url: None,
             account_management: AccountManagementState::Idle,
             account_management_capabilities: AccountManagementCapabilities::default(),
+            account_notifications: AccountNotificationsState::default(),
             soft_logout_reauth: SoftLogoutReauthState::Idle,
             qr_login: QrLoginState::Idle,
             settings: SettingsState::default(),

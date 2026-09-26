@@ -1268,6 +1268,16 @@ normal QA-title mode and cannot change product title semantics.
   URL. React renders **Manage account & devices** only when the Rust destination
   exists and never fetches metadata, constructs a URL, retries discovery, or
   renders local remote-device list/rename/sign-out controls.
+- Account notification settings (#981) are Rust-owned server state in
+  `AppState.account_notifications` (mirrors: `koushi_state` →
+  `koushi_protocol::state_update` changed slice → Tauri `dto.rs` domain slice →
+  `types.ts` `AccountNotificationsState`). React renders category states,
+  email targets, and pending verification only from that snapshot and
+  dispatches `AccountCommand::AccountNotifications` through the typed
+  `DesktopApi` methods. Opening the Notifications page may dispatch only the
+  read-only load. Do not add React-local ON/OFF, target, or verification state,
+  and never render ON from a requested or failed operation. The email address
+  input uses `ImeTextField`; the UIA password uses `SecureImeTextField`.
 - Verification and device DTOs include user/device ids for Rust correlation, but
   the GUI should not display those ids by default. Use ordinal/status labels
   (`Device 1`, `Verified`, etc.) unless a Rust-owned redacted display model is

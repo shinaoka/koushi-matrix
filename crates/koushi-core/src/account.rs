@@ -8,6 +8,9 @@ pub(crate) enum RoomEventLookupResult {
 }
 
 mod account_management;
+mod account_notifications;
+#[cfg(test)]
+mod account_notifications_tests;
 mod actor;
 mod avatar_demand;
 mod history_export;

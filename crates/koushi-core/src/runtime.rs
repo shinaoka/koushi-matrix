@@ -5071,6 +5071,10 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
             request_id: *flow_id,
             flow_id: *flow_id,
         }),
+        AccountCommand::AccountNotifications {
+            request_id,
+            request,
+        } => Some(account_notifications_action(request_id.sequence, request)),
         AccountCommand::SoftLogoutReauth { request_id, .. } => {
             Some(AppAction::SoftLogoutReauthRequested {
                 request_id: request_id.sequence,
@@ -5191,3 +5195,39 @@ fn default_data_dir() -> PathBuf {
 
 #[cfg(test)]
 mod tests;
+
+/// Reducer projection of an account-notifications command (#981). Only the
+/// operation kind crosses into reducer state; addresses and credentials stay
+/// in the command for the account actor.
+fn account_notifications_action(
+    request_id: u64,
+    request: &koushi_protocol::command::AccountNotificationsRequest,
+) -> AppAction {
+    use koushi_protocol::command::AccountNotificationsRequest as Request;
+    use koushi_state::AccountNotificationsOperation as Operation;
+
+    let operation = match request {
+        Request::Load => return AppAction::AccountNotificationsLoadRequested { request_id },
+        Request::SubmitUia { flow_id, .. } => {
+            return AppAction::AccountNotificationsUiaSubmitted {
+                request_id: *flow_id,
+                flow_id: *flow_id,
+            };
+        }
+        Request::CancelPendingEmail => return AppAction::AccountNotificationsPendingEmailCancelled,
+        Request::SetCategory { category, enabled } => Operation::SetCategory {
+            category: *category,
+            enabled: *enabled,
+        },
+        Request::SetAccountPush { enabled } => Operation::SetAccountPush { enabled: *enabled },
+        Request::RequestEmailToken { .. } => Operation::RequestEmailToken,
+        Request::ResendEmailToken => Operation::ResendEmailToken,
+        Request::ConfirmEmail => Operation::ConfirmEmail,
+        Request::EnableEmailNotifications { .. } => Operation::EnableEmailNotifications,
+        Request::DisableEmailNotifications => Operation::DisableEmailNotifications,
+    };
+    AppAction::AccountNotificationsOperationRequested {
+        request_id,
+        operation,
+    }
+}

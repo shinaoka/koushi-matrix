@@ -1463,6 +1463,37 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
         RoomNotificationSettings::default(),
     );
 
+    // account_notifications (#981) — loaded snapshot with a mixed category,
+    // a pending email, and a UIA continuation.
+    state.account_notifications = koushi_state::AccountNotificationsState {
+        load: koushi_state::AccountNotificationsLoadState::Loaded,
+        snapshot: Some(koushi_state::AccountNotificationsSnapshot {
+            account_push_enabled: true,
+            encrypted_event_push: false,
+            categories: koushi_state::NotificationCategoryStates {
+                direct_messages: koushi_state::NotificationCategoryState::On,
+                group_messages: koushi_state::NotificationCategoryState::Mixed,
+                mentions_and_replies: koushi_state::NotificationCategoryState::On,
+                invites: koushi_state::NotificationCategoryState::Off,
+            },
+            email_management: koushi_state::NotificationEmailManagement::Available,
+            emails: vec![koushi_state::NotificationEmailAddress {
+                address: "fixture@example.invalid".to_owned(),
+                notifications_active: true,
+            }],
+            unverified_email_pusher_count: 0,
+        }),
+        pending_email: Some(koushi_state::PendingNotificationEmail {
+            address: "pending@example.invalid".to_owned(),
+            resend_count: 1,
+        }),
+        operation: koushi_state::AccountNotificationsOperationState::AwaitingUia {
+            request_id: 81,
+            flow_id: 81,
+            operation: koushi_state::AccountNotificationsOperation::ConfirmEmail,
+        },
+    };
+
     // room_management — with settings snapshot
     state.room_management = RoomManagementState {
         selected_room_id: Some("!room:example.invalid".to_owned()),

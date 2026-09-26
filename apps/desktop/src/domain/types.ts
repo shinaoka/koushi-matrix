@@ -69,6 +69,7 @@ export interface AppDomainState {
   account_management_url: string | null;
   account_management: AccountManagementState;
   account_management_capabilities: AccountManagementCapabilities;
+  account_notifications: AccountNotificationsState;
   soft_logout_reauth: SoftLogoutReauthState;
   qr_login: QrLoginState;
   settings: SettingsState;
@@ -505,6 +506,99 @@ export type AccountManagementOperation =
 
 export interface AccountManagementCapabilities {
   change_password: CapabilityState;
+}
+
+// Mirrors koushi_state::state::account_notifications (#981).
+export type NotificationCategory =
+  | "directMessages"
+  | "groupMessages"
+  | "mentionsAndReplies"
+  | "invites";
+
+export type NotificationCategoryState = "on" | "off" | "mixed" | "unavailable";
+
+export interface NotificationCategoryStates {
+  direct_messages: NotificationCategoryState;
+  group_messages: NotificationCategoryState;
+  mentions_and_replies: NotificationCategoryState;
+  invites: NotificationCategoryState;
+}
+
+export type NotificationEmailManagement =
+  | "available"
+  | "unsupported"
+  | "delegatedToAccountManagement";
+
+export interface NotificationEmailAddress {
+  address: string;
+  notifications_active: boolean;
+}
+
+export interface AccountNotificationsSnapshot {
+  account_push_enabled: boolean;
+  encrypted_event_push: boolean;
+  categories: NotificationCategoryStates;
+  email_management: NotificationEmailManagement;
+  emails: NotificationEmailAddress[];
+  unverified_email_pusher_count: number;
+}
+
+export type AccountNotificationsFailureKind =
+  | "unsupported"
+  | "emailInUse"
+  | "emailDenied"
+  | "invalidEmail"
+  | "emailNotVerified"
+  | "emailNotRegistered"
+  | "authRejected"
+  | "forbidden"
+  | "rateLimited"
+  | "network"
+  | "server"
+  | "sessionRequired";
+
+export type AccountNotificationsLoadState =
+  | { kind: "notLoaded" }
+  | { kind: "loading"; request_id: number }
+  | { kind: "loaded" }
+  | { kind: "failed"; request_id: number; failureKind: AccountNotificationsFailureKind };
+
+export type AccountNotificationsOperation =
+  | { kind: "setCategory"; category: NotificationCategory; enabled: boolean }
+  | { kind: "setAccountPush"; enabled: boolean }
+  | { kind: "requestEmailToken" }
+  | { kind: "resendEmailToken" }
+  | { kind: "confirmEmail" }
+  | { kind: "enableEmailNotifications" }
+  | { kind: "disableEmailNotifications" };
+
+export type AccountNotificationsOperationState =
+  | { kind: "idle" }
+  | { kind: "working"; request_id: number; operation: AccountNotificationsOperation }
+  | {
+      kind: "awaitingUia";
+      request_id: number;
+      flow_id: number;
+      operation: AccountNotificationsOperation;
+    }
+  | { kind: "succeeded"; request_id: number; operation: AccountNotificationsOperation }
+  | {
+      kind: "failed";
+      request_id: number;
+      operation: AccountNotificationsOperation;
+      failureKind: AccountNotificationsFailureKind;
+    };
+
+export interface PendingNotificationEmail {
+  address: string;
+  resend_count: number;
+}
+
+export interface AccountNotificationsState {
+  load: AccountNotificationsLoadState;
+  snapshot: AccountNotificationsSnapshot | null;
+  pending_email: PendingNotificationEmail | null;
+  operation: AccountNotificationsOperationState;
 }
 
 export type CapabilityState =

@@ -31,6 +31,7 @@ import type {
   InviteScopeSelection,
   RoomListFilter,
   RoomModerationAction,
+  NotificationCategory,
   RoomNotificationMode,
   RoomSettingChange,
   RoomTagKind,
@@ -251,6 +252,49 @@ export class TauriDesktopApi implements DesktopApi {
 
   async submitAccountManagementUia(flowId: number, password: string): Promise<CommandAdmission> {
     return this.invokeCommand<CommandAdmission>("submit_account_management_uia", { flowId, password });
+  }
+
+  async loadAccountNotifications(): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("load_account_notifications");
+  }
+
+  async setNotificationCategory(
+    category: NotificationCategory,
+    enabled: boolean
+  ): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("set_notification_category", { category, enabled });
+  }
+
+  async setAccountPushEnabled(enabled: boolean): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("set_account_push_enabled", { enabled });
+  }
+
+  async requestNotificationEmailToken(address: string, lang: string): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("request_notification_email_token", { address, lang });
+  }
+
+  async resendNotificationEmailToken(): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("resend_notification_email_token");
+  }
+
+  async confirmNotificationEmail(): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("confirm_notification_email");
+  }
+
+  async submitNotificationEmailUia(flowId: number, password: string): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("submit_notification_email_uia", { flowId, password });
+  }
+
+  async cancelNotificationEmail(): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("cancel_notification_email");
+  }
+
+  async enableEmailNotifications(address: string, lang: string): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("enable_email_notifications", { address, lang });
+  }
+
+  async disableEmailNotifications(): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("disable_email_notifications");
   }
 
   async loadAccountManagementCapabilities(): Promise<CommandAdmission> {

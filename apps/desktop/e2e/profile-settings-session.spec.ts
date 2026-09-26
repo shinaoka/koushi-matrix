@@ -729,6 +729,49 @@ test("typography settings dispatch Rust-owned update_settings patches", async ({
     .toBe("twemojiColr");
 });
 
+test("account notification settings load read-only and dispatch typed commands", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  await page.getByRole("button", { name: "User settings" }).click();
+  await page.getByRole("tab", { name: "Notifications", exact: true }).click();
+
+  await expect.poll(() => invocationCount(page, "load_account_notifications")).toBe(1);
+  const group = page.getByRole("switch", { name: "Group messages" });
+  await expect(group).toHaveAttribute("data-state", "mixed");
+  await expect(group).toHaveAttribute("aria-checked", "false");
+  await expect(page.getByRole("switch", { name: "Direct messages" })).toHaveAttribute(
+    "aria-checked",
+    "true"
+  );
+  // Opening the page wrote nothing.
+  for (const command of [
+    "set_notification_category",
+    "set_account_push_enabled",
+    "enable_email_notifications",
+    "disable_email_notifications",
+    "request_notification_email_token"
+  ]) {
+    expect(await invocationCount(page, command)).toBe(0);
+  }
+
+  await group.click();
+  await expect.poll(() => invocationCount(page, "set_notification_category")).toBe(1);
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("set_notification_category")[0]?.args)
+  ).toEqual({ category: "groupMessages", enabled: true });
+
+  const email = page.getByRole("switch", { name: "Email notifications" });
+  await expect(email).toHaveAttribute("aria-checked", "false");
+  await email.click();
+  await expect.poll(() => invocationCount(page, "enable_email_notifications")).toBe(1);
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("enable_email_notifications")[0]?.args)
+  ).toEqual({ address: "harness@example.invalid", lang: "en" });
+});
+
 test("notification settings dispatch Rust-owned update_settings patches", async ({
   page
 }) => {
@@ -737,7 +780,7 @@ test("notification settings dispatch Rust-owned update_settings patches", async 
 
   await page.getByRole("button", { name: "User settings" }).click();
   await page.getByRole("tab", { name: "Notifications", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Notifications" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Notifications", exact: true })).toBeVisible();
 
   const desktopNotifications = page.getByRole("switch", { name: "Desktop notifications" });
   await expect(desktopNotifications).toHaveAttribute("aria-checked", "true");

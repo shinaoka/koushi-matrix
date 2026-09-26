@@ -262,6 +262,7 @@ import {
   type RuntimeAlert
 } from "./components/Shell";
 import { ContextualRightPanel } from "./components/rightPanel";
+import type { AccountNotificationActions } from "./components/user-settings/AccountNotificationsSections";
 import type { HistoryExportControls } from "./components/HistoryExportDialog";
 import { historyExportLabels } from "./domain/historyExportLabels";
 import type {
@@ -2605,6 +2606,34 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
   async function forceRotateOutboundSession(roomId: string) {
     await settleCommand(api.forceRotateOutboundSession(roomId));
   }
+
+  // Account notification settings (#981). The Rust snapshot is the only
+  // source of displayed state; these callbacks only dispatch typed commands.
+  // Memoized so the Notifications page's read-only load effect is stable.
+  // The digest language comes from the Rust-resolved locale profile.
+  const notificationLangRef = useRef("en");
+  notificationLangRef.current = snapshot?.state.domain.locale_profile.lang ?? "en";
+  const accountNotificationActions = useMemo<AccountNotificationActions>(() => ({
+    load: () => runInBackground(settleCommand(api.loadAccountNotifications())),
+    setCategory: (category, enabled) =>
+      runInBackground(settleCommand(api.setNotificationCategory(category, enabled))),
+    setAccountPush: (enabled) =>
+      runInBackground(settleCommand(api.setAccountPushEnabled(enabled))),
+    requestEmailToken: (address) =>
+      runInBackground(
+        settleCommand(api.requestNotificationEmailToken(address, notificationLangRef.current))
+      ),
+    resendEmailToken: () => runInBackground(settleCommand(api.resendNotificationEmailToken())),
+    confirmEmail: () => runInBackground(settleCommand(api.confirmNotificationEmail())),
+    submitUia: (flowId, password) =>
+      runInBackground(settleCommand(api.submitNotificationEmailUia(flowId, password))),
+    cancelEmail: () => runInBackground(settleCommand(api.cancelNotificationEmail())),
+    enableEmail: (address) =>
+      runInBackground(
+        settleCommand(api.enableEmailNotifications(address, notificationLangRef.current))
+      ),
+    disableEmail: () => runInBackground(settleCommand(api.disableEmailNotifications()))
+  }), []);
 
   // The platform half of the Rust-owned history export. Memoized so an open
   // dialog loads the time zone once; the receipt reconciler is a ref.
@@ -6694,6 +6723,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           onSubmitAccountManagementUia={(flowId, password) => {
             runInBackground(submitAccountManagementUia(flowId, password));
           }}
+          accountNotificationActions={accountNotificationActions}
           onUpdateRoomSetting={(roomId, change) => {
             runInBackground(updateRoomSetting(roomId, change));
           }}

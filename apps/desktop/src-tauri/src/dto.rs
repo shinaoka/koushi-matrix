@@ -220,6 +220,8 @@ pub struct FrontendDomainStateChangedSlices {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_management_capabilities: Option<AccountManagementCapabilities>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_notifications: Option<koushi_state::AccountNotificationsState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub soft_logout_reauth: Option<SoftLogoutReauthState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub qr_login: Option<QrLoginState>,
@@ -332,6 +334,7 @@ impl FrontendDomainStateChangedSlices {
             && self.account_management_url.is_none()
             && self.account_management.is_none()
             && self.account_management_capabilities.is_none()
+            && self.account_notifications.is_none()
             && self.soft_logout_reauth.is_none()
             && self.qr_login.is_none()
             && self.settings.is_none()
@@ -438,6 +441,7 @@ impl From<StateDelta> for FrontendDesktopSnapshotDelta {
         domain.account_management_url = changed.account_management_url;
         domain.account_management = changed.account_management;
         domain.account_management_capabilities = changed.account_management_capabilities;
+        domain.account_notifications = changed.account_notifications;
         domain.soft_logout_reauth = changed.soft_logout_reauth;
         domain.qr_login = changed.qr_login;
         if let Some(settings) = changed.settings {
@@ -557,6 +561,7 @@ pub struct FrontendDomainState {
     pub account_management_url: Option<AccountManagementUrl>,
     pub account_management: AccountManagementState,
     pub account_management_capabilities: AccountManagementCapabilities,
+    pub account_notifications: koushi_state::AccountNotificationsState,
     pub soft_logout_reauth: SoftLogoutReauthState,
     pub qr_login: QrLoginState,
     pub settings: SettingsState,
@@ -631,6 +636,7 @@ fn frontend_app_state_for_platform(state: AppState, platform: DisplayPlatform) -
             account_management_url: state.account_management_url,
             account_management: state.account_management,
             account_management_capabilities: state.account_management_capabilities,
+            account_notifications: state.account_notifications,
             soft_logout_reauth: state.soft_logout_reauth,
             qr_login: state.qr_login,
             settings: state.settings,

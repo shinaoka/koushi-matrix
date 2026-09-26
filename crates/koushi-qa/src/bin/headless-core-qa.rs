@@ -100,6 +100,8 @@ mod orchestrator;
 mod participants;
 #[path = "headless_core_qa/registry.rs"]
 mod registry;
+#[path = "headless_core_qa/scenarios/account_notifications.rs"]
+mod scenario_account_notifications;
 #[path = "headless_core_qa/scenarios/avatars.rs"]
 mod scenario_avatars;
 #[path = "headless_core_qa/scenarios/history_export.rs"]

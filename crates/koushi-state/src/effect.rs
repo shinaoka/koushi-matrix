@@ -221,6 +221,7 @@ pub enum UiEvent {
     E2eeKeyManagementChanged,
     AccountManagementChanged,
     AccountManagementCapabilitiesChanged,
+    AccountNotificationsChanged,
     SoftLogoutReauthChanged,
     QrLoginChanged,
     RoomInteractionsChanged,

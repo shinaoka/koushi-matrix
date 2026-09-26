@@ -14,6 +14,7 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 
 mod account;
+mod account_notifications;
 mod activity;
 mod avatar;
 mod basic_operation;
@@ -494,6 +495,67 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         }
         AppAction::AccountManagementCapabilitiesLoadFailed => {
             account::handle_account_management_capabilities_load_failed(state)
+        }
+        AppAction::AccountNotificationsLoadRequested { request_id } => {
+            account_notifications::handle_load_requested(state, request_id)
+        }
+        AppAction::AccountNotificationsLoaded {
+            request_id,
+            snapshot,
+        } => account_notifications::handle_loaded(state, request_id, snapshot),
+        AppAction::AccountNotificationsLoadFailed {
+            request_id,
+            failure_kind,
+        } => account_notifications::handle_load_failed(state, request_id, failure_kind),
+        AppAction::AccountNotificationsOperationRequested {
+            request_id,
+            operation,
+        } => account_notifications::handle_operation_requested(state, request_id, operation),
+        AppAction::AccountNotificationsEmailTokenSent {
+            request_id,
+            operation,
+            address,
+            resend_count,
+        } => account_notifications::handle_email_token_sent(
+            state,
+            request_id,
+            operation,
+            address,
+            resend_count,
+        ),
+        AppAction::AccountNotificationsUiaRequired {
+            request_id,
+            flow_id,
+            operation,
+        } => account_notifications::handle_uia_required(state, request_id, flow_id, operation),
+        AppAction::AccountNotificationsUiaSubmitted {
+            request_id,
+            flow_id,
+        } => account_notifications::handle_uia_submitted(state, request_id, flow_id),
+        AppAction::AccountNotificationsOperationSucceeded {
+            request_id,
+            operation,
+            snapshot,
+        } => account_notifications::handle_operation_succeeded(
+            state, request_id, operation, snapshot,
+        ),
+        AppAction::AccountNotificationsOperationFailed {
+            request_id,
+            operation,
+            failure_kind,
+            snapshot,
+        } => account_notifications::handle_operation_failed(
+            state,
+            request_id,
+            operation,
+            failure_kind,
+            snapshot,
+        ),
+        AppAction::AccountNotificationsPendingEmailCancelled => {
+            account_notifications::handle_pending_email_cancelled(state)
+        }
+        AppAction::AccountNotificationsPendingEmailVerified => {
+            account_notifications::handle_pending_email_verified(state)
         }
         AppAction::CurrentSessionStatusRefreshRequested {
             request_id,
@@ -1880,6 +1942,8 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let had_account_management = state.account_management != AccountManagementState::Idle;
     let had_account_management_capabilities =
         state.account_management_capabilities != AccountManagementCapabilities::default();
+    let had_account_notifications =
+        state.account_notifications != crate::state::AccountNotificationsState::default();
     let had_soft_logout_reauth = state.soft_logout_reauth != SoftLogoutReauthState::Idle;
     let had_qr_login = state.qr_login != QrLoginState::Idle;
     let had_live_signals = state.live_signals != Default::default();
@@ -1930,6 +1994,7 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.account_management_url = None;
     state.account_management = AccountManagementState::Idle;
     state.account_management_capabilities = AccountManagementCapabilities::default();
+    state.account_notifications = Default::default();
     state.soft_logout_reauth = SoftLogoutReauthState::Idle;
     state.qr_login = QrLoginState::Idle;
     state.live_signals = Default::default();
@@ -1973,6 +2038,9 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
         effects.push(AppEffect::EmitUiEvent(
             UiEvent::AccountManagementCapabilitiesChanged,
         ));
+    }
+    if had_account_notifications {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::AccountNotificationsChanged));
     }
     if had_soft_logout_reauth {
         effects.push(AppEffect::EmitUiEvent(UiEvent::SoftLogoutReauthChanged));

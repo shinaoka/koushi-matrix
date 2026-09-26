@@ -487,6 +487,7 @@ async fn reset_local_data_clears_current_account_persistence_and_signs_out_local
         identity_reset_flow_id: None,
         identity_reset_timeout_task: None,
         pending_uia_operations: BTreeMap::new(),
+        pending_notification_email: None,
         pending_device_cleanup: None,
         verification_request: None,
         sas_verification: None,

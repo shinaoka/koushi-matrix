@@ -20,6 +20,13 @@ import { ImeSafeForm, ImeTextField } from "./ImeTextControl";
 import { KeyboardSettingsContent } from "./KeyboardSettingsPanel";
 import { SearchHistorySection } from "./user-settings/SearchHistorySection";
 import { AccountManagementSection } from "./user-settings/AccountManagementSection";
+import {
+  type AccountNotificationActions,
+  AccountNotificationsLoadStatus,
+  EmailNotificationsSection,
+  NotificationCategoriesSection,
+  noopAccountNotificationActions
+} from "./user-settings/AccountNotificationsSections";
 import { SecuritySection } from "./user-settings/SecuritySection";
 import { TrustSection } from "./user-settings/TrustSection";
 import { AppearanceControls, LanguageControls } from "./user-settings/AppearanceControls";
@@ -31,6 +38,7 @@ import { currentSessionStatusDetails } from "../domain/currentSessionStatus";
 import type {
   AccountManagementCapabilities,
   AccountManagementState,
+  AccountNotificationsState,
   CurrentSessionStatusState,
   DisplaySettings,
   E2eeTrustState,
@@ -98,6 +106,8 @@ export function UserSettingsPanel({
   onDisplayDensityChange = () => undefined,
   accountManagementUrl = null,
   onManageAccount = () => undefined,
+  accountNotifications = defaultAccountNotificationsState,
+  accountNotificationActions = noopAccountNotificationActions,
   rooms
 }: {
   initialCategory?: SettingsCategoryId;
@@ -157,6 +167,8 @@ export function UserSettingsPanel({
   onDisplayDensityChange?: (density: DisplayDensity) => void;
   accountManagementUrl?: string | null;
   onManageAccount?: () => void;
+  accountNotifications?: AccountNotificationsState;
+  accountNotificationActions?: AccountNotificationActions;
   rooms?: RoomSummary[];
 }) {
   const sessionStatusRefreshOwnerRef = useRef<string | null>(null);
@@ -190,6 +202,17 @@ export function UserSettingsPanel({
   const [activeCategory, setActiveCategory] = useState<SettingsCategoryId>(initialCategory);
   const contentRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => { if (contentRef.current) contentRef.current.scrollTop = 0; }, [activeCategory]);
+  // Opening the Notifications page re-reads the account's server-owned
+  // notification settings (read-only; it never writes rules or pushers), so
+  // changes made in other clients are reflected on every visit.
+  const notificationsOwner =
+    activeCategory === "notifications" && currentSession ? sessionKey(currentSession) : null;
+  const loadAccountNotifications = accountNotificationActions.load;
+  useEffect(() => {
+    if (notificationsOwner) {
+      loadAccountNotifications();
+    }
+  }, [notificationsOwner, loadAccountNotifications]);
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const profileBusy = profile.update.kind !== "idle";
   const displayNameBusy = profile.update.kind === "settingDisplayName";
@@ -392,9 +415,11 @@ export function UserSettingsPanel({
               <h3>{t("settings.notifications")}</h3>
               {isSaving ? <span className="settings-save-state">{t("settings.saving")}</span> : null}
             </div>
+            <h4 className="settings-subheading">{t("settings.notificationsThisDevice")}</h4>
             <div className="settings-toggle-list">
               <NotificationSettingToggle
                 label={t("settings.notificationDesktop")}
+                description={t("settings.notificationDesktopDescription")}
                 settingKey="desktop_notifications"
                 current={selectedNotifications}
                 onSelect={onUpdateSettings}
@@ -424,6 +449,25 @@ export function UserSettingsPanel({
               />
             </div>
           </section>
+          {currentSession ? (
+            <>
+              <AccountNotificationsLoadStatus
+                state={accountNotifications}
+                onRetry={accountNotificationActions.load}
+              />
+              <EmailNotificationsSection
+                state={accountNotifications}
+                actions={accountNotificationActions}
+                syncKey={sessionKey(currentSession)}
+                accountManagementAvailable={Boolean(accountManagementUrl)}
+                onManageAccount={onManageAccount}
+              />
+              <NotificationCategoriesSection
+                state={accountNotifications}
+                actions={accountNotificationActions}
+              />
+            </>
+          ) : null}
         </div>
         <div id="settings-page-preferences" role="tabpanel" aria-labelledby="settings-tab-preferences" className="settings-category" hidden={activeCategory !== "preferences"} tabIndex={0}>
           <section id="settings-display" className="settings-section" aria-label={t("settings.display")}>
@@ -947,3 +991,10 @@ function avatarSourceUrl(avatar: ProfileState["own"]["avatar"]): string | null {
 function accountInitial(userId: string): string {
   return userId.replace(/^@/, "").charAt(0).toUpperCase() || "?";
 }
+
+const defaultAccountNotificationsState: AccountNotificationsState = {
+  load: { kind: "notLoaded" },
+  snapshot: null,
+  pending_email: null,
+  operation: { kind: "idle" }
+};
