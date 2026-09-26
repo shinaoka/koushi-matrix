@@ -1197,6 +1197,12 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     roomName: string;
     reason: OperationFailureKind;
   } | null>(null);
+  // The add-rooms projection exists only for the active Space; leaving that
+  // Space closes the dialog instead of showing another Space's rows.
+  const activeSpaceIdForAddRooms = snapshot?.state.ui.navigation.active_space_id ?? null;
+  useEffect(() => {
+    setAddExistingRoomSpaceId((open) => (open && open !== activeSpaceIdForAddRooms ? null : open));
+  }, [activeSpaceIdForAddRooms]);
   const createRoomAddressPreview = useRoomAddressPreview(
     api, createDraftName, createRoomManualAlias,
     snapshot?.state.domain.session.user_id ?? null, createDialog === "room"
@@ -6840,13 +6846,9 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           onValueChange={setCreateDraftName}
         />
       ) : null}
-      {addExistingRoomSpaceId ? (
+      {addExistingRoomSpaceId && snapshot.sidebar.space_add_rooms?.space_id === addExistingRoomSpaceId ? (
         <AddExistingRoomDialog
-          model={
-            snapshot.sidebar.space_add_rooms?.space_id === addExistingRoomSpaceId
-              ? snapshot.sidebar.space_add_rooms
-              : null
-          }
+          model={snapshot.sidebar.space_add_rooms}
           spaceName={
             snapshot.sidebar.space_rail.find((space) => space.space_id === addExistingRoomSpaceId)
               ?.display_name ?? ""
@@ -6882,7 +6884,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
             </p>
             <div className="dialog-actions">
               <button type="button" className="dialog-button" onClick={() => setCreatedRoomLinkFailure(null)}>
-                {t("action.cancel")}
+                {t("action.done")}
               </button>
               <button
                 type="button"

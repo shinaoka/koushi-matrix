@@ -21,7 +21,7 @@ export function AddExistingRoomDialog({
   onAdd,
   onClose
 }: {
-  model: SpaceAddRoomsModel | null;
+  model: SpaceAddRoomsModel;
   spaceName: string;
   /** Another basic operation (e.g. room creation) is in flight. */
   busy: boolean;
@@ -30,7 +30,7 @@ export function AddExistingRoomDialog({
 }) {
   const [query, setQuery] = useState("");
   const title = t("spaceAddRooms.title", { spaceName });
-  const candidates = model?.candidates ?? [];
+  const candidates = model.candidates;
   const normalized = query.trim().toLocaleLowerCase();
   // Text filtering of an already classified and ordered Rust list, as the
   // sidebar room filter does.
