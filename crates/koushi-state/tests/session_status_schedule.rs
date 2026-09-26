@@ -103,7 +103,10 @@ fn manual(state: &mut AppState, request_id: u64, now_ms: u64) -> Vec<AppEffect> 
 }
 
 fn check_due(state: &mut AppState, token: u64, now_ms: u64) -> Vec<AppEffect> {
-    reduce(state, AppAction::CurrentSessionStatusCheckDue { token, now_ms })
+    reduce(
+        state,
+        AppAction::CurrentSessionStatusCheckDue { token, now_ms },
+    )
 }
 
 /// Drop and restore sync connectivity; returns the effects of the Running edge.
@@ -208,7 +211,11 @@ fn verified_status_is_not_rechecked_by_opens_or_reconnects_until_due() {
     let boundary = checked_at + SESSION_STATUS_FRESHNESS_MS;
     let arm = armed(&reconnect(&mut state));
     let effects = fire(&mut state, arm, boundary);
-    assert_eq!(refreshes(&effects).len(), 1, "exactly one check at the boundary");
+    assert_eq!(
+        refreshes(&effects).len(),
+        1,
+        "exactly one check at the boundary"
+    );
     assert_eq!(
         refreshes(&open(&mut state, 9_999, boundary)).len(),
         0,
@@ -249,7 +256,10 @@ fn reconnect_after_network_failure_respects_the_failure_backoff() {
     let due = fire(&mut state, Some(rearmed), 2_000 + MINUTE_MS);
     assert_eq!(
         refreshes(&due),
-        vec![(active_request(&state), SessionStatusRefreshTrigger::Recovery)],
+        vec![(
+            active_request(&state),
+            SessionStatusRefreshTrigger::Recovery
+        )],
         "one recovery check once the backoff elapsed"
     );
 }
@@ -308,7 +318,11 @@ fn repeated_failures_keep_retrying_at_the_capped_backoff_and_recover() {
 
     let due = failed + SESSION_STATUS_FAILURE_BACKOFF_CAP_MS;
     let effects = fire(&mut state, armed(&early), due);
-    assert_eq!(refreshes(&effects).len(), 1, "no permanent stop after the cap");
+    assert_eq!(
+        refreshes(&effects).len(),
+        1,
+        "no permanent stop after the cap"
+    );
 
     let settled = succeed_active(&mut state, due + 1);
     assert_eq!(consecutive_failures(&state), 0);
@@ -340,7 +354,10 @@ fn stable_connection_runs_periodic_checks_without_interaction() {
         let effects = fire(&mut state, Some(arm), now);
         assert_eq!(
             refreshes(&effects),
-            vec![(active_request(&state), SessionStatusRefreshTrigger::Scheduled)],
+            vec![(
+                active_request(&state),
+                SessionStatusRefreshTrigger::Scheduled
+            )],
             "period {period}: one scheduled check"
         );
         let settled = succeed_active(&mut state, now);
@@ -410,10 +427,7 @@ fn manual_periodic_and_reconnect_join_one_in_flight_request() {
     // Cancellation result lands before the Running edge: still backed off.
     let edge = reconnect(&mut state);
     assert!(refreshes(&edge).is_empty());
-    assert_eq!(
-        armed(&edge).map(|arm| arm.1),
-        Some(now + 3 + 2 * MINUTE_MS)
-    );
+    assert_eq!(armed(&edge).map(|arm| arm.1), Some(now + 3 + 2 * MINUTE_MS));
 }
 
 /// Scheduler-issued request ids never collide with command sequence numbers.
@@ -439,13 +453,19 @@ fn trust_loss_and_logout_fence_stale_due_notifications() {
             trust: CurrentDeviceTrustState::Unverified,
         },
     );
-    assert_eq!(state.current_session_status, CurrentSessionStatusState::Idle);
+    assert_eq!(
+        state.current_session_status,
+        CurrentSessionStatusState::Idle
+    );
     assert!(refreshes(&fire(&mut state, Some(arm), SESSION_STATUS_FRESHNESS_MS)).is_empty());
 
     let mut state = connected_state(ready_at(0));
     let arm = armed(&reconnect(&mut state)).expect("armed");
     reduce(&mut state, AppAction::LogoutRequested);
-    assert_eq!(state.current_session_status, CurrentSessionStatusState::Idle);
+    assert_eq!(
+        state.current_session_status,
+        CurrentSessionStatusState::Idle
+    );
     assert!(
         state.current_session_status_schedule.token > arm.0,
         "session teardown must advance the schedule token"

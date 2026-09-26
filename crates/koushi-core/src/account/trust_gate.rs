@@ -724,8 +724,19 @@ impl AccountActor {
             self.trust_recheck_pending = false;
             return;
         };
+        if self.absorb_promoted_trust_recheck() {
+            // #1009: joined an in-flight full inspection (which now carries the
+            // demand) or deferred behind the failure backoff (still pending).
+            if self.session_check.trust_joined_inspection {
+                self.trust_recheck_pending = false;
+            }
+            return;
+        }
         self.trust_recheck_pending = false;
         let generation = self.trust_generation;
+        crate::session_check_diagnostics::record_trust_recheck(
+            crate::session_check_diagnostics::TrustRecheckOutcome::Started,
+        );
         record_verification_admission_event(verification_admission_event(
             "trust_recheck_started",
             generation,
@@ -760,19 +771,13 @@ impl AccountActor {
         if let Some(task) = self.current_session_status_task.take() {
             task.abort();
         }
+        self.session_check.waiting_inspection = None;
         self.current_session_status_request = Some(request_id);
         let generation = self.trust_generation;
         let started_at = Instant::now();
         record(
             DiagnosticEvent::new(DiagnosticLevel::Debug, "session_status", "refresh_started")
-                .field(DiagnosticField::token(
-                    "trigger",
-                    match trigger {
-                        koushi_state::SessionStatusRefreshTrigger::Open => "open",
-                        koushi_state::SessionStatusRefreshTrigger::Manual => "manual",
-                        koushi_state::SessionStatusRefreshTrigger::Recovery => "recovery",
-                    },
-                )),
+                .field(DiagnosticField::token("trigger", trigger.as_str())),
         );
         let Some(session) = self.session.clone().filter(|_| self.session_promoted) else {
             let tx = self.self_tx.clone();
@@ -810,10 +815,45 @@ impl AccountActor {
             }));
             return;
         }
+        if self.trust_recheck_task.is_some() {
+            // #1009: an authoritative trust recheck is querying the own
+            // identity right now. Wait for it and reuse what it fetched.
+            record(
+                DiagnosticEvent::new(DiagnosticLevel::Debug, "session_status", "refresh_waiting")
+                    .field(DiagnosticField::token("reason", "trust_recheck_in_flight")),
+            );
+            self.session_check.waiting_inspection = Some(super::session_check::WaitingInspection {
+                request_id,
+                generation,
+                sync_state,
+            });
+            return;
+        }
+        self.spawn_current_session_inspection(
+            session,
+            request_id,
+            generation,
+            sync_state,
+            koushi_sdk::OwnIdentitySource::Query,
+        );
+    }
+
+    fn spawn_current_session_inspection(
+        &mut self,
+        session: Arc<MatrixClientSession>,
+        request_id: u64,
+        generation: u64,
+        sync_state: koushi_state::CurrentSessionSyncState,
+        own_identity_source: koushi_sdk::OwnIdentitySource,
+    ) {
+        let tx = self.self_tx.clone();
+        // The timeout covers the SDK inspection only, not a wait for a trust
+        // recheck that preceded it.
+        let started_at = Instant::now();
         self.current_session_status_task = Some(executor::spawn(async move {
             let result = match executor::timeout(
                 CURRENT_SESSION_STATUS_TIMEOUT,
-                session.inspect_current_session(),
+                session.inspect_current_session_with(own_identity_source),
             )
             .await
             {
@@ -833,6 +873,38 @@ impl AccountActor {
         }));
     }
 
+    /// Start the full inspection that waited for an authoritative recheck.
+    /// After a successful recheck the own identity was just fetched, so the
+    /// inspection reads it locally instead of querying again.
+    pub(super) fn start_waiting_current_session_inspection(&mut self, recheck_succeeded: bool) {
+        let Some(waiting) = self.session_check.waiting_inspection.take() else {
+            return;
+        };
+        if self.current_session_status_request != Some(waiting.request_id)
+            || waiting.generation != self.trust_generation
+            || self.current_session_status_task.is_some()
+        {
+            return;
+        }
+        let Some(session) = self.session.clone().filter(|_| self.session_promoted) else {
+            // The session left Ready while waiting; the reducer resets its
+            // slice on that transition, so only the Core request is released.
+            self.current_session_status_request = None;
+            return;
+        };
+        self.spawn_current_session_inspection(
+            session,
+            waiting.request_id,
+            waiting.generation,
+            waiting.sync_state,
+            if recheck_succeeded {
+                koushi_sdk::OwnIdentitySource::FreshLocal
+            } else {
+                koushi_sdk::OwnIdentitySource::Query
+            },
+        );
+    }
+
     pub(super) async fn finish_current_session_status_refresh(
         &mut self,
         request_id: u64,
@@ -844,26 +916,32 @@ impl AccountActor {
             koushi_state::CurrentSessionStatusFailureKind,
         >,
     ) {
-        if self.current_session_status_request == Some(request_id)
+        let is_current = self.current_session_status_request == Some(request_id)
             && self.trust_generation == generation
-            && self.session_promoted
+            && self.session_promoted;
+        if is_current
             && let Some(trust) = current_session_status_observed_non_verified_trust(&result)
             && trust == koushi_state::CurrentDeviceTrustState::Unverified
         {
             self.current_session_status_request = None;
             self.current_session_status_task = None;
+            self.session_check.trust_joined_inspection = false;
             self.handle_current_device_trust(generation, trust).await;
             return;
         }
-        let should_recheck_unknown = self.session_promoted
-            && matches!(
-                result.as_ref(),
-                Ok(koushi_sdk::MatrixCurrentSessionInspection {
-                    verification: koushi_state::CurrentDeviceTrustState::Unknown,
-                    ..
-                })
-            );
-        let checked_at_ms = crate::time::current_epoch_ms();
+        // #1009: a successful inspection ran the own-user `/keys/query` and
+        // then read the current-device verification subscriber, exactly like a
+        // standalone authoritative recheck. Its verification settles any trust
+        // demand instead of issuing a second own-identity query.
+        let observed_trust = if is_current {
+            result
+                .as_ref()
+                .ok()
+                .map(|inspection| inspection.verification)
+        } else {
+            None
+        };
+        let checked_at_ms = self.session_check_now_ms();
         let Some(action) = current_session_status_completion_action(
             self.current_session_status_request,
             self.trust_generation,
@@ -884,8 +962,23 @@ impl AccountActor {
             started_at.elapsed(),
         ));
         self.send_actions(vec![action]).await;
-        if should_recheck_unknown {
-            self.request_authoritative_trust_recheck();
+        match observed_trust {
+            Some(trust) => {
+                if std::mem::take(&mut self.session_check.trust_joined_inspection) {
+                    self.record_trust_recheck_settlement(true);
+                } else {
+                    self.session_check.trust_failures = 0;
+                }
+                if trust == koushi_state::CurrentDeviceTrustState::Unknown {
+                    record_verification_admission_event(verification_admission_event(
+                        "trust_recheck_settled_by_inspection",
+                        generation,
+                        0,
+                    ));
+                    self.handle_current_device_trust(generation, trust).await;
+                }
+            }
+            None => self.release_joined_trust_recheck(),
         }
     }
 
@@ -894,6 +987,11 @@ impl AccountActor {
     /// a completion message, leaving the reducer in `Checking` forever.
     pub(super) async fn cancel_current_session_status_for_connectivity_loss(&mut self) {
         let request_id = self.current_session_status_request.take();
+        self.session_check.waiting_inspection = None;
+        if std::mem::take(&mut self.session_check.trust_joined_inspection) {
+            // The next proven edge runs the joined trust demand.
+            self.trust_recheck_pending = true;
+        }
         if let Some(task) = self.current_session_status_task.take() {
             task.abort();
             let _ = task.await;
@@ -902,16 +1000,19 @@ impl AccountActor {
         let Some(request_id) = request_id else {
             return;
         };
+        let checked_at_ms = self.session_check_now_ms();
         self.send_actions(vec![AppAction::CurrentSessionStatusRefreshFailed {
             request_id,
             kind: koushi_state::CurrentSessionStatusFailureKind::ConnectivityUnavailable,
-            checked_at_ms: crate::time::current_epoch_ms(),
+            checked_at_ms,
         }])
         .await;
     }
 
     pub(super) async fn cancel_current_session_status_refresh(&mut self) {
         self.current_session_status_request = None;
+        self.session_check.waiting_inspection = None;
+        self.session_check.trust_joined_inspection = false;
         if let Some(task) = self.current_session_status_task.take() {
             task.abort();
             let _ = task.await;

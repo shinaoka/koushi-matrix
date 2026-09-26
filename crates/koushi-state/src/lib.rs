@@ -116,6 +116,7 @@ pub use state::{
     SESSION_STATUS_FAILURE_BACKOFF_BASE_MS, SESSION_STATUS_FAILURE_BACKOFF_CAP_MS,
     SESSION_STATUS_FRESHNESS_MS, SESSION_STATUS_SCHEDULED_REQUEST_ID_BASE, SessionStatusCheckDecision,
     SessionStatusCheckStats, SessionStatusRefreshTrigger, SessionStatusSchedule, SettingsPatch,
+    session_status_failure_backoff_ms,
     SettingsPersistenceState, SettingsState,
     SettingsValues, SidebarCategory, SidebarCollapsedSections, SidebarScopeSettings,
     SidebarSectionKind, SidebarSectionPatch, SidebarSectionSettings, SidebarSettings,

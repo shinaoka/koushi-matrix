@@ -324,6 +324,21 @@ pub(crate) enum AccountMessage {
         trigger: koushi_state::SessionStatusRefreshTrigger,
         sync_state: koushi_state::CurrentSessionSyncState,
     },
+    /// #1009: reducer `ArmCurrentSessionStatusCheck`; replaces the timer.
+    ArmCurrentSessionStatusCheck {
+        token: u64,
+        due_at_ms: u64,
+    },
+    CurrentSessionStatusTimerFired {
+        token: u64,
+    },
+    TrustRecheckRetryDue {
+        serial: u64,
+    },
+    #[cfg(test)]
+    ConfigureSessionCheckClock {
+        base_epoch_ms: u64,
+    },
     CurrentSessionStatusRefreshFinished {
         request_id: u64,
         generation: u64,
@@ -894,6 +909,7 @@ pub struct AccountActor {
     pub(super) trust_recheck_pending: bool,
     pub(super) current_session_status_task: Option<crate::executor::JoinHandle<()>>,
     pub(super) current_session_status_request: Option<u64>,
+    pub(super) session_check: super::session_check::SessionCheckCoordinator,
     pub(super) secure_backup_ready: bool,
     pub(super) recovery_key_delivery_pending: bool,
     pub(super) secure_backup_inspection_task: Option<crate::executor::JoinHandle<()>>,
@@ -1219,6 +1235,7 @@ impl AccountActor {
             trust_recheck_pending: false,
             current_session_status_task: None,
             current_session_status_request: None,
+            session_check: super::session_check::SessionCheckCoordinator::default(),
             secure_backup_ready: false,
             recovery_key_delivery_pending: false,
             secure_backup_inspection_task: None,
@@ -1808,6 +1825,22 @@ impl AccountActor {
                 } => {
                     self.start_current_session_status_refresh(request_id, trigger, sync_state);
                 }
+                AccountMessage::ArmCurrentSessionStatusCheck { token, due_at_ms } => {
+                    self.arm_current_session_status_timer(token, due_at_ms);
+                }
+                AccountMessage::CurrentSessionStatusTimerFired { token } => {
+                    self.handle_current_session_status_timer_fired(token).await;
+                }
+                AccountMessage::TrustRecheckRetryDue { serial } => {
+                    self.handle_trust_recheck_retry_due(serial);
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureSessionCheckClock { base_epoch_ms } => {
+                    self.session_check.clock = super::session_check::SessionCheckClock::Virtual {
+                        base_epoch_ms,
+                        origin: crate::executor::Instant::now(),
+                    };
+                }
                 AccountMessage::CurrentSessionStatusRefreshFinished {
                     request_id,
                     generation,
@@ -1848,6 +1881,7 @@ impl AccountActor {
                     self.trust_recheck_task = None;
                     let replay_after_settlement = self.trust_recheck_pending;
                     self.trust_recheck_pending = false;
+                    let recheck_succeeded = result.is_ok();
                     let trust = match result {
                         Ok(trust) => Some(trust),
                         Err(_)
@@ -1868,10 +1902,14 @@ impl AccountActor {
                     if let Some(trust) = trust {
                         self.handle_current_device_trust(generation, trust).await;
                     }
+                    // #1009: a failure on a promoted session keeps the demand
+                    // pending behind the shared failure backoff.
+                    self.record_trust_recheck_settlement(recheck_succeeded);
                     if replay_after_settlement {
                         self.trust_recheck_pending = true;
                         self.start_authoritative_trust_recheck_if_idle(true);
                     }
+                    self.start_waiting_current_session_inspection(recheck_succeeded);
                 }
                 AccountMessage::FirstProvisionalEncryptionSyncFinished {
                     generation,

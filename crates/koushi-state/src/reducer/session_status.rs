@@ -73,9 +73,7 @@ fn due_at_ms(status: &CurrentSessionStatusState) -> u64 {
 fn is_due(status: &CurrentSessionStatusState, now_ms: u64) -> bool {
     match settled_interval(status) {
         None => matches!(status, CurrentSessionStatusState::Idle),
-        Some((checked_at, interval)) => {
-            now_ms < checked_at || now_ms - checked_at >= interval
-        }
+        Some((checked_at, interval)) => now_ms < checked_at || now_ms - checked_at >= interval,
     }
 }
 

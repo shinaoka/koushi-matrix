@@ -178,6 +178,18 @@ impl std::fmt::Debug for MatrixCurrentSessionInspection {
     }
 }
 
+/// Where the current-session inspection reads the own cross-signing identity
+/// from (#1009).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OwnIdentitySource {
+    /// Query the homeserver (`/keys/query` for the own user).
+    Query,
+    /// Read the local crypto store because an own-identity query settled
+    /// successfully immediately before this inspection; querying again would
+    /// duplicate it.
+    FreshLocal,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, thiserror::Error)]
 #[serde(rename_all = "snake_case")]
 #[error("current-session inspection failed")]
@@ -2545,6 +2557,13 @@ impl MatrixClientSession {
     pub async fn inspect_current_session(
         &self,
     ) -> Result<MatrixCurrentSessionInspection, MatrixCurrentSessionInspectionError> {
+        self.inspect_current_session_with(OwnIdentitySource::Query)
+            .await
+    }
+    pub async fn inspect_current_session_with(
+        &self,
+        own_identity_source: OwnIdentitySource,
+    ) -> Result<MatrixCurrentSessionInspection, MatrixCurrentSessionInspectionError> {
         let client = self.client();
         let verification = client.encryption().verification_state();
         let user_id = client
@@ -2567,10 +2586,16 @@ impl MatrixClientSession {
             .ok_or(MatrixCurrentSessionInspectionError::CurrentDeviceMissing)?;
 
         let encryption = client.encryption();
-        let own_identity = encryption
-            .request_user_identity(user_id)
-            .await
-            .map_err(|_| MatrixCurrentSessionInspectionError::IdentityRequest)?;
+        let own_identity = match own_identity_source {
+            OwnIdentitySource::Query => encryption
+                .request_user_identity(user_id)
+                .await
+                .map_err(|_| MatrixCurrentSessionInspectionError::IdentityRequest)?,
+            OwnIdentitySource::FreshLocal => encryption
+                .get_user_identity(user_id)
+                .await
+                .map_err(|_| MatrixCurrentSessionInspectionError::IdentityRequest)?,
+        };
         let current_crypto_device = encryption
             .get_device(user_id, device_id)
             .await

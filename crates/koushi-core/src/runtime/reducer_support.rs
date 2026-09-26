@@ -181,6 +181,7 @@ impl super::AppActor {
             _ => None,
         };
         let effects = reduce_with_unread_diagnostics(&mut self.state, action);
+        crate::session_check_diagnostics::observe_schedule(&self.state);
         // A scoped reader can be the only consumer of this resource. Its
         // completion must not depend on a legacy/global projection changing.
         if let Some(mxc_uri) = avatar_thumbnail_change.as_deref() {

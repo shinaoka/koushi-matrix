@@ -1835,6 +1835,25 @@ pub(super) async fn run_session_status_stage(conn: &mut CoreConnection) -> Resul
         SessionState::Ready(info) => info.device_id.clone(),
         _ => return Err("session_status: current session is not Ready".to_owned()),
     };
+    // #1009: a newly admitted session runs one automatic scheduled check once
+    // sync is Running. A manual refresh issued while it is in flight joins it,
+    // so wait for the slice to settle before asking for a correlated check.
+    let settle_deadline = QaEventDeadline::after(EVENT_TIMEOUT);
+    while matches!(
+        conn.snapshot().current_session_status,
+        CurrentSessionStatusState::Checking { .. }
+    ) {
+        settle_deadline
+            .recv(conn)
+            .await
+            .map_err(|_| "session_status: automatic check did not settle".to_owned())?
+            .map_err(|lag| {
+                format!(
+                    "session_status: event stream lagged (skipped={})",
+                    lag.skipped
+                )
+            })?;
+    }
     let request_id = conn.next_request_id();
     conn.command(CoreCommand::Account(
         AccountCommand::RefreshCurrentSessionStatus {
