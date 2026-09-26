@@ -4385,6 +4385,7 @@ stateDiagram-v2
     Completed --> Idle : HistoryCrawlStopped\n(room pruned)
     Failed --> Queued : HistoryCrawlStarted\n(retry)
     Completed --> Queued : HistoryCrawlStarted\n(explicit StartHistoryCrawl: index again, #996)
+    Completed --> Queued : HistoryCrawlStarted\n(catch-up: latest event changed since completion, #996)
 ```
 
 ### Guards and lifecycle
@@ -4395,12 +4396,32 @@ stateDiagram-v2
   Events are deduplicated by id; the index upserts, so repeats are harmless.
   A completed room can be crawled again with an explicit `StartHistoryCrawl`
   (the room row's **Index again** action).
+- **Catch-up of completed rooms (#996)**: live timeline indexing covers only
+  rooms whose timeline is loaded, so messages that sync delivers to any other
+  room would otherwise never reach the index once its crawl completed.
+  `NotifySearchCrawlerRoomsAvailable` therefore carries each room's latest
+  event id from the room list (`latest_event_ids`, a snapshot like
+  `room_ids`). When a crawl completes, the actor records the latest event id it
+  knew when the crawl's first page started. A later notification whose latest
+  event id for that room differs, and whose latest event is not already in the
+  document store, re-queues an automatic catch-up checkpoint
+  (`HistoryCrawlStarted`: `Completed --> Queued`, so the pending-indexing hint
+  shows while the index is known stale). The catch-up indexes the room's cached
+  events newer than the recorded event and, only when the cache does not reach
+  it (a limited sync inserted a gap), pages backwards until a page contains the
+  recorded event or the start of the room. It does not re-walk the whole
+  room, except when no boundary was recorded (the room had no latest event
+  when its crawl started), where the only safe catch-up is a fresh crawl.
+  A page preempted by timeline pagination keeps its first-page work.
+  It carries the room's previous processed/indexed counts forward. Completion
+  re-checks the newest known latest event id so an event that arrived during
+  the catch-up is not missed.
 
 - **Auto-start (idempotent)**: `RoomListUpdated` emits
   `AppEffect::NotifySearchCrawlerRoomsAvailable` with all current joined rooms
   whenever `speed != Paused`. The `SearchActor` owns an Element-style
   checkpoint queue: it skips rooms already queued, actively paging, or
-  completed, fetches one bounded `/messages` page at a time, and pushes an
+  completed (unless a catch-up is due, above), fetches one bounded `/messages` page at a time, and pushes an
   unfinished checkpoint to the back of the queue. This round-robin shape avoids
   one room monopolizing historical backfill. Every crawler page also passes
   through the account-wide `/messages` backpressure gate shared with
@@ -4497,8 +4518,14 @@ stateDiagram-v2
   arm therefore uses a `tokio::select!` loop that drains both `msg_rx` and
   `index_rx` concurrently while awaiting each handle, so cancellation and
   completion can proceed without backpressure stalls.
-  Completed rooms are NOT persisted across restarts; the actor uses an
-  in-memory `completed_rooms: HashSet<String>` seeded fresh each session.
+  Completed rooms are NOT persisted across restarts, and neither is the
+  document store: the actor keeps an in-memory `completed_rooms` map (room id to
+  the recorded latest event id and counts) seeded fresh each session, and every
+  launch re-crawls every room from the SDK event cache after the startup
+  delay. Messages that arrived while the app was closed are covered by that
+  re-crawl (the first page indexes the cached newest events and backward
+  pagination resolves the gap a limited sync inserted), so no watermark needs
+  to survive a restart.
 
 ## Appearance / Theme Ownership
 

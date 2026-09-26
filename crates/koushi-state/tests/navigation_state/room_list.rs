@@ -410,6 +410,7 @@ fn room_list_update_replaces_state_and_emits_room_list_event() {
                     "dm-a".to_owned(),
                     "global-room".to_owned(),
                 ],
+                latest_event_ids: Default::default(),
                 settings: search_crawler_settings_standard(),
             },
             AppEffect::SubscribeTimeline {
@@ -566,6 +567,7 @@ fn room_list_update_selects_first_room_when_no_room_is_active() {
                     "dm-a".to_owned(),
                     "global-room".to_owned(),
                 ],
+                latest_event_ids: Default::default(),
                 settings: search_crawler_settings_standard(),
             },
             AppEffect::SubscribeTimeline {
@@ -652,6 +654,7 @@ fn room_list_update_clears_missing_active_space_and_room() {
             initial_attention_diagnostic(0, 1, false),
             AppEffect::NotifySearchCrawlerRoomsAvailable {
                 room_ids: vec!["global-room".to_owned()],
+                latest_event_ids: Default::default(),
                 settings: search_crawler_settings_standard(),
             },
             AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
@@ -818,6 +821,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
             AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged),
             AppEffect::NotifySearchCrawlerRoomsAvailable {
                 room_ids: vec!["room-a".to_owned(), "room-b".to_owned()],
+                latest_event_ids: Default::default(),
                 settings: search_crawler_settings_standard(),
             },
             AppEffect::SubscribeTimeline {
@@ -932,6 +936,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
             AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged),
             AppEffect::NotifySearchCrawlerRoomsAvailable {
                 room_ids: vec!["room-b".to_owned()],
+                latest_event_ids: Default::default(),
                 settings: search_crawler_settings_standard(),
             },
             AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
@@ -1005,6 +1010,7 @@ fn room_list_update_keeps_active_dm_global_with_selected_space() {
                     "dm-a".to_owned(),
                     "global-room".to_owned(),
                 ],
+                latest_event_ids: Default::default(),
                 settings: search_crawler_settings_standard(),
             },
         ]

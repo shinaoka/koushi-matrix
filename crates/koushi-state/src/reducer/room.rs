@@ -193,10 +193,11 @@ fn handle_room_list_updated_with_crawler(
         use crate::state::SearchCrawlerSpeed;
         let crawler_settings = &state.settings.values.search_crawler;
         if crawler_settings.speed != SearchCrawlerSpeed::Paused {
-            let room_ids: Vec<String> = state.rooms.iter().map(|r| r.room_id.clone()).collect();
+            let (room_ids, latest_event_ids) = super::search::search_crawler_rooms(state);
             if !room_ids.is_empty() {
                 effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
                     room_ids,
+                    latest_event_ids,
                     settings: crawler_settings.clone(),
                 });
             }

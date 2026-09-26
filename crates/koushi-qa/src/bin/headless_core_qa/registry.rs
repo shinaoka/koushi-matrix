@@ -155,6 +155,7 @@ pub(super) enum QaScenario {
     EditRedactSearch,
     RedactEditConvergence,
     SearchCrawler,
+    SearchCrawlerCatchup,
     RoomHistoryExport,
     ScheduledSend,
     SendQueue,
@@ -196,6 +197,7 @@ pub(super) enum QaStage {
     EditRedactSearch,
     RedactEditConvergence,
     SearchCrawler,
+    SearchCrawlerCatchup,
     RoomHistoryExport,
     ScheduledSend,
     SendQueue,
@@ -275,6 +277,7 @@ impl QaScenario {
             "edit_redact_search" => Ok(Self::EditRedactSearch),
             "redact_edit_convergence" => Ok(Self::RedactEditConvergence),
             "search_crawler" => Ok(Self::SearchCrawler),
+            "search_crawler_catchup" => Ok(Self::SearchCrawlerCatchup),
             "room_history_export" => Ok(Self::RoomHistoryExport),
             "scheduled_send" => Ok(Self::ScheduledSend),
             "send_queue" => Ok(Self::SendQueue),
@@ -285,7 +288,7 @@ impl QaScenario {
             "thread_late_joiner" => Ok(Self::ThreadLateJoiner),
             "avatar_demand" => Ok(Self::AvatarDemand),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, e2ee_trust, e2ee_login_store, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, redact_edit_convergence, search_crawler, room_history_export, scheduled_send, restore_cleanup, link_preview, cache_restore, read_state_convergence, thread_late_joiner, avatar_demand; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, e2ee_trust, e2ee_login_store, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, redact_edit_convergence, search_crawler, search_crawler_catchup, room_history_export, scheduled_send, restore_cleanup, link_preview, cache_restore, read_state_convergence, thread_late_joiner, avatar_demand; got {other}"
             )),
         }
     }
@@ -298,6 +301,7 @@ impl QaScenario {
                     | QaStage::TimelineStress
                     | QaStage::DeviceCleanup
                     | QaStage::ReadStateConvergence
+                    | QaStage::SearchCrawlerCatchup
                     | QaStage::ThreadLateJoiner
                     | QaStage::AvatarDemand
             ),
@@ -497,6 +501,9 @@ impl QaScenario {
                 matches!(stage, QaStage::Safety | QaStage::ReadStateConvergence)
             }
             Self::ThreadLateJoiner => matches!(stage, QaStage::Safety | QaStage::ThreadLateJoiner),
+            Self::SearchCrawlerCatchup => {
+                matches!(stage, QaStage::Safety | QaStage::SearchCrawlerCatchup)
+            }
         }
     }
 
@@ -668,6 +675,11 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "crawl_no_media_bytes=ok",
             "crawl_throttle=ok",
             "crawl_failure=ok",
+        ],
+        QaStage::SearchCrawlerCatchup => &[
+            "crawl_catchup_live=ok",
+            "crawl_catchup_restart=ok",
+            "search_crawler_catchup=ok",
         ],
         QaStage::RoomHistoryExport => &[
             "history_export_full=ok",
@@ -978,6 +990,7 @@ pub(super) fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             vec![QaStage::Safety, QaStage::ReadStateConvergence]
         }
         QaScenario::ThreadLateJoiner => vec![QaStage::Safety, QaStage::ThreadLateJoiner],
+        QaScenario::SearchCrawlerCatchup => vec![QaStage::Safety, QaStage::SearchCrawlerCatchup],
         QaScenario::All => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -1066,6 +1079,7 @@ pub(super) fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static st
         | QaScenario::GateNoProof
         | QaScenario::AvatarDemand
         | QaScenario::ReadStateConvergence
+        | QaScenario::SearchCrawlerCatchup
         | QaScenario::ThreadLateJoiner => stages_for_scenario(scenario)
             .into_iter()
             .flat_map(|stage| tokens_for_stage(stage).iter().copied())

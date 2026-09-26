@@ -143,6 +143,10 @@ pub enum AppEffect {
     /// re-crawled with the new settings.
     NotifySearchCrawlerRoomsAvailable {
         room_ids: Vec<String>,
+        /// Latest event id of each room that has one in the room list. The
+        /// actor re-queues a catch-up crawl for a completed room whose latest
+        /// event changed since its crawl completed (#996).
+        latest_event_ids: std::collections::BTreeMap<String, String>,
         settings: SearchCrawlerSettings,
     },
     /// Tell the `SearchActor` to drop all rooms from its `completed_rooms`

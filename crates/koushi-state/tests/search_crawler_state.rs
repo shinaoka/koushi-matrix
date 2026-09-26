@@ -252,7 +252,10 @@ fn enable_from_paused_enqueues_all_known_rooms() {
         notify.is_some(),
         "expected NotifySearchCrawlerRoomsAvailable with 2 rooms; got {effects:?}"
     );
-    if let Some(AppEffect::NotifySearchCrawlerRoomsAvailable { room_ids, settings }) = notify {
+    if let Some(AppEffect::NotifySearchCrawlerRoomsAvailable {
+        room_ids, settings, ..
+    }) = notify
+    {
         let mut ids = room_ids.clone();
         ids.sort();
         assert_eq!(ids, vec!["room-a", "room-b"]);
@@ -1064,5 +1067,50 @@ fn crawler_state_debug_output_does_not_contain_room_ids_or_sdk_errors() {
     assert!(
         !debug.contains("$"),
         "Matrix event id in crawler Debug: {debug}"
+    );
+}
+
+/// #996: the room-availability snapshot carries each room's latest event id so
+/// the actor can catch up a completed room whose latest event changed.
+#[test]
+fn rooms_available_carries_latest_event_ids_for_catch_up() {
+    let mut state = ready_state_with_rooms(&["room-a", "room-b"]);
+    state.rooms[0].latest_event = Some(koushi_state::RoomLatestEventSummary {
+        event_id: "$latest-a".to_owned(),
+        relation_type: None,
+        relation_event_id: None,
+        thread_root_event_id: None,
+        sender_id: None,
+        sender_label: None,
+        sender_avatar: None,
+        preview: None,
+        timestamp_ms: 1,
+        is_redacted: false,
+    });
+    state.settings.values.search_crawler = settings_paused();
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 1,
+            patch: SettingsPatch {
+                search_crawler: Some(settings_standard()),
+                ..Default::default()
+            },
+        },
+    );
+
+    let latest = effects
+        .iter()
+        .find_map(|effect| match effect {
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                latest_event_ids, ..
+            } => Some(latest_event_ids.clone()),
+            _ => None,
+        })
+        .expect("rooms-available notification");
+    assert_eq!(
+        latest.into_iter().collect::<Vec<_>>(),
+        [("room-a".to_owned(), "$latest-a".to_owned())]
     );
 }
