@@ -37,8 +37,7 @@ pub(crate) fn handle_loaded(
     if state.account_notifications.load != (AccountNotificationsLoadState::Loading { request_id }) {
         return Vec::new();
     }
-    state.account_notifications.load = AccountNotificationsLoadState::Loaded;
-    state.account_notifications.snapshot = Some(snapshot);
+    apply_snapshot(state, Some(snapshot));
     changed()
 }
 
@@ -226,8 +225,27 @@ pub(crate) fn handle_pending_email_cancelled(state: &mut AppState) -> Vec<AppEff
 
 fn apply_snapshot(state: &mut AppState, snapshot: Option<AccountNotificationsSnapshot>) {
     if let Some(snapshot) = snapshot {
+        clear_pending_if_verified(state, &snapshot);
         state.account_notifications.snapshot = Some(snapshot);
         state.account_notifications.load = AccountNotificationsLoadState::Loaded;
+    }
+}
+
+/// A pending address that the server now lists as a validated 3PID is no
+/// longer pending (confirmed here, or in another client).
+fn clear_pending_if_verified(state: &mut AppState, snapshot: &AccountNotificationsSnapshot) {
+    let verified = state
+        .account_notifications
+        .pending_email
+        .as_ref()
+        .is_some_and(|pending| {
+            snapshot
+                .emails
+                .iter()
+                .any(|email| email.address.eq_ignore_ascii_case(&pending.address))
+        });
+    if verified {
+        state.account_notifications.pending_email = None;
     }
 }
 

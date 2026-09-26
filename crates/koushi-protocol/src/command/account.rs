@@ -173,6 +173,74 @@ impl fmt::Debug for SecureBackupPassphraseChangeRequest {
     }
 }
 
+/// Account notification settings requests (#981).
+///
+/// `RequestEmailToken` carries the address being verified and
+/// `SubmitUia` carries the account password; both are redacted in `Debug`.
+#[derive(Clone, Eq, PartialEq)]
+pub enum AccountNotificationsRequest {
+    /// Read-only server load; never writes rules or pushers.
+    Load,
+    SetCategory {
+        category: koushi_state::NotificationCategory,
+        enabled: bool,
+    },
+    /// `.m.rule.master` (account-wide). Only offered to recover an account
+    /// silenced by another client.
+    SetAccountPush { enabled: bool },
+    /// Start verification of a new notification email.
+    /// `lang` is the app catalog locale, reused for the digest language if a
+    /// verified address takes over an active email target.
+    RequestEmailToken { address: String, lang: String },
+    ResendEmailToken,
+    /// The user reports having opened the verification link.
+    ConfirmEmail,
+    SubmitUia {
+        flow_id: u64,
+        auth: IdentityResetAuthRequest,
+    },
+    CancelPendingEmail,
+    /// Make this validated address the only email notification target.
+    /// `lang` is the app catalog locale used for the digest language.
+    EnableEmailNotifications { address: String, lang: String },
+    DisableEmailNotifications,
+}
+
+impl fmt::Debug for AccountNotificationsRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Load => formatter.write_str("Load"),
+            Self::SetCategory { category, enabled } => formatter
+                .debug_struct("SetCategory")
+                .field("category", category)
+                .field("enabled", enabled)
+                .finish(),
+            Self::SetAccountPush { enabled } => formatter
+                .debug_struct("SetAccountPush")
+                .field("enabled", enabled)
+                .finish(),
+            Self::RequestEmailToken { .. } => formatter
+                .debug_struct("RequestEmailToken")
+                .field("address", &"<redacted>")
+                .finish(),
+            Self::ResendEmailToken => formatter.write_str("ResendEmailToken"),
+            Self::ConfirmEmail => formatter.write_str("ConfirmEmail"),
+            Self::SubmitUia { flow_id, auth } => formatter
+                .debug_struct("SubmitUia")
+                .field("flow_id", flow_id)
+                .field("auth", auth)
+                .finish(),
+            Self::CancelPendingEmail => formatter.write_str("CancelPendingEmail"),
+            Self::EnableEmailNotifications { lang, .. } => formatter
+                .debug_struct("EnableEmailNotifications")
+                .field("address", &"<redacted>")
+                .field("lang", lang)
+                .finish(),
+            Self::DisableEmailNotifications => formatter.write_str("DisableEmailNotifications"),
+        }
+    }
+}
+
 // LoginRequest and RecoveryRequest redact their own Debug in
 // koushi-state (username, password, device name, recovery secret).
 pub enum AccountCommand {
@@ -240,6 +308,10 @@ pub enum AccountCommand {
         request_id: RequestId,
         flow_id: u64,
         auth: IdentityResetAuthRequest,
+    },
+    AccountNotifications {
+        request_id: RequestId,
+        request: AccountNotificationsRequest,
     },
     SoftLogoutReauth {
         request_id: RequestId,
@@ -519,6 +591,14 @@ impl fmt::Debug for AccountCommand {
                 .field("request_id", request_id)
                 .field("flow_id", flow_id)
                 .field("auth", auth)
+                .finish(),
+            Self::AccountNotifications {
+                request_id,
+                request,
+            } => formatter
+                .debug_struct("AccountNotifications")
+                .field("request_id", request_id)
+                .field("request", request)
                 .finish(),
             Self::SoftLogoutReauth { request_id, .. } => formatter
                 .debug_struct("SoftLogoutReauth")

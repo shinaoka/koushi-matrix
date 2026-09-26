@@ -1030,6 +1030,10 @@ pub struct AccountActor {
     /// supplies interactive auth. Secrets (password, UIA session) are held
     /// only inside this actor-private map, never in reducer state.
     pub(super) pending_uia_operations: BTreeMap<u64, PendingUiaOperation>,
+    /// Pending notification-email verification (#981): client secret,
+    /// validation session id and UIA continuation stay actor-private.
+    pub(super) pending_notification_email:
+        Option<super::account_notifications::PendingNotificationEmailVerification>,
     /// Opaque legacy UIAA continuation or local retry context. Raw SDK data
     /// never enters reducer state or diagnostics.
     pub(super) pending_device_cleanup: Option<PendingDeviceCleanup>,
@@ -1295,6 +1299,7 @@ impl AccountActor {
             identity_reset_flow_id: None,
             identity_reset_timeout_task: None,
             pending_uia_operations: BTreeMap::new(),
+            pending_notification_email: None,
             pending_device_cleanup: None,
             pending_oidc_login: None,
             #[cfg(test)]
@@ -2617,6 +2622,12 @@ impl AccountActor {
             } => {
                 self.handle_submit_account_management_uia(request_id, flow_id, auth)
                     .await;
+            }
+            AccountCommand::AccountNotifications {
+                request_id,
+                request,
+            } => {
+                self.handle_account_notifications(request_id, request).await;
             }
             AccountCommand::SoftLogoutReauth {
                 request_id,

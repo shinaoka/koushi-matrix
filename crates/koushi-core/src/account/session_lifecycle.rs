@@ -1861,6 +1861,7 @@ impl AccountActor {
         self.stop_provisional_runtime().await;
         let session = Arc::new(session);
         self.pending_uia_operations.clear();
+        self.pending_notification_email = None;
         self.pending_device_cleanup = None;
         self.session = Some(session.clone());
         self.set_secure_backup_send_admitted(false);

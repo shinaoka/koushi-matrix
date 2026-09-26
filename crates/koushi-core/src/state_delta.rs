@@ -31,6 +31,7 @@ pub fn build_state_delta(
     changed_slice!(account_management_url);
     changed_slice!(account_management);
     changed_slice!(account_management_capabilities);
+    changed_slice!(account_notifications);
     changed_slice!(soft_logout_reauth);
     changed_slice!(qr_login);
     changed_slice!(settings);
@@ -543,6 +544,7 @@ fn audit_app_state_delta_slices(state: &AppState) {
         account_management_url: _,
         account_management: _,
         account_management_capabilities: _,
+        account_notifications: _,
         soft_logout_reauth: _,
         qr_login: _,
         settings: _,

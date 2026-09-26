@@ -222,6 +222,7 @@ impl AccountActor {
         self.invalidate_account_hydration();
         self.abort_avatar_fetch_tasks();
         self.pending_uia_operations.clear();
+        self.pending_notification_email = None;
         self.provisional_persistable = None;
         self.session_promoted = false;
         self.pending_ready_events.clear();
