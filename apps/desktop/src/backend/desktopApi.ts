@@ -6,6 +6,7 @@ import type {
   ViewDelivery
 } from "../domain/coreEvents";
 import type {
+  NotificationCategory,
   ActivityMarkReadTarget,
   ActivityTab,
   AttachmentFilter,
@@ -161,6 +162,17 @@ export interface DesktopApi {
   refreshCurrentSessionStatus(trigger: SessionStatusRefreshCommandTrigger): Promise<CommandAdmission>;
   submitAccountManagementUia(flowId: number, password: string): Promise<CommandAdmission>;
   loadAccountManagementCapabilities(): Promise<CommandAdmission>;
+  /** Account notification settings (#981). `load` is read-only. */
+  loadAccountNotifications(): Promise<CommandAdmission>;
+  setNotificationCategory(category: NotificationCategory, enabled: boolean): Promise<CommandAdmission>;
+  setAccountPushEnabled(enabled: boolean): Promise<CommandAdmission>;
+  requestNotificationEmailToken(address: string, lang: string): Promise<CommandAdmission>;
+  resendNotificationEmailToken(): Promise<CommandAdmission>;
+  confirmNotificationEmail(): Promise<CommandAdmission>;
+  submitNotificationEmailUia(flowId: number, password: string): Promise<CommandAdmission>;
+  cancelNotificationEmail(): Promise<CommandAdmission>;
+  enableEmailNotifications(address: string, lang: string): Promise<CommandAdmission>;
+  disableEmailNotifications(): Promise<CommandAdmission>;
   changePassword(newPassword: string): Promise<CommandAdmission>;
   deactivateAccount(eraseData: boolean): Promise<CommandAdmission>;
   probeLocalEncryptionHealth(): Promise<CommandAdmission>;

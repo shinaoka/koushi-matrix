@@ -61,6 +61,7 @@ import type { HistoryExportControls } from "./HistoryExportDialog";
 import { SpaceInfoPanel } from "./SpaceInfoPanel";
 import { ThreadsListView } from "./ThreadsListView";
 import { UserSettingsPanel } from "./UserSettingsPanel";
+import type { AccountNotificationActions } from "./user-settings/AccountNotificationsSections";
 import { PeoplePanel, ProfilePanel } from "./PeoplePanel";
 import {
   SpaceMembersPanel,
@@ -193,6 +194,7 @@ export function ContextualRightPanel({
   onReportUser = () => undefined,
   onLoadAccountManagementCapabilities = () => undefined,
   onChangePassword = () => undefined,
+  accountNotificationActions,
   onDeactivateAccount = () => undefined,
   onSubmitAccountManagementUia = () => undefined,
   onStartCrawlRoom = () => undefined,
@@ -338,6 +340,7 @@ export function ContextualRightPanel({
   historyExportControls?: HistoryExportControls;
   onLoadAccountManagementCapabilities?: () => void;
   onChangePassword?: (newPassword: string) => void;
+  accountNotificationActions?: AccountNotificationActions;
   onDeactivateAccount?: (eraseData: boolean) => void;
   onSubmitAccountManagementUia?: (flowId: number, password: string) => void;
   onStartCrawlRoom?: (roomId: string) => void;
@@ -584,6 +587,8 @@ export function ContextualRightPanel({
             onLoadAccountManagementCapabilities ?? (() => undefined)
           }
           onChangePassword={onChangePassword ?? (() => undefined)}
+          accountNotifications={snapshot.state.domain.account_notifications}
+          accountNotificationActions={accountNotificationActions}
           onDeactivateAccount={onDeactivateAccount ?? (() => undefined)}
           onSubmitAccountManagementUia={onSubmitAccountManagementUia ?? (() => undefined)}
           onStartCrawlRoom={onStartCrawlRoom}

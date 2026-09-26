@@ -1450,4 +1450,44 @@ describe("UserSettingsPanel", () => {
         .getAttribute("aria-checked")
     ).toBe("false");
   });
+  test("opening the Notifications page performs one read-only account notifications load", () => {
+    const load = vi.fn();
+    const setCategory = vi.fn();
+    const noop = () => undefined;
+    render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+        accountNotificationActions={{
+          load,
+          setCategory,
+          setAccountPush: noop,
+          requestEmailToken: noop,
+          resendEmailToken: noop,
+          confirmEmail: noop,
+          submitUia: noop,
+          cancelEmail: noop,
+          enableEmail: noop,
+          disableEmail: noop
+        }}
+      />
+    );
+    expect(load).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("tab", { name: "Notifications" }));
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(setCategory).not.toHaveBeenCalled();
+    expect(screen.getAllByText("Loading notification settings…").length).toBeGreaterThan(0);
+  });
 });

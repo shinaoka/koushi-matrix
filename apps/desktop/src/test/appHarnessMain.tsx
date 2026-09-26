@@ -279,6 +279,12 @@ function readySnapshot(
           room_notification_settings: {}, room_interactions: {},
           account_management_url: "https://account.example.test/devices",
           account_management: { kind: "idle" },
+          account_notifications: {
+            load: { kind: "notLoaded" },
+            snapshot: null,
+            pending_email: null,
+            operation: { kind: "idle" }
+          },
           account_management_capabilities: { change_password: { kind: "unknown" } },
           soft_logout_reauth: { kind: "idle" }, qr_login: { kind: "idle" },
           directory: {
