@@ -187,11 +187,16 @@ pub enum AccountNotificationsRequest {
     },
     /// `.m.rule.master` (account-wide). Only offered to recover an account
     /// silenced by another client.
-    SetAccountPush { enabled: bool },
+    SetAccountPush {
+        enabled: bool,
+    },
     /// Start verification of a new notification email.
     /// `lang` is the app catalog locale, reused for the digest language if a
     /// verified address takes over an active email target.
-    RequestEmailToken { address: String, lang: String },
+    RequestEmailToken {
+        address: String,
+        lang: String,
+    },
     ResendEmailToken,
     /// The user reports having opened the verification link.
     ConfirmEmail,
@@ -202,7 +207,10 @@ pub enum AccountNotificationsRequest {
     CancelPendingEmail,
     /// Make this validated address the only email notification target.
     /// `lang` is the app catalog locale used for the digest language.
-    EnableEmailNotifications { address: String, lang: String },
+    EnableEmailNotifications {
+        address: String,
+        lang: String,
+    },
     DisableEmailNotifications,
 }
 

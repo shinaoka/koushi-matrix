@@ -20,12 +20,10 @@ use koushi_state::{
 };
 use matrix_sdk::ruma::{
     api::client::push::{
-        EmailPusherData, PusherIds, PusherInit, PusherKind, get_pushers, get_pushrules_all, set_pushrule_actions,
-        set_pushrule_enabled,
+        EmailPusherData, PusherIds, PusherInit, PusherKind, get_pushers, get_pushrules_all,
+        set_pushrule_actions, set_pushrule_enabled,
     },
-    push::{
-        Action, RuleKind, Ruleset, SoundTweakValue, Tweak,
-    },
+    push::{Action, RuleKind, Ruleset, SoundTweakValue, Tweak},
     thirdparty::Medium,
 };
 
@@ -125,10 +123,7 @@ impl RuleSpec {
 
 fn dm_rules() -> [RuleSpec; 2] {
     [
-        RuleSpec::underride(
-            ".m.rule.room_one_to_one",
-            RuleActions::NotifyWithSound,
-        ),
+        RuleSpec::underride(".m.rule.room_one_to_one", RuleActions::NotifyWithSound),
         RuleSpec::underride(
             ".m.rule.encrypted_room_one_to_one",
             RuleActions::NotifyWithSound,
@@ -138,14 +133,8 @@ fn dm_rules() -> [RuleSpec; 2] {
 
 fn group_rules() -> [RuleSpec; 2] {
     [
-        RuleSpec::underride(
-            ".m.rule.message",
-            RuleActions::Notify,
-        ),
-        RuleSpec::underride(
-            ".m.rule.encrypted",
-            RuleActions::Notify,
-        ),
+        RuleSpec::underride(".m.rule.message", RuleActions::Notify),
+        RuleSpec::underride(".m.rule.encrypted", RuleActions::Notify),
     ]
 }
 
@@ -260,7 +249,11 @@ fn room_mentions_notify(ruleset: &Ruleset) -> Option<bool> {
 pub fn summarize_categories(ruleset: &Ruleset) -> NotificationCategoryStates {
     NotificationCategoryStates {
         direct_messages: combine(dm_rules().iter().map(|spec| rule_notifies(ruleset, spec))),
-        group_messages: combine(group_rules().iter().map(|spec| rule_notifies(ruleset, spec))),
+        group_messages: combine(
+            group_rules()
+                .iter()
+                .map(|spec| rule_notifies(ruleset, spec)),
+        ),
         mentions_and_replies: combine([
             user_mentions_notify(ruleset),
             room_mentions_notify(ruleset),
@@ -635,9 +628,8 @@ pub async fn add_notification_email(
     auth: Option<&IdentityResetAuthRequest>,
     uiaa_session: Option<&str>,
 ) -> Result<(), AddNotificationEmailError> {
-    let sid = <&matrix_sdk::ruma::SessionId>::try_from(sid).map_err(|_| {
-        AddNotificationEmailError::Failed(AccountNotificationsFailureKind::Server)
-    })?;
+    let sid = <&matrix_sdk::ruma::SessionId>::try_from(sid)
+        .map_err(|_| AddNotificationEmailError::Failed(AccountNotificationsFailureKind::Server))?;
     let auth_data = crate::e2ee::account_management_auth_data(session, auth, uiaa_session);
     match session
         .client()

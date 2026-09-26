@@ -54,12 +54,18 @@ fn request(sequence: u64) -> RequestId {
     }
 }
 
-async fn send(handle: &AccountActorHandle, request_id: RequestId, request: AccountNotificationsRequest) {
+async fn send(
+    handle: &AccountActorHandle,
+    request_id: RequestId,
+    request: AccountNotificationsRequest,
+) {
     handle
-        .send(AccountMessage::Command(AccountCommand::AccountNotifications {
-            request_id,
-            request,
-        }))
+        .send(AccountMessage::Command(
+            AccountCommand::AccountNotifications {
+                request_id,
+                request,
+            },
+        ))
         .await;
 }
 
@@ -134,7 +140,9 @@ async fn load_command_is_read_only_and_projects_mixed_state() {
         .unwrap();
     for verb in ["PUT", "DELETE", "POST"] {
         Mock::given(method(verb))
-            .and(path_regex(r"^/_matrix/client/v3/(pushrules|pushers|account/3pid).*"))
+            .and(path_regex(
+                r"^/_matrix/client/v3/(pushrules|pushers|account/3pid).*",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
             .expect(0)
             .mount(server.server())
@@ -149,12 +157,16 @@ async fn load_command_is_read_only_and_projects_mixed_state() {
     .await;
     let cred_dir = tempdir().unwrap();
     let data_dir = tempdir().unwrap();
-    let (handle, mut action_rx, _event_rx) = spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    let (handle, mut action_rx, _event_rx) =
+        spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
     install_session(&server, &handle).await;
 
     send(&handle, request(1), AccountNotificationsRequest::Load).await;
     match next_notifications_action(&mut action_rx).await {
-        AppAction::AccountNotificationsLoaded { request_id, snapshot } => {
+        AppAction::AccountNotificationsLoaded {
+            request_id,
+            snapshot,
+        } => {
             assert_eq!(request_id, 1);
             assert_eq!(
                 snapshot.categories.group_messages,
@@ -174,21 +186,27 @@ async fn email_verification_with_uia_moves_an_active_target_to_the_new_address()
     // Before confirmation: old@ is the only validated email and has a pusher.
     Mock::given(method("POST"))
         .and(path("/_matrix/client/v3/account/3pid/email/requestToken"))
-        .and(body_partial_json(json!({"email": "new@example.invalid", "send_attempt": 1})))
+        .and(body_partial_json(
+            json!({"email": "new@example.invalid", "send_attempt": 1}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"sid": "sid1"})))
         .expect(1)
         .mount(server.server())
         .await;
     Mock::given(method("POST"))
         .and(path("/_matrix/client/v3/account/3pid/email/requestToken"))
-        .and(body_partial_json(json!({"email": "new@example.invalid", "send_attempt": 2})))
+        .and(body_partial_json(
+            json!({"email": "new@example.invalid", "send_attempt": 2}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"sid": "sid1"})))
         .expect(1)
         .mount(server.server())
         .await;
     Mock::given(method("POST"))
         .and(path("/_matrix/client/v3/account/3pid/add"))
-        .and(body_partial_json(json!({"auth": {"type": "m.login.password", "session": "uia1"}})))
+        .and(body_partial_json(
+            json!({"auth": {"type": "m.login.password", "session": "uia1"}}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
         .expect(1)
         .mount(server.server())
@@ -203,14 +221,18 @@ async fn email_verification_with_uia_moves_an_active_target_to_the_new_address()
         .await;
     Mock::given(method("POST"))
         .and(path("/_matrix/client/v3/pushers/set"))
-        .and(body_partial_json(json!({"kind": "email", "pushkey": "new@example.invalid", "lang": "ja"})))
+        .and(body_partial_json(
+            json!({"kind": "email", "pushkey": "new@example.invalid", "lang": "ja"}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
         .expect(1)
         .mount(server.server())
         .await;
     Mock::given(method("POST"))
         .and(path("/_matrix/client/v3/pushers/set"))
-        .and(body_partial_json(json!({"kind": null, "pushkey": "old@example.invalid"})))
+        .and(body_partial_json(
+            json!({"kind": null, "pushkey": "old@example.invalid"}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
         .expect(1)
         .mount(server.server())
@@ -230,7 +252,8 @@ async fn email_verification_with_uia_moves_an_active_target_to_the_new_address()
 
     let cred_dir = tempdir().unwrap();
     let data_dir = tempdir().unwrap();
-    let (handle, mut action_rx, _event_rx) = spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    let (handle, mut action_rx, _event_rx) =
+        spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
     install_session(&server, &handle).await;
 
     send(
@@ -256,13 +279,26 @@ async fn email_verification_with_uia_moves_an_active_target_to_the_new_address()
         other => panic!("unexpected {other:?}"),
     }
 
-    send(&handle, request(11), AccountNotificationsRequest::ResendEmailToken).await;
+    send(
+        &handle,
+        request(11),
+        AccountNotificationsRequest::ResendEmailToken,
+    )
+    .await;
     assert!(matches!(
         next_notifications_action(&mut action_rx).await,
-        AppAction::AccountNotificationsEmailTokenSent { resend_count: 1, .. }
+        AppAction::AccountNotificationsEmailTokenSent {
+            resend_count: 1,
+            ..
+        }
     ));
 
-    send(&handle, request(12), AccountNotificationsRequest::ConfirmEmail).await;
+    send(
+        &handle,
+        request(12),
+        AccountNotificationsRequest::ConfirmEmail,
+    )
+    .await;
     assert!(matches!(
         next_notifications_action(&mut action_rx).await,
         AppAction::AccountNotificationsUiaRequired {
@@ -330,7 +366,8 @@ async fn rejected_email_pusher_settles_failed_with_the_server_state() {
     .await;
     let cred_dir = tempdir().unwrap();
     let data_dir = tempdir().unwrap();
-    let (handle, mut action_rx, _event_rx) = spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    let (handle, mut action_rx, _event_rx) =
+        spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
     install_session(&server, &handle).await;
 
     send(
@@ -348,7 +385,10 @@ async fn rejected_email_pusher_settles_failed_with_the_server_state() {
             snapshot,
             ..
         } => {
-            assert_eq!(failure_kind, AccountNotificationsFailureKind::EmailNotRegistered);
+            assert_eq!(
+                failure_kind,
+                AccountNotificationsFailureKind::EmailNotRegistered
+            );
             assert!(!snapshot.expect("re-read").email_notifications_active());
         }
         other => panic!("unexpected {other:?}"),

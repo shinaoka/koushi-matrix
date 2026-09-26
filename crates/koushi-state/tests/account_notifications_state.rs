@@ -421,7 +421,13 @@ fn email_verification_flow_with_uia_and_resend() {
     );
     assert!(state.account_notifications.pending_email.is_none());
     assert_eq!(
-        state.account_notifications.snapshot.as_ref().unwrap().emails[0].address,
+        state
+            .account_notifications
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .emails[0]
+            .address,
         "user@example.invalid"
     );
 }

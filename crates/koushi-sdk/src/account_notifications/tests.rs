@@ -77,7 +77,10 @@ fn only_room_mentions_disabled_projects_mixed_mentions() {
     ruleset
         .set_enabled(RuleKind::Override, ".m.rule.is_room_mention", false)
         .unwrap();
-    assert_eq!(summarize_categories(&ruleset).mentions_and_replies, S::Mixed);
+    assert_eq!(
+        summarize_categories(&ruleset).mentions_and_replies,
+        S::Mixed
+    );
 }
 
 #[test]
@@ -93,7 +96,10 @@ fn legacy_mention_rules_are_used_when_msc3952_rules_are_absent() {
         ]
     }))
     .unwrap();
-    assert_eq!(summarize_categories(&ruleset).mentions_and_replies, S::Mixed);
+    assert_eq!(
+        summarize_categories(&ruleset).mentions_and_replies,
+        S::Mixed
+    );
 }
 
 #[test]
@@ -289,7 +295,9 @@ fn toggle(ruleset: &mut Ruleset, category: NotificationCategory, enabled: bool) 
                 kind,
                 rule_id,
                 actions,
-            } => ruleset.set_actions(kind, rule_id, actions.to_ruma()).unwrap(),
+            } => ruleset
+                .set_actions(kind, rule_id, actions.to_ruma())
+                .unwrap(),
         }
     }
 }
@@ -316,7 +324,11 @@ async fn dm_off_with_mentions_on_still_notifies_mentions_in_dms() {
 #[tokio::test]
 async fn mentions_off_with_group_on_still_notifies_as_a_message() {
     let mut ruleset = defaults();
-    toggle(&mut ruleset, NotificationCategory::MentionsAndReplies, false);
+    toggle(
+        &mut ruleset,
+        NotificationCategory::MentionsAndReplies,
+        false,
+    );
     assert!(evaluate(&ruleset, 5, true).await);
     toggle(&mut ruleset, NotificationCategory::GroupMessages, false);
     assert!(!evaluate(&ruleset, 5, true).await);
@@ -329,7 +341,10 @@ fn snapshot_matches_pushers_to_validated_emails_case_insensitively() {
     let snapshot = build_account_notifications_snapshot(
         &defaults(),
         koushi_state::NotificationEmailManagement::Available,
-        &["one@example.invalid".to_owned(), "two@example.invalid".to_owned()],
+        &[
+            "one@example.invalid".to_owned(),
+            "two@example.invalid".to_owned(),
+        ],
         &[
             "TWO@example.invalid".to_owned(),
             "stale@example.invalid".to_owned(),
@@ -603,9 +618,14 @@ async fn confirm_before_link_and_uiaa_are_distinguished() {
     let auth = koushi_state::IdentityResetAuthRequest::UiaaPassword {
         password: koushi_state::AuthSecret::new("synthetic-password".to_owned()),
     };
-    let second =
-        add_notification_email(&session, &secret, "sid123", Some(&auth), Some("uiaa-session"))
-            .await;
+    let second = add_notification_email(
+        &session,
+        &secret,
+        "sid123",
+        Some(&auth),
+        Some("uiaa-session"),
+    )
+    .await;
     assert!(matches!(
         second,
         Err(AddNotificationEmailError::Failed(

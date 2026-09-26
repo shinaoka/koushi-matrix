@@ -96,8 +96,11 @@ pub(crate) fn handle_email_token_sent(
         operation,
         AccountNotificationsOperation::RequestEmailToken
             | AccountNotificationsOperation::ResendEmailToken
-    ) || !working_matches(&state.account_notifications.operation, request_id, operation)
-    {
+    ) || !working_matches(
+        &state.account_notifications.operation,
+        request_id,
+        operation,
+    ) {
         return Vec::new();
     }
     state.account_notifications.pending_email = Some(PendingNotificationEmail {
@@ -160,7 +163,11 @@ pub(crate) fn handle_operation_succeeded(
     operation: AccountNotificationsOperation,
     snapshot: Option<AccountNotificationsSnapshot>,
 ) -> Vec<AppEffect> {
-    if !working_matches(&state.account_notifications.operation, request_id, operation) {
+    if !working_matches(
+        &state.account_notifications.operation,
+        request_id,
+        operation,
+    ) {
         return Vec::new();
     }
     if operation == AccountNotificationsOperation::ConfirmEmail {
@@ -181,7 +188,11 @@ pub(crate) fn handle_operation_failed(
     failure_kind: AccountNotificationsFailureKind,
     snapshot: Option<AccountNotificationsSnapshot>,
 ) -> Vec<AppEffect> {
-    if !working_matches(&state.account_notifications.operation, request_id, operation) {
+    if !working_matches(
+        &state.account_notifications.operation,
+        request_id,
+        operation,
+    ) {
         return Vec::new();
     }
     // The pending address is left untouched: the account actor replaces its

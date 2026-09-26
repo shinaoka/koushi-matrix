@@ -58,7 +58,8 @@ impl AccountActor {
                 let Some(session) = self.notifications_session(request_id, operation).await else {
                     return;
                 };
-                let result = koushi_sdk::set_notification_category(&session, category, enabled).await;
+                let result =
+                    koushi_sdk::set_notification_category(&session, category, enabled).await;
                 self.finish_notifications_operation(request_id, operation, result)
                     .await;
             }
