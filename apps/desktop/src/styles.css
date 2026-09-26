@@ -5466,6 +5466,9 @@ mark {
 .upload-staging-list {
   /* Multiple attachments and very short windows scroll inside the modal. */
   display: grid;
+  /* Cards keep their content height; spare dialog height stays below the
+     last card instead of stretching filename rows and caption frames (#1012). */
+  align-content: start;
   gap: 8px;
   min-height: 0;
   overflow-y: auto;
@@ -5681,6 +5684,11 @@ mark {
 }
 
 @media (min-height: 480px) {
+  /* A lone fitted image is the one card that takes the spare height. */
+  .upload-staging-list.is-single:has(> .upload-staging-item.has-preview) {
+    align-content: stretch;
+  }
+
   .upload-staging-list.is-single .upload-staging-item.has-preview {
     grid-template-rows: auto minmax(180px, 1fr) auto;
     min-block-size: 0;
