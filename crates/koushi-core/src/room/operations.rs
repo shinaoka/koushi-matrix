@@ -17,7 +17,8 @@ use koushi_sdk::{
 use koushi_state::{
     AppAction, BasicOperationRequest, INVITE_ALREADY_IN_SPACE_MESSAGE, InviteDestination,
     InviteDestinationResult, InviteDestinationResultKind, InviteScopeSelection,
-    OperationFailureKind, RoomNotificationMode, RoomTagInfo, RoomTagKind,
+    OperationFailureKind, RoomAddressAvailability, RoomAddressSuggestion, RoomNotificationMode,
+    RoomTagInfo, RoomTagKind, SpaceChildLinkOutcome,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 use std::sync::Mutex;
@@ -35,6 +36,9 @@ const CREATE_ROOM_FAILED_MESSAGE: &str = "Room creation failed";
 const CREATE_SPACE_FAILED_MESSAGE: &str = "Space creation failed";
 
 const LINK_SPACE_CHILD_FAILED_MESSAGE: &str = "Linking the room to the space failed";
+
+/// Bound on one advisory address lookup; a slow server settles `Unknown`.
+const ROOM_ADDRESS_CHECK_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub(super) type SpaceChildLinkKey = (String, String);
 
@@ -133,7 +137,7 @@ fn matrix_create_room_options(options: CreateRoomOptions) -> MatrixCreateRoomOpt
             .parent_space
             .map(|parent| MatrixCreateRoomParentSpace {
                 space_id: parent.space_id,
-                via_server: parent.via_server,
+                via_servers: Vec::new(),
             }),
     }
 }
@@ -214,6 +218,46 @@ pub(crate) fn classify_room_error(error: &MatrixRoomOperationError) -> RoomFailu
     }
 }
 
+fn room_failure_token(kind: RoomFailureKind) -> &'static str {
+    match kind {
+        RoomFailureKind::AliasInUse => "failed_alias_in_use",
+        RoomFailureKind::Forbidden => "failed_forbidden",
+        RoomFailureKind::InvalidInvite => "failed_invalid_invite",
+        RoomFailureKind::Network => "failed_network",
+        RoomFailureKind::NotFound => "failed_not_found",
+        RoomFailureKind::Sdk => "failed_sdk",
+    }
+}
+
+/// Private-data-free trace of a Space child link: the path (`create`, `add`,
+/// `repair`), the outcome token, and whether the child/inverse were written.
+fn trace_space_child_link(
+    path: &'static str,
+    stage: &'static str,
+    outcome: Option<koushi_sdk::MatrixSpaceChildLinkOutcome>,
+) {
+    let mut event = DiagnosticEvent::new(DiagnosticLevel::Debug, "core.room", "space_child_link")
+        .field(DiagnosticField::token("path", path))
+        .field(DiagnosticField::token("stage", stage));
+    if let Some(outcome) = outcome {
+        event = event
+            .field(DiagnosticField::boolean(
+                "child_written",
+                outcome.child_written,
+            ))
+            .field(DiagnosticField::token(
+                "parent",
+                match outcome.parent {
+                    koushi_sdk::MatrixSpaceParentLinkOutcome::Written => "written",
+                    koushi_sdk::MatrixSpaceParentLinkOutcome::AlreadyPresent => "already_present",
+                    koushi_sdk::MatrixSpaceParentLinkOutcome::NotPermitted => "not_permitted",
+                    koushi_sdk::MatrixSpaceParentLinkOutcome::Failed => "failed",
+                },
+            ));
+    }
+    record(event);
+}
+
 fn trace_room_operation(kind: &'static str, stage: &'static str, request_id: RequestId) {
     record(
         DiagnosticEvent::new(DiagnosticLevel::Debug, "core.room", stage)
@@ -246,22 +290,25 @@ impl RoomActor {
                 continue;
             }
 
-            match koushi_sdk::set_space_child(
-                &session,
-                &link.space_id,
-                &link.child_room_id,
-                &link.via_server,
-            )
-            .await
-            {
-                Ok(()) => {
+            match koushi_sdk::set_space_child(&session, &link.space_id, &link.child_room_id).await {
+                Ok(outcome) => {
+                    trace_space_child_link("repair", "linked", Some(outcome));
                     if let Ok(mut attempts) = self.attempted_space_child_repairs.write() {
                         attempts.insert(key);
                     }
                     self.refresh_room_list();
                 }
                 Err(error) => {
-                    let _kind = classify_room_error(&error);
+                    // Background repair has no user request to settle; record
+                    // only the coarse kind, and do not retry this pair on
+                    // every room-list snapshot for the rest of the session.
+                    // The Add existing room action remains the explicit,
+                    // visible retry path.
+                    let kind = classify_room_error(&error);
+                    trace_space_child_link("repair", room_failure_token(kind), None);
+                    if let Ok(mut attempts) = self.attempted_space_child_repairs.write() {
+                        attempts.insert(key);
+                    }
                 }
             }
         }
@@ -333,22 +380,114 @@ impl RoomActor {
         let Some(parent_space) = parent_space else {
             return;
         };
-        let Ok(via_server) = koushi_sdk::room_id_server_name(room_id) else {
+
+        // The room is already created; a linking failure must not turn the
+        // creation into a failure, but it is settled visibly (#1007) instead
+        // of being dropped.
+        let outcome =
+            match koushi_sdk::set_space_child(session, &parent_space.space_id, room_id).await {
+                Ok(outcome) => {
+                    trace_space_child_link("create", "linked", Some(outcome));
+                    self.mark_space_child_link_attempted(&parent_space.space_id, room_id);
+                    self.emit(CoreEvent::Room(RoomEvent::SpaceChildSet {
+                        request_id,
+                        space_id: parent_space.space_id.clone(),
+                        child_room_id: room_id.to_owned(),
+                    }));
+                    SpaceChildLinkOutcome::Linked
+                }
+                Err(error) => {
+                    let kind = classify_room_error(&error);
+                    // No `OperationFailed` for the create request: the room
+                    // exists, and that event would settle creation as failed.
+                    trace_space_child_link("create", room_failure_token(kind), None);
+                    SpaceChildLinkOutcome::Failed {
+                        reason: operation_failure_kind(kind),
+                    }
+                }
+            };
+        self.reduce_reliable(vec![AppAction::SpaceChildLinkSettled {
+            request_id: request_id.sequence,
+            space_id: parent_space.space_id.clone(),
+            child_room_id: room_id.to_owned(),
+            outcome,
+        }])
+        .await;
+    }
+
+    /// Start an advisory lookup of a create-room address (#1006). Only the
+    /// newest lookup runs; the reducer also admits only its settlement.
+    pub(super) async fn handle_check_room_address_availability(
+        &mut self,
+        request_id: RequestId,
+        alias_localpart: String,
+    ) {
+        let Some(session) = self.session.clone() else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
-
-        match koushi_sdk::set_space_child(session, &parent_space.space_id, room_id, &via_server)
+        self.stop_room_address_check().await;
+        let user_id = session.info.user_id.clone();
+        let preview =
+            koushi_sdk::preview_room_address("", Some(&alias_localpart), None, Some(&user_id));
+        let Some(full_alias) = preview.full_alias else {
+            // An invalid or empty draft has nothing to look up.
+            self.reduce_reliable(vec![AppAction::RoomAddressAvailabilityCleared])
+                .await;
+            return;
+        };
+        self.reduce_reliable(vec![AppAction::RoomAddressAvailabilityRequested {
+            request_id: request_id.sequence,
+            full_alias: full_alias.clone(),
+        }])
+        .await;
+        let action_tx = self.action_tx.clone();
+        self.room_address_check_task = Some(executor::spawn(async move {
+            let availability = match executor::timeout(
+                ROOM_ADDRESS_CHECK_TIMEOUT,
+                koushi_sdk::check_room_alias_availability(&session, &full_alias),
+            )
             .await
-        {
-            Ok(()) => {
-                self.mark_space_child_link_attempted(&parent_space.space_id, room_id);
-                self.emit(CoreEvent::Room(RoomEvent::SpaceChildSet {
-                    request_id,
-                    space_id: parent_space.space_id.clone(),
-                    child_room_id: room_id.to_owned(),
-                }));
-            }
-            Err(_) => {}
+            {
+                Ok(koushi_sdk::MatrixRoomAliasAvailability::Available) => {
+                    RoomAddressAvailability::Available
+                }
+                Ok(koushi_sdk::MatrixRoomAliasAvailability::InUse) => {
+                    RoomAddressAvailability::InUse
+                }
+                Ok(koushi_sdk::MatrixRoomAliasAvailability::Unknown) | Err(_) => {
+                    RoomAddressAvailability::Unknown
+                }
+            };
+            let suggestion = (availability == RoomAddressAvailability::InUse)
+                .then(|| {
+                    let localpart =
+                        koushi_state::suggest_alternative_room_alias_localpart(&preview.localpart);
+                    koushi_sdk::preview_room_address("", Some(&localpart), None, Some(&user_id))
+                        .full_alias
+                        .map(|full_alias| RoomAddressSuggestion {
+                            localpart,
+                            full_alias,
+                        })
+                })
+                .flatten();
+            // A settlement is reliable: the reducer drops it only when a newer
+            // check or a clear already replaced this one.
+            let _ = action_tx
+                .send(vec![AppAction::RoomAddressAvailabilitySettled {
+                    request_id: request_id.sequence,
+                    full_alias,
+                    availability,
+                    suggestion,
+                }])
+                .await;
+        }));
+    }
+
+    pub(super) async fn stop_room_address_check(&mut self) {
+        if let Some(task) = self.room_address_check_task.take() {
+            task.abort();
+            let _ = task.await;
         }
     }
 
@@ -397,7 +536,6 @@ impl RoomActor {
         request_id: RequestId,
         space_id: String,
         child_room_id: String,
-        via_server: String,
     ) {
         let Some(session) = &self.session else {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
@@ -412,28 +550,49 @@ impl RoomActor {
             },
         }])
         .await;
-        match koushi_sdk::set_space_child(session, &space_id, &child_room_id, &via_server).await {
-            Ok(()) => {
+        match koushi_sdk::set_space_child(session, &space_id, &child_room_id).await {
+            Ok(outcome) => {
+                trace_space_child_link("add", "linked", Some(outcome));
+                self.mark_space_child_link_attempted(&space_id, &child_room_id);
+                self.reduce_reliable(vec![
+                    AppAction::SpaceChildLinkSettled {
+                        request_id: request_id.sequence,
+                        space_id: space_id.clone(),
+                        child_room_id: child_room_id.clone(),
+                        outcome: SpaceChildLinkOutcome::Linked,
+                    },
+                    AppAction::BasicOperationSucceeded {
+                        request_id: request_id.sequence,
+                    },
+                ])
+                .await;
                 self.emit(CoreEvent::Room(RoomEvent::SpaceChildSet {
                     request_id,
                     space_id,
                     child_room_id,
                 }));
-                self.reduce_reliable(vec![AppAction::BasicOperationSucceeded {
-                    request_id: request_id.sequence,
-                }])
-                .await;
                 // Reflect the actor's own mutation immediately.
                 self.refresh_room_list();
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
-                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
-                self.reduce_reliable(vec![AppAction::BasicOperationFailed {
-                    request_id: request_id.sequence,
-                    message: LINK_SPACE_CHILD_FAILED_MESSAGE.to_owned(),
-                }])
+                trace_space_child_link("add", room_failure_token(kind), None);
+                self.reduce_reliable(vec![
+                    AppAction::SpaceChildLinkSettled {
+                        request_id: request_id.sequence,
+                        space_id,
+                        child_room_id,
+                        outcome: SpaceChildLinkOutcome::Failed {
+                            reason: operation_failure_kind(kind),
+                        },
+                    },
+                    AppAction::BasicOperationFailed {
+                        request_id: request_id.sequence,
+                        message: LINK_SPACE_CHILD_FAILED_MESSAGE.to_owned(),
+                    },
+                ])
                 .await;
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
     }
@@ -1277,3 +1436,9 @@ impl RoomActor {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod space_child_link_tests;
+
+#[cfg(test)]
+mod room_address_check_tests;

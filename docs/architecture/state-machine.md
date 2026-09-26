@@ -3107,6 +3107,101 @@ stateDiagram-v2
   events around the `CreateRoom` / `CreateSpace` / `SetSpaceChild` SDK calls,
   using the command's `request_id` (its `sequence`) as the correlation id.
 
+### Space child linking settlements (#1007)
+
+Parent-side Space linking runs inside the slot above: as its own
+`LinkingSpaceChild` operation (`SetSpaceChild`, the Add existing room action)
+or as the parent-Space step of `CreatingRoom`. Its result is recorded in
+`AppState.space_child_links`, the latest settlement per `(Space, room)` pair:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unsettled
+    Unsettled --> Linked: SpaceChildLinkSettled(Linked) [request_id in flight]
+    Unsettled --> Failed: SpaceChildLinkSettled(Failed) [request_id in flight]
+    Failed --> Linked: SpaceChildLinkSettled(Linked) [retry in flight]
+    Failed --> Failed: SpaceChildLinkSettled(Failed) [retry in flight]
+    Linked --> Linked: SpaceChildLinkSettled(Linked) [duplicate add in flight]
+    Linked --> Unsettled: session views cleared
+    Failed --> Unsettled: session views cleared
+```
+
+- Settle guard: `SpaceChildLinkSettled { request_id, space_id, child_room_id,
+  outcome }` applies only while `request_id` is the in-flight basic operation,
+  so an idle-state, stale, or non-admitted duplicate completion is ignored. The
+  Room actor dispatches it before `BasicOperationSucceeded` /
+  `BasicOperationFailed` (or, for creation, before `BasicOperationSucceeded`),
+  so every settled snapshot carries the result.
+- `Linked` means the homeserver accepted the parent-side `m.space.child`. The
+  reducer also adds the room to that `SpaceSummary.child_room_ids`, because the
+  SDK room cache can lag a just-sent state event; the next room-list snapshot
+  replaces the list, and the recorded `Linked` keeps the room from reappearing
+  as addable in the meantime.
+- Creation is not failed by its linking step: the room exists. A failed link
+  records `Failed` without an `OperationFailed` for the create request; the
+  Tauri `create_room` settlement reports it as `spaceLinkFailure` so the GUI can
+  offer Add existing room. An explicit add that fails also emits
+  `OperationFailed(RoomOperationFailed { kind })` and records the recoverable
+  `basic_operation_failed` error.
+- Routing: Core never parses `via` from a room ID (room version 12 IDs have no
+  server name). `koushi-sdk::set_space_child` mirrors
+  `SpaceService::add_child_to_space`: `Room::route()` for the child, falling back
+  to the session's own homeserver when no joined members are loaded yet (a new
+  room), then the inverse `m.space.parent` when the account may send it and none
+  exists. An inverse failure is a diagnostic token, not an operation failure:
+  the parent-side child is the relationship other clients list. A Space whose
+  power levels deny `m.space.child` fails `Forbidden` before any request.
+- Projection: `SidebarModel.space_add_rooms` (`space_add_rooms_for_state`)
+  lists the account's joined, non-DM rooms for the active Space with status
+  `available`, `adding` (the in-flight pair), `added` (a parent-side child or a
+  recorded `Linked`), or `failed { reason }` (retryable). A child-side
+  `m.space.parent` alone never makes a room `added`. React renders these rows
+  and may text-filter them; it does not classify rooms or derive status.
+- Background repair of parent-only relationships (`missing_space_child_links`)
+  uses the same routing but has no request to settle; its failures are
+  diagnostic only, and a pair that failed is not retried automatically again in
+  that session (Add existing room is the explicit retry).
+- A parent-side `m.space.child` with an empty `via` cannot route and is how a
+  child is removed, so it does not count as a child: the room is offered as
+  `available` and can be repaired or added again.
+
+### Advisory room address availability (#1006)
+
+The create-room dialog's address check is `AppState.room_address_availability`
+(Tauri `ui.room_address_availability`). It is advisory: one homeserver lookup
+through the SDK's `Client::is_room_alias_available`, never a reservation.
+`CreateRoom` stays authoritative and still reports `AliasInUse`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Checking: RoomAddressAvailabilityRequested [Ready]
+    Checking --> Checking: RoomAddressAvailabilityRequested (newer draft)
+    Checked --> Checking: RoomAddressAvailabilityRequested
+    Checking --> Checked: RoomAddressAvailabilitySettled [same request_id and full_alias]
+    Checking --> Idle: RoomAddressAvailabilityCleared / session views cleared
+    Checked --> Idle: RoomAddressAvailabilityCleared / session views cleared
+```
+
+- Start: `RoomCommand::CheckRoomAddressAvailability { alias_localpart }`. Core
+  resolves the full alias on the account's server with `preview_room_address`;
+  an empty or invalid draft dispatches `Cleared` and no lookup. The Room actor
+  aborts and joins the previous lookup task before starting the next, and on
+  `ClearRoomAddressAvailability`, session clear, and shutdown.
+- Settle guard: `Settled` applies only while `Checking` carries the same
+  `request_id` and `full_alias`; stale, duplicate, and idle completions are
+  ignored.
+- Outcomes: `available` (404 `M_NOT_FOUND`), `inUse` (the alias resolved), or
+  `unknown` (any other failure, or the 8-second bound). An error is never
+  reported as available.
+- Suggestion: only `inUse` carries one, from
+  `suggest_alternative_room_alias_localpart` (increment a trailing `-N`, else
+  append `-2`), validated on the same server. It has not been checked; using it
+  changes the draft, and the new address gets its own check.
+- The renderer chooses when to ask (400 ms after the shown address stops
+  changing), shows a result only when its `full_alias` is the address shown, and
+  never blocks submission on it.
+
 ## Room Management
 
 Room settings and moderation are Rust-owned state in
@@ -3224,11 +3319,15 @@ stateDiagram-v2
   default idle state and drop selected-room settings.
 - Headless core QA covers this with the `room_management` scenario and
   private-data-free tokens `room_settings=ok`, `permission_guard=ok`,
-  `moderation=ok`, and `space_access=ok`. The lane uses a disposable management
+  `moderation=ok`, `space_access=ok`, and `space_add_existing=ok`. The lane uses a disposable management
   room so timeline and room/space stages are not disrupted. `space_access=ok`
   proves a disposable Space's join rule switches invite ↔ public for its
   creator, reaches a second member's open settings through sync, is refused for
   that member, and leaves the child room's join rule unchanged.
+  `space_add_existing=ok` proves a room version 12 (domainless) room with only a
+  child-side `m.space.parent` is offered, added through `SetSpaceChild`, and
+  projected as added, and that the homeserver then holds a routed
+  `m.space.child` for it and for a room created inside the Space (#1007).
 
 ## Space Members
 

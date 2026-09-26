@@ -50,10 +50,17 @@ npm --prefix apps/desktop run qa:headless-basic:local
 This lane runs against disposable local homeservers and must prove the full
 basic-operations scenario set.
 
-The `directory` lane additionally requires `room_address_preview_create_share=ok`
-and `room_address_collision=ok`: ordinary Core room creation must match the Rust
-preview, its SDK sharing URL must join the intended room, and duplicate creation
-must retain the typed alias-collision failure. The `live_signals` lane additionally
+The `directory` lane additionally requires `room_address_preview_create_share=ok`,
+`room_address_collision=ok`, `room_address_availability=ok`, and
+`room_address_space_prefix=ok`: ordinary Core
+room creation must match the Rust preview, its SDK sharing URL must join the
+intended room, and duplicate creation must retain the typed alias-collision
+failure. The advisory check must report the taken address in use with a
+different, unchecked alternative, report an unused address available, and
+clear back to idle. From a Space, the unedited suggestion must be `<space>-<room>`; reusing
+the room-only address taken outside the Space must fail as `AliasInUse`, and the
+Space-prefixed address must create a room with the same display name that is
+linked to the Space (#1006). The `live_signals` lane additionally
 requires `ignored_user_history_recovery=ok`: both ignore and unignore must show a
 Clear followed by the existing event's return, without a new message, restart or
 viewport request. Both additions are also mandatory for `all`. The shared Node
@@ -81,6 +88,7 @@ room_settings=ok
 moderation=ok
 permission_guard=ok
 space_access=ok
+space_add_existing=ok
 timeline=ok
 hide_redacted=ok
 activity_recent=ok
@@ -143,7 +151,12 @@ errors as success output.
 
 `room_settings=ok`, `moderation=ok`, and `permission_guard=ok` are the Phase A
 room-management proof; `space_access=ok` adds a Space's join-rule change and
-its member-side refusal and sync (#935). The core lane creates a disposable management room,
+its member-side refusal and sync (#935). `space_add_existing=ok` adds an
+existing room version 12 room that only claims the Space as its parent through
+Core `SetSpaceChild`, then reads the Space's `m.space.child` from the
+homeserver with a disposable auditor device of the same user and requires
+nonempty routing; a room created inside the Space must be linked the same way
+(#1007). The core lane creates a disposable management room,
 loads Rust-owned settings/permission facts, updates a setting through
 `RoomCommand`, rejects an unauthorized moderation command before SDK mutation,
 and performs an authorized moderation action. The lane must not print room IDs,

@@ -56,9 +56,11 @@ pub enum CreateRoomVisibility {
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+/// The Space a new room is created in. Core derives the routing for both
+/// relationship events from the SDK (#1007); room version 12 Space IDs carry
+/// no server name for a renderer to extract.
 pub struct CreateRoomParentSpace {
     pub space_id: String,
-    pub via_server: String,
 }
 
 impl fmt::Debug for CreateRoomParentSpace {
@@ -66,7 +68,6 @@ impl fmt::Debug for CreateRoomParentSpace {
         formatter
             .debug_struct("CreateRoomParentSpace")
             .field("space_id", &"RoomId(..)")
-            .field("via_server", &"ServerName(..)")
             .finish()
     }
 }
@@ -85,11 +86,25 @@ pub enum RoomCommand {
         request_id: RequestId,
         name: String,
     },
+    /// Start an advisory availability check of a create-room address local
+    /// part on the account's server (#1006). It replaces any earlier check;
+    /// the result is `AppState.room_address_availability`, never a
+    /// reservation.
+    CheckRoomAddressAvailability {
+        request_id: RequestId,
+        alias_localpart: String,
+    },
+    /// Cancel the advisory check (the create dialog closed or the address
+    /// no longer needs one).
+    ClearRoomAddressAvailability {
+        request_id: RequestId,
+    },
+    /// Link a joined room under a joined Space. Core derives the `via`
+    /// routing from the SDK (room version 12 IDs carry no server name).
     SetSpaceChild {
         request_id: RequestId,
         space_id: String,
         child_room_id: String,
-        via_server: String,
     },
     InviteUser {
         request_id: RequestId,
@@ -312,12 +327,20 @@ impl fmt::Debug for RoomCommand {
                 .field("request_id", request_id)
                 .field("name", &"RoomName(..)")
                 .finish(),
+            Self::CheckRoomAddressAvailability { request_id, .. } => formatter
+                .debug_struct("CheckRoomAddressAvailability")
+                .field("request_id", request_id)
+                .field("alias_localpart", &"[redacted]")
+                .finish(),
+            Self::ClearRoomAddressAvailability { request_id } => formatter
+                .debug_struct("ClearRoomAddressAvailability")
+                .field("request_id", request_id)
+                .finish(),
             Self::SetSpaceChild { request_id, .. } => formatter
                 .debug_struct("SetSpaceChild")
                 .field("request_id", request_id)
                 .field("space_id", &"RoomId(..)")
                 .field("child_room_id", &"RoomId(..)")
-                .field("via_server", &"ServerName(..)")
                 .finish(),
             Self::InviteUser { request_id, .. } => formatter
                 .debug_struct("InviteUser")

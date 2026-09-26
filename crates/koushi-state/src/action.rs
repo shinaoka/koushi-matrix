@@ -23,7 +23,8 @@ use crate::state::{
     RoomModerationAction, RoomPreferencesState, RoomSettingChange, RoomSettingsSnapshot,
     RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability,
     ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope, SessionInfo,
-    SessionStatusRefreshTrigger, SettingsPatch, SettingsValues, SpaceChildSummary,
+    SessionStatusRefreshTrigger, SettingsPatch, SettingsValues, SpaceChildLinkOutcome,
+    SpaceChildSummary,
     SpaceMemberInviteOutcome, SpaceMemberRoleUpdateOutcome, SpaceMembersProjection, SpaceSummary,
     StagedUploadCompressionChoice, StagedUploadItem, StagedUploadOutputSelection,
     SyncLifecycleStatus, TimelineContinuityInspection, TimelineGapRepairFailureKind,
@@ -1565,6 +1566,29 @@ pub enum AppAction {
     BasicOperationFailed {
         request_id: u64,
         message: String,
+    },
+    /// An advisory availability check of a create-room address started
+    /// (#1006); it replaces any earlier check.
+    RoomAddressAvailabilityRequested {
+        request_id: u64,
+        full_alias: String,
+    },
+    /// Admitted only for the in-flight check of the same address.
+    RoomAddressAvailabilitySettled {
+        request_id: u64,
+        full_alias: String,
+        availability: crate::room_address::RoomAddressAvailability,
+        suggestion: Option<crate::room_address::RoomAddressSuggestion>,
+    },
+    /// The dialog closed or the address no longer needs a check.
+    RoomAddressAvailabilityCleared,
+    /// The parent-Space linking step of the in-flight basic operation settled
+    /// (#1007). Admitted only while `request_id` is in flight.
+    SpaceChildLinkSettled {
+        request_id: u64,
+        space_id: String,
+        child_room_id: String,
+        outcome: SpaceChildLinkOutcome,
     },
     LiveRoomReceiptSummariesUpdated {
         room_id: String,

@@ -398,9 +398,6 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
     let space_id = wait_for_space_created(&mut conn_a, create_space_id, "create space").await?;
     println!("space_created=ok");
 
-    // Extract server name from room_id (e.g., "!room:localhost:PORT" → "localhost:PORT")
-    let via_server = config.server_name.clone();
-
     // A sets room as child of space
     let set_child_id = conn_a.next_request_id();
     conn_a
@@ -408,7 +405,6 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
             request_id: set_child_id,
             space_id: space_id.clone(),
             child_room_id: room_id.clone(),
-            via_server: via_server.clone(),
         }))
         .await
         .map_err(|e| format!("submit set space child: {e}"))?;

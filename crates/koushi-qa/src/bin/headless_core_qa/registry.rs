@@ -611,6 +611,7 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "moderation=ok",
             "permission_guard=ok",
             "space_access=ok",
+            "space_add_existing=ok",
         ],
         QaStage::RoomPeopleProjection => &[
             "room_people_joined_scope=ok",
@@ -770,6 +771,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "moderation=ok",
         "permission_guard=ok",
         "space_access=ok",
+        "space_add_existing=ok",
         "timeline=ok",
         "timeline_nav=ok",
         "hide_redacted=ok",

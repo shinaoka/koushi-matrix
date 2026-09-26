@@ -219,7 +219,6 @@ fn missing_space_child_links_detects_parent_only_relationship() {
         vec![MissingSpaceChildLink {
             space_id: "!space:example.test".to_owned(),
             child_room_id: "!room:example.test".to_owned(),
-            via_server: "example.test".to_owned(),
         }]
     );
 }
@@ -1167,4 +1166,45 @@ async fn live_push_rules_reproject_notification_modes_without_room_updates() {
         }).await.expect("push policy update projected without a room diff");
     }
     harness.stop().await;
+}
+
+#[test]
+fn missing_space_child_links_includes_domainless_room_ids() {
+    // Room version 12 room IDs have no `:server` component (#1007).
+    let child_room_id = "!31hneApxJ_1o-63DmFrpeqnkFfWppnzWso1JvH3ogLM";
+    let snapshot = MatrixRoomListSnapshot {
+        spaces: vec![MatrixRoomListSpace {
+            space_id: "!space:example.test".to_owned(),
+            raw_name: None,
+            display_name: "My Space".to_owned(),
+            avatar_mxc_uri: None,
+            join_rule: koushi_sdk::MatrixRoomJoinRule::Invite,
+            child_room_ids: Vec::new(),
+            member_user_ids: Vec::new(),
+        }],
+        rooms: vec![MatrixRoomListRoom {
+            room_id: child_room_id.to_owned(),
+            display_name: "Room".to_owned(),
+            avatar_mxc_uri: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: MatrixRoomTags::default(),
+            unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
+            marked_unread: false,
+            recency_stamp: None,
+            conversation_activity: None,
+            latest_event: None,
+            parent_space_ids: vec!["!space:example.test".to_owned()],
+            is_encrypted: true,
+            joined_members: 1,
+        }],
+        ..MatrixRoomListSnapshot::default()
+    };
+
+    let links = missing_space_child_links(&snapshot);
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].space_id, "!space:example.test");
+    assert_eq!(links[0].child_room_id, child_room_id);
 }

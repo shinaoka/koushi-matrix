@@ -1226,6 +1226,8 @@ pub fn run() {
             commands::directory::preview_join_target,
             commands::directory::dismiss_directory_preview,
             commands::room::set_space_child,
+            commands::room::check_room_address_availability,
+            commands::room::clear_room_address_availability,
             commands::room::join_room,
             commands::room::accept_invite,
             commands::room::decline_invite,

@@ -1966,6 +1966,12 @@ button:disabled {
   background: var(--surface-hover);
 }
 
+.section-menu-separator {
+  block-size: 1px;
+  margin-block: 4px;
+  background: var(--line);
+}
+
 .section-count {
   min-width: 1.5em;
   text-align: end;
@@ -9139,6 +9145,58 @@ kbd {
 
 .confirmation-modal { width: 480px; }
 .confirmation-content { padding: 0 20px 20px; overflow-y: auto; }
+
+/* #1006 advisory address availability under the address field. */
+.create-room-address-availability p { margin: 4px 0 0; }
+.create-room-address-suggestion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* #1007 Add existing room to a Space. */
+.space-add-rooms-modal { inline-size: 520px; }
+.space-add-rooms {
+  display: grid;
+  gap: 10px;
+  min-block-size: 0;
+  padding: 0 20px 20px;
+  overflow: auto;
+}
+.space-add-rooms p { margin: 0; }
+.space-add-rooms-list {
+  display: grid;
+  gap: 6px;
+  max-block-size: 320px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+.space-add-room {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 10px;
+  min-block-size: 40px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.space-add-room-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.space-add-room-status { color: var(--text-muted); font-size: 12px; }
+.space-add-room-failure {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  color: var(--danger);
+  font-size: 12px;
+}
+.space-add-rooms-empty { color: var(--text-muted); }
 
 /* #59 room-history export dialog. */
 .room-history-export-modal { inline-size: 520px; }

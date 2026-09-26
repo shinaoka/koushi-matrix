@@ -164,7 +164,7 @@ async fn run_authenticated(
             .await
             .map_err(|error| format!("create space failed: {error}"))?;
 
-    koushi_sdk::set_space_child(session_a, &space_id, &room_id, &config.server_name)
+    koushi_sdk::set_space_child(session_a, &space_id, &room_id)
         .await
         .map_err(|error| format!("set space child failed: {error}"))?;
 

@@ -49,7 +49,8 @@ use tauri::{AppHandle, Manager, State};
 use crate::{
     CoreRuntimeState,
     dto::{
-        FrontendCommandAdmission, FrontendCommandResult, FrontendCommandSettlement, SearchScopeKind,
+        FrontendCommandAdmission, FrontendCommandResult, FrontendCommandSettlement,
+        FrontendCreateRoomSettlement, SearchScopeKind,
     },
 };
 

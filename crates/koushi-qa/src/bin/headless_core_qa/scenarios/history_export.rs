@@ -861,7 +861,6 @@ async fn run_space_export(
         conn_a,
         &space_id,
         encrypted_room_id,
-        &config.server_name,
         "history export space child",
     )
     .await?;
@@ -872,23 +871,9 @@ async fn run_space_export(
         "history export plain room",
     )
     .await?;
-    set_space_child_for_qa(
-        conn_a,
-        &space_id,
-        &plain_room,
-        &config.server_name,
-        "history export plain child",
-    )
-    .await?;
+    set_space_child_for_qa(conn_a, &space_id, &plain_room, "history export plain child").await?;
     let dm_room = start_direct_message_for_qa(conn_a, user_c, "history export dm").await?;
-    set_space_child_for_qa(
-        conn_a,
-        &space_id,
-        &dm_room,
-        &config.server_name,
-        "history export dm child",
-    )
-    .await?;
+    set_space_child_for_qa(conn_a, &space_id, &dm_room, "history export dm child").await?;
     let _ = account_key_a;
     // The reducer admits a Space export only for a Space in `AppState.spaces`.
     wait_for_space_in_space_list(conn_a, &space_id, "history export space projection").await?;
@@ -995,14 +980,7 @@ async fn run_space_export(
         "history export added room",
     )
     .await?;
-    set_space_child_for_qa(
-        conn_a,
-        &space_id,
-        &added_room,
-        &config.server_name,
-        "history export added child",
-    )
-    .await?;
+    set_space_child_for_qa(conn_a, &space_id, &added_room, "history export added child").await?;
     wait_for_space_child_projection(
         conn_a,
         &space_id,

@@ -142,6 +142,8 @@ impl CoreCommand {
                 | RoomCommand::CreatePublicDirectoryRoom { request_id, .. }
                 | RoomCommand::CreateSpace { request_id, .. }
                 | RoomCommand::SetSpaceChild { request_id, .. }
+                | RoomCommand::CheckRoomAddressAvailability { request_id, .. }
+                | RoomCommand::ClearRoomAddressAvailability { request_id }
                 | RoomCommand::InviteUser { request_id, .. }
                 | RoomCommand::LoadSpaceMembers { request_id, .. }
                 | RoomCommand::LoadSpaceChildren { request_id, .. }

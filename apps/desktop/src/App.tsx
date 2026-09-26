@@ -1,6 +1,7 @@
 import { HelpDialog } from "./components/HelpDialog";
 import { DesktopUpdates } from "./components/DesktopUpdates";
-import { useModalFocusTracking } from "./components/ModalDialog";
+import { ModalDialog, useModalFocusTracking } from "./components/ModalDialog";
+import { AddExistingRoomDialog } from "./components/AddExistingRoomDialog";
 import {
   type FormEvent,
   type CSSProperties,
@@ -39,6 +40,7 @@ import {
 import type {
   ComposerDocument,
   ComposerDraftRevision,
+  OperationFailureKind,
   TimelinePaneState
 } from "./domain/types";
 import {
@@ -231,7 +233,7 @@ import { getTimelineTransportStats } from "./domain/timelineTransportStats";
 import {
   ICON_SIZE,
   composerModeProp,
-  serverNameFromRoomId,
+  operationFailureLabel,
   syncStatePresentation,
   type ActiveContextMenu,
   type ContextMenuTarget,
@@ -246,6 +248,7 @@ import {
 import { AuthScreen, SlidingSyncCapabilityBlockedScreen } from "./components/auth";
 import {
   CreateEntityDialog,
+  type CreateRoomAddressConflict,
   type CreateRoomDialogOptions,
   DiagnosticDialog,
   DirectoryPreviewDialog,
@@ -450,13 +453,15 @@ function defaultCreateRoomDialogOptions(): CreateRoomDialogOptions {
   return { ...DEFAULT_CREATE_ROOM_OPTIONS };
 }
 
+/** Pause after the last address edit before the advisory lookup (#1006). */
+const ROOM_ADDRESS_CHECK_DEBOUNCE_MS = 400;
+
 function createRoomRequestFromDraft(
   name: string,
   options: CreateRoomDialogOptions,
   activeSpaceId: string | null
 ): CreateRoomRequest {
   const visibility = options.visibility;
-  const parentViaServer = activeSpaceId ? serverNameFromRoomId(activeSpaceId) : null;
   return {
     name,
     topic: options.topic.trim() || null,
@@ -464,13 +469,9 @@ function createRoomRequestFromDraft(
     encrypted: visibility === "private" ? options.encrypted : false,
     invitedOnly: visibility === "private" ? options.invitedOnly : false,
     visibility,
-    parentSpace:
-      activeSpaceId && parentViaServer
-        ? {
-            spaceId: activeSpaceId,
-            viaServer: parentViaServer
-          }
-        : null
+    // Core derives the relationship routing (#1007); a room version 12 Space
+    // ID has no server name to extract here.
+    parentSpace: activeSpaceId ? { spaceId: activeSpaceId } : null
   };
 }
 
@@ -1181,14 +1182,70 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
   const [createDialog, setCreateDialog] = useState<"room" | "space" | null>(null);
   const [createDraftName, setCreateDraftName] = useState("");
   const createDialogEpochRef = useRef(0);
-  const [createRoomAliasCollision, setCreateRoomAliasCollision] = useState<string | null>(null);
+  // The attempted address of a create that failed with AliasInUse (#1006),
+  // kept with the localpart it applies to so an edit retires it.
+  const [createRoomAliasCollision, setCreateRoomAliasCollision] = useState<
+    (CreateRoomAddressConflict & { localpart: string }) | null
+  >(null);
   const [createRoomDraftOptions, setCreateRoomDraftOptions] =
     useState<CreateRoomDialogOptions>(defaultCreateRoomDialogOptions);
   const [createRoomManualAlias, setCreateRoomManualAlias] = useState<string | null>(null);
+  // #1007: which Space the Add existing room dialog targets, and the notice
+  // for a room whose creation settled but whose Space link failed (both
+  // presentation-only; the rows and outcomes are Rust-projected).
+  const [addExistingRoomSpaceId, setAddExistingRoomSpaceId] = useState<string | null>(null);
+  const [createdRoomLinkFailure, setCreatedRoomLinkFailure] = useState<{
+    spaceId: string;
+    spaceName: string;
+    roomName: string;
+    reason: OperationFailureKind;
+  } | null>(null);
+  // The add-rooms projection exists only for the active Space; leaving that
+  // Space closes the dialog instead of showing another Space's rows.
+  const activeSpaceIdForAddRooms = snapshot?.state.ui.navigation.active_space_id ?? null;
+  useEffect(() => {
+    setAddExistingRoomSpaceId((open) => (open && open !== activeSpaceIdForAddRooms ? null : open));
+  }, [activeSpaceIdForAddRooms]);
   const createRoomAddressPreview = useRoomAddressPreview(
     api, createDraftName, createRoomManualAlias,
     snapshot?.state.domain.session.user_id ?? null, createDialog === "room"
   );
+  // #1006: the advisory check follows the shown address after a short pause
+  // in typing. Rust owns the lookup, its cancellation and stale-result
+  // fencing; this effect only picks when to ask.
+  const createRoomAvailabilityTarget =
+    createDialog === "room" &&
+    createRoomDraftOptions.visibility === "public" &&
+    createRoomAddressPreview?.error === null &&
+    createRoomAddressPreview.full_alias
+      ? createRoomAddressPreview.localpart
+      : null;
+  const roomAddressAvailability = snapshot?.state.ui.room_address_availability ?? null;
+  const previousRoomAddressCheckTargetRef = useRef<string | null>(null);
+  useEffect(() => {
+    const previousTarget = previousRoomAddressCheckTargetRef.current;
+    previousRoomAddressCheckTargetRef.current = createRoomAvailabilityTarget;
+    if (createRoomAvailabilityTarget === null) {
+      // The dialog closed or the address stopped being checkable: always
+      // cancel, so no lookup keeps running (Rust ignores a clear when idle).
+      if (previousTarget !== null) {
+        void api.clearRoomAddressAvailability().catch(() => undefined);
+      }
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void api.checkRoomAddressAvailability(createRoomAvailabilityTarget).catch(() => undefined);
+    }, ROOM_ADDRESS_CHECK_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+    // Only a new target (or leaving the check) starts a request.
+  }, [api, createRoomAvailabilityTarget]);
+  const shownRoomAddressAvailability =
+    roomAddressAvailability &&
+    roomAddressAvailability.kind !== "idle" &&
+    createRoomAvailabilityTarget !== null &&
+    roomAddressAvailability.full_alias === createRoomAddressPreview?.full_alias
+      ? roomAddressAvailability
+      : null;
   const displayedCreateRoomOptions = {
     ...createRoomDraftOptions,
     aliasLocalpart: createRoomManualAlias ?? createRoomAddressPreview?.localpart ?? ""
@@ -3895,6 +3952,9 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     const name = createDraftName.trim();
     const activeSpaceIdForCreatedRoom =
       kind === "room" ? snapshot?.state.ui.navigation.active_space_id ?? null : null;
+    const activeSpaceNameForCreatedRoom =
+      snapshot?.sidebar.space_rail.find((space) => space.space_id === activeSpaceIdForCreatedRoom)
+        ?.display_name ?? "";
     // Guard against double-submit: a create already in flight (isBusy) or a
     // pending basic_operation (Rust-owned) must block re-entry.
     if (
@@ -3914,14 +3974,34 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
         kind === "room"
           ? createRoomRequestFromDraft(name, displayedCreateRoomOptions, activeSpaceIdForCreatedRoom)
           : null;
-      await settleCommand(
-        kind === "space" ? api.createSpace(name) : api.createRoom(createRoomRequest!)
-      );
+      let spaceLinkFailure: OperationFailureKind | null = null;
+      if (kind === "space") {
+        await settleCommand(api.createSpace(name));
+      } else {
+        spaceLinkFailure = (await settleCommand(api.createRoom(createRoomRequest!))).spaceLinkFailure ?? null;
+      }
       if (epoch === createDialogEpochRef.current) closeCreateDialog();
+      if (spaceLinkFailure && activeSpaceIdForCreatedRoom) {
+        setCreatedRoomLinkFailure({
+          spaceId: activeSpaceIdForCreatedRoom,
+          spaceName: activeSpaceNameForCreatedRoom,
+          roomName: name,
+          reason: spaceLinkFailure
+        });
+      }
     } catch (error) {
       if (kind === "room" && typeof error === "object" && error !== null && "kind" in error && error.kind === "aliasInUse") {
         if (epoch === createDialogEpochRef.current) {
-          setCreateRoomAliasCollision(displayedCreateRoomOptions.aliasLocalpart);
+          const localpart = displayedCreateRoomOptions.aliasLocalpart;
+          const server = createRoomAddressPreview?.server_name ?? "";
+          setCreateRoomAliasCollision({
+            localpart,
+            fullAddress: createRoomAddressPreview?.full_alias ?? `#${localpart}:${server}`,
+            server,
+            roomName: name
+          });
+          // Refresh the advisory result so an alternative is offered at once.
+          void api.checkRoomAddressAvailability(localpart).catch(() => undefined);
         }
         return;
       }
@@ -3936,6 +4016,12 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
 
   async function setComposerReplyTarget(roomId: string, eventId: string) {
     await settleCommand(api.setComposerReplyTarget(roomId, eventId));
+  }
+
+  async function addExistingRoomToSpace(spaceId: string, roomId: string) {
+    // The pending/added/failed row comes from the Rust snapshot; the command
+    // returns at admission.
+    await settleCommand(api.setSpaceChild(spaceId, roomId));
   }
 
   async function cancelComposerReply() {
@@ -6177,6 +6263,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           activeView={primaryView}
           snapshot={snapshot}
           onCreateRoom={() => openCreateDialog("room")}
+          onAddExistingRoom={(spaceId) => setAddExistingRoomSpaceId(spaceId)}
           onNewDm={openNewDmDialog}
           onOpenContextMenu={openContextMenu}
           onOpenActivity={() => {
@@ -6779,7 +6866,14 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           kind={createDialog}
           roomOptions={displayedCreateRoomOptions}
           addressPreview={createRoomAddressPreview}
-          addressFailure={createRoomAliasCollision === displayedCreateRoomOptions.aliasLocalpart ? "aliasInUse" : null}
+          targetSpaceName={activeSpace ? activeSpaceName : null}
+          addressConflict={
+            createRoomAliasCollision?.localpart === displayedCreateRoomOptions.aliasLocalpart
+              ? createRoomAliasCollision
+              : null
+          }
+          addressAvailability={shownRoomAddressAvailability}
+          onUseSuggestedAddress={(localpart) => setCreateRoomManualAlias(localpart)}
           onOpenAddressHelp={(url) => runInBackground(openExternalHttpUrl(url))}
           value={createDraftName}
           onCancel={closeCreateDialog}
@@ -6794,6 +6888,59 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           }}
           onValueChange={setCreateDraftName}
         />
+      ) : null}
+      {addExistingRoomSpaceId && snapshot.sidebar.space_add_rooms?.space_id === addExistingRoomSpaceId ? (
+        <AddExistingRoomDialog
+          model={snapshot.sidebar.space_add_rooms}
+          spaceName={
+            snapshot.sidebar.space_rail.find((space) => space.space_id === addExistingRoomSpaceId)
+              ?.display_name ?? ""
+          }
+          busy={
+            snapshot.state.ui.basic_operation.kind !== "idle" &&
+            snapshot.state.ui.basic_operation.kind !== "linkingSpaceChild"
+          }
+          onAdd={(roomId) => addExistingRoomToSpace(addExistingRoomSpaceId, roomId)}
+          onClose={() => setAddExistingRoomSpaceId(null)}
+        />
+      ) : null}
+      {createdRoomLinkFailure ? (
+        <ModalDialog
+          title={t("spaceAddRooms.createdLinkFailedTitle")}
+          className="confirmation-modal"
+          onClose={() => setCreatedRoomLinkFailure(null)}
+        >
+          <div className="confirmation-content">
+            <p role="alert">
+              {createdRoomLinkFailure.reason === "forbidden"
+                ? t("spaceAddRooms.createdLinkFailedForbidden", {
+                    roomName: createdRoomLinkFailure.roomName,
+                    spaceName: createdRoomLinkFailure.spaceName
+                  })
+                : t("spaceAddRooms.createdLinkFailed", {
+                    roomName: createdRoomLinkFailure.roomName,
+                    spaceName: createdRoomLinkFailure.spaceName,
+                    reason: operationFailureLabel(createdRoomLinkFailure.reason)
+                  })}
+            </p>
+            <div className="dialog-actions">
+              <button type="button" className="dialog-button" onClick={() => setCreatedRoomLinkFailure(null)}>
+                {t("action.done")}
+              </button>
+              <button
+                type="button"
+                className="dialog-button is-primary"
+                onClick={() => {
+                  const spaceId = createdRoomLinkFailure.spaceId;
+                  setCreatedRoomLinkFailure(null);
+                  setAddExistingRoomSpaceId(spaceId);
+                }}
+              >
+                {t("spaceAddRooms.action")}
+              </button>
+            </div>
+          </div>
+        </ModalDialog>
       ) : null}
       {newDmDialogOpen ? (
         <UserIdDialog

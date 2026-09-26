@@ -599,6 +599,31 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   reported from `AppState.invites`, not from the server summary. A child the
   server did not describe is `unknown` with no join action — the permission model
   is never worked around.
+- Add existing room (#1007) renders `SidebarModel.space_add_rooms`, projected
+  by `space_add_rooms_for_state` from the active Space's parent-side
+  `child_room_ids`, the in-flight `LinkingSpaceChild` pair, and
+  `AppState.space_child_links` (Core-owned, not a delta slice; the sidebar is
+  recomputed when it or `basic_operation` changes). React may text-filter the
+  rows and dispatch `set_space_child(spaceId, childRoomId)`; it must not classify
+  eligibility from `parent_space_ids`, derive a row status, or pass routing:
+  Core derives `via` from the SDK. `create_room` returns
+  `spaceLinkFailure` because a failed link does not fail creation. Browser tests
+  push Rust-shaped `space_add_rooms` snapshots after the command receipt.
+- The create-room address preview (`preview_room_address`, #838/#1006) is Rust
+  owned: normalization, the `<space>-<room>` suggestion from the selected
+  Space's Matrix name (dropped when it would exceed 255 bytes), validation, the
+  full alias, and the `server_name` whose alias namespace all Spaces share.
+  React keeps only whether the address was edited, and re-requests the preview
+  for the current draft; an `aliasInUse` create failure is rendered with the
+  attempted full address and server captured from that preview. A submitted
+  alias is never renamed or retried automatically.
+- The advisory availability check (#1006) is Rust state
+  (`ui.room_address_availability`): Core owns the lookup, its cancellation, the
+  stale-result guard, the outcome, and the unchecked alternative. React only
+  debounces when to dispatch `check_room_address_availability` /
+  `clear_room_address_availability`, renders a result whose `full_alias` equals
+  the shown address, and applies a suggestion only when the user chooses
+  **Use this address**.
 - Room-tag GUI tests should stub `set_room_tag` / `remove_room_tag` to return the
   current snapshot first, assert the row does not move immediately, then push a
   Rust-shaped snapshot with updated `RoomSummary.tags` / sidebar room tags and

@@ -11,6 +11,7 @@ mod locale_profile;
 mod reducer;
 mod room_address;
 mod sidebar;
+mod space_add_rooms;
 mod state;
 mod submission;
 mod typography_profile;
@@ -37,7 +38,11 @@ pub use locale_profile::{
     resolve_locale_display_profile,
 };
 pub use reducer::reduce;
-pub use room_address::{RoomAddressError, RoomAddressPreview, suggest_room_alias_localpart};
+pub use room_address::{
+    RoomAddressAvailability, RoomAddressAvailabilityState, RoomAddressError, RoomAddressPreview,
+    RoomAddressSuggestion, suggest_alternative_room_alias_localpart, suggest_room_alias_localpart,
+    suggest_space_room_alias_localpart,
+};
 pub use sidebar::{
     AccountHomeItem, RoomListItem, SidebarModel, SidebarSections, SpaceRailItem, compose_sidebar,
     compose_sidebar_for_state, compose_sidebar_with_account_facts,
@@ -159,6 +164,11 @@ pub use state::{
     SlidingSyncCapabilityFailureKind, SlidingSyncCapabilityResult, SlidingSyncCapabilityState,
     SlidingSyncPositiveEvidence, SlidingSyncRevalidationState,
 };
+// Space add-existing-room projection and linking settlements (#1007).
+pub use space_add_rooms::{
+    SpaceAddRoomCandidate, SpaceAddRoomStatus, SpaceAddRoomsModel, space_add_rooms_for_state,
+};
+pub use state::{SpaceChildLinkOutcome, SpaceChildLinkResult, SpaceChildLinkResults};
 // History export keeps its own block so the feature does not edit the shared
 // list above.
 pub use state::{

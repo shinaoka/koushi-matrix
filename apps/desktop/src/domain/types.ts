@@ -6,6 +6,8 @@ export interface RoomAddressPreview {
   localpart: string;
   full_alias: string | null;
   error: "empty" | "invalid" | "notReady" | null;
+  /** The server whose alias namespace every Space on it shares (#1006). */
+  server_name: string | null;
 }
 
 export interface CreateRoomRequest {
@@ -20,9 +22,9 @@ export interface CreateRoomRequest {
 
 export type CreateRoomVisibility = "private" | "public";
 
+/** Core derives both relationship events' routing from the SDK (#1007). */
 export interface CreateRoomParentSpace {
   spaceId: string;
-  viaServer: string;
 }
 
 export interface DesktopSnapshot {
@@ -111,6 +113,8 @@ export interface AppUiState {
   history_export: HistoryExportState;
   threads_list: ThreadsListState;
   basic_operation: BasicOperationState;
+  /** Rust-owned advisory address check of the create-room dialog (#1006). */
+  room_address_availability: RoomAddressAvailabilityState;
   errors: AppError[];
 }
 
@@ -455,6 +459,11 @@ export interface CommandAdmission {
 export interface CommandSettlement {
   protocolVersion: 1;
   publishedGeneration: number;
+}
+
+/** `create_room` settlement; a failed parent-Space link does not fail creation (#1007). */
+export interface CreateRoomSettlement extends CommandSettlement {
+  spaceLinkFailure: OperationFailureKind | null;
 }
 
 export interface CommandResult<T> {
@@ -1943,6 +1952,26 @@ export type ComposerMode =
 // Rust BasicOperationState is #[serde(tag = "kind", rename_all = "camelCase")]
 // → internally tagged, camelCase VARIANT names, snake_case fields. Pending
 // variants carry the correlation request_id (see docs/architecture/state-machine.md).
+export type RoomAddressAvailability = "available" | "inUse" | "unknown";
+
+export interface RoomAddressSuggestion {
+  localpart: string;
+  full_alias: string;
+}
+
+/** Advisory only: never a reservation; room creation is authoritative. */
+export type RoomAddressAvailabilityState =
+  | { kind: "idle" }
+  | { kind: "checking"; request_id: number; full_alias: string }
+  | {
+      kind: "checked";
+      request_id: number;
+      full_alias: string;
+      availability: RoomAddressAvailability;
+      /** Offered only for an address in use; not checked yet. */
+      suggestion: RoomAddressSuggestion | null;
+    };
+
 export type BasicOperationState =
   | { kind: "idle" }
   | { kind: "creatingRoom"; request_id: number; name: string }
@@ -2565,7 +2594,27 @@ export interface SidebarModel {
   dms_collapsed?: boolean;
   low_priority_collapsed?: boolean;
   sections: SidebarSections;
+  /** Rust-projected Add existing room rows for the active Space (#1007). */
+  space_add_rooms?: SpaceAddRoomsModel | null;
 }
+
+export interface SpaceAddRoomsModel {
+  space_id: string;
+  candidates: SpaceAddRoomCandidate[];
+}
+
+export interface SpaceAddRoomCandidate {
+  room_id: string;
+  display_name: string;
+  avatar: AvatarImage | null;
+  status: SpaceAddRoomStatus;
+}
+
+export type SpaceAddRoomStatus =
+  | { kind: "available" }
+  | { kind: "adding" }
+  | { kind: "added" }
+  | { kind: "failed"; reason: OperationFailureKind };
 
 /**
  * `rooms`, `people`, and `low_priority` are the mutually exclusive visible

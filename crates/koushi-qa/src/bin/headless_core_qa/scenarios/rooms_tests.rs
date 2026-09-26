@@ -24,6 +24,7 @@ fn room_management_scenario_runs_after_room_space_and_reports_private_tokens() {
             "moderation=ok",
             "permission_guard=ok",
             "space_access=ok",
+            "space_add_existing=ok",
             "restore_cleanup=ok",
         ]
     );

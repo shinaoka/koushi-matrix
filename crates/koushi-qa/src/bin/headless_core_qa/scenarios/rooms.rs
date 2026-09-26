@@ -2,6 +2,8 @@
 mod address;
 #[path = "rooms/space_access.rs"]
 mod space_access;
+#[path = "rooms/space_add_existing.rs"]
+mod space_add_existing;
 
 use super::event_wait::{
     QaEventDeadline, wait_for_dm_room_in_room_list, wait_for_initial_items,
@@ -916,6 +918,7 @@ pub(super) async fn run_room_management_stage(
     println!("moderation=ok");
 
     space_access::verify(config, conn_a, conn_b).await?;
+    space_add_existing::verify(config, conn_a).await?;
 
     Ok(())
 }

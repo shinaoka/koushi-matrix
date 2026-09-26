@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { EntityAvatar, Sidebar, WorkspaceRail } from "./Shell";
 import { readyDesktopSnapshotFixture } from "../test/desktopApiFixture";
 import type { RoomListItem } from "../domain/types";
+import { t } from "../i18n/messages";
 
 function room(room_id: string, display_name: string): RoomListItem {
   return {
@@ -387,5 +388,36 @@ describe("Rust-projected workspace shell", () => {
 
     fireEvent.click(screen.getByText("Open Room").closest("button") as HTMLButtonElement);
     expect(onJoinRoom).toHaveBeenCalledWith("!open:example.invalid");
+  });
+
+  // #1007: the selected Space's Rooms actions offer Add existing room.
+  it("offers Add existing room from the Space's Rooms options, not at Home", () => {
+    const snapshot = readyDesktopSnapshotFixture();
+    const onAddExistingRoom = vi.fn();
+    snapshot.sidebar.space_rail = snapshot.sidebar.space_rail.map((space) => ({ ...space, is_active: false }));
+    const { unmount } = render(
+      <Sidebar snapshot={snapshot} {...sidebarProps()} onAddExistingRoom={onAddExistingRoom} />
+    );
+    fireEvent.click(screen.getByRole("button", {
+      name: t("roomList.sectionOptions", { section: t("roomList.categoryRooms") })
+    }));
+    expect(screen.queryByRole("menuitem", { name: t("spaceAddRooms.action") })).toBeNull();
+    unmount();
+
+    snapshot.sidebar.space_rail = [{
+      space_id: "!space:example.invalid",
+      display_name: "Synthetic Workspace",
+      avatar: null,
+      unread_count: 0,
+      highlight_count: 0,
+      is_active: true
+    }];
+    render(<Sidebar snapshot={snapshot} {...sidebarProps()} onAddExistingRoom={onAddExistingRoom} />);
+    fireEvent.click(screen.getByRole("button", {
+      name: t("roomList.sectionOptions", { section: t("roomList.categoryRooms") })
+    }));
+    fireEvent.click(screen.getByRole("menuitem", { name: t("spaceAddRooms.action") }));
+    expect(onAddExistingRoom).toHaveBeenCalledWith("!space:example.invalid");
+    expect(screen.queryByRole("menu")).toBeNull();
   });
 });

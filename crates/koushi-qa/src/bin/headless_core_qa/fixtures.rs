@@ -143,7 +143,6 @@ pub(super) async fn set_space_child_for_qa(
     conn: &mut CoreConnection,
     space_id: &str,
     child_room_id: &str,
-    via_server: &str,
     label: &str,
 ) -> Result<(), String> {
     let request_id = conn.next_request_id();
@@ -151,7 +150,6 @@ pub(super) async fn set_space_child_for_qa(
         request_id,
         space_id: space_id.to_owned(),
         child_room_id: child_room_id.to_owned(),
-        via_server: via_server.to_owned(),
     }))
     .await
     .map_err(|e| format!("{label}: submit set space child failed: {e}"))?;

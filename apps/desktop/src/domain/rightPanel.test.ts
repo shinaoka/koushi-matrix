@@ -408,7 +408,8 @@ function snapshotForPanelMode(
         files_view: { kind: "closed" }, history_export: { kind: "idle" },
         threads_list: { kind: "closed" },
         errors: [],
-        basic_operation: { kind: "idle" }
+        basic_operation: { kind: "idle" },
+        room_address_availability: { kind: "idle" }
       }
     },
     // Production always sends the legacy top-level thread as null; the open/closed

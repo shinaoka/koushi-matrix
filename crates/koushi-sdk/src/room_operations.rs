@@ -186,7 +186,10 @@ pub enum MatrixCreateRoomVisibility {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MatrixCreateRoomParentSpace {
     pub space_id: String,
-    pub via_server: String,
+    /// Routing for the new room's `m.space.parent`. Empty means `create_room`
+    /// derives it from the Space with the SDK routing algorithm; it is never
+    /// parsed from the Space ID, which room version 12 leaves domainless.
+    pub via_servers: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -760,12 +763,23 @@ pub async fn create_room(
         && preview_room_address(
             &options.name,
             Some(options.alias_localpart.as_deref().unwrap_or("")),
+            None,
             session.client().user_id().map(|id| id.as_str()),
         )
         .error
         .is_some()
     {
         return Err(MatrixRoomOperationError::InvalidRoomAlias);
+    }
+    let mut options = options;
+    if let Some(parent_space) = options.parent_space.as_mut()
+        && parent_space.via_servers.is_empty()
+    {
+        parent_space.via_servers = parent_space_routing(session, &parent_space.space_id)
+            .await?
+            .into_iter()
+            .map(|server| server.to_string())
+            .collect();
     }
     let request = create_room_request(options)?;
     let room = session
@@ -774,6 +788,22 @@ pub async fn create_room(
         .await
         .map_err(MatrixRoomOperationError::from_sdk_error)?;
     Ok(room.room_id().to_string())
+}
+
+async fn parent_space_routing(
+    session: &MatrixClientSession,
+    space_id: &str,
+) -> Result<Vec<matrix_sdk::ruma::OwnedServerName>, MatrixRoomOperationError> {
+    match matrix_room(session, space_id) {
+        Ok(space) => space_child::routing_servers(session, &space).await,
+        // The Space is not in the local store: this account's homeserver is
+        // still the route through which it will be joined.
+        Err(MatrixRoomOperationError::RoomUnavailable) => Ok(space_child::route_or_own_server(
+            Vec::new(),
+            session.client().user_id().map(|id| id.server_name()),
+        )),
+        Err(error) => Err(error),
+    }
 }
 
 pub async fn create_public_directory_room(
@@ -846,10 +876,19 @@ pub(super) fn create_room_request(
     if let Some(parent_space) = options.parent_space {
         let parent_space_id = matrix_sdk::ruma::OwnedRoomId::try_from(parent_space.space_id)
             .map_err(|_| MatrixRoomOperationError::InvalidRoomId)?;
-        let via_server = matrix_sdk::ruma::OwnedServerName::try_from(parent_space.via_server)
-            .map_err(|_| MatrixRoomOperationError::InvalidServerName)?;
+        let via_servers = parent_space
+            .via_servers
+            .into_iter()
+            .map(|server| {
+                matrix_sdk::ruma::OwnedServerName::try_from(server)
+                    .map_err(|_| MatrixRoomOperationError::InvalidServerName)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if via_servers.is_empty() {
+            return Err(MatrixRoomOperationError::InvalidServerName);
+        }
         let mut parent_content =
-            matrix_sdk::ruma::events::space::parent::SpaceParentEventContent::new(vec![via_server]);
+            matrix_sdk::ruma::events::space::parent::SpaceParentEventContent::new(via_servers);
         parent_content.canonical = true;
         request.initial_state.push(
             matrix_sdk::ruma::events::InitialStateEvent::new(
@@ -890,17 +929,44 @@ pub(super) fn create_room_request(
 }
 
 /// Resolve a draft against the account's Matrix server; this never probes availability.
+///
+/// An unedited address (`alias_localpart == None`) is suggested from the room
+/// name, prefixed with `space_name` when the room is created from a Space
+/// (#1006). The Space prefix is dropped rather than truncated when it alone
+/// would push the alias past Matrix's 255-byte limit.
 pub fn preview_room_address(
     name: &str,
     alias_localpart: Option<&str>,
+    space_name: Option<&str>,
     user_id: Option<&str>,
 ) -> koushi_state::RoomAddressPreview {
-    use koushi_state::{RoomAddressError, RoomAddressPreview, suggest_room_alias_localpart};
-    let localpart = alias_localpart
-        .map(|value| value.trim().to_owned())
-        .unwrap_or_else(|| suggest_room_alias_localpart(name));
+    use koushi_state::{suggest_room_alias_localpart, suggest_space_room_alias_localpart};
     let user = user_id.and_then(|id| matrix_sdk::ruma::UserId::parse(id).ok());
-    let error = if user.is_none() {
+    let server_name = user.as_ref().map(|user| user.server_name().to_string());
+    match alias_localpart {
+        Some(value) => resolve_room_address(value.trim().to_owned(), server_name),
+        None => {
+            let suggested = resolve_room_address(
+                suggest_space_room_alias_localpart(space_name, name),
+                server_name.clone(),
+            );
+            if space_name.is_some()
+                && suggested.error == Some(koushi_state::RoomAddressError::Invalid)
+            {
+                resolve_room_address(suggest_room_alias_localpart(name), server_name)
+            } else {
+                suggested
+            }
+        }
+    }
+}
+
+fn resolve_room_address(
+    localpart: String,
+    server_name: Option<String>,
+) -> koushi_state::RoomAddressPreview {
+    use koushi_state::{RoomAddressError, RoomAddressPreview};
+    let error = if server_name.is_none() {
         Some(RoomAddressError::NotReady)
     } else if localpart.is_empty() {
         Some(RoomAddressError::Empty)
@@ -913,12 +979,13 @@ pub fn preview_room_address(
         localpart,
         full_alias: None,
         error,
+        server_name,
     };
     if preview.error.is_none() {
         let alias = format!(
             "#{}:{}",
             preview.localpart,
-            user.expect("validated user").server_name()
+            preview.server_name.as_deref().expect("validated server")
         );
         // The SDK enables Ruma's arbitrary-length compatibility feature; new
         // aliases still obey Matrix's 255-byte identifier limit.
@@ -932,6 +999,31 @@ pub fn preview_room_address(
         }
     }
     preview
+}
+
+/// Outcome of one advisory alias lookup; never a reservation (#1006).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixRoomAliasAvailability {
+    Available,
+    InUse,
+    Unknown,
+}
+
+/// Ask the homeserver whether a complete alias resolves, with the SDK's
+/// `Client::is_room_alias_available` (a 404 `M_NOT_FOUND` means available).
+/// Any other failure is `Unknown`, never reported as available.
+pub async fn check_room_alias_availability(
+    session: &MatrixClientSession,
+    full_alias: &str,
+) -> MatrixRoomAliasAvailability {
+    let Ok(alias) = matrix_sdk::ruma::RoomAliasId::parse(full_alias) else {
+        return MatrixRoomAliasAvailability::Unknown;
+    };
+    match session.client().is_room_alias_available(&alias).await {
+        Ok(true) => MatrixRoomAliasAvailability::Available,
+        Ok(false) => MatrixRoomAliasAvailability::InUse,
+        Err(_) => MatrixRoomAliasAvailability::Unknown,
+    }
 }
 
 fn validate_alias_localpart(alias_localpart: &str) -> Result<(), MatrixRoomOperationError> {
@@ -1447,36 +1539,6 @@ pub async fn forget_room(
     Ok(room_id)
 }
 
-pub async fn set_space_child(
-    session: &MatrixClientSession,
-    space_id: &str,
-    child_room_id: &str,
-    via_server: &str,
-) -> Result<(), MatrixRoomOperationError> {
-    let space = matrix_room(session, space_id)?;
-    let child_room_id = matrix_sdk::ruma::OwnedRoomId::try_from(child_room_id)
-        .map_err(|_| MatrixRoomOperationError::InvalidRoomId)?;
-    let via_server = matrix_sdk::ruma::OwnedServerName::try_from(via_server)
-        .map_err(|_| MatrixRoomOperationError::InvalidServerName)?;
-    let content =
-        matrix_sdk::ruma::events::space::child::SpaceChildEventContent::new(vec![via_server]);
-
-    space
-        .send_state_event_for_key(&child_room_id, content)
-        .await
-        .map(|_| ())
-        .map_err(MatrixRoomOperationError::from_sdk_error)
-}
-
-pub fn room_id_server_name(room_id: &str) -> Result<String, MatrixRoomOperationError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id)
-        .map_err(|_| MatrixRoomOperationError::InvalidRoomId)?;
-    room_id
-        .server_name()
-        .map(ToString::to_string)
-        .ok_or(MatrixRoomOperationError::InvalidRoomId)
-}
-
 pub async fn set_room_tag(
     session: &MatrixClientSession,
     room_id: &str,
@@ -1706,8 +1768,17 @@ pub async fn room_is_joined(
     Ok(room.state() == matrix_sdk_base::RoomState::Joined)
 }
 
+mod space_child;
+pub use space_child::{MatrixSpaceChildLinkOutcome, MatrixSpaceParentLinkOutcome, set_space_child};
+
 #[cfg(test)]
 mod address_tests;
+
+#[cfg(test)]
+mod space_child_tests;
+
+#[cfg(test)]
+mod alias_availability_tests;
 
 #[cfg(test)]
 mod tests;

@@ -114,7 +114,6 @@ pub(super) async fn run_timeline_stress_stage(
                 conn_a,
                 &space_id,
                 &room_id,
-                &config.server_name,
                 "timeline_stress set space child",
             )
             .await?;
