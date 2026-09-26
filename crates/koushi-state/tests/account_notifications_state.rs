@@ -8,14 +8,15 @@ use koushi_state::{
 };
 
 fn ready_state() -> AppState {
-    let mut state = AppState::default();
-    state.session = SessionState::Ready(SessionInfo {
-        homeserver: "https://example.invalid".to_owned(),
-        user_id: "@user:example.invalid".to_owned(),
-        device_id: "DEVICE".to_owned(),
-        authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
-    });
-    state
+    AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: "@user:example.invalid".to_owned(),
+            device_id: "DEVICE".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        ..AppState::default()
+    }
 }
 
 fn snapshot(email_active: bool, group: NotificationCategoryState) -> AccountNotificationsSnapshot {
