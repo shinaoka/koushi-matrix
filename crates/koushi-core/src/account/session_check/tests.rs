@@ -444,3 +444,40 @@ async fn a_stale_timer_notification_keeps_the_newer_timer_owned() {
     assert_eq!(owned.await.expect("timer probe"), Some(2));
     shutdown_and_ack(&handle).await;
 }
+
+#[tokio::test]
+async fn a_demand_after_the_inspection_identity_query_returned_runs_its_own_recheck() {
+    let (handle, mut action_rx, control) = promoted_actor().await;
+    let baseline = settled_query_count(&control).await;
+    let probes_baseline = control.backup_probe_count.load(Ordering::SeqCst);
+    drain(&mut action_rx);
+
+    // Keep the inspection in flight past its own-identity step.
+    control.backup_hold.store(true, Ordering::SeqCst);
+    handle
+        .send(AccountMessage::RefreshCurrentSessionStatus {
+            request_id: 82,
+            trigger: koushi_state::SessionStatusRefreshTrigger::Manual,
+            sync_state: koushi_state::CurrentSessionSyncState::Running,
+        })
+        .await;
+    executor::timeout(Duration::from_secs(5), async {
+        while control.backup_probe_count.load(Ordering::SeqCst) == probes_baseline {
+            executor::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the inspection reaches its backup probe");
+    assert_eq!(control.count.load(Ordering::SeqCst), baseline + 1);
+
+    handle.send(AccountMessage::CheckCurrentDeviceTrust).await;
+    wait_for_query_count(&control, baseline + 2).await;
+    control.backup_hold.store(false, Ordering::SeqCst);
+    executor::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        control.count.load(Ordering::SeqCst),
+        baseline + 2,
+        "a late demand must not join; it issues exactly one own query"
+    );
+    shutdown_and_ack(&handle).await;
+}

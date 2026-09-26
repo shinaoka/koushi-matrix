@@ -772,6 +772,9 @@ impl AccountActor {
             task.abort();
         }
         self.session_check.waiting_inspection = None;
+        // Only a spawned SDK inspection publishes a query phase; the offline,
+        // non-promoted, and waiting paths must not leave a stale flag.
+        self.session_check.inspection_identity_returned = None;
         self.current_session_status_request = Some(request_id);
         let generation = self.trust_generation;
         let started_at = Instant::now();

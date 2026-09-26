@@ -269,6 +269,10 @@ pub(super) struct KeyQueryControl {
     pub(super) fail: std::sync::atomic::AtomicBool,
     /// Account device-list requests (one per full current-session inspection).
     pub(super) devices_count: std::sync::atomic::AtomicUsize,
+    /// Server key-backup version probes (after the inspection's identity step).
+    pub(super) backup_probe_count: std::sync::atomic::AtomicUsize,
+    /// Hold the key-backup version probe until cleared.
+    pub(super) backup_hold: std::sync::atomic::AtomicBool,
 }
 
 pub(super) fn spawn_named_quarantine_password_server(
@@ -406,6 +410,32 @@ pub(super) fn spawn_named_quarantine_password_server_with_controls(
                 } else {
                     r#"{"device_keys":{},"failures":{}}"#.to_owned()
                 }
+            } else if text.starts_with("GET /_matrix/client/")
+                && text.contains("/room_keys/version")
+                && let Some(control) = key_query_control.as_ref()
+            {
+                control
+                    .backup_probe_count
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let body = r#"{"errcode":"M_NOT_FOUND","error":"No current backup version"}"#;
+                if control.backup_hold.load(std::sync::atomic::Ordering::SeqCst) {
+                    // Answer from a side thread so other requests keep flowing
+                    // while this probe is held.
+                    let control = std::sync::Arc::clone(control);
+                    std::thread::spawn(move || {
+                        while control.backup_hold.load(std::sync::atomic::Ordering::SeqCst) {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    });
+                    continue 'accept;
+                }
+                body.to_owned()
             } else if text.starts_with("GET /_matrix/client/") && text.contains("/devices HTTP/1.1")
             {
                 // Account device list for the current-session inspection.

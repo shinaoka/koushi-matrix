@@ -2628,6 +2628,10 @@ impl MatrixClientSession {
         };
         identity_query_returned.store(true, std::sync::atomic::Ordering::SeqCst);
         let own_identity = own_identity?;
+        // #1009: the trust verdict is the subscriber reading right after the
+        // own-identity step, like a standalone recheck; later local store or
+        // backup-probe work must not move it.
+        let verification = map_sdk_verification_state(verification.get());
         let current_crypto_device = encryption
             .get_device(user_id, device_id)
             .await
@@ -2653,7 +2657,7 @@ impl MatrixClientSession {
 
         Ok(MatrixCurrentSessionInspection {
             device_display_name: current_device.display_name,
-            verification: map_sdk_verification_state(verification.get()),
+            verification,
             is_cross_signed_by_owner,
             own_identity_verification,
             key_backup: classify_current_session_backup(local_backup_state, server_probe),
