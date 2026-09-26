@@ -275,3 +275,103 @@ for (const height of [800, 520]) {
     await expect(dialog).toBeVisible();
   });
 }
+
+/** Synthetic non-image attachments: staging renders no preview for these. */
+function stagedPlainFile(name: string) {
+  return { name, mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4 synthetic\n") };
+}
+
+/**
+ * Per-card geometry for #1012. A card without a preview must keep its natural
+ * content height: the dialog's spare height may not stretch the filename row
+ * or the caption composer into blank space around the real editor.
+ */
+async function stagingCardGeometry(page: Page) {
+  return page.evaluate(() =>
+    Array.from(document.querySelectorAll<HTMLElement>(".upload-staging-item")).map((card) => {
+      const height = (selector: string) => card.querySelector<HTMLElement>(selector)!.getBoundingClientRect().height;
+      const composer = card.querySelector<HTMLElement>(".upload-staging-caption .composer")!;
+      const childHeights = Array.from(composer.children)
+        .map((child) => (child as HTMLElement).getBoundingClientRect().height)
+        .reduce((sum, value) => sum + value, 0);
+      const cardBox = card.getBoundingClientRect();
+      return {
+        hasPreview: card.classList.contains("has-preview"),
+        top: cardBox.top,
+        bottom: cardBox.bottom,
+        card: cardBox.height,
+        file: height(".upload-staging-file"),
+        fileName: height(".upload-staging-name"),
+        composer: composer.getBoundingClientRect().height,
+        composerContent: childHeights,
+        editor: height('[role="textbox"]')
+      };
+    })
+  );
+}
+
+function expectNaturalCard(card: Awaited<ReturnType<typeof stagingCardGeometry>>[number], label: string) {
+  // The filename row holds one line of text plus its sticky padding.
+  expect(card.file, `${label}: filename row ${card.file}px`).toBeLessThanOrEqual(card.fileName + 16);
+  // The composer frame hugs its toolbar and editor instead of adding blank area.
+  expect(
+    card.composer,
+    `${label}: composer ${card.composer}px vs content ${card.composerContent}px`
+  ).toBeLessThanOrEqual(card.composerContent + 12);
+}
+
+for (const surface of ["main", "thread"] as const) {
+  for (const viewport of [STANDARD_VIEWPORT, SHORT_VIEWPORT, { width: 900, height: 440 }]) {
+    test(`${surface} single file without a preview keeps its natural height at ${viewport.height}px (#1012)`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await gotoReadyShell(page);
+      if (surface === "thread") {
+        await page.getByRole("button", { name: /2 replies/ }).click();
+      }
+      const pane = surface === "thread" ? page.locator('aside[aria-label="Context panel"]') : page;
+      await pane.getByRole("button", { name: "Attach file", exact: true }).click();
+      await pane
+        .locator('input[type="file"][aria-label="Attach file input"]')
+        .setInputFiles(stagedPlainFile("synthetic-report.pdf"));
+      const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle"), exact: true });
+      await expect(dialog).toBeVisible();
+      const [card] = await stagingCardGeometry(page);
+      expect(card.hasPreview).toBe(false);
+      expectNaturalCard(card, `${surface} ${viewport.height}px`);
+      // The white caption area the user sees is the editor: its lower edge takes focus.
+      const caption = dialog.getByRole("textbox", { name: "Caption for synthetic-report.pdf" });
+      const editor = (await caption.boundingBox())!;
+      await page.mouse.click(editor.x + editor.width / 2, editor.y + editor.height - 4);
+      await expect(caption).toBeFocused();
+      await page.keyboard.type("Synthetic caption");
+      await expect(caption).toHaveText("Synthetic caption");
+      await expect(caption).toBeInViewport();
+      expectStagingBounded((await stagingGeometry(page))!, `${surface} file staging`);
+      await expect(dialog.getByRole("button", { name: t("upload.sendAttachments") })).toBeInViewport();
+    });
+  }
+}
+
+test("mixed files and images stack without stretched gaps (#1012)", async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 1400 });
+  await gotoReadyShell(page);
+  await page.getByRole("button", { name: "Attach file", exact: true }).click();
+  await page.locator('input[type="file"][aria-label="Attach file input"]').setInputFiles([
+    stagedPlainFile("synthetic-a.pdf"),
+    stagedPortraitImage(),
+    stagedPlainFile("synthetic-b.pdf")
+  ]);
+  const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle"), exact: true });
+  await expect(dialog.locator(".upload-staging-item")).toHaveCount(3);
+  await expect(dialog.locator(".upload-staging-preview")).toBeVisible();
+  const cards = await stagingCardGeometry(page);
+  for (const [index, card] of cards.entries()) {
+    if (!card.hasPreview) {
+      expectNaturalCard(card, `card ${index}`);
+    }
+    if (index > 0) {
+      // Cards follow each other at the list gap, not spread across the height.
+      expect(card.top - cards[index - 1].bottom, `gap before card ${index}`).toBeLessThanOrEqual(9);
+    }
+  }
+});
