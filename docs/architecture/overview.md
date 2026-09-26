@@ -1338,6 +1338,20 @@ and reaches React only through the Tauri/TypeScript DTO.
 User notification preferences are the same boundary: `SettingsValues.notifications`
 is the Rust-owned persisted source of truth, and legacy settings files backfill
 the default policy before any GUI reads the snapshot.
+Account-level notification settings (#981) are server-owned and shared with
+every Matrix client on the account, so they are a separate Rust slice,
+`AppState.account_notifications`, never folded into `SettingsValues`. The
+device-local app switch (`desktop_notifications`) gates only this device's
+banners; email delivery is a `kind: email` pusher and is independent of it.
+The four ON/OFF categories are projections of standard predefined push rules
+read from `GET /pushrules/`; email targets are validated email 3PIDs plus
+`GET /pushers`. The AccountActor owns every read and write through
+`koushi-sdk::account_notifications`, the 3PID client secret/session id and the
+UIA continuation; loads are read-only, writes happen only for an explicit
+toggle and touch only rules not already in the requested state, and every
+completion carries an authoritative post-write re-read. React renders that
+snapshot and dispatches `AccountCommand::AccountNotifications`; it never
+decides ON/OFF, email target, or verification state.
 Message formatting is also projected before it reaches React:
 `TimelineItem.formatted` is sanitized in Rust from Matrix `formatted_body` and
 carries sanitized HTML plus plain-text/code-block metadata. Message type

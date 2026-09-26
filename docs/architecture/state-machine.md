@@ -4627,6 +4627,133 @@ stateDiagram-v2
 - The complete `NavigationState` Debug representation exposes counts/booleans
   and coarse kinds only; it never exposes IDs, local names/icons or anchors.
 
+## Account Notification Settings
+
+Account notification settings (#981) are server-owned Matrix state shared by
+every client on the account: standard push rules, validated email 3PIDs, and
+`kind: email` pushers. They live in `AppState.account_notifications` and are
+reset with the other session views on logout, lock, switch, and session clear.
+The device-local app switch stays in `SettingsValues.notifications` (see
+Settings) and never writes push rules or pushers.
+
+Load (read-only):
+
+```mermaid
+stateDiagram-v2
+    [*] --> NotLoaded
+    NotLoaded --> Loading: AccountNotificationsLoadRequested [Ready]
+    Loaded --> Loading: AccountNotificationsLoadRequested [Ready]
+    Failed --> Loading: AccountNotificationsLoadRequested [Ready]
+    Loading --> Loaded: AccountNotificationsLoaded [matching request_id]
+    Loading --> Failed: AccountNotificationsLoadFailed [matching request_id]
+    Loaded --> NotLoaded: logout/lock/switch/session clear
+    Failed --> NotLoaded: logout/lock/switch/session clear
+```
+
+Operations (user-initiated writes and email verification):
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Working: AccountNotificationsOperationRequested [Ready]
+    Succeeded --> Working: AccountNotificationsOperationRequested [Ready]
+    Failed --> Working: AccountNotificationsOperationRequested [Ready]
+    Working --> Working: AccountNotificationsOperationRequested [Ready, latest wins]
+    Working --> Succeeded: AccountNotificationsOperationSucceeded [matching request_id, operation]
+    Working --> Succeeded: AccountNotificationsEmailTokenSent [matching request_id, request/resend]
+    Working --> Failed: AccountNotificationsOperationFailed [matching request_id, operation]
+    Working --> AwaitingUia: AccountNotificationsUiaRequired [matching request_id, operation]
+    AwaitingUia --> Working: AccountNotificationsUiaSubmitted [matching request_id, flow_id]
+    AwaitingUia --> Succeeded: AccountNotificationsOperationSucceeded [matching request_id]
+    AwaitingUia --> Failed: AccountNotificationsOperationFailed [matching request_id]
+    AwaitingUia --> Idle: AccountNotificationsPendingEmailCancelled
+    Succeeded --> Idle: AccountNotificationsPendingEmailCancelled [request/resend]
+    Failed --> Idle: AccountNotificationsPendingEmailCancelled [email operation]
+```
+
+Pending email (display fact only; secrets stay in the AccountActor):
+
+```mermaid
+stateDiagram-v2
+    [*] --> None
+    None --> Pending: AccountNotificationsEmailTokenSent
+    Pending --> Pending: AccountNotificationsEmailTokenSent [resend or replacement address]
+    Pending --> None: AccountNotificationsOperationSucceeded [ConfirmEmail]
+    Pending --> None: snapshot lists the pending address as a validated 3PID
+    Pending --> None: AccountNotificationsPendingEmailCancelled
+    Pending --> None: logout/lock/switch/session clear
+```
+
+- **No write on open.** Opening Settings → Notifications dispatches only the
+  read-only load. It performs GET requests (`/pushrules/`, `/account/3pid`,
+  `/pushers`, capabilities) and never writes rules, sounds, or pushers, so
+  mixed or custom states set by other clients are preserved until the user
+  toggles a switch. Proven by `koushi-sdk` and AccountActor mock-homeserver
+  tests that fail on any write request.
+- **No optimistic ON.** `OperationRequested` never changes the snapshot. Every
+  completion (success or failure) carries the actor's post-write server
+  re-read, so a failed or partial write is shown as the server state it left.
+  `OperationFailed` with a snapshot replaces the snapshot as well.
+- **Latest wins.** A new request replaces an in-flight one; the AccountActor
+  executes writes in order and the newest completion carries the newest
+  server read. Stale request ids, mismatched operations, duplicate
+  completions, and completions after reset are ignored.
+- `ResendEmailToken` and `ConfirmEmail` are rejected without a pending email.
+  A not-yet-opened link (`M_THREEPID_AUTH_FAILED`), rejected password, or
+  failed resend keeps the pending address. A resubmitted password that the
+  server challenges again settles `AuthRejected` and restarts UIA on the next
+  confirm. The UIA flow id is the original confirm request id; the actor
+  rejects a submit whose flow id does not match its continuation.
+- Pending verification does not survive restart: the client secret and
+  validation session id are never persisted. After restart `GET /account/3pid`
+  is the truth and the user adds or resends again.
+
+Category mapping (Element X / SDK compatible):
+
+| Category | Push rules | OFF write | ON write |
+| --- | --- | --- | --- |
+| Direct messages | `.m.rule.room_one_to_one`, `.m.rule.encrypted_room_one_to_one` (+ poll-start 1:1 on write) | actions `[]` | enable, or restore `notify` + default sound only if the rule does not notify |
+| Group messages | `.m.rule.message`, `.m.rule.encrypted` (+ poll-start on write) | actions `[]` | enable, or restore `notify` only if silent |
+| Mentions and replies | `.m.rule.is_user_mention`, `.m.rule.is_room_mention` (legacy `contains_display_name`, `contains_user_name`, `roomnotif` when present) | disable | enable, or restore spec actions if silent |
+| Room invites | `.m.rule.invite_for_me` | disable | enable, or restore `notify` + default sound if silent |
+
+- A rule reads ON only when it exists, is enabled, and notifies. A category is
+  `Mixed` when its read rules disagree (for example encrypted vs. unencrypted,
+  or `@room` disabled while user mentions are enabled); it is shown as not ON
+  and toggling it applies ON to every rule in the category. Missing rules are
+  never created.
+- Rules that already match the requested state are not written, so re-applying
+  the current value is a no-op and a custom sound tweak on a rule that already
+  notifies survives.
+- **Overlap.** Standard push-rule precedence evaluates override rules before
+  underride rules, so Group OFF (or DM OFF) with Mentions ON still notifies a
+  mention or reply that mentions the user, and Mentions OFF with Group ON still
+  notifies the message as a group message. Replies notify through the MSC3952
+  mention the reply carries; there is no separate reply rule. Per-room
+  exceptions stay in room notification mode (Room Management).
+- `.m.rule.master` enabled by another client is projected as
+  `account_push_enabled = false` with an explicit "Turn on" action; Koushi never
+  maps its app or email switch to the master rule.
+
+Email notifications:
+
+- Email is ON exactly when `GET /pushers` returns a `kind: email` pusher. The
+  displayed target is the active pusher's validated 3PID address; pushers for
+  addresses that are not validated 3PIDs are counted separately and keep the
+  switch ON until removed.
+- `EnableEmailNotifications { address }` requires `address` to be a validated
+  3PID (re-read from the server). It adds the Element Web pusher shape
+  (`kind: email`, `app_id: m.email`, `pushkey: <address>`, `append: true`,
+  `data.brand: Koushi`) and then deletes every other email pusher, so a change
+  never leaves the old target active and a failure never removes the old
+  target first. `DisableEmailNotifications` deletes every email pusher.
+- A confirmed new address takes over the target only if email notifications
+  were active ("Change"); otherwise the user turns them on explicitly, after
+  verification.
+- OAuth/MAS sessions project `DelegatedToAccountManagement` and link to the
+  account-management destination; `m.3pid_changes: false` projects
+  `Unsupported`. Neither offers the add flow.
+
 ## Desktop Application Updates
 
 The desktop adapter owns one process-wide update lifecycle. It is independent
