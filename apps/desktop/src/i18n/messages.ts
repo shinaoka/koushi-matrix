@@ -379,10 +379,10 @@ export type MessageId =
   | "room.ban"
   | "room.banMember"
   | "room.avatarUrl"
+  | "room.avatar"
+  | "room.editAvatar"
   | "room.accessAndHistory"
   | "room.accessAndHistoryHint"
-  | "room.currentAvatar"
-  | "room.currentTopic"
   | "room.copyShareLink"
   | "room.directMessage"
   | "room.dmList"
@@ -396,6 +396,7 @@ export type MessageId =
   | "room.historyJoined"
   | "room.historyShared"
   | "room.historyVisibility"
+  | "room.changeHistoryVisibility"
   | "room.historyInvitedDescription"
   | "room.historyJoinedDescription"
   | "room.historySharedDescription"
@@ -406,6 +407,7 @@ export type MessageId =
   | "room.historyWorldReadableWarning"
   | "room.historyWorldReadable"
   | "room.joinRule"
+  | "room.changeJoinRule"
   | "room.joinRuleInvite"
   | "room.joinRuleKnock"
   | "room.joinRulePrivate"
@@ -422,7 +424,7 @@ export type MessageId =
   | "room.confirmRotation"
   | "room.rotationDiscardCompleted"
   | "room.rotationDiscardFailed"
-  | "room.management"
+  | "room.details"
   | "room.messageMember"
   | "room.aliasDialogTitle"
   | "room.aliasInput"
@@ -442,6 +444,8 @@ export type MessageId =
   | "room.notifyModeMentions"
   | "room.notifyModeMute"
   | "room.operationFailed"
+  | "room.settingForbidden"
+  | "room.settingNoPermission"
   | "room.people"
   | "room.rolePermissions"
   | "room.memberRole"
@@ -465,6 +469,7 @@ export type MessageId =
   | "room.statusNotEncrypted"
   | "room.statusPrivate"
   | "room.statusPublic"
+  | "room.statusShowSetting"
   | "room.saveAccess"
   | "room.saveHistoryVisibility"
   | "room.saveJoinRule"
@@ -481,6 +486,8 @@ export type MessageId =
   | "room.returnToInvite"
   | "room.timeline"
   | "room.topic"
+  | "room.topicLabel"
+  | "room.editTopic"
   | "room.type"
   | "room.unban"
   | "room.unbanMember"
@@ -661,6 +668,12 @@ export type MessageId =
   | "settings.messagingPrivacy"
   | "settings.notRestored"
   | "settings.openRecovery"
+  | "settings.propertyEdit"
+  | "settings.propertyChange"
+  | "settings.propertySave"
+  | "settings.propertyClear"
+  | "settings.propertySaving"
+  | "settings.propertySaved"
   | "settings.preferences"
   | "settings.profile"
   | "settings.profileAvatar"
@@ -921,23 +934,28 @@ export type MessageId =
   | "gate.rejectUser"
   | "space.allRooms"
   | "space.canonicalName"
+  | "space.canonicalNameHint"
   | "space.childRooms"
   | "space.names"
   | "space.nameUnset"
   | "space.directMessages"
-  | "space.home"
   | "space.invite"
   | "space.localIcon"
+  | "space.localIconHint"
+  | "space.editLocalIcon"
+  | "space.saveLocalIcon"
+  | "space.clearLocalIcon"
+  | "space.localPresentationFailed"
   | "space.localIconPlaceholder"
   | "space.localName"
+  | "space.localNameHint"
+  | "space.editLocalName"
+  | "space.saveLocalName"
+  | "space.clearLocalName"
   | "space.localNamePlaceholder"
-  | "space.localPresentation"
-  | "space.resetLocalPresentation"
   | "space.noUnread"
-  | "space.preferences"
   | "space.roomMembership"
   | "space.spacePreferences"
-  | "space.spaceSettings"
   | "space.access"
   | "space.accessScope"
   | "space.accessCurrent"
@@ -1884,10 +1902,10 @@ const en: Catalog = {
   "people.setAlias": "Set alias",
   "people.unknownUser": "Unknown user",
   "room.avatarUrl": "Room avatar URL",
+  "room.avatar": "Avatar",
+  "room.editAvatar": "Edit avatar",
   "room.ban": "Ban",
   "room.banMember": "Ban {name}",
-  "room.currentAvatar": "Current avatar",
-  "room.currentTopic": "Current topic",
   "room.copyShareLink": "Copy room link",
   "room.members": "Members",
   "room.directMessage": "Direct message",
@@ -1903,6 +1921,7 @@ const en: Catalog = {
   "room.historyJoined": "Since join",
   "room.historyShared": "Shared history",
   "room.historyVisibility": "History visibility",
+  "room.changeHistoryVisibility": "Change history visibility",
   "room.historyInvitedDescription": "People can see messages sent after they are invited.",
   "room.historyJoinedDescription": "People can see messages sent after they join.",
   "room.historySharedDescription": "People can see the room history that is shared with members.",
@@ -1914,6 +1933,7 @@ const en: Catalog = {
   "room.historyWorldReadable": "World readable",
   "room.invitePeople": "Invite people",
   "room.joinRule": "Join rule",
+  "room.changeJoinRule": "Change join rule",
   "room.joinRuleInvite": "Invite only",
   "room.joinRuleKnock": "Knock",
   "room.joinRulePrivate": "Private",
@@ -1923,7 +1943,7 @@ const en: Catalog = {
   "room.joinRuleUnknown": "Unrecognised rule",
   "room.kick": "Kick",
   "room.kickMember": "Kick {name}",
-  "room.management": "Room management",
+  "room.details": "Details",
   "room.messageMember": "Message {name}",
   "room.memberRole": "Member role",
   "room.memberRoleFor": "Member role for {name}",
@@ -1946,6 +1966,8 @@ const en: Catalog = {
   "room.notifyModeMentions": "Mentions only",
   "room.notifyModeMute": "Mute",
   "room.operationFailed": "Operation failed",
+  "room.settingForbidden": "You no longer have permission to change this setting.",
+  "room.settingNoPermission": "Your role in this room cannot change this setting.",
   "room.people": "People",
   "room.roleAdministrator": "Administrator",
   "room.roleCreator": "Creator",
@@ -1973,6 +1995,7 @@ const en: Catalog = {
   "room.statusNotEncrypted": "Not encrypted",
   "room.statusPrivate": "Private",
   "room.statusPublic": "Public",
+  "room.statusShowSetting": "{status}: show setting",
   "room.saveAccess": "Save access",
   "room.saveHistoryVisibility": "Save history visibility",
   "room.saveJoinRule": "Save join rule",
@@ -1989,6 +2012,8 @@ const en: Catalog = {
   "room.returnToInvite": "Return to invite",
   "room.timeline": "Timeline",
   "room.topic": "Room topic",
+  "room.topicLabel": "Topic",
+  "room.editTopic": "Edit topic",
   "room.type": "Type",
   "room.unban": "Unban",
   "room.unbanMember": "Unban {name}",
@@ -2188,6 +2213,12 @@ const en: Catalog = {
   "settings.messagingPrivacy": "Messaging & privacy",
   "settings.notRestored": "Not restored",
   "settings.openRecovery": "Open recovery",
+  "settings.propertyEdit": "Edit",
+  "settings.propertyChange": "Change",
+  "settings.propertySave": "Save",
+  "settings.propertyClear": "Clear",
+  "settings.propertySaving": "Saving…",
+  "settings.propertySaved": "Saved",
   "settings.preferences": "Preferences",
   "settings.profile": "Profile",
   "settings.profileAvatar": "Avatar",
@@ -2449,23 +2480,28 @@ const en: Catalog = {
   "gate.rejectUser": "This session was rejected.",
   "space.allRooms": "All rooms",
   "space.canonicalName": "Matrix name",
+  "space.canonicalNameHint": "Shared on Matrix with everyone in the Space.",
   "space.childRooms": "Child rooms",
   "space.names": "Names",
   "space.nameUnset": "Not set",
   "space.directMessages": "Direct Messages",
-  "space.home": "Home",
   "space.invite": "Invite",
   "space.localIcon": "Local icon",
+  "space.localIconHint": "Shown only on this device, in the Space list when the Space has no picture.",
+  "space.editLocalIcon": "Edit local icon",
+  "space.saveLocalIcon": "Save local icon",
+  "space.clearLocalIcon": "Clear local icon",
+  "space.localPresentationFailed": "Could not save this on this device. Try again.",
   "space.localIconPlaceholder": "Emoji or short text",
   "space.localName": "Local name",
+  "space.localNameHint": "Shown only on this device. Clear it to show the Matrix name again; the local icon is kept.",
+  "space.editLocalName": "Edit local name",
+  "space.saveLocalName": "Save local name",
+  "space.clearLocalName": "Clear local name",
   "space.localNamePlaceholder": "Space label on this device",
-  "space.localPresentation": "Local presentation",
-  "space.resetLocalPresentation": "Reset local presentation",
   "space.noUnread": "No unread",
-  "space.preferences": "Preferences",
   "space.roomMembership": "Room membership",
   "space.spacePreferences": "Space preferences",
-  "space.spaceSettings": "Space settings",
   "space.access": "Access",
   "space.accessScope": "Access decides who can join this Space. It does not change the rooms inside it, their history or encryption, or whether the Space is listed in the server's room directory.",
   "space.accessCurrent": "Current access",
@@ -3299,10 +3335,10 @@ const ja: Catalog = {
   "people.setAlias": "エイリアスを設定",
   "people.unknownUser": "不明なユーザー",
   "room.avatarUrl": "ルームアバターURL",
+  "room.avatar": "アバター",
+  "room.editAvatar": "アバターを編集",
   "room.ban": "BAN",
   "room.banMember": "{name}をBAN",
-  "room.currentAvatar": "現在のアバター",
-  "room.currentTopic": "現在のトピック",
   "room.copyShareLink": "ルームリンクをコピー",
   "room.members": "メンバー",
   "room.directMessage": "ダイレクトメッセージ",
@@ -3318,6 +3354,7 @@ const ja: Catalog = {
   "room.historyJoined": "参加以降",
   "room.historyShared": "共有履歴",
   "room.historyVisibility": "履歴の表示範囲",
+  "room.changeHistoryVisibility": "履歴の表示範囲を変更",
   "room.historyInvitedDescription": "招待された後に送信されたメッセージを閲覧できます。",
   "room.historyJoinedDescription": "参加した後に送信されたメッセージを閲覧できます。",
   "room.historySharedDescription": "メンバーに共有されたルーム履歴を閲覧できます。",
@@ -3329,6 +3366,7 @@ const ja: Catalog = {
   "room.historyWorldReadable": "誰でも閲覧可",
   "room.invitePeople": "メンバーを招待",
   "room.joinRule": "参加ルール",
+  "room.changeJoinRule": "参加ルールを変更",
   "room.joinRuleInvite": "招待のみ",
   "room.joinRuleKnock": "ノック",
   "room.joinRulePrivate": "非公開",
@@ -3338,7 +3376,7 @@ const ja: Catalog = {
   "room.joinRuleUnknown": "認識できないルール",
   "room.kick": "キック",
   "room.kickMember": "{name}をキック",
-  "room.management": "ルーム管理",
+  "room.details": "詳細",
   "room.messageMember": "{name}にメッセージ",
   "room.memberRole": "メンバーロール",
   "room.memberRoleFor": "{name}のメンバーロール",
@@ -3361,6 +3399,8 @@ const ja: Catalog = {
   "room.notifyModeMentions": "メンションのみ",
   "room.notifyModeMute": "ミュート",
   "room.operationFailed": "操作に失敗しました",
+  "room.settingForbidden": "この設定を変更する権限がありません。",
+  "room.settingNoPermission": "このルームでのあなたの役割では、この設定を変更できません。",
   "room.people": "ユーザー",
   "room.roleAdministrator": "管理者",
   "room.roleCreator": "作成者",
@@ -3388,6 +3428,7 @@ const ja: Catalog = {
   "room.statusNotEncrypted": "未暗号化",
   "room.statusPrivate": "非公開",
   "room.statusPublic": "公開",
+  "room.statusShowSetting": "{status}：設定を表示",
   "room.saveAccess": "アクセス設定を保存",
   "room.saveHistoryVisibility": "履歴の表示範囲を保存",
   "room.saveJoinRule": "参加ルールを保存",
@@ -3404,6 +3445,8 @@ const ja: Catalog = {
   "room.returnToInvite": "招待に戻る",
   "room.timeline": "タイムライン",
   "room.topic": "ルームトピック",
+  "room.topicLabel": "トピック",
+  "room.editTopic": "トピックを編集",
   "room.type": "種類",
   "room.unban": "BAN解除",
   "room.unbanMember": "{name}のBANを解除",
@@ -3602,6 +3645,12 @@ const ja: Catalog = {
   "settings.messagingPrivacy": "メッセージとプライバシー",
   "settings.notRestored": "未復元",
   "settings.openRecovery": "リカバリーを開く",
+  "settings.propertyEdit": "編集",
+  "settings.propertyChange": "変更",
+  "settings.propertySave": "保存",
+  "settings.propertyClear": "クリア",
+  "settings.propertySaving": "保存中…",
+  "settings.propertySaved": "保存しました",
   "settings.preferences": "環境設定",
   "settings.profile": "プロフィール",
   "settings.profileAvatar": "アバター",
@@ -3864,23 +3913,28 @@ const ja: Catalog = {
   "gate.rejectUser": "このセッションは拒否されました。",
   "space.allRooms": "すべてのルーム",
   "space.canonicalName": "Matrix上の名前",
+  "space.canonicalNameHint": "Matrix上でスペースの全員に共有される名前です。",
   "space.childRooms": "子ルーム",
   "space.names": "名前",
   "space.nameUnset": "未設定",
   "space.directMessages": "Direct Messages",
-  "space.home": "ホーム",
   "space.invite": "招待",
   "space.localIcon": "ローカルアイコン",
+  "space.localIconHint": "この端末でのみ、画像のないスペースの一覧表示に使われます。",
+  "space.editLocalIcon": "ローカルアイコンを編集",
+  "space.saveLocalIcon": "ローカルアイコンを保存",
+  "space.clearLocalIcon": "ローカルアイコンをクリア",
+  "space.localPresentationFailed": "この端末に保存できませんでした。もう一度お試しください。",
   "space.localIconPlaceholder": "絵文字または短い文字",
   "space.localName": "ローカル名",
+  "space.localNameHint": "この端末でのみ表示されます。クリアするとMatrix上の名前の表示に戻ります。ローカルアイコンはそのまま残ります。",
+  "space.editLocalName": "ローカル名を編集",
+  "space.saveLocalName": "ローカル名を保存",
+  "space.clearLocalName": "ローカル名をクリア",
   "space.localNamePlaceholder": "この端末でのスペース名",
-  "space.localPresentation": "ローカル表示",
-  "space.resetLocalPresentation": "ローカル表示をリセット",
   "space.noUnread": "未読なし",
-  "space.preferences": "環境設定",
   "space.roomMembership": "ルーム参加状態",
   "space.spacePreferences": "スペース環境設定",
-  "space.spaceSettings": "スペース設定",
   "space.access": "アクセス",
   "space.accessScope": "アクセスは、このスペースに誰が参加できるかを決めます。スペース内のルーム、その履歴や暗号化、サーバーのルームディレクトリへの掲載には影響しません。",
   "space.accessCurrent": "現在のアクセス",

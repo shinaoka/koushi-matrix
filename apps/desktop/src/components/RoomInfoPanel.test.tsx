@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { RoomInfoPanel } from "./RoomInfoPanel";
 import { setActiveLocaleProfile, t } from "../i18n/messages";
 import type {
   LinkPreviewSettingsState,
+  RoomManagementOperationState,
+  RoomManagementState,
   RoomNotificationSettings,
+  RoomSettingsSnapshot,
   RoomSummary,
   SettingsState
 } from "../domain/types";
@@ -143,7 +146,7 @@ describe("RoomInfoPanel", () => {
       name: "Beta Room"
     });
     expect(screen.getByRole("textbox", { name: "Room name" }).compareDocumentPosition(
-      screen.getByRole("region", { name: "Room management" })
+      screen.getByRole("region", { name: "Details" })
     ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
@@ -180,10 +183,12 @@ describe("RoomInfoPanel", () => {
       />
     );
 
+    fireEvent.click(screen.getByRole("button", { name: "Change join rule" }));
     fireEvent.change(screen.getByRole("combobox", { name: "Join rule" }), {
       target: { value: "public" }
     });
     fireEvent.click(screen.getByRole("button", { name: "Save join rule" }));
+    fireEvent.click(screen.getByRole("button", { name: "Change history visibility" }));
     fireEvent.change(screen.getByRole("combobox", { name: "History visibility" }), {
       target: { value: "invited" }
     });
@@ -229,6 +234,8 @@ describe("RoomInfoPanel", () => {
       />
     );
 
+    expect(propertyCard("join-rule").textContent).toContain(t("room.joinRuleKnockRestricted"));
+    fireEvent.click(screen.getByRole("button", { name: "Change join rule" }));
     const select = screen.getByRole("combobox", { name: "Join rule" }) as HTMLSelectElement;
     expect(select.value).toBe("knockRestricted");
     const current = Array.from(select.options).find((option) => option.value === "knockRestricted");
@@ -268,11 +275,17 @@ describe("RoomInfoPanel", () => {
       />
     );
 
-    expect(screen.getByRole("combobox", { name: "Join rule" }).hasAttribute("disabled")).toBe(true);
-    expect(
-      screen.getByRole("combobox", { name: "History visibility" }).hasAttribute("disabled")
-    ).toBe(true);
-    expect(screen.getAllByText("Since join").length).toBeGreaterThan(0);
+    // Read-only in place: the value and the reason share the card, and there
+    // is no disabled form elsewhere to find.
+    expect(screen.queryByRole("combobox", { name: "Join rule" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "History visibility" })).toBeNull();
+    for (const property of ["topic", "avatar", "join-rule", "history-visibility"]) {
+      const card = propertyCard(property);
+      expect(within(card).queryByRole("button")).toBeNull();
+      expect(card.textContent).toContain(t("room.settingNoPermission"));
+    }
+    expect(propertyCard("join-rule").textContent).toContain("Invite only");
+    expect(propertyCard("history-visibility").textContent).toContain("Since join");
   });
 
   test("keeps a room-name composition across equivalent Rust settings snapshots", () => {
@@ -342,7 +355,8 @@ describe("RoomInfoPanel", () => {
     expect(screen.getByRole("button", { name: "People" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Files" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Notifications" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Room settings" })).toBeTruthy();
+    // Issue #1008: no entry without a destination.
+    expect(screen.queryByRole("button", { name: "Room settings" })).toBeNull();
     expect(screen.getByText("Synthetic Workspace")).toBeTruthy();
   });
 
@@ -776,5 +790,312 @@ describe("RoomInfoPanel URL previews", () => {
       "!room-alpha:example.invalid",
       false
     );
+  });
+});
+
+function roomSettings(overrides: Partial<RoomSettingsSnapshot> = {}): RoomSettingsSnapshot {
+  return {
+    room_id: baseRoom.room_id,
+    name: "Alpha Room",
+    topic: "Original topic",
+    avatar_url: null,
+    join_rule: "invite",
+    history_visibility: "shared",
+    permissions: {
+      can_edit_settings: true,
+      can_change_join_rule: true,
+      can_edit_roles: true,
+      can_invite: true,
+      can_kick: true,
+      can_ban: true,
+      can_unban: true
+    },
+    members: [],
+    ...overrides
+  };
+}
+
+function managed(
+  settings: RoomSettingsSnapshot = roomSettings(),
+  operation: RoomManagementOperationState = { kind: "idle" }
+): RoomManagementState {
+  return { selected_room_id: settings.room_id, settings, operation };
+}
+
+function propertyCard(property: string): HTMLElement {
+  const card = document.querySelector(`[data-setting-property="${property}"]`);
+  if (!card) throw new Error(`no ${property} card`);
+  return card as HTMLElement;
+}
+
+// Issue #1008: each property's value, change control and result share one card.
+describe("RoomInfoPanel property cards", () => {
+  test("shows the topic once and edits it in the same card", () => {
+    const onUpdateRoomSetting = vi.fn();
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed()}
+        onUpdateRoomSetting={onUpdateRoomSetting}
+      />
+    );
+
+    expect(screen.queryByText("Current topic")).toBeNull();
+    expect(screen.getAllByText("Original topic")).toHaveLength(1);
+    expect(screen.queryByRole("textbox", { name: "Room topic" })).toBeNull();
+    const card = propertyCard("topic");
+    expect(card.textContent).toContain("Original topic");
+
+    fireEvent.click(within(card).getByRole("button", { name: "Edit topic" }));
+    const topic = within(card).getByRole("textbox", { name: "Room topic" }) as HTMLTextAreaElement;
+    expect(document.activeElement).toBe(topic);
+    expect(topic.value).toBe("Original topic");
+    fireEvent.change(topic, { target: { value: "  Updated topic  " } });
+    fireEvent.click(within(card).getByRole("button", { name: "Save topic" }));
+
+    expect(onUpdateRoomSetting).toHaveBeenCalledWith(baseRoom.room_id, { topic: "Updated topic" });
+    expect(within(propertyCard("topic")).queryByRole("textbox")).toBeNull();
+    expect(document.activeElement).toBe(within(propertyCard("topic")).getByRole("heading", { name: "Topic" }));
+  });
+
+  test("shows the avatar preview with its address and edits it in the same card", () => {
+    const onUpdateRoomSetting = vi.fn();
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed(roomSettings({ avatar_url: "mxc://example.invalid/avatar" }))}
+        onUpdateRoomSetting={onUpdateRoomSetting}
+      />
+    );
+
+    expect(screen.queryByText("Current avatar")).toBeNull();
+    const card = propertyCard("avatar");
+    expect(card.querySelector(".settings-property-avatar")).toBeTruthy();
+    expect(screen.getAllByText("mxc://example.invalid/avatar")).toHaveLength(1);
+
+    fireEvent.click(within(card).getByRole("button", { name: "Edit avatar" }));
+    const field = within(card).getByRole("textbox", { name: "Room avatar URL" });
+    fireEvent.change(field, { target: { value: "" } });
+    fireEvent.click(within(card).getByRole("button", { name: "Save avatar" }));
+    expect(onUpdateRoomSetting).toHaveBeenCalledWith(baseRoom.room_id, { avatarUrl: null });
+  });
+
+  test("cancel closes the editor without saving and returns focus to Edit", () => {
+    const onUpdateRoomSetting = vi.fn();
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed()}
+        onUpdateRoomSetting={onUpdateRoomSetting}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Change join rule" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Join rule" }), { target: { value: "public" } });
+    fireEvent.click(within(propertyCard("join-rule")).getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("combobox", { name: "Join rule" })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Change join rule" }));
+    expect(onUpdateRoomSetting).not.toHaveBeenCalled();
+    expect(propertyCard("join-rule").textContent).toContain("Invite only");
+  });
+
+  test("history notes explain the value being chosen, in its card", () => {
+    render(
+      <RoomInfoPanel
+        room={{ ...baseRoom, is_encrypted: true }}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed()}
+        onUpdateRoomSetting={vi.fn()}
+      />
+    );
+
+    const card = propertyCard("history-visibility");
+    expect(card.textContent).toContain(t("room.historySharedDescription"));
+    expect(card.textContent).toContain(t("room.historySharedEncryptedHint"));
+    expect(card.textContent).toContain(t("room.historyNonRetroactive"));
+
+    fireEvent.click(within(card).getByRole("button", { name: "Change history visibility" }));
+    fireEvent.change(within(card).getByRole("combobox"), { target: { value: "worldReadable" } });
+    expect(card.textContent).toContain(t("room.historyWorldReadableWarning"));
+    expect(card.textContent).toContain(t("room.historyNonRetroactive"));
+    expect(card.textContent).not.toContain(t("room.historySharedEncryptedHint"));
+  });
+
+  test("attributes Rust's pending, failed and saved state to the submitted property only", () => {
+    const onUpdateRoomSetting = vi.fn();
+    const view = (management: RoomManagementState) => (
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={management}
+        onUpdateRoomSetting={onUpdateRoomSetting}
+      />
+    );
+    const { rerender } = render(view(managed()));
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit topic" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Room topic" }), {
+      target: { value: "Updated topic" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save topic" }));
+
+    rerender(
+      view(
+        managed(roomSettings(), {
+          kind: "pending",
+          request_id: 7,
+          room_id: baseRoom.room_id,
+          operation: "settings"
+        })
+      )
+    );
+    expect(within(propertyCard("topic")).getByRole("status").textContent).toBe("Saving…");
+    expect(within(propertyCard("avatar")).queryByRole("status")).toBeNull();
+    expect(within(propertyCard("join-rule")).queryByRole("status")).toBeNull();
+    // Nothing else can be submitted while Rust holds the change.
+    expect(screen.getByRole("button", { name: "Edit avatar" })).toHaveProperty("disabled", true);
+
+    rerender(
+      view(
+        managed(roomSettings(), {
+          kind: "failed",
+          request_id: 7,
+          room_id: baseRoom.room_id,
+          operation: "settings",
+          failureKind: "forbidden"
+        })
+      )
+    );
+    expect(within(propertyCard("topic")).getByRole("status").textContent).toBe(
+      t("room.settingForbidden")
+    );
+    // A failure is not a success: the confirmed value is still the old one.
+    expect(propertyCard("topic").textContent).toContain("Original topic");
+    expect(within(propertyCard("avatar")).queryByRole("status")).toBeNull();
+
+    // Retry from the same card.
+    fireEvent.click(screen.getByRole("button", { name: "Edit topic" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Room topic" }), {
+      target: { value: "Updated topic" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save topic" }));
+    expect(onUpdateRoomSetting).toHaveBeenCalledTimes(2);
+    // The earlier failure is not this submission's outcome.
+    expect(within(propertyCard("topic")).queryByRole("status")).toBeNull();
+
+    rerender(view(managed(roomSettings({ topic: "Updated topic" }))));
+    expect(within(propertyCard("topic")).getByRole("status").textContent).toBe("Saved");
+    expect(propertyCard("topic").textContent).toContain("Updated topic");
+  });
+
+  test("switching rooms drops an open editor and the previous room's result", () => {
+    const onUpdateRoomSetting = vi.fn();
+    const otherRoom = { ...baseRoom, room_id: "!room-beta:example.invalid", display_label: "Beta Room" };
+    const { rerender } = render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed()}
+        onUpdateRoomSetting={onUpdateRoomSetting}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit topic" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Room topic" }), {
+      target: { value: "Draft for alpha" }
+    });
+    rerender(
+      <RoomInfoPanel
+        room={otherRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed(roomSettings({ room_id: otherRoom.room_id, topic: "Beta topic" }), {
+          kind: "failed",
+          request_id: 3,
+          room_id: otherRoom.room_id,
+          operation: "settings",
+          failureKind: "network"
+        })}
+        onUpdateRoomSetting={onUpdateRoomSetting}
+      />
+    );
+
+    expect(screen.queryByRole("textbox", { name: "Room topic" })).toBeNull();
+    expect(propertyCard("topic").textContent).toContain("Beta topic");
+    expect(within(propertyCard("topic")).queryByRole("status")).toBeNull();
+    expect(onUpdateRoomSetting).not.toHaveBeenCalled();
+  });
+
+  test("summary badges lead to the setting they summarize", () => {
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed(roomSettings({ join_rule: "public", history_visibility: "worldReadable" }))}
+        onUpdateRoomSetting={vi.fn()}
+      />
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: t("room.statusShowSetting", { status: t("room.statusPublic") }) })
+    );
+    expect(document.activeElement).toBe(
+      within(propertyCard("join-rule")).getByRole("heading", { name: "Join rule" })
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: t("room.statusShowSetting", { status: t("room.statusHistoryWorldReadable") })
+      })
+    );
+    expect(document.activeElement).toBe(
+      within(propertyCard("history-visibility")).getByRole("heading", { name: "History visibility" })
+    );
+    // Encryption cannot be changed here, so its badge is not a link.
+    expect(screen.queryByRole("button", { name: /Not encrypted/ })).toBeNull();
+  });
+
+  test("the Notifications entry leads to the notification setting", () => {
+    render(
+      <RoomInfoPanel room={baseRoom} roomNotificationSettings={idleSettings} spaces={[]} />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Notifications" }));
+    expect(document.activeElement).toBe(
+      within(screen.getByRole("region", { name: "Notifications" })).getByRole("heading")
+    );
+  });
+
+  test("keeps download, repair and diagnostics after the room's properties", () => {
+    render(
+      <RoomInfoPanel
+        room={{ ...baseRoom, is_encrypted: true }}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed()}
+        onUpdateRoomSetting={vi.fn()}
+        onRepairRoomTimeline={vi.fn()}
+        onForceRotateOutboundSession={vi.fn()}
+      />
+    );
+
+    const details = screen.getByRole("region", { name: "Details" });
+    const access = screen.getByRole("region", { name: t("room.accessAndHistory") });
+    const permissions = screen.getByRole("region", { name: t("room.rolePermissions") });
+    expect(details.nextElementSibling).toBe(access);
+    for (const auxiliary of [t("room.repair"), t("room.encryptionDebugging")]) {
+      const section = screen.getByRole("region", { name: auxiliary });
+      expect(permissions.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
   });
 });

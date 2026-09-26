@@ -282,10 +282,20 @@ export async function runLocalRoomManagementScenario() {
     await roomInfoButton.waitForDisplayed({ timeout: timeoutMs });
     await roomInfoButton.click();
 
-    const topicInput = await session.browser.$('textarea[aria-label="Room topic"]');
+    // Issue #1008: the topic is edited in its own property card.
+    const editTopicButton = await session.browser.$(
+      '[data-setting-property="topic"] button[aria-label="Edit topic"]'
+    );
+    await editTopicButton.waitForDisplayed({ timeout: timeoutMs });
+    await editTopicButton.click();
+    const topicInput = await session.browser.$(
+      '[data-setting-property="topic"] textarea[aria-label="Room topic"]'
+    );
     await topicInput.waitForDisplayed({ timeout: timeoutMs });
     await topicInput.setValue(session.roomManagementTopic);
-    const saveTopicButton = await session.browser.$("//button[normalize-space()='Save topic']");
+    const saveTopicButton = await session.browser.$(
+      '[data-setting-property="topic"] button[aria-label="Save topic"]'
+    );
     await saveTopicButton.waitForDisplayed({ timeout: timeoutMs });
     await saveTopicButton.click();
     await waitForRoomManagementTopic(

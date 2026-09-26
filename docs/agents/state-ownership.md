@@ -857,6 +857,18 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   "Private" dispatches the `invite` rule. Pending/failed state comes from the
   Space-scoped `room_management.operation`; the renderer keeps only its own
   confirmation step and which submission is its own, both reset per Space.
+- Room Info property cards (#1008) attribute the room-scoped
+  `room_management.operation` to the property the panel itself submitted
+  (field plus the failed `request_id` already on screen), reset per room.
+  Pending and failed come only from that operation, and "saved" only once the
+  settings snapshot carries the submitted value; the renderer owns nothing but
+  the open editor and its DOM draft.
+- Space Info local name/icon (#1008) are saved explicitly. The navigation
+  preference command settles at admission, so a rejected promise is shown as a
+  failure and "saved" appears only once `space_local_presentations` carries
+  the submitted value. `PreferenceRejected` is event-only and not projected
+  into state, so a Core-side rejection after admission leaves the old value on
+  the card without a failure message.
 - App's room/Space settings request epochs and load markers are renderer-only
   panel-demand fences, not settings authority. Rust/Core owns each correlated
   load terminal and the returned settings snapshot, while React must distinguish

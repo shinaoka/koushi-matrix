@@ -827,11 +827,12 @@ export async function waitForRoomManagementTopic(browser, expectedTopic, timeout
   let matched = false;
   while (Date.now() - startedAt < timeout) {
     matched = await browser.execute((topic) => {
-      const rowText = (element) => (element.textContent ?? "").replace(/\s+/g, " ").trim();
-      return Array.from(document.querySelectorAll(".settings-detail-row")).some((row) => {
-        const text = rowText(row);
-        return text.includes("Current topic") && text.includes(topic);
-      });
+      // Issue #1008: the topic card shows the Rust-confirmed value while no
+      // editor is open in it.
+      const card = document.querySelector('[data-setting-property="topic"]');
+      if (!card || card.querySelector("textarea")) return false;
+      const value = card.querySelector(".settings-property-value");
+      return (value?.textContent ?? "").replace(/\s+/g, " ").trim() === topic;
     }, expectedTopic);
     if (matched) {
       return;

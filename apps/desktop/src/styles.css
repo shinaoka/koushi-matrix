@@ -7995,6 +7995,152 @@ kbd {
   font-weight: 800;
 }
 
+/*
+ * #1008: one card per property — its confirmed value, the control that
+ * changes it and the result of the last change. Wraps at narrow widths so
+ * long Japanese labels and values push the actions below instead of clipping.
+ */
+.settings-property-card {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.settings-property-label {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.settings-property-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-property-value {
+  flex: 1 1 12rem;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  line-break: strict;
+  overflow-wrap: anywhere;
+}
+
+.settings-property-empty {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.settings-property-multiline {
+  white-space: pre-wrap;
+}
+
+.settings-property-secondary {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.settings-property-avatar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-property-avatar {
+  display: inline-flex;
+  flex: 0 0 auto;
+  inline-size: 36px;
+  block-size: 36px;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.settings-property-avatar img,
+.settings-property-avatar .avatar-fallback {
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+}
+
+.settings-property-icon-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: 32px;
+  min-block-size: 32px;
+  padding-inline: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.settings-property-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.settings-property-editor {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-property-editor input,
+.settings-property-editor textarea,
+.settings-property-editor select {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+}
+
+.settings-property-editor textarea {
+  min-height: 76px;
+  resize: vertical;
+}
+
+.settings-property-status {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.settings-property-status-saved {
+  color: var(--success);
+}
+
+.settings-property-status-failed {
+  color: var(--danger);
+}
+
+.room-status-badge-link {
+  cursor: pointer;
+}
+
+.room-status-badge-link:hover,
+.room-status-badge-link:focus-visible {
+  border-color: var(--brand);
+}
+
 /* #935: Space access. The mode reads as the section's headline fact. */
 .space-access .space-access-mode {
   font-weight: 800;

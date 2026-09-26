@@ -186,6 +186,14 @@ placement changes; otherwise explain why no manual change is needed. Run
 `node scripts/user-help.mjs --check` for navigation and generated llms.txt.
 A passing link check alone does not establish that instructions are correct.
 
+For UI changes, check the changed surfaces against
+[Property Display And Editing](../../REPOSITORY_RULES.md#property-display-and-editing)
+in both self-review and independent audit: no property with its display and
+its editing in separate places, no duplicate display/edit locations, no
+unrelated actions between them, and no setting-like entry without a matching
+destination. Report findings with the property, both locations, and the
+effect.
+
 Scope notes that repeatedly matter:
 
 - Read `Cargo.toml` and `src/lib.rs` alongside a change that adds feature gates,

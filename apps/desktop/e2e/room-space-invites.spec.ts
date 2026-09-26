@@ -1123,14 +1123,15 @@ test("room management panel updates settings, roles, and members from Rust state
 
   await page.getByRole("button", { name: "Room info" }).click();
   await expect(page.getByRole("heading", { name: "Harness Room" })).toBeVisible();
-  const currentTopicRow = page.locator(".settings-detail-row").filter({
-    hasText: "Current topic"
-  });
+  // Issue #1008: the topic's value, its editor and its result share one card.
+  const currentTopicRow = page.locator('[data-setting-property="topic"]');
   await expect(currentTopicRow.getByText("Original managed topic")).toBeVisible();
+  await expect(page.getByText("Original managed topic")).toHaveCount(1);
 
-  const topicInput = page.getByRole("textbox", { name: "Room topic" });
+  await currentTopicRow.getByRole("button", { name: "Edit topic" }).click();
+  const topicInput = currentTopicRow.getByRole("textbox", { name: "Room topic" });
   await topicInput.fill("Updated managed topic");
-  await page.getByRole("button", { name: "Save topic" }).click();
+  await currentTopicRow.getByRole("button", { name: "Save topic" }).click();
 
   await expect.poll(() => invocationCount(page, "update_room_setting")).toBeGreaterThanOrEqual(1);
   await expect
@@ -1168,13 +1169,12 @@ test("room management panel updates settings, roles, and members from Rust state
   await expect(currentTopicRow.getByText("Updated managed topic")).toBeVisible();
   await expect(currentTopicRow.getByText("Original managed topic")).toHaveCount(0);
 
-  const currentAvatarRow = page.locator(".settings-detail-row").filter({
-    hasText: "Current avatar"
-  });
+  const currentAvatarRow = page.locator('[data-setting-property="avatar"]');
   await expect(currentAvatarRow.getByText("No avatar")).toBeVisible();
-  const avatarInput = page.getByRole("textbox", { name: "Room avatar URL" });
+  await currentAvatarRow.getByRole("button", { name: "Edit avatar" }).click();
+  const avatarInput = currentAvatarRow.getByRole("textbox", { name: "Room avatar URL" });
   await avatarInput.fill("mxc://example.invalid/managed-avatar");
-  await page.getByRole("button", { name: "Save avatar" }).click();
+  await currentAvatarRow.getByRole("button", { name: "Save avatar" }).click();
 
   await expect.poll(() => invocationCount(page, "update_room_setting")).toBeGreaterThanOrEqual(2);
   await expect
@@ -1212,6 +1212,7 @@ test("room management panel updates settings, roles, and members from Rust state
   await expect(currentAvatarRow.getByText("mxc://example.invalid/managed-avatar")).toBeVisible();
   await expect(currentAvatarRow.getByText("No avatar")).toHaveCount(0);
 
+  await page.getByRole("button", { name: "Change history visibility" }).click();
   const historyVisibilitySelect = page.getByRole("combobox", { name: "History visibility" });
   await historyVisibilitySelect.selectOption("joined");
   await page.getByRole("button", { name: "Save history visibility" }).click();
@@ -1224,6 +1225,7 @@ test("room management panel updates settings, roles, and members from Rust state
       change: { historyVisibility: "joined" }
     });
 
+  await page.getByRole("button", { name: "Change join rule" }).click();
   const joinRuleSelect = page.getByRole("combobox", { name: "Join rule" });
   await joinRuleSelect.selectOption("public");
   await page.getByRole("button", { name: "Save join rule" }).click();

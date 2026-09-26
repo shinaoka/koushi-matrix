@@ -121,92 +121,96 @@ export function SpaceAccessSection({
         {t("space.access")}
       </h3>
       <p className="profile-settings-hint">{t("space.accessScope")}</p>
-      <div className="settings-detail-list">
-        <div className="settings-detail-row">
-          <span>{t("space.accessCurrent")}</span>
-          <strong className="space-access-mode">
+      {/*
+        Issue #1008: the mode, the actions that change it, the confirmation
+        and the result share one card.
+      */}
+      <div className="settings-property-card space-access-card" data-setting-property="space-access">
+        <div className="settings-property-row">
+          <span className="settings-property-label">{t("space.accessCurrent")}</span>
+          <strong className="settings-property-value space-access-mode">
             {current ? t(accessModeMessage(current)) : t("space.accessLoading")}
           </strong>
         </div>
-      </div>
 
-      {current === null ? null : !settings ? (
-        <p className="profile-settings-hint">{t("space.accessCheckingPermission")}</p>
-      ) : !canChange ? (
-        <p className="profile-settings-hint">{t("space.accessNoPermission")}</p>
-      ) : (
-        <div className="space-access-actions">
-          {confirming ? (
-            <div
-              className="space-access-confirm"
-              role="group"
-              aria-label={t(choiceLabel(confirming))}
-            >
-              <p>
-                {t(confirming === "public" ? "space.accessConfirmPublic" : "space.accessConfirmPrivate")}
-              </p>
-              {current !== "public" && current !== "invite" ? (
-                <p>{t("space.accessReplacesRule", { rule: joinRuleName(current) })}</p>
-              ) : null}
-              <div className="profile-settings-actions">
-                <button
-                  className="profile-settings-action"
-                  ref={confirmButtonRef}
-                  type="button"
-                  disabled={pending}
-                  onClick={() => submit(confirming)}
-                >
-                  {t(choiceLabel(confirming))}
-                </button>
-                <button
-                  className="profile-settings-action"
-                  type="button"
-                  onClick={() => {
-                    setFocusTarget({ kind: "trigger", choice: confirming });
-                    setConfirming(null);
-                  }}
-                >
-                  {t("action.cancel")}
-                </button>
+        {current === null ? null : !settings ? (
+          <p className="profile-settings-hint">{t("space.accessCheckingPermission")}</p>
+        ) : !canChange ? (
+          <p className="profile-settings-hint">{t("space.accessNoPermission")}</p>
+        ) : (
+          <div className="space-access-actions">
+            {confirming ? (
+              <div
+                className="space-access-confirm"
+                role="group"
+                aria-label={t(choiceLabel(confirming))}
+              >
+                <p>
+                  {t(confirming === "public" ? "space.accessConfirmPublic" : "space.accessConfirmPrivate")}
+                </p>
+                {current !== "public" && current !== "invite" ? (
+                  <p>{t("space.accessReplacesRule", { rule: joinRuleName(current) })}</p>
+                ) : null}
+                <div className="profile-settings-actions">
+                  <button
+                    className="profile-settings-action"
+                    ref={confirmButtonRef}
+                    type="button"
+                    disabled={pending}
+                    onClick={() => submit(confirming)}
+                  >
+                    {t(choiceLabel(confirming))}
+                  </button>
+                  <button
+                    className="profile-settings-action"
+                    type="button"
+                    onClick={() => {
+                      setFocusTarget({ kind: "trigger", choice: confirming });
+                      setConfirming(null);
+                    }}
+                  >
+                    {t("action.cancel")}
+                  </button>
+                </div>
               </div>
-            </div>
-          ) : (
-            <div className="profile-settings-actions">
-              {choices.map((choice) => (
-                <button
-                  className="profile-settings-action"
-                  key={choice}
-                  ref={(element) => {
-                    triggerRefs.current[choice] = element;
-                  }}
-                  type="button"
-                  disabled={pending}
-                  onClick={() => {
-                    setConfirming(choice);
-                    setFocusTarget({ kind: "confirm" });
-                  }}
-                >
-                  {t(choiceLabel(choice))}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+            ) : (
+              <div className="profile-settings-actions">
+                {choices.map((choice) => (
+                  <button
+                    className="profile-settings-action"
+                    key={choice}
+                    ref={(element) => {
+                      triggerRefs.current[choice] = element;
+                    }}
+                    type="button"
+                    disabled={pending}
+                    onClick={() => {
+                      setConfirming(choice);
+                      setFocusTarget({ kind: "confirm" });
+                    }}
+                  >
+                    {t(choiceLabel(choice))}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
-      {/* Always mounted, so a change of text is announced. */}
-      <p
-        className={failed ? "space-access-status space-access-status-failed" : "space-access-status"}
-        role="status"
-      >
-        {pending
-          ? t("space.accessSaving")
-          : failed
-            ? t(failure === "forbidden" ? "space.accessForbidden" : "space.accessFailed")
-            : saved
-              ? t("space.accessSaved")
-              : null}
-      </p>
+        {/* Always mounted, so a change of text is announced. */}
+        <p
+          className={failed ? "space-access-status space-access-status-failed" : "space-access-status"}
+          role="status"
+        >
+          {pending
+            ? t("space.accessSaving")
+            : failed
+              ? t(failure === "forbidden" ? "space.accessForbidden" : "space.accessFailed")
+              : saved
+                ? t("space.accessSaved")
+                : null}
+        </p>
+      </div>
     </section>
   );
 }
