@@ -115,6 +115,7 @@ pub struct StateDeltaChangedSlices {
     pub files_view: Option<FilesViewState>,
     pub history_export: Option<koushi_state::HistoryExportState>,
     pub basic_operation: Option<BasicOperationState>,
+    pub room_address_availability: Option<koushi_state::RoomAddressAvailabilityState>,
     pub live_signals: Option<LiveSignalsState>,
     /// Room-local live-signal replacements; `None` removes a room entry.
     /// Receipt-only changes use `live_signals_receipts_by_room_event` instead.

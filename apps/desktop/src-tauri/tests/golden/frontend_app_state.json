@@ -1189,6 +1189,16 @@
           "!space:example.invalid"
         ]
       },
+      "room_address_availability": {
+        "availability": "inUse",
+        "full_alias": "#fixture-room:example.invalid",
+        "kind": "checked",
+        "request_id": 3,
+        "suggestion": {
+          "full_alias": "#fixture-room-2:example.invalid",
+          "localpart": "fixture-room-2"
+        }
+      },
       "room_list": {
         "active_filter": {
           "kind": "rooms"

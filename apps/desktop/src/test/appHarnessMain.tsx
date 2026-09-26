@@ -322,7 +322,8 @@ function readySnapshot(
           },
           timeline: { room_id: ROOM_ID, is_subscribed: true, is_paginating_backwards: false, composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: COMPOSER_DRAFT_REVISION_ZERO, last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO, draft: "", document: { version: 2, inlines: [] }, mode: composerMode }, submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] }, scheduled_send_capability: "unknown", scheduled_sends: [], staged_uploads: [], media_gallery: [], media_downloads: {}, continuity: { kind: "unknown" } },
           thread: { kind: "closed" }, threads_list: { kind: "closed" }, focused_context: { kind: "closed" },
-          files_view: { kind: "closed" }, history_export: { kind: "idle" }, errors: [], basic_operation: basicOperation
+          files_view: { kind: "closed" }, history_export: { kind: "idle" }, errors: [], basic_operation: basicOperation,
+          room_address_availability: { kind: "idle" }
         }
       },
       sidebar,

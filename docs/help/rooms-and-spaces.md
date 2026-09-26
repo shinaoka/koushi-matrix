@@ -49,6 +49,14 @@ until you edit the address yourself. A public room created in a Space is listed
 in the public room directory, and anyone, including people outside the Space,
 can find and join it.
 
+While you type, Koushi checks whether the address is already used and shows
+the result under the address field. This check is only advice: an address that
+was free when checked can still be taken before you create the room, and the
+check never reserves it. If the address is in use, Koushi shows a suggestion,
+marked as not checked yet; choose **Use this address** to put it in the address
+field, where it is checked in turn. If the check cannot be completed, you can
+still create the room.
+
 If the address is already in use, the dialog keeps everything you entered,
 names the address that was taken, and moves you to the address field. Keep the
 room name and change only the address, for example by adding a project name or

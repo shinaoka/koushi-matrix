@@ -17,7 +17,8 @@ use koushi_sdk::{
 use koushi_state::{
     AppAction, BasicOperationRequest, INVITE_ALREADY_IN_SPACE_MESSAGE, InviteDestination,
     InviteDestinationResult, InviteDestinationResultKind, InviteScopeSelection,
-    OperationFailureKind, RoomNotificationMode, RoomTagInfo, RoomTagKind, SpaceChildLinkOutcome,
+    OperationFailureKind, RoomAddressAvailability, RoomAddressSuggestion, RoomNotificationMode,
+    RoomTagInfo, RoomTagKind, SpaceChildLinkOutcome,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 use std::sync::Mutex;
@@ -35,6 +36,9 @@ const CREATE_ROOM_FAILED_MESSAGE: &str = "Room creation failed";
 const CREATE_SPACE_FAILED_MESSAGE: &str = "Space creation failed";
 
 const LINK_SPACE_CHILD_FAILED_MESSAGE: &str = "Linking the room to the space failed";
+
+/// Bound on one advisory address lookup; a slow server settles `Unknown`.
+const ROOM_ADDRESS_CHECK_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub(super) type SpaceChildLinkKey = (String, String);
 
@@ -404,6 +408,82 @@ impl RoomActor {
             outcome,
         }])
         .await;
+    }
+
+    /// Start an advisory lookup of a create-room address (#1006). Only the
+    /// newest lookup runs; the reducer also admits only its settlement.
+    pub(super) async fn handle_check_room_address_availability(
+        &mut self,
+        request_id: RequestId,
+        alias_localpart: String,
+    ) {
+        let Some(session) = self.session.clone() else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        self.stop_room_address_check().await;
+        let user_id = session.info.user_id.clone();
+        let preview =
+            koushi_sdk::preview_room_address("", Some(&alias_localpart), None, Some(&user_id));
+        let Some(full_alias) = preview.full_alias else {
+            // An invalid or empty draft has nothing to look up.
+            self.reduce_reliable(vec![AppAction::RoomAddressAvailabilityCleared])
+                .await;
+            return;
+        };
+        self.reduce_reliable(vec![AppAction::RoomAddressAvailabilityRequested {
+            request_id: request_id.sequence,
+            full_alias: full_alias.clone(),
+        }])
+        .await;
+        let action_tx = self.action_tx.clone();
+        self.room_address_check_task = Some(executor::spawn(async move {
+            let availability = match executor::timeout(
+                ROOM_ADDRESS_CHECK_TIMEOUT,
+                koushi_sdk::check_room_alias_availability(&session, &full_alias),
+            )
+            .await
+            {
+                Ok(koushi_sdk::MatrixRoomAliasAvailability::Available) => {
+                    RoomAddressAvailability::Available
+                }
+                Ok(koushi_sdk::MatrixRoomAliasAvailability::InUse) => {
+                    RoomAddressAvailability::InUse
+                }
+                Ok(koushi_sdk::MatrixRoomAliasAvailability::Unknown) | Err(_) => {
+                    RoomAddressAvailability::Unknown
+                }
+            };
+            let suggestion = (availability == RoomAddressAvailability::InUse)
+                .then(|| {
+                    let localpart =
+                        koushi_state::suggest_alternative_room_alias_localpart(&preview.localpart);
+                    koushi_sdk::preview_room_address("", Some(&localpart), None, Some(&user_id))
+                        .full_alias
+                        .map(|full_alias| RoomAddressSuggestion {
+                            localpart,
+                            full_alias,
+                        })
+                })
+                .flatten();
+            // A settlement is reliable: the reducer drops it only when a newer
+            // check or a clear already replaced this one.
+            let _ = action_tx
+                .send(vec![AppAction::RoomAddressAvailabilitySettled {
+                    request_id: request_id.sequence,
+                    full_alias,
+                    availability,
+                    suggestion,
+                }])
+                .await;
+        }));
+    }
+
+    pub(super) async fn stop_room_address_check(&mut self) {
+        if let Some(task) = self.room_address_check_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
     }
 
     pub(super) async fn handle_create_space(&self, request_id: RequestId, name: String) {
@@ -1354,3 +1434,6 @@ mod tests;
 
 #[cfg(test)]
 mod space_child_link_tests;
+
+#[cfg(test)]
+mod room_address_check_tests;

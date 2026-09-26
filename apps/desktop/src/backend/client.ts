@@ -1123,6 +1123,14 @@ export class TauriDesktopApi implements DesktopApi {
     return this.invokeCommand<CommandSettlement>("create_space", { name });
   }
 
+  async checkRoomAddressAvailability(aliasLocalpart: string): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("check_room_address_availability", { aliasLocalpart });
+  }
+
+  async clearRoomAddressAvailability(): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("clear_room_address_availability");
+  }
+
   async setSpaceChild(spaceId: string, childRoomId: string): Promise<CommandAdmission> {
     return this.invokeCommand<CommandAdmission>("set_space_child", { spaceId, childRoomId });
   }

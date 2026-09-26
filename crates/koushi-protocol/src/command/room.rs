@@ -86,6 +86,19 @@ pub enum RoomCommand {
         request_id: RequestId,
         name: String,
     },
+    /// Start an advisory availability check of a create-room address local
+    /// part on the account's server (#1006). It replaces any earlier check;
+    /// the result is `AppState.room_address_availability`, never a
+    /// reservation.
+    CheckRoomAddressAvailability {
+        request_id: RequestId,
+        alias_localpart: String,
+    },
+    /// Cancel the advisory check (the create dialog closed or the address
+    /// no longer needs one).
+    ClearRoomAddressAvailability {
+        request_id: RequestId,
+    },
     /// Link a joined room under a joined Space. Core derives the `via`
     /// routing from the SDK (room version 12 IDs carry no server name).
     SetSpaceChild {
@@ -313,6 +326,15 @@ impl fmt::Debug for RoomCommand {
                 .debug_struct("CreateSpace")
                 .field("request_id", request_id)
                 .field("name", &"RoomName(..)")
+                .finish(),
+            Self::CheckRoomAddressAvailability { request_id, .. } => formatter
+                .debug_struct("CheckRoomAddressAvailability")
+                .field("request_id", request_id)
+                .field("alias_localpart", &"[redacted]")
+                .finish(),
+            Self::ClearRoomAddressAvailability { request_id } => formatter
+                .debug_struct("ClearRoomAddressAvailability")
+                .field("request_id", request_id)
                 .finish(),
             Self::SetSpaceChild { request_id, .. } => formatter
                 .debug_struct("SetSpaceChild")

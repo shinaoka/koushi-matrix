@@ -9146,6 +9146,15 @@ kbd {
 .confirmation-modal { width: 480px; }
 .confirmation-content { padding: 0 20px 20px; overflow-y: auto; }
 
+/* #1006 advisory address availability under the address field. */
+.create-room-address-availability p { margin: 4px 0 0; }
+.create-room-address-suggestion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 /* #1007 Add existing room to a Space. */
 .space-add-rooms-modal { inline-size: 520px; }
 .space-add-rooms {

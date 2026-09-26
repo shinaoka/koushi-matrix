@@ -418,6 +418,8 @@ pub struct FrontendUiStateChangedSlices {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub basic_operation: Option<BasicOperationState>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_address_availability: Option<koushi_state::RoomAddressAvailabilityState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub errors: Option<Vec<AppError>>,
 }
 
@@ -432,6 +434,7 @@ impl FrontendUiStateChangedSlices {
             && self.history_export.is_none()
             && self.threads_list.is_none()
             && self.basic_operation.is_none()
+            && self.room_address_availability.is_none()
             && self.errors.is_none()
     }
 }
@@ -526,6 +529,7 @@ impl From<StateDelta> for FrontendDesktopSnapshotDelta {
         ui.history_export = changed.history_export;
         ui.threads_list = changed.threads_list;
         ui.basic_operation = changed.basic_operation;
+        ui.room_address_availability = changed.room_address_availability;
         ui.errors = changed.errors;
 
         let state = if domain.is_empty() && ui.is_empty() {
@@ -616,6 +620,7 @@ pub struct FrontendUiState {
     pub history_export: koushi_state::HistoryExportState,
     pub threads_list: ThreadsListState,
     pub basic_operation: BasicOperationState,
+    pub room_address_availability: koushi_state::RoomAddressAvailabilityState,
     pub errors: Vec<AppError>,
 }
 
@@ -688,6 +693,7 @@ fn frontend_app_state_for_platform(state: AppState, platform: DisplayPlatform) -
             history_export: state.history_export,
             threads_list: state.threads_list,
             basic_operation: state.basic_operation,
+            room_address_availability: state.room_address_availability,
             errors: state.errors,
         },
     }

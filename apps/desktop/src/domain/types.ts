@@ -113,6 +113,8 @@ export interface AppUiState {
   history_export: HistoryExportState;
   threads_list: ThreadsListState;
   basic_operation: BasicOperationState;
+  /** Rust-owned advisory address check of the create-room dialog (#1006). */
+  room_address_availability: RoomAddressAvailabilityState;
   errors: AppError[];
 }
 
@@ -1950,6 +1952,26 @@ export type ComposerMode =
 // Rust BasicOperationState is #[serde(tag = "kind", rename_all = "camelCase")]
 // → internally tagged, camelCase VARIANT names, snake_case fields. Pending
 // variants carry the correlation request_id (see docs/architecture/state-machine.md).
+export type RoomAddressAvailability = "available" | "inUse" | "unknown";
+
+export interface RoomAddressSuggestion {
+  localpart: string;
+  full_alias: string;
+}
+
+/** Advisory only: never a reservation; room creation is authoritative. */
+export type RoomAddressAvailabilityState =
+  | { kind: "idle" }
+  | { kind: "checking"; request_id: number; full_alias: string }
+  | {
+      kind: "checked";
+      request_id: number;
+      full_alias: string;
+      availability: RoomAddressAvailability;
+      /** Offered only for an address in use; not checked yet. */
+      suggestion: RoomAddressSuggestion | null;
+    };
+
 export type BasicOperationState =
   | { kind: "idle" }
   | { kind: "creatingRoom"; request_id: number; name: string }

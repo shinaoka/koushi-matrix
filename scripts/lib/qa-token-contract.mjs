@@ -13,6 +13,7 @@
 const ADDRESS_TOKENS = [
   "room_address_preview_create_share=ok",
   "room_address_collision=ok",
+  "room_address_availability=ok",
   "room_address_space_prefix=ok"
 ];
 const IGNORE_RECOVERY_TOKEN = "ignored_user_history_recovery=ok";

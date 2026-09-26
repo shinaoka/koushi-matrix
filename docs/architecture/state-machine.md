@@ -3161,6 +3161,43 @@ stateDiagram-v2
   uses the same routing but has no request to settle; its failures are
   diagnostic only.
 
+### Advisory room address availability (#1006)
+
+The create-room dialog's address check is `AppState.room_address_availability`
+(Tauri `ui.room_address_availability`). It is advisory: one homeserver lookup
+through the SDK's `Client::is_room_alias_available`, never a reservation.
+`CreateRoom` stays authoritative and still reports `AliasInUse`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Checking: RoomAddressAvailabilityRequested [Ready]
+    Checking --> Checking: RoomAddressAvailabilityRequested (newer draft)
+    Checked --> Checking: RoomAddressAvailabilityRequested
+    Checking --> Checked: RoomAddressAvailabilitySettled [same request_id and full_alias]
+    Checking --> Idle: RoomAddressAvailabilityCleared / session views cleared
+    Checked --> Idle: RoomAddressAvailabilityCleared / session views cleared
+```
+
+- Start: `RoomCommand::CheckRoomAddressAvailability { alias_localpart }`. Core
+  resolves the full alias on the account's server with `preview_room_address`;
+  an empty or invalid draft dispatches `Cleared` and no lookup. The Room actor
+  aborts and joins the previous lookup task before starting the next, and on
+  `ClearRoomAddressAvailability`, session clear, and shutdown.
+- Settle guard: `Settled` applies only while `Checking` carries the same
+  `request_id` and `full_alias`; stale, duplicate, and idle completions are
+  ignored.
+- Outcomes: `available` (404 `M_NOT_FOUND`), `inUse` (the alias resolved), or
+  `unknown` (any other failure, or the 8-second bound). An error is never
+  reported as available.
+- Suggestion: only `inUse` carries one, from
+  `suggest_alternative_room_alias_localpart` (increment a trailing `-N`, else
+  append `-2`), validated on the same server. It has not been checked; using it
+  changes the draft, and the new address gets its own check.
+- The renderer chooses when to ask (400 ms after the shown address stops
+  changing), shows a result only when its `full_alias` is the address shown, and
+  never blocks submission on it.
+
 ## Room Management
 
 Room settings and moderation are Rust-owned state in

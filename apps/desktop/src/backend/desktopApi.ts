@@ -454,6 +454,8 @@ export interface DesktopApi {
   createRoom(request: CreateRoomRequest): Promise<CreateRoomSettlement>;
   createSpace(name: string): Promise<CommandSettlement>;
   setSpaceChild(spaceId: string, childRoomId: string): Promise<CommandAdmission>;
+  checkRoomAddressAvailability(aliasLocalpart: string): Promise<CommandAdmission>;
+  clearRoomAddressAvailability(): Promise<CommandAdmission>;
   acceptInvite(roomId: string): Promise<CommandSettlement>;
   declineInvite(roomId: string): Promise<CommandSettlement>;
   startDirectMessage(userId: string): Promise<CommandSettlement>;

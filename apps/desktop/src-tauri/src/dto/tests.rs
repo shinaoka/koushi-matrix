@@ -1966,6 +1966,17 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
         request_id: 1,
         name: "Fixture New Room".to_owned(),
     };
+    // #1006: an advisory address check that found the address in use and
+    // offers an unchecked alternative.
+    state.room_address_availability = koushi_state::RoomAddressAvailabilityState::Checked {
+        request_id: 3,
+        full_alias: "#fixture-room:example.invalid".to_owned(),
+        availability: koushi_state::RoomAddressAvailability::InUse,
+        suggestion: Some(koushi_state::RoomAddressSuggestion {
+            localpart: "fixture-room-2".to_owned(),
+            full_alias: "#fixture-room-2:example.invalid".to_owned(),
+        }),
+    };
     // #1007: a failed Space link makes the sidebar's add-rooms projection
     // carry a `failed` row beside the `available`/`added` ones.
     state.space_child_links.entries = vec![koushi_state::SpaceChildLinkResult {

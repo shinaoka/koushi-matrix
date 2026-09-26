@@ -6,6 +6,10 @@ use crate::{
     },
 };
 
+use crate::room_address::{
+    RoomAddressAvailability, RoomAddressAvailabilityState, RoomAddressSuggestion,
+};
+
 use super::is_session_ready;
 
 pub(crate) fn handle_clear_error(state: &mut AppState, code: String) -> Vec<AppEffect> {
@@ -99,5 +103,54 @@ pub(crate) fn handle_space_child_link_settled(
         child_room_id,
         outcome,
     });
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
+pub(crate) fn handle_room_address_availability_requested(
+    state: &mut AppState,
+    request_id: u64,
+    full_alias: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    state.room_address_availability = RoomAddressAvailabilityState::Checking {
+        request_id,
+        full_alias,
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
+pub(crate) fn handle_room_address_availability_settled(
+    state: &mut AppState,
+    request_id: u64,
+    full_alias: String,
+    availability: RoomAddressAvailability,
+    suggestion: Option<RoomAddressSuggestion>,
+) -> Vec<AppEffect> {
+    let matches = matches!(
+        &state.room_address_availability,
+        RoomAddressAvailabilityState::Checking {
+            request_id: pending,
+            full_alias: pending_alias,
+        } if *pending == request_id && *pending_alias == full_alias
+    );
+    if !matches {
+        return Vec::new();
+    }
+    state.room_address_availability = RoomAddressAvailabilityState::Checked {
+        request_id,
+        full_alias,
+        availability,
+        suggestion: suggestion.filter(|_| availability == RoomAddressAvailability::InUse),
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
+pub(crate) fn handle_room_address_availability_cleared(state: &mut AppState) -> Vec<AppEffect> {
+    if state.room_address_availability == RoomAddressAvailabilityState::Idle {
+        return Vec::new();
+    }
+    state.room_address_availability = RoomAddressAvailabilityState::Idle;
     vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
 }

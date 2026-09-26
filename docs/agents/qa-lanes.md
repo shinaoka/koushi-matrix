@@ -102,7 +102,7 @@ qa-bin`; plain `cargo test` does not compile that binary.
 | `gate_restore`, `gate_negative`, `gate_no_proof` | verification-gate paths | `gate_new_identity_bootstrap=ok` |
 | `invites_dm` | invite receipt/accept/decline and DM start | `invite_recv=ok`, `invite_accept=ok`, `invite_decline=ok`, `dm_start=ok` |
 | `room_space` | room and space classification | — |
-| `directory` | public directory query, alias join, Rust address preview/create/share-link join and collision, and the Space-prefixed default address (#1006) | `directory_query=ok`, `directory_join=ok`, `room_address_preview_create_share=ok`, `room_address_collision=ok`, `room_address_space_prefix=ok` |
+| `directory` | public directory query, alias join, Rust address preview/create/share-link join and collision, the advisory availability check, and the Space-prefixed default address (#1006) | `directory_query=ok`, `directory_join=ok`, `room_address_preview_create_share=ok`, `room_address_collision=ok`, `room_address_availability=ok`, `room_address_space_prefix=ok` |
 | `room_management` | settings edit, permission guard, moderation, a Space's join-rule change (#935), and adding an existing (room version 12) room to a Space (#1007), using a disposable management room and Space so they cannot disturb other stages | `room_settings=ok`, `permission_guard=ok`, `moderation=ok`, `space_access=ok`, `space_add_existing=ok`, plus cleanup tokens |
 | `room_people_projection` | member projection | — |
 | `timeline` | timeline projection and navigation | `timeline_nav=ok` |

@@ -1848,6 +1848,27 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             request_id,
             message,
         } => basic_operation::handle_basic_operation_failed(state, request_id, message),
+        AppAction::RoomAddressAvailabilityRequested {
+            request_id,
+            full_alias,
+        } => basic_operation::handle_room_address_availability_requested(
+            state, request_id, full_alias,
+        ),
+        AppAction::RoomAddressAvailabilitySettled {
+            request_id,
+            full_alias,
+            availability,
+            suggestion,
+        } => basic_operation::handle_room_address_availability_settled(
+            state,
+            request_id,
+            full_alias,
+            availability,
+            suggestion,
+        ),
+        AppAction::RoomAddressAvailabilityCleared => {
+            basic_operation::handle_room_address_availability_cleared(state)
+        }
         AppAction::SpaceChildLinkSettled {
             request_id,
             space_id,
@@ -2029,6 +2050,7 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.space_members = Default::default();
     state.basic_operation = Default::default();
     state.space_child_links = Default::default();
+    state.room_address_availability = Default::default();
     state.room_notification_settings.clear();
     state.room_notification_awaiting_echo.clear();
 

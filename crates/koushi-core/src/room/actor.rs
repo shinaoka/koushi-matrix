@@ -437,6 +437,9 @@ pub struct RoomActor {
     pub(super) pinned_refresh_sequence: u64,
     pub(super) pinned_latest_refresh: HashMap<String, u64>,
     pub(super) pinned_refresh_tasks: Vec<executor::JoinHandle<()>>,
+    /// The one in-flight advisory address lookup (#1006); a newer check,
+    /// clear, session clear or shutdown aborts and joins it.
+    pub(super) room_address_check_task: Option<executor::JoinHandle<()>>,
     command_rx: mpsc::Receiver<RoomMessage>,
 }
 
@@ -503,6 +506,7 @@ impl RoomActor {
             pinned_refresh_sequence: 0,
             pinned_latest_refresh: HashMap::new(),
             pinned_refresh_tasks: Vec::new(),
+            room_address_check_task: None,
             command_rx,
         };
         let task = executor::spawn(actor.run());
@@ -524,6 +528,7 @@ impl RoomActor {
             match msg {
                 RoomMessage::Shutdown => {
                     self.stop_pinned_refreshes().await;
+                    self.stop_room_address_check().await;
                     self.stop_observation().await;
                     break;
                 }
@@ -683,6 +688,7 @@ impl RoomActor {
                 }
                 RoomMessage::SessionCleared { ack } => {
                     self.stop_pinned_refreshes().await;
+                    self.stop_room_address_check().await;
                     self.stop_observation().await;
                     self.reset_space_member_session();
                     self.session = None;
@@ -812,6 +818,18 @@ impl RoomActor {
             }
             RoomCommand::CreateSpace { request_id, name } => {
                 self.handle_create_space(request_id, name).await;
+            }
+            RoomCommand::CheckRoomAddressAvailability {
+                request_id,
+                alias_localpart,
+            } => {
+                self.handle_check_room_address_availability(request_id, alias_localpart)
+                    .await;
+            }
+            RoomCommand::ClearRoomAddressAvailability { request_id: _ } => {
+                self.stop_room_address_check().await;
+                self.reduce_reliable(vec![AppAction::RoomAddressAvailabilityCleared])
+                    .await;
             }
             RoomCommand::SetSpaceChild {
                 request_id,

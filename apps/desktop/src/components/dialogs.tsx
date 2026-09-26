@@ -17,6 +17,7 @@ import {
 import { type MessageId, t } from "../i18n/messages";
 import type {
   CreateRoomVisibility,
+  RoomAddressAvailabilityState,
   RoomAddressPreview,
   DirectoryPreviewState,
   InviteScopeSelection,
@@ -105,6 +106,8 @@ export function CreateEntityDialog({
   targetSpaceName = null,
   addressPreview = null,
   addressConflict = null,
+  addressAvailability = null,
+  onUseSuggestedAddress,
   isBusy,
   kind,
   roomOptions,
@@ -120,6 +123,9 @@ export function CreateEntityDialog({
   targetSpaceName?: string | null;
   addressPreview?: RoomAddressPreview | null;
   addressConflict?: CreateRoomAddressConflict | null;
+  /** The Rust advisory check of the address currently shown (#1006). */
+  addressAvailability?: RoomAddressAvailabilityState | null;
+  onUseSuggestedAddress?: (localpart: string) => void;
   isBusy: boolean;
   kind: "room" | "space";
   roomOptions?: CreateRoomDialogOptions;
@@ -341,6 +347,12 @@ export function CreateEntityDialog({
                   ? t("dialog.roomAddressPreview", { address: addressPreview.full_alias })
                   : t(addressPreview?.error === "empty" ? "dialog.roomAddressEmpty" : addressPreview?.error === "invalid" ? "dialog.roomAddressInvalid" : "dialog.roomAddressPending")}
               </p>
+              <RoomAddressAvailabilityNote
+                availability={addressAvailability}
+                server={addressPreview?.server_name ?? ""}
+                conflictShown={addressConflict !== null}
+                onUseSuggestedAddress={onUseSuggestedAddress}
+              />
               </div>
             ) : null}
           </div>
@@ -365,6 +377,57 @@ export function CreateEntityDialog({
         </div>
       </ImeSafeForm>
     </NativeModal>
+  );
+}
+
+/** Advisory availability of the address (#1006): a lookup, never a
+ * reservation. The create-time conflict above stays authoritative, so while it
+ * is shown only the suggestion is added. */
+function RoomAddressAvailabilityNote({
+  availability,
+  server,
+  conflictShown,
+  onUseSuggestedAddress
+}: {
+  availability: RoomAddressAvailabilityState | null;
+  server: string;
+  conflictShown: boolean;
+  onUseSuggestedAddress?: (localpart: string) => void;
+}) {
+  if (!availability || availability.kind === "idle") return null;
+  const address = availability.full_alias;
+  const suggestion =
+    availability.kind === "checked" && availability.availability === "inUse"
+      ? availability.suggestion
+      : null;
+  let message: string | null = null;
+  if (!conflictShown) {
+    if (availability.kind === "checking") {
+      message = t("dialog.roomAddressChecking", { address });
+    } else if (availability.availability === "available") {
+      message = t("dialog.roomAddressAvailable", { address });
+    } else if (availability.availability === "inUse") {
+      message = t("dialog.roomAddressTaken", { address, server });
+    } else {
+      message = t("dialog.roomAddressCheckUnknown");
+    }
+  }
+  return (
+    <div className="create-room-address-availability" data-availability={availability.kind === "checked" ? availability.availability : "checking"}>
+      {message ? <p id="create-room-address-availability" aria-live="polite">{message}</p> : null}
+      {suggestion ? (
+        <p className="create-room-address-suggestion">
+          <span>{t("dialog.roomAddressSuggestion", { address: suggestion.full_alias })}</span>{" "}
+          <button
+            type="button"
+            className="dialog-button"
+            onClick={() => onUseSuggestedAddress?.(suggestion.localpart)}
+          >
+            {t("dialog.roomAddressUseSuggestion")}
+          </button>
+        </p>
+      ) : null}
+    </div>
   );
 }
 

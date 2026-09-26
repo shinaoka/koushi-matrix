@@ -453,6 +453,9 @@ function defaultCreateRoomDialogOptions(): CreateRoomDialogOptions {
   return { ...DEFAULT_CREATE_ROOM_OPTIONS };
 }
 
+/** Pause after the last address edit before the advisory lookup (#1006). */
+const ROOM_ADDRESS_CHECK_DEBOUNCE_MS = 400;
+
 function createRoomRequestFromDraft(
   name: string,
   options: CreateRoomDialogOptions,
@@ -1207,6 +1210,38 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     api, createDraftName, createRoomManualAlias,
     snapshot?.state.domain.session.user_id ?? null, createDialog === "room"
   );
+  // #1006: the advisory check follows the shown address after a short pause
+  // in typing. Rust owns the lookup, its cancellation and stale-result
+  // fencing; this effect only picks when to ask.
+  const createRoomAvailabilityTarget =
+    createDialog === "room" &&
+    createRoomDraftOptions.visibility === "public" &&
+    createRoomAddressPreview?.error === null &&
+    createRoomAddressPreview.full_alias
+      ? createRoomAddressPreview.localpart
+      : null;
+  const roomAddressAvailability = snapshot?.state.ui.room_address_availability ?? null;
+  const roomAddressAvailabilityIdle = !roomAddressAvailability || roomAddressAvailability.kind === "idle";
+  useEffect(() => {
+    if (createRoomAvailabilityTarget === null) {
+      if (!roomAddressAvailabilityIdle) {
+        void api.clearRoomAddressAvailability().catch(() => undefined);
+      }
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void api.checkRoomAddressAvailability(createRoomAvailabilityTarget).catch(() => undefined);
+    }, ROOM_ADDRESS_CHECK_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+    // Only a new target (or leaving the check) starts a request.
+  }, [api, createRoomAvailabilityTarget]);
+  const shownRoomAddressAvailability =
+    roomAddressAvailability &&
+    roomAddressAvailability.kind !== "idle" &&
+    createRoomAvailabilityTarget !== null &&
+    roomAddressAvailability.full_alias === createRoomAddressPreview?.full_alias
+      ? roomAddressAvailability
+      : null;
   const displayedCreateRoomOptions = {
     ...createRoomDraftOptions,
     aliasLocalpart: createRoomManualAlias ?? createRoomAddressPreview?.localpart ?? ""
@@ -3961,6 +3996,8 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
             server,
             roomName: name
           });
+          // Refresh the advisory result so an alternative is offered at once.
+          void api.checkRoomAddressAvailability(localpart).catch(() => undefined);
         }
         return;
       }
@@ -6831,6 +6868,8 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
               ? createRoomAliasCollision
               : null
           }
+          addressAvailability={shownRoomAddressAvailability}
+          onUseSuggestedAddress={(localpart) => setCreateRoomManualAlias(localpart)}
           onOpenAddressHelp={(url) => runInBackground(openExternalHttpUrl(url))}
           value={createDraftName}
           onCancel={closeCreateDialog}

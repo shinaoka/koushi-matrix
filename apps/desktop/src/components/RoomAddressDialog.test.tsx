@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { setActiveLocaleProfile, t } from "../i18n/messages";
 import { CreateEntityDialog } from "./dialogs";
+import type { RoomAddressAvailabilityState } from "../domain/types";
 
 afterEach(() => { cleanup(); setActiveLocaleProfile("en", "none"); });
 test.each(["en", "ja"] as const)("renders Rust address preview and preserves drafts across visibility in %s", locale => {
@@ -64,4 +65,55 @@ test("a public room at Home shows no Space note", () => {
     addressPreview={{ localpart: "papers", full_alias: "#papers:example.invalid", error: null, server_name: "example.invalid" }}
     onCancel={vi.fn()} onValueChange={vi.fn()} onSubmit={vi.fn()} onRoomOptionsChange={vi.fn()} />);
   expect(screen.queryByText(t("dialog.publicRoomInSpace", { spaceName: "research-group" }))).toBeNull();
+});
+
+// #1006: the advisory availability note renders only Rust-owned results and
+// offers an unchecked alternative behind an explicit action.
+function renderWithAvailability(
+  availability: RoomAddressAvailabilityState,
+  onUse = vi.fn(),
+  conflict = false
+) {
+  render(<CreateEntityDialog kind="room" isBusy={false} value="papers"
+    roomOptions={{ aliasLocalpart: "papers", topic: "", visibility: "public", encrypted: false, invitedOnly: false }}
+    addressPreview={{ localpart: "papers", full_alias: "#papers:example.invalid", error: null, server_name: "example.invalid" }}
+    addressConflict={conflict ? { fullAddress: "#papers:example.invalid", server: "example.invalid", roomName: "papers" } : null}
+    addressAvailability={availability}
+    onUseSuggestedAddress={onUse}
+    onCancel={vi.fn()} onValueChange={vi.fn()} onSubmit={vi.fn()} onRoomOptionsChange={vi.fn()} />);
+  return onUse;
+}
+
+test.each(["en", "ja"] as const)("advisory results are labeled as not reserving the address in %s", locale => {
+  setActiveLocaleProfile(locale, "none");
+  renderWithAvailability({ kind: "checking", request_id: 1, full_alias: "#papers:example.invalid" });
+  expect(screen.getByText(t("dialog.roomAddressChecking", { address: "#papers:example.invalid" }))).toBeTruthy();
+  cleanup();
+  renderWithAvailability({ kind: "checked", request_id: 1, full_alias: "#papers:example.invalid", availability: "available", suggestion: null });
+  expect(screen.getByText(t("dialog.roomAddressAvailable", { address: "#papers:example.invalid" }))).toBeTruthy();
+  cleanup();
+  renderWithAvailability({ kind: "checked", request_id: 1, full_alias: "#papers:example.invalid", availability: "unknown", suggestion: null });
+  expect(screen.getByText(t("dialog.roomAddressCheckUnknown"))).toBeTruthy();
+  // Submission is never blocked by an advisory result.
+  expect((screen.getByRole("button", { name: t("dialog.submitCreateRoom") }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("an address in use offers a labeled suggestion that is used only on request", () => {
+  const onUse = renderWithAvailability({
+    kind: "checked", request_id: 2, full_alias: "#papers:example.invalid", availability: "inUse",
+    suggestion: { localpart: "papers-2", full_alias: "#papers-2:example.invalid" }
+  });
+  expect(screen.getByText(t("dialog.roomAddressTaken", { address: "#papers:example.invalid", server: "example.invalid" }))).toBeTruthy();
+  expect(screen.getByText(t("dialog.roomAddressSuggestion", { address: "#papers-2:example.invalid" }))).toBeTruthy();
+  expect(onUse).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: t("dialog.roomAddressUseSuggestion") }));
+  expect(onUse).toHaveBeenCalledWith("papers-2");
+});
+
+test("while the authoritative conflict is shown only the suggestion is added", () => {
+  renderWithAvailability({
+    kind: "checked", request_id: 2, full_alias: "#papers:example.invalid", availability: "available", suggestion: null
+  }, vi.fn(), true);
+  expect(screen.queryByText(t("dialog.roomAddressAvailable", { address: "#papers:example.invalid" }))).toBeNull();
+  expect(screen.getByRole("alert")).toBeTruthy();
 });

@@ -833,6 +833,36 @@ pub async fn create_space(
     Ok(command_settlement(generation))
 }
 
+/// Start the Rust-owned advisory availability check of a create-room address
+/// (#1006). The result arrives as `ui.room_address_availability`.
+#[tauri::command]
+pub async fn check_room_address_availability(
+    alias_localpart: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command_with_admission(
+        state.inner(),
+        CoreCommand::Room(RoomCommand::CheckRoomAddressAvailability {
+            request_id,
+            alias_localpart,
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn clear_room_address_availability(
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command_with_admission(
+        state.inner(),
+        CoreCommand::Room(RoomCommand::ClearRoomAddressAvailability { request_id }),
+    )
+    .await
+}
+
 #[tauri::command]
 pub async fn set_space_child(
     space_id: String,

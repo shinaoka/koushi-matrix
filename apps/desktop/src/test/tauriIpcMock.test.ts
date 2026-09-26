@@ -114,6 +114,7 @@ describe("TauriIpcMock command responses", () => {
       "files_view",
       "threads_list",
       "basic_operation",
+      "room_address_availability",
       "errors"
     ]) {
       expect(ui).toHaveProperty(key);

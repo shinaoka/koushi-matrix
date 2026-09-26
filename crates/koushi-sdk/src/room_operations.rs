@@ -1001,6 +1001,31 @@ fn resolve_room_address(
     preview
 }
 
+/// Outcome of one advisory alias lookup; never a reservation (#1006).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixRoomAliasAvailability {
+    Available,
+    InUse,
+    Unknown,
+}
+
+/// Ask the homeserver whether a complete alias resolves, with the SDK's
+/// `Client::is_room_alias_available` (a 404 `M_NOT_FOUND` means available).
+/// Any other failure is `Unknown`, never reported as available.
+pub async fn check_room_alias_availability(
+    session: &MatrixClientSession,
+    full_alias: &str,
+) -> MatrixRoomAliasAvailability {
+    let Ok(alias) = matrix_sdk::ruma::RoomAliasId::parse(full_alias) else {
+        return MatrixRoomAliasAvailability::Unknown;
+    };
+    match session.client().is_room_alias_available(&alias).await {
+        Ok(true) => MatrixRoomAliasAvailability::Available,
+        Ok(false) => MatrixRoomAliasAvailability::InUse,
+        Err(_) => MatrixRoomAliasAvailability::Unknown,
+    }
+}
+
 fn validate_alias_localpart(alias_localpart: &str) -> Result<(), MatrixRoomOperationError> {
     if alias_localpart.starts_with('#')
         || alias_localpart.contains(':')
@@ -1751,6 +1776,9 @@ mod address_tests;
 
 #[cfg(test)]
 mod space_child_tests;
+
+#[cfg(test)]
+mod alias_availability_tests;
 
 #[cfg(test)]
 mod tests;

@@ -317,6 +317,7 @@ pub fn build_state_delta(
     changed_slice!(files_view);
     changed_slice!(history_export);
     changed_slice!(basic_operation);
+    changed_slice!(room_address_availability);
     if previous.live_signals.presence != next.live_signals.presence {
         let user_ids = previous
             .live_signals
@@ -589,6 +590,7 @@ fn audit_app_state_delta_slices(state: &AppState) {
         // Core-owned; its only frontend projection is the sidebar's
         // `space_add_rooms`, recomputed below when it changes.
         space_child_links: _,
+        room_address_availability: _,
         live_signals: _,
         e2ee_trust: _,
         local_encryption: _,

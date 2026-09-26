@@ -39,7 +39,8 @@ pub use locale_profile::{
 };
 pub use reducer::reduce;
 pub use room_address::{
-    RoomAddressError, RoomAddressPreview, suggest_room_alias_localpart,
+    RoomAddressAvailability, RoomAddressAvailabilityState, RoomAddressError, RoomAddressPreview,
+    RoomAddressSuggestion, suggest_alternative_room_alias_localpart, suggest_room_alias_localpart,
     suggest_space_room_alias_localpart,
 };
 pub use sidebar::{

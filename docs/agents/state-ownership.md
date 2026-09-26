@@ -617,6 +617,13 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   for the current draft; an `aliasInUse` create failure is rendered with the
   attempted full address and server captured from that preview. A submitted
   alias is never renamed or retried automatically.
+- The advisory availability check (#1006) is Rust state
+  (`ui.room_address_availability`): Core owns the lookup, its cancellation, the
+  stale-result guard, the outcome, and the unchecked alternative. React only
+  debounces when to dispatch `check_room_address_availability` /
+  `clear_room_address_availability`, renders a result whose `full_alias` equals
+  the shown address, and applies a suggestion only when the user chooses
+  **Use this address**.
 - Room-tag GUI tests should stub `set_room_tag` / `remove_room_tag` to return the
   current snapshot first, assert the row does not move immediately, then push a
   Rust-shaped snapshot with updated `RoomSummary.tags` / sidebar room tags and

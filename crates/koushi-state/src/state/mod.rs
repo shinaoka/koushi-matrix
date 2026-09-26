@@ -378,6 +378,9 @@ pub struct AppState {
     /// Core-owned; the frontend reads the sidebar's Space add-rooms projection.
     #[serde(default)]
     pub space_child_links: SpaceChildLinkResults,
+    /// Advisory address check of the create-room dialog (#1006).
+    #[serde(default)]
+    pub room_address_availability: crate::room_address::RoomAddressAvailabilityState,
     pub live_signals: LiveSignalsState,
     pub e2ee_trust: E2eeTrustState,
     pub local_encryption: LocalEncryptionState,
@@ -443,6 +446,7 @@ impl Default for AppState {
             history_export: HistoryExportState::Idle,
             basic_operation: BasicOperationState::Idle,
             space_child_links: SpaceChildLinkResults::default(),
+            room_address_availability: Default::default(),
             live_signals: LiveSignalsState::default(),
             e2ee_trust: E2eeTrustState::default(),
             local_encryption: LocalEncryptionState::Unknown,

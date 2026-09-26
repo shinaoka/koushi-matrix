@@ -1,6 +1,6 @@
 use super::*;
 use koushi_core::{CreateRoomOptions, CreateRoomParentSpace, CreateRoomVisibility};
-use koushi_state::SpaceChildLinkOutcome;
+use koushi_state::{RoomAddressAvailability, RoomAddressAvailabilityState, SpaceChildLinkOutcome};
 use matrix_sdk::ruma::{MatrixToUri, matrix_uri::MatrixId};
 
 pub(super) async fn verify(
@@ -104,6 +104,9 @@ pub(super) async fn verify(
         }
     }
     println!("room_address_collision=ok");
+
+    verify_advisory_availability(conn_a, &expected_alias).await?;
+    println!("room_address_availability=ok");
 
     verify_space_prefixed_address(conn_a, &name, &expected_alias).await?;
     println!("room_address_space_prefix=ok");
@@ -240,6 +243,91 @@ async fn verify_space_prefixed_address(
         return Err("address: the Space room's alias differs from its preview".into());
     }
     select_space_for_address_qa(conn_a, None).await
+}
+
+/// #1006: the advisory check reports the address taken above as in use with
+/// an unchecked alternative, and an unused address as available.
+async fn verify_advisory_availability(
+    conn_a: &mut CoreConnection,
+    taken_alias: &str,
+) -> Result<(), String> {
+    let taken_localpart = taken_alias
+        .trim_start_matches('#')
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let taken = check_address_for_qa(conn_a, &taken_localpart).await?;
+    match taken {
+        RoomAddressAvailabilityState::Checked {
+            availability: RoomAddressAvailability::InUse,
+            suggestion: Some(suggestion),
+            ..
+        } if suggestion.localpart != taken_localpart => {}
+        _ => {
+            return Err(
+                "address: a taken address was not reported in use with a suggestion".into(),
+            );
+        }
+    }
+    let free_localpart = format!("koushi-free-{}", std::process::id());
+    match check_address_for_qa(conn_a, &free_localpart).await? {
+        RoomAddressAvailabilityState::Checked {
+            availability: RoomAddressAvailability::Available,
+            suggestion: None,
+            ..
+        } => {}
+        _ => return Err("address: an unused address was not reported available".into()),
+    }
+    let clear_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(
+            RoomCommand::ClearRoomAddressAvailability {
+                request_id: clear_id,
+            },
+        ))
+        .await
+        .map_err(|_| "address: clear availability submission failed")?;
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    while conn_a.snapshot().room_address_availability != RoomAddressAvailabilityState::Idle {
+        tokio::time::timeout_at(deadline, conn_a.recv_event())
+            .await
+            .map_err(|_| "address: clear availability timeout")?
+            .map_err(|_| "address: clear availability event stream lagged")?;
+    }
+    Ok(())
+}
+
+async fn check_address_for_qa(
+    conn: &mut CoreConnection,
+    localpart: &str,
+) -> Result<RoomAddressAvailabilityState, String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(
+        RoomCommand::CheckRoomAddressAvailability {
+            request_id,
+            alias_localpart: localpart.to_owned(),
+        },
+    ))
+    .await
+    .map_err(|_| "address: availability submission failed")?;
+    let settled = |state: &AppState| match &state.room_address_availability {
+        checked @ RoomAddressAvailabilityState::Checked {
+            request_id: settled_id,
+            ..
+        } if *settled_id == request_id.sequence => Some(checked.clone()),
+        _ => None,
+    };
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    loop {
+        if let Some(state) = settled(&conn.snapshot()) {
+            return Ok(state);
+        }
+        tokio::time::timeout_at(deadline, conn.recv_event())
+            .await
+            .map_err(|_| "address: availability settlement timeout")?
+            .map_err(|_| "address: availability event stream lagged")?;
+    }
 }
 
 async fn select_space_for_address_qa(

@@ -163,3 +163,72 @@ test("a Space room conflict names the attempted address and keeps the draft in t
       })
     ]);
 });
+
+// #1006: the advisory check is requested for the shown address after typing
+// pauses, is rendered only from Rust snapshots for that address, and its
+// alternative is used only on an explicit action.
+test("advisory availability offers an unchecked alternative and follows the shown address", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("preview_room_address", ({ name, aliasLocalpart }) => {
+      const localpart = aliasLocalpart ?? name.toLowerCase();
+      return {
+        localpart,
+        full_alias: localpart ? `#${localpart}:example.invalid` : null,
+        error: localpart ? null : "empty",
+        server_name: "example.invalid"
+      };
+    });
+    window.__harness.clearInvocations();
+  });
+  const pushAvailability = (availability: unknown) => page.evaluate((value) => {
+    const next = structuredClone(window.__harness.currentSnapshot());
+    next.state_generation = (next.state_generation ?? 0) + 1;
+    next.state.ui.room_address_availability = value as typeof next.state.ui.room_address_availability;
+    window.__harness.setSnapshot(next);
+    window.__harness.pushStateUpdate();
+  }, availability);
+  const checks = () => page.evaluate(() =>
+    window.__harness.invocationsOf("check_room_address_availability").map((call) => call.args.aliasLocalpart));
+
+  await page.getByRole("button", { name: "Create room", exact: true }).click();
+  await page.getByRole("textbox", { name: "Room name" }).fill("Papers");
+  await page.getByRole("radio", { name: "Public room", exact: true }).check();
+  const address = page.getByRole("textbox", { name: "Room address" });
+  await expect(address).toHaveValue("papers");
+  await expect.poll(checks).toEqual(["papers"]);
+
+  await pushAvailability({ kind: "checking", request_id: 1, full_alias: "#papers:example.invalid" });
+  await expect(page.getByText("Checking whether #papers:example.invalid is in use…")).toBeVisible();
+  await pushAvailability({
+    kind: "checked", request_id: 1, full_alias: "#papers:example.invalid", availability: "inUse",
+    suggestion: { localpart: "papers-2", full_alias: "#papers-2:example.invalid" }
+  });
+  await expect(page.getByText("#papers:example.invalid is already in use on example.invalid.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Suggestion (not checked yet): #papers-2:example.invalid")).toBeVisible();
+  // Nothing changes until the user asks for the suggestion.
+  await expect(address).toHaveValue("papers");
+  await page.getByRole("button", { name: "Use this address" }).click();
+  await expect(address).toHaveValue("papers-2");
+  await expect(page.getByRole("status").filter({ hasText: "Full address:" }))
+    .toHaveText("Full address: #papers-2:example.invalid");
+  // The old result no longer describes the shown address.
+  await expect(page.getByText("Suggestion (not checked yet)", { exact: false })).toHaveCount(0);
+  await expect.poll(checks).toEqual(["papers", "papers-2"]);
+
+  // A late result for the earlier address is not shown for the new one.
+  await pushAvailability({
+    kind: "checked", request_id: 1, full_alias: "#papers:example.invalid", availability: "available", suggestion: null
+  });
+  await expect(page.getByText(/was not in use when checked/)).toHaveCount(0);
+  await pushAvailability({
+    kind: "checked", request_id: 2, full_alias: "#papers-2:example.invalid", availability: "available", suggestion: null
+  });
+  await expect(page.getByText(
+    "#papers-2:example.invalid was not in use when checked. This does not reserve it; the server confirms the address when you create the room."
+  )).toBeVisible();
+
+  await page.getByRole("button", { name: "Cancel create" }).click();
+  await expect.poll(() => page.evaluate(() =>
+    window.__harness.invocationsOf("clear_room_address_availability").length)).toBeGreaterThan(0);
+});
