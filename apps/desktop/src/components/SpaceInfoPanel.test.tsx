@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { renderToStaticMarkup } from "react-dom/server";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { SpaceInfoPanel } from "./SpaceInfoPanel";
+import { t } from "../i18n/messages";
+import type { SpaceSummary } from "../domain/types";
 
 afterEach(cleanup);
 
@@ -77,9 +79,6 @@ describe("SpaceInfoPanel", () => {
     expect(markup).not.toContain("Alpha Upstream");
     expect(markup).toContain("Beta Room");
     expect(markup).not.toContain("Alice");
-    expect(markup).toContain("Home");
-    expect(markup).toContain("Preferences");
-    expect(markup).toContain("Space settings");
     expect(markup).toContain("Invite");
     expect(markup).toContain("Space preferences");
     expect(markup).toContain("Room membership");
@@ -208,43 +207,312 @@ describe("SpaceInfoPanel", () => {
     expect(onOpenMembers).toHaveBeenCalledTimes(1);
   });
 
-  test("autosaves local presentation edits without a save button", () => {
+  // Issue #1008: the entry list leads somewhere or is not there.
+  test("offers no dead-end entries and names the access entry after its target", () => {
+    render(
+      <SpaceInfoPanel
+        fallbackName="Synthetic Workspace"
+        rooms={[]}
+        space={workSpace()}
+        onInvitePeople={vi.fn()}
+        onOpenFiles={vi.fn()}
+        onOpenMembers={vi.fn()}
+      />
+    );
+
+    for (const label of ["Home", "Preferences", "Space settings", "Notifications"]) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
+    const entries = screen
+      .getAllByRole("button")
+      .filter((button) => button.classList.contains("settings-list-item"));
+    expect(entries.map((entry) => entry.textContent)).toEqual([
+      "Access",
+      "Members",
+      "Invite",
+      "Files"
+    ]);
+    expect(entries.every((entry) => !(entry as HTMLButtonElement).disabled)).toBe(true);
+  });
+
+  test("keeps auxiliary history download after the Space's own properties", () => {
+    render(
+      <SpaceInfoPanel
+        fallbackName="Synthetic Workspace"
+        rooms={[]}
+        space={workSpace()}
+        historyExport={{ kind: "idle" } as never}
+        historyExportControls={{} as never}
+        onSetLocalPresentation={vi.fn()}
+      />
+    );
+
+    const names = screen.getByRole("region", { name: "Names" });
+    const access = screen.getByRole("region", { name: "Access" });
+    const rooms = screen.getByRole("region", { name: "Rooms" });
+    const download = screen.getByRole("region", { name: t("historyExport.spaceSection") });
+    // The access section follows the names directly: nothing splits the
+    // Space's own properties, and the download comes after its rooms.
+    expect(names.nextElementSibling).toBe(access);
+    expect(rooms.compareDocumentPosition(download) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  test("shows and edits the local name in one card, without a second copy elsewhere", () => {
     const onSetLocalPresentation = vi.fn();
     render(
       <SpaceInfoPanel
         fallbackName="Synthetic Workspace"
         localIcon="SW"
-        localName="Synthetic Workspace"
+        localName="Research"
         rooms={[]}
-        space={{
-          space_id: "!space-work:example.invalid",
-          raw_name: null,
-          display_name: "Synthetic Workspace",
-          avatar: null,
-          join_rule: null,
-          child_room_ids: []
-        }}
+        space={workSpace()}
         onSetLocalPresentation={onSetLocalPresentation}
       />
     );
 
-    expect(screen.queryByRole("button", { name: "Save local presentation" })).toBeNull();
+    // One place: the label appears once, no textbox is open, and nothing
+    // saves until asked.
+    expect(screen.getAllByText("Local name")).toHaveLength(1);
+    expect(screen.queryByRole("region", { name: "Local presentation" })).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    const card = localNameCard();
+    expect(card.textContent).toContain("Research");
 
-    fireEvent.change(screen.getByLabelText("Local name"), {
-      target: { value: "Research" }
+    fireEvent.click(within(card).getByRole("button", { name: "Edit local name" }));
+    const field = within(card).getByRole("textbox", { name: "Local name" }) as HTMLInputElement;
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe("Research");
+    fireEvent.change(field, { target: { value: "  Lab  " } });
+    expect(onSetLocalPresentation).not.toHaveBeenCalled();
+    fireEvent.click(within(card).getByRole("button", { name: "Save local name" }));
+
+    expect(onSetLocalPresentation).toHaveBeenCalledTimes(1);
+    expect(onSetLocalPresentation).toHaveBeenCalledWith({ name: "Lab", icon: "SW" });
+    expect(within(localNameCard()).queryByRole("textbox")).toBeNull();
+    expect(document.activeElement).toBe(within(localNameCard()).getByRole("heading", { name: "Local name" }));
+  });
+
+  test("cancel and Escape close the editor without saving and return focus to Edit", () => {
+    const onSetLocalPresentation = vi.fn();
+    render(
+      <SpaceInfoPanel
+        fallbackName="Synthetic Workspace"
+        localName="Research"
+        rooms={[]}
+        space={workSpace()}
+        onSetLocalPresentation={onSetLocalPresentation}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit local name" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Local name" }), { target: { value: "Draft" } });
+    fireEvent.click(within(localNameCard()).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Edit local name" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit local name" }));
+    const field = screen.getByRole("textbox", { name: "Local name" });
+    expect((field as HTMLInputElement).value).toBe("Research");
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(onSetLocalPresentation).not.toHaveBeenCalled();
+  });
+
+  test("an IME confirmation Enter does not save the local name", () => {
+    vi.useFakeTimers();
+    try {
+      const onSetLocalPresentation = vi.fn();
+      render(
+        <SpaceInfoPanel
+          fallbackName="Synthetic Workspace"
+          rooms={[]}
+          space={workSpace()}
+          onSetLocalPresentation={onSetLocalPresentation}
+        />
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Edit local name" }));
+      const field = screen.getByRole("textbox", { name: "Local name" });
+      const form = field.closest("form") as HTMLFormElement;
+      fireEvent.compositionStart(field);
+      fireEvent.change(field, { target: { value: "研究" } });
+      const imeEnter = createEvent.keyDown(field, {
+        key: "Enter",
+        code: "Enter",
+        keyCode: 229,
+        isComposing: true
+      });
+      fireEvent(field, imeEnter);
+      fireEvent.submit(form);
+
+      expect(imeEnter.defaultPrevented).toBe(false);
+      expect(onSetLocalPresentation).not.toHaveBeenCalled();
+      expect(screen.getByRole("textbox", { name: "Local name" })).toBeTruthy();
+
+      fireEvent.compositionEnd(field);
+      act(() => {
+        vi.runAllTimers();
+      });
+      fireEvent.submit(form);
+      expect(onSetLocalPresentation).toHaveBeenCalledWith({ name: "研究", icon: null });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("clearing the local name keeps the local icon, and the reverse", async () => {
+    const onSetLocalPresentation = vi.fn();
+    render(
+      <SpaceInfoPanel
+        fallbackName="Synthetic Workspace"
+        localIcon="SW"
+        localName="Research"
+        rooms={[]}
+        space={workSpace()}
+        onSetLocalPresentation={onSetLocalPresentation}
+      />
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Clear local name" }));
     });
-    expect(onSetLocalPresentation).toHaveBeenLastCalledWith({
-      name: "Research",
-      icon: "SW"
+    expect(onSetLocalPresentation).toHaveBeenLastCalledWith({ name: null, icon: "SW" });
+    fireEvent.click(screen.getByRole("button", { name: "Clear local icon" }));
+    expect(onSetLocalPresentation).toHaveBeenLastCalledWith({ name: "Research", icon: null });
+  });
+
+  test("clearing the last local field removes the Space's local presentation", () => {
+    const onSetLocalPresentation = vi.fn();
+    render(
+      <SpaceInfoPanel
+        fallbackName="Synthetic Workspace"
+        localIcon="SW"
+        rooms={[]}
+        space={workSpace()}
+        onSetLocalPresentation={onSetLocalPresentation}
+      />
+    );
+
+    // Nothing to clear on an unset name: the card offers setting it instead.
+    expect(screen.queryByRole("button", { name: "Clear local name" })).toBeNull();
+    expect(localNameCard().textContent).toContain("Not set");
+    expect(within(localNameCard()).getByRole("button", { name: "Edit local name" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Clear local icon" }));
+    expect(onSetLocalPresentation).toHaveBeenLastCalledWith(null);
+  });
+
+  test("reports saving, then saved only once Rust's value is the submitted one", async () => {
+    let admit!: () => void;
+    const onSetLocalPresentation = vi.fn(
+      () => new Promise<void>((resolve) => { admit = resolve; })
+    );
+    const view = (localName: string) => (
+      <SpaceInfoPanel
+        fallbackName="Synthetic Workspace"
+        localName={localName}
+        rooms={[]}
+        space={workSpace()}
+        onSetLocalPresentation={onSetLocalPresentation}
+      />
+    );
+    const { rerender } = render(view("Research"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit local name" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Local name" }), { target: { value: "Lab" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save local name" }));
+
+    expect(within(localNameCard()).getByRole("status").textContent).toBe("Saving…");
+    expect(within(localNameCard()).getByRole("button", { name: "Edit local name" })).toHaveProperty("disabled", true);
+    // The icon card is not the one being saved.
+    expect(within(localIconCard()).queryByRole("status")).toBeNull();
+
+    await act(async () => admit());
+    // Admitted, but the confirmed value is still the old one: no success.
+    expect(within(localNameCard()).queryByRole("status")).toBeNull();
+    expect(localNameCard().textContent).toContain("Research");
+
+    rerender(view("Lab"));
+    expect(within(localNameCard()).getByRole("status").textContent).toBe("Saved");
+    expect(localNameCard().textContent).toContain("Lab");
+  });
+
+  test("a rejected save is reported in the card and can be retried", async () => {
+    const onSetLocalPresentation = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("synthetic rejection"))
+      .mockResolvedValueOnce(undefined);
+    render(
+      <SpaceInfoPanel
+        fallbackName="Synthetic Workspace"
+        localName="Research"
+        rooms={[]}
+        space={workSpace()}
+        onSetLocalPresentation={onSetLocalPresentation}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit local name" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Local name" }), { target: { value: "Lab" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save local name" }));
     });
 
-    fireEvent.change(screen.getByLabelText("Local icon"), {
-      target: { value: "R" }
+    expect(within(localNameCard()).getByRole("status").textContent).toBe(
+      "Could not save this on this device. Try again."
+    );
+    expect(localNameCard().textContent).toContain("Research");
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit local name" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Local name" }), { target: { value: "Lab" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save local name" }));
     });
-    expect(onSetLocalPresentation).toHaveBeenLastCalledWith({
-      name: "Research",
-      icon: "R"
-    });
+    expect(onSetLocalPresentation).toHaveBeenCalledTimes(2);
+    expect(within(localNameCard()).queryByRole("status")).toBeNull();
+  });
+
+  test("switching Spaces drops an open editor and a pending result", async () => {
+    let admit!: () => void;
+    const onSetLocalPresentation = vi.fn(
+      () => new Promise<void>((resolve) => { admit = resolve; })
+    );
+    const view = (space: SpaceSummary, localName: string) => (
+      <SpaceInfoPanel
+        fallbackName="Synthetic Workspace"
+        localName={localName}
+        rooms={[]}
+        space={space}
+        onSetLocalPresentation={onSetLocalPresentation}
+      />
+    );
+    const { rerender } = render(view(workSpace(), "Research"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit local name" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Local name" }), { target: { value: "Lab" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save local name" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit local icon" }));
+
+    const other = workSpace("!space-other:example.invalid");
+    rerender(view(other, "Lab"));
+    await act(async () => admit());
+
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(within(localNameCard()).queryByRole("status")).toBeNull();
+    expect(onSetLocalPresentation).toHaveBeenCalledTimes(1);
+  });
+
+  test("without a save handler the local name is shown read-only in the same card", () => {
+    render(
+      <SpaceInfoPanel
+        fallbackName="Synthetic Workspace"
+        localName="Research"
+        rooms={[]}
+        space={workSpace()}
+      />
+    );
+
+    expect(localNameCard().textContent).toContain("Research");
+    expect(within(localNameCard()).queryByRole("button")).toBeNull();
   });
 
   // Issue #960: a local presentation name must not hide what the Space is
@@ -267,10 +535,12 @@ describe("SpaceInfoPanel", () => {
       />
     );
 
-    const canonical = screen.getByText("Matrix name").closest(".settings-detail-row");
+    const canonical = screen.getByText("Matrix name").closest("[data-setting-property]");
     expect(canonical?.textContent).toContain("Research Group");
-    const local = screen.getByText("Local name", { selector: "span" }).closest(".settings-detail-row");
-    expect(local?.textContent).toContain("My Shortcut");
+    expect(canonical?.textContent).not.toContain("My Shortcut");
+    const local = localNameCard();
+    expect(local.textContent).toContain("My Shortcut");
+    expect(local.textContent).not.toContain("Research Group");
     // The local name still wins the panel title, as it did before.
     expect(screen.getByRole("heading", { name: "My Shortcut" })).toBeTruthy();
   });
@@ -291,7 +561,7 @@ describe("SpaceInfoPanel", () => {
       />
     );
 
-    const canonical = screen.getByText("Matrix name").closest(".settings-detail-row");
+    const canonical = screen.getByText("Matrix name").closest("[data-setting-property]");
     expect(canonical?.textContent).toContain("Not set");
     expect(canonical?.textContent).not.toContain("Alice and Bob");
   });
@@ -446,3 +716,22 @@ describe("SpaceInfoPanel", () => {
     expect(screen.getAllByText("Joined Room")).toHaveLength(1);
   });
 });
+
+function workSpace(spaceId = "!space-work:example.invalid"): SpaceSummary {
+  return {
+    space_id: spaceId,
+    raw_name: null,
+    display_name: "Synthetic Workspace",
+    avatar: null,
+    join_rule: null,
+    child_room_ids: []
+  };
+}
+
+function localNameCard(): HTMLElement {
+  return document.querySelector('[data-setting-property="space-local-name"]') as HTMLElement;
+}
+
+function localIconCard(): HTMLElement {
+  return document.querySelector('[data-setting-property="space-local-icon"]') as HTMLElement;
+}

@@ -370,7 +370,7 @@ describe("Space access (#935)", () => {
     expect(screen.queryByRole("region", { name: t("space.access") })).toBeNull();
   });
 
-  test("the Space settings entry leads to the access section", () => {
+  test("the Access entry leads to the access section", () => {
     render(
       <SpaceInfoPanel
         fallbackName="Workspace"
@@ -380,7 +380,7 @@ describe("Space access (#935)", () => {
       />
     );
 
-    const entry = screen.getByRole("button", { name: t("space.spaceSettings") });
+    const entry = screen.getByRole("button", { name: t("space.access") });
     expect((entry as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(entry);
     expect(document.activeElement).toBe(within(access()).getByRole("heading", { name: t("space.access") }));

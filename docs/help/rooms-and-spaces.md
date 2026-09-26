@@ -92,7 +92,42 @@ notification settings can also affect whether a desktop notification appears.
 **Mute** suppresses desktop notifications and sounds and excludes that room from
 notification badge totals, even if it still has unread messages or mentions.
 Muting does not mark messages as read. Room notification changes made in another
-Matrix client are reflected after synchronization.
+Matrix client are reflected after synchronization. The **Notifications** entry at
+the bottom of **Room info** moves to this setting.
+
+## Change room details, access, and history
+
+Open **Room info**. Each property is shown, changed, and confirmed in one card:
+
+- **Details**: **Topic** and **Avatar**. Choose **Edit**, change the value, and
+  choose **Save** (or **Cancel**, or press **Esc**). Saving an empty value
+  removes the topic or avatar. The avatar card shows the room's picture and its
+  `mxc://` address.
+- **Access and history**: **Join rule** and **History visibility**. Choose
+  **Change**, pick a value, and choose **Save**. The explanation under the choice
+  describes the value you are about to save, including when history becomes
+  visible to anyone and that a change does not apply to messages already sent.
+
+The badges at the top of **Room info**, such as **Public** or **Anyone can see
+history**, move to the matching card. A card shows **Saving…** while the change
+is sent and **Saved** once the room reports the new value; if the change fails,
+the reason is shown in the same card and the old value stays. If your role cannot
+change a property, its card shows the current value and says so. The room name is
+edited at the top of the panel.
+
+## Space names and access
+
+Open **Space info** from the Space's menu or header. **Names** shows two separate
+values:
+
+- **Matrix name** is the Space's name on Matrix, shared with everyone in it.
+- **Local name** and **Local icon** apply only to this device. Choose **Edit** to
+  set or change one, then **Save**. **Clear** removes only that value: clearing
+  the local name shows the Matrix name again and keeps the local icon.
+
+**Access** shows who can join the Space and, if your role allows it, the
+action that changes it; the confirmation and the result appear in the same card.
+The **Access** entry at the bottom of **Space info** moves to this section.
 
 ## Download room history
 

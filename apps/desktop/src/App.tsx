@@ -1301,7 +1301,8 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     spaceId: string,
     presentation: SpaceLocalPresentation | null
   ) {
-    settleCommandInBackground(
+    // Returned so Space info can show this change's admission result in place (#1008).
+    return settleCommand(
       api.updateNavigationPreference({
         kind: "setSpacePresentation",
         space_id: spaceId,

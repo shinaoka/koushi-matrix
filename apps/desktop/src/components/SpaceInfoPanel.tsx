@@ -1,13 +1,4 @@
-import {
-  Bell,
-  ChevronRight,
-  FileText,
-  Home,
-  MailPlus,
-  Settings,
-  SlidersHorizontal,
-  Users
-} from "lucide-react";
+import { ChevronRight, FileText, MailPlus, Settings, Users } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { t } from "../i18n/messages";
@@ -20,9 +11,19 @@ import type {
   SpaceChildSummary,
   SpaceSummary
 } from "../domain/types";
-import { ImeTextField } from "./ImeTextControl";
 import { HistoryExportSection, type HistoryExportControls } from "./HistoryExportDialog";
 import { SpaceAccessSection } from "./SpaceAccessSection";
+import {
+  InlineTextPropertyEditor,
+  SettingsPropertyCard,
+  type PropertySaveStatus
+} from "./SettingsPropertyCard";
+
+/** Mirrors Rust `MAX_LOCAL_SPACE_NAME_SCALARS` / `MAX_LOCAL_SPACE_ICON_SCALARS`. */
+const MAX_LOCAL_NAME_LENGTH = 128;
+const MAX_LOCAL_ICON_LENGTH = 12;
+
+type LocalPresentationField = "name" | "icon";
 
 export function SpaceInfoPanel({
   fallbackName,
@@ -57,13 +58,26 @@ export function SpaceInfoPanel({
   onJoinRoom?: (roomId: string) => void;
   onOpenFiles?: () => void;
   onOpenMembers?: () => void;
-  onSetLocalPresentation?: (override: { name?: string; icon?: string } | null) => void;
+  /**
+   * Saves this device's presentation of the Space. The promise settles when
+   * Rust admits the preference change; the confirmed value arrives as props.
+   */
+  onSetLocalPresentation?: (
+    override: { name?: string | null; icon?: string | null } | null
+  ) => void | Promise<unknown>;
   /** Issue #935: change who can join the selected Space. */
   onUpdateJoinRule?: (spaceId: string, joinRule: RoomJoinRule) => void | Promise<void>;
 }) {
   const accessHeadingRef = useRef<HTMLHeadingElement>(null);
-  const [localNameDraft, setLocalNameDraft] = useState(localName);
-  const [localIconDraft, setLocalIconDraft] = useState(localIcon);
+  // Which local-presentation change is this panel's own, so its result shows
+  // on that property's card; the confirmed value is always Rust's.
+  const [localSubmission, setLocalSubmission] = useState<{
+    field: LocalPresentationField;
+    target: string;
+    inFlight: boolean;
+    rejected: boolean;
+  } | null>(null);
+  const localEpochRef = useRef(0);
   const childRooms = space
     ? space.child_room_ids
         .map((roomId) => rooms.find((room) => room.room_id === roomId))
@@ -87,10 +101,18 @@ export function SpaceInfoPanel({
       : null;
   const memberCount = loadedSpaceSettings?.members.length ?? 0;
 
+  const spaceId = space?.space_id ?? null;
   useEffect(() => {
-    setLocalNameDraft(localName);
-    setLocalIconDraft(localIcon);
-  }, [localIcon, localName]);
+    // A result never carries across to another Space.
+    localEpochRef.current += 1;
+    setLocalSubmission(null);
+  }, [spaceId]);
+  useEffect(
+    () => () => {
+      localEpochRef.current += 1;
+    },
+    []
+  );
 
   function openAccessSettings() {
     const heading = accessHeadingRef.current;
@@ -102,10 +124,46 @@ export function SpaceInfoPanel({
     onOpenMembers?.();
   }
 
-  function updateLocalPresentation(next: { name: string; icon: string }) {
-    setLocalNameDraft(next.name);
-    setLocalIconDraft(next.icon);
-    onSetLocalPresentation?.(next);
+  /**
+   * Changes one local field and keeps the other: clearing the name must not
+   * drop the icon, nor the reverse. Removing both removes the Space's local
+   * presentation.
+   */
+  function saveLocalPresentation(field: LocalPresentationField, next: string) {
+    if (!onSetLocalPresentation) return;
+    const epoch = ++localEpochRef.current;
+    const name = field === "name" ? next : localName.trim();
+    const icon = field === "icon" ? next : localIcon.trim();
+    setLocalSubmission({ field, target: next, inFlight: true, rejected: false });
+    const settle = (rejected: boolean) => {
+      if (localEpochRef.current === epoch) {
+        setLocalSubmission((previous) =>
+          previous ? { ...previous, inFlight: false, rejected } : previous
+        );
+      }
+    };
+    try {
+      void Promise.resolve(
+        onSetLocalPresentation(name || icon ? { name: name || null, icon: icon || null } : null)
+      ).then(
+        () => settle(false),
+        () => settle(true)
+      );
+    } catch {
+      settle(true);
+    }
+  }
+
+  function localStatus(field: LocalPresentationField): PropertySaveStatus {
+    if (localSubmission?.field !== field) return null;
+    if (localSubmission.inFlight) return { kind: "saving" };
+    if (localSubmission.rejected) {
+      return { kind: "failed", message: t("space.localPresentationFailed") };
+    }
+    // Saved only once Rust's value is the submitted one; a change Rust
+    // rejects after admitting it leaves the old value, never a success.
+    const confirmed = (field === "name" ? localName : localIcon).trim();
+    return confirmed === localSubmission.target ? { kind: "saved" } : null;
   }
 
   return (
@@ -126,23 +184,69 @@ export function SpaceInfoPanel({
       {space ? (
         <section className="settings-section" aria-label={t("space.names")}>
           <h3>{t("space.names")}</h3>
-          <div className="settings-detail-list">
-            {/*
-              Issue #960: the canonical `m.room.name` and the local label this
-              device shows are different facts. A Space with no name event has
-              no canonical name — its alias or computed name is not one.
-            */}
-            <DetailRow
-              label={t("space.canonicalName")}
-              userText={Boolean(space.raw_name?.trim())}
-              value={space.raw_name?.trim() || t("space.nameUnset")}
-            />
-            <DetailRow
-              label={t("space.localName")}
-              userText={Boolean(localName.trim())}
-              value={localName.trim() || t("space.nameUnset")}
-            />
-          </div>
+          {/*
+            Issue #960: the canonical `m.room.name` and the local label this
+            device shows are different facts. A Space with no name event has
+            no canonical name — its alias or computed name is not one.
+            Issue #1008: each is shown, changed and confirmed in its own card.
+          */}
+          <SettingsPropertyCard
+            property="space-matrix-name"
+            label={t("space.canonicalName")}
+            hint={<p className="profile-settings-hint">{t("space.canonicalNameHint")}</p>}
+          >
+            <div className="settings-property-row">
+              <div
+                className="settings-property-value"
+                dir={space.raw_name?.trim() ? "auto" : undefined}
+              >
+                {space.raw_name?.trim() || (
+                  <span className="settings-property-empty">{t("space.nameUnset")}</span>
+                )}
+              </div>
+            </div>
+          </SettingsPropertyCard>
+          <InlineTextPropertyEditor
+            key={`${space.space_id}:local-name`}
+            property="space-local-name"
+            label={t("space.localName")}
+            value={localName}
+            emptyText={t("space.nameUnset")}
+            inputLabel={t("space.localName")}
+            editLabel={t("space.editLocalName")}
+            saveLabel={t("space.saveLocalName")}
+            clearLabel={t("space.clearLocalName")}
+            placeholder={t("space.localNamePlaceholder")}
+            maxLength={MAX_LOCAL_NAME_LENGTH}
+            syncKey={`${space.space_id}:local-name`}
+            canEdit={Boolean(onSetLocalPresentation)}
+            busy={Boolean(localSubmission?.inFlight)}
+            hint={<p className="profile-settings-hint">{t("space.localNameHint")}</p>}
+            status={localStatus("name")}
+            onSave={(next) => saveLocalPresentation("name", next)}
+            onClear={() => saveLocalPresentation("name", "")}
+          />
+          <InlineTextPropertyEditor
+            key={`${space.space_id}:local-icon`}
+            property="space-local-icon"
+            label={t("space.localIcon")}
+            value={localIcon}
+            emptyText={t("space.nameUnset")}
+            display={<span className="settings-property-icon-preview">{localIcon.trim()}</span>}
+            inputLabel={t("space.localIcon")}
+            editLabel={t("space.editLocalIcon")}
+            saveLabel={t("space.saveLocalIcon")}
+            clearLabel={t("space.clearLocalIcon")}
+            placeholder={t("space.localIconPlaceholder")}
+            maxLength={MAX_LOCAL_ICON_LENGTH}
+            syncKey={`${space.space_id}:local-icon`}
+            canEdit={Boolean(onSetLocalPresentation)}
+            busy={Boolean(localSubmission?.inFlight)}
+            hint={<p className="profile-settings-hint">{t("space.localIconHint")}</p>}
+            status={localStatus("icon")}
+            onSave={(next) => saveLocalPresentation("icon", next)}
+            onClear={() => saveLocalPresentation("icon", "")}
+          />
         </section>
       ) : null}
 
@@ -155,65 +259,6 @@ export function SpaceInfoPanel({
           space={space}
           onUpdateJoinRule={onUpdateJoinRule}
         />
-      ) : null}
-
-      {space && historyExport && historyExportControls ? (
-        <HistoryExportSection
-          key={space.space_id}
-          target={{ kind: "space", spaceId: space.space_id, name: space.display_name || fallbackName }}
-          exportState={historyExport}
-          controls={historyExportControls}
-        />
-      ) : null}
-
-      {space && onSetLocalPresentation ? (
-        <section className="settings-section" aria-label={t("space.localPresentation")}>
-          <h3>{t("space.localPresentation")}</h3>
-          <div className="profile-settings-form">
-            <label className="profile-settings-field">
-              <span>{t("space.localName")}</span>
-              <ImeTextField
-                value={localNameDraft}
-                syncKey={`${space.space_id}:local-name`}
-                placeholder={t("space.localNamePlaceholder")}
-                onChange={(event) =>
-                  updateLocalPresentation({
-                    name: event.currentTarget.value,
-                    icon: localIconDraft
-                  })
-                }
-              />
-            </label>
-            <label className="profile-settings-field">
-              <span>{t("space.localIcon")}</span>
-              <ImeTextField
-                value={localIconDraft}
-                syncKey={`${space.space_id}:local-icon`}
-                placeholder={t("space.localIconPlaceholder")}
-                maxLength={12}
-                onChange={(event) =>
-                  updateLocalPresentation({
-                    name: localNameDraft,
-                    icon: event.currentTarget.value
-                  })
-                }
-              />
-            </label>
-            <div className="profile-settings-actions">
-              <button
-                className="profile-settings-action"
-                type="button"
-                onClick={() => {
-                  setLocalNameDraft("");
-                  setLocalIconDraft("");
-                  onSetLocalPresentation(null);
-                }}
-              >
-                {t("space.resetLocalPresentation")}
-              </button>
-            </div>
-          </div>
-        </section>
       ) : null}
 
       <section className="settings-section" aria-label={t("workspace.rooms")}>
@@ -274,18 +319,26 @@ export function SpaceInfoPanel({
         </div>
       </section>
 
+      {space && historyExport && historyExportControls ? (
+        <HistoryExportSection
+          key={space.space_id}
+          target={{ kind: "space", spaceId: space.space_id, name: space.display_name || fallbackName }}
+          exportState={historyExport}
+          controls={historyExportControls}
+        />
+      ) : null}
+
       <SettingsEntryList
         entries={[
-          { icon: <Home size={16} />, label: t("space.home") },
-          { icon: <SlidersHorizontal size={16} />, label: t("space.preferences") },
-          {
-            icon: <Settings size={16} />,
-            label: t("space.spaceSettings"),
-            onClick: space ? openAccessSettings : undefined
-          },
-          { icon: <Users size={16} />, label: t("room.members"), onClick: space ? openMembers : undefined },
+          // Issue #1008: every entry leads somewhere. Access is on this
+          // panel, so its entry moves focus there and carries its name.
+          ...(space
+            ? [
+                { icon: <Settings size={16} />, label: t("space.access"), onClick: openAccessSettings },
+                { icon: <Users size={16} />, label: t("room.members"), onClick: openMembers }
+              ]
+            : []),
           { icon: <MailPlus size={16} />, label: t("space.invite"), onClick: onInvitePeople },
-          { icon: <Bell size={16} />, label: t("room.notifications") },
           { icon: <FileText size={16} />, label: t("room.files"), onClick: onOpenFiles }
         ]}
       />

@@ -392,9 +392,10 @@ describe("desktop release scripts", () => {
     const source = readLinuxProductionSource();
 
     expect(source).toContain("export async function runLocalRoomManagementScenario()");
-    expect(source).toContain('textarea[aria-label="Room topic"]');
-    expect(source).toContain("Save topic");
-    expect(source).toContain(".settings-detail-row");
+    expect(source).toContain('[data-setting-property="topic"] button[aria-label="Edit topic"]');
+    expect(source).toContain('[data-setting-property="topic"] textarea[aria-label="Room topic"]');
+    expect(source).toContain('[data-setting-property="topic"] button[aria-label="Save topic"]');
+    expect(source).toContain(".settings-property-value");
     expect(source).toContain(".room-member-row");
     expect(source).toContain('button[data-action="kick"]');
     expect(source).toContain("waitForRoomManagementTopic(");

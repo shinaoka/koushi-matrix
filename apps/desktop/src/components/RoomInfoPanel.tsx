@@ -11,13 +11,18 @@ import {
   Link,
   Lock,
   LockOpen,
-  Settings,
   Users
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { t } from "../i18n/messages";
-import { ImeSafeForm, ImeTextArea, ImeTextField } from "./ImeTextControl";
+import { ImeSafeForm, ImeTextField } from "./ImeTextControl";
+import {
+  InlineChoicePropertyEditor,
+  InlineTextPropertyEditor,
+  type PropertySaveStatus
+} from "./SettingsPropertyCard";
+import { EntityAvatar } from "./Shell";
 import {
   HistoryExportSection,
   type HistoryExportControls
@@ -28,6 +33,7 @@ import type {
   InviteHistoryPolicy,
   RoomJoinRule,
   RoomManagementState,
+  OperationFailureKind,
   RoomNotificationMode,
   RoomNotificationSettings,
   RoomSettingChange,
@@ -103,13 +109,19 @@ export function RoomInfoPanel({
     readiness: "ready" as const
   };
   const [nameDraft, setNameDraft] = useState(settings?.name ?? roomName);
-  const [topicDraft, setTopicDraft] = useState(settings?.topic ?? "");
-  const [avatarDraft, setAvatarDraft] = useState(settings?.avatar_url ?? "");
-  const [joinRuleDraft, setJoinRuleDraft] = useState<RoomJoinRule>(
-    settings?.join_rule ?? "invite"
-  );
-  const [historyVisibilityDraft, setHistoryVisibilityDraft] =
-    useState<RoomHistoryVisibility>(settings?.history_visibility ?? "shared");
+  // Issue #1008: which settings change is this panel's own, so Rust's pending
+  // or failed operation is shown on that property rather than in a shared
+  // footer. Reset per room: a result never carries across to another room.
+  const [submission, setSubmission] = useState<{
+    roomId: string;
+    field: RoomSettingField;
+    target: string | null;
+    /** A failure already on screen when this submission started is not its outcome. */
+    priorFailureRequestId: number | null;
+  } | null>(null);
+  const joinRuleHeadingRef = useRef<HTMLHeadingElement>(null);
+  const historyHeadingRef = useRef<HTMLHeadingElement>(null);
+  const notificationsHeadingRef = useRef<HTMLHeadingElement>(null);
   const [rotationConfirm, setRotationConfirm] = useState(false);
   const [rotationState, setRotationState] = useState<"idle" | "pending" | "completed" | "failed">(
     "idle"
@@ -125,24 +137,13 @@ export function RoomInfoPanel({
 
   useEffect(() => {
     setNameDraft(settings?.name ?? roomName);
-    setTopicDraft(settings?.topic ?? "");
-    setAvatarDraft(settings?.avatar_url ?? "");
-    setJoinRuleDraft(settings?.join_rule ?? "invite");
-    setHistoryVisibilityDraft(settings?.history_visibility ?? "shared");
-  }, [
-    roomId,
-    roomName,
-    settings?.avatar_url,
-    settings?.history_visibility,
-    settings?.join_rule,
-    settings?.name,
-    settings?.topic
-  ]);
+  }, [roomId, roomName, settings?.name]);
 
   useEffect(() => {
     rotationEpochRef.current += 1;
     setRotationConfirm(false);
     setRotationState("idle");
+    setSubmission(null);
   }, [roomId]);
 
   async function forceRotation() {
@@ -164,11 +165,62 @@ export function RoomInfoPanel({
     void onRepairRoomTimeline(roomId);
   }
 
-  const canEditSettings =
-    Boolean(settings?.permissions.can_edit_settings) &&
-    Boolean(onUpdateRoomSetting) &&
-    !settingsPending;
+  const mayEditSettings =
+    Boolean(settings?.permissions.can_edit_settings) && Boolean(onUpdateRoomSetting);
+  const canEditSettings = mayEditSettings && !settingsPending;
+  const readOnlyReason =
+    settings && !settings.permissions.can_edit_settings ? t("room.settingNoPermission") : null;
   const statusBadges = roomStatusBadges(isEncrypted, Boolean(room?.is_dm), settings);
+
+  function submitSetting(field: RoomSettingField, change: RoomSettingChange, target: string | null) {
+    if (!canEditSettings) return;
+    setSubmission({
+      roomId,
+      field,
+      target,
+      priorFailureRequestId: operation.kind === "failed" ? operation.request_id : null
+    });
+    onUpdateRoomSetting?.(roomId, change);
+  }
+
+  function confirmedValue(field: RoomSettingField): string | null {
+    switch (field) {
+      case "name":
+        return settings?.name ?? null;
+      case "topic":
+        return settings?.topic ?? null;
+      case "avatar":
+        return settings?.avatar_url ?? null;
+      case "joinRule":
+        return settings?.join_rule ?? null;
+      case "historyVisibility":
+        return settings?.history_visibility ?? null;
+    }
+  }
+
+  function fieldStatus(field: RoomSettingField): PropertySaveStatus {
+    if (!submission || submission.roomId !== roomId || submission.field !== field) return null;
+    const ownOperation =
+      operation.kind !== "idle" && operation.operation === "settings" && operation.room_id === roomId;
+    if (ownOperation && operation.kind === "pending") return { kind: "saving" };
+    if (
+      ownOperation &&
+      operation.kind === "failed" &&
+      operation.request_id !== submission.priorFailureRequestId
+    ) {
+      return { kind: "failed", message: roomSettingFailureMessage(operation.failureKind) };
+    }
+    // Saved only once Rust's snapshot carries the submitted value.
+    return (confirmedValue(field)?.trim() || null) === submission.target
+      ? { kind: "saved" }
+      : null;
+  }
+
+  function revealSetting(heading: HTMLHeadingElement | null) {
+    heading?.scrollIntoView?.({ block: "nearest" });
+    heading?.focus();
+  }
+  const nameStatus = fieldStatus("name");
 
   async function copyShareLink() {
     if (!shareLink) return;
@@ -206,11 +258,8 @@ export function RoomInfoPanel({
             aria-label={t("dialog.roomName")}
             onSubmit={(event) => {
               event.preventDefault();
-              if (canEditSettings) {
-                onUpdateRoomSetting?.(room.room_id, {
-                  name: nameDraft.trim() || null
-                });
-              }
+              const name = nameDraft.trim() || null;
+              submitSetting("name", { name }, name);
             }}
           >
             <label className="room-name-header-field">
@@ -231,18 +280,54 @@ export function RoomInfoPanel({
               {t("room.saveName")}
             </button>
           </ImeSafeForm>
+          {nameStatus ? (
+            <p
+              className={
+                nameStatus.kind === "failed"
+                  ? "settings-property-status settings-property-status-failed"
+                  : "settings-property-status"
+              }
+              role="status"
+            >
+              {nameStatus.kind === "saving"
+                ? t("settings.propertySaving")
+                : nameStatus.kind === "saved"
+                  ? t("settings.propertySaved")
+                  : nameStatus.message}
+            </p>
+          ) : null}
           <p dir="auto">{room.room_id}</p>
         </div>
       </header>
 
       <div className="room-status-bar" aria-label={t("room.status")}>
         <div className="room-status-badges">
-          {statusBadges.map((badge) => (
-            <span className="room-status-badge" key={badge.label}>
-              {badge.icon}
-              <span>{badge.label}</span>
-            </span>
-          ))}
+          {statusBadges.map((badge) =>
+            badge.setting ? (
+              // Issue #1008: a summary of a setting leads to that setting.
+              <button
+                className="room-status-badge room-status-badge-link"
+                key={badge.label}
+                type="button"
+                aria-label={t("room.statusShowSetting", { status: badge.label })}
+                onClick={() =>
+                  revealSetting(
+                    badge.setting === "joinRule"
+                      ? joinRuleHeadingRef.current
+                      : historyHeadingRef.current
+                  )
+                }
+              >
+                {badge.icon}
+                <span>{badge.label}</span>
+              </button>
+            ) : (
+              <span className="room-status-badge" key={badge.label}>
+                {badge.icon}
+                <span>{badge.label}</span>
+              </span>
+            )
+          )}
         </div>
         {shareLink ? (
           <button className="room-share-link-button" type="button" onClick={copyShareLink}>
@@ -265,6 +350,157 @@ export function RoomInfoPanel({
         <SummaryTile label={t("room.unread")} value={String(room.unread_count)} />
         <SummaryTile label={t("room.spaces")} value={parentSpaces.length ? String(parentSpaces.length) : t("room.noSpaces")} />
       </div>
+
+      <section className="settings-section" aria-label={t("room.details")}>
+        <h3>{t("room.details")}</h3>
+        {settings ? (
+          <>
+            <InlineTextPropertyEditor
+              key={`${roomId}:topic`}
+              property="topic"
+              label={t("room.topicLabel")}
+              value={settings.topic ?? ""}
+              emptyText={t("room.noTopic")}
+              display={<span className="settings-property-multiline">{settings.topic?.trim()}</span>}
+              inputLabel={t("room.topic")}
+              editLabel={t("room.editTopic")}
+              saveLabel={t("room.saveTopic")}
+              multiline
+              syncKey={`${roomId}:topic`}
+              canEdit={mayEditSettings}
+              busy={settingsPending}
+              readOnlyReason={readOnlyReason}
+              status={fieldStatus("topic")}
+              onSave={(next) => submitSetting("topic", { topic: next || null }, next || null)}
+            />
+            <InlineTextPropertyEditor
+              key={`${roomId}:avatar`}
+              property="avatar"
+              label={t("room.avatar")}
+              value={settings.avatar_url ?? ""}
+              emptyText={t("room.noAvatar")}
+              userText={false}
+              display={
+                <span className="settings-property-avatar-row">
+                  <EntityAvatar
+                    avatar={room.avatar}
+                    className="settings-property-avatar"
+                    colorSeed={room.room_id}
+                    fallback={Array.from(room.display_label.trim())[0] ?? "#"}
+                  />
+                  <small className="settings-property-secondary" dir="ltr">
+                    {settings.avatar_url?.trim()}
+                  </small>
+                </span>
+              }
+              inputLabel={t("room.avatarUrl")}
+              editLabel={t("room.editAvatar")}
+              saveLabel={t("room.saveAvatar")}
+              syncKey={`${roomId}:avatar`}
+              canEdit={mayEditSettings}
+              busy={settingsPending}
+              readOnlyReason={readOnlyReason}
+              status={fieldStatus("avatar")}
+              onSave={(next) => submitSetting("avatar", { avatarUrl: next || null }, next || null)}
+            />
+          </>
+        ) : (
+          <div className="settings-detail-row">
+            <span>{t("room.settingsLoading")}</span>
+          </div>
+        )}
+      </section>
+
+      <section className="settings-section room-access-history" aria-label={t("room.accessAndHistory")}>
+        <h3>{t("room.accessAndHistory")}</h3>
+        <p className="profile-settings-hint">{t("room.accessAndHistoryHint")}</p>
+        {settings ? (
+          <>
+            <InlineChoicePropertyEditor<RoomJoinRule>
+              key={`${roomId}:join-rule`}
+              property="join-rule"
+              label={t("room.joinRule")}
+              headingRef={joinRuleHeadingRef}
+              value={settings.join_rule}
+              valueLabel={roomJoinRuleLabel}
+              options={joinRuleOptions(settings.join_rule).map((rule) => ({
+                value: rule,
+                disabled: !SETTABLE_JOIN_RULES.includes(rule)
+              }))}
+              selectLabel={t("room.joinRule")}
+              changeLabel={t("room.changeJoinRule")}
+              saveLabel={t("room.saveJoinRule")}
+              canEdit={mayEditSettings}
+              busy={settingsPending}
+              readOnlyReason={readOnlyReason}
+              status={fieldStatus("joinRule")}
+              onSave={(joinRule) => submitSetting("joinRule", { joinRule }, joinRule)}
+            />
+            <InlineChoicePropertyEditor<RoomHistoryVisibility>
+              key={`${roomId}:history-visibility`}
+              property="history-visibility"
+              label={t("room.historyVisibility")}
+              headingRef={historyHeadingRef}
+              value={settings.history_visibility}
+              valueLabel={roomHistoryVisibilityLabel}
+              options={HISTORY_VISIBILITY_OPTIONS.map((visibility) => ({ value: visibility }))}
+              selectLabel={t("room.historyVisibility")}
+              changeLabel={t("room.changeHistoryVisibility")}
+              saveLabel={t("room.saveHistoryVisibility")}
+              canEdit={mayEditSettings}
+              busy={settingsPending}
+              readOnlyReason={readOnlyReason}
+              status={fieldStatus("historyVisibility")}
+              notes={(visibility) => (
+                <>
+                  <p className="profile-settings-hint">
+                    {roomHistoryVisibilityDescription(visibility)}
+                  </p>
+                  {visibility === "worldReadable" ? (
+                    <p className="settings-notice" role="note">
+                      <AlertTriangle size={15} aria-hidden="true" />
+                      {t("room.historyWorldReadableWarning")}
+                    </p>
+                  ) : null}
+                  {isEncrypted && visibility === "shared" ? (
+                    <p className="settings-notice" role="note">
+                      <KeyRound size={15} aria-hidden="true" />
+                      {t("room.historySharedEncryptedHint")}
+                    </p>
+                  ) : null}
+                  <p className="settings-notice" role="note">
+                    {t("room.historyNonRetroactive")}
+                  </p>
+                </>
+              )}
+              onSave={(historyVisibility) =>
+                submitSetting("historyVisibility", { historyVisibility }, historyVisibility)
+              }
+            />
+            {historyPolicy.readiness === "recoveryRequired" ? (
+              <div className="settings-notice" role="alert">
+                <AlertTriangle size={15} aria-hidden="true" />
+                <span>{t("room.historyRecoveryRequired")}</span>
+                {onOpenRecovery ? (
+                  <button className="inline-link-button" type="button" onClick={onOpenRecovery}>
+                    {t("settings.openRecovery")}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {onReturnToInvite ? (
+              <button className="profile-settings-action" type="button" onClick={onReturnToInvite}>
+                <ArrowLeft size={15} aria-hidden="true" />
+                {t("room.returnToInvite")}
+              </button>
+            ) : null}
+          </>
+        ) : (
+          <div className="settings-detail-row">
+            <span>{t("room.settingsLoading")}</span>
+          </div>
+        )}
+      </section>
 
       <section className="settings-section" aria-label={t("room.spaces")}>
         <h3>{t("room.spaces")}</h3>
@@ -292,6 +528,118 @@ export function RoomInfoPanel({
           <DetailRow label={t("room.dmList")} value={room.is_dm ? t("room.globalDmList") : t("room.roomScoped")} />
         </div>
       </section>
+
+      {appSettings && linkPreviewSettings && onSetRoomUrlPreviewOverride ? (
+        <section className="settings-section" aria-label={t("settings.urlPreviews")}>
+          <h3>{t("settings.urlPreviews")}</h3>
+          <button
+            className="settings-toggle-row"
+            type="button"
+            role="switch"
+            aria-checked={roomUrlPreviewsEnabled}
+            onClick={() => {
+              onSetRoomUrlPreviewOverride(roomId, !roomUrlPreviewsEnabled);
+            }}
+          >
+            <span className="settings-toggle-copy">
+              <span className="settings-toggle-label">
+                <Link size={15} aria-hidden="true" />
+                <span>{t("settings.urlPreviewsEnabledForRoom")}</span>
+              </span>
+            </span>
+            <span className="settings-switch-track" aria-hidden="true">
+              <span className="settings-switch-thumb" />
+            </span>
+          </button>
+          {isEncrypted ? (
+            <p className="settings-notice" role="note">
+              {t("settings.urlPreviewsEncryptedNotice")}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
+      <section className="settings-section" aria-label={t("room.notifications")}>
+        <h3 ref={notificationsHeadingRef} tabIndex={-1}>{t("room.notifications")}</h3>
+        <div className="settings-detail-list">
+          <label className="settings-select-row" htmlFor={`room-notification-${roomId}`}>
+            <span>{t("room.notifications")}</span>
+            <select
+              id={`room-notification-${roomId}`}
+              value={roomNotificationSettings?.mode.kind ?? "all"}
+              onChange={(event) =>
+                onSetRoomNotificationMode?.(roomId, {
+                  kind: event.target.value as RoomNotificationMode["kind"]
+                })
+              }
+              disabled={
+                !onSetRoomNotificationMode ||
+                roomNotificationSettings?.operation.kind === "pending"
+              }
+            >
+              <option value="all">{t("room.notifyModeAll")}</option>
+              <option value="mentions">{t("room.notifyModeMentions")}</option>
+              <option value="mute">{t("room.notifyModeMute")}</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section className="settings-section" aria-label={t("room.rolePermissions")}>
+        <h3>{t("room.rolePermissions")}</h3>
+        <div className="settings-detail-list">
+          <DetailRow
+            label={t("room.editSettings")}
+            value={permissions?.can_edit_settings ? t("settings.current") : t("auth.notChecked")}
+          />
+          <DetailRow
+            label={t("room.editRoles")}
+            value={permissions?.can_edit_roles ? t("settings.current") : t("auth.notChecked")}
+          />
+          <DetailRow
+            label={t("room.kick")}
+            value={permissions?.can_kick ? t("settings.current") : t("auth.notChecked")}
+          />
+          <DetailRow
+            label={t("room.ban")}
+            value={permissions?.can_ban ? t("settings.current") : t("auth.notChecked")}
+          />
+          <DetailRow
+            label={t("room.unban")}
+            value={permissions?.can_unban ? t("settings.current") : t("auth.notChecked")}
+          />
+        </div>
+      </section>
+
+      {/*
+        Issue #1008: auxiliary actions — download, repair and diagnostics —
+        follow the room's properties instead of splitting them.
+      */}
+      {historyExport && historyExportControls ? (
+        <HistoryExportSection
+          key={roomId}
+          target={{ kind: "room", roomId, name: room.display_label, encrypted: room.is_encrypted }}
+          exportState={historyExport}
+          controls={historyExportControls}
+        />
+      ) : null}
+
+      {onRepairRoomTimeline ? (
+        <section className="settings-section" aria-label={t("room.repair")}>
+          <h3>{t("room.repair")}</h3>
+          <div className="room-key-actions">
+            <button
+              className="profile-settings-action"
+              type="button"
+              onClick={repairRoomTimeline}
+            >
+              <History size={16} aria-hidden="true" />
+              <span>{t("room.repairTimeline")}</span>
+            </button>
+            <p className="profile-settings-hint">{t("room.repairTimelineHint")}</p>
+          </div>
+        </section>
+      ) : null}
 
       {isEncrypted && onForceRotateOutboundSession ? (
         <section className="settings-section" aria-label={t("room.encryptionDebugging")}>
@@ -336,324 +684,6 @@ export function RoomInfoPanel({
         </section>
       ) : null}
 
-      {historyExport && historyExportControls ? (
-        <HistoryExportSection
-          key={roomId}
-          target={{ kind: "room", roomId, name: room.display_label, encrypted: room.is_encrypted }}
-          exportState={historyExport}
-          controls={historyExportControls}
-        />
-      ) : null}
-
-      {onRepairRoomTimeline ? (
-        <section className="settings-section" aria-label={t("room.repair")}>
-          <h3>{t("room.repair")}</h3>
-          <div className="room-key-actions">
-            <button
-              className="profile-settings-action"
-              type="button"
-              onClick={repairRoomTimeline}
-            >
-              <History size={16} aria-hidden="true" />
-              <span>{t("room.repairTimeline")}</span>
-            </button>
-            <p className="profile-settings-hint">{t("room.repairTimelineHint")}</p>
-          </div>
-        </section>
-      ) : null}
-
-      {appSettings && linkPreviewSettings && onSetRoomUrlPreviewOverride ? (
-        <section className="settings-section" aria-label={t("settings.urlPreviews")}>
-          <h3>{t("settings.urlPreviews")}</h3>
-          <button
-            className="settings-toggle-row"
-            type="button"
-            role="switch"
-            aria-checked={roomUrlPreviewsEnabled}
-            onClick={() => {
-              onSetRoomUrlPreviewOverride(roomId, !roomUrlPreviewsEnabled);
-            }}
-          >
-            <span className="settings-toggle-copy">
-              <span className="settings-toggle-label">
-                <Link size={15} aria-hidden="true" />
-                <span>{t("settings.urlPreviewsEnabledForRoom")}</span>
-              </span>
-            </span>
-            <span className="settings-switch-track" aria-hidden="true">
-              <span className="settings-switch-thumb" />
-            </span>
-          </button>
-          {isEncrypted ? (
-            <p className="settings-notice" role="note">
-              {t("settings.urlPreviewsEncryptedNotice")}
-            </p>
-          ) : null}
-        </section>
-      ) : null}
-
-      <section className="settings-section" aria-label={t("room.notifications")}>
-        <h3>{t("room.notifications")}</h3>
-        <div className="settings-detail-list">
-          <label className="settings-select-row" htmlFor={`room-notification-${roomId}`}>
-            <span>{t("room.notifications")}</span>
-            <select
-              id={`room-notification-${roomId}`}
-              value={roomNotificationSettings?.mode.kind ?? "all"}
-              onChange={(event) =>
-                onSetRoomNotificationMode?.(roomId, {
-                  kind: event.target.value as RoomNotificationMode["kind"]
-                })
-              }
-              disabled={
-                !onSetRoomNotificationMode ||
-                roomNotificationSettings?.operation.kind === "pending"
-              }
-            >
-              <option value="all">{t("room.notifyModeAll")}</option>
-              <option value="mentions">{t("room.notifyModeMentions")}</option>
-              <option value="mute">{t("room.notifyModeMute")}</option>
-            </select>
-          </label>
-        </div>
-      </section>
-
-      <section className="settings-section room-access-history" aria-label={t("room.accessAndHistory")}>
-        <h3>{t("room.accessAndHistory")}</h3>
-        <p className="profile-settings-hint">{t("room.accessAndHistoryHint")}</p>
-        {settings ? (
-          <div className="room-management-grid">
-            <div className="settings-detail-list">
-              <DetailRow label={t("room.joinRule")} value={roomJoinRuleLabel(settings.join_rule)} />
-              <DetailRow
-                label={t("room.historyVisibility")}
-                value={roomHistoryVisibilityLabel(settings.history_visibility)}
-              />
-            </div>
-            <ImeSafeForm
-              className="room-management-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (canEditSettings) {
-                  onUpdateRoomSetting?.(room.room_id, { joinRule: joinRuleDraft });
-                }
-              }}
-            >
-              <label className="profile-settings-field">
-                <span>{t("room.joinRule")}</span>
-                <select
-                  value={joinRuleDraft}
-                  aria-label={t("room.joinRule")}
-                  disabled={!canEditSettings}
-                  onChange={(event) => setJoinRuleDraft(event.currentTarget.value as RoomJoinRule)}
-                >
-                  {joinRuleOptions(settings.join_rule).map((rule) => (
-                    <option key={rule} value={rule} disabled={!SETTABLE_JOIN_RULES.includes(rule)}>
-                      {roomJoinRuleLabel(rule)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                className="profile-settings-action"
-                type="submit"
-                disabled={!canEditSettings || joinRuleDraft === settings.join_rule}
-              >
-                {t("room.saveJoinRule")}
-              </button>
-            </ImeSafeForm>
-            <ImeSafeForm
-              className="room-management-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (canEditSettings) {
-                  onUpdateRoomSetting?.(room.room_id, {
-                    historyVisibility: historyVisibilityDraft
-                  });
-                }
-              }}
-            >
-              <label className="profile-settings-field">
-                <span>{t("room.historyVisibility")}</span>
-                <select
-                  value={historyVisibilityDraft}
-                  aria-label={t("room.historyVisibility")}
-                  disabled={!canEditSettings}
-                  onChange={(event) =>
-                    setHistoryVisibilityDraft(event.currentTarget.value as RoomHistoryVisibility)
-                  }
-                >
-                  {(["worldReadable", "shared", "invited", "joined"] as const).map(
-                    (visibility) => (
-                      <option key={visibility} value={visibility}>
-                        {roomHistoryVisibilityLabel(visibility)}
-                      </option>
-                    )
-                  )}
-                </select>
-              </label>
-              <button
-                className="profile-settings-action"
-                type="submit"
-                disabled={!canEditSettings || historyVisibilityDraft === settings.history_visibility}
-              >
-                {t("room.saveHistoryVisibility")}
-              </button>
-            </ImeSafeForm>
-            <p className="profile-settings-hint">
-              {roomHistoryVisibilityDescription(historyVisibilityDraft)}
-            </p>
-            {historyVisibilityDraft === "worldReadable" ? (
-              <p className="settings-notice" role="note">
-                <AlertTriangle size={15} aria-hidden="true" />
-                {t("room.historyWorldReadableWarning")}
-              </p>
-            ) : null}
-            {isEncrypted && historyVisibilityDraft === "shared" ? (
-              <p className="settings-notice" role="note">
-                <KeyRound size={15} aria-hidden="true" />
-                {t("room.historySharedEncryptedHint")}
-              </p>
-            ) : null}
-            <p className="settings-notice" role="note">
-              {t("room.historyNonRetroactive")}
-            </p>
-            {historyPolicy.readiness === "recoveryRequired" ? (
-              <div className="settings-notice" role="alert">
-                <AlertTriangle size={15} aria-hidden="true" />
-                <span>{t("room.historyRecoveryRequired")}</span>
-                {onOpenRecovery ? (
-                  <button className="inline-link-button" type="button" onClick={onOpenRecovery}>
-                    {t("settings.openRecovery")}
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
-            {onReturnToInvite ? (
-              <button className="profile-settings-action" type="button" onClick={onReturnToInvite}>
-                <ArrowLeft size={15} aria-hidden="true" />
-                {t("room.returnToInvite")}
-              </button>
-            ) : null}
-          </div>
-        ) : (
-          <div className="settings-detail-row">
-            <span>{t("room.settingsLoading")}</span>
-          </div>
-        )}
-      </section>
-
-      <section className="settings-section" aria-label={t("room.management")}>
-        <h3>{t("room.management")}</h3>
-        {settings ? (
-          <div className="room-management-grid">
-            <div className="settings-detail-list">
-              <DetailRow
-                label={t("room.currentTopic")}
-                value={settings.topic?.trim() || t("room.noTopic")}
-              />
-              <DetailRow
-                label={t("room.currentAvatar")}
-                value={settings.avatar_url?.trim() || t("room.noAvatar")}
-              />
-            </div>
-            <ImeSafeForm
-              className="room-management-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (canEditSettings) {
-                  onUpdateRoomSetting?.(room.room_id, {
-                    avatarUrl: avatarDraft.trim() || null
-                  });
-                }
-              }}
-            >
-              <label className="profile-settings-field">
-                <span>{t("room.avatarUrl")}</span>
-                <ImeTextField
-                  value={avatarDraft}
-                  syncKey={`${roomId}:avatar`}
-                  aria-label={t("room.avatarUrl")}
-                  disabled={!canEditSettings}
-                  onChange={(event) => setAvatarDraft(event.currentTarget.value)}
-                />
-              </label>
-              <button
-                className="profile-settings-action"
-                type="submit"
-                disabled={!canEditSettings || avatarDraft.trim() === (settings.avatar_url ?? "")}
-              >
-                {t("room.saveAvatar")}
-              </button>
-            </ImeSafeForm>
-            <ImeSafeForm
-              className="room-management-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (canEditSettings) {
-                  onUpdateRoomSetting?.(room.room_id, {
-                    topic: topicDraft.trim() || null
-                  });
-                }
-              }}
-            >
-              <label className="profile-settings-field">
-                <span>{t("room.topic")}</span>
-                <ImeTextArea
-                  value={topicDraft}
-                  syncKey={`${roomId}:topic`}
-                  aria-label={t("room.topic")}
-                  disabled={!canEditSettings}
-                  onChange={(event) => setTopicDraft(event.currentTarget.value)}
-                />
-              </label>
-              <button
-                className="profile-settings-action"
-                type="submit"
-                disabled={!canEditSettings || topicDraft.trim() === (settings.topic ?? "")}
-              >
-                {t("room.saveTopic")}
-              </button>
-            </ImeSafeForm>
-            {operation.kind === "failed" ? (
-              <div className="room-management-status" role="status">
-                {t("room.operationFailed")}
-              </div>
-            ) : null}
-          </div>
-        ) : (
-          <div className="settings-detail-row">
-            <span>{t("room.settingsLoading")}</span>
-          </div>
-        )}
-      </section>
-
-      <section className="settings-section" aria-label={t("room.rolePermissions")}>
-        <h3>{t("room.rolePermissions")}</h3>
-        <div className="settings-detail-list">
-          <DetailRow
-            label={t("room.editSettings")}
-            value={permissions?.can_edit_settings ? t("settings.current") : t("auth.notChecked")}
-          />
-          <DetailRow
-            label={t("room.editRoles")}
-            value={permissions?.can_edit_roles ? t("settings.current") : t("auth.notChecked")}
-          />
-          <DetailRow
-            label={t("room.kick")}
-            value={permissions?.can_kick ? t("settings.current") : t("auth.notChecked")}
-          />
-          <DetailRow
-            label={t("room.ban")}
-            value={permissions?.can_ban ? t("settings.current") : t("auth.notChecked")}
-          />
-          <DetailRow
-            label={t("room.unban")}
-            value={permissions?.can_unban ? t("settings.current") : t("auth.notChecked")}
-          />
-        </div>
-      </section>
-
       <SettingsEntryList
         entries={[
           { icon: <Users size={16} />, label: t("room.invitePeople"), onClick: onInvitePeople },
@@ -663,20 +693,45 @@ export function RoomInfoPanel({
             onClick: onOpenPeople
           },
           { icon: <FileText size={16} />, label: t("room.files"), onClick: onOpenFiles },
-          { icon: <Bell size={16} />, label: t("room.notifications") },
-          { icon: <Settings size={16} />, label: t("room.roomSettings") }
+          // Issue #1008: the notification setting is on this panel; the entry
+          // leads to it rather than being a dead end.
+          {
+            icon: <Bell size={16} />,
+            label: t("room.notifications"),
+            onClick: () => revealSetting(notificationsHeadingRef.current)
+          }
         ]}
       />
     </section>
   );
 }
 
+type RoomSettingField = "name" | "topic" | "avatar" | "joinRule" | "historyVisibility";
+
+interface StatusBadge {
+  label: string;
+  icon: ReactNode;
+  /** The setting this badge summarizes, when it is changed on this panel. */
+  setting?: "joinRule" | "historyVisibility";
+}
+
+const HISTORY_VISIBILITY_OPTIONS: readonly RoomHistoryVisibility[] = [
+  "worldReadable",
+  "shared",
+  "invited",
+  "joined"
+];
+
+function roomSettingFailureMessage(kind: OperationFailureKind): string {
+  return kind === "forbidden" ? t("room.settingForbidden") : t("room.operationFailed");
+}
+
 function roomStatusBadges(
   isEncrypted: boolean,
   isDm: boolean,
   settings: RoomManagementState["settings"]
-): Array<{ label: string; icon: ReactNode }> {
-  const badges: Array<{ label: string; icon: ReactNode }> = [
+): StatusBadge[] {
+  const badges: StatusBadge[] = [
     {
       label: isEncrypted ? t("room.statusEncrypted") : t("room.statusNotEncrypted"),
       icon: isEncrypted ? (
@@ -693,11 +748,13 @@ function roomStatusBadges(
         settings.join_rule === "public"
           ? t("room.statusPublic")
           : t("room.statusPrivate"),
-      icon: <Globe2 size={14} aria-hidden="true" />
+      icon: <Globe2 size={14} aria-hidden="true" />,
+      setting: "joinRule"
     });
     badges.push({
       label: roomHistoryStatusLabel(settings.history_visibility),
-      icon: <History size={14} aria-hidden="true" />
+      icon: <History size={14} aria-hidden="true" />,
+      setting: "historyVisibility"
     });
   }
 

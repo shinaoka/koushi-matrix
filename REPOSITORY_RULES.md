@@ -6,7 +6,7 @@ glue. Vendored upstream code must keep its original license and copyright
 notices; local changes to vendored code must remain easy to upstream or
 revert.
 
-Last amended: 2026-09-20.
+Last amended: 2026-09-26.
 
 ## Read Order And Authority
 
@@ -100,6 +100,35 @@ conflict is being resolved.
   `Cancel edit`). Keep a descriptive accessible name when the visible context
   is insufficient for assistive technology; concise visible text must not
   remove necessary accessibility context.
+
+## Property Display And Editing
+
+- One property has one primary place. The current value of a setting or
+  editable property, the control that changes or clears it, and the result of
+  that change (saving, saved, failed, retry) live in the same row or card. Do
+  not show a read-only "current X" in one section and an "X settings" form in
+  another, and do not place unrelated actions (downloads, diagnostics,
+  repair) between a property group's display and its editing.
+- The same place covers every state: unset (offer to set it there), read-only
+  (show the value with the reason it cannot be changed), in flight, and
+  failed. A failure is never shown as success, and an unsaved draft stays
+  distinguishable from the confirmed value.
+- Values that mean different things stay separate even when they look alike:
+  a shared Matrix value and a device-local override are two properties, each
+  with its own card; merging display locations must not merge meaning or
+  storage.
+- Anything that looks like a setting leads somewhere. A menu entry or summary
+  badge for a property on the same surface moves to that property, and its
+  label matches its destination. An unimplemented feature is not presented as
+  a disabled or dead-end setting.
+- Summaries, aggregates, and non-editable status (header titles, member or
+  unread counts, encryption state) may stay separate; explain the purpose of
+  a separate display, and make a summary of a setting lead to it. Unifying
+  display never removes a required confirmation or permission check.
+- New or changed UI must not introduce a violation. An audit finding names
+  the property, the display location, the edit location, and the effect, and
+  is resolved by a fix or a recorded, reasoned exception. Existing violations
+  in unrelated surfaces need not be fixed in the same change.
 
 ## macOS Native Window Controls And Overlay Layout
 

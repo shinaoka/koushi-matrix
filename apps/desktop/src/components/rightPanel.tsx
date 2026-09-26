@@ -345,8 +345,8 @@ export function ContextualRightPanel({
   onDisplayDensityChange?: (density: DisplayDensity) => void;
   onSetSpaceLocalOverride?: (
     spaceId: string,
-    override: { name?: string; icon?: string } | null
-  ) => void;
+    override: SpaceLocalPresentation | null
+  ) => void | Promise<unknown>;
   spaceLocalOverrides?: Record<string, SpaceLocalPresentation>;
   onTimelineDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
