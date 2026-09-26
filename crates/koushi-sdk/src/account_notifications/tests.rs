@@ -633,3 +633,190 @@ async fn confirm_before_link_and_uiaa_are_distinguished() {
         ))
     ));
 }
+
+// ── Opt-in end-to-end check against a disposable Synapse + SMTP sink ────────
+
+/// Minimal standard-alphabet base64 decoder for captured test mail bodies.
+fn decode_base64(input: &str) -> Vec<u8> {
+    let value = |c: u8| -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some(u32::from(c - b'A')),
+            b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
+            b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    };
+    let mut out = Vec::new();
+    let (mut buffer, mut bits) = (0u32, 0u32);
+    for c in input.bytes().filter_map(value) {
+        buffer = (buffer << 6) | c;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    out
+}
+
+/// Pull the first 3PID `submit_token` link from a captured Synapse mail,
+/// decoding base64 MIME parts (quoted-printable escapes are also undone).
+fn verification_link(mail: &str) -> Option<String> {
+    let mut texts = vec![
+        mail.replace("=\r\n", "")
+            .replace("=\n", "")
+            .replace("=3D", "="),
+    ];
+    for part in mail.split("Content-Transfer-Encoding: base64").skip(1) {
+        let body: String = part
+            .lines()
+            .skip(1)
+            .skip_while(|line| line.trim().is_empty())
+            .take_while(|line| !line.trim().is_empty() && !line.starts_with("--"))
+            .collect();
+        texts.push(String::from_utf8_lossy(&decode_base64(&body)).into_owned());
+    }
+    texts.iter().find_map(|text| {
+        text.split(|c: char| c.is_whitespace() || c == '"' || c == '<' || c == '>')
+            .find(|candidate| candidate.starts_with("http") && candidate.contains("submit_token"))
+            .map(|link| link.replace("&amp;", "&"))
+    })
+}
+
+fn mail_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    files.sort_by_key(|path| {
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| stem.parse::<u64>().ok())
+            .unwrap_or(0)
+    });
+    files
+}
+
+/// Runs the production adapter through add → verify → UIA → email pusher ON →
+/// unread digest received → OFF against a disposable Synapse whose `email:`
+/// block points at a local SMTP sink writing numbered `*.eml` files.
+///
+/// Env: `KOUSHI_EMAIL_E2E_HOMESERVER`, `_USER`, `_PASSWORD`, `_ADDRESS`,
+/// `_MAIL_DIR`, `_ROOM_ID` (a room the user joined), `_SENDER_TOKEN` (another
+/// member's access token used to send one synthetic message). Synthetic data
+/// only; never point this at a real account.
+#[tokio::test]
+#[ignore = "requires a disposable Synapse with an SMTP sink"]
+async fn email_notifications_end_to_end_with_local_synapse() {
+    let env = |name: &str| std::env::var(format!("KOUSHI_EMAIL_E2E_{name}")).expect(name);
+    let homeserver = env("HOMESERVER");
+    let mail_dir = std::path::PathBuf::from(env("MAIL_DIR"));
+    let address = env("ADDRESS");
+    let password = env("PASSWORD");
+    let session = crate::login_with_password(&koushi_state::LoginRequest {
+        homeserver: homeserver.clone(),
+        username: env("USER"),
+        password: koushi_state::AuthSecret::new(password.clone()),
+        device_display_name: Some("Koushi email e2e".to_owned()),
+    })
+    .await
+    .expect("login");
+
+    let before = mail_files(&mail_dir).len();
+    let secret = matrix_sdk::ruma::ClientSecret::new();
+    let sid = request_notification_email_token(&session, &secret, &address, 1)
+        .await
+        .expect("request token");
+
+    // Not verified yet: add asks for UIA, and with auth the server refuses.
+    let uiaa = match add_notification_email(&session, &secret, &sid, None, None).await {
+        Err(AddNotificationEmailError::UiaaChallenge { session }) => session,
+        other => panic!("expected UIA challenge, got {other:?}"),
+    };
+    let auth = koushi_state::IdentityResetAuthRequest::UiaaPassword {
+        password: koushi_state::AuthSecret::new(password.clone()),
+    };
+    let early = add_notification_email(&session, &secret, &sid, Some(&auth), uiaa.as_deref()).await;
+    println!("early add outcome: {early:?}");
+    assert!(early.is_err(), "unverified email must not be added");
+    assert!(
+        set_email_notification_target(&session, &address, "en")
+            .await
+            .is_err(),
+        "no pusher before verification"
+    );
+
+    // Open the verification link from the captured mail.
+    let mail_deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mail = loop {
+        assert!(
+            std::time::Instant::now() < mail_deadline,
+            "no verification mail"
+        );
+        let files = mail_files(&mail_dir);
+        if files.len() > before {
+            break std::fs::read_to_string(files.last().unwrap()).unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+    let link = verification_link(&mail).expect("verification link");
+    let status = reqwest::get(&link).await.expect("open link").status();
+    assert!(status.is_success(), "submit_token status {status}");
+
+    match add_notification_email(&session, &secret, &sid, None, None).await {
+        Ok(()) => {}
+        Err(AddNotificationEmailError::UiaaChallenge { session: uiaa }) => {
+            add_notification_email(&session, &secret, &sid, Some(&auth), uiaa.as_deref())
+                .await
+                .expect("add verified email");
+        }
+        Err(other) => panic!("unexpected add outcome {other:?}"),
+    }
+    let snapshot = load_account_notifications(&session).await.expect("load");
+    assert!(snapshot.emails.iter().any(|email| email.address == address));
+    assert!(
+        !snapshot.email_notifications_active(),
+        "verification alone does not enable email notifications"
+    );
+    println!("email_e2e_verified=ok");
+
+    set_email_notification_target(&session, &address, "en")
+        .await
+        .expect("enable email notifications");
+    let snapshot = load_account_notifications(&session).await.expect("load");
+    assert!(snapshot.email_notifications_active());
+    println!("email_e2e_pusher_on=ok");
+
+    // One unread message from another member produces a digest mail.
+    let before_digest = mail_files(&mail_dir).len();
+    let url = format!(
+        "{}/_matrix/client/v3/rooms/{}/send/m.room.message/e2e-{}",
+        homeserver.trim_end_matches('/'),
+        env("ROOM_ID"),
+        std::process::id()
+    );
+    let response = reqwest::Client::new()
+        .put(url)
+        .bearer_auth(env("SENDER_TOKEN"))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({"msgtype": "m.text", "body": "synthetic digest body"}).to_string())
+        .send()
+        .await
+        .expect("send");
+    assert!(response.status().is_success());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    while mail_files(&mail_dir).len() <= before_digest {
+        assert!(std::time::Instant::now() < deadline, "no digest mail");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    println!("email_e2e_digest_received=ok");
+
+    disable_email_notifications(&session)
+        .await
+        .expect("disable");
+    let snapshot = load_account_notifications(&session).await.expect("load");
+    assert!(!snapshot.email_notifications_active());
+    println!("email_e2e_pusher_off=ok");
+}
