@@ -372,7 +372,7 @@ export function CreateEntityDialog({
             aria-label={submitLabel}
             disabled={!canSubmit}
           >
-            {isSpace ? t("action.createSpace") : t("action.createRoom")}
+            {t("action.create")}
           </button>
         </div>
       </ImeSafeForm>
@@ -810,8 +810,13 @@ export function InviteTargetsDialog({
           >
             {isCompleted ? t("action.done") : t("action.cancel")}
           </button>
-          <button className="dialog-button is-primary" type="submit" disabled={!canSubmit}>
-            {t("dialog.sendInvite")}
+          <button
+            className="dialog-button is-primary"
+            type="submit"
+            disabled={!canSubmit}
+            aria-label={t("dialog.sendInvite")}
+          >
+            {t("action.invite")}
           </button>
         </div>
       </ImeSafeForm>

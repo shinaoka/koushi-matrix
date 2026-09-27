@@ -305,6 +305,18 @@ pub(super) fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
         .build()
 }
 
+/// Opt out before AppKit finishes launching: Koushi already owns one localized
+/// fullscreen toggle. Apple's injected item otherwise duplicates it and keeps
+/// an inaccurate Enter title after a programmatic fullscreen transition.
+/// https://developer.apple.com/library/archive/releasenotes/AppKit/RN-AppKitOlderNotes/index.html
+#[cfg(target_os = "macos")]
+pub(super) fn configure_fullscreen_menu() {
+    objc2_foundation::NSUserDefaults::standardUserDefaults().setBool_forKey(
+        false,
+        &objc2_foundation::NSString::from_str("NSFullScreenMenuItemEverywhere"),
+    );
+}
+
 #[cfg(target_os = "macos")]
 pub(super) fn toggle_main_window_fullscreen(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -336,6 +348,20 @@ mod tests {
     use super::{
         MenuLabels, desktop_menu_action_id, desktop_menu_items, localized, native_menu_label_keys,
     };
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fullscreen_menu_opt_out_preserves_one_authored_toggle() {
+        super::configure_fullscreen_menu();
+        assert!(!objc2_foundation::NSUserDefaults::standardUserDefaults().boolForKey(
+            &objc2_foundation::NSString::from_str("NSFullScreenMenuItemEverywhere"),
+        ));
+        let items = desktop_menu_items();
+        let fullscreen: Vec<_> = items.iter().filter(|item| item.id == "toggle_fullscreen").collect();
+        assert_eq!(fullscreen.len(), 1);
+        assert_eq!(fullscreen[0].accelerator, "Ctrl+Command+F");
+        assert_eq!(fullscreen[0].label_key, "menu.toggleFullscreen");
+    }
 
     #[test]
     fn native_zoom_keys_dispatch_to_the_shared_webview_zoom_owner() {

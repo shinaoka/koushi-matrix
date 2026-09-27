@@ -266,3 +266,21 @@ test("growth above the viewport is compensated before any reveal, keeping the re
   expect(Math.abs(after - probe.top)).toBeLessThanOrEqual(2);
   await expectActionsVisible(page, id);
 });
+
+// #1027: both catalogs keep concise actions reachable in the real editor.
+for (const locale of ["en", "ja"] as const) {
+  test(`inline edit actions fit and retain accessible context in ${locale}`, async ({ page }) => {
+    await seed(page, [item(0, SHORT)]);
+    await page.evaluate((locale) => {
+      const snapshot = window.__harness.currentSnapshot();
+      snapshot.state.domain.locale_profile = { ...snapshot.state.domain.locale_profile, lang: locale, catalog_locale: locale };
+      window.__harness.setSnapshot(snapshot);
+      window.__harness.pushStateUpdate();
+    }, locale);
+    const row = page.locator('[data-event-id="$e0:example.invalid"]');
+    await row.getByRole("button", { name: t("timeline.editMessage", {}, locale) }).click();
+    await expect(row.getByRole("button", { name: t("timeline.saveEdit", {}, locale) })).toHaveText(t("settings.propertySave", {}, locale));
+    await expect(row.getByRole("button", { name: t("timeline.cancelEdit", {}, locale) })).toHaveText(t("action.cancel", {}, locale));
+    await expectActionsVisible(page, "$e0:example.invalid");
+  });
+}

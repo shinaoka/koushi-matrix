@@ -495,10 +495,7 @@ fn pinned_events_projection_is_a_supported_notice() {
         state_event_notice_body("m.room.history_visibility").as_ref(),
         "updated history visibility"
     );
-    assert_eq!(
-        state_event_notice_body("m.room.topic").as_ref(),
-        "Unsupported event: m.room.topic"
-    );
+    assert_eq!(state_event_notice_body("m.room.topic").as_ref(), "");
 }
 
 #[test]
@@ -509,6 +506,8 @@ fn supported_state_event_notices_carry_i18n_keys() {
     assert_eq!(
         projection.notice_i18n,
         Some(TimelineNoticeI18n {
+            value: None,
+            replacement_room_id: None,
             key: TimelineNoticeI18nKey::RoomPowerLevels,
             old_name: None,
             new_name: None,
@@ -541,6 +540,8 @@ fn room_name_notice_projects_initial_name_as_structured_set_notice() {
     assert_eq!(
         projection.notice_i18n,
         Some(TimelineNoticeI18n {
+            value: None,
+            replacement_room_id: None,
             key: TimelineNoticeI18nKey::RoomNameSet,
             old_name: None,
             new_name: Some("研究室 🧪".to_owned()),
@@ -562,6 +563,8 @@ fn room_name_notice_projects_old_and_new_names_for_change() {
     assert_eq!(
         projection.notice_i18n,
         Some(TimelineNoticeI18n {
+            value: None,
+            replacement_room_id: None,
             key: TimelineNoticeI18nKey::RoomNameChanged,
             old_name: Some("Old room".to_owned()),
             new_name: Some("<新しい部屋>".to_owned()),
@@ -578,6 +581,8 @@ fn room_name_notice_projects_empty_name_as_removal() {
     assert_eq!(
         projection.notice_i18n,
         Some(TimelineNoticeI18n {
+            value: None,
+            replacement_room_id: None,
             key: TimelineNoticeI18nKey::RoomNameRemoved,
             old_name: None,
             new_name: None,
@@ -608,6 +613,8 @@ fn room_name_notice_projects_redacted_content_as_safe_generic_notice() {
     assert_eq!(
         projection.notice_i18n,
         Some(TimelineNoticeI18n {
+            value: None,
+            replacement_room_id: None,
             key: TimelineNoticeI18nKey::RoomNameChangedGeneric,
             old_name: None,
             new_name: None,
@@ -1364,7 +1371,6 @@ fn cancelled_link_preview_loads_return_loading_previews_to_pending() {
     assert!(!reset_loading_link_previews_to_pending(&mut item));
 }
 
-
 #[test]
 fn editable_document_reads_replacement_content_not_fallback() {
     let raw = serde_json::json!({"content": {
@@ -1508,4 +1514,27 @@ async fn check_reopening_edit(with_reply: bool) {
             );
         }
     }
+}
+
+#[test]
+fn canonical_alias_housekeeping_has_no_conversation_body() {
+    let projection = state_event_notice_projection("m.room.canonical_alias");
+    assert!(
+        projection.body.is_none(),
+        "routine alias state must not produce an unsupported row"
+    );
+    assert!(projection.notice_i18n.is_none());
+}
+
+#[test]
+fn malformed_encryption_is_not_a_success_notice() {
+    use matrix_sdk_ui::timeline::TimelineItemContent;
+    let content = TimelineItemContent::FailedToParseState {
+        event_type: "m.room.encryption".into(),
+        state_key: String::new(),
+        error: std::sync::Arc::new(serde_json::from_str::<serde_json::Value>("{").unwrap_err()),
+    };
+    let projection = super::message_projection_from_timeline_content(&content);
+    assert_ne!(projection.body.as_deref(), Some("enabled room encryption"));
+    assert!(projection.notice_i18n.is_some());
 }

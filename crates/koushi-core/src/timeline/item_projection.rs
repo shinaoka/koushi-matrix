@@ -2467,7 +2467,8 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
             let mut mentioned_user_ids = Vec::new();
             // Editing uses the effective revision; source/crypto projections
             // deliberately continue to use original_json_for_event_item.
-            if let Some(raw) = event_item.latest_json()
+            if let Some(raw) = event_item
+                .latest_json()
                 .and_then(|raw| serde_json::from_str(raw.json().get()).ok())
             {
                 actions.editable_document = composer_document_from_event_json(&raw);
@@ -2775,53 +2776,159 @@ fn message_projection_from_timeline_content(content: &TimelineItemContent) -> Me
     }
 
     match content {
-        TimelineItemContent::MembershipChange(change) => {
-            return membership_change_projection(
-                &change
-                    .display_name()
-                    .unwrap_or_else(|| change.user_id().to_string()),
-                change.change(),
-            );
+        TimelineItemContent::MembershipChange(change) => membership_change_projection(
+            &change
+                .display_name()
+                .unwrap_or_else(|| change.user_id().to_string()),
+            change.change(),
+        ),
+        TimelineItemContent::ProfileChange(change) => profile_change_projection(change),
+        TimelineItemContent::OtherState(state) => other_state_projection(state.content()),
+        TimelineItemContent::FailedToParseState { .. }
+        | TimelineItemContent::FailedToParseMessageLike { .. } => localized_notice_projection(
+            TimelineNoticeI18nKey::MalformedEvent,
+            "This event could not be read.",
+        ),
+        TimelineItemContent::CallInvite | TimelineItemContent::RtcNotification { .. } => {
+            localized_notice_projection(
+                TimelineNoticeI18nKey::Call,
+                "Call (not available in Koushi)",
+            )
         }
-        TimelineItemContent::ProfileChange(change) => {
-            return profile_change_projection(change);
-        }
-        TimelineItemContent::OtherState(state) => {
-            if let AnyOtherStateEventContentChange::RoomName(change) = state.content() {
-                return room_name_notice_projection(change);
+        TimelineItemContent::MsgLike(_) => {
+            if let Some(sticker) = content.as_sticker() {
+                sticker_projection_from_body(&sticker.content().body)
+            } else if content.is_unable_to_decrypt() {
+                localized_notice_projection(
+                    TimelineNoticeI18nKey::UnableToDecrypt,
+                    "Unable to decrypt message",
+                )
+            } else if content.is_poll() {
+                localized_notice_projection(
+                    TimelineNoticeI18nKey::Poll,
+                    "Poll (viewing and voting are not available yet)",
+                )
+            } else if content.as_live_location_state().is_some() {
+                localized_notice_projection(
+                    TimelineNoticeI18nKey::LiveLocation,
+                    "Live location (not available yet)",
+                )
+            } else if content.is_redacted() {
+                hidden_content_projection()
+            } else {
+                localized_notice_projection(
+                    TimelineNoticeI18nKey::UnsupportedMessage,
+                    "This message cannot be displayed yet.",
+                )
             }
         }
-        _ => {}
     }
+}
 
-    if let Some(sticker) = content.as_sticker() {
-        return sticker_projection_from_body(&sticker.content().body);
+fn hidden_content_projection() -> MessageProjection {
+    let mut projection = non_user_content_projection("");
+    projection.body = None;
+    projection
+}
+
+pub(super) fn localized_notice_projection(key: TimelineNoticeI18nKey, body: &str) -> MessageProjection {
+    let mut projection = non_user_content_projection(body);
+    projection.message_kind = TimelineMessageKind::Notice;
+    projection.notice_i18n = Some(TimelineNoticeI18n {
+        key,
+        old_name: None,
+        new_name: None,
+        value: None,
+        replacement_room_id: None,
+    });
+    projection
+}
+
+fn other_state_projection(state: &AnyOtherStateEventContentChange) -> MessageProjection {
+    use AnyOtherStateEventContentChange as S;
+    match state {
+        S::RoomName(change) => room_name_notice_projection(change),
+        S::RoomTopic(StateEventContentChange::Original {
+            content,
+            prev_content,
+        }) => {
+            let (key, body) = if content.topic.trim().is_empty() {
+                (
+                    TimelineNoticeI18nKey::RoomTopicRemoved,
+                    "removed the room topic".to_owned(),
+                )
+            } else if prev_content
+                .as_ref()
+                .is_some_and(|old| old.topic.as_deref().is_some_and(|topic| !topic.trim().is_empty()))
+            {
+                (
+                    TimelineNoticeI18nKey::RoomTopicChanged,
+                    format!("changed the room topic to {}", content.topic),
+                )
+            } else {
+                (
+                    TimelineNoticeI18nKey::RoomTopicSet,
+                    format!("set the room topic to {}", content.topic),
+                )
+            };
+            let mut projection = localized_notice_projection(key, &body);
+            projection.notice_i18n.as_mut().unwrap().value = Some(content.topic.clone());
+            projection
+        }
+        S::RoomAvatar(StateEventContentChange::Original { content, .. }) => {
+            if content.url.is_some() {
+                localized_notice_projection(
+                    TimelineNoticeI18nKey::RoomAvatarChanged,
+                    "changed the room avatar",
+                )
+            } else {
+                localized_notice_projection(
+                    TimelineNoticeI18nKey::RoomAvatarRemoved,
+                    "removed the room avatar",
+                )
+            }
+        }
+        S::RoomThirdPartyInvite(StateEventContentChange::Original { content, .. })
+            if !content.display_name.trim().is_empty() =>
+        {
+            let mut projection = localized_notice_projection(
+                TimelineNoticeI18nKey::RoomThirdPartyInvite,
+                &format!("invited {}", content.display_name),
+            );
+            projection.notice_i18n.as_mut().unwrap().value = Some(content.display_name.clone());
+            projection
+        }
+        S::RoomTombstone(StateEventContentChange::Original { content, .. }) => {
+            let mut projection = localized_notice_projection(
+                TimelineNoticeI18nKey::RoomUpgraded,
+                "replaced this room",
+            );
+            projection.notice_i18n.as_mut().unwrap().replacement_room_id =
+                Some(content.replacement_room.to_string());
+            projection
+        }
+        S::RoomCreate(_)
+        | S::RoomEncryption(_)
+        | S::RoomGuestAccess(_)
+        | S::RoomHistoryVisibility(_)
+        | S::RoomJoinRules(_)
+        | S::RoomPinnedEvents(_)
+        | S::RoomPowerLevels(_)
+        | S::SpaceParent(_) => state_event_notice_projection(&state.event_type().to_string()),
+        // Element X also filters alias, hierarchy, moderation and custom state.
+        // No row is removed from the SDK cache: only its conversation body is empty.
+        S::PolicyRuleRoom(_)
+        | S::PolicyRuleServer(_)
+        | S::PolicyRuleUser(_)
+        | S::RoomCanonicalAlias(_)
+        | S::RoomServerAcl(_)
+        | S::SpaceChild(_)
+        | S::_Custom { .. }
+        | S::RoomTopic(_)
+        | S::RoomAvatar(_)
+        | S::RoomThirdPartyInvite(_)
+        | S::RoomTombstone(_) => hidden_content_projection(),
     }
-
-    if content.is_unable_to_decrypt() {
-        return non_user_content_projection("Unable to decrypt message");
-    }
-
-    if content.is_poll() {
-        return non_user_content_projection("Poll message");
-    }
-
-    if content.is_redacted() {
-        return MessageProjection {
-            body: None,
-            notice_i18n: None,
-            body_is_user_content: false,
-            message_kind: TimelineMessageKind::Text,
-            spoiler_spans: Vec::new(),
-            media: None,
-            formatted: None,
-        };
-    }
-
-    let event_type = content
-        .event_type_str()
-        .unwrap_or_else(|| "unsupported Matrix event".to_owned());
-    state_event_notice_projection(&event_type)
 }
 
 pub(super) fn sticker_projection_from_body(body: &str) -> MessageProjection {
@@ -2839,8 +2946,13 @@ pub(super) fn sticker_projection_from_body(body: &str) -> MessageProjection {
 
 fn state_event_notice_projection(event_type: &str) -> MessageProjection {
     MessageProjection {
-        body: Some(state_event_notice_body(event_type).into_owned()),
+        body: {
+            let body = state_event_notice_body(event_type);
+            (!body.is_empty()).then(|| body.into_owned())
+        },
         notice_i18n: state_event_notice_i18n(event_type).map(|key| TimelineNoticeI18n {
+            value: None,
+            replacement_room_id: None,
             key,
             old_name: None,
             new_name: None,
@@ -2863,7 +2975,7 @@ fn state_event_notice_body(event_type: &str) -> Cow<'_, str> {
         "m.room.join_rules" => Cow::Borrowed("updated join rules"),
         "m.room.history_visibility" => Cow::Borrowed("updated history visibility"),
         "m.room.pinned_events" => Cow::Borrowed("updated pinned messages"),
-        _ => Cow::Owned(format!("Unsupported event: {event_type}")),
+        _ => Cow::Borrowed(""),
     }
 }
 
@@ -2899,6 +3011,8 @@ fn room_name_notice_projection(
                 (
                     "removed the room name".to_owned(),
                     TimelineNoticeI18n {
+                        value: None,
+                        replacement_room_id: None,
                         key: TimelineNoticeI18nKey::RoomNameRemoved,
                         old_name: None,
                         new_name: None,
@@ -2909,6 +3023,8 @@ fn room_name_notice_projection(
                 (
                     format!("changed the room name from {previous_name} to {current_name}"),
                     TimelineNoticeI18n {
+                        value: None,
+                        replacement_room_id: None,
                         key: TimelineNoticeI18nKey::RoomNameChanged,
                         old_name: Some(previous_name.to_owned()),
                         new_name: Some(current_name.to_owned()),
@@ -2918,6 +3034,8 @@ fn room_name_notice_projection(
                 (
                     format!("set the room name to {current_name}"),
                     TimelineNoticeI18n {
+                        value: None,
+                        replacement_room_id: None,
                         key: TimelineNoticeI18nKey::RoomNameSet,
                         old_name: None,
                         new_name: Some(current_name.to_owned()),
@@ -2928,6 +3046,8 @@ fn room_name_notice_projection(
         StateEventContentChange::Redacted(_) => (
             "changed the room name".to_owned(),
             TimelineNoticeI18n {
+                value: None,
+                replacement_room_id: None,
                 key: TimelineNoticeI18nKey::RoomNameChangedGeneric,
                 old_name: None,
                 new_name: None,
@@ -4195,3 +4315,6 @@ fn classify_reaction_error(err: &matrix_sdk_ui::timeline::Error) -> TimelineFail
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod content_policy_tests;

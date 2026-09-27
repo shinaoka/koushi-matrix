@@ -794,6 +794,9 @@ fn install_oidc_deep_link_handler(_app: &tauri::App) -> tauri::Result<()> {
 }
 
 pub fn run() {
+    #[cfg(target_os = "macos")]
+    desktop_menu::configure_fullscreen_menu();
+
     let restore_session = restore_session_enabled_from_env_value(
         std::env::var("KOUSHI_RESTORE_SESSION").ok().as_deref(),
     );

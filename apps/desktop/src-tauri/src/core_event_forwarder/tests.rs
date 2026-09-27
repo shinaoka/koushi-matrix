@@ -531,7 +531,19 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
         key: key.clone(),
         actor_generation: 1,
         generation: TimelineGeneration(1),
-        items: vec![item.clone()],
+        items: vec![
+            item.clone(),
+            TimelineItem {
+                notice_i18n: Some(koushi_protocol::event::TimelineNoticeI18n {
+                    key: koushi_protocol::event::TimelineNoticeI18nKey::RoomUpgraded,
+                    old_name: None,
+                    new_name: None,
+                    value: Some("Synthetic topic".to_owned()),
+                    replacement_room_id: Some("!replacement:example.test".to_owned()),
+                }),
+                ..item.clone()
+            },
+        ],
     }))
     .expect("timeline events serialize");
     assert_eq!(initial["kind"], json!("Timeline"));

@@ -959,6 +959,112 @@
               "reply_count": 2
             },
             "timestamp_ms": 123
+          },
+          {
+            "actions": {
+              "can_copy": true,
+              "can_forward": true,
+              "can_permalink": true,
+              "can_reply": true,
+              "can_view_source": true,
+              "editable_document": {
+                "inlines": [
+                  {
+                    "kind": "text",
+                    "text": "Hello "
+                  },
+                  {
+                    "display_label": "Mention User",
+                    "kind": "mention",
+                    "target": {
+                      "display_label": "Mention User",
+                      "kind": "user",
+                      "user_id": "@mention:example.test"
+                    }
+                  }
+                ],
+                "version": 2
+              },
+              "permalink": "https://matrix.to/#/!r%3Aexample.test/%24e1"
+            },
+            "body": "hello",
+            "can_edit": true,
+            "can_react": true,
+            "can_redact": true,
+            "display_metadata": {
+              "activity_event_id": "$thread-reply:example.test",
+              "content_event_id": "$e1",
+              "display_timestamp_ms": 124,
+              "kind": {
+                "kind": "threadRoot"
+              },
+              "row_id": "thread-root:$e1"
+            },
+            "formatted": {
+              "code_blocks": [
+                {
+                  "body": "fn main() {}",
+                  "language": "rust"
+                }
+              ],
+              "html": "<strong>hello</strong><pre><code class=\"language-rust\">fn main() {}</code></pre>",
+              "plain_text": "hellofn main() {}"
+            },
+            "id": {
+              "Event": {
+                "event_id": "$e1"
+              }
+            },
+            "in_reply_to_event_id": null,
+            "is_edited": true,
+            "is_hidden": false,
+            "is_redacted": false,
+            "mentioned_user_ids": [
+              "@mentioned:example.test"
+            ],
+            "message_kind": "emote",
+            "notice_i18n": {
+              "key": "timeline.notice.roomUpgraded",
+              "replacement_room_id": "!replacement:example.test",
+              "value": "Synthetic topic"
+            },
+            "reactions": [
+              {
+                "count": 2,
+                "key": "👍",
+                "my_reaction_event_id": "$reaction:test",
+                "reacted_by_me": true,
+                "sender_preview": [
+                  {
+                    "display_label": "Test User",
+                    "user_id": "@u:example.test"
+                  }
+                ]
+              }
+            ],
+            "request_state": {
+              "stage": "withheld",
+              "withheldCode": "unavailable"
+            },
+            "sender": "@u:example.test",
+            "sender_label": null,
+            "spoiler_spans": [
+              {
+                "end_utf16": 5,
+                "reason": "fixture",
+                "start_utf16": 0
+              }
+            ],
+            "thread_root": null,
+            "thread_summary": {
+              "latest_body_preview": "thread reply",
+              "latest_event_id": "$thread-reply:example.test",
+              "latest_sender": "@thread:example.test",
+              "latest_sender_label": null,
+              "latest_timestamp_ms": 124,
+              "reply_count": 2
+            },
+            "timestamp_ms": 123
           }
         ],
         "key": {

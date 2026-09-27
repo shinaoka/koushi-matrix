@@ -806,15 +806,16 @@ export function TimelineItemRow({
         onSend={submitEditDocument}
       />
       <div className="message-edit-actions">
-        <button className="message-edit-button" type="submit">
-          {t("timeline.saveEdit")}
+        <button className="message-edit-button" type="submit" aria-label={t("timeline.saveEdit")}>
+          {t("settings.propertySave")}
         </button>
         <button
           className="message-edit-button"
           type="button"
           onClick={closeEditForm}
+          aria-label={t("timeline.cancelEdit")}
         >
-          {t("timeline.cancelEdit")}
+          {t("action.cancel")}
         </button>
       </div>
     </ImeSafeForm>
@@ -826,6 +827,26 @@ export function TimelineItemRow({
     >
       {emotePrefix}
       {messageBodyContent}
+      {item.notice_i18n?.replacement_room_id ? (
+        <>
+          {" "}
+          <a
+            href={`https://matrix.to/#/${encodeURIComponent(item.notice_i18n.replacement_room_id)}`}
+            onClick={(event) => {
+              event.preventDefault();
+              const roomId = item.notice_i18n?.replacement_room_id;
+              if (!roomId) return;
+              if (onOpenMatrixTarget) {
+                onOpenMatrixTarget({ kind: "room", roomIdOrAlias: roomId, viaServers: [] });
+              } else {
+                void openExternalHttpUrl(`https://matrix.to/#/${encodeURIComponent(roomId)}`);
+              }
+            }}
+          >
+            {t("timeline.openReplacementRoom")}
+          </a>
+        </>
+      ) : null}
     </div>
   );
   const mediaContent =
@@ -1491,6 +1512,32 @@ function replyQuoteBody(quote: NonNullable<TimelineItem["reply_quote"]>): string
 function localizedTimelineItemBody(item: TimelineItem): string {
   const notice = item.notice_i18n;
   switch (notice?.key) {
+    case "timeline.notice.roomTopicSet":
+      return t("timeline.notice.roomTopicSet", { value: notice?.value ?? "" });
+    case "timeline.notice.roomTopicChanged":
+      return t("timeline.notice.roomTopicChanged", { value: notice?.value ?? "" });
+    case "timeline.notice.roomTopicRemoved":
+      return t("timeline.notice.roomTopicRemoved", { value: notice?.value ?? "" });
+    case "timeline.notice.roomAvatarChanged":
+      return t("timeline.notice.roomAvatarChanged", { value: notice?.value ?? "" });
+    case "timeline.notice.roomAvatarRemoved":
+      return t("timeline.notice.roomAvatarRemoved", { value: notice?.value ?? "" });
+    case "timeline.notice.roomThirdPartyInvite":
+      return t("timeline.notice.roomThirdPartyInvite", { value: notice?.value ?? "" });
+    case "timeline.notice.roomUpgraded":
+      return t("timeline.notice.roomUpgraded", { value: notice?.value ?? "" });
+    case "timeline.notice.malformedEvent":
+      return t("timeline.notice.malformedEvent", { value: notice?.value ?? "" });
+    case "timeline.notice.unsupportedMessage":
+      return t("timeline.notice.unsupportedMessage", { value: notice?.value ?? "" });
+    case "timeline.notice.unableToDecrypt":
+      return t("timeline.notice.unableToDecrypt", { value: notice?.value ?? "" });
+    case "timeline.notice.poll":
+      return t("timeline.notice.poll", { value: notice?.value ?? "" });
+    case "timeline.notice.liveLocation":
+      return t("timeline.notice.liveLocation", { value: notice?.value ?? "" });
+    case "timeline.notice.call":
+      return t("timeline.notice.call", { value: notice?.value ?? "" });
     case "timeline.notice.roomCreate":
       return t("timeline.notice.roomCreate");
     case "timeline.notice.roomPowerLevels":

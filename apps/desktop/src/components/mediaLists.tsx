@@ -332,11 +332,12 @@ function ScheduledMessagesList({
                     <button
                       className="timeline-send-bar-action"
                       type="submit"
+                      aria-label={t("scheduled.save")}
                       disabled={
                         scheduledSendTimestampFromInput(editValue) === null || !editBody.trim()
                       }
                     >
-                      {t("scheduled.save")}
+                      {t("settings.propertySave")}
                     </button>
                   </div>
                 </ImeSafeForm>

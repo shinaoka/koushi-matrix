@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { t } from "../src/i18n/messages";
+
 import { HARNESS_ROOM_ID, gotoReadyShell } from "./support/basicOperations";
 
 // Issue #1008: each Room info property is one card holding its value, its
@@ -86,6 +88,16 @@ for (const locale of ["en", "ja"] as const) {
     await gotoReadyShell(page);
     await seedRoomManagement(page, locale);
     await page.locator('button[aria-label="Room info"], button[aria-label="ルーム情報"]').first().click();
+
+    const nameSave = page.getByRole("button", { name: t("room.saveName", {}, locale) });
+    await expect(nameSave).toHaveText(t("settings.propertySave", {}, locale));
+    const nameGeometry = await nameSave.evaluate((button) => {
+      const box = button.getBoundingClientRect();
+      const form = button.closest("form")!.getBoundingClientRect();
+      return { left: box.left - form.left, right: form.right - box.right };
+    });
+    expect(nameGeometry.left).toBeGreaterThanOrEqual(-1);
+    expect(nameGeometry.right).toBeGreaterThanOrEqual(-1);
 
     const topic = page.locator('.room-info-panel [data-setting-property="topic"]');
     await expect(topic).toBeVisible();

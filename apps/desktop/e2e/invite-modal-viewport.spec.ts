@@ -327,3 +327,24 @@ test("ordinary shorter dialogs are not regressed by the modal layout", async ({ 
   expect(geometry!.bottom).toBeLessThanOrEqual(geometry!.viewportHeight + 1);
   await expect(page.getByRole("button", { name: t("dialog.startDm") })).toBeVisible();
 });
+
+// #1027: shortening the visible footer keeps recipient context accessible.
+for (const locale of ["en", "ja"] as const) {
+  test(`invite footer fits with concise actions in ${locale}`, async ({ page }) => {
+    await page.setViewportSize(SHORT_VIEWPORT);
+    await gotoReadyShell(page);
+    await seedInviteWorkflow(page);
+    await page.evaluate((locale) => {
+      const snapshot = window.__harness.currentSnapshot();
+      snapshot.state.domain.locale_profile = { ...snapshot.state.domain.locale_profile, lang: locale, catalog_locale: locale };
+      window.__harness.setSnapshot(snapshot);
+      window.__harness.pushStateUpdate();
+    }, locale);
+    await page.getByRole("button", { name: t("room.roomInfo", {}, locale), exact: true }).click();
+    await page.getByRole("button", { name: t("room.invitePeople", {}, locale) }).click();
+    await expect(page.getByRole("button", { name: t("dialog.sendInvite", {}, locale) })).toHaveText(t("action.invite", {}, locale));
+    const geometry = await dialogGeometry(page);
+    expect(geometry).not.toBeNull();
+    expectDialogBounded(geometry!, locale);
+  });
+}

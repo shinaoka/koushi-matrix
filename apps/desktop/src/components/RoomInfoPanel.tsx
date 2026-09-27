@@ -275,9 +275,10 @@ export function RoomInfoPanel({
             <button
               className="profile-settings-action"
               type="submit"
+              aria-label={t("room.saveName")}
               disabled={!canEditSettings || nameDraft.trim() === (settings?.name ?? roomName)}
             >
-              {t("room.saveName")}
+              {t("settings.propertySave")}
             </button>
           </ImeSafeForm>
           {nameStatus ? (

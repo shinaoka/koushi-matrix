@@ -143,6 +143,7 @@ describe("scheduled message editing", () => {
     expect(body.textContent).toBe("Original body");
     body.textContent = "Edited **body**";
     fireEvent.input(body);
+    expect(screen.getByRole("button", { name: "Save scheduled send" }).textContent).toBe("Save");
     fireEvent.click(screen.getByRole("button", { name: "Save scheduled send" }));
 
     expect(onReschedule).toHaveBeenCalledWith("scheduled-1", "Edited **body**", expect.any(Number));

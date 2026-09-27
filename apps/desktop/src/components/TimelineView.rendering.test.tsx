@@ -52,6 +52,31 @@ afterEach(() => {
 
 describe("TimelineView", () => {
 
+  it.each(["en", "ja"] as const)("renders content-policy notices and replacement navigation in %s", async (locale) => {
+    setActiveLocaleProfile(locale, "none");
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const openTarget = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents(listener) { emit = listener; return () => undefined; }
+    });
+    render(<TimelineView timelineKey={KEY} roomId="!room:example.invalid" transport={transport} onReply={vi.fn()} onOpenMatrixTarget={openTarget} />);
+    const entries: TimelineItem[] = [
+      { ...message("$topic", "fallback topic"), message_kind: "notice", notice_i18n: { key: "timeline.notice.roomTopicSet", value: "<Synthetic topic>" } },
+      { ...message("$malformed", "fallback malformed"), message_kind: "notice", notice_i18n: { key: "timeline.notice.malformedEvent" } },
+      { ...message("$utd", "fallback decryption"), message_kind: "notice", notice_i18n: { key: "timeline.notice.unableToDecrypt" } },
+      { ...message("$upgrade", "fallback upgrade"), message_kind: "notice", notice_i18n: { key: "timeline.notice.roomUpgraded", replacement_room_id: "!new:example.invalid" } },
+      { ...message("$hidden", ""), body: null, is_hidden: true }
+    ];
+    act(() => emit({ kind: "Timeline", event: { InitialItems: { request_id: null, key: KEY, generation: 1, items: entries } } }));
+    expect(await screen.findByText(locale === "en" ? "set the room topic to <Synthetic topic>" : "トピックを「<Synthetic topic>」に設定しました")).toBeTruthy();
+    expect(screen.getByText(locale === "en" ? "This event could not be read." : "このイベントを読み取れませんでした。")).toBeTruthy();
+    expect(screen.getByText(locale === "en" ? "Unable to decrypt message" : "メッセージを復号できません")).toBeTruthy();
+    fireEvent.click(screen.getByRole("link", { name: locale === "en" ? "Open replacement room" : "新しいルームを開く" }));
+    expect(openTarget).toHaveBeenCalledWith({ kind: "room", roomIdOrAlias: "!new:example.invalid", viaServers: [] });
+    expect(document.querySelector('[data-event-id="$hidden"]')).toBeNull();
+    expect(document.querySelector("Synthetic")).toBeNull();
+  });
+
   it.each([
     ["ordinary event", latestEventSummary(), "$event:example.invalid"],
     ["redacted event", latestEventSummary({ is_redacted: true }), null],

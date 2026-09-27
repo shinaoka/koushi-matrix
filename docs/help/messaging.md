@@ -27,7 +27,7 @@ composer sends replies in that thread; it does not offer nested threads.
 ## Edit or remove a message
 
 Open the message's context menu. For an editable message you sent, choose
-**Edit**, change the text, and choose **Save edit**. Available actions depend
+**Edit**, change the text, and choose **Save**. Available actions depend
 on ownership, permissions, and whether the message has been sent.
 
 **Redact** on a sent message performs a Matrix redaction, not a guarantee that nobody
@@ -47,3 +47,15 @@ upload limits and network failures can prevent a send. Open an attachment from
 the timeline, or use **Room info → Files** to browse room files.
 
 For a failed send, see [sending troubleshooting](troubleshooting.md#message-will-not-send).
+
+## Room changes and unavailable content
+
+Topic and avatar changes appear as notices. Room replacement notices include a
+link to the new room. Routine alias, hierarchy and policy updates do not add
+conversation rows. Event details remain available through the existing message
+source action on visible events.
+
+Unreadable events and messages that cannot yet be displayed have neutral
+notices. These are distinct from messages waiting for decryption. Polls, live
+location and calls have explanatory placeholders; these placeholders do not
+provide voting, location tracking or calling functionality.

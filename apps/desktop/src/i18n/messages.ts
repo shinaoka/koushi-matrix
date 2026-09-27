@@ -14,6 +14,8 @@ export type MessageId =
 
   | "action.add"
   | "action.back"
+  | "action.create"
+  | "action.invite"
   | "action.cancel"
   | "action.close"
   | "action.continue"
@@ -1151,6 +1153,7 @@ export type MessageId =
   | "shortcut.uploadFile"
   | "timeline.conversation"
   | "timeline.conversationStart"
+  | "timeline.openReplacementRoom"
   | "timeline.notice.roomCreate"
   | "timeline.notice.roomPowerLevels"
   | "timeline.notice.roomGuestAccess"
@@ -1163,6 +1166,19 @@ export type MessageId =
   | "timeline.notice.roomNameChanged"
   | "timeline.notice.roomNameRemoved"
   | "timeline.notice.roomNameChangedGeneric"
+  | "timeline.notice.roomTopicSet"
+  | "timeline.notice.roomTopicChanged"
+  | "timeline.notice.roomTopicRemoved"
+  | "timeline.notice.roomAvatarChanged"
+  | "timeline.notice.roomAvatarRemoved"
+  | "timeline.notice.roomThirdPartyInvite"
+  | "timeline.notice.roomUpgraded"
+  | "timeline.notice.malformedEvent"
+  | "timeline.notice.unsupportedMessage"
+  | "timeline.notice.unableToDecrypt"
+  | "timeline.notice.poll"
+  | "timeline.notice.liveLocation"
+  | "timeline.notice.call"
   | "timeline.editedMessage"
   | "timeline.editMessage"
   | "timeline.editBody"
@@ -1627,6 +1643,8 @@ const en: Catalog = {
 
   "action.add": "Add",
   "action.back": "Back",
+  "action.create": "Create",
+  "action.invite": "Invite",
   "action.cancel": "Cancel",
   "action.close": "Close {title}",
   "action.continue": "Continue",
@@ -2796,7 +2814,21 @@ const en: Catalog = {
   "shortcut.uploadFile": "Upload file",
   "timeline.conversation": "Conversation timeline",
   "timeline.conversationStart": "Start of conversation",
+  "timeline.openReplacementRoom": "Open replacement room",
   "timeline.notice.roomCreate": "created the room",
+  "timeline.notice.roomTopicSet": "set the room topic to {value}",
+  "timeline.notice.roomTopicChanged": "changed the room topic to {value}",
+  "timeline.notice.roomTopicRemoved": "removed the room topic",
+  "timeline.notice.roomAvatarChanged": "changed the room avatar",
+  "timeline.notice.roomAvatarRemoved": "removed the room avatar",
+  "timeline.notice.roomThirdPartyInvite": "invited {value}",
+  "timeline.notice.roomUpgraded": "replaced this room",
+  "timeline.notice.malformedEvent": "This event could not be read.",
+  "timeline.notice.unsupportedMessage": "This message cannot be displayed yet.",
+  "timeline.notice.unableToDecrypt": "Unable to decrypt message",
+  "timeline.notice.poll": "Poll (viewing and voting are not available yet)",
+  "timeline.notice.liveLocation": "Live location (not available yet)",
+  "timeline.notice.call": "Call (not available in Koushi)",
   "timeline.notice.roomPowerLevels": "updated room permissions",
   "timeline.notice.roomGuestAccess": "updated guest access",
   "timeline.notice.roomEncryption": "enabled room encryption",
@@ -3168,6 +3200,8 @@ const ja: Catalog = {
 
   "action.add": "追加",
   "action.back": "戻る",
+  "action.create": "作成",
+  "action.invite": "招待",
   "action.cancel": "キャンセル",
   "action.close": "{title}を閉じる",
   "action.continue": "続行",
@@ -4326,7 +4360,21 @@ const ja: Catalog = {
   "shortcut.uploadFile": "ファイルをアップロード",
   "timeline.conversation": "会話タイムライン",
   "timeline.conversationStart": "会話の開始",
+  "timeline.openReplacementRoom": "新しいルームを開く",
   "timeline.notice.roomCreate": "ルームを作成しました",
+  "timeline.notice.roomTopicSet": "トピックを「{value}」に設定しました",
+  "timeline.notice.roomTopicChanged": "トピックを「{value}」に変更しました",
+  "timeline.notice.roomTopicRemoved": "トピックを削除しました",
+  "timeline.notice.roomAvatarChanged": "ルームの画像を変更しました",
+  "timeline.notice.roomAvatarRemoved": "ルームの画像を削除しました",
+  "timeline.notice.roomThirdPartyInvite": "{value} を招待しました",
+  "timeline.notice.roomUpgraded": "このルームは新しいルームに置き換えられました",
+  "timeline.notice.malformedEvent": "このイベントを読み取れませんでした。",
+  "timeline.notice.unsupportedMessage": "このメッセージはまだ表示できません。",
+  "timeline.notice.unableToDecrypt": "メッセージを復号できません",
+  "timeline.notice.poll": "投票（表示・回答にはまだ対応していません）",
+  "timeline.notice.liveLocation": "リアルタイムの位置情報（まだ対応していません）",
+  "timeline.notice.call": "通話（Koushi では対応していません）",
   "timeline.notice.roomPowerLevels": "ルーム権限を更新しました",
   "timeline.notice.roomGuestAccess": "ゲストアクセスを更新しました",
   "timeline.notice.roomEncryption": "ルームの暗号化を有効にしました",

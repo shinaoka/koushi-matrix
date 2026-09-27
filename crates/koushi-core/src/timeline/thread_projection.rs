@@ -1178,7 +1178,10 @@ fn message_projection_from_loaded_root_raw(raw: &serde_json::Value) -> Option<Me
             let sticker = serde_json::from_value::<StickerEventContent>(content).ok()?;
             Some(sticker_projection_from_body(&sticker.body))
         }
-        Some("m.room.encrypted") => Some(non_user_content_projection("Unable to decrypt message")),
+        Some("m.room.encrypted") => Some(super::item_projection::localized_notice_projection(
+            koushi_protocol::event::TimelineNoticeI18nKey::UnableToDecrypt,
+            "Unable to decrypt message",
+        )),
         _ => None,
     }
 }

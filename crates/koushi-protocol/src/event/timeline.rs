@@ -794,9 +794,40 @@ pub enum TimelineNoticeI18nKey {
     RoomNameRemoved,
     #[serde(rename = "timeline.notice.roomNameChangedGeneric")]
     RoomNameChangedGeneric,
+    #[serde(rename = "timeline.notice.roomTopicSet")]
+    RoomTopicSet,
+    #[serde(rename = "timeline.notice.roomTopicChanged")]
+    RoomTopicChanged,
+    #[serde(rename = "timeline.notice.roomTopicRemoved")]
+    RoomTopicRemoved,
+    #[serde(rename = "timeline.notice.roomAvatarChanged")]
+    RoomAvatarChanged,
+    #[serde(rename = "timeline.notice.roomAvatarRemoved")]
+    RoomAvatarRemoved,
+    #[serde(rename = "timeline.notice.roomThirdPartyInvite")]
+    RoomThirdPartyInvite,
+    #[serde(rename = "timeline.notice.roomUpgraded")]
+    RoomUpgraded,
+    #[serde(rename = "timeline.notice.malformedEvent")]
+    MalformedEvent,
+    #[serde(rename = "timeline.notice.unsupportedMessage")]
+    UnsupportedMessage,
+    #[serde(rename = "timeline.notice.unableToDecrypt")]
+    UnableToDecrypt,
+    #[serde(rename = "timeline.notice.poll")]
+    Poll,
+    #[serde(rename = "timeline.notice.liveLocation")]
+    LiveLocation,
+    #[serde(rename = "timeline.notice.call")]
+    Call,
 }
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelineNoticeI18n {
+    /// User-authored topic or invitation display name, never an invitation token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement_room_id: Option<String>,
     pub key: TimelineNoticeI18nKey,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub old_name: Option<String>,
@@ -810,6 +841,11 @@ impl fmt::Debug for TimelineNoticeI18n {
             .field("key", &self.key)
             .field("has_old_name", &self.old_name.is_some())
             .field("has_new_name", &self.new_name.is_some())
+            .field("has_value", &self.value.is_some())
+            .field(
+                "has_replacement_room_id",
+                &self.replacement_room_id.is_some(),
+            )
             .finish()
     }
 }

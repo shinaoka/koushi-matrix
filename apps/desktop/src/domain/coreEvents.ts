@@ -304,9 +304,24 @@ export type TimelineNoticeI18nKey =
   | "timeline.notice.roomNameSet"
   | "timeline.notice.roomNameChanged"
   | "timeline.notice.roomNameRemoved"
-  | "timeline.notice.roomNameChangedGeneric";
+  | "timeline.notice.roomNameChangedGeneric"
+  | "timeline.notice.roomTopicSet"
+  | "timeline.notice.roomTopicChanged"
+  | "timeline.notice.roomTopicRemoved"
+  | "timeline.notice.roomAvatarChanged"
+  | "timeline.notice.roomAvatarRemoved"
+  | "timeline.notice.roomThirdPartyInvite"
+  | "timeline.notice.roomUpgraded"
+  | "timeline.notice.malformedEvent"
+  | "timeline.notice.unsupportedMessage"
+  | "timeline.notice.unableToDecrypt"
+  | "timeline.notice.poll"
+  | "timeline.notice.liveLocation"
+  | "timeline.notice.call";
 
 export interface TimelineNoticeI18n {
+  value?: string | null;
+  replacement_room_id?: string | null;
   key: TimelineNoticeI18nKey;
   old_name?: string | null;
   new_name?: string | null;

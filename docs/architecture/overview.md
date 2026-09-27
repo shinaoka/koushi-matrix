@@ -550,6 +550,15 @@ An in-process actor system in `koushi-core`:
   download effects. It provides a cloneable timeline/send context to the
   manager and projects local echoes, but it neither owns the accepted SDK
   enqueue future nor terminal send observation or command correlation.
+  Timeline content presentation is decided in Rust before display: useful typed
+  state changes produce catalog-coded notices; canonical aliases, hierarchy
+  children, ACL/policy/custom state bookkeeping have no conversation body.
+  Empty projected content stays hidden through resets and ignore/unignore, while
+  SDK state application, event identities, receipts and relations stay intact.
+  Malformed content never implies a successful state change. Unknown message
+  content, calls, polls, and live location use distinct localized interim notices;
+  their full feature implementation remains deferred. Tombstones retain a
+  replacement-room link rather than being silently discarded.
   Room live timelines use
   `TimelineFocus::Live { hide_threaded_events: true }` so threaded replies
   are hidden from the main room timeline. Expanded threads use
