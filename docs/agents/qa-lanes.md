@@ -138,7 +138,10 @@ Room-list space classification can lag behind room/space create or join on local
 homeservers. Headless core QA should perform a bounded `SyncOnce` after A
 creates/invites and after B joins before asserting `rooms` vs `spaces`;
 otherwise a valid space can temporarily appear as a plain room and make
-aggregate lanes flaky.
+aggregate lanes flaky. Address-prefix checks also wait for the created
+Space's authoritative name state: list presence alone does not mean that its
+name has been hydrated. Keep the prefix assertion separate from this readiness
+check, and use one bounded event deadline rather than a fixed sleep.
 
 Headless logout cleanup must observe both the exact correlated `LoggedOut` event
 and an authoritative `SessionState::SignedOut` snapshot before issuing a

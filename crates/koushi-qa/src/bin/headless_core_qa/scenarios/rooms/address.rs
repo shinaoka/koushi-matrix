@@ -126,6 +126,18 @@ async fn verify_space_prefixed_address(
     let space_id =
         create_space_for_qa(conn_a, "Koushi Address Space", "address space create").await?;
     wait_for_space_in_space_list(conn_a, &space_id, "address space list").await?;
+    // Synapse can project the Space ID before its required name state arrives.
+    // The address oracle needs that authoritative name, not just list presence.
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
+    while !conn_a.snapshot().spaces.iter().any(|space| {
+        space.space_id == space_id && space.raw_name.as_deref() == Some("Koushi Address Space")
+    }) {
+        deadline
+            .recv(conn_a)
+            .await
+            .map_err(|_| "address: Space name sync timeout")?
+            .map_err(|_| "address: Space name event stream lagged")?;
+    }
     select_space_for_address_qa(conn_a, Some(&space_id)).await?;
 
     let prefixed = conn_a.preview_room_address(name, None);
@@ -134,7 +146,17 @@ async fn verify_space_prefixed_address(
         .clone()
         .ok_or("address: Space suggestion was invalid")?;
     if !prefixed.localpart.starts_with("koushi-address-space-") || prefixed_alias == taken_alias {
-        return Err("address: Space suggestion did not carry the Space prefix".into());
+        let snapshot = conn_a.snapshot();
+        let space = snapshot
+            .spaces
+            .iter()
+            .find(|space| space.space_id == space_id);
+        return Err(format!(
+            "address: Space suggestion did not carry the Space prefix (selected={}, space_present={}, name_ready={})",
+            snapshot.navigation.active_space_id.as_deref() == Some(space_id.as_str()),
+            space.is_some(),
+            space.is_some_and(|space| space.raw_name.as_deref() == Some("Koushi Address Space")),
+        ));
     }
     let taken_localpart = taken_alias
         .trim_start_matches('#')
