@@ -2058,16 +2058,41 @@ async fn authoritative_trust_runs_through_app_actor_ack_and_restarts_real_childr
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let homeserver = format!("http://{}", listener.local_addr().expect("address"));
-    std::thread::spawn(move || {
-        for _ in 0..4096 {
+    // Release builds can make more than 4096 sync requests during the trust
+    // transition. Keep the fixture alive for the runtime's lifetime instead
+    // of turning healthy sync into a network failure at an arbitrary count.
+    struct FixtureServer {
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        address: std::net::SocketAddr,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for FixtureServer {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::Release);
+            // Wake the blocking accept so the fixture can release its port.
+            let _ = std::net::TcpStream::connect(self.address);
+            if let Some(thread) = self.thread.take() {
+                thread.join().expect("fixture server stopped");
+            }
+        }
+    }
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let address = listener.local_addr().expect("address");
+    let server_thread = std::thread::spawn(move || {
+        loop {
             let Ok((mut stream, _)) = listener.accept() else {
                 return;
             };
+            if server_stop.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
             std::thread::spawn(move || {
                 let mut request = Vec::new();
                 let mut buffer = [0_u8; 4096];
                 loop {
-                    let count = stream.read(&mut buffer).expect("read");
+                    let Ok(count) = stream.read(&mut buffer) else { return; };
+                    if count == 0 { return; }
                     request.extend_from_slice(&buffer[..count]);
                     let text = String::from_utf8_lossy(&request);
                     let Some(end) = text.find("\r\n\r\n") else {
@@ -2139,6 +2164,12 @@ async fn authoritative_trust_runs_through_app_actor_ack_and_restarts_real_childr
             });
         }
     });
+
+    let _server = FixtureServer {
+        stop,
+        address,
+        thread: Some(server_thread),
+    };
 
     let data_dir = tempfile::tempdir().expect("data tempdir");
     let credential_dir = tempfile::tempdir().expect("credential tempdir");
