@@ -7,7 +7,7 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-09-24.
+Last amended: 2026-09-27.
 
 ## Design Simplicity
 
@@ -1068,7 +1068,7 @@ Operational setup and failure diagnosis are documented in
 2. Local Tuwunel toolchain caveats are tracked in
    [environment](../agents/environment.md) and the QA scripts, not hand-run.
 3. Required local gates before merging product changes: crate tests
-   (`koushi-state`, `-auth`, `-core`), frontend tests + typecheck, and
+   (`koushi-state`, `koushi-sdk`, `koushi-core`), frontend tests + typecheck, and
    `qa:headless-local -- --server=both`. During iteration, use focused checks
    first; this does not waive merge gates. Documentation-only changes that do
    not change executable code, dependencies, or QA runner contracts run the
