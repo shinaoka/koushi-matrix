@@ -12,7 +12,9 @@ const MIN_RESTORABLE_WINDOW_WIDTH: u32 = 760;
 const MIN_RESTORABLE_WINDOW_HEIGHT: u32 = 620;
 const DEFAULT_WINDOW_WIDTH_LOGICAL: u32 = 1280;
 const DEFAULT_WINDOW_HEIGHT_LOGICAL: u32 = 820;
-const WINDOW_STATE_SCHEMA_VERSION: u8 = 2;
+// v3 captures the inner size that `set_size` restores; v2 captured the outer
+// frame, so every launch grew the window by its decorations on Linux.
+const WINDOW_STATE_SCHEMA_VERSION: u8 = 3;
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 struct PersistedWindowState {
     pub version: u8,
@@ -28,6 +30,69 @@ pub(super) struct AppliedWindowGeometry {
     logical_size: tauri::LogicalSize<u32>,
     physical_position: tauri::PhysicalPosition<i32>,
     maximized: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WindowFrameSample {
+    outer_position: tauri::PhysicalPosition<i32>,
+    inner_size: tauri::PhysicalSize<u32>,
+    outer_size: tauri::PhysicalSize<u32>,
+    scale_factor: f64,
+    maximized: bool,
+}
+impl WindowFrameSample {
+    fn capture<R: tauri::Runtime>(window: &tauri::Window<R>) -> Result<Self, String> {
+        Ok(Self {
+            outer_position: window
+                .outer_position()
+                .map_err(|_| "window position could not be captured".to_owned())?,
+            inner_size: window
+                .inner_size()
+                .map_err(|_| "window size could not be captured".to_owned())?,
+            outer_size: window
+                .outer_size()
+                .map_err(|_| "window frame size could not be captured".to_owned())?,
+            scale_factor: window
+                .scale_factor()
+                .map_err(|_| "window scale factor could not be captured".to_owned())?,
+            maximized: window
+                .is_maximized()
+                .map_err(|_| "window maximized state could not be captured".to_owned())?,
+        })
+    }
+
+    fn geometry(&self) -> AppliedWindowGeometry {
+        capture_window_geometry(
+            self.outer_position,
+            self.inner_size,
+            self.scale_factor,
+            self.maximized,
+        )
+    }
+
+    fn persisted_state(&self) -> PersistedWindowState {
+        persisted_window_state_from_geometry(
+            self.outer_position,
+            self.inner_size,
+            self.scale_factor,
+            self.maximized,
+        )
+    }
+
+    /// Title bar, borders, and (on GTK) client-side shadow around the inner
+    /// size. GTK reports a bogus outer size until the first configure event,
+    /// so a frame smaller than its content counts as undecorated.
+    fn decoration_logical(&self) -> tauri::LogicalSize<u32> {
+        if !valid_window_scale_factor(self.scale_factor) {
+            return tauri::LogicalSize::new(0, 0);
+        }
+        tauri::PhysicalSize::new(
+            self.outer_size.width.saturating_sub(self.inner_size.width),
+            self.outer_size
+                .height
+                .saturating_sub(self.inner_size.height),
+        )
+        .to_logical::<u32>(self.scale_factor)
+    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WindowStatePersistenceAction {
@@ -226,16 +291,39 @@ fn selected_work_area(
 fn clamped_logical_size(
     logical_size: tauri::LogicalSize<u32>,
     area: &WindowWorkArea,
+    decoration: tauri::LogicalSize<u32>,
 ) -> tauri::LogicalSize<u32> {
     let maximum = max_logical_size_for_work_area(area);
+    let maximum_width = maximum
+        .width
+        .saturating_sub(decoration.width)
+        .max(MIN_RESTORABLE_WINDOW_WIDTH);
+    let maximum_height = maximum
+        .height
+        .saturating_sub(decoration.height)
+        .max(MIN_RESTORABLE_WINDOW_HEIGHT);
     tauri::LogicalSize::new(
-        logical_size.width.min(maximum.width),
-        logical_size.height.min(maximum.height),
+        logical_size.width.min(maximum_width),
+        logical_size.height.min(maximum_height),
+    )
+}
+fn outer_physical_size(
+    logical_size: tauri::LogicalSize<u32>,
+    decoration: tauri::LogicalSize<u32>,
+    scale_factor: f64,
+) -> tauri::PhysicalSize<u32> {
+    physical_size_for_logical_size(
+        tauri::LogicalSize::new(
+            logical_size.width.saturating_add(decoration.width),
+            logical_size.height.saturating_add(decoration.height),
+        ),
+        scale_factor,
     )
 }
 fn restored_window_geometry(
     state: &PersistedWindowState,
     work_areas: &[WindowWorkArea],
+    decoration: tauri::LogicalSize<u32>,
 ) -> Option<AppliedWindowGeometry> {
     if !persisted_window_state_is_restorable(state) {
         return None;
@@ -249,10 +337,13 @@ fn restored_window_geometry(
     let logical_size = clamped_logical_size(
         tauri::LogicalSize::new(state.width_logical, state.height_logical),
         selected,
+        decoration,
     );
-    let physical_size = physical_size_for_logical_size(logical_size, selected.scale_factor);
-    let maximum_x = i64::from(selected.x) + i64::from(selected.width - physical_size.width);
-    let maximum_y = i64::from(selected.y) + i64::from(selected.height - physical_size.height);
+    let physical_size = outer_physical_size(logical_size, decoration, selected.scale_factor);
+    let maximum_x =
+        i64::from(selected.x) + i64::from(selected.width.saturating_sub(physical_size.width));
+    let maximum_y =
+        i64::from(selected.y) + i64::from(selected.height.saturating_sub(physical_size.height));
 
     Some(AppliedWindowGeometry {
         logical_size,
@@ -263,7 +354,10 @@ fn restored_window_geometry(
         maximized: state.maximized,
     })
 }
-fn default_window_geometry(work_areas: &[WindowWorkArea]) -> Option<AppliedWindowGeometry> {
+fn default_window_geometry(
+    work_areas: &[WindowWorkArea],
+    decoration: tauri::LogicalSize<u32>,
+) -> Option<AppliedWindowGeometry> {
     let selected = work_areas
         .iter()
         .find(|area| area.primary && window_work_area_is_usable(area))
@@ -275,10 +369,13 @@ fn default_window_geometry(work_areas: &[WindowWorkArea]) -> Option<AppliedWindo
     let logical_size = clamped_logical_size(
         tauri::LogicalSize::new(DEFAULT_WINDOW_WIDTH_LOGICAL, DEFAULT_WINDOW_HEIGHT_LOGICAL),
         selected,
+        decoration,
     );
-    let physical_size = physical_size_for_logical_size(logical_size, selected.scale_factor);
-    let x = i64::from(selected.x) + i64::from(selected.width - physical_size.width) / 2;
-    let y = i64::from(selected.y) + i64::from(selected.height - physical_size.height) / 2;
+    let physical_size = outer_physical_size(logical_size, decoration, selected.scale_factor);
+    let x =
+        i64::from(selected.x) + i64::from(selected.width.saturating_sub(physical_size.width)) / 2;
+    let y =
+        i64::from(selected.y) + i64::from(selected.height.saturating_sub(physical_size.height)) / 2;
 
     Some(AppliedWindowGeometry {
         logical_size,
@@ -366,7 +463,7 @@ fn persist_window_state(state: &PersistedWindowState) -> Result<(), String> {
     persist_window_state_with_base(&app_data_dir()?, state)
 }
 fn apply_persisted_window_state<R: tauri::Runtime>(
-    window: &tauri::WebviewWindow<R>,
+    window: &tauri::Window<R>,
     state: Option<PersistedWindowState>,
     gate: &Mutex<WindowStatePersistenceGate>,
 ) -> Result<(), String> {
@@ -396,32 +493,17 @@ fn apply_persisted_window_state<R: tauri::Runtime>(
             }
         })
         .collect::<Vec<_>>();
+    let initial_sample = WindowFrameSample::capture(window)?;
+    let decoration = initial_sample.decoration_logical();
     let expected = state
         .as_ref()
-        .and_then(|state| restored_window_geometry(state, &work_areas))
-        .or_else(|| default_window_geometry(&work_areas));
+        .and_then(|state| restored_window_geometry(state, &work_areas, decoration))
+        .or_else(|| default_window_geometry(&work_areas, decoration));
     let Some(expected) = expected else {
         return Ok(());
     };
 
-    let initial_position = window
-        .outer_position()
-        .map_err(|_| "window position could not be captured".to_owned())?;
-    let initial_size = window
-        .outer_size()
-        .map_err(|_| "window size could not be captured".to_owned())?;
-    let initial_scale_factor = window
-        .scale_factor()
-        .map_err(|_| "window scale factor could not be captured".to_owned())?;
-    let initial_maximized = window
-        .is_maximized()
-        .map_err(|_| "window maximized state could not be captured".to_owned())?;
-    let initial = capture_window_geometry(
-        initial_position,
-        initial_size,
-        initial_scale_factor,
-        initial_maximized,
-    );
+    let initial = initial_sample.geometry();
     gate.lock()
         .map_err(|_| "window state gate is unavailable".to_owned())?
         .arm(initial, expected);
@@ -451,35 +533,16 @@ pub(super) fn restore_main_window_state<R: tauri::Runtime, M: Manager<R>>(
     let Some(gate) = manager.try_state::<Mutex<WindowStatePersistenceGate>>() else {
         return Ok(());
     };
-    apply_persisted_window_state(&window, load_window_state()?, gate.inner())
-}
-fn persisted_window_state_from_window<R: tauri::Runtime>(
-    window: &tauri::Window<R>,
-) -> Result<PersistedWindowState, String> {
-    let position = window
-        .outer_position()
-        .map_err(|_| "window position could not be captured".to_owned())?;
-    let size = window
-        .outer_size()
-        .map_err(|_| "window size could not be captured".to_owned())?;
-    let scale_factor = window
-        .scale_factor()
-        .map_err(|_| "window scale factor could not be captured".to_owned())?;
-    let maximized = window
-        .is_maximized()
-        .map_err(|_| "window maximized state could not be captured".to_owned())?;
-    Ok(persisted_window_state_from_geometry(
-        position,
-        size,
-        scale_factor,
-        maximized,
-    ))
+    apply_persisted_window_state(
+        &window.as_ref().window(),
+        load_window_state()?,
+        gate.inner(),
+    )
 }
 fn persist_current_window_state<R: tauri::Runtime>(
     window: &tauri::Window<R>,
 ) -> Result<(), String> {
-    let state = persisted_window_state_from_window(window)?;
-    persist_window_state(&state)
+    persist_window_state(&WindowFrameSample::capture(window)?.persisted_state())
 }
 pub(super) fn persist_observed_window_geometry<R: tauri::Runtime>(
     window: &tauri::Window<R>,
@@ -487,30 +550,13 @@ pub(super) fn persist_observed_window_geometry<R: tauri::Runtime>(
     let Some(gate) = window.try_state::<Mutex<WindowStatePersistenceGate>>() else {
         return Ok(());
     };
-    let position = window
-        .outer_position()
-        .map_err(|_| "window position could not be captured".to_owned())?;
-    let size = window
-        .outer_size()
-        .map_err(|_| "window size could not be captured".to_owned())?;
-    let scale_factor = window
-        .scale_factor()
-        .map_err(|_| "window scale factor could not be captured".to_owned())?;
-    let maximized = window
-        .is_maximized()
-        .map_err(|_| "window maximized state could not be captured".to_owned())?;
-    let geometry = capture_window_geometry(position, size, scale_factor, maximized);
+    let sample = WindowFrameSample::capture(window)?;
     let action = gate
         .lock()
         .map_err(|_| "window state gate is unavailable".to_owned())?
-        .observe(geometry);
+        .observe(sample.geometry());
     if action == WindowStatePersistenceAction::Persist {
-        persist_window_state(&persisted_window_state_from_geometry(
-            position,
-            size,
-            scale_factor,
-            maximized,
-        ))?;
+        persist_window_state(&sample.persisted_state())?;
     }
     Ok(())
 }
