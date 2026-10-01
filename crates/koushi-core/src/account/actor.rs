@@ -560,6 +560,21 @@ pub(crate) enum AccountMessage {
     ContactSecurityStoreChanged {
         generation: u64,
     },
+    ContactSecurityLoadFinished {
+        request_id: RequestId,
+        generation: u64,
+        user_id: String,
+        result:
+            Result<koushi_state::ContactSecuritySummary, koushi_state::ContactSecurityFailureKind>,
+        changes:
+            Result<koushi_sdk::ContactSecurityChanges, koushi_state::ContactSecurityFailureKind>,
+    },
+    ContactUserVerificationRequestFinished {
+        request_id: RequestId,
+        generation: u64,
+        target: VerificationTarget,
+        result: Result<koushi_sdk::MatrixVerificationRequestHandle, koushi_sdk::E2eeTrustError>,
+    },
     VerificationRequestObserverEnded {
         flow_id: u64,
     },
@@ -1147,6 +1162,10 @@ pub struct AccountActor {
     /// Open contact's security-details observer (#1024).
     pub(super) contact_security: Option<super::contact_security::ContactSecurityObservation>,
     pub(super) contact_security_generation: u64,
+    pub(super) contact_security_load_task: Option<crate::executor::JoinHandle<()>>,
+    pub(super) pending_contact_verification_send:
+        Option<super::contact_security::PendingContactVerificationSend>,
+    pub(super) contact_verification_send_generation: u64,
     /// Epoch attached to incoming verification messages from the active SDK client.
     pub(super) incoming_verification_session_generation: u64,
     /// SDK session-change observer for auth invalidation / soft logout.
@@ -1411,6 +1430,9 @@ impl AccountActor {
             incoming_verification_observer: None,
             contact_security: None,
             contact_security_generation: 0,
+            contact_security_load_task: None,
+            pending_contact_verification_send: None,
+            contact_verification_send_generation: 0,
             incoming_verification_session_generation: 0,
             session_change_observer: None,
             account_hydration_task: None,
@@ -2581,6 +2603,29 @@ impl AccountActor {
                 }
                 AccountMessage::ContactSecurityStoreChanged { generation } => {
                     self.handle_contact_security_store_changed(generation).await;
+                }
+                AccountMessage::ContactSecurityLoadFinished {
+                    request_id,
+                    generation,
+                    user_id,
+                    result,
+                    changes,
+                } => {
+                    self.handle_contact_security_load_finished(
+                        request_id, generation, user_id, result, changes,
+                    )
+                    .await;
+                }
+                AccountMessage::ContactUserVerificationRequestFinished {
+                    request_id,
+                    generation,
+                    target,
+                    result,
+                } => {
+                    self.handle_contact_user_verification_request_finished(
+                        request_id, generation, target, result,
+                    )
+                    .await;
                 }
                 AccountMessage::VerificationRequestObserverEnded { flow_id } => {
                     if self.active_verification_target(flow_id).is_some() {

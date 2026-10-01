@@ -7,15 +7,21 @@ use koushi_protocol::{
 };
 use koushi_state::{
     AppAction, ContactDevicesStatus, ContactIdentityVerification, ContactSecurityFailureKind,
-    ContactSecuritySummary, SessionInfo,
+    ContactSecuritySummary, SessionInfo, VerificationCancelReason,
 };
 use matrix_sdk::{
     Client,
     ruma::{DeviceId, UserId, device_id, user_id},
     test_utils::mocks::MatrixMockServer,
 };
+use serde_json::json;
 use tempfile::tempdir;
+use tokio::sync::oneshot;
 use tokio::time::{Duration, timeout};
+use wiremock::{
+    Mock, ResponseTemplate,
+    matchers::{method, path_regex},
+};
 
 use super::{
     actor::{AccountActorHandle, AccountMessage},
@@ -95,6 +101,53 @@ async fn load(handle: &AccountActorHandle, sequence: u64, user_id: &UserId) {
     .await;
 }
 
+async fn wait_for_keys_query_after(server: &MatrixMockServer, baseline: usize) {
+    timeout(Duration::from_secs(3), async {
+        loop {
+            if server.received_requests().await.is_some_and(|requests| {
+                requests.len() > baseline
+                    && requests
+                        .iter()
+                        .skip(baseline)
+                        .any(|request| request.url.path().ends_with("/keys/query"))
+            }) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("contact security key query started");
+}
+
+async fn delay_next_keys_query(server: &MatrixMockServer) {
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/_matrix/client/.*/keys/query$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(700))
+                .set_body_json(json!({ "device_keys": {}, "failures": {} })),
+        )
+        .with_priority(1)
+        .up_to_n_times(1)
+        .mount(server.server())
+        .await;
+}
+
+async fn actor_responds_during_contact_security_request(handle: &AccountActorHandle) -> bool {
+    let (response, response_rx) = oneshot::channel();
+    if !handle
+        .send(AccountMessage::InspectSessionRuntime { response })
+        .await
+    {
+        return false;
+    }
+    matches!(
+        timeout(Duration::from_millis(300), response_rx).await,
+        Ok(Ok((true, _, _, _)))
+    )
+}
+
 async fn next_contact_action(
     action_rx: &mut tokio::sync::mpsc::Receiver<Vec<AppAction>>,
     wait: Duration,
@@ -133,6 +186,109 @@ fn expect_loaded(
         }
         other => panic!("expected load for request {sequence}, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn contact_security_load_does_not_block_account_actor_during_key_query() {
+    let server = MatrixMockServer::new().await;
+    server.mock_crypto_endpoints_preset().await;
+    let alice = cross_signed_client(
+        &server,
+        user_id!("@alice:example.test"),
+        device_id!("ALICE1"),
+    )
+    .await;
+    let bob_id = user_id!("@bob:example.test");
+    let _bob = cross_signed_client(&server, bob_id, device_id!("BOB1")).await;
+    let cred_dir = tempdir().unwrap();
+    let data_dir = tempdir().unwrap();
+    let (handle, _action_rx, _event_rx) = spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    install_session(&server, &handle, &alice).await;
+    let baseline = server.received_requests().await.unwrap_or_default().len();
+    delay_next_keys_query(&server).await;
+
+    load(&handle, 1, bob_id).await;
+    wait_for_keys_query_after(&server, baseline).await;
+    let actor_responded = actor_responds_during_contact_security_request(&handle).await;
+    shutdown_and_ack(&handle).await;
+
+    assert!(
+        actor_responded,
+        "AccountActor waited for contact key-query I/O"
+    );
+}
+
+#[tokio::test]
+async fn contact_verification_does_not_block_account_actor_during_key_query() {
+    let server = MatrixMockServer::new().await;
+    server.mock_crypto_endpoints_preset().await;
+    let alice = cross_signed_client(
+        &server,
+        user_id!("@alice:example.test"),
+        device_id!("ALICE1"),
+    )
+    .await;
+    let bob_id = user_id!("@bob:example.test");
+    let _bob = cross_signed_client(&server, bob_id, device_id!("BOB1")).await;
+    let cred_dir = tempdir().unwrap();
+    let data_dir = tempdir().unwrap();
+    let (handle, mut action_rx, _event_rx) =
+        spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    install_session(&server, &handle, &alice).await;
+    let baseline = server.received_requests().await.unwrap_or_default().len();
+    delay_next_keys_query(&server).await;
+
+    send(
+        &handle,
+        request(2),
+        ContactSecurityRequest::RequestVerification {
+            user_id: bob_id.to_string(),
+        },
+    )
+    .await;
+    wait_for_keys_query_after(&server, baseline).await;
+    let actor_responded = actor_responds_during_contact_security_request(&handle).await;
+    assert!(
+        handle
+            .send(AccountMessage::Command(
+                AccountCommand::CancelVerification {
+                    request_id: request(3),
+                    flow_id: 2,
+                    reason: VerificationCancelReason::User,
+                }
+            ))
+            .await
+    );
+    let cancelled = timeout(Duration::from_millis(300), async {
+        loop {
+            let Some(actions) = action_rx.recv().await else {
+                return false;
+            };
+            if actions.iter().any(|action| {
+                matches!(
+                    action,
+                    AppAction::VerificationCancelled {
+                        request_id: 2,
+                        reason: VerificationCancelReason::User,
+                    }
+                )
+            }) {
+                return true;
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    shutdown_and_ack(&handle).await;
+
+    assert!(
+        actor_responded,
+        "AccountActor waited for verification key-query I/O"
+    );
+    assert!(
+        cancelled,
+        "in-flight contact verification should be cancellable"
+    );
 }
 
 #[tokio::test]
@@ -218,14 +374,12 @@ async fn switching_contacts_stops_refreshing_the_previous_contact() {
     let (handle, mut action_rx, _event_rx) =
         spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
     install_session(&server, &handle, &alice).await;
+    let baseline = server.received_requests().await.unwrap_or_default().len();
+    delay_next_keys_query(&server).await;
 
     load(&handle, 1, bob_id).await;
+    wait_for_keys_query_after(&server, baseline).await;
     load(&handle, 2, carol_id).await;
-    expect_loaded(
-        next_contact_action(&mut action_rx, Duration::from_secs(10)).await,
-        1,
-        bob_id,
-    );
     let carol = expect_loaded(
         next_contact_action(&mut action_rx, Duration::from_secs(10)).await,
         2,
@@ -233,6 +387,12 @@ async fn switching_contacts_stops_refreshing_the_previous_contact() {
     );
     assert_eq!(carol.devices, ContactDevicesStatus::OwnerIdentityMissing);
     assert_eq!(carol.identity, ContactIdentityVerification::Unknown);
+    assert!(
+        next_contact_action(&mut action_rx, Duration::from_secs(1))
+            .await
+            .is_none(),
+        "stale Bob load must not overtake the newer Carol load"
+    );
 
     // A change to Bob's devices re-reads only the open contact (Carol), whose
     // answer is unchanged, so nothing is projected for Bob.

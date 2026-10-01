@@ -8839,13 +8839,12 @@ kbd {
 
 @media (max-width: 760px) {
   .titlebar {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: 8px;
     padding: 0 8px;
   }
 
-  .scope-select,
-  .top-actions {
+  .scope-select {
     display: none;
   }
 

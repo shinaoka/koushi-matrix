@@ -1100,3 +1100,30 @@ mentions behind. A wrapper cannot correct SDK-owned aggregate counts without
 duplicating cache ownership. This minimal fork fix is intended for upstream
 submission with its production-redaction and cache-restoration regression.
 See [reproduction and historical limits](2026-09-15-redacted-notifications.md).
+
+## 2026-10-01: Reject partial `/keys/query` results for user identity
+
+A successful HTTP response may list the contact's homeserver under
+`get_keys::v3::Response::failures`. The SDK applies that same response to the
+OlmMachine, but `request_user_identity` previously ignored the partial failure
+and returned the cached identity as if fresh. It now returns
+`Error::UserKeyQueryFailure` when the queried user's server appears in that
+response. This keeps the freshness decision attached to the response that
+updates the store, avoids a second racy query, and matches the method's
+up-to-date guarantee.
+
+Koushi maps the error to a network failure for contact-security reads and
+verification, own-user SAS requests, and current-device trust rechecks; other
+identity-query consumers fail closed as `Unknown` or `IdentityRequest`. It no
+longer issues an independent freshness probe in
+`crates/koushi-sdk/src/contact_security.rs`. Regressions:
+`partial_key_query_failure_does_not_project_stale_verified_identity`,
+`keys_query_failure_for_the_contact_server_is_not_a_fresh_retrieval`, and
+`partial_keys_query_failure_is_network_for_own_user_sas`, plus the current
+trust-recheck classifier test and AccountActor delayed-query
+responsiveness/cancellation tests in
+`crates/koushi-core/src/account/contact_security_tests.rs`.
+
+**Upstreaming intent:** submit the small SDK behavior fix and regression to
+matrix-rust-sdk; keep the downstream patch only until the upstream API has the
+same failure semantics.

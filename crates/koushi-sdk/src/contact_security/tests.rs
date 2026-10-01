@@ -278,7 +278,7 @@ async fn keys_query_failure_for_the_contact_server_is_not_a_fresh_retrieval() {
         .bootstrap_cross_signing(None)
         .await
         .expect("bob identity reset");
-    // Answers the SDK's query and the freshness check of two retrievals.
+    // Answers the SDK's single query for each retrieval.
     // (Not a scoped mock: wiremock 0.6 deactivates scoped mocks by an index
     // that its priority sort has reordered.)
     Mock::given(method("POST"))
@@ -293,8 +293,8 @@ async fn keys_query_failure_for_the_contact_server_is_not_a_fresh_retrieval() {
             },
         })))
         .with_priority(1)
-        .up_to_n_times(4)
-        .expect(4)
+        .up_to_n_times(2)
+        .expect(2)
         .mount(server.server())
         .await;
     assert_eq!(
@@ -316,6 +316,55 @@ async fn keys_query_failure_for_the_contact_server_is_not_a_fresh_retrieval() {
     assert_eq!(
         fresh.identity,
         ContactIdentityVerification::ChangedAfterVerification
+    );
+}
+
+#[tokio::test]
+async fn partial_key_query_failure_does_not_project_stale_verified_identity() {
+    let server = MatrixMockServer::new().await;
+    server.mock_crypto_endpoints_preset().await;
+    let alice = cross_signed_client(
+        &server,
+        user_id!("@alice:example.test"),
+        device_id!("ALICE1"),
+    )
+    .await;
+    let alice_session = session(&alice, server.uri());
+    let bob_id = user_id!("@bob:example.test");
+    let bob = cross_signed_client(&server, bob_id, device_id!("BOB1")).await;
+    verify_contact(&alice, bob_id).await;
+    assert_eq!(
+        load_contact_security(&alice_session, bob_id.as_str())
+            .await
+            .expect("initial load")
+            .identity,
+        ContactIdentityVerification::VerifiedByYou
+    );
+
+    bob.encryption()
+        .bootstrap_cross_signing(None)
+        .await
+        .expect("bob identity reset");
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/_matrix/client/.*/keys/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "device_keys": {},
+            "failures": {
+                "example.test": {
+                    "errcode": "M_UNAVAILABLE",
+                    "error": "synthetic federation failure",
+                },
+            },
+        })))
+        .with_priority(1)
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(server.server())
+        .await;
+
+    assert_eq!(
+        load_contact_security(&alice_session, bob_id.as_str()).await,
+        Err(ContactSecurityFailureKind::Network)
     );
 }
 
@@ -469,8 +518,8 @@ async fn serve_keys_query(server: &MatrixMockServer, body: Value) {
     Mock::given(method("POST"))
         .and(path_regex(r"^/_matrix/client/.*/keys/query"))
         .respond_with(ResponseTemplate::new(200).set_body_json(body))
-        // One retrieval issues the SDK's query and the freshness check.
-        .up_to_n_times(2)
+        // One retrieval issues a single SDK query.
+        .up_to_n_times(1)
         .mount(server.server())
         .await;
 }
