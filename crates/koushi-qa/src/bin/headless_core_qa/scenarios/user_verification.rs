@@ -6,10 +6,10 @@
 //! security details then report B as verified by A while B's device
 //! confirmation stays independent.
 //!
-//! Tuwunel and Synapse both exercise a fresh encrypted DM. The QA waits for
-//! the outgoing verification-progress event, emitted only after the SDK send
-//! completes, before B joins. This makes Synapse's pre-join event-delivery
-//! behavior deterministic instead of racing the command's optimistic state.
+//! Tuwunel and Synapse both exercise a fresh encrypted DM. A starts the request
+//! while B is still invited; the QA joins B before waiting for the SDK send to
+//! finish. This verifies the sender waits for membership before emitting the
+//! room-based verification request.
 
 use koushi_protocol::command::ContactSecurityRequest;
 use koushi_state::{
@@ -93,12 +93,18 @@ async fn wait_for_outgoing_request_sent(
 ) -> Result<(), String> {
     let deadline = QaEventDeadline::after(E2EE_EVENT_TIMEOUT);
     loop {
-        if let VerificationFlowState::Failed {
-            request_id, kind, ..
-        } = &conn.snapshot().e2ee_trust.verification
-            && *request_id == flow_id
-        {
-            return Err(format!("{label}: verification request failed: {kind:?}"));
+        match &conn.snapshot().e2ee_trust.verification {
+            VerificationFlowState::Requested {
+                request_id,
+                target,
+                initiator: VerificationInitiator::Us,
+            } if *request_id == flow_id && target.user_id == user_id => return Ok(()),
+            VerificationFlowState::Failed {
+                request_id, kind, ..
+            } if *request_id == flow_id => {
+                return Err(format!("{label}: verification request failed: {kind:?}"));
+            }
+            _ => {}
         }
 
         let event = deadline
@@ -198,11 +204,8 @@ pub(super) async fn run_user_verification_stage(
         }))
         .await
         .map_err(|error| format!("user_verification request: {error}"))?;
-    wait_for_outgoing_request_sent(conn_a, flow_a, &user_b, "user_verification request sent")
-        .await?;
-    println!("user_verification_request_sent=ok");
-
-    // 3. B accepts the in-room request (joining the new direct chat first).
+    // 3. B accepts the invite before A's SDK send completes. The SDK must
+    // hold the room-based request until B's membership is joined.
     if new_direct_chat {
         let dm_room_id = wait_until(conn_b, "user_verification DM invite", |state| {
             // B is a fresh QA account, so its only invite is the room A just
@@ -214,6 +217,10 @@ pub(super) async fn run_user_verification_stage(
         accept_invite_for_qa(conn_b, &dm_room_id, "user_verification B joins DM").await?;
         println!("user_verification_dm_joined=ok");
     }
+    wait_for_outgoing_request_sent(conn_a, flow_a, &user_b, "user_verification request sent")
+        .await?;
+    println!("user_verification_request_sent=ok");
+
     let target_a = VerificationTarget {
         user_id: session_a.user_id.clone(),
         device_id: session_a.device_id.clone(),
