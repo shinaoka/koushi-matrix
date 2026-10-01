@@ -39,10 +39,11 @@ pub struct NativeAttentionState {
     /// Notification text and navigation target for the desktop adapter.
     ///
     /// Present only for a candidate that was selected and not suppressed. It is
-    /// deliberately outside [`NativeAttentionSummary`], and it is never
-    /// serialized: only the Rust desktop adapter reads it from live state
-    /// (overview.md, "Desktop Attention Surfaces"), so the attention surface
-    /// that reaches the webview stays free of message content and identifiers.
+    /// deliberately outside [`NativeAttentionSummary`]; the reducer uses its
+    /// room target to keep the candidate and its title tied to the selected
+    /// room, and the Rust desktop adapter handles notification delivery. It is never
+    /// serialized, so the attention surface that reaches the webview stays
+    /// free of message content and identifiers.
     #[serde(skip)]
     pub notification: Option<NativeNotificationPayload>,
 }
@@ -114,6 +115,16 @@ pub struct NativeNotificationPayload {
     pub title: String,
     pub body: String,
     pub target: NativeNotificationTarget,
+}
+
+impl NativeNotificationPayload {
+    pub(crate) fn refresh_title_for_candidate(
+        &mut self,
+        room_display_name: &str,
+        kind: RoomAttentionKind,
+    ) {
+        self.title = native_notification_title(room_display_name, kind);
+    }
 }
 
 impl fmt::Debug for NativeNotificationPayload {

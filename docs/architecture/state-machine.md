@@ -5310,12 +5310,10 @@ stateDiagram-v2
   progress instead of offering Verify user. A `RequestVerification` the
   reducer refuses for that reason fails with `VerificationInProgress`, not
   `SessionRequired`.
-- A recipient on Simplified Sliding Sync who joins a brand-new DM after the
-  request was sent receives the request only if their server delivers that
-  event through sync (Tuwunel does); Synapse returns it through gap repair,
-  which the SDK does not feed to its verification machine. The confirmation
-  step therefore says only that the request is sent in that chat and to try
-  again once the contact has joined if they do not see it.
+- For room-based user verification, the SDK waits up to 60 seconds for the
+  contact's joined membership before sending the request. This avoids relying
+  on delivery of a pre-join event through backfill; if no join is observed
+  before the deadline, the request fails with a timeout and is not sent.
 
 ## Desktop Application Updates
 
