@@ -1524,4 +1524,28 @@ describe("SpaceMembersPanel member row role display (#880)", () => {
     expect(row!.querySelector(".space-members-role")?.textContent).toBe("Administrator");
     expect(screen.queryByRole("combobox", { name: "Role for Alice" })).toBeNull();
   });
+
+  it("applies automatic direction to the user name, not its role label", () => {
+    const { container } = render(
+      <SpaceMembersPanel
+        state={state({
+          can_edit_roles: false,
+          space_joined: [
+            member("@rtl:example.invalid", "שלום 42!", "space_joined", {
+              role: "administrator"
+            })
+          ]
+        })}
+        canInvite={true}
+        onInviteUser={vi.fn()}
+        onOpenProfile={vi.fn()}
+      />
+    );
+
+    const row = container.querySelector(".space-members-row");
+    const name = row?.querySelector(".space-members-name");
+    expect(name?.getAttribute("dir")).not.toBe("auto");
+    expect(name?.querySelector("[dir=auto]")?.textContent).toBe("שלום 42!");
+    expect(row?.querySelector(".space-members-role")?.getAttribute("dir")).not.toBe("auto");
+  });
 });

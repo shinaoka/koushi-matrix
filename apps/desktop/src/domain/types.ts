@@ -1342,6 +1342,7 @@ export interface RoomLatestEventSummary {
 export interface InvitePreview {
   room_id: string;
   display_name: string;
+  display_name_placeholder?: RoomNamePlaceholder | null;
   avatar: AvatarImage | null;
   topic: string | null;
   inviter_display_name: string | null;

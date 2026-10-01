@@ -261,6 +261,7 @@ pub(super) fn normalize_invites(
         .map(|invite| InvitePreview {
             room_id: invite.room_id.clone(),
             display_name: invite.display_name.clone(),
+            display_name_placeholder: invite.display_name_placeholder.clone(),
             avatar: avatar_from_mxc_uri(invite.avatar_mxc_uri.as_deref()),
             topic: invite.topic.clone(),
             inviter_display_name: invite.inviter_display_name.clone(),
@@ -278,5 +279,7 @@ pub(super) fn avatar_from_mxc_uri(mxc_uri: Option<&str>) -> Option<AvatarImage> 
     })
 }
 
+#[cfg(test)]
+mod invite_tests;
 #[cfg(test)]
 mod tests;

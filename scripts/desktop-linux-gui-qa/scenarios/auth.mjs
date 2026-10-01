@@ -8,6 +8,8 @@ import { childEnvironment } from "../redaction.mjs";
 import { checkLinuxTools,ensureAppBinary,ensureDbusSession,qaDataDirForRun,settleChild,spawnLogged,startDbusMonitor,startXvfb,terminateProcessGroup,triggerNotificationSmoke,waitForDbusMonitorReady,waitForDbusMonitorToken,waitForPort,waitForSignedOutTitle } from "../runtime.mjs";
 import { elementCount,importDesktopWebdriverio,safeDeleteSession,waitForDocumentText,waitForElementCountGreaterThan,waitForQaTitle,webdriverCapabilities } from "../webdriver.mjs";
 
+export const INVITE_ACCEPT_BUTTON_SELECTOR = 'button[aria-label="Accept"]';
+
 export async function runSignedOutScenario() {
   checkLinuxTools();
   const realLogin = realLoginFromStdin ? await readRealLoginCredentials() : null;
@@ -193,7 +195,7 @@ export async function runLocalInvitesDmScenario() {
     await invitesButton.click();
 
     const baselineRooms = parseQaTitle(await session.browser.execute(() => document.title)).rooms;
-    const acceptButton = await session.browser.$('button[aria-label="Accept invite"]');
+    const acceptButton = await session.browser.$(INVITE_ACCEPT_BUTTON_SELECTOR);
     await acceptButton.waitForDisplayed({ timeout: timeoutMs });
     await acceptButton.click();
     await waitForQaTitle(

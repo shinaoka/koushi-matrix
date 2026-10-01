@@ -139,6 +139,7 @@ describe("RoomInfoPanel", () => {
     );
 
     const name = screen.getByRole("textbox", { name: "Room name" });
+    expect(name.getAttribute("dir")).toBe("auto");
     fireEvent.change(name, { target: { value: "Beta Room" } });
     expect(screen.getByRole("button", { name: "Save room name" }).textContent).toBe("Save");
     fireEvent.click(screen.getByRole("button", { name: "Save room name" }));

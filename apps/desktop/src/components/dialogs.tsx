@@ -697,7 +697,7 @@ export function InviteTargetsDialog({
         <div className="invite-selected-targets" aria-label={t("dialog.inviteSelectedTargets")}>
           {workflow.selected_targets.map((target) => (
             <span className="invite-selected-target" key={target.user_id}>
-              <span>{target.display_label}</span>
+              <span dir="auto">{target.display_label}</span>
               <button
                 type="button"
                 aria-label={t("dialog.removeInviteTarget")}
@@ -729,8 +729,8 @@ export function InviteTargetsDialog({
               disabled={candidate.status !== "selectable"}
               onClick={() => onSelectCandidate(candidate.user_id)}
             >
-              <span>{candidate.display_label}</span>
-              <span>{candidate.user_id}</span>
+              <span dir="auto">{candidate.display_label}</span>
+              <span dir="auto">{candidate.user_id}</span>
             </button>
           ))}
           {workflow.query.explicit_user_id ? (
@@ -740,8 +740,8 @@ export function InviteTargetsDialog({
               disabled={workflow.query.explicit_user_id.status !== "selectable"}
               onClick={() => onSelectCandidate(workflow.query.explicit_user_id!.user_id)}
             >
-              <span>{workflow.query.explicit_user_id.display_label}</span>
-              <span>
+              <span dir="auto">{workflow.query.explicit_user_id.display_label}</span>
+              <span dir="auto">
                 {workflow.query.explicit_user_id.status === "invalidMatrixId"
                   ? t("dialog.inviteInvalidMatrixId")
                   : workflow.query.explicit_user_id.user_id}
@@ -1482,13 +1482,13 @@ export function DirectoryPreviewDialog({
         {room && displayName ? (
           <div className="directory-preview-room">
             <h2 className="directory-preview-name">
-              <span>{displayName}</span>
+              <span dir="auto">{displayName}</span>
               {isSpace ? (
                 <span className="directory-result-type">{t("directory.spaceBadge")}</span>
               ) : null}
             </h2>
-            {alias ? <div className="directory-preview-alias">{alias}</div> : null}
-            {room.topic ? <p className="directory-preview-topic">{room.topic}</p> : null}
+            {alias ? <div className="directory-preview-alias" dir="auto">{alias}</div> : null}
+            {room.topic ? <p className="directory-preview-topic" dir="auto">{room.topic}</p> : null}
             <div className="directory-preview-meta">
               {t("directory.memberCount", { count: String(room.joined_members) })}
             </div>

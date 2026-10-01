@@ -619,6 +619,65 @@ fn disabling_badges_immediately_projects_zero_from_rust_owned_settings() {
 }
 
 #[test]
+fn unrelated_settings_update_preserves_the_raw_native_badge_total() {
+    let mut state = AppState {
+        rooms: vec![
+            room("!plain:example.invalid", "Plain", false, 1, 0, 0),
+            room("!notified:example.invalid", "Notified", false, 4, 2, 0),
+        ],
+        ..AppState::default()
+    };
+    state.settings.values.notifications.badges = true;
+    state.native_attention.summary.unread_count = 2;
+    state.native_attention.summary.badge_count = 5;
+    state.native_attention.summary.capabilities = available_capabilities();
+
+    reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 45,
+            patch: SettingsPatch {
+                locale: Some(Default::default()),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+
+    assert_eq!(state.native_attention.summary.badge_count, 5);
+}
+
+#[test]
+fn re_enabling_badges_reprojects_the_raw_room_unread_total() {
+    let mut state = AppState {
+        rooms: vec![
+            room("!plain:example.invalid", "Plain", false, 1, 0, 0),
+            room("!notified:example.invalid", "Notified", false, 4, 2, 0),
+        ],
+        ..AppState::default()
+    };
+    state.settings.values.notifications.badges = false;
+    state.native_attention.summary.unread_count = 2;
+    state.native_attention.summary.badge_count = 0;
+    state.native_attention.summary.capabilities = available_capabilities();
+
+    reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 46,
+            patch: SettingsPatch {
+                notifications: Some(NotificationSettings {
+                    badges: true,
+                    ..NotificationSettings::default()
+                }),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+
+    assert_eq!(state.native_attention.summary.badge_count, 5);
+}
+
+#[test]
 fn native_sound_dispatch_outcomes_are_correlated_and_stale_safe() {
     for (outcome, expected_kind) in [
         (NativeAttentionSoundOutcome::Played, "delivered"),

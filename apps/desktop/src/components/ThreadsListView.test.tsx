@@ -45,6 +45,54 @@ describe("ThreadsListView", () => {
     expect(screen.queryByText(/@private-(root|reply):example\.invalid/)).toBeNull();
   });
 
+  it("resolves each remote string independently in mixed-direction rows", () => {
+    const rootPreview = "שורש השרשור 5!";
+    const rootSender = "דוד שולח 42!";
+    const latestSender = "Alice";
+    const latestPreview = "Latest reply 99!";
+    const { container } = render(
+      <ThreadsListView
+        scope={{ kind: "home" }}
+        threadsList={{
+          kind: "open",
+          room_id: "home",
+          request_id: 3,
+          items: [
+            {
+              room_id: "!room:example.invalid",
+              root_event_id: "$root:example.invalid",
+              root_sender: "@root:example.invalid",
+              root_sender_label: rootSender,
+              root_body_preview: rootPreview,
+              root_timestamp_ms: 1_800_000_000_000,
+              latest_event_id: "$reply:example.invalid",
+              latest_sender: "@reply:example.invalid",
+              latest_sender_label: latestSender,
+              latest_body_preview: latestPreview,
+              latest_timestamp_ms: 1_800_000_000_100,
+              reply_count: 2
+            }
+          ],
+          is_paginating: false,
+          end_reached: true
+        }}
+        onClose={() => undefined}
+        onOpenThread={() => undefined}
+        onPaginate={() => undefined}
+      />
+    );
+
+    const main = container.querySelector(".threads-list-row-main");
+    expect(main?.getAttribute("dir")).not.toBe("auto");
+    const directionalText = Array.from(main!.querySelectorAll<HTMLElement>("[dir=auto]"));
+    expect(directionalText.map((element) => element.textContent)).toEqual([
+      rootPreview,
+      rootSender,
+      latestSender,
+      latestPreview
+    ]);
+  });
+
   it("opens an aggregate row in the room that owns its root", () => {
     const onOpenThread = vi.fn();
     render(

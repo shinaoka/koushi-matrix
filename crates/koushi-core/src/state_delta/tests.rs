@@ -704,6 +704,7 @@ fn invite_changes_use_a_scoped_delta_when_order_is_stable() {
     previous.invites.push(InvitePreview {
         room_id: "!invite:example.invalid".into(),
         display_name: "Invite".into(),
+        display_name_placeholder: None,
         avatar: None,
         topic: None,
         inviter_display_name: Some("Inviter".into()),

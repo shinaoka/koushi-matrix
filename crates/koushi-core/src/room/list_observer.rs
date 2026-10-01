@@ -1526,7 +1526,7 @@ async fn normalize_and_project_entries(
         direct_targets_by_room,
     )
     .await;
-    snapshot.invites = invite_previews_from_service_entries(invited_rooms).await;
+    snapshot.invites = koushi_sdk::matrix_invite_previews_from_rooms(invited_rooms).await;
     if let (Some(direct_state), Some(diagnostics)) = (direct_state, sliding_sync_diagnostics) {
         let projected_dms = snapshot.rooms.iter().filter(|room| room.is_dm).count();
         let explicit_dms = direct_state.authoritative_targets().map_or(0, |targets| {
@@ -1612,50 +1612,6 @@ async fn normalize_and_project_entries(
         authoritative.load(Ordering::Acquire),
     )
     .await
-}
-
-async fn invite_previews_from_service_entries(
-    rooms: impl IntoIterator<Item = matrix_sdk::Room>,
-) -> Vec<koushi_sdk::MatrixInvitePreview> {
-    let mut invites = Vec::new();
-    for room in rooms {
-        if room.state() != matrix_sdk::RoomState::Invited {
-            // The SDK room object is live and can transition to Joined after
-            // the entries vector was collected. Do not panic or re-project a
-            // stale invite during that normal acceptance race.
-            continue;
-        }
-        let display_name = room
-            .display_name()
-            .await
-            .ok()
-            .map(|name| name.to_string())
-            .or_else(|| room.name())
-            .unwrap_or_else(|| "Invite".to_owned());
-        let inviter = room
-            .invite_details()
-            .await
-            .ok()
-            .and_then(|details| details.inviter);
-        let inviter_display_name = inviter
-            .as_ref()
-            .and_then(|inviter| inviter.display_name().map(ToOwned::to_owned));
-        let inviter_user_id = inviter.map(|inviter| inviter.user_id().to_string());
-        let is_dm = room.is_direct().await.unwrap_or(false);
-        let is_space = room.is_space();
-
-        invites.push(koushi_sdk::MatrixInvitePreview {
-            room_id: room.room_id().to_string(),
-            display_name,
-            avatar_mxc_uri: room.avatar_url().map(|uri| uri.to_string()),
-            topic: room.topic(),
-            inviter_display_name,
-            inviter_user_id,
-            is_dm,
-            is_space,
-        });
-    }
-    invites
 }
 
 async fn relay_missing_space_child_links(

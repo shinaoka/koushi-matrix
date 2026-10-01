@@ -176,14 +176,11 @@ pub(crate) fn handle_native_window_focus_changed(
 }
 
 pub(crate) fn apply_badge_setting(state: &mut AppState) -> bool {
-    let next = if state.settings.values.notifications.badges
-        && state.native_attention.summary.capabilities.badge
-            != crate::state::NativeAttentionCapability::Unavailable
-    {
-        state.native_attention.summary.unread_count
-    } else {
-        0
-    };
+    let next =
+        projected_native_attention_from_rooms(state, NativeAttentionObservationKind::InitialSync)
+            .state
+            .summary
+            .badge_count;
     if state.native_attention.summary.badge_count == next {
         return false;
     }

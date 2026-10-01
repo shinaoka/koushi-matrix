@@ -1,5 +1,11 @@
 import { t } from "../i18n/messages";
-import type { RoomListItem, RoomNamePlaceholder, RoomSummary, SpaceChildSummary } from "./types";
+import type {
+  InvitePreview,
+  RoomListItem,
+  RoomNamePlaceholder,
+  RoomSummary,
+  SpaceChildSummary
+} from "./types";
 
 function roomNamePlaceholderText(placeholder: RoomNamePlaceholder): string {
   switch (placeholder.kind) {
@@ -30,6 +36,15 @@ export function roomListItemLabel(
   return room.display_name_placeholder
     ? roomNamePlaceholderText(room.display_name_placeholder)
     : room.display_name;
+}
+
+/** The localized people-facing name shown for an invite preview. */
+export function invitePreviewLabel(
+  invite: Pick<InvitePreview, "display_name" | "display_name_placeholder">
+): string {
+  return invite.display_name_placeholder
+    ? roomNamePlaceholderText(invite.display_name_placeholder)
+    : invite.display_name;
 }
 
 /** `roomDisplayLabel` for a Space child the account has not joined (#1070). */

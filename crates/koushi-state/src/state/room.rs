@@ -296,6 +296,8 @@ pub enum RoomTagKind {
 pub struct InvitePreview {
     pub room_id: String,
     pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name_placeholder: Option<RoomNamePlaceholder>,
     #[serde(default)]
     pub avatar: Option<AvatarImage>,
     pub topic: Option<String>,

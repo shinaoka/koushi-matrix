@@ -3832,7 +3832,6 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 4px;
   background: var(--surface-hover);
-  font-family: var(--font-ui);
   font-size: 0.95em;
   overflow-wrap: anywhere;
 }
@@ -3903,14 +3902,13 @@ button:disabled {
   display: block;
   min-width: 0;
   color: inherit;
-  font-family: var(--font-ui);
   font-size: 13px;
   line-height: 1.45;
   overflow-wrap: inherit;
 }
 
-.message-code-block.language-rust .message-code-block-pre code,
-.message-code-block code[class*="language-"] {
+.message-body.message-formatted-body code,
+.message-code-block-pre code {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
@@ -4232,11 +4230,17 @@ button:disabled {
 }
 
 .typing-indicator {
-  min-height: 28px;
-  padding: 6px 12px 10px 54px;
+  box-sizing: border-box;
+  height: 24px;
+  min-width: 0;
+  padding: 4px 12px 4px 54px;
   color: var(--text-muted);
   font-size: 13px;
   font-style: italic;
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .message-reactions {

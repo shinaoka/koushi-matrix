@@ -877,13 +877,8 @@ test("live signals render from Rust state and dispatch only viewport/typing comm
                   }
                 },
                 fully_read_event_id: eventId,
-                typing_user_ids: ["@typing-user:example.invalid"],
-                typing_users: [
-                  {
-                    user_id: "@typing-user:example.invalid",
-                    display_label: "Typing User"
-                  }
-                ]
+                typing_user_ids: [],
+                typing_users: []
               }
             },
             presence: {
@@ -897,13 +892,52 @@ test("live signals render from Rust state and dispatch only viewport/typing comm
   }, LIVE_SIGNALS_EVENT_ID);
 
   const row = page.locator(`[data-event-id="${LIVE_SIGNALS_EVENT_ID}"]`);
+  const typingIndicator = page.locator(".typing-indicator");
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await expect(typingIndicator).toHaveCount(1);
   await expect(row.locator(".presence-dot[data-presence='online']")).toBeVisible();
   await expect(row.locator(".message-receipts")).toHaveAttribute("aria-label", /Read by 1/);
-  await expect(page.getByText("Read up to here", { exact: true })).toBeVisible();
+  const readMarker = page.getByText("Read up to here", { exact: true });
+  await expect(readMarker).toBeVisible();
+  await expect(typingIndicator).toBeEmpty();
+  const measureLayout = async () => ({
+    composer: await composer.boundingBox(),
+    readMarker: await readMarker.boundingBox(),
+    row: await row.boundingBox(),
+    typingIndicator: await typingIndicator.boundingBox()
+  });
+  const emptyLayout = await measureLayout();
+  const publishTypingUsers = async (users: Array<{ user_id: string; display_label: string }>) =>
+    page.evaluate(
+      ({ roomId, typingUsers }) => {
+        const next = structuredClone(window.__harness.currentSnapshot());
+        const signals = next.state.domain.live_signals.rooms[roomId];
+        if (!signals) throw new Error(`Missing live signals for ${roomId}`);
+        signals.typing_users = typingUsers;
+        signals.typing_user_ids = typingUsers.map((user) => user.user_id);
+        window.__harness.setSnapshot(next);
+        window.__harness.pushStateUpdate();
+      },
+      { roomId: HARNESS_ROOM_ID, typingUsers: users }
+    );
+
+  await publishTypingUsers([
+    { user_id: "@typing-user:example.invalid", display_label: "Typing User" }
+  ]);
   await expect(page.getByText("Typing User is typing", { exact: true })).toBeVisible();
-  await expect(page.locator(".typing-indicator")).not.toContainText(
-    "@typing-user:example.invalid"
-  );
+  expect(await measureLayout()).toEqual(emptyLayout);
+  await expect(typingIndicator).not.toContainText("@typing-user:example.invalid");
+
+  await publishTypingUsers([
+    { user_id: "@typing-user:example.invalid", display_label: "Typing User" },
+    { user_id: "@second-typing-user:example.invalid", display_label: "Second User" }
+  ]);
+  await expect(typingIndicator).toContainText("2 people are typing");
+  expect(await measureLayout()).toEqual(emptyLayout);
+
+  await publishTypingUsers([]);
+  await expect(typingIndicator).toBeEmpty();
+  expect(await measureLayout()).toEqual(emptyLayout);
   await expect
     .poll(async () =>
       page.evaluate(

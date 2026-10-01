@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { INVITE_ACCEPT_BUTTON_SELECTOR } from "../../../scripts/desktop-linux-gui-qa/scenarios/auth.mjs";
 import { t } from "../src/i18n/messages";
 
 import { HARNESS_ROOM_ID, gotoReadyShell, invocationCount, seedTimelineItems } from "./support/basicOperations";
@@ -15,6 +16,31 @@ async function selectAccountHome(page: Page): Promise<void> {
     .click();
   await expect(page.getByRole("main", { name: "Activity" })).toBeVisible();
 }
+
+test("Linux invite smoke selector resolves the visible accept action", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const next = structuredClone(window.__harness.currentSnapshot());
+    next.state.domain.invites = [
+      {
+        room_id: "!qa-invite:example.invalid",
+        display_name: "Synthetic invite",
+        avatar: null,
+        topic: null,
+        inviter_display_name: "Synthetic inviter",
+        inviter_user_id: "@inviter:example.invalid",
+        is_dm: false,
+        is_space: false
+      }
+    ];
+    window.__harness.setSnapshot(next);
+    window.__harness.pushStateUpdate();
+  });
+  await selectAccountHome(page);
+  await page.getByRole("button", { name: "Invites", exact: true }).click();
+
+  await expect(page.locator(INVITE_ACCEPT_BUTTON_SELECTOR)).toBeVisible();
+});
 
 test("create-room dialog submits create_room and closes on success", async ({ page }) => {
   await gotoReadyShell(page);

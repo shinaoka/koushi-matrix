@@ -197,6 +197,7 @@ test("the progress view lists every room with its phase and counts, and Stop is 
   );
   const items = screen.getByTestId("history-export-rooms").querySelectorAll("li");
   expect(items).toHaveLength(5);
+  expect(items[0].querySelector(".export-progress-name")?.getAttribute("dir")).toBe("auto");
   expect(items[0].textContent).toContain(t("historyExport.phaseCompleted", { exported: 12, attachments: 3 }));
   expect(items[1].textContent).toContain(t("historyExport.phaseAttachments", { done: 4, total: 10 }));
   expect(items[2].textContent).toContain(t("historyExport.phaseSkipped"));

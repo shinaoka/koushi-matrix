@@ -21,6 +21,7 @@ fn invite_preview(room_id: &str, is_dm: bool) -> InvitePreview {
     InvitePreview {
         room_id: room_id.to_owned(),
         display_name: "Invite preview".to_owned(),
+        display_name_placeholder: None,
         avatar: None,
         topic: Some("Project room".to_owned()),
         inviter_display_name: Some("Inviter".to_owned()),
@@ -180,6 +181,7 @@ fn invite_list_filters_invites_from_ignored_inviters_in_room_list_projection() {
     let invite_from_ignored = InvitePreview {
         room_id: "!blocked-room:localhost".to_owned(),
         display_name: "Blocked Room".to_owned(),
+        display_name_placeholder: None,
         avatar: None,
         topic: None,
         inviter_display_name: Some("Blocked".to_owned()),
@@ -190,6 +192,7 @@ fn invite_list_filters_invites_from_ignored_inviters_in_room_list_projection() {
     let invite_from_normal = InvitePreview {
         room_id: "!normal-room:localhost".to_owned(),
         display_name: "Normal Room".to_owned(),
+        display_name_placeholder: None,
         avatar: None,
         topic: None,
         inviter_display_name: Some("Normal".to_owned()),

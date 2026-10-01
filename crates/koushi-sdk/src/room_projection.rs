@@ -238,6 +238,7 @@ pub enum MatrixRoomTagKind {
 pub struct MatrixInvitePreview {
     pub room_id: String,
     pub display_name: String,
+    pub display_name_placeholder: Option<koushi_state::RoomNamePlaceholder>,
     pub avatar_mxc_uri: Option<String>,
     pub topic: Option<String>,
     pub inviter_display_name: Option<String>,
@@ -2416,7 +2417,8 @@ async fn matrix_space_member_user_ids_no_sync(room: &matrix_sdk::Room) -> Option
     Some(user_ids)
 }
 
-async fn matrix_invite_previews_from_rooms(
+/// Project the current invited rooms for the account-wide invite pane.
+pub async fn matrix_invite_previews_from_rooms(
     rooms: impl IntoIterator<Item = matrix_sdk::Room>,
 ) -> Vec<MatrixInvitePreview> {
     let mut invites = Vec::new();
@@ -2425,10 +2427,11 @@ async fn matrix_invite_previews_from_rooms(
             continue;
         }
 
-        let display_name = room
-            .display_name()
-            .await
-            .ok()
+        let sdk_display_name = room.display_name().await.ok();
+        let display_name_placeholder = sdk_display_name
+            .as_ref()
+            .and_then(matrix_room_name_placeholder);
+        let display_name = sdk_display_name
             .map(|name| name.to_string())
             .or_else(|| room.name())
             .unwrap_or_else(|| "Invite".to_owned());
@@ -2447,6 +2450,7 @@ async fn matrix_invite_previews_from_rooms(
         invites.push(MatrixInvitePreview {
             room_id: room.room_id().to_string(),
             display_name,
+            display_name_placeholder,
             avatar_mxc_uri: room.avatar_url().map(|uri| uri.to_string()),
             topic: room.topic(),
             inviter_display_name,
@@ -3142,6 +3146,8 @@ pub(crate) async fn matrix_space_child_room_ids(room: &matrix_sdk::Room) -> Vec<
     child_room_ids
 }
 
+#[cfg(test)]
+mod invite_preview_tests;
 #[cfg(test)]
 mod notification_mode_tests;
 #[cfg(test)]

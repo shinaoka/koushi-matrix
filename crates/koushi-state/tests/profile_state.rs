@@ -1215,6 +1215,7 @@ fn room_space_and_invite_summaries_surface_avatar_mxc() {
             invites: vec![InvitePreview {
                 room_id: "!invite:localhost".to_owned(),
                 display_name: "Invite".to_owned(),
+                display_name_placeholder: None,
                 avatar: Some(avatar("mxc://localhost/invite-avatar")),
                 topic: None,
                 inviter_display_name: Some("Inviter".to_owned()),
@@ -1245,6 +1246,7 @@ fn ignored_users_load_filters_invites_and_presence() {
     state.invites = vec![InvitePreview {
         room_id: "!invite:localhost".to_owned(),
         display_name: "Invite".to_owned(),
+        display_name_placeholder: None,
         avatar: None,
         topic: None,
         inviter_display_name: Some("Inviter".to_owned()),
