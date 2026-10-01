@@ -3684,11 +3684,11 @@ export const TimelineView = memo(function TimelineView({
           />
         ) : null}
       </div>
-      {roomSignals && roomSignals.typing_users.length > 0 ? (
-        <div className="typing-indicator" dir="auto">
-          {formatTypingUsers(roomSignals.typing_users)}
-        </div>
-      ) : null}
+      <div className="typing-indicator" dir="auto">
+        {roomSignals && roomSignals.typing_users.length > 0
+          ? formatTypingUsers(roomSignals.typing_users)
+          : ""}
+      </div>
       {messageSource ? (
         <MessageSourceDialog
           source={messageSource}

@@ -155,6 +155,7 @@ fn a_pending_invitation_is_reported_as_invited_inside_its_space() {
     state.invites = vec![InvitePreview {
         room_id: "!invited:example.invalid".to_owned(),
         display_name: "Invited Room".to_owned(),
+        display_name_placeholder: None,
         avatar: None,
         topic: None,
         inviter_display_name: None,
@@ -321,6 +322,7 @@ fn only_joinable_rows_carry_a_join_affordance() {
     state.invites = vec![InvitePreview {
         room_id: "!pending:example.invalid".to_owned(),
         display_name: "Pending Room".to_owned(),
+        display_name_placeholder: None,
         avatar: None,
         topic: None,
         inviter_display_name: None,

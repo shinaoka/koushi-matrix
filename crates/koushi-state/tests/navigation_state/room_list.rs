@@ -486,6 +486,7 @@ fn transient_room_list_snapshots_are_whole_state_inert_before_invites_write() {
     let existing_invite = InvitePreview {
         room_id: "!existing:example.invalid".to_owned(),
         display_name: "Existing invite".to_owned(),
+        display_name_placeholder: None,
         avatar: None,
         topic: None,
         inviter_display_name: None,

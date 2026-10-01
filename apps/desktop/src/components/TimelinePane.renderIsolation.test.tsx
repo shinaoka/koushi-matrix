@@ -128,6 +128,7 @@ describe("TimelinePane render isolation", () => {
     const { container, rerender } = render(renderWithStore(pendingSnapshot));
     expect(container.querySelector(".message .avatar img")).toBeNull();
     rerender(renderWithStore(snapshot));
+    expect(screen.getByText("Alpha Room").getAttribute("dir")).toBe("auto");
     expect(screen.getByText("Own message")).toBeTruthy();
     expect(snapshot.state.domain.profile.own.avatar.thumbnail.kind).toBe("ready");
     expect(container.querySelector(".message .avatar img")?.getAttribute("src")).toBe("https://example.invalid/own.png");

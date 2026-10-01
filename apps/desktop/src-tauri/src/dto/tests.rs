@@ -684,7 +684,8 @@ fn frontend_snapshot_serializes_invite_previews() {
     let mut state = booted_app_state();
     state.invites.push(InvitePreview {
         room_id: "!invite:matrix.org".to_owned(),
-        display_name: "Project invite".to_owned(),
+        display_name: "Empty Room".to_owned(),
+        display_name_placeholder: Some(koushi_state::RoomNamePlaceholder::Empty),
         avatar: None,
         topic: Some("Project topic".to_owned()),
         inviter_display_name: Some("Inviter".to_owned()),
@@ -701,7 +702,8 @@ fn frontend_snapshot_serializes_invite_previews() {
         json!([
             {
                     "room_id": "!invite:matrix.org",
-                    "display_name": "Project invite",
+                    "display_name": "Empty Room",
+                    "display_name_placeholder": { "kind": "empty" },
                     "avatar": null,
                     "topic": "Project topic",
                     "inviter_display_name": "Inviter",
@@ -856,6 +858,7 @@ fn frontend_snapshot_serializes_home_invite_and_attention_counts() {
         state.invites.push(InvitePreview {
             room_id: room_id.to_owned(),
             display_name: "Invite".to_owned(),
+            display_name_placeholder: None,
             avatar: None,
             topic: None,
             inviter_display_name: None,
@@ -1480,6 +1483,7 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
     state.invites.push(InvitePreview {
         room_id: "!invite:example.invalid".to_owned(),
         display_name: "Fixture Invite".to_owned(),
+        display_name_placeholder: None,
         avatar: None,
         topic: Some("Fixture invite topic".to_owned()),
         inviter_display_name: Some("Inviter".to_owned()),

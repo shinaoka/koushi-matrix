@@ -34,6 +34,7 @@ import type {
   SearchResult
 } from "../domain/types";
 import { focusedTimelineKey, roomTimelineKey } from "../domain/coreEvents";
+import { invitePreviewLabel } from "../domain/roomDisplayLabel";
 import {
   ICON_SIZE,
   avatarInitial,
@@ -583,28 +584,31 @@ export function InvitesPane({
       <section className="invites-layout" aria-label={t("invite.pendingInvites")}>
         <div className="invite-list">
           {invites.length ? (
-            invites.map((invite) => (
-              <button
-                className={`invite-row ${invite.room_id === selectedInvite?.room_id ? "is-active" : ""}`}
-                key={invite.room_id}
-                type="button"
-                aria-label={invite.display_name}
-                onClick={() => setSelectedInviteId(invite.room_id)}
-              >
-                <EntityAvatar
-                  avatar={invite.avatar}
-                  className={`invite-row-icon ${invite.is_dm ? "is-user" : "is-room"}`}
-                  colorSeed={invite.room_id}
-                  fallback={avatarInitial(invite.display_name)}
-                />
-                <span className="invite-row-main">
-                  <strong dir="auto">{invite.display_name}</strong>
-                  <small dir="auto">
-                    {invite.inviter_display_name ?? t("invite.unknownInviter")}
-                  </small>
-                </span>
-              </button>
-            ))
+            invites.map((invite) => {
+              const displayName = invitePreviewLabel(invite);
+              return (
+                <button
+                  className={`invite-row ${invite.room_id === selectedInvite?.room_id ? "is-active" : ""}`}
+                  key={invite.room_id}
+                  type="button"
+                  aria-label={displayName}
+                  onClick={() => setSelectedInviteId(invite.room_id)}
+                >
+                  <EntityAvatar
+                    avatar={invite.avatar}
+                    className={`invite-row-icon ${invite.is_dm ? "is-user" : "is-room"}`}
+                    colorSeed={invite.room_id}
+                    fallback={avatarInitial(displayName)}
+                  />
+                  <span className="invite-row-main">
+                    <strong dir="auto">{displayName}</strong>
+                    <small dir="auto">
+                      {invite.inviter_display_name ?? t("invite.unknownInviter")}
+                    </small>
+                  </span>
+                </button>
+              );
+            })
           ) : (
             <div className="empty-results" role="status">
               {t("invite.noPending")}
@@ -619,10 +623,10 @@ export function InvitesPane({
                   avatar={selectedInvite.avatar}
                   className={`invite-preview-icon ${selectedInvite.is_dm ? "is-user" : "is-room"}`}
                   colorSeed={selectedInvite.room_id}
-                  fallback={avatarInitial(selectedInvite.display_name)}
+                  fallback={avatarInitial(invitePreviewLabel(selectedInvite))}
                 />
                 <div>
-                  <h2 dir="auto">{selectedInvite.display_name}</h2>
+                  <h2 dir="auto">{invitePreviewLabel(selectedInvite)}</h2>
                   <p dir="auto">
                     {selectedInvite.inviter_display_name
                       ? t("invite.fromInviter", {
@@ -977,7 +981,7 @@ export function TimelinePane({
             colorSeed={activeRoom?.room_id ?? activeRoomName}
             fallback={avatarInitial(activeRoomName)}
           />
-          <span>{activeRoomName}</span>
+          <span dir="auto">{activeRoomName}</span>
         </div>
         <div className="channel-actions">
           <nav className="timeline-header-navigation" aria-label={t("timeline.navigation")}>

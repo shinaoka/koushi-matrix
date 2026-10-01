@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createDesktopApiFixture } from "../test/desktopApiFixture";
 import { ActivityPane, ExplorePane, InvitesPane } from "./panes";
-import { setActiveLocaleProfile } from "../i18n/messages";
+import { setActiveLocaleProfile, t } from "../i18n/messages";
 import type {
   ActivityRow,
   ActivityState,
@@ -311,6 +311,65 @@ describe("InvitesPane actions", () => {
   afterEach(() => {
     cleanup();
     setActiveLocaleProfile("en", "none");
+  });
+
+  it("localizes structurally marked empty invite room names but preserves literal names", async () => {
+    setActiveLocaleProfile("ja", "none");
+    const snapshot = await createDesktopApiFixture().getSnapshot();
+    snapshot.state.domain.invites = [
+      {
+        room_id: "!empty:example.invalid",
+        display_name: "Empty Room",
+        display_name_placeholder: { kind: "empty" },
+        avatar: null,
+        topic: null,
+        inviter_display_name: "Inviter",
+        inviter_user_id: "@inviter:example.invalid",
+        is_dm: false,
+        is_space: false
+      },
+      {
+        room_id: "!empty-was:example.invalid",
+        display_name: "Empty Room (was Former Room)",
+        display_name_placeholder: { kind: "emptyWas", previous_names: "Former Room" },
+        avatar: null,
+        topic: null,
+        inviter_display_name: "Inviter",
+        inviter_user_id: "@inviter:example.invalid",
+        is_dm: false,
+        is_space: false
+      },
+      {
+        room_id: "!literal:example.invalid",
+        display_name: "Empty Room",
+        avatar: null,
+        topic: null,
+        inviter_display_name: "Inviter",
+        inviter_user_id: "@inviter:example.invalid",
+        is_dm: false,
+        is_space: false
+      }
+    ];
+
+    const { container } = render(
+      <InvitesPane
+        inviteActionError={null}
+        isBusy={false}
+        snapshot={snapshot}
+        onAcceptInvite={vi.fn()}
+        onDeclineInvite={vi.fn()}
+        onNewDm={vi.fn()}
+      />
+    );
+
+    const rows = container.querySelectorAll<HTMLButtonElement>(".invite-row");
+    expect(rows[0]?.getAttribute("aria-label")).toBe(t("room.namePlaceholderEmpty"));
+    expect(rows[0]?.querySelector("strong")?.textContent).toBe(t("room.namePlaceholderEmpty"));
+    expect(screen.getByRole("heading", { name: t("room.namePlaceholderEmpty") })).toBeTruthy();
+    expect(rows[1]?.querySelector("strong")?.textContent).toBe(
+      t("room.namePlaceholderEmptyWas", { previousNames: "Former Room" })
+    );
+    expect(rows[2]?.querySelector("strong")?.textContent).toBe("Empty Room");
   });
 
   it("shows a safe error when accepting an invite fails", async () => {

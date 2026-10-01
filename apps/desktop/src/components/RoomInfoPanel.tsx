@@ -269,6 +269,7 @@ export function RoomInfoPanel({
                 value={nameDraft}
                 syncKey={`${roomId}:name`}
                 aria-label={t("dialog.roomName")}
+                dir="auto"
                 disabled={!canEditSettings}
                 onChange={(event) => setNameDraft(event.currentTarget.value)}
               />

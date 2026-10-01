@@ -17,7 +17,7 @@ If you received an invitation:
 
 1. Open **Home → Invites**.
 2. Select the invitation and check the room and inviter.
-3. Choose **Accept invite** to join, or **Decline invite** to reject it.
+3. Choose **Accept** to join, or **Decline** to reject it.
 
 If you have a room address:
 

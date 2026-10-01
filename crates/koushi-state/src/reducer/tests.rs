@@ -368,6 +368,7 @@ fn room_list_bootstrap_does_not_clear_cached_rooms_for_invite_only_provisional_s
             invites: vec![crate::state::InvitePreview {
                 room_id: "!invite:example.invalid".to_owned(),
                 display_name: "Invite".to_owned(),
+                display_name_placeholder: None,
                 avatar: None,
                 topic: None,
                 inviter_display_name: None,
@@ -573,6 +574,7 @@ fn avatar_thumbnail_updates_rust_owned_snapshots() {
     state.invites = vec![crate::state::InvitePreview {
         room_id: "!invite:example.invalid".to_owned(),
         display_name: "Invite".to_owned(),
+        display_name_placeholder: None,
         avatar: Some(test_avatar(mxc_uri)),
         topic: None,
         inviter_display_name: None,

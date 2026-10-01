@@ -2225,6 +2225,53 @@ describe("TimelineView", () => {
     );
   });
 
+  it("formats Japanese thread summary count once in visible and accessible text", async () => {
+    setActiveLocaleProfile("ja", "none");
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const root = {
+      ...message("$japanese-thread-root:example.invalid", "Thread root"),
+      thread_summary: {
+        reply_count: 1,
+        latest_event_id: "$japanese-thread-reply:example.invalid",
+        latest_sender: "@bob:example.invalid",
+        latest_sender_label: "Bob",
+        latest_body_preview: "Latest reply",
+        latest_timestamp_ms: 1_800_000_000_500
+      }
+    };
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key: KEY, generation: 1, items: [root] }
+        }
+      });
+    });
+
+    const row = await screen.findByText("Thread root").then((node) =>
+      node.closest<HTMLElement>("article")
+    );
+    const chip = within(row!).getByRole("button", { name: /スレッドを開く/ });
+    expect(chip.textContent).toContain("返信 1 件 · Bob: Latest reply");
+    expect(chip.textContent).not.toContain("件件");
+    expect(chip.getAttribute("aria-label")).toContain("返信 1 件 · Bob: Latest reply");
+  });
+
   it("shows notification count on the matching root row without moving timeline rows", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const onOpenThread = vi.fn();

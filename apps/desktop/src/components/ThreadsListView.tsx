@@ -83,16 +83,17 @@ function ThreadsListRow({
         <span className="threads-list-row-icon" aria-hidden="true">
           <MessageCircle size={18} />
         </span>
-        <span className="threads-list-row-main" dir="auto">
-          <span className="threads-list-row-preview">
+        <span className="threads-list-row-main">
+          <span className="threads-list-row-preview" dir="auto">
             {item.root_body_preview ?? t("activity.noPreview")}
           </span>
           <span className="threads-list-row-meta">
-            {peopleFacingLabel(item.root_sender_label)}
+            <span dir="auto">{peopleFacingLabel(item.root_sender_label)}</span>
             {item.latest_body_preview ? (
               <>
                 {" · "}
-                {peopleFacingLabel(item.latest_sender_label)}: {item.latest_body_preview}
+                <span dir="auto">{peopleFacingLabel(item.latest_sender_label)}</span>: {" "}
+                <span dir="auto">{item.latest_body_preview}</span>
               </>
             ) : null}
             {" · "}

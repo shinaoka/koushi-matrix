@@ -156,7 +156,7 @@ function RoomList({ rooms }: { rooms: HistoryExportRoom[] }) {
     <ul className="export-progress-list" data-testid="history-export-rooms">
       {rooms.map((room) => (
         <li key={room.room_id} data-phase={room.phase}>
-          <span className="export-progress-name">{room.display_name}</span>
+          <span className="export-progress-name" dir="auto">{room.display_name}</span>
           <span className="export-progress-phase">{roomPhaseText(room)}</span>
           {room.phase === "completed" && room.counts.attachments_failed > 0 ? (
             <span className="export-progress-note">

@@ -425,7 +425,11 @@ const japaneseIdenticalMessageAllowlist = new Set<MessageId>([
   "settings.fontInter",
   "settings.twemojiColr",
   "timeline.mediaUploadProgress",
-  "workspace.people"
+  "workspace.people",
+  // Templates combine a localized reply count with user-provided sender/body text.
+  "timeline.threadSummaryWithBody",
+  "timeline.threadSummaryWithPreview",
+  "timeline.threadSummaryWithSender"
 ]);
 
 function lineNumberAt(sourceFile: ts.SourceFile, node: ts.Node): number {

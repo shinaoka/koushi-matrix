@@ -1014,10 +1014,11 @@ test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting"
       in_reply_to_event_id: null,
       formatted: {
         html:
-          '<strong>Formatted keyword</strong><blockquote>Quoted body</blockquote><ul><li>List item</li></ul><a href="https://example.invalid/path">safe link</a><pre><code class="language-rust">const veryLongToken = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";</code></pre>',
+          '<strong>Formatted keyword</strong><blockquote>Quoted body</blockquote><ul><li>List item</li></ul><a href="https://example.invalid/path">safe link</a><p>Inline <code>inline_token()</code></p><pre><code>untagged_token()</code></pre><pre><code class="language-rust">const veryLongToken = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";</code></pre>',
         plain_text:
-          'Formatted keywordQuoted bodyList itemsafe linkconst veryLongToken = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";',
+          'Formatted keywordQuoted bodyList itemsafe linkInline inline_token()untagged_token()const veryLongToken = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";',
         code_blocks: [
+          { language: null, body: "untagged_token()" },
           {
             language: "rust",
             body:
@@ -1043,7 +1044,14 @@ test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting"
   await expect(row.locator("li")).toHaveText("List item");
   await expect(row.locator('a[href="https://example.invalid/path"]')).toHaveText("safe link");
   await expect(row.locator("pre code.language-rust")).toContainText("veryLongToken");
-  await expect(row.getByRole("button", { name: "Copy code" })).toBeVisible();
+  await expect(row.locator("pre code")).toHaveCount(2);
+  await expect(row.locator(".message-body code")).toHaveCount(3);
+  await expect(row.getByRole("button", { name: "Copy code" }).first()).toBeVisible();
+  const codeFontFamilies = await row
+    .locator(".message-body code")
+    .evaluateAll((elements) => elements.map((element) => getComputedStyle(element).fontFamily));
+  expect(new Set(codeFontFamilies).size).toBe(1);
+  expect(codeFontFamilies[0]?.toLowerCase()).toContain("monospace");
   await expect(row.getByText("plain fallback should not render")).toHaveCount(0);
 
   const pre = row.locator("pre").first();

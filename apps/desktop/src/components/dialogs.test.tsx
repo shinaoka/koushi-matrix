@@ -14,11 +14,12 @@ import {
 } from "./ImeTextControl";
 import {
   CreateEntityDialog,
+  DirectoryPreviewDialog,
   InviteTargetsDialog,
   ResetLocalDataConfirmationDialog,
   UploadStagingDialog
 } from "./dialogs";
-import type { InviteWorkflowState } from "../domain/types";
+import type { DirectoryPreviewState, InviteWorkflowState } from "../domain/types";
 
 afterEach(() => {
   cleanup();
@@ -595,6 +596,92 @@ describe("CreateEntityDialog room access", () => {
       />
     );
     expect(screen.getByText(t("dialog.invitedOnlyRoomInSpace", { spaceName: "春学" }))).toBeTruthy();
+  });
+});
+
+describe("DirectoryPreviewDialog text direction", () => {
+  it("resolves name, alias and topic independently", () => {
+    const preview: DirectoryPreviewState = {
+      kind: "ready",
+      request_id: 1,
+      room_id_or_alias: "#public:example.invalid",
+      via_servers: [],
+      room: {
+        room_id: "!public:example.invalid",
+        canonical_alias: "#חדר:example.invalid",
+        room_type: "m.space",
+        name: "חדר ציבורי 7!",
+        topic: "נושא החדר 99!",
+        joined_members: 3,
+        joinability: "open",
+        membership: "none"
+      }
+    };
+
+    render(
+      <DirectoryPreviewDialog
+        isBusy={false}
+        preview={preview}
+        onCancel={vi.fn()}
+        onConfirm={vi.fn()}
+      />
+    );
+
+    const name = screen.getByText("חדר ציבורי 7!", { exact: true });
+    expect(name.getAttribute("dir")).toBe("auto");
+    expect(name.closest("h2")?.getAttribute("dir")).not.toBe("auto");
+    expect(screen.getByText("#חדר:example.invalid", { exact: true }).getAttribute("dir")).toBe(
+      "auto"
+    );
+    expect(screen.getByText("נושא החדר 99!", { exact: true }).getAttribute("dir")).toBe("auto");
+  });
+});
+
+describe("InviteTargetsDialog text direction", () => {
+  it("marks each selected and candidate identity string independently", () => {
+    const target = {
+      user_id: "@rtl:example.invalid",
+      display_label: "שלום 42!",
+      original_display_label: "שלום 42!",
+      avatar: null,
+      source: "profile" as const,
+      status: "selectable" as const,
+      status_message: null
+    };
+    const current: InviteWorkflowState = {
+      query: {
+        room_id: "!room:example.invalid",
+        query: "rtl",
+        candidates: [target],
+        explicit_user_id: target
+      },
+      selected_targets: [target],
+      scope_plan: null,
+      selected_scope: null,
+      history_policy: null,
+      operation: { kind: "idle" }
+    };
+    const { container } = render(
+      <InviteTargetsDialog
+        isBusy={false}
+        query="rtl"
+        title={t("dialog.invitePeopleTitle")}
+        workflow={current}
+        onCancel={vi.fn()}
+        onQueryChange={vi.fn()}
+        onRemoveTarget={vi.fn()}
+        onScopeChange={vi.fn()}
+        onSelectCandidate={vi.fn()}
+        onSubmit={vi.fn()}
+      />
+    );
+
+    expect(
+      container.querySelector(".invite-selected-target span")?.getAttribute("dir")
+    ).toBe("auto");
+    for (const candidate of container.querySelectorAll(".invite-target-candidate")) {
+      expect(candidate.querySelectorAll("span[dir=auto]")).toHaveLength(2);
+    }
   });
 });
 

@@ -859,8 +859,8 @@ function SpaceMemberRow({
           />
         </span>
         <span className="space-members-row-text">
-          <span className="space-members-name" dir="auto">
-            {entry.display_label}
+          <span className="space-members-name">
+            <span dir="auto">{entry.display_label}</span>
             {roleLabel ? <span className="space-members-role">{roleLabel}</span> : null}
           </span>
           {sectionId === "child-only" && entry.child_room_ids.length > 0 ? (
