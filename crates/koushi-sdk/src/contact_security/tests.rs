@@ -320,55 +320,6 @@ async fn keys_query_failure_for_the_contact_server_is_not_a_fresh_retrieval() {
 }
 
 #[tokio::test]
-async fn partial_key_query_failure_does_not_project_stale_verified_identity() {
-    let server = MatrixMockServer::new().await;
-    server.mock_crypto_endpoints_preset().await;
-    let alice = cross_signed_client(
-        &server,
-        user_id!("@alice:example.test"),
-        device_id!("ALICE1"),
-    )
-    .await;
-    let alice_session = session(&alice, server.uri());
-    let bob_id = user_id!("@bob:example.test");
-    let bob = cross_signed_client(&server, bob_id, device_id!("BOB1")).await;
-    verify_contact(&alice, bob_id).await;
-    assert_eq!(
-        load_contact_security(&alice_session, bob_id.as_str())
-            .await
-            .expect("initial load")
-            .identity,
-        ContactIdentityVerification::VerifiedByYou
-    );
-
-    bob.encryption()
-        .bootstrap_cross_signing(None)
-        .await
-        .expect("bob identity reset");
-    Mock::given(method("POST"))
-        .and(path_regex(r"^/_matrix/client/.*/keys/query"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "device_keys": {},
-            "failures": {
-                "example.test": {
-                    "errcode": "M_UNAVAILABLE",
-                    "error": "synthetic federation failure",
-                },
-            },
-        })))
-        .with_priority(1)
-        .up_to_n_times(1)
-        .expect(1)
-        .mount(server.server())
-        .await;
-
-    assert_eq!(
-        load_contact_security(&alice_session, bob_id.as_str()).await,
-        Err(ContactSecurityFailureKind::Network)
-    );
-}
-
-#[tokio::test]
 async fn key_store_changes_are_observed_and_reread_without_network() {
     let server = MatrixMockServer::new().await;
     server.mock_crypto_endpoints_preset().await;

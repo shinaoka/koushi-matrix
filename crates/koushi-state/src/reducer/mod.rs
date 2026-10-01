@@ -2234,14 +2234,22 @@ pub(crate) fn refresh_open_room_summary_display_projection(
 }
 
 pub(crate) fn refresh_native_attention_candidate_display_projection(state: &mut AppState) -> bool {
-    let Some(candidate) = state.native_attention.summary.candidate.as_mut() else {
+    let Some(candidate) = state.native_attention.summary.candidate.as_ref() else {
+        return false;
+    };
+    let Some(candidate_room_id) = state
+        .native_attention
+        .notification
+        .as_ref()
+        .map(|notification| notification.target.room_id.as_str())
+    else {
         return false;
     };
     let Some(display_label) = state
         .rooms
         .iter()
-        .filter(|room| room.tags.low_priority.is_none())
-        .filter_map(|room| {
+        .find(|room| room.room_id.as_str() == candidate_room_id && room.tags.low_priority.is_none())
+        .and_then(|room| {
             crate::state::room_attention_summary(
                 room.display_label.clone(),
                 room.is_dm,
@@ -2256,14 +2264,20 @@ pub(crate) fn refresh_native_attention_candidate_display_projection(state: &mut 
                 && summary.highlight_count == candidate.highlight_count
         })
         .map(|summary| summary.room_display_name)
-        .min()
     else {
         return false;
     };
     if candidate.room_display_name == display_label {
         return false;
     }
-    candidate.room_display_name = display_label;
+    let Some(candidate) = state.native_attention.summary.candidate.as_mut() else {
+        return false;
+    };
+    let candidate_kind = candidate.kind;
+    candidate.room_display_name = display_label.clone();
+    if let Some(notification) = state.native_attention.notification.as_mut() {
+        notification.refresh_title_for_candidate(&display_label, candidate_kind);
+    }
     true
 }
 
