@@ -606,7 +606,7 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         ],
         QaStage::UserVerification => &[
             "user_verification_offered=ok",
-            "user_verification_request_waiting=ok",
+            "user_verification_request_sent=ok",
             "user_verification_accepted=ok",
             "user_verification_sas_match=ok",
             "user_verification_done=ok",

@@ -6,13 +6,10 @@
 //! security details then report B as verified by A while B's device
 //! confirmation stays independent.
 //!
-//! Tuwunel covers the "no direct chat yet" path: the SDK creates a new
-//! encrypted DM and B, after accepting the invite, receives the request that
-//! was sent before B joined. Synapse covers reuse of an existing direct chat.
-//! On Synapse, events sent before a Simplified Sliding Sync client joined
-//! arrive through gap repair (pagination) rather than sync, and the SDK feeds
-//! only synced events to its verification machine, so such a recipient does
-//! not see a request sent into a brand-new DM.
+//! Tuwunel and Synapse both exercise a fresh encrypted DM. The QA waits for
+//! the outgoing verification-progress event, emitted only after the SDK send
+//! completes, before B joins. This makes Synapse's pre-join event-delivery
+//! behavior deterministic instead of racing the command's optimistic state.
 
 use koushi_protocol::command::ContactSecurityRequest;
 use koushi_state::{
@@ -30,8 +27,8 @@ use super::participants::{
 };
 use super::registry::{E2EE_EVENT_TIMEOUT, QaConfig};
 use super::{
-    AccountCommand, CoreCommand, CoreConnection, SasEmoji, VerificationFlowState,
-    VerificationTarget,
+    AccountCommand, CoreCommand, CoreConnection, CoreEvent, E2eeTrustEvent, SasEmoji,
+    VerificationFlowState, VerificationTarget,
 };
 
 async fn wait_until<T>(
@@ -88,6 +85,45 @@ async fn wait_for_done(conn: &mut CoreConnection, flow_id: u64, label: &str) -> 
     .await
 }
 
+async fn wait_for_outgoing_request_sent(
+    conn: &mut CoreConnection,
+    flow_id: u64,
+    user_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let deadline = QaEventDeadline::after(E2EE_EVENT_TIMEOUT);
+    loop {
+        if let VerificationFlowState::Failed {
+            request_id, kind, ..
+        } = &conn.snapshot().e2ee_trust.verification
+            && *request_id == flow_id
+        {
+            return Err(format!("{label}: verification request failed: {kind:?}"));
+        }
+
+        let event = deadline
+            .recv(conn)
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for the SDK request send"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        if let CoreEvent::E2eeTrust(E2eeTrustEvent::VerificationProgress { state, .. }) = event {
+            match state {
+                VerificationFlowState::Requested {
+                    request_id,
+                    target,
+                    initiator: VerificationInitiator::Us,
+                } if request_id == flow_id && target.user_id == user_id => return Ok(()),
+                VerificationFlowState::Failed {
+                    request_id, kind, ..
+                } if request_id == flow_id => {
+                    return Err(format!("{label}: verification request failed: {kind:?}"));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 pub(super) async fn run_user_verification_stage(
     config: &QaConfig,
     conn_a: &mut CoreConnection,
@@ -96,7 +132,7 @@ pub(super) async fn run_user_verification_stage(
     let session_a = authenticated_session_info(conn_a, "user_verification session A")?;
     let session_b = authenticated_session_info(conn_b, "user_verification session B")?;
     let user_b = session_b.user_id.clone();
-    let new_direct_chat = config.server_kind == "tuwunel";
+    let new_direct_chat = matches!(config.server_kind.as_str(), "tuwunel" | "synapse");
 
     // Existing-chat path: A and B already share a direct chat.
     if !new_direct_chat {
@@ -162,37 +198,21 @@ pub(super) async fn run_user_verification_stage(
         }))
         .await
         .map_err(|error| format!("user_verification request: {error}"))?;
-    wait_until(
-        conn_a,
-        "user_verification request waiting",
-        |state| match &state.e2ee_trust.verification {
-            VerificationFlowState::Requested {
-                request_id,
-                initiator: VerificationInitiator::Us,
-                target,
-            } if *request_id == flow_a && target.user_id == user_b => Ok(Some(())),
-            VerificationFlowState::Failed {
-                request_id, kind, ..
-            } if *request_id == flow_a => {
-                Err(format!("user_verification: request failed: {kind:?}"))
-            }
-            _ => Ok(None),
-        },
-    )
-    .await?;
-    println!("user_verification_request_waiting=ok");
+    wait_for_outgoing_request_sent(conn_a, flow_a, &user_b, "user_verification request sent")
+        .await?;
+    println!("user_verification_request_sent=ok");
 
     // 3. B accepts the in-room request (joining the new direct chat first).
     if new_direct_chat {
         let dm_room_id = wait_until(conn_b, "user_verification DM invite", |state| {
-            Ok(state
-                .invites
-                .iter()
-                .find(|invite| invite.is_dm)
-                .map(|invite| invite.room_id.clone()))
+            // B is a fresh QA account, so its only invite is the room A just
+            // created. Do not depend on the server preserving is_direct in
+            // the invited-room projection.
+            Ok(state.invites.first().map(|invite| invite.room_id.clone()))
         })
         .await?;
         accept_invite_for_qa(conn_b, &dm_room_id, "user_verification B joins DM").await?;
+        println!("user_verification_dm_joined=ok");
     }
     let target_a = VerificationTarget {
         user_id: session_a.user_id.clone(),
@@ -205,6 +225,7 @@ pub(super) async fn run_user_verification_stage(
         "user_verification B incoming request",
     )
     .await?;
+    println!("user_verification_incoming_request=ok");
     // The reducer projects an incoming request as acceptable (initiator them).
     wait_until(
         conn_b,

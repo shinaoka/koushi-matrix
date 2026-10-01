@@ -41,7 +41,7 @@ export const HEADLESS_LOCAL_QA_SCENARIO_TOKENS = Object.freeze({
   ]),
   user_verification: Object.freeze([
     "user_verification_offered=ok",
-    "user_verification_request_waiting=ok",
+    "user_verification_request_sent=ok",
     "user_verification_accepted=ok",
     "user_verification_sas_match=ok",
     "user_verification_done=ok",

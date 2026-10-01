@@ -73,6 +73,39 @@ test("every top-bar control shares one vertical center line", async ({ page }) =
   expect(Math.abs(values[0]! - barCenter)).toBeLessThanOrEqual(0.5);
 });
 
+test("session status and Diagnostics stay reachable at the minimum width", async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 800 });
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          locale_profile: { ...snapshot.state.domain.locale_profile, platform: "macos" }
+        }
+      }
+    });
+    window.__harness.pushStateUpdate();
+  });
+
+  await expect(page.locator(".top-actions .sync-status")).toBeVisible();
+  await expect(page.getByRole("button", { name: t("diagnostics.open") })).toBeVisible();
+
+  const layout = await page.evaluate(() => {
+    const titlebar = document.querySelector<HTMLElement>(".titlebar")!;
+    const actions = document.querySelector<HTMLElement>(".top-actions")!;
+    return {
+      overflow: titlebar.scrollWidth - titlebar.clientWidth,
+      actionsWithinTitlebar: actions.getBoundingClientRect().right <= titlebar.getBoundingClientRect().right
+    };
+  });
+  expect(layout.overflow).toBeLessThanOrEqual(1);
+  expect(layout.actionsWithinTitlebar).toBe(true);
+});
+
 test("search scope selector fits Room/DM in English and Japanese", async ({ page }) => {
   await gotoReadyShell(page);
 
