@@ -52,14 +52,22 @@ pub(crate) fn record_search_trace(
 
 #[tauri::command]
 pub async fn submit_search(
+    account_tab_id: Option<String>,
     query: String,
     scope: SearchScopeKind,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let search_scope = resolve_search_scope(scope, state.inner()).await;
-    let settlement =
-        submit_search_production_path(query, scope, search_scope, state.inner()).await?;
+    let search_scope =
+        resolve_search_scope(scope, state.inner(), account_tab_id.as_deref()).await?;
+    let settlement = submit_search_production_path(
+        query,
+        scope,
+        search_scope,
+        state.inner(),
+        account_tab_id.as_deref(),
+    )
+    .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(settlement)
 }
@@ -71,13 +79,14 @@ pub(crate) async fn submit_search_production_path(
     scope: SearchScopeKind,
     search_scope: SearchScope,
     state: &CoreRuntimeState,
+    account_tab_id: Option<&str>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let mut wait_conn = state.runtime.attach();
+    let mut wait_conn = account_connection(state, account_tab_id).await?;
     let baseline_snapshot = wait_conn.versioned_snapshot();
     let baseline_generation = baseline_snapshot.generation;
     let account_key = account_key_from_app_state(&baseline_snapshot.state);
     let account_key = (!account_key.0.is_empty()).then_some(account_key);
-    let request_id = next_request_id(state).await;
+    let request_id = next_request_id_for(state, account_tab_id).await?;
     record_search_trace(scope, &search_scope, &query, request_id);
     submit_core_command(
         state,
@@ -120,15 +129,16 @@ pub(crate) async fn submit_search_production_path(
 
 #[tauri::command]
 pub async fn close_search(
+    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let mut wait_conn = state.inner().runtime.attach();
+    let mut wait_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
     let baseline_snapshot = wait_conn.versioned_snapshot();
     let baseline_generation = baseline_snapshot.generation;
     let account_key = account_key_from_app_state(&baseline_snapshot.state);
     let account_key = (!account_key.0.is_empty()).then_some(account_key);
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     submit_core_command(state.inner(), build_close_search_command(request_id)).await?;
     let outcome = wait_conn
         .wait_for_request_outcome(
@@ -155,17 +165,16 @@ pub async fn close_search(
 
 #[tauri::command]
 pub async fn start_room_crawl(
+    account_tab_id: Option<String>,
     room_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     // Read current crawler settings from the Rust-owned snapshot so this
     // command doesn't duplicate settings state in the TypeScript layer.
-    let settings = state
-        .connection
-        .lock()
-        .await
+    let settings = account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
         .snapshot()
         .settings
         .values
@@ -186,11 +195,12 @@ pub async fn start_room_crawl(
 
 #[tauri::command]
 pub async fn stop_room_crawl(
+    account_tab_id: Option<String>,
     room_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_core_command_with_admission(
         state.inner(),
         CoreCommand::Search(SearchCommand::StopHistoryCrawl {
@@ -245,11 +255,12 @@ pub(super) fn resolve_search_scope_from_active_room(
 async fn resolve_search_scope(
     scope: SearchScopeKind,
     state: &CoreRuntimeState,
-) -> koushi_protocol::SearchScope {
-    let snapshot = state.connection.lock().await.snapshot();
-    resolve_search_scope_from_active_room(
+    account_tab_id: Option<&str>,
+) -> Result<koushi_protocol::SearchScope, String> {
+    let snapshot = account_connection(state, account_tab_id).await?.snapshot();
+    Ok(resolve_search_scope_from_active_room(
         scope,
         snapshot.navigation.active_room_id,
         snapshot.navigation.active_space_id,
-    )
+    ))
 }

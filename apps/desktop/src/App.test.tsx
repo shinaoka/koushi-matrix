@@ -17,7 +17,7 @@ import { COMPOSER_DRAFT_REVISION_ZERO } from "./domain/composerDraftRevision";
 import { MessageSourceDialog, TimelineItemRow } from "./components/TimelineView";
 import { focusedTimelineKey, type TimelineItem } from "./domain/coreEvents";
 import { timelineStoreKeyId } from "./domain/timelineStore";
-import type { DesktopSnapshot } from "./domain/types";
+import type { AccountTabsSnapshot } from "./domain/types";
 import type { RightPanelMode } from "./domain/rightPanel";
 import { formatScheduledSendTime } from "./app/uiShared";
 import { t } from "./i18n/messages";
@@ -137,6 +137,55 @@ describe("ContextualRightPanel", () => {
     expect(markup).not.toContain('aria-label="Activity"');
     expect(markup).toContain('role="separator"');
     expect(markup).toContain('aria-label="Create space"');
+  });
+
+  test("account tabs, App Settings, and diagnostics stay in the shell around login content", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { PersistentAccountShell } = await import("./App");
+    const markup = renderToStaticMarkup(
+      <PersistentAccountShell
+        accountTabs={{
+          selectedTabId: "account:@hiroshi:matrix.org",
+          tabs: [
+            {
+              id: "account:@hiroshi:matrix.org",
+              accountKey: "@hiroshi:matrix.org",
+              homeserver: "https://matrix.org",
+              displayName: "Hiroshi",
+              avatarSourceRef: null,
+              status: "ready",
+              unreadCount: 3
+            },
+            {
+              id: "account:@lab:uni.example",
+              accountKey: "@lab:uni.example",
+              homeserver: "https://uni.example",
+              displayName: "Lab",
+              avatarSourceRef: null,
+              status: "needsVerification",
+              unreadCount: 0
+            }
+          ],
+          badgeCount: 3
+        }}
+        selectedAccountTabId="account:@hiroshi:matrix.org"
+        onSelectAccountTab={() => undefined}
+        onAddAccountTab={() => undefined}
+        onRemoveSignedOutAccountTab={() => undefined}
+        onOpenAppSettings={() => undefined}
+        onOpenDiagnostics={() => undefined}
+      >
+        <main>AuthScreen</main>
+      </PersistentAccountShell>
+    );
+
+    expect(markup).toContain("AuthScreen");
+    expect(markup).toContain('aria-label="Hiroshi: Ready"');
+    expect(markup).toContain('aria-label="Lab: Needs verification"');
+    expect(markup).toContain('aria-label="Add account"');
+    expect(markup).toContain('aria-label="App Settings"');
+    expect(markup).toContain('aria-label="Open diagnostics"');
+    expect(markup).toContain("3");
   });
 
   test("workspace rail renders Rust-projected space attention counts", async () => {
@@ -962,7 +1011,6 @@ describe("ContextualRightPanel", () => {
         mode="search"
         recoverySecretFilled={false}
         recoverySecretInputRef={{ current: null }}
-        savedSessions={[]}
         searchQuery="Alpha"
         searchResults={
           snapshot.state.domain.search.kind === "results" ? snapshot.state.domain.search.results : []
@@ -978,7 +1026,6 @@ describe("ContextualRightPanel", () => {
         onReply={() => undefined}
         onResultSelect={() => undefined}
         onSubmitRecovery={(event) => event.preventDefault()}
-        onSwitchAccount={() => undefined}
         {...trustPanelHandlers}
         onThreadComposerDocumentChange={() => undefined}
         onThreadReplySend={() => undefined}
@@ -1017,7 +1064,6 @@ describe("ContextualRightPanel", () => {
         mode="search"
         recoverySecretFilled={false}
         recoverySecretInputRef={{ current: null }}
-        savedSessions={[]}
         searchIndexingPending={true}
         searchQuery="NoMatch"
         searchResults={[]}
@@ -1032,7 +1078,6 @@ describe("ContextualRightPanel", () => {
         onReply={() => undefined}
         onResultSelect={() => undefined}
         onSubmitRecovery={(event) => event.preventDefault()}
-        onSwitchAccount={() => undefined}
         {...trustPanelHandlers}
         onThreadComposerDocumentChange={() => undefined}
         onThreadReplySend={() => undefined}
@@ -1067,7 +1112,6 @@ describe("ContextualRightPanel", () => {
         mode="search"
         recoverySecretFilled={false}
         recoverySecretInputRef={{ current: null }}
-        savedSessions={[]}
         searchQuery="Alpha"
         searchResults={
           snapshot.state.domain.search.kind === "results"
@@ -1110,7 +1154,6 @@ describe("ContextualRightPanel", () => {
         onReply={() => undefined}
         onResultSelect={() => undefined}
         onSubmitRecovery={(event) => event.preventDefault()}
-        onSwitchAccount={() => undefined}
         {...trustPanelHandlers}
         onThreadComposerDocumentChange={() => undefined}
         onThreadReplySend={() => undefined}
@@ -1142,7 +1185,6 @@ describe("ContextualRightPanel", () => {
         mode="focusedContext"
         recoverySecretFilled={false}
         recoverySecretInputRef={{ current: null }}
-        savedSessions={[]}
         searchQuery="Alpha"
         searchResults={
           snapshot.state.domain.search.kind === "results"
@@ -1183,7 +1225,6 @@ describe("ContextualRightPanel", () => {
         onReply={() => undefined}
         onResultSelect={() => undefined}
         onSubmitRecovery={(event) => event.preventDefault()}
-        onSwitchAccount={() => undefined}
         {...trustPanelHandlers}
         onThreadComposerDocumentChange={() => undefined}
         onThreadReplySend={() => undefined}
@@ -1233,7 +1274,6 @@ describe("ContextualRightPanel", () => {
         mode="thread"
         recoverySecretFilled={false}
         recoverySecretInputRef={{ current: null }}
-        savedSessions={[]}
         searchQuery=""
         searchResults={[]}
         snapshot={snapshot}
@@ -1272,7 +1312,6 @@ describe("ContextualRightPanel", () => {
         onReply={() => undefined}
         onResultSelect={() => undefined}
         onSubmitRecovery={(event) => event.preventDefault()}
-        onSwitchAccount={() => undefined}
         {...trustPanelHandlers}
         onThreadComposerDocumentChange={() => undefined}
         onThreadReplySend={() => undefined}
@@ -1317,7 +1356,6 @@ describe("ContextualRightPanel", () => {
         mode="thread"
         recoverySecretFilled={false}
         recoverySecretInputRef={{ current: null }}
-        savedSessions={[]}
         searchQuery=""
         searchResults={[]}
         snapshot={snapshot}
@@ -1331,7 +1369,6 @@ describe("ContextualRightPanel", () => {
         onReply={() => undefined}
         onResultSelect={() => undefined}
         onSubmitRecovery={(event) => event.preventDefault()}
-        onSwitchAccount={() => undefined}
         {...trustPanelHandlers}
         onThreadComposerDocumentChange={() => undefined}
         onThreadReplySend={() => undefined}
@@ -1376,7 +1413,6 @@ describe("ContextualRightPanel", () => {
         mode="thread"
         recoverySecretFilled={false}
         recoverySecretInputRef={{ current: null }}
-        savedSessions={[]}
         searchQuery=""
         searchResults={[]}
         snapshot={snapshot}
@@ -1390,7 +1426,6 @@ describe("ContextualRightPanel", () => {
         onReply={() => undefined}
         onResultSelect={() => undefined}
         onSubmitRecovery={(event) => event.preventDefault()}
-        onSwitchAccount={() => undefined}
         {...trustPanelHandlers}
         onThreadComposerDocumentChange={() => undefined}
         onThreadReplySend={() => undefined}
@@ -1425,9 +1460,8 @@ describe("ContextualRightPanel", () => {
       new URL("./backend/tauriTimelineTransport.ts", import.meta.url),
       "utf8"
     );
-    const transportStart = source.indexOf("const tauriTimelineTransport");
-    const transportEnd = source.indexOf("export {", transportStart);
-    const transportBranch = source.slice(transportStart, transportEnd);
+    const transportStart = source.indexOf("export function createTauriTimelineTransport");
+    const transportBranch = source.slice(transportStart);
 
     expect(transportBranch).toContain("paginate_timeline_backwards");
     expect(transportBranch).toContain("paginate_thread_timeline_backwards");
@@ -1450,7 +1484,10 @@ describe("ContextualRightPanel", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 
     const listenerIndex = source.indexOf("desktopEventPort.listenStateUpdates");
-    const initialSnapshotIndex = source.indexOf(".then(() => api.getSnapshot())", listenerIndex);
+    const initialSnapshotIndex = source.indexOf(
+      ".then(() => api.getSnapshot(accountTabId ?? undefined))",
+      listenerIndex
+    );
     expect(listenerIndex).toBeGreaterThanOrEqual(0);
     expect(initialSnapshotIndex).toBeGreaterThan(listenerIndex);
     expect(source).toContain("api.resyncSnapshot");
@@ -1490,9 +1527,8 @@ describe("ContextualRightPanel", () => {
       new URL("./backend/tauriTimelineTransport.ts", import.meta.url),
       "utf8"
     );
-    const transportStart = source.indexOf("const tauriTimelineTransport");
-    const transportEnd = source.indexOf("export {", transportStart);
-    const transportBranch = source.slice(transportStart, transportEnd);
+    const transportStart = source.indexOf("export function createTauriTimelineTransport");
+    const transportBranch = source.slice(transportStart);
 
     expect(source).toContain("let tauriCoreEventListenerReady");
     expect(transportBranch).toContain(
@@ -1563,7 +1599,6 @@ describe("ContextualRightPanel", () => {
         mode={"recovery" as RightPanelMode}
         recoverySecretFilled={false}
         recoverySecretInputRef={{ current: null }}
-        savedSessions={[]}
         searchQuery=""
         searchResults={[]}
         snapshot={snapshot}
@@ -1577,7 +1612,6 @@ describe("ContextualRightPanel", () => {
         onReply={() => undefined}
         onResultSelect={() => undefined}
         onSubmitRecovery={(event) => event.preventDefault()}
-        onSwitchAccount={() => undefined}
         {...trustPanelHandlers}
         onThreadComposerDocumentChange={() => undefined}
         onThreadReplySend={() => undefined}
@@ -2070,10 +2104,12 @@ describe("desktop integration source guards", () => {
     expect(notificationEffectSource).toContain("snapshot.state.domain.native_attention.summary.capabilities");
     expect(notificationEffectSource).not.toContain("snapshot.state.domain.rooms");
 
-    const clearStart = hookSource.indexOf("safeAttentionSummary.badgeCount !== 0");
-    const clearEnd = hookSource.indexOf("  }, [safeAttentionSummary.badgeCount]);", clearStart);
+    const clearStart = hookSource.indexOf("if (!desktopAttentionPort || badgeCount !== 0)");
+    const clearEnd = hookSource.indexOf("  }, [badgeCount, desktopAttentionPort]);", clearStart);
     const clearSource = hookSource.slice(clearStart, clearEnd);
-    expect(clearSource).toContain("safeAttentionSummary.badgeCount !== 0");
+    expect(clearSource).toContain("badgeCount !== 0");
+    expect(hookSource).toContain("aggregateBadgeCount ?? safeAttentionSummary.badgeCount");
+    expect(appSource).toContain("aggregateBadgeCount: accountTabs?.badgeCount");
     expect(clearSource).toContain("void clearDesktopAttentionNotifications");
     expect(clearSource).toContain("desktopAttentionPort.notifications");
 
@@ -2187,7 +2223,7 @@ describe("desktop integration source guards", () => {
   });
 });
 
-describe("TopBar sync state rendering", () => {
+describe("TopBar account shell rendering", () => {
   test("uses native macOS titlebar overlay instead of a separate titlebar row", () => {
     const config = JSON.parse(
       readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8")
@@ -2206,12 +2242,9 @@ describe("TopBar sync state rendering", () => {
     const markup = renderToStaticMarkup(
       <TopBar
         activeSpaceName="Matrix"
-        isBusy={false}
         searchInputRef={{ current: null }}
         searchQuery=""
         searchScope="allRooms"
-        sync="running"
-        onRestartSync={() => undefined}
         onSearchQueryChange={() => undefined}
         onSearchScopeChange={() => undefined}
       />
@@ -2229,12 +2262,9 @@ describe("TopBar sync state rendering", () => {
     const markup = renderToStaticMarkup(
       <TopBar
         activeSpaceName="Matrix"
-        isBusy={false}
         searchInputRef={{ current: null }}
         searchQuery=""
         searchScope="allRooms"
-        sync="running"
-        onRestartSync={() => undefined}
         onSearchQueryChange={() => undefined}
         onSearchScopeChange={() => undefined}
       />
@@ -2245,60 +2275,59 @@ describe("TopBar sync state rendering", () => {
     expect(markup).not.toContain("titlebar-drag-strip");
   });
 
-  test("renders reconnecting and failed states with a restart control", async () => {
+  test("shows account-tab status instead of global sync actions in the titlebar", async () => {
     vi.stubGlobal("window", { location: { search: "" } });
     const { TopBar } = await import("./App");
-    const baseProps = {
-      activeSpaceName: "Matrix",
-      isBusy: false,
-      searchInputRef: { current: null },
-      searchQuery: "",
-      searchScope: "allRooms" as const,
-      onRestartSync: () => undefined,
-      onSearchQueryChange: () => undefined,
-      onSearchScopeChange: () => undefined
-    };
-
-    const reconnectingMarkup = renderToStaticMarkup(
-      <TopBar
-        {...baseProps}
-        sync={
-          {
-            reconnecting: "sync service is unavailable"
-          } as DesktopSnapshot["state"]["domain"]["sync"]
+    const accountTabs = {
+      selectedTabId: "ready",
+      tabs: [
+        {
+          id: "ready",
+          accountKey: "@work:matrix.org",
+          homeserver: "https://matrix.org",
+          displayName: "Work",
+          avatarSourceRef: null,
+          status: "ready",
+          unreadCount: 0
+        },
+        {
+          id: "warning",
+          accountKey: "@personal:example.org",
+          homeserver: "https://example.org",
+          displayName: "Personal",
+          avatarSourceRef: null,
+          status: "error",
+          unreadCount: 0
+        },
+        {
+          id: "signed-out",
+          accountKey: null,
+          homeserver: null,
+          displayName: "Archived",
+          avatarSourceRef: null,
+          status: "signedOut",
+          unreadCount: 0
         }
+      ],
+      badgeCount: 0
+    } satisfies AccountTabsSnapshot;
+    const markup = renderToStaticMarkup(
+      <TopBar
+        accountTabs={accountTabs}
+        selectedAccountTabId="ready"
+        searchInputRef={{ current: null }}
+        searchQuery=""
+        searchScope="allRooms"
+        onSearchQueryChange={() => undefined}
+        onSearchScopeChange={() => undefined}
       />
     );
-    expect(reconnectingMarkup).toContain("Reconnecting");
-    expect(reconnectingMarkup).toContain("sync service is unavailable");
-    expect(reconnectingMarkup).toContain('aria-label="Restart sync"');
 
-    const failedMarkup = renderToStaticMarkup(
-      <TopBar
-        {...baseProps}
-        sync={
-          {
-            failed: "transport error"
-          } as DesktopSnapshot["state"]["domain"]["sync"]
-        }
-      />
-    );
-    expect(failedMarkup).toContain("Failed");
-    expect(failedMarkup).toContain("transport error");
-    expect(failedMarkup).toContain('aria-label="Restart sync"');
-
-    const authRequiredMarkup = renderToStaticMarkup(
-      <TopBar
-        {...baseProps}
-        sync={
-          {
-            failed: "sync_failed_auth"
-          } as DesktopSnapshot["state"]["domain"]["sync"]
-        }
-      />
-    );
-    expect(authRequiredMarkup).toContain("Sign-in required");
-    expect(authRequiredMarkup).not.toContain('aria-label="Restart sync"');
+    expect(markup).toContain("account-tab-ready-dot");
+    expect(markup).toContain("account-tab-error-dot");
+    expect(markup).toContain("account-tab-signed-out-dot");
+    expect(markup).not.toContain("sync-status");
+    expect(markup).not.toContain('aria-label="Restart sync"');
   });
 });
 
@@ -2794,6 +2823,12 @@ describe("Timeline item row rendering", () => {
         () => undefined
       )
     ).resolves.toBe("Sign-in failed. Please try again.");
+  });
+
+  test("secure backup inspection retry keeps the account-bound API receiver", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    expect(source).toContain("await settleCommand(api.retrySecureBackupInspection());");
+    expect(source).not.toContain("const operation = api.retrySecureBackupInspection;");
   });
 
   test("ready with non-running sync renders the normal shell", () => {

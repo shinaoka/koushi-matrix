@@ -125,8 +125,8 @@ pub enum SearchCrawlerSpeed {
     Paused,
 }
 
-/// Persisted settings that control the search history crawler.
-/// Stored as `settings/settings.json` → `search_crawler`.
+/// Effective settings for one account's search history crawler.
+/// Speed is app-wide; indexing filters belong to the account.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SearchCrawlerSettings {
     #[serde(default)]

@@ -3,7 +3,8 @@ import { ImeSafeForm, ImeTextField, SecureImeTextField } from "./ImeTextControl"
 import { ResetLocalDataConfirmationDialog } from "./dialogs";
 import { RecoveryKeyReveal, copyRecoveryKeyToClipboard } from "./RecoveryKeyReveal";
 import { t } from "../i18n/messages";
-import { api, startSessionVerificationWindowDrag } from "../backend/appRuntime";
+import { api as defaultApi, startSessionVerificationWindowDrag } from "../backend/appRuntime";
+import type { DesktopApi } from "../backend/desktopApi";
 import type {
   CommandReceipt,
   DesktopSnapshot,
@@ -79,22 +80,26 @@ export interface SessionVerificationGateOperations {
   openSecureBackupDiagnostics?: () => Promise<void> | void;
 }
 
-const defaultSessionVerificationGateOperations: SessionVerificationGateOperations = {
-  startOwnUserSas: () => api.startOwnUserSas(),
-  submitRecovery: (secret) => api.submitRecovery(secret),
-  retryCurrentDeviceTrustDiscovery: () => api.retryCurrentDeviceTrustDiscovery(),
-  startDeviceCleanup: () => api.startDeviceCleanup(),
-  submitDeviceCleanupUia: (flowId, password) =>
-    api.submitDeviceCleanupUia(flowId, password),
-  eraseLocalDataAnyway: () => api.eraseLocalDataAnyway(),
-  recoverSecureBackup: api.recoverSecureBackup,
-  bootstrapSecureBackup: (passphrase, intent) => api.bootstrapSecureBackup(passphrase, intent),
-  copyRecoveryKey: copyRecoveryKeyToClipboard,
-  confirmSecureBackupRecoveryKeySaved: (revealRequestId) =>
-    api.confirmSecureBackupRecoveryKeySaved(revealRequestId),
-  retrySecureBackupInspection: api.retrySecureBackupInspection,
-  openSecureBackupDiagnostics: () => api.getDiagnosticSnapshot().then(() => undefined)
-};
+function defaultSessionVerificationGateOperations(
+  api: DesktopApi
+): SessionVerificationGateOperations {
+  return {
+    startOwnUserSas: () => api.startOwnUserSas(),
+    submitRecovery: (secret) => api.submitRecovery(secret),
+    retryCurrentDeviceTrustDiscovery: () => api.retryCurrentDeviceTrustDiscovery(),
+    startDeviceCleanup: () => api.startDeviceCleanup(),
+    submitDeviceCleanupUia: (flowId, password) =>
+      api.submitDeviceCleanupUia(flowId, password),
+    eraseLocalDataAnyway: () => api.eraseLocalDataAnyway(),
+    recoverSecureBackup: api.recoverSecureBackup?.bind(api),
+    bootstrapSecureBackup: (passphrase, intent) => api.bootstrapSecureBackup(passphrase, intent),
+    copyRecoveryKey: copyRecoveryKeyToClipboard,
+    confirmSecureBackupRecoveryKeySaved: (revealRequestId) =>
+      api.confirmSecureBackupRecoveryKeySaved(revealRequestId),
+    retrySecureBackupInspection: api.retrySecureBackupInspection?.bind(api),
+    openSecureBackupDiagnostics: () => api.getDiagnosticSnapshot().then(() => undefined)
+  };
+}
 
 export function secureBackupFailureLabel(kind: SecureBackupGateFailureKind): string {
   return t(
@@ -159,20 +164,23 @@ export function SessionVerificationGate({
   onReceipt,
   onSignOut,
   onStartWindowDrag = startSessionVerificationWindowDrag,
+  desktopApi: providedApi,
   operations: providedOperations
 }: {
   snapshot: DesktopSnapshot;
   onReceipt: (receipt: CommandReceipt) => Promise<void>;
   onSignOut: () => void;
   onStartWindowDrag?: () => void;
+  desktopApi?: DesktopApi;
   operations?: SessionVerificationGateOperations;
 }) {
+  const api = providedApi ?? defaultApi;
   const session = snapshot.state.domain.session;
   const authenticationInvalidated =
     session.kind === "locked" &&
     snapshot.state.domain.session_lock_reason?.kind === "unknownToken";
   const operations = {
-    ...defaultSessionVerificationGateOperations,
+    ...defaultSessionVerificationGateOperations(api),
     ...providedOperations
   };
   const secureBackupGate = snapshot.state.domain.secure_backup_gate;

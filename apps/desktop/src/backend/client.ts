@@ -13,6 +13,7 @@ import type {
   CommandAdmission,
   CommandSettlement,
   ActivityTab,
+  AccountTabsSnapshot,
   DesktopSnapshot,
   DesktopUpdateState,
   ComposerKeyEvent,
@@ -72,10 +73,64 @@ import type { DisplayPlatform } from "../domain/types";
 
 export type DesktopInvoke = typeof invoke;
 
+let selectedAccountTabId: string | null = null;
+
+export function setRendererSelectedAccountTabId(id: string | null): void {
+  selectedAccountTabId = id;
+}
+
+export function isRendererSelectedAccountTabId(id: string): boolean {
+  return selectedAccountTabId === id;
+}
+
 export class TauriDesktopApi implements DesktopApi {
-  constructor(private readonly invokeCommand: DesktopInvoke = invoke) {}
-  async getSnapshot(): Promise<DesktopSnapshot> {
-    return this.invokeCommand<DesktopSnapshot>("get_snapshot");
+  private readonly invokeCommand: DesktopInvoke;
+
+  constructor(
+    private readonly rawInvokeCommand: DesktopInvoke = invoke,
+    private readonly accountTabId?: string
+  ) {
+    this.invokeCommand = ((command, args) => {
+      if (this.accountTabId !== undefined && selectedAccountTabId !== this.accountTabId) {
+        return Promise.reject(new Error("account tab is no longer selected"));
+      }
+      if (this.accountTabId === undefined) {
+        return args === undefined
+          ? this.rawInvokeCommand(command)
+          : this.rawInvokeCommand(command, args);
+      }
+      if (args !== undefined && (args === null || typeof args !== "object" || Array.isArray(args))) {
+        return this.rawInvokeCommand(command, args);
+      }
+      return this.rawInvokeCommand(command, { ...args, accountTabId: this.accountTabId });
+    }) as DesktopInvoke;
+  }
+
+  forAccountTab(tabId: string): DesktopApi {
+    return new TauriDesktopApi(this.rawInvokeCommand, tabId);
+  }
+  async getSnapshot(accountTabId?: string): Promise<DesktopSnapshot> {
+    return accountTabId === undefined
+      ? this.invokeCommand<DesktopSnapshot>("get_snapshot")
+      : this.invokeCommand<DesktopSnapshot>("get_snapshot", { accountTabId });
+  }
+
+  async listAccountTabs(): Promise<AccountTabsSnapshot> {
+    return this.invokeCommand("list_account_tabs");
+  }
+
+  async selectAccountTab(tabId: string): Promise<AccountTabsSnapshot> {
+    return this.invokeCommand("select_account_tab", { tabId });
+  }
+
+  async addAccountTab(): Promise<AccountTabsSnapshot> {
+    return this.invokeCommand("add_account_tab");
+  }
+
+  async removeSignedOutAccountTab(
+    tabId: string
+  ): Promise<AccountTabsSnapshot> {
+    return this.invokeCommand("remove_signed_out_account_tab", { tabId });
   }
 
   async getDesktopUpdateState(): Promise<DesktopUpdateState> {
@@ -94,12 +149,20 @@ export class TauriDesktopApi implements DesktopApi {
     return this.invokeCommand<void>("restart_to_install_desktop_update");
   }
 
-  async settlementSnapshot(): Promise<DesktopSnapshot> {
-    return this.invokeCommand<DesktopSnapshot>("settlement_snapshot");
+  async settlementSnapshot(accountTabId?: string): Promise<DesktopSnapshot> {
+    return accountTabId === undefined
+      ? this.invokeCommand<DesktopSnapshot>("settlement_snapshot")
+      : this.invokeCommand<DesktopSnapshot>("settlement_snapshot", {
+          accountTabId
+        });
   }
 
-  async resyncSnapshot(): Promise<DesktopSnapshot> {
-    return this.invokeCommand<DesktopSnapshot>("resync_snapshot");
+  async resyncSnapshot(accountTabId?: string): Promise<DesktopSnapshot> {
+    return accountTabId === undefined
+      ? this.invokeCommand<DesktopSnapshot>("resync_snapshot")
+      : this.invokeCommand<DesktopSnapshot>("resync_snapshot", {
+          accountTabId
+        });
   }
 
   async getDiagnosticSnapshot(): Promise<DiagnosticLogSnapshot> {
@@ -117,14 +180,20 @@ export class TauriDesktopApi implements DesktopApi {
   }
 
   async startOidcLogin(homeserver: string): Promise<OidcBrowserLaunchResponse> {
-    return this.invokeCommand<OidcBrowserLaunchResponse>("start_oidc_login", { homeserver });
+    const args = this.accountTabId === undefined
+      ? { homeserver }
+      : { homeserver, accountTabId: this.accountTabId };
+    return this.invokeCommand<OidcBrowserLaunchResponse>("start_oidc_login", args);
   }
 
   async completeOidcLogin(
     homeserver: string,
     callbackUrl: string
   ): Promise<CommandSettlement> {
-    return this.invokeCommand<CommandSettlement>("complete_oidc_login", { homeserver, callbackUrl });
+    const args = this.accountTabId === undefined
+      ? { homeserver, callbackUrl }
+      : { homeserver, callbackUrl, accountTabId: this.accountTabId };
+    return this.invokeCommand<CommandSettlement>("complete_oidc_login", args);
   }
 
   async submitLogin(

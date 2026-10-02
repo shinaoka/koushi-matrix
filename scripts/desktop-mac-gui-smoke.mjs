@@ -19,7 +19,7 @@ const checks = [
   "optional synthetic send smoke message",
   "verify QA title panel token after shortcuts",
   "open Keyboard settings shortcut",
-  "open User settings shortcut",
+  "open Account settings shortcut",
   "verify viewport density and native resize receipt",
   "capture private-data-free screenshots",
   "stop app process group"
@@ -681,7 +681,8 @@ async function waitForViewportRootLayout(timeout, minimumGeneration = 0, diagnos
 }
 
 async function runViewportRootLayoutSmoke(timeout, originalWindow, diagnostics = null) {
-  await clickNamedSystemEventsButton("Display");
+  await clickNamedSystemEventsButton("App Settings");
+  await clickNamedSystemEventsButton("Appearance");
   for (const density of ["Compact", "Default", "Comfortable"]) {
     const before = await currentWindowInfo();
     await clickDensityButton(density);

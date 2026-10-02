@@ -12,6 +12,7 @@
 //! capabilities live here behind a port. StoreActor is the only actor allowed
 //! platform-conditional code.
 
+mod account_settings;
 pub(crate) mod composer_drafts;
 mod navigation;
 mod read_state;
@@ -864,6 +865,54 @@ impl StoreActor {
     /// created.
     pub fn data_dir(&self) -> &std::path::Path {
         &self.data_dir
+    }
+
+    pub fn account_local_data_dir(&self, key_id: &SessionKeyId) -> PathBuf {
+        self.account_root_dir(key_id)
+    }
+
+    pub fn load_saved_session_index(&self) -> Result<koushi_key::SavedSessionIndex, CoreFailure> {
+        self.credential_store
+            .load_saved_sessions()
+            .map_err(|_| CoreFailure::StoreUnavailable)
+    }
+
+    pub fn save_saved_session_index(
+        &self,
+        index: &koushi_key::SavedSessionIndex,
+    ) -> Result<(), CoreFailure> {
+        self.credential_store
+            .save_saved_sessions(index)
+            .map_err(|_| CoreFailure::StoreUnavailable)
+    }
+
+    pub fn select_saved_account(
+        &self,
+        account_key: &koushi_protocol::AccountKey,
+    ) -> Result<bool, CoreFailure> {
+        self.credential_store
+            .select_saved_account(account_key)
+            .map_err(|_| CoreFailure::StoreUnavailable)
+    }
+
+    pub fn ensure_saved_account_tab(
+        &self,
+        account_key: &koushi_protocol::AccountKey,
+        homeserver: &str,
+        select: bool,
+    ) -> Result<(), CoreFailure> {
+        self.credential_store
+            .ensure_saved_account_tab(account_key, homeserver, select)
+            .map_err(|_| CoreFailure::StoreUnavailable)
+    }
+
+    pub fn remove_saved_account_tab(
+        &self,
+        account_key: &koushi_protocol::AccountKey,
+    ) -> Result<bool, CoreFailure> {
+        self.credential_store
+            .remove_saved_account_tab(account_key)
+            .map_err(|_| CoreFailure::StoreUnavailable)
     }
 
     // --- private helpers ---

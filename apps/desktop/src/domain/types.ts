@@ -39,11 +39,38 @@ export interface CreateRoomParentSpace {
 }
 
 export interface DesktopSnapshot {
+  account_tab_id?: string;
   state_generation?: number;
   state: AppState;
   sidebar: SidebarModel;
   timeline: TimelineMessage[];
   thread: ThreadSnapshot | null;
+}
+
+export type AccountTabStatus =
+  | "addAccount"
+  | "restoring"
+  | "authenticating"
+  | "needsVerification"
+  | "ready"
+  | "signedOut"
+  | "loggingOut"
+  | "error";
+
+export interface AccountTabSummary {
+  id: string;
+  accountKey: string | null;
+  homeserver: string | null;
+  displayName: string | null;
+  avatarSourceRef: string | null;
+  status: AccountTabStatus;
+  unreadCount: number;
+}
+
+export interface AccountTabsSnapshot {
+  selectedTabId: string;
+  tabs: AccountTabSummary[];
+  badgeCount: number;
 }
 
 export interface SavedSessionInfo {
@@ -168,6 +195,7 @@ export interface SettingsValues {
 }
 
 export interface SettingsPatch {
+  scope?: "account" | "app";
   locale?: LocaleSettings;
   appearance?: AppearanceSettings;
   typography?: TypographySettings;

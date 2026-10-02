@@ -1299,6 +1299,7 @@ impl SearchActor {
                 checkpoint,
                 messages,
                 completed,
+                work_permit,
             } => {
                 if checkpoint.settings_generation != self.crawl_settings_generation {
                     return;
@@ -1309,6 +1310,7 @@ impl SearchActor {
                 for message in messages {
                     self.handle_index(message);
                 }
+                drop(work_permit);
                 let _ = self
                     .action_tx
                     .send(vec![AppAction::HistoryCrawlProgress {

@@ -3,12 +3,12 @@ import { expect, test } from "@playwright/test";
 test("settings reserve native-button space without a mounted titlebar", async ({ page }) => {
   await page.setViewportSize({ width: 700, height: 320 });
   await page.goto("/appHarness.html");
-  await page.getByRole("button", { name: "User settings", exact: true }).click();
+  await page.getByRole("button", { name: "Account Settings", exact: true }).click();
   await page.evaluate(() => {
     document.documentElement.dataset.platform = "macos";
     document.querySelector(".titlebar")?.remove();
   });
-  const dialog = page.getByRole("dialog", { name: "User settings" });
+  const dialog = page.getByRole("dialog", { name: "Account Settings" });
   const rect = await dialog.boundingBox();
   expect(rect!.y).toBeGreaterThanOrEqual(44);
   expect(rect!.y + rect!.height).toBeLessThanOrEqual(320);
@@ -111,31 +111,36 @@ test("real emoji picker autofocus and Escape are local to the parent modal", asy
   await expect(page.getByRole("button", { name: "Open modal emoji", exact: true })).toBeFocused();
 });
 
-test("session status respects changing native safe space and stays scrollable in a short window", async ({ page }) => {
+test("session settings remain scrollable inside the native safe area", async ({ page }) => {
   await page.setViewportSize({ width: 820, height: 320 });
   await page.goto("/appHarness.html");
-  await page.getByRole("button", { name: "Open session status", exact: true }).click();
+  const settings = page.getByRole("button", { name: "Account Settings", exact: true });
+  await settings.click();
+  const dialog = page.getByRole("dialog", { name: "Account Settings", exact: true });
+  await dialog.getByRole("tab", { name: "Sessions", exact: true }).click();
   await page.evaluate(() => {
     document.documentElement.dataset.platform = "macos";
     document.documentElement.style.setProperty("--webview-zoom", "0.5");
   });
-  const popup = page.locator(".session-status-popover");
-  await expect.poll(async () => (await popup.boundingBox())!.y).toBeGreaterThanOrEqual(88);
-  const bounds = (await popup.boundingBox())!;
+  const bounds = (await dialog.boundingBox())!;
+  expect(bounds.y).toBeGreaterThanOrEqual(44);
   expect(bounds.y + bounds.height).toBeLessThanOrEqual(320);
-  const last = popup.getByRole("button").last();
+  const sessionPanel = dialog.locator("#settings-page-sessions");
+  await expect(sessionPanel).toBeVisible();
+  await expect(dialog.locator(".settings-category-content")).toHaveCSS("overflow-y", "auto");
+  const last = sessionPanel.getByRole("button").last();
   await last.focus();
   await expect(last).toBeInViewport();
   await page.keyboard.press("Escape");
-  await expect(popup).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Open session status", exact: true })).toBeFocused();
+  await expect(dialog).toBeHidden();
+  await expect(settings).toBeFocused();
 });
 
 test("root settings, native Help, and create dialogs restore pointer origins", async ({ page }) => {
   await page.goto("/appHarness.html");
-  const settings = page.getByRole("button", { name: "User settings", exact: true });
+  const settings = page.getByRole("button", { name: "Account Settings", exact: true });
   await settings.click();
-  await expect(page.getByRole("dialog", { name: "User settings", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Account Settings", exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(settings).toBeFocused();
   // The native menu has no WebView DOM button. Preserve the most recent app

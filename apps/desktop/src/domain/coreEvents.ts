@@ -1287,12 +1287,14 @@ export type StateUpdateEnvelope =
       protocol_version: 1;
       kind: "delta";
       generation: number;
+      account_tab_id?: string;
       changed: StateDeltaChangedSlices;
     }
   | {
       protocol_version: 1;
       kind: "snapshot";
       generation: number;
+      account_tab_id?: string;
       snapshot: DesktopSnapshot;
       reason: StateUpdateSnapshotReason;
     };
@@ -1395,6 +1397,7 @@ export type IntentOutcome =
 // ---------------------------------------------------------------------------
 
 export type CoreEventPayload =
+  (
   | { kind: "Account"; event: AccountEvent }
   | { kind: "Sync"; event: SyncEvent }
   | { kind: "Room"; event: RoomEvent }
@@ -1423,7 +1426,8 @@ export type CoreEventPayload =
       published_generation: number;
     }
   /** Emitted by the Tauri adapter when EventStreamLag is detected. */
-  | { kind: "ResyncMarker" };
+  | { kind: "ResyncMarker" }
+  ) & { account_tab_id?: string };
 
 /**
  * Issue #450: whether a CoreEvent reports a recognized-but-unavailable slash

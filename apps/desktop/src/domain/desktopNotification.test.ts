@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
   clearDesktopAttentionNotifications,
+  desktopNotificationActivationPlan,
   desktopNotificationTargetPlan,
   sendDesktopAttentionNotification,
   type DesktopNotificationActivation,
@@ -66,10 +67,27 @@ describe("desktop notification dispatch", () => {
 
 describe("desktop notification activation plan", () => {
   const target = (overrides: Partial<DesktopNotificationActivation>) => ({
+    account_tab_id: "account:@alice:example.invalid",
     room_id: "!room:example.invalid",
     event_id: "$event:example.invalid",
     thread_root_event_id: null,
     ...overrides
+  });
+
+  test("keeps the owning account attached to the navigation target", () => {
+    expect(
+      desktopNotificationActivationPlan(
+        target({ thread_root_event_id: "$root:example.invalid" })
+      )
+    ).toEqual({
+      accountTabId: "account:@alice:example.invalid",
+      target: {
+        kind: "thread",
+        roomId: "!room:example.invalid",
+        rootEventId: "$root:example.invalid",
+        eventId: "$event:example.invalid"
+      }
+    });
   });
 
   test("opens the thread anchored at the triggering reply", () => {

@@ -81,7 +81,11 @@ test("ready sync lifecycle stays in the normal shell", async ({ page }) => {
     await expect(page.getByRole("main", { name: /Verify this session|Preparing your rooms/ })).toHaveCount(0);
   }
 
-  await expect(page.getByRole("button", { name: "Restart sync" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Restart sync" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Account Settings", exact: true }).click();
+  const accountSettings = page.getByRole("dialog", { name: "Account Settings", exact: true });
+  await accountSettings.getByRole("tab", { name: "Sessions", exact: true }).click();
+  await expect(accountSettings.getByRole("button", { name: "Restart sync", exact: true })).toBeVisible();
 });
 
 test("gate controls follow the Core admission matrix", async ({ page }) => {
@@ -147,6 +151,53 @@ test("recovery and bootstrap actions preserve secrets outside observable state",
   const observable = await page.evaluate(() => `${JSON.stringify(window.__harness.currentSnapshot())}\n${document.body.textContent ?? ""}`);
   expect(observable).not.toContain(passphrase);
   expect(observable).not.toContain(destination);
+});
+
+test("secure backup gate actions retain the selected account API receiver", async ({ page }) => {
+  await page.goto("/appHarness.html");
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          secure_backup_gate: { kind: "blockedFailed", failure: "network" }
+        }
+      }
+    });
+    window.__harness.pushStateUpdate();
+    window.__harness.clearInvocations();
+  });
+  await page.getByRole("button", { name: "Retry secure backup", exact: true }).click();
+  await expect.poll(() => page.evaluate(
+    () => window.__harness.invocationsOf("retry_secure_backup_inspection").length
+  )).toBe(1);
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          secure_backup_gate: { kind: "existingBackupNeedsRecovery", failure: "network" }
+        }
+      }
+    });
+    window.__harness.pushStateUpdate();
+    window.__harness.clearInvocations();
+  });
+  const secret = "SYNTHETIC_BACKUP_RECOVERY_4401";
+  await page.getByLabel("Secure backup recovery key").fill(secret);
+  await page.getByRole("button", { name: "Recover secure backup", exact: true }).click();
+  await expect.poll(() => page.evaluate(
+    () => window.__harness.invocationsOf("recover_secure_backup")[0]?.args
+  )).toEqual({ secret: "[REDACTED]" });
+  await expect(page.locator("body")).not.toContainText(secret);
 });
 
 test("device cleanup is explicit, remote-first, and keeps UIA secrets out of observable state", async ({ page }) => {

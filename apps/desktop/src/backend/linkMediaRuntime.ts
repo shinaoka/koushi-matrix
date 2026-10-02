@@ -26,7 +26,13 @@ export function renderableThumbnailSourceUrl(sourceRef: string): string | null {
 
 export async function saveReadyMediaFile(
   sourceUrl: string,
-  filename: string
+  filename: string,
+  accountTabId?: string
 ): Promise<void> {
-  await activePort().saveMediaFile(sourceUrl, filename);
+  const port = activePort();
+  if (accountTabId === undefined) {
+    await port.saveMediaFile(sourceUrl, filename);
+  } else {
+    await port.saveMediaFile(sourceUrl, filename, accountTabId);
+  }
 }

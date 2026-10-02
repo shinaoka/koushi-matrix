@@ -11,6 +11,18 @@ export type MessageId =
   | "settings.categorySessions"
   | "settings.categoryPreferences"
   | "settings.categoryHelp"
+  | "settings.accountSettings"
+  | "settings.appSettings"
+  | "accountTabs.addAccount"
+  | "accountTabs.select"
+  | "accountTabs.restoring"
+  | "accountTabs.authenticating"
+  | "accountTabs.needsVerification"
+  | "accountTabs.ready"
+  | "accountTabs.signedOut"
+  | "accountTabs.loggingOut"
+  | "accountTabs.error"
+  | "accountTabs.removeFromList"
 
   | "action.add"
   | "action.back"
@@ -138,6 +150,7 @@ export type MessageId =
   | "composer.imageCompressionTitle"
   | "composer.placeholder"
   | "composer.replying"
+  | "composer.sendingAs"
   | "composer.slashCommandUnavailable"
   | "composer.removeAttachment"
   | "composer.cancelReply"
@@ -661,7 +674,6 @@ export type MessageId =
   | "sessionStatus.connectionUnavailable"
   | "sessionStatus.copyDeviceId"
   | "sessionStatus.crossSigned"
-  | "sessionStatus.deviceId"
   | "sessionStatus.deviceName"
   | "sessionStatus.failed"
   | "sessionStatus.failureSdk"
@@ -671,26 +683,19 @@ export type MessageId =
   | "sessionStatus.failureAuthentication"
   | "sessionStatus.failureNetwork"
   | "sessionStatus.failureServer"
-  | "sessionStatus.homeserver"
   | "sessionStatus.identity"
   | "sessionStatus.identityMissing"
   | "sessionStatus.identityUnverified"
   | "sessionStatus.identityVerified"
   | "sessionStatus.keyBackup"
   | "sessionStatus.lastChecked"
-  | "sessionStatus.manageAccount"
   | "sessionStatus.notChecked"
   | "sessionStatus.notCrossSigned"
-  | "sessionStatus.open"
-  | "sessionStatus.openWithRuntimeWarning"
-  | "sessionStatus.openWithRuntimeWarnings"
   | "sessionStatus.ownerCrossSigning"
   | "sessionStatus.recheck"
   | "sessionStatus.retry"
   | "sessionStatus.runtimeAlertSecureBackup"
-  | "sessionStatus.runtimeWarningCount"
   | "sessionStatus.runtimeWarnings"
-  | "sessionStatus.runtimeWarningsCount"
   | "sessionStatus.sync"
   | "sessionStatus.syncError"
   | "sessionStatus.syncRunning"
@@ -700,7 +705,6 @@ export type MessageId =
   | "sessionStatus.unavailable"
   | "sessionStatus.unverified"
   | "sessionStatus.unknown"
-  | "sessionStatus.userId"
   | "sessionStatus.verification"
   | "sessionStatus.verified"
   | "settings.accounts"
@@ -1492,6 +1496,8 @@ export type MessageId =
   | "settings.searchHistoryResume"
   | "settings.searchHistoryRebuild"
   | "settings.searchHistoryRebuildConfirm"
+  | "settings.searchHistoryBudget"
+  | "settings.searchHistoryBudgetDescription"
   | "settings.searchHistorySpeed"
   | "settings.searchHistorySpeedStandard"
   | "settings.searchHistorySpeedFast"
@@ -1727,6 +1733,18 @@ const en: Catalog = {
   "settings.categorySessions": "Sessions",
   "settings.categoryPreferences": "Preferences",
   "settings.categoryHelp": "Help & About",
+  "settings.accountSettings": "Account Settings",
+  "settings.appSettings": "App Settings",
+  "accountTabs.addAccount": "Add account",
+  "accountTabs.select": "{account}: {status}",
+  "accountTabs.restoring": "Restoring",
+  "accountTabs.authenticating": "Signing in",
+  "accountTabs.needsVerification": "Needs verification",
+  "accountTabs.ready": "Ready",
+  "accountTabs.signedOut": "Sign in again",
+  "accountTabs.loggingOut": "Signing out",
+  "accountTabs.error": "Account error",
+  "accountTabs.removeFromList": "Remove {account} from list",
 
   "action.add": "Add",
   "action.back": "Back",
@@ -1858,6 +1876,7 @@ const en: Catalog = {
   "composer.imageCompressionTitle": "Compress image",
   "composer.placeholder": "Message {roomName}",
   "composer.replying": "Replying",
+  "composer.sendingAs": "Sending as {account}",
   "composer.slashCommandUnavailable": "This command is not available in this composer.",
   "composer.removeAttachment": "Remove attachment",
   "composer.cancelReply": "Cancel reply",
@@ -1914,7 +1933,7 @@ const en: Catalog = {
   "context.openSpaceInfo": "Space info",
   "context.openThread": "Reply in thread",
   "context.openUserInfo": "User info",
-  "context.openUserSettings": "User settings",
+  "context.openUserSettings": "Account Settings",
   "context.redactMessage": "Redact",
   "context.removeFromFavourites": "Remove from Favourites",
   "context.removeFromLowPriority": "Remove from Low priority",
@@ -2123,7 +2142,7 @@ const en: Catalog = {
   "panel.search": "Search",
   "panel.spaceInfo": "Space info",
   "panel.thread": "Thread",
-  "panel.userSettings": "User settings",
+  "panel.userSettings": "Account Settings",
   "panel.people": "People",
   "panel.profile": "Profile",
   "people.membership": "Membership",
@@ -2182,7 +2201,7 @@ const en: Catalog = {
   "people.security.verifyChatNew": "You don't have a direct chat with this person yet. Koushi creates a new encrypted direct chat with them and waits up to a minute for them to join before sending the request.",
   "people.security.verifyHow": "They accept the request in their app. Then you both compare emoji, in person or over another trusted channel. Verifying them doesn't confirm devices they haven't confirmed themselves.",
   "people.security.verifySend": "Send request",
-  "people.security.verifyRequiresCrossSigning": "To verify other people, this session needs your own cross-signing keys. Verify this session or set up cross-signing in User settings → Encryption first.",
+  "people.security.verifyRequiresCrossSigning": "To verify other people, this session needs your own cross-signing keys. Verify this session or set up cross-signing in Account Settings → Encryption first.",
   "people.security.verifyBusy": "Another verification is in progress. You can verify this person after it finishes.",
   "people.security.verifyWaiting": "Waiting for them to accept the request in their app…",
   "people.security.verifyIncoming": "This person asked to verify you.",
@@ -2390,7 +2409,6 @@ const en: Catalog = {
   "sessionStatus.connectionUnavailable": "Connection unavailable",
   "sessionStatus.copyDeviceId": "Copy Device ID",
   "sessionStatus.crossSigned": "Cross-signed",
-  "sessionStatus.deviceId": "Device ID",
   "sessionStatus.deviceName": "Device name",
   "sessionStatus.failed": "Check failed",
   "sessionStatus.failureSdk": "Session check failed",
@@ -2400,26 +2418,19 @@ const en: Catalog = {
   "sessionStatus.failureAuthentication": "Sign-in is required to check this session",
   "sessionStatus.failureNetwork": "Could not check this session because of a network problem",
   "sessionStatus.failureServer": "The server could not complete the session check",
-  "sessionStatus.homeserver": "Homeserver",
   "sessionStatus.identity": "Own identity",
   "sessionStatus.identityMissing": "Identity missing",
   "sessionStatus.identityUnverified": "Identity unverified",
   "sessionStatus.identityVerified": "Identity verified",
   "sessionStatus.keyBackup": "Key backup",
   "sessionStatus.lastChecked": "Last checked",
-  "sessionStatus.manageAccount": "Manage account and devices",
   "sessionStatus.notChecked": "Not checked",
   "sessionStatus.notCrossSigned": "Not cross-signed",
-  "sessionStatus.open": "Open session status",
-  "sessionStatus.openWithRuntimeWarning": "Open session status, {count} runtime warning",
-  "sessionStatus.openWithRuntimeWarnings": "Open session status, {count} runtime warnings",
   "sessionStatus.ownerCrossSigning": "Owner cross-signing",
   "sessionStatus.recheck": "Recheck",
   "sessionStatus.retry": "Retry",
   "sessionStatus.runtimeAlertSecureBackup": "Secure Backup unavailable",
-  "sessionStatus.runtimeWarningCount": "{count} runtime warning",
   "sessionStatus.runtimeWarnings": "Runtime warnings",
-  "sessionStatus.runtimeWarningsCount": "{count} runtime warnings",
   "sessionStatus.sync": "Sync",
   "sessionStatus.syncError": "Error",
   "sessionStatus.syncRunning": "Running",
@@ -2429,7 +2440,6 @@ const en: Catalog = {
   "sessionStatus.unavailable": "Unavailable",
   "sessionStatus.unverified": "Unverified",
   "sessionStatus.unknown": "Unknown",
-  "sessionStatus.userId": "User ID",
   "sessionStatus.verification": "Verification",
   "sessionStatus.verified": "Verified",
   "settings.accounts": "Accounts",
@@ -2957,7 +2967,7 @@ const en: Catalog = {
   "shortcut.noteCallsDeferred": "Calls are out of scope for this milestone.",
   "shortcut.noteGoHomeAdapted": "macOS uses Ctrl+Shift+H in some Matrix clients; this prototype keeps one cross-platform row.",
   "shortcut.noteUploadUiDeferred": "Upload UI is not implemented yet.",
-  "shortcut.openUserSettings": "User settings",
+  "shortcut.openUserSettings": "Account Settings",
   "shortcut.parityAdapted": "adapted",
   "shortcut.parityDeferred": "deferred",
   "shortcut.parityNotApplicable": "not applicable",
@@ -3196,7 +3206,7 @@ const en: Catalog = {
   "workspace.searchScope": "Search scope",
   "workspace.spaceInfoSettings": "Space info and settings",
   "workspace.threads": "Threads",
-  "workspace.userSettings": "User settings",
+  "workspace.userSettings": "Account Settings",
   "workspace.workspaces": "Workspaces",
   "spaceMembers.title": "Space members",
   "spaceMembers.search": "Search space members",
@@ -3237,11 +3247,13 @@ const en: Catalog = {
   "threads.title": "Threads",
   "settings.searchHistory": "Search history",
   "settings.searchHistoryCrawler": "Crawler",
-  "settings.searchHistoryPause": "Pause crawler",
-  "settings.searchHistoryResume": "Resume crawler",
+  "settings.searchHistoryPause": "Pause background work",
+  "settings.searchHistoryResume": "Resume background work",
   "settings.searchHistoryRebuild": "Rebuild search database",
   "settings.searchHistoryRebuildConfirm": "Rebuild the search database? This clears the local search index and re-crawls room history.",
-  "settings.searchHistorySpeed": "Crawl speed",
+  "settings.searchHistoryBudget": "Background work",
+  "settings.searchHistoryBudgetDescription": "Search crawling and media prefetch share this budget across all accounts; Off pauses both.",
+  "settings.searchHistorySpeed": "Background work speed",
   "settings.searchHistorySpeedStandard": "Standard",
   "settings.searchHistorySpeedFast": "Fast",
   "settings.searchHistorySpeedSlow": "Slow",
@@ -3371,6 +3383,18 @@ const ja: Catalog = {
   "settings.categorySessions": "セッション",
   "settings.categoryPreferences": "環境設定",
   "settings.categoryHelp": "ヘルプと情報",
+  "settings.accountSettings": "アカウント設定",
+  "settings.appSettings": "アプリ設定",
+  "accountTabs.addAccount": "アカウントを追加",
+  "accountTabs.select": "{account}：{status}",
+  "accountTabs.restoring": "復元中",
+  "accountTabs.authenticating": "サインイン中",
+  "accountTabs.needsVerification": "本人確認が必要",
+  "accountTabs.ready": "利用可能",
+  "accountTabs.signedOut": "再サインイン",
+  "accountTabs.loggingOut": "サインアウト中",
+  "accountTabs.error": "アカウントエラー",
+  "accountTabs.removeFromList": "{account}を一覧から削除",
 
   "action.add": "追加",
   "action.back": "戻る",
@@ -3494,6 +3518,7 @@ const ja: Catalog = {
   "composer.messageComposer": "メッセージ入力欄",
   "composer.placeholder": "{roomName}にメッセージ",
   "composer.replying": "返信中",
+  "composer.sendingAs": "{account}として送信",
   "composer.slashCommandUnavailable": "このコマンドはこの入力欄では実行できません。",
   "composer.removeAttachment": "添付を削除",
   "composer.cancelReply": "返信をキャンセル",
@@ -3555,7 +3580,7 @@ const ja: Catalog = {
   "context.openSpaceInfo": "スペース情報",
   "context.openThread": "スレッドで返信",
   "context.openUserInfo": "ユーザー情報",
-  "context.openUserSettings": "ユーザー設定",
+  "context.openUserSettings": "アカウント設定",
   "context.redactMessage": "削除",
   "context.removeFromFavourites": "お気に入りから削除",
   "context.removeFromLowPriority": "低優先度から削除",
@@ -3764,7 +3789,7 @@ const ja: Catalog = {
   "panel.search": "検索",
   "panel.spaceInfo": "スペース情報",
   "panel.thread": "スレッド",
-  "panel.userSettings": "ユーザー設定",
+  "panel.userSettings": "アカウント設定",
   "panel.people": "メンバー",
   "panel.profile": "プロフィール",
   "people.membership": "参加状態",
@@ -3823,7 +3848,7 @@ const ja: Catalog = {
   "people.security.verifyChatNew": "この人とのダイレクトチャットはまだありません。Koushiが新しい暗号化ダイレクトチャットを作成し、相手の参加を最大1分待ってからリクエストを送信します。",
   "people.security.verifyHow": "相手が自分のアプリでリクエストを承認した後、対面または別の信頼できる経路で、お互いに絵文字を比較します。検証しても、相手が確認していないデバイスが確認されるわけではありません。",
   "people.security.verifySend": "リクエストを送信",
-  "people.security.verifyRequiresCrossSigning": "他の人を検証するには、このセッションにあなた自身のクロス署名鍵が必要です。先にこのセッションを検証するか、ユーザー設定 → 暗号化でクロス署名を設定してください。",
+  "people.security.verifyRequiresCrossSigning": "他の人を検証するには、このセッションにあなた自身のクロス署名鍵が必要です。先にこのセッションを検証するか、アカウント設定 → 暗号化でクロス署名を設定してください。",
   "people.security.verifyBusy": "別の検証が進行中です。完了した後にこの人を検証できます。",
   "people.security.verifyWaiting": "相手が自分のアプリでリクエストを承認するのを待っています…",
   "people.security.verifyIncoming": "この人があなたの検証を求めています。",
@@ -4031,7 +4056,6 @@ const ja: Catalog = {
   "sessionStatus.connectionUnavailable": "接続を利用できません",
   "sessionStatus.copyDeviceId": "デバイス ID をコピー",
   "sessionStatus.crossSigned": "クロス署名済み",
-  "sessionStatus.deviceId": "デバイス ID",
   "sessionStatus.deviceName": "デバイス名",
   "sessionStatus.failed": "確認失敗",
   "sessionStatus.failureSdk": "セッションの確認に失敗しました",
@@ -4041,26 +4065,19 @@ const ja: Catalog = {
   "sessionStatus.failureAuthentication": "このセッションを確認するにはサインインが必要です",
   "sessionStatus.failureNetwork": "ネットワークの問題によりこのセッションを確認できませんでした",
   "sessionStatus.failureServer": "サーバーがセッションの確認を完了できませんでした",
-  "sessionStatus.homeserver": "ホームサーバー",
   "sessionStatus.identity": "自分の ID",
   "sessionStatus.identityMissing": "ID がありません",
   "sessionStatus.identityUnverified": "ID は未検証です",
   "sessionStatus.identityVerified": "ID を検証済み",
   "sessionStatus.keyBackup": "鍵バックアップ",
   "sessionStatus.lastChecked": "最終確認",
-  "sessionStatus.manageAccount": "アカウントとデバイスを管理",
   "sessionStatus.notChecked": "未確認",
   "sessionStatus.notCrossSigned": "クロス署名なし",
-  "sessionStatus.open": "セッション状態を開く",
-  "sessionStatus.openWithRuntimeWarning": "セッション状態を開く（実行時の警告 {count} 件）",
-  "sessionStatus.openWithRuntimeWarnings": "セッション状態を開く（実行時の警告 {count} 件）",
   "sessionStatus.ownerCrossSigning": "所有者のクロス署名",
   "sessionStatus.recheck": "再確認",
   "sessionStatus.retry": "再試行",
   "sessionStatus.runtimeAlertSecureBackup": "安全なバックアップを利用できません",
-  "sessionStatus.runtimeWarningCount": "実行時の警告 {count} 件",
   "sessionStatus.runtimeWarnings": "実行時の警告",
-  "sessionStatus.runtimeWarningsCount": "実行時の警告 {count} 件",
   "sessionStatus.sync": "同期",
   "sessionStatus.syncError": "エラー",
   "sessionStatus.syncRunning": "実行中",
@@ -4070,7 +4087,6 @@ const ja: Catalog = {
   "sessionStatus.unavailable": "利用不可",
   "sessionStatus.unverified": "未検証",
   "sessionStatus.unknown": "不明",
-  "sessionStatus.userId": "ユーザー ID",
   "sessionStatus.verification": "検証",
   "sessionStatus.verified": "検証済み",
   "settings.accounts": "アカウント",
@@ -4598,7 +4614,7 @@ const ja: Catalog = {
   "shortcut.noteCallsDeferred": "通話はこのマイルストーンの範囲外です。",
   "shortcut.noteGoHomeAdapted": "一部のMatrixクライアントのmacOS版ではCtrl+Shift+Hですが、この試作ではクロスプラットフォームの1行に統一しています。",
   "shortcut.noteUploadUiDeferred": "アップロードUIはまだ実装されていません。",
-  "shortcut.openUserSettings": "ユーザー設定",
+  "shortcut.openUserSettings": "アカウント設定",
   "shortcut.parityAdapted": "調整済み",
   "shortcut.parityDeferred": "延期",
   "shortcut.parityNotApplicable": "対象外",
@@ -4836,7 +4852,7 @@ const ja: Catalog = {
   "workspace.searchScope": "検索範囲",
   "workspace.spaceInfoSettings": "スペース情報と設定",
   "workspace.threads": "スレッド",
-  "workspace.userSettings": "ユーザー設定",
+  "workspace.userSettings": "アカウント設定",
   "workspace.workspaces": "ワークスペース",
   "spaceMembers.title": "スペースのメンバー",
   "spaceMembers.search": "スペースのメンバーを検索",
@@ -4877,11 +4893,13 @@ const ja: Catalog = {
   "threads.title": "スレッド",
   "settings.searchHistory": "検索履歴",
   "settings.searchHistoryCrawler": "クローラー",
-  "settings.searchHistoryPause": "クローラーを一時停止",
-  "settings.searchHistoryResume": "クローラーを再開",
+  "settings.searchHistoryPause": "バックグラウンド処理を一時停止",
+  "settings.searchHistoryResume": "バックグラウンド処理を再開",
   "settings.searchHistoryRebuild": "検索データベースを再構築",
   "settings.searchHistoryRebuildConfirm": "検索データベースを再構築しますか？ローカル検索インデックスを消去し、ルーム履歴を再クロールします。",
-  "settings.searchHistorySpeed": "クロール速度",
+  "settings.searchHistoryBudget": "バックグラウンド処理",
+  "settings.searchHistoryBudgetDescription": "検索クロールとメディアの先読みは全アカウントでこの予算を共有します。オフにすると両方を一時停止します。",
+  "settings.searchHistorySpeed": "バックグラウンド処理の速度",
   "settings.searchHistorySpeedStandard": "標準",
   "settings.searchHistorySpeedFast": "高速",
   "settings.searchHistorySpeedSlow": "低速",

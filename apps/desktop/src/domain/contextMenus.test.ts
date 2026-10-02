@@ -115,8 +115,7 @@ describe("context menu registry", () => {
       "leaveSpace"
     ]);
     expect(contextMenuItems({ kind: "account" }).map((item) => item.id)).toEqual([
-      "openUserSettings",
-      "switchAccount"
+      "openUserSettings"
     ]);
   });
 

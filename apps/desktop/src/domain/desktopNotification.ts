@@ -7,6 +7,7 @@ import type { DesktopAttentionDiagnosticSink } from "./desktopAttention";
  * identifiers it needs to present the target after a click.
  */
 export interface DesktopNotificationActivation {
+  account_tab_id: string;
   room_id: string;
   event_id: string | null;
   thread_root_event_id: string | null;
@@ -37,6 +38,20 @@ export type DesktopNotificationTargetPlan =
   | { kind: "thread"; roomId: string; rootEventId: string; eventId: string }
   | { kind: "event"; roomId: string; eventId: string }
   | { kind: "room"; roomId: string };
+
+export interface DesktopNotificationActivationPlan {
+  accountTabId: string;
+  target: DesktopNotificationTargetPlan;
+}
+
+export function desktopNotificationActivationPlan(
+  activation: DesktopNotificationActivation
+): DesktopNotificationActivationPlan {
+  return {
+    accountTabId: activation.account_tab_id,
+    target: desktopNotificationTargetPlan(activation)
+  };
+}
 
 export function desktopNotificationTargetPlan(
   activation: DesktopNotificationActivation

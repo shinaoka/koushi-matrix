@@ -31,12 +31,27 @@ pub struct OidcBrowserLaunchResponse {
 pub async fn get_snapshot(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
+    account_tab_id: Option<String>,
 ) -> Result<FrontendDesktopSnapshot, String> {
+    let (account_tab_id, connection) = match account_tab_id {
+        Some(id) => {
+            state
+                .inner()
+                .connection
+                .lock_for_tab_id(
+                    &koushi_core::account_runtime_manager::AccountTabId::from_string(id),
+                )
+                .await?
+        }
+        None => state.inner().connection.lock_with_tab_id().await,
+    };
+    let snapshot = connection.versioned_snapshot();
+    drop(connection);
     update_qa_window_title_from_state(&app, state.inner()).await;
-    let snapshot = state.inner().connection.lock().await.versioned_snapshot();
-    Ok(FrontendDesktopSnapshot::from_versioned(
+    Ok(FrontendDesktopSnapshot::from_versioned_for_account(
         snapshot.state,
         snapshot.generation,
+        account_tab_id,
     ))
 }
 
@@ -44,11 +59,25 @@ pub async fn get_snapshot(
 #[tauri::command]
 pub async fn settlement_snapshot(
     state: State<'_, CoreRuntimeState>,
+    account_tab_id: Option<String>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    let snapshot = state.inner().connection.lock().await.versioned_snapshot();
-    Ok(FrontendDesktopSnapshot::from_versioned(
+    let (account_tab_id, connection) = match account_tab_id {
+        Some(id) => {
+            state
+                .inner()
+                .connection
+                .lock_for_tab_id(
+                    &koushi_core::account_runtime_manager::AccountTabId::from_string(id),
+                )
+                .await?
+        }
+        None => state.inner().connection.lock_with_tab_id().await,
+    };
+    let snapshot = connection.versioned_snapshot();
+    Ok(FrontendDesktopSnapshot::from_versioned_for_account(
         snapshot.state,
         snapshot.generation,
+        account_tab_id,
     ))
 }
 
@@ -60,10 +89,23 @@ pub async fn settlement_snapshot(
 pub async fn resync_snapshot(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
+    account_tab_id: Option<String>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    let (versioned_snapshot, request_id) = {
-        let connection = state.inner().connection.lock().await;
+    let (account_tab_id, versioned_snapshot, request_id) = {
+        let (account_tab_id, connection) = match account_tab_id {
+            Some(id) => {
+                state
+                    .inner()
+                    .connection
+                    .lock_for_tab_id(
+                        &koushi_core::account_runtime_manager::AccountTabId::from_string(id),
+                    )
+                    .await?
+            }
+            None => state.inner().connection.lock_with_tab_id().await,
+        };
         (
+            account_tab_id,
             connection.versioned_snapshot(),
             connection.next_request_id(),
         )
@@ -74,20 +116,22 @@ pub async fn resync_snapshot(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(FrontendDesktopSnapshot::from_versioned(
+    Ok(FrontendDesktopSnapshot::from_versioned_for_account(
         versioned_snapshot.state,
         versioned_snapshot.generation,
+        account_tab_id,
     ))
 }
 
 #[tauri::command]
 pub async fn discover_login_methods(
+    account_tab_id: Option<String>,
     homeserver: String,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let mut wait_conn = state.inner().runtime.attach();
+    let mut wait_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
     let baseline_generation = wait_conn.state_generation();
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     submit_core_command(
         state.inner(),
         build_discover_login_command(request_id, homeserver.clone()),
@@ -114,17 +158,38 @@ pub async fn discover_login_methods(
 #[tauri::command]
 pub async fn start_oidc_login(
     homeserver: String,
+    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<OidcBrowserLaunchResponse, String> {
-    let mut wait_conn = state.inner().runtime.attach();
+    let (tab_id, submit_conn) = match account_tab_id {
+        Some(id) => {
+            state
+                .inner()
+                .connection
+                .lock_for_tab_id(
+                    &koushi_core::account_runtime_manager::AccountTabId::from_string(id),
+                )
+                .await?
+        }
+        None => state.inner().connection.lock_with_tab_id().await,
+    };
+    let id = koushi_core::account_runtime_manager::AccountTabId::from_string(tab_id.clone());
+    let mut wait_conn = state
+        .inner()
+        .runtime
+        .tab_connection(&id)
+        .ok_or_else(|| "account tab does not exist".to_owned())?;
     let baseline_generation = wait_conn.state_generation();
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_start_oidc_login_command(request_id, homeserver),
+    let request_id = submit_conn.next_request_id();
+    tokio::time::timeout(
+        CORE_COMMAND_SUBMIT_TIMEOUT,
+        submit_conn.command(build_start_oidc_login_command(request_id, homeserver)),
     )
-    .await?;
+    .await
+    .map_err(|_| "command submit timed out".to_owned())?
+    .map_err(|error| format!("command submit failed: {error}"))?;
+    drop(submit_conn);
     let outcome = wait_conn
         .wait_for_request_outcome(
             OutcomeCorrelation::Request(request_id),
@@ -136,13 +201,17 @@ pub async fn start_oidc_login(
         .map_err(|error| invoke_error_from_request_outcome("OIDC login", error))?;
     let RequestOutcome::OidcAuthorization {
         authorization_url,
-        state: _,
+        state: oidc_state,
         generation,
         ..
     } = outcome
     else {
         return Err("OIDC login returned an invalid outcome".to_owned());
     };
+    state.inner().runtime.register_oidc_attempt(
+        &koushi_core::account_runtime_manager::AccountTabId::from_string(tab_id),
+        oidc_state,
+    );
     record(DiagnosticEvent::new(
         DiagnosticLevel::Info,
         "desktop.oidc_browser",
@@ -228,23 +297,50 @@ fn launch_oidc_browser(
 pub async fn complete_oidc_login(
     _homeserver: String,
     callback_url: String,
+    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let mut wait_conn = state.inner().runtime.attach();
+    let oidc_state = crate::oidc_callback_state(&callback_url)
+        .ok_or_else(|| "OIDC callback has no unique state".to_owned())?;
+    let tab_id = state
+        .inner()
+        .runtime
+        .oidc_attempt_tab(&oidc_state)
+        .ok_or_else(|| "OIDC callback does not match a pending login".to_owned())?;
+    if account_tab_id
+        .as_deref()
+        .is_some_and(|expected| expected != tab_id.as_str())
+    {
+        return Err("OIDC callback belongs to a different account tab".to_owned());
+    }
+    let tab_id = state
+        .inner()
+        .runtime
+        .take_oidc_attempt(&oidc_state)
+        .ok_or_else(|| "OIDC callback was already consumed".to_owned())?;
+    let (_, submit_conn) = state.inner().connection.lock_for_tab_id(&tab_id).await?;
+    let mut wait_conn = state
+        .inner()
+        .runtime
+        .tab_connection(&tab_id)
+        .ok_or_else(|| "account tab does not exist".to_owned())?;
     let baseline_generation = wait_conn.state_generation();
     let account_key = account_key_from_app_state(&wait_conn.snapshot());
     let account_key = (!account_key.0.is_empty()).then_some(account_key);
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_complete_oidc_login_command(
+    let request_id = submit_conn.next_request_id();
+    tokio::time::timeout(
+        CORE_COMMAND_SUBMIT_TIMEOUT,
+        submit_conn.command(build_complete_oidc_login_command(
             request_id,
             callback_url,
             crate::dto::frontend_display_platform(),
-        ),
+        )),
     )
-    .await?;
+    .await
+    .map_err(|_| "command submit timed out".to_owned())?
+    .map_err(|error| format!("command submit failed: {error}"))?;
+    drop(submit_conn);
     let outcome = wait_conn
         .wait_for_request_outcome(
             OutcomeCorrelation::Request(request_id),
@@ -264,8 +360,10 @@ pub async fn complete_oidc_login(
     Ok(command_settlement(generation))
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn submit_login(
+    account_tab_id: Option<String>,
     homeserver: String,
     username: String,
     password: String,
@@ -280,23 +378,37 @@ pub async fn submit_login(
         password: AuthSecret::new(password),
         device_display_name,
     };
-    let generation = submit_login_request(app, state.inner(), login_request, platform).await?;
+    let generation = submit_login_request(
+        app,
+        state.inner(),
+        account_tab_id.as_deref(),
+        login_request,
+        platform,
+    )
+    .await?;
     Ok(command_settlement(generation))
 }
 
 #[tauri::command]
 pub async fn submit_soft_logout_reauth(
+    account_tab_id: Option<String>,
     password: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let generation =
-        submit_soft_logout_reauth_request(app, state.inner(), AuthSecret::new(password)).await?;
+    let generation = submit_soft_logout_reauth_request(
+        app,
+        state.inner(),
+        account_tab_id.as_deref(),
+        AuthSecret::new(password),
+    )
+    .await?;
     Ok(command_settlement(generation))
 }
 
 #[tauri::command]
 pub async fn list_saved_sessions(
+    account_tab_id: Option<String>,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<Vec<SessionInfo>, String> {
     // GUI-smoke toggle: skip the keychain-backed query entirely.
@@ -304,9 +416,9 @@ pub async fn list_saved_sessions(
         return Ok(Vec::new());
     }
 
-    let mut wait_conn = state.inner().runtime.attach();
+    let mut wait_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
     let baseline_generation = wait_conn.state_generation();
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     submit_core_command(
         state.inner(),
         CoreCommand::Account(AccountCommand::QuerySavedSessions { request_id }),
@@ -329,15 +441,16 @@ pub async fn list_saved_sessions(
 
 #[tauri::command]
 pub async fn switch_account(
+    account_tab_id: Option<String>,
     homeserver: String,
     user_id: String,
     device_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let mut wait_conn = state.inner().runtime.attach();
+    let mut wait_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
     let baseline_generation = wait_conn.state_generation();
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     submit_core_command(
         state.inner(),
         build_switch_account_command(request_id, user_id.clone()),
@@ -366,18 +479,26 @@ pub async fn switch_account(
 
 #[tauri::command]
 pub async fn submit_recovery(
+    account_tab_id: Option<String>,
     secret: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    submit_recovery_request(app, state.inner(), AuthSecret::new(secret)).await
+    submit_recovery_request(
+        app,
+        state.inner(),
+        account_tab_id.as_deref(),
+        AuthSecret::new(secret),
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn start_device_cleanup(
+    account_tab_id: Option<String>,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_start_device_cleanup_command(request_id),
@@ -388,11 +509,12 @@ pub async fn start_device_cleanup(
 
 #[tauri::command]
 pub async fn submit_device_cleanup_uia(
+    account_tab_id: Option<String>,
     flow_id: u64,
     password: String,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_submit_device_cleanup_uia_command(request_id, flow_id, AuthSecret::new(password)),
@@ -403,9 +525,10 @@ pub async fn submit_device_cleanup_uia(
 
 #[tauri::command]
 pub async fn erase_local_data_anyway(
+    account_tab_id: Option<String>,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_erase_device_cleanup_local_data_anyway_command(request_id),
@@ -416,13 +539,14 @@ pub async fn erase_local_data_anyway(
 
 #[tauri::command]
 pub async fn logout(
+    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let mut wait_conn = state.inner().runtime.attach();
+    let mut wait_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
     let baseline = wait_conn.versioned_snapshot();
     let account_key = account_key_from_app_state(&baseline.state);
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     submit_core_command(state.inner(), build_logout_command(request_id)).await?;
     let outcome = wait_conn
         .wait_for_request_outcome(
@@ -446,9 +570,10 @@ pub async fn logout(
 
 #[tauri::command]
 pub async fn retry_sliding_sync_capability(
+    account_tab_id: Option<String>,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_retry_sliding_sync_capability_command(request_id),
@@ -459,9 +584,10 @@ pub async fn retry_sliding_sync_capability(
 
 #[tauri::command]
 pub async fn change_homeserver(
+    account_tab_id: Option<String>,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_change_homeserver_command(request_id),
@@ -472,10 +598,11 @@ pub async fn change_homeserver(
 
 #[tauri::command]
 pub async fn restart_sync(
+    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission =
         submit_core_command_with_admission(state.inner(), build_restart_sync_command(request_id))
             .await?;
@@ -486,21 +613,24 @@ pub async fn restart_sync(
 pub(super) async fn submit_login_request(
     app: AppHandle,
     state: &CoreRuntimeState,
+    account_tab_id: Option<&str>,
     login_request: LoginRequest,
     platform: DisplayPlatform,
 ) -> Result<u64, String> {
-    submit_login_and_wait_for_authenticated(app, state, login_request, platform).await
+    submit_login_and_wait_for_authenticated(app, state, account_tab_id, login_request, platform)
+        .await
 }
 
 pub(super) async fn submit_soft_logout_reauth_request(
     app: AppHandle,
     state: &CoreRuntimeState,
+    account_tab_id: Option<&str>,
     password: AuthSecret,
 ) -> Result<u64, String> {
-    let mut wait_conn = state.runtime.attach();
+    let mut wait_conn = account_connection(state, account_tab_id).await?;
     let baseline_generation = wait_conn.state_generation();
     let account_key = account_key_from_app_state(&wait_conn.snapshot());
-    let request_id = next_request_id(state).await;
+    let request_id = next_request_id_for(state, account_tab_id).await?;
     submit_core_command(
         state,
         build_submit_soft_logout_reauth_command(request_id, password),
@@ -531,17 +661,31 @@ const LOGIN_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 async fn submit_login_and_wait_for_authenticated(
     app: AppHandle,
     state: &CoreRuntimeState,
+    account_tab_id: Option<&str>,
     login_request: LoginRequest,
     platform: DisplayPlatform,
 ) -> Result<u64, String> {
     // Use a dedicated connection so the event cursor is attached before the
     // login command is submitted and the correlated LoggedIn event cannot be
     // missed by this product path.
-    let mut wait_conn = state.runtime.attach();
+    let mut wait_conn = account_connection(state, account_tab_id).await?;
+    let current_tab = account_tab_id
+        .map(|id| koushi_core::account_runtime_manager::AccountTabId::from_string(id.to_owned()))
+        .unwrap_or_else(|| state.runtime.selected_tab_id());
+    if let Some(existing) = state.runtime.account_tab_for_existing_password_login(
+        &current_tab,
+        &login_request.homeserver,
+        &login_request.username,
+    ) {
+        let state = app.state::<CoreRuntimeState>();
+        super::account_tabs::select_account_tab(app.clone(), state, existing.as_str().to_owned())
+            .await?;
+        return Err("account is already open in another tab".to_owned());
+    }
     let baseline_generation = wait_conn.state_generation();
     let account_key = account_key_from_app_state(&wait_conn.snapshot());
     let account_key = (!account_key.0.is_empty()).then_some(account_key);
-    let login_request_id = next_request_id(state).await;
+    let login_request_id = next_request_id_for(state, account_tab_id).await?;
     submit_core_command(
         state,
         build_submit_login_command(login_request_id, login_request, platform),
@@ -575,9 +719,10 @@ const SAVED_SESSIONS_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::f
 pub(super) async fn submit_recovery_request(
     app: AppHandle,
     state: &CoreRuntimeState,
+    account_tab_id: Option<&str>,
     secret: AuthSecret,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state).await;
+    let request_id = next_request_id_for(state, account_tab_id).await?;
     let admission = submit_core_command_with_admission(
         state,
         build_submit_recovery_command(request_id, secret),

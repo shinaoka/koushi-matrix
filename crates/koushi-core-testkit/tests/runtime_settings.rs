@@ -1,7 +1,7 @@
 //! Runtime settings integration tests.
 
 use koushi_core::settings::{SETTINGS_SCHEMA_VERSION, SettingsStore, SettingsStoreErrorKind};
-use koushi_core::{CoreCommand, CoreRuntime};
+use koushi_core::{CoreCommand, CoreRuntime, store::StoreActor};
 use koushi_protocol::command::AppCommand;
 use koushi_state::{
     AppearanceSettings, DisplayDensity, DisplaySettings, MediaSettings, NativeAttentionCandidate,
@@ -133,6 +133,55 @@ async fn legacy_settings_import_rejects_a_failed_initial_load() {
 }
 
 #[tokio::test]
+async fn failed_account_settings_load_does_not_commit_legacy_import_marker() {
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    let store = StoreActor::new(data_dir.path());
+    let account_settings_file = store
+        .account_local_data_dir(&support::session_key())
+        .join("settings/account-settings.v1.enc");
+    std::fs::create_dir_all(account_settings_file.parent().expect("settings dir"))
+        .expect("create settings dir");
+    std::fs::write(&account_settings_file, b"corrupt account settings")
+        .expect("corrupt account settings");
+
+    let runtime = CoreRuntime::start_with_data_dir(data_dir.path().to_path_buf());
+    let mut connection = runtime.attach();
+    runtime
+        .inject_actions(support::restore_ready_actions())
+        .await;
+    support::wait_for_state(&mut connection, |state| {
+        matches!(state.session, koushi_state::SessionState::Ready(_))
+            && !state.settings.values.notifications.send_read_receipts
+    })
+    .await;
+
+    connection
+        .command_with_admission(CoreCommand::App(AppCommand::ImportLegacySettings {
+            request_id: connection.next_request_id(),
+            patch: SettingsPatch {
+                appearance: Some(AppearanceSettings {
+                    density: DisplayDensity::Compact,
+                    ..AppearanceSettings::default()
+                }),
+                notifications: Some(NotificationSettings::default()),
+                ..SettingsPatch::default()
+            },
+        }))
+        .await
+        .expect("admit account settings import");
+
+    let persisted = SettingsStore::new(data_dir.path())
+        .load()
+        .expect("load shared settings");
+    assert!(!persisted.legacy_frontend_preferences_imported);
+    assert_eq!(persisted.appearance.density, DisplayDensity::Comfortable);
+    assert_eq!(
+        std::fs::read(&account_settings_file).expect("account settings remain untouched"),
+        b"corrupt account settings"
+    );
+}
+
+#[tokio::test]
 async fn legacy_settings_import_does_not_project_before_persistence() {
     let data_dir = tempfile::tempdir().expect("tempdir");
     let runtime = CoreRuntime::start_with_data_dir(data_dir.path().to_path_buf());
@@ -213,6 +262,7 @@ async fn disabled_badges_remain_rust_projected_to_zero_after_runtime_restart() {
             .command(CoreCommand::App(AppCommand::UpdateSettings {
                 request_id,
                 patch: SettingsPatch {
+                    scope: Some(koushi_state::SettingsPatchScope::App),
                     notifications: Some(notifications),
                     ..SettingsPatch::default()
                 },
@@ -225,6 +275,17 @@ async fn disabled_badges_remain_rust_projected_to_zero_after_runtime_restart() {
                 && state.settings.persistence == SettingsPersistenceState::Idle
         })
         .await;
+        assert!(
+            connection.snapshot().errors.is_empty(),
+            "badges setting must persist successfully"
+        );
+        assert!(
+            !koushi_core::settings::SettingsStore::new(data_dir.path())
+                .load()
+                .expect("saved app settings")
+                .notifications
+                .badges
+        );
     }
 
     let restarted = CoreRuntime::start_with_data_dir(data_dir.path().to_path_buf());
@@ -349,13 +410,17 @@ fn settings_store_resets_unversioned_encrypted_url_preview_opt_in() {
     let data_dir = tempfile::tempdir().expect("tempdir");
     let path = write_settings_file(data_dir.path(), LEGACY_OPTED_IN_ENCRYPTED_PREVIEWS);
 
-    let values = SettingsStore::new(data_dir.path())
-        .load()
-        .expect("legacy settings load");
+    let store = SettingsStore::new(data_dir.path());
+    let values = store.load().expect("legacy settings load");
+    let legacy = store
+        .legacy_account_settings()
+        .expect("legacy account settings")
+        .expect("account settings retained for migration");
 
     assert!(!values.display.encrypted_url_previews_enabled);
-    assert!(values.display.url_previews_enabled);
     assert_eq!(values.appearance.theme, ThemePreference::Dark);
+    assert!(!legacy.display.encrypted_url_previews_enabled);
+    assert!(legacy.display.url_previews_enabled);
 
     let persisted = persisted_settings_json(&path);
     assert_eq!(
@@ -363,35 +428,40 @@ fn settings_store_resets_unversioned_encrypted_url_preview_opt_in() {
         serde_json::json!(SETTINGS_SCHEMA_VERSION)
     );
     assert_eq!(
-        persisted["display"]["encrypted_url_previews_enabled"],
+        persisted["legacy_account_settings"]["display"]["encrypted_url_previews_enabled"],
         serde_json::json!(false)
     );
 }
 
 #[test]
-fn settings_store_keeps_versioned_encrypted_url_preview_opt_in() {
+fn settings_store_retains_legacy_account_values_until_migration_completes() {
     let data_dir = tempfile::tempdir().expect("tempdir");
+    let path = write_settings_file(data_dir.path(), LEGACY_OPTED_IN_ENCRYPTED_PREVIEWS);
     let store = SettingsStore::new(data_dir.path());
-    let mut values = store.load().expect("default settings");
-    values.display.encrypted_url_previews_enabled = true;
-    store.save(&values).expect("save explicit opt-in");
+    let mut values = store.load().expect("legacy settings load");
+    values.appearance.theme = ThemePreference::Light;
+    store.save(&values).expect("save app setting");
 
-    let path = data_dir.path().join("settings/settings.json");
-    assert_eq!(
-        persisted_settings_json(&path)["schema_version"],
-        serde_json::json!(SETTINGS_SCHEMA_VERSION)
-    );
-
-    let reloaded = store.load().expect("reload versioned settings");
-    assert!(reloaded.display.encrypted_url_previews_enabled);
-    assert_eq!(reloaded, values);
-    // A second load must not re-run the migration.
     assert!(
         store
-            .load()
-            .expect("load again")
-            .display
-            .encrypted_url_previews_enabled
+            .legacy_account_settings()
+            .expect("load migration")
+            .is_some()
+    );
+    assert!(
+        persisted_settings_json(&path)
+            .get("legacy_account_settings")
+            .is_some()
+    );
+
+    store
+        .complete_legacy_account_migration()
+        .expect("complete account migration");
+    assert!(store.legacy_account_settings().expect("reload").is_none());
+    assert!(
+        persisted_settings_json(&path)
+            .get("legacy_account_settings")
+            .is_none()
     );
 }
 
@@ -401,7 +471,7 @@ fn settings_store_round_trips_versioned_values() {
     let store = SettingsStore::new(data_dir.path());
     let mut values = store.load().expect("default settings");
     values.appearance.theme = ThemePreference::Dark;
-    values.display.url_previews_enabled = false;
+    values.display.code_block_wrap = false;
     values.legacy_frontend_preferences_imported = true;
     store.save(&values).expect("save");
 
@@ -458,23 +528,35 @@ fn settings_store_resets_version_1_message_previews_default() {
         VERSION_1_WITH_RETIRED_MESSAGE_PREVIEW_DEFAULT,
     );
 
-    let values = SettingsStore::new(data_dir.path())
-        .load()
-        .expect("version-1 settings load");
+    let store = SettingsStore::new(data_dir.path());
+    let values = store.load().expect("version-1 settings load");
+    let legacy = store
+        .legacy_account_settings()
+        .expect("legacy account settings")
+        .expect("account settings retained for migration");
 
     assert!(!values.notifications.message_previews);
-    // Unrelated values survive, and the version-0 (#1034) reset does not
-    // re-run for a version-1 opt-in.
-    assert!(values.display.encrypted_url_previews_enabled);
+    assert!(!values.display.encrypted_url_previews_enabled);
+    assert!(!legacy.notifications.message_previews);
+    // The version-1 encrypted-room opt-in survives while the retired message
+    // preview default is reset before the account settings are seeded.
+    assert!(legacy.display.encrypted_url_previews_enabled);
     assert!(!values.notifications.sound);
     assert_eq!(values.locale.language_tag.as_deref(), Some("ja-JP"));
     assert_eq!(values.appearance.theme, ThemePreference::Dark);
 
     let persisted = persisted_settings_json(&path);
-    assert_eq!(persisted["schema_version"], serde_json::json!(2));
     assert_eq!(
-        persisted["notifications"]["message_previews"],
+        persisted["schema_version"],
+        serde_json::json!(SETTINGS_SCHEMA_VERSION)
+    );
+    assert_eq!(
+        persisted["legacy_account_settings"]["notifications"]["message_previews"],
         serde_json::json!(false)
+    );
+    assert_eq!(
+        persisted["legacy_account_settings"]["display"]["encrypted_url_previews_enabled"],
+        serde_json::json!(true)
     );
 }
 
@@ -486,30 +568,38 @@ fn settings_store_resets_unversioned_message_previews_default() {
         &VERSION_1_WITH_RETIRED_MESSAGE_PREVIEW_DEFAULT.replace("\"schema_version\": 1,", ""),
     );
 
-    let values = SettingsStore::new(data_dir.path())
-        .load()
-        .expect("unversioned settings load");
+    let store = SettingsStore::new(data_dir.path());
+    let values = store.load().expect("unversioned settings load");
+    let legacy = store
+        .legacy_account_settings()
+        .expect("legacy account settings")
+        .expect("account settings retained for migration");
 
     assert!(!values.notifications.message_previews);
     assert!(!values.display.encrypted_url_previews_enabled);
+    assert!(!legacy.notifications.message_previews);
+    assert!(!legacy.display.encrypted_url_previews_enabled);
 }
 
 #[test]
-fn settings_store_keeps_versioned_message_previews_opt_in() {
+fn settings_store_does_not_persist_account_owned_values() {
     let data_dir = tempfile::tempdir().expect("tempdir");
     let store = SettingsStore::new(data_dir.path());
     let mut values = store.load().expect("default settings");
-    assert!(!values.notifications.message_previews);
+    values.appearance.theme = ThemePreference::Light;
     values.notifications.message_previews = true;
-    store.save(&values).expect("save explicit opt-in");
+    values.display.url_previews_enabled = false;
+    store.save(&values).expect("save settings");
 
-    let reloaded = store.load().expect("reload versioned settings");
-    assert!(reloaded.notifications.message_previews);
-    assert_eq!(reloaded, values);
+    let path = data_dir.path().join("settings/settings.json");
+    let persisted = persisted_settings_json(&path);
+    assert_eq!(persisted["appearance"]["theme"], serde_json::json!("light"));
+    assert!(persisted["notifications"].get("message_previews").is_none());
+    assert!(persisted["display"].get("url_previews_enabled").is_none());
     assert!(
-        store
+        !store
             .load()
-            .expect("load again")
+            .expect("reload settings")
             .notifications
             .message_previews
     );

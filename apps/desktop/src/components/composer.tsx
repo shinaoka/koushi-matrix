@@ -88,6 +88,7 @@ export const Composer = memo(function Composer({
   editorOnly = false,
   canEdit = true,
   composerMode,
+  sendingAccount = null,
   hasStagedUploads = false,
   stagedUploadsReady = false,
   isSending,
@@ -120,6 +121,7 @@ export const Composer = memo(function Composer({
   editorOnly?: boolean;
   canEdit?: boolean;
   composerMode: ComposerModeProp;
+  sendingAccount?: { name: string; colorClassName: string } | null;
   hasStagedUploads?: boolean;
   stagedUploadsReady?: boolean;
   isSending: boolean;
@@ -803,6 +805,15 @@ export const Composer = memo(function Composer({
       <div className="composer-drop-overlay" aria-hidden={!fileDragActive}>
         {t("composer.dropFiles")}
       </div>
+      {!editorOnly && sendingAccount ? (
+        <div className="composer-sending-as">
+          <span
+            className={`composer-sending-as-dot ${sendingAccount.colorClassName}`}
+            aria-hidden="true"
+          />
+          <span>{t("composer.sendingAs", { account: sendingAccount.name })}</span>
+        </div>
+      ) : null}
       {notice ? (
         <p className="composer-notice" role="status">
           {notice}
@@ -1086,7 +1097,8 @@ const ThreadComposer = memo(function ThreadComposer({
   onScheduleSend,
   onSend,
   onSendStagedUploads,
-  onDiagnosticLogEntry
+  onDiagnosticLogEntry,
+  sendingAccount = null
 }: {
   canEdit: boolean;
   document: ComposerDocument;
@@ -1110,10 +1122,12 @@ const ThreadComposer = memo(function ThreadComposer({
   onSend: (document: ComposerDocument) => void | Promise<void>;
   onSendStagedUploads?: () => void;
   onDiagnosticLogEntry?: (entry: DiagnosticLogEntry) => void;
+  sendingAccount?: { name: string; colorClassName: string } | null;
 }) {
   return (
     <Composer
       surface="thread"
+      sendingAccount={sendingAccount}
       canEdit={canEdit}
       composerMode={PLAIN_COMPOSER_MODE}
       hasStagedUploads={hasStagedUploads}

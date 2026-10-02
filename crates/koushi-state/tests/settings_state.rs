@@ -391,6 +391,10 @@ fn notification_settings_patch_is_rust_owned_and_persisted() {
             AppEffect::PersistSettings {
                 request_id: 77,
                 values: state.settings.values.clone(),
+                patch: Box::new(SettingsPatch {
+                    notifications: Some(notification_settings.clone()),
+                    ..SettingsPatch::default()
+                }),
             },
             AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
         ]
@@ -429,6 +433,10 @@ fn code_block_wrap_patch_is_rust_owned_and_persisted() {
             AppEffect::PersistSettings {
                 request_id: 78,
                 values: state.settings.values.clone(),
+                patch: Box::new(SettingsPatch {
+                    display: Some(display_settings.clone()),
+                    ..SettingsPatch::default()
+                }),
             },
             AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
         ]
@@ -467,6 +475,10 @@ fn hide_redacted_patch_is_rust_owned_and_persisted() {
             AppEffect::PersistSettings {
                 request_id: 79,
                 values: state.settings.values.clone(),
+                patch: Box::new(SettingsPatch {
+                    display: Some(display_settings.clone()),
+                    ..SettingsPatch::default()
+                }),
             },
             AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
         ]
@@ -503,6 +515,10 @@ fn composer_math_mode_patch_is_rust_owned_and_persisted() {
             AppEffect::PersistSettings {
                 request_id: 82,
                 values: state.settings.values.clone(),
+                patch: Box::new(SettingsPatch {
+                    composer: Some(composer_settings.clone()),
+                    ..SettingsPatch::default()
+                }),
             },
             AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
         ]
@@ -538,6 +554,10 @@ fn image_upload_compression_patch_is_rust_owned_and_persisted() {
             AppEffect::PersistSettings {
                 request_id: 80,
                 values: state.settings.values.clone(),
+                patch: Box::new(SettingsPatch {
+                    media: Some(media_settings.clone()),
+                    ..SettingsPatch::default()
+                }),
             },
             AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
         ]
@@ -574,6 +594,10 @@ fn timeline_thread_root_order_patch_is_rust_owned_and_persisted() {
             AppEffect::PersistSettings {
                 request_id: 88,
                 values: state.settings.values.clone(),
+                patch: Box::new(SettingsPatch {
+                    timeline: Some(timeline_settings.clone()),
+                    ..SettingsPatch::default()
+                }),
             },
             AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
         ]
@@ -606,6 +630,7 @@ fn settings_update_is_optimistic_and_emits_a_persist_effect() {
             AppEffect::PersistSettings {
                 request_id: 42,
                 values: state.settings.values.clone(),
+                patch: Box::new(dark_theme_patch()),
             },
             AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
         ]
@@ -993,7 +1018,7 @@ fn close_to_tray_defaults_on_persists_and_backfills_for_legacy_stores() {
     assert!(!state.settings.values.window.close_to_tray);
     assert!(effects.iter().any(|effect| matches!(
         effect,
-        AppEffect::PersistSettings { request_id: 805, values }
+        AppEffect::PersistSettings { request_id: 805, values, .. }
             if !values.window.close_to_tray
     )));
 
