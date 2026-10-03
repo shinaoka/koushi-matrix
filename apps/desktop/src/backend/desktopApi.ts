@@ -124,6 +124,7 @@ export interface DesktopApi {
   selectAccountTab(tabId: string): Promise<AccountTabsSnapshot>;
   addAccountTab(): Promise<AccountTabsSnapshot>;
   removeSignedOutAccountTab(tabId: string): Promise<AccountTabsSnapshot>;
+  cancelAddAccountTab(tabId: string): Promise<AccountTabsSnapshot>;
   getDesktopUpdateState(): Promise<DesktopUpdateState>;
   checkForDesktopUpdate(): Promise<void>;
   downloadDesktopUpdate(expectedGeneration: number): Promise<void>;

@@ -80,6 +80,7 @@ describe("DesktopApi command contract", () => {
         "enableEmailNotifications",
         "disableEmailNotifications",
         "addAccountTab",
+        "cancelAddAccountTab",
         "listAccountTabs",
         "removeSignedOutAccountTab",
         "selectAccountTab"

@@ -97,7 +97,7 @@ test("SSO start reports authorization and native browser outcomes without a wind
           ...snapshot.state.domain,
           auth: {
             kind: "ready",
-            homeserver: "https://matrix.org",
+            homeserver: "matrix.org",
             flows: [
               {
                 kind: "sso",
@@ -121,7 +121,9 @@ test("SSO start reports authorization and native browser outcomes without a wind
     window.__harness.pushStateUpdate();
   });
 
-  const startSso = page.getByRole("button", { name: t("auth.flowSso") });
+  const startSso = page.getByRole("button", {
+    name: t("auth.continueWithMethod", { method: t("auth.flowSso") })
+  });
   await startSso.click();
   await expect(page.getByRole("alert")).toHaveText(t("auth.ssoInvalidAuthorizationUrl"));
 
@@ -153,16 +155,49 @@ test("SSO start reports authorization and native browser outcomes without a wind
   ).toBe(0);
 });
 
-test("auth form defaults to matrix.org and submits custom ports in the homeserver URL field", async ({
+test("auth form derives the server from one Matrix ID and discovers login methods for it", async ({
   page
 }) => {
   await gotoSignedOutAuth(page);
 
+  await expect(page.locator('input[name="homeserver"]')).toHaveCount(0);
+  await expect(page.getByTestId("auth-server-summary")).toContainText("matrix.org");
+
+  await page.getByRole("textbox", { name: t("auth.matrixId") }).fill("@alice:example.org");
+  await expect(page.getByTestId("auth-server-summary")).toContainText("example.org");
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        window.__harness.invocationsOf("discover_login_methods").map((call) => call.args)
+      )
+    )
+    .toContainEqual({ homeserver: "example.org" });
+
+  await page.getByLabel(t("auth.password")).fill("synthetic-password");
+  await page.getByRole("textbox", { name: t("auth.deviceName") }).fill("Koushi Test Device");
+  await page.getByRole("button", { name: t("auth.continue") }).click();
+
+  await expect.poll(() => invocationCount(page, "submit_login")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("submit_login")[0]?.args))
+    .toEqual({
+      homeserver: "example.org",
+      username: "@alice:example.org",
+      password: "[REDACTED]",
+      deviceDisplayName: "Koushi Test Device",
+      platform: "linux"
+    });
+});
+
+test("auth form keeps an explicit server path for custom ports", async ({ page }) => {
+  await gotoSignedOutAuth(page);
+
+  await page.getByRole("button", { name: t("auth.changeServer") }).click();
   const homeserverInput = page.locator('input[name="homeserver"]');
-  await expect(homeserverInput).toHaveValue("https://matrix.org");
+  await expect(homeserverInput).toHaveValue("matrix.org");
 
   await homeserverInput.fill("https://example.org:8448");
-  await page.getByRole("textbox", { name: t("auth.username") }).fill("alice");
+  await page.getByRole("textbox", { name: t("auth.matrixId") }).fill("alice");
   await page.getByLabel(t("auth.password")).fill("synthetic-password");
   await page.getByRole("textbox", { name: t("auth.deviceName") }).fill("Koushi Test Device");
   await page.getByRole("button", { name: t("auth.continue") }).click();

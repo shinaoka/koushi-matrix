@@ -165,6 +165,14 @@ export function AccountTabStrip({
     }
   }
 
+  // An unfinished add-account tab closes back to the previous account (#1101);
+  // only a signed-out account is removed from the list.
+  function removeLabel(tab: AccountTabSummary, label: string): string {
+    return tab.status === "addAccount"
+      ? t("accountTabs.cancelAddAccount")
+      : t("accountTabs.removeFromList", { account: label });
+  }
+
   return (
     <nav className="account-tab-strip" aria-label={t("settings.accountSettings")}>
       {tabs.map((tab) => {
@@ -211,12 +219,12 @@ export function AccountTabStrip({
                 <span className="account-tab-signed-out-dot" role="img" aria-label={status} />
               ) : null}
             </button>
-            {tab.status === "signedOut" ? (
+            {tab.status === "signedOut" || (tab.status === "addAccount" && tabs.length > 1) ? (
               <button
                 className="account-tab-remove"
                 type="button"
-                aria-label={t("accountTabs.removeFromList", { account: label })}
-                title={t("accountTabs.removeFromList", { account: label })}
+                aria-label={removeLabel(tab, label)}
+                title={removeLabel(tab, label)}
                 onClick={() => onRemove(tab.id)}
               >
                 <X size={ICON_SIZE.micro} aria-hidden="true" />

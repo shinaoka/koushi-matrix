@@ -767,6 +767,11 @@ stateDiagram-v2
   tab in place once the Matrix identity is known. If that MXID already has a
   tab, the new context is rejected and the existing tab is selected; an existing
   account session is never logged out by cancellation or duplicate-login cleanup.
+- Cancelling the unfinished add-account context is allowed only while it is
+  unbound and signed out and another tab exists. It removes that tab, shuts
+  down its temporary runtime, and selects the tab that was selected when the
+  add flow started (falling back to a neighbour). An in-flight password or OIDC
+  login cannot be cancelled this way.
 - Selecting an account binds commands and their completions to that account's
   runtime. A result from an earlier selected tab cannot mutate another tab's
   state. Async forms, secrets, dialogs, and local drafts are reset when their
@@ -3753,6 +3758,15 @@ stateDiagram-v2
 - Discovery completion actions are accepted only while the reducer is still
   `Discovering` the same homeserver. Late completions from older discovery
   requests are ignored.
+- The sign-in target is a server name or homeserver URL, mirroring the SDK's
+  `ServerNameOrHomeserverUrl`. A bare server name (no URL path) is resolved
+  through `/.well-known/matrix/client` and falls back to the input when the
+  document is missing or invalid; a URL with a path is used as-is. Discovery,
+  password login, and OIDC start all resolve the same way in `koushi-sdk`, so
+  `@alice:example.org` signs in on the delegated homeserver (#1101). The
+  renderer derives that target from the Matrix ID's server name unless the user
+  explicitly chooses a server, and only offers single sign-on from a discovery
+  result for its current target.
 
 Active-session account management:
 
