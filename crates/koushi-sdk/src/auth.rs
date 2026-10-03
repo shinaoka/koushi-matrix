@@ -175,6 +175,12 @@ impl Homeserver {
         normalized
     }
 
+    /// True for a server name such as `example.org[:port]`, i.e. a URL with
+    /// no path beyond `/`, which is eligible for well-known discovery.
+    fn is_bare_server_name(&self) -> bool {
+        self.base_url.path() == "/"
+    }
+
     pub fn login_discovery_url(&self) -> Url {
         self.base_url
             .join(LOGIN_DISCOVERY_PATH)
@@ -198,6 +204,74 @@ impl Homeserver {
             .join(WELL_KNOWN_CLIENT_PATH)
             .expect("well-known client path should be relative")
     }
+}
+
+/// Server names (`example.org`, `https://example.org/`) are resolved through
+/// `/.well-known/matrix/client` like Element X does, so a Matrix ID domain that
+/// delegates its client API elsewhere reaches the advertised homeserver.
+/// Inputs with a path are explicit homeserver URLs and skip discovery; a
+/// missing or unusable well-known document falls back to the input itself.
+pub async fn resolve_homeserver(input: &str) -> Result<Homeserver, LoginDiscoveryError> {
+    let homeserver = Homeserver::parse(input)?;
+    if !homeserver.is_bare_server_name() {
+        return Ok(homeserver);
+    }
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(WELL_KNOWN_CLIENT_TIMEOUT)
+        .user_agent("matrix-desktop-prelogin/0.1")
+        .build()
+    else {
+        return Ok(homeserver);
+    };
+    let Ok(response) = client.get(homeserver.well_known_client_url()).send().await else {
+        return Ok(homeserver);
+    };
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap_or_default();
+    Ok(well_known_homeserver(status, &body).unwrap_or(homeserver))
+}
+
+/// Blocking form of [`resolve_homeserver`] for the pre-login discovery path.
+/// Also returns the server name's well-known document when one was fetched,
+/// so delegated-auth links come from the domain the user typed rather than
+/// from the delegated homeserver host.
+fn resolve_homeserver_blocking_with_well_known(
+    input: &str,
+) -> Result<(Homeserver, Option<serde_json::Value>), LoginDiscoveryError> {
+    let homeserver = Homeserver::parse(input)?;
+    if !homeserver.is_bare_server_name() {
+        return Ok((homeserver, None));
+    }
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(WELL_KNOWN_CLIENT_TIMEOUT)
+        .user_agent("matrix-desktop-prelogin/0.1")
+        .build()
+    else {
+        return Ok((homeserver, None));
+    };
+    let Ok(response) = client.get(homeserver.well_known_client_url()).send() else {
+        return Ok((homeserver, None));
+    };
+    let status = response.status().as_u16();
+    let body = response.text().unwrap_or_default();
+    let document = (status == 200)
+        .then(|| serde_json::from_str::<serde_json::Value>(&body).ok())
+        .flatten();
+    match well_known_homeserver(status, &body) {
+        Some(resolved) => Ok((resolved, document)),
+        None => Ok((homeserver, document)),
+    }
+}
+
+/// The advertised `m.homeserver.base_url`, held to the same rules as a typed
+/// homeserver (https unless loopback, no credentials, query, or fragment).
+fn well_known_homeserver(status: u16, body: &str) -> Option<Homeserver> {
+    if status != 200 {
+        return None;
+    }
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let base_url = value.get("m.homeserver")?.get("base_url")?.as_str()?;
+    Homeserver::parse(base_url).ok()
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -255,7 +329,7 @@ struct MatrixErrorResponse {
 }
 
 pub fn discover_login_flows(homeserver: &str) -> Result<LoginDiscovery, LoginDiscoveryError> {
-    let homeserver = Homeserver::parse(homeserver)?;
+    let (homeserver, well_known) = resolve_homeserver_blocking_with_well_known(homeserver)?;
     let client = reqwest::blocking::Client::builder()
         .timeout(DISCOVERY_TIMEOUT)
         .user_agent("matrix-desktop-prelogin/0.1")
@@ -284,7 +358,10 @@ pub fn discover_login_flows(homeserver: &str) -> Result<LoginDiscovery, LoginDis
         // #475: delegated account-management/registration links come from the
         // well-known client document; failure to fetch or parse it must never
         // block login (the links are a nicety, so this fails open to empty).
-        delegated: discover_delegated_auth_links(&homeserver),
+        delegated: well_known
+            .as_ref()
+            .map(parse_well_known_client)
+            .unwrap_or_else(|| discover_delegated_auth_links(&homeserver)),
     })
 }
 
@@ -1055,6 +1132,111 @@ mod active_session_account_management_tests {
         assert!(
             destination.contains("org.matrix.sessions_list"),
             "{destination}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod homeserver_resolution_tests {
+    use serde_json::json;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+
+    use super::{discover_login_flows, resolve_homeserver};
+
+    async fn homeserver_with_password_flow() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/login"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "flows": [{ "type": "m.login.password" }] })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn server_name_follows_well_known_delegation() {
+        let delegated = homeserver_with_password_flow().await;
+        let domain = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/matrix/client"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "m.homeserver": { "base_url": delegated.uri() },
+                "m.authentication": { "registration": "https://account.example.test/register" }
+            })))
+            .mount(&domain)
+            .await;
+
+        for input in [domain.uri(), format!("{}/", domain.uri())] {
+            assert_eq!(
+                resolve_homeserver(&input)
+                    .await
+                    .expect("resolve")
+                    .normalized(),
+                delegated.uri()
+            );
+        }
+
+        let domain_uri = domain.uri();
+        let discovery = tokio::task::spawn_blocking(move || discover_login_flows(&domain_uri))
+            .await
+            .expect("discovery task")
+            .expect("discovery");
+        assert_eq!(discovery.homeserver, delegated.uri());
+        assert_eq!(
+            discovery.delegated.registration_url.as_deref(),
+            Some("https://account.example.test/register"),
+            "delegated-auth links come from the typed domain's well-known"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_or_unusable_well_known_falls_back_to_the_input() {
+        for response in [
+            ResponseTemplate::new(404),
+            ResponseTemplate::new(200).set_body_string("not-json"),
+            ResponseTemplate::new(200).set_body_json(json!({})),
+            ResponseTemplate::new(200).set_body_json(
+                json!({ "m.homeserver": { "base_url": "http://insecure.example" } }),
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/.well-known/matrix/client"))
+                .respond_with(response)
+                .mount(&server)
+                .await;
+            assert_eq!(
+                resolve_homeserver(&server.uri())
+                    .await
+                    .expect("resolve")
+                    .normalized(),
+                server.uri()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_homeserver_url_with_a_path_skips_discovery() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/matrix/client"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let explicit = format!("{}/matrix", server.uri());
+        assert_eq!(
+            resolve_homeserver(&explicit)
+                .await
+                .expect("resolve")
+                .normalized(),
+            explicit
         );
     }
 }

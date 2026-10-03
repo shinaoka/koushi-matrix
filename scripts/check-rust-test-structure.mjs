@@ -3043,7 +3043,7 @@ export function checkCoreAccountPasswordStoreFirst() {
   const rule = "core.account.password_store_first";
   const login = accountItemBody("session_lifecycle.rs", "async fn handle_login_password");
   const failures = [];
-  for (const marker of ["Homeserver::parse", "existing_account_store_config", "pending_login_owner()", "login_with_password_with_new_device", "login_with_password_with_store_and_device"]) if (!login?.includes(marker)) failures.push(sourceContractFailure(rule, `password login lacks ${marker}`));
+  for (const marker of ["resolve_homeserver", "existing_account_store_config", "pending_login_owner()", "login_with_password_with_new_device", "login_with_password_with_store_and_device"]) if (!login?.includes(marker)) failures.push(sourceContractFailure(rule, `password login lacks ${marker}`));
   for (const marker of ["login_with_existing_device", "fallback_to_fresh_device"]) if (login?.includes(marker)) failures.push(sourceContractFailure(rule, `password login contains forbidden ${marker}`));
   return failures;
 }

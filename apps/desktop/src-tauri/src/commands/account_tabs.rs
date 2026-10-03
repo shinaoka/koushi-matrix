@@ -139,3 +139,44 @@ pub async fn remove_signed_out_account_tab(
     allow_account_media_cache_dirs(&app, &state.runtime);
     Ok(account_tabs_snapshot(&state.runtime))
 }
+
+#[tauri::command]
+pub async fn cancel_add_account_tab(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+    tab_id: String,
+) -> Result<crate::AccountTabsSnapshot, String> {
+    let tab_id = AccountTabId::from_string(tab_id);
+    let selected = state.runtime.selected_tab_id() == tab_id;
+    if selected {
+        state.close_reader_subscriptions().await;
+        state.stop_selected_forwarder().await;
+    }
+    state.stop_account_tab_watchers().await;
+    let cancelled = state.runtime.cancel_add_account_tab(&tab_id).await;
+    if matches!(cancelled, Ok(true)) {
+        state.connection.remove_cached_connection(&tab_id).await;
+    }
+    let selected_tab = state.runtime.selected_tab_id();
+    if selected {
+        super::native_attention::transfer_native_window_focus(
+            &state.runtime,
+            &state.native_window_focus_generation,
+            &tab_id,
+            &selected_tab,
+            state
+                .native_window_focused
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+        .await;
+        state.restart_selected_forwarder(app.clone());
+    }
+    state.restart_account_tab_watchers(app.clone()).await;
+    emit_account_tabs_changed(&app, &state.runtime);
+    allow_account_media_cache_dirs(&app, &state.runtime);
+    match cancelled {
+        Ok(true) => Ok(account_tabs_snapshot(&state.runtime)),
+        Ok(false) => Err("account tab cannot be cancelled".to_owned()),
+        Err(_) => Err("could not cancel account tab".to_owned()),
+    }
+}

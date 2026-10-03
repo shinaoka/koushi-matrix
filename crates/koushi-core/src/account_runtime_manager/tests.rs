@@ -360,6 +360,75 @@ async fn duplicate_password_login_reuses_the_existing_account_tab() {
         manager.account_tab_for_existing_password_login(&add_tab, "https://other.invalid", "bob"),
         None
     );
+    assert_eq!(
+        manager.account_tab_for_existing_password_login(
+            &add_tab,
+            "example.invalid",
+            "@bob:example.invalid"
+        ),
+        Some(bob_tab.clone()),
+        "a Matrix ID matches even when its domain delegates to another homeserver URL"
+    );
+    manager.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn cancelling_an_add_account_tab_returns_to_the_previous_account() {
+    let data_dir = tempfile::tempdir().expect("data directory");
+    let credential_dir = tempfile::tempdir().expect("credential directory");
+    let store = StoreActor::with_backend(
+        CredentialStoreBackend::FileDir(FileCredentialStore::new(credential_dir.path())),
+        data_dir.path().to_path_buf(),
+    );
+    let native_artifact_factory: Arc<dyn Fn() -> Arc<dyn NativeArtifactPort> + Send + Sync> =
+        Arc::new(|| Arc::new(crate::native_artifact::NativeArtifactRegistry::new()));
+    let manager = AccountRuntimeManager::new(
+        store,
+        SettingsStore::new(data_dir.path()),
+        native_artifact_factory,
+    );
+    let only_tab = manager.selected_tab_id();
+    assert!(
+        !manager
+            .cancel_add_account_tab(&only_tab)
+            .await
+            .expect("cancel only tab"),
+        "the last tab stays as the sign-in surface"
+    );
+    manager
+        .bind_authenticated_session(&only_tab, &session("@bob:example.invalid"))
+        .await
+        .expect("bind Bob");
+    let bob_tab = only_tab;
+    assert!(
+        !manager
+            .cancel_add_account_tab(&bob_tab)
+            .await
+            .expect("cancel bound tab"),
+        "a bound account tab is never cancelled"
+    );
+
+    let add_tab = manager.add_account_tab().await.expect("add account tab");
+    assert_eq!(manager.selected_tab_id(), add_tab);
+    assert!(
+        manager
+            .cancel_add_account_tab(&add_tab)
+            .await
+            .expect("cancel add tab")
+    );
+    assert_eq!(manager.selected_tab_id(), bob_tab);
+    let descriptors = manager.tab_descriptors();
+    assert_eq!(descriptors.len(), 1);
+    assert_eq!(
+        descriptors[0].account_key,
+        Some(AccountKey("@bob:example.invalid".to_owned()))
+    );
+    assert!(
+        !manager
+            .cancel_add_account_tab(&add_tab)
+            .await
+            .expect("cancel removed tab")
+    );
     manager.shutdown_all().await;
 }
 

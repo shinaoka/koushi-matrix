@@ -420,6 +420,8 @@ const japaneseIdenticalMessageAllowlist = new Set<MessageId>([
   "upload.formatPng",
   "auth.flowOidc",
   "auth.flowToken",
+  // "Matrix ID" is the protocol's product term in both locales (Element X ja).
+  "auth.matrixId",
   "roomList.filterPeople",
   "space.directMessages",
   "settings.fontInter",

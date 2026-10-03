@@ -58,6 +58,9 @@ struct ManagerState {
     tabs: Vec<ManagedTab>,
     selected: AccountTabId,
     next_add_id: u64,
+    /// The tab that was selected when the unbound add-account tab was opened,
+    /// so cancelling it returns the user to where they came from.
+    add_return_to: Option<AccountTabId>,
     shutdown_result: Option<Result<(), CoreShutdownError>>,
 }
 
@@ -113,6 +116,7 @@ impl AccountRuntimeManager {
                 }],
                 selected: first_add,
                 next_add_id: 2,
+                add_return_to: None,
                 shutdown_result: None,
             }),
             operation_gate: tokio::sync::Mutex::new(()),
@@ -510,6 +514,9 @@ impl AccountRuntimeManager {
             .find(|tab| tab.descriptor.account_key.is_none())
         {
             let id = tab.descriptor.id.clone();
+            if state.selected != id {
+                state.add_return_to = Some(state.selected.clone());
+            }
             state.selected = id.clone();
             self.account_work.set_selected_account(Some(id.as_str()));
             return Ok(id);
@@ -532,9 +539,59 @@ impl AccountRuntimeManager {
             session_key_id: None,
             runtime,
         });
+        state.add_return_to = Some(state.selected.clone());
         state.selected = id.clone();
         self.account_work.set_selected_account(Some(id.as_str()));
         Ok(id)
+    }
+
+    /// Close an add-account tab that never bound an account. Only a signed-out
+    /// tab qualifies (an in-flight password login must settle first), and the
+    /// last tab is kept so the window always has a sign-in surface. Existing
+    /// accounts and the credential store are never touched.
+    pub async fn cancel_add_account_tab(
+        &self,
+        id: &AccountTabId,
+    ) -> Result<bool, koushi_protocol::failure::CoreFailure> {
+        let _operation = self.operation_gate.lock().await;
+        let (runtime, selected_tab_id) = {
+            let mut state = self.state.lock().expect("account runtime manager mutex");
+            let Some(position) = state.tabs.iter().position(|tab| &tab.descriptor.id == id) else {
+                return Ok(false);
+            };
+            let tab = &state.tabs[position];
+            let signed_out = matches!(
+                tab.runtime.attach().snapshot().session,
+                SessionState::SignedOut
+            );
+            if tab.descriptor.account_key.is_some() || !signed_out || state.tabs.len() < 2 {
+                return Ok(false);
+            }
+            let runtime = state.tabs.remove(position).runtime;
+            let return_to = state.add_return_to.take();
+            if state.selected == *id {
+                state.selected = return_to
+                    .filter(|target| state.tabs.iter().any(|tab| &tab.descriptor.id == target))
+                    .unwrap_or_else(|| {
+                        state.tabs[position.min(state.tabs.len() - 1)]
+                            .descriptor
+                            .id
+                            .clone()
+                    });
+            }
+            (runtime, state.selected.clone())
+        };
+        self.account_work
+            .set_selected_account(Some(selected_tab_id.as_str()));
+        self.oidc_attempts
+            .lock()
+            .expect("OIDC attempt mutex")
+            .retain(|_, tab_id| tab_id != id);
+        runtime
+            .shutdown_checked()
+            .await
+            .map_err(|_| koushi_protocol::failure::CoreFailure::StoreUnavailable)?;
+        Ok(true)
     }
 
     /// Find another retained tab that owns the saved device this login would reuse.
@@ -544,12 +601,15 @@ impl AccountRuntimeManager {
         homeserver: &str,
         username: &str,
     ) -> Option<AccountTabId> {
-        let Ok(homeserver) = koushi_sdk::Homeserver::parse(homeserver) else {
-            return None;
-        };
-        let homeserver = homeserver.normalized();
         let username = username.trim();
+        // A full Matrix ID names the account regardless of which homeserver
+        // URL its domain delegates to.
         let exact = username.starts_with('@') && username.contains(':');
+        let homeserver = if exact {
+            None
+        } else {
+            Some(koushi_sdk::Homeserver::parse(homeserver).ok()?.normalized())
+        };
         self.state
             .lock()
             .expect("account runtime manager mutex")
@@ -557,15 +617,16 @@ impl AccountRuntimeManager {
             .iter()
             .find(|tab| {
                 tab.descriptor.id != *current_tab
-                    && tab.descriptor.homeserver.as_deref() == Some(homeserver.as_str())
                     && tab.descriptor.account_key.as_ref().is_some_and(|key| {
                         if exact {
                             key.0 == username
                         } else {
-                            key.0
-                                .strip_prefix('@')
-                                .and_then(|user| user.split_once(':'))
-                                .is_some_and(|(localpart, _)| localpart == username)
+                            tab.descriptor.homeserver.as_deref() == homeserver.as_deref()
+                                && key
+                                    .0
+                                    .strip_prefix('@')
+                                    .and_then(|user| user.split_once(':'))
+                                    .is_some_and(|(localpart, _)| localpart == username)
                         }
                     })
             })
