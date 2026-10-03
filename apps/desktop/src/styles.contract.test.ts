@@ -188,21 +188,16 @@ describe("styles.css token system", () => {
     expect(shellSource).toContain('target.closest("button, input, select, textarea, a, label")');
   });
 
-  test("titlebar allocates room for account tabs and account-scoped search", () => {
+  test("titlebar reserves visible room for Matrix connection status", () => {
     const titlebarBlock = selectorBlock(".titlebar");
     expect(titlebarBlock).toContain(
-      "grid-template-columns: minmax(0, 1.35fr) minmax(160px, 1fr) var(--search-scope-column) minmax(132px, max-content);"
+      "grid-template-columns: minmax(220px, 1fr) var(--search-scope-column) minmax(132px, max-content);"
     );
     expect(titlebarBlock).not.toContain(" 84px;");
-    expect(shellSource).toContain('className="account-tab-strip"');
-  });
-
-  test("narrow account tabs keep their avatar and status badge visible", () => {
-    expect(css).toMatch(
-      /@media\s+\(max-width:\s*760px\)[\s\S]*?\.account-tab-label\s*\{[^}]*display:\s*none/
-    );
-    expect(shellSource).toContain('className={`account-tab-avatar');
-    expect(shellSource).toContain('className="account-tab-unread"');
+    expect(css).not.toContain(".history");
+    expect(shellSource).toContain('className="sync-status"');
+    expect(shellSource).toContain('className="sync-status-label"');
+    expect(shellSource).toContain('className="sync-status-detail"');
   });
 
   test("locale-sensitive layout uses logical properties instead of physical left/right declarations", () => {
@@ -570,12 +565,11 @@ describe("styles.css token system", () => {
     expect(appSource).toContain('aria-label={t("workspace.resizeRightPanel")}');
   });
 
-  test("account content inherits its containing block beneath the persistent shell", () => {
-    const root = groupedSelectorBlock(/\.desktop,\s*\.account-tab-shell/, "desktop roots");
+  test("application root inherits the containing block instead of using a viewport height", () => {
+    const root = selectorBlock(".desktop");
     expect(root).toContain("block-size: 100%;");
     expect(root).toContain("min-block-size: 0;");
     expect(root).not.toMatch(/(?:height|min-height|block-size):\s*100(?:d)?vh/);
-    expect(lastSelectorBlock(".account-tab-shell")).toContain("block-size: 100vh;");
   });
 
   test("the composer math switch never renders hover as the ON state", () => {

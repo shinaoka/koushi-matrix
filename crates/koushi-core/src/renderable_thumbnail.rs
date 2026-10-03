@@ -53,7 +53,6 @@ impl fmt::Display for RenderableThumbnailStoreError {
 impl std::error::Error for RenderableThumbnailStoreError {}
 
 struct RenderableThumbnailEntry {
-    account_scope: String,
     bytes: Vec<u8>,
     mime_type: String,
 }
@@ -139,7 +138,6 @@ impl RenderableThumbnailCache {
     fn insert(
         &mut self,
         cache_key: String,
-        account_scope: &str,
         bytes: Vec<u8>,
         mime_type: String,
     ) -> Result<(), RenderableThumbnailStoreError> {
@@ -163,11 +161,7 @@ impl RenderableThumbnailCache {
                 max_bytes: MAX_RENDERABLE_THUMBNAIL_BYTES,
             });
         }
-        let entry = RenderableThumbnailEntry {
-            account_scope: account_scope.to_owned(),
-            bytes,
-            mime_type,
-        };
+        let entry = RenderableThumbnailEntry { bytes, mime_type };
         if let Some(previous) = self.entries.remove(&cache_key) {
             self.retained_bytes = self.retained_bytes.saturating_sub(previous.bytes.len());
             self.remove_from_lru(&cache_key);
@@ -226,29 +220,12 @@ impl RenderableThumbnailCache {
     }
 
     fn clear(&mut self) {
-        self.clear_matching(|_| true);
-    }
-
-    fn clear_account(&mut self, account_scope: &str) {
-        self.clear_matching(|entry| entry.account_scope == account_scope);
-    }
-
-    fn clear_matching(&mut self, matches: impl Fn(&RenderableThumbnailEntry) -> bool) {
-        let keys: Vec<_> = self
-            .entries
-            .iter()
-            .filter_map(|(key, entry)| matches(entry).then_some(key.clone()))
-            .collect();
-        let mut removed_bytes = 0usize;
-        for key in &keys {
-            if let Some(entry) = self.entries.remove(key) {
-                removed_bytes = removed_bytes.saturating_add(entry.bytes.len());
-                self.remove_from_lru(key);
-            }
-        }
-        self.retained_bytes = self.retained_bytes.saturating_sub(removed_bytes);
+        let removed_entries = self.entries.len();
+        let removed_bytes = self.retained_bytes;
+        self.entries.clear();
+        self.lru.clear();
+        self.retained_bytes = 0;
         self.clear_count = self.clear_count.saturating_add(1);
-        let removed_entries = keys.len();
         if removed_entries > 0 || removed_bytes > 0 {
             record(
                 DiagnosticEvent::new(DiagnosticLevel::Debug, "core.renderable_thumbnail", "clear")
@@ -341,16 +318,12 @@ fn mime_type_from_bytes(bytes: &[u8]) -> String {
         .unwrap_or_else(|| "application/octet-stream".to_owned())
 }
 
-pub(crate) fn renderable_thumbnail_cache_key_for_account(
+pub(crate) fn renderable_thumbnail_cache_key(
     kind: RenderableThumbnailKind,
-    account_scope: &str,
     source: &str,
 ) -> String {
     let mut hasher = DefaultHasher::new();
     hasher.write(kind.path_segment().as_bytes());
-    hasher.write(&[0]);
-    hasher.write(account_scope.as_bytes());
-    hasher.write(&[0]);
     hasher.write(source.as_bytes());
     format!("{}/{:016x}", kind.path_segment(), hasher.finish())
 }
@@ -371,22 +344,13 @@ pub fn store_renderable_thumbnail(
     source: &str,
     bytes: Vec<u8>,
 ) -> Result<AvatarThumbnailState, RenderableThumbnailStoreError> {
-    store_renderable_thumbnail_for_account(kind, "", source, bytes)
-}
-
-pub(crate) fn store_renderable_thumbnail_for_account(
-    kind: RenderableThumbnailKind,
-    account_scope: &str,
-    source: &str,
-    bytes: Vec<u8>,
-) -> Result<AvatarThumbnailState, RenderableThumbnailStoreError> {
     let mime_type = mime_type_from_bytes(&bytes);
-    let cache_key = renderable_thumbnail_cache_key_for_account(kind, account_scope, source);
+    let cache_key = renderable_thumbnail_cache_key(kind, source);
     {
         let mut cache = renderable_thumbnail_cache()
             .lock()
             .expect("renderable thumbnail cache should not be poisoned");
-        cache.insert(cache_key.clone(), account_scope, bytes, mime_type.clone())?;
+        cache.insert(cache_key.clone(), bytes, mime_type.clone())?;
     }
 
     Ok(AvatarThumbnailState::Ready {
@@ -436,13 +400,6 @@ pub fn clear_renderable_thumbnail_cache() {
         .lock()
         .expect("renderable thumbnail cache should not be poisoned");
     cache.clear();
-}
-
-pub(crate) fn clear_renderable_thumbnail_cache_for_account(account_scope: &str) {
-    let mut cache = renderable_thumbnail_cache()
-        .lock()
-        .expect("renderable thumbnail cache should not be poisoned");
-    cache.clear_account(account_scope);
 }
 
 /// Serializes tests that share the process-global thumbnail cache. The mutex
@@ -522,16 +479,6 @@ pub fn cleanup_legacy_plaintext_thumbnail_dirs(data_dir: &Path) -> std::io::Resu
         }
     }
     Ok(())
-}
-
-/// Old media downloads were device-wide and keyed only by room/event IDs. They
-/// are a re-downloadable cache, so remove it when moving to account-rooted paths.
-pub fn cleanup_legacy_media_downloads(data_dir: &Path) -> std::io::Result<()> {
-    match fs::remove_dir_all(data_dir.join("media_downloads")) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
 }
 
 #[cfg(test)]

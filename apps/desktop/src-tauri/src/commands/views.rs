@@ -1,20 +1,5 @@
 use super::*;
 
-fn reader_subscription_key(
-    account_tab_id: Option<&str>,
-    scope: koushi_protocol::view::ViewScopeId,
-) -> (
-    Option<koushi_core::account_runtime_manager::AccountTabId>,
-    koushi_protocol::view::ViewScopeId,
-) {
-    (
-        account_tab_id.map(|id| {
-            koushi_core::account_runtime_manager::AccountTabId::from_string(id.to_owned())
-        }),
-        scope,
-    )
-}
-
 #[derive(serde::Serialize)]
 pub(crate) struct ReceiptReaderResourceContent {
     pub(crate) bytes: Vec<u8>,
@@ -23,13 +8,12 @@ pub(crate) struct ReceiptReaderResourceContent {
 
 #[tauri::command]
 pub async fn subscribe_receipt_reader(
-    account_tab_id: Option<String>,
     source: koushi_protocol::view::ReceiptSourceRef,
     start: u64,
     limit: koushi_protocol::view::ReaderWindowLimit,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<koushi_protocol::view::ViewScopeId, String> {
-    let connection = account_connection(state.inner(), account_tab_id.as_deref()).await?;
+    let connection = state.connection.lock().await;
     let subscription = connection
         .subscribe_reader(source, start, limit)
         .map_err(|error| format!("reader subscribe failed: {error:?}"))?;
@@ -39,16 +23,12 @@ pub async fn subscribe_receipt_reader(
         control: subscription.control(),
         subscription: std::sync::Arc::new(tokio::sync::Mutex::new(subscription)),
     };
-    state.reader_subscriptions.lock().await.insert(
-        reader_subscription_key(account_tab_id.as_deref(), scope),
-        entry,
-    );
+    state.reader_subscriptions.lock().await.insert(scope, entry);
     Ok(scope)
 }
 
 #[tauri::command]
 pub async fn receive_receipt_reader(
-    account_tab_id: Option<String>,
     scope: koushi_protocol::view::ViewScopeId,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<Option<koushi_protocol::view::ViewDelivery>, String> {
@@ -56,7 +36,7 @@ pub async fn receive_receipt_reader(
         .reader_subscriptions
         .lock()
         .await
-        .get(&reader_subscription_key(account_tab_id.as_deref(), scope))
+        .get(&scope)
         .cloned()
         .ok_or_else(|| "reader scope is not owned by this window".to_owned())?;
     Ok(entry.subscription.lock().await.next_delivery().await)
@@ -64,7 +44,6 @@ pub async fn receive_receipt_reader(
 
 #[tauri::command]
 pub async fn read_receipt_reader_resource(
-    account_tab_id: Option<String>,
     scope: koushi_protocol::view::ViewScopeId,
     revision: koushi_protocol::view::ViewRevision,
     source_ref: String,
@@ -74,7 +53,7 @@ pub async fn read_receipt_reader_resource(
         .reader_subscriptions
         .lock()
         .await
-        .get(&reader_subscription_key(account_tab_id.as_deref(), scope))
+        .get(&scope)
         .cloned()
         .ok_or_else(|| "reader scope is not owned by this window".to_owned())?;
     entry
@@ -91,7 +70,6 @@ pub async fn read_receipt_reader_resource(
 
 #[tauri::command]
 pub async fn update_receipt_reader_window(
-    account_tab_id: Option<String>,
     scope: koushi_protocol::view::ViewScopeId,
     request: koushi_protocol::view::ReaderWindowRequest,
     state: State<'_, CoreRuntimeState>,
@@ -100,7 +78,7 @@ pub async fn update_receipt_reader_window(
         .reader_subscriptions
         .lock()
         .await
-        .get(&reader_subscription_key(account_tab_id.as_deref(), scope))
+        .get(&scope)
         .cloned()
         .ok_or_else(|| "reader scope is not owned by this window".to_owned())?;
     entry
@@ -111,7 +89,6 @@ pub async fn update_receipt_reader_window(
 
 #[tauri::command]
 pub async fn observe_receipt_reader_avatars(
-    account_tab_id: Option<String>,
     scope: koushi_protocol::view::ViewScopeId,
     request: koushi_protocol::view::ReaderAvatarObservation,
     state: State<'_, CoreRuntimeState>,
@@ -120,7 +97,7 @@ pub async fn observe_receipt_reader_avatars(
         .reader_subscriptions
         .lock()
         .await
-        .get(&reader_subscription_key(account_tab_id.as_deref(), scope))
+        .get(&scope)
         .cloned()
         .ok_or_else(|| "reader scope is not owned by this window".to_owned())?;
     entry
@@ -136,7 +113,6 @@ pub async fn observe_receipt_reader_avatars(
 
 #[tauri::command]
 pub async fn ack_receipt_reader(
-    account_tab_id: Option<String>,
     scope: koushi_protocol::view::ViewScopeId,
     revision: koushi_protocol::view::ViewRevision,
     state: State<'_, CoreRuntimeState>,
@@ -145,7 +121,7 @@ pub async fn ack_receipt_reader(
         .reader_subscriptions
         .lock()
         .await
-        .get(&reader_subscription_key(account_tab_id.as_deref(), scope))
+        .get(&scope)
         .cloned()
         .ok_or_else(|| "reader scope is not owned by this window".to_owned())?;
     entry
@@ -156,16 +132,10 @@ pub async fn ack_receipt_reader(
 
 #[tauri::command]
 pub async fn close_receipt_reader(
-    account_tab_id: Option<String>,
     scope: koushi_protocol::view::ViewScopeId,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<(), String> {
-    if let Some(entry) = state
-        .reader_subscriptions
-        .lock()
-        .await
-        .remove(&reader_subscription_key(account_tab_id.as_deref(), scope))
-    {
+    if let Some(entry) = state.reader_subscriptions.lock().await.remove(&scope) {
         entry.close.close();
     }
     Ok(())
@@ -173,14 +143,13 @@ pub async fn close_receipt_reader(
 
 #[tauri::command]
 pub async fn open_files_view(
-    account_tab_id: Option<String>,
     scope: FilesViewScope,
     filter: AttachmentFilter,
     sort: AttachmentSort,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_open_files_view_command(request_id, scope, filter, sort),
@@ -192,11 +161,10 @@ pub async fn open_files_view(
 
 #[tauri::command]
 pub async fn close_files_view(
-    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_close_files_view_command(request_id),
@@ -208,12 +176,11 @@ pub async fn close_files_view(
 
 #[tauri::command]
 pub async fn open_threads_list(
-    account_tab_id: Option<String>,
     scope: koushi_state::ThreadsListScope,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_open_threads_list_command(request_id, scope),
@@ -225,11 +192,10 @@ pub async fn open_threads_list(
 
 #[tauri::command]
 pub async fn close_threads_list(
-    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_close_threads_list_command(request_id),
@@ -241,12 +207,11 @@ pub async fn close_threads_list(
 
 #[tauri::command]
 pub async fn paginate_threads_list(
-    account_tab_id: Option<String>,
     scope: koushi_state::ThreadsListScope,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_paginate_threads_list_command(request_id, scope),
@@ -258,7 +223,6 @@ pub async fn paginate_threads_list(
 
 #[tauri::command]
 pub async fn open_thread(
-    account_tab_id: Option<String>,
     room_id: String,
     root_event_id: String,
     intent: ThreadOpenIntent,
@@ -268,7 +232,7 @@ pub async fn open_thread(
     // Thread open/close is Rust-owned product state: drive the reducer's
     // ThreadPaneState through a first-class core command instead of discarding
     // the inputs in a snapshot-only shim.
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_open_thread_command(request_id, room_id, root_event_id, intent),
@@ -280,11 +244,10 @@ pub async fn open_thread(
 
 #[tauri::command]
 pub async fn close_thread(
-    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         CoreCommand::App(AppCommand::CloseThread { request_id }),

@@ -30,8 +30,7 @@ test("generates the deterministic README application composition", async ({ page
 
   const sourceSnapshot = await page.evaluate(() => window.__harness.currentSnapshot());
   const fixture = createReadmeFixture(sourceSnapshot);
-  await page.evaluate(async ({ accountTabs, stateUpdate, initialItems }) => {
-    await window.__harness.pushAccountTabs(accountTabs);
+  await page.evaluate(async ({ stateUpdate, initialItems }) => {
     window.__harness.pushStateUpdate(stateUpdate);
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     await window.__harness.pushCoreEvent(initialItems);

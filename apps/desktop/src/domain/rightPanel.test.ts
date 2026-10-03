@@ -26,13 +26,16 @@ describe("right panel context menu routing", () => {
     ).toEqual({ mode: "spaceInfo", selectSpaceId: "!space-a:example.invalid" });
   });
 
-  test("routes account menu actions to account settings panels", () => {
+  test("routes account menu actions to user and keyboard settings panels", () => {
     expect(
       rightPanelIntentForContextMenuAction({ kind: "account" }, "openUserSettings")
     ).toEqual({ mode: "userSettings" });
     expect(
       rightPanelIntentForContextMenuAction({ kind: "account" }, "openKeyboardSettings")
     ).toEqual({ mode: "keyboardSettings" });
+    expect(
+      rightPanelIntentForContextMenuAction({ kind: "account" }, "switchAccount")
+    ).toEqual({ mode: "userSettings" });
   });
 
   test("does not invent panel switches for open and search-only actions", () => {

@@ -709,7 +709,6 @@ export function SummaryTile({ label, value }: { label: string; value: string }) 
 
 export function TimelinePane({
   activeRoomName,
-  sendingAccount = null,
   canEdit = true,
   composerDocument,
   composerNotice = null,
@@ -721,7 +720,6 @@ export function TimelinePane({
   showSearchResults,
   snapshot,
   timelineTransport,
-  accountTabId,
   onCancelReply,
   onCancelScheduledSend,
   onAttachFiles,
@@ -760,7 +758,6 @@ export function TimelinePane({
   onTimelineDiagnosticLogEntry
 }: {
   activeRoomName: string;
-  sendingAccount?: { name: string; colorClassName: string } | null;
   canEdit?: boolean;
   composerDocument: ComposerDocument;
   composerDraftKey?: string;
@@ -771,7 +768,6 @@ export function TimelinePane({
   showSearchResults: boolean;
   snapshot: DesktopSnapshot;
   timelineTransport: TimelineTransport | null;
-  accountTabId?: string;
   onCancelReply: () => void;
   onCancelScheduledSend: (scheduledId: string) => void;
   onAttachFiles: (files: File[]) => void | Promise<void>;
@@ -1079,7 +1075,6 @@ export function TimelinePane({
               }
               roomId={timelineRoomId}
               timelineKey={timelineKey!}
-              accountTabId={accountTabId}
               isAnchored={Boolean(mainTimelineAnchorEventId)}
               onReturnToLive={onReturnToLive}
               liveLatestEventId={liveLatestEventId}
@@ -1179,7 +1174,6 @@ export function TimelinePane({
         />
       ) : null}
       <Composer
-        sendingAccount={sendingAccount}
         canEdit={canEdit}
         composerMode={composerModeForComposer}
         preferSendOnForwardTab

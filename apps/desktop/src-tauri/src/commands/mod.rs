@@ -87,7 +87,6 @@ const CORE_COMMAND_SUBMIT_TIMEOUT: Duration = Duration::from_secs(2);
 const QA_TITLE_ENV: &str = "KOUSHI_QA_TITLE";
 
 pub(crate) mod account;
-pub(crate) mod account_tabs;
 pub(crate) mod activity;
 pub(crate) mod app_updates;
 pub(crate) mod clipboard_image;
@@ -119,7 +118,7 @@ pub(crate) async fn submit_core_command(
     state: &CoreRuntimeState,
     command: CoreCommand,
 ) -> Result<(), String> {
-    let command_handle = command_handle_for_request(state, command.request_id()).await?;
+    let command_handle = { state.connection.lock().await.command_handle() };
 
     match tokio::time::timeout(CORE_COMMAND_SUBMIT_TIMEOUT, command_handle.command(command)).await {
         Ok(Ok(())) => Ok(()),
@@ -132,7 +131,7 @@ pub(crate) async fn submit_core_command_with_admission(
     state: &CoreRuntimeState,
     command: CoreCommand,
 ) -> Result<FrontendCommandAdmission, String> {
-    let command_handle = command_handle_for_request(state, command.request_id()).await?;
+    let command_handle = { state.connection.lock().await.command_handle() };
 
     match tokio::time::timeout(
         CORE_COMMAND_SUBMIT_TIMEOUT,
@@ -146,65 +145,9 @@ pub(crate) async fn submit_core_command_with_admission(
     }
 }
 
-/// Allocate a `RequestId` for the debug-only QA control pipe.
-#[cfg(any(debug_assertions, test))]
+/// Allocate a `RequestId` from the command-dispatch connection.
 async fn next_request_id(state: &CoreRuntimeState) -> koushi_protocol::RequestId {
     state.connection.lock().await.next_request_id()
-}
-
-pub(crate) async fn account_connection(
-    state: &CoreRuntimeState,
-    account_tab_id: Option<&str>,
-) -> Result<CoreConnection, String> {
-    match account_tab_id {
-        Some(id) => {
-            let tab_id =
-                koushi_core::account_runtime_manager::AccountTabId::from_string(id.to_owned());
-            state.connection.lock_for_tab_id(&tab_id).await?;
-            state
-                .runtime
-                .tab_connection(&tab_id)
-                .ok_or_else(|| "account tab does not exist".to_owned())
-        }
-        None => {
-            let (id, _) = state.connection.lock_with_tab_id().await;
-            let tab_id = koushi_core::account_runtime_manager::AccountTabId::from_string(id);
-            state
-                .runtime
-                .tab_connection(&tab_id)
-                .ok_or_else(|| "account tab does not exist".to_owned())
-        }
-    }
-}
-
-pub(crate) async fn next_request_id_for(
-    state: &CoreRuntimeState,
-    account_tab_id: Option<&str>,
-) -> Result<koushi_protocol::RequestId, String> {
-    let connection = match account_tab_id {
-        Some(id) => {
-            state
-                .connection
-                .lock_for_tab_id(
-                    &koushi_core::account_runtime_manager::AccountTabId::from_string(id.to_owned()),
-                )
-                .await?
-                .1
-        }
-        None => state.connection.lock_with_tab_id().await.1,
-    };
-    Ok(connection.next_request_id())
-}
-
-async fn command_handle_for_request(
-    state: &CoreRuntimeState,
-    request_id: RequestId,
-) -> Result<koushi_core::CoreCommandHandle, String> {
-    state
-        .connection
-        .command_handle_for_request(request_id)
-        .await
-        .ok_or_else(|| "account tab does not exist".to_owned())
 }
 
 async fn submit_core_command_with_native_artifact(
@@ -242,7 +185,7 @@ async fn submit_core_command_with_native_artifact_path(
     if command.request_id() != request_id {
         return Err("native artifact request correlation mismatch".to_owned());
     }
-    let command_handle = command_handle_for_request(state, request_id).await?;
+    let command_handle = { state.connection.lock().await.command_handle() };
 
     match tokio::time::timeout(
         CORE_COMMAND_SUBMIT_TIMEOUT,
@@ -420,16 +363,13 @@ fn optional_non_blank(value: Option<String>) -> Option<String> {
     })
 }
 
-/// Derive the `AccountKey` for the requested tab's active session from its snapshot.
+/// Derive the `AccountKey` for the currently active session from the snapshot.
 ///
 /// Returns an empty key if no session is active (commands that require a Ready
 /// session will be rejected by `AppActor::requires_ready_session`).
-async fn account_key_from_snapshot(
-    state: &CoreRuntimeState,
-    account_tab_id: Option<&str>,
-) -> Result<AccountKey, String> {
-    let connection = account_connection(state, account_tab_id).await?;
-    Ok(account_key_from_app_state(&connection.snapshot()))
+async fn account_key_from_snapshot(state: &CoreRuntimeState) -> AccountKey {
+    let snapshot = state.connection.lock().await.snapshot();
+    account_key_from_app_state(&snapshot)
 }
 
 fn account_key_from_app_state(snapshot: &koushi_state::AppState) -> AccountKey {

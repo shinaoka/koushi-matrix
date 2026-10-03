@@ -7,12 +7,11 @@ use koushi_core::EventNavigationError;
 
 #[tauri::command]
 pub async fn update_navigation_preference(
-    account_tab_id: Option<String>,
     update: koushi_state::NavigationPreferenceUpdate,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_update_navigation_preference_command(request_id, update),
@@ -24,14 +23,13 @@ pub async fn update_navigation_preference(
 
 #[tauri::command]
 pub async fn select_space(
-    account_tab_id: Option<String>,
     space_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     let started = std::time::Instant::now();
     let requested_space_id = space_id.clone();
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     record(
         DiagnosticEvent::new(DiagnosticLevel::Debug, "desktop.space.transition", "submit")
             .field(DiagnosticField::request_id(
@@ -71,12 +69,11 @@ pub async fn select_space(
 
 #[tauri::command]
 pub async fn reorder_spaces(
-    account_tab_id: Option<String>,
     space_ids: Vec<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_reorder_spaces_command(request_id, space_ids),
@@ -88,12 +85,11 @@ pub async fn reorder_spaces(
 
 #[tauri::command]
 pub async fn select_room(
-    account_tab_id: Option<String>,
     room_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
+    let mut event_conn = state.runtime.attach();
     let generation = event_conn
         .select_room_and_wait(room_id, SELECT_ROOM_EVENT_TIMEOUT)
         .await
@@ -118,10 +114,9 @@ pub(super) fn build_dismiss_event_navigation_failure_command(
 /// rather than renderer-local state.
 #[tauri::command]
 pub async fn dismiss_event_navigation_failure(
-    account_tab_id: Option<String>,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     submit_core_command_with_admission(
         state.inner(),
         build_dismiss_event_navigation_failure_command(request_id),
@@ -131,7 +126,6 @@ pub async fn dismiss_event_navigation_failure(
 
 #[tauri::command]
 pub async fn open_activity_event(
-    account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
     app: AppHandle,
@@ -140,7 +134,6 @@ pub async fn open_activity_event(
     navigate_to_event(
         room_id,
         event_id,
-        account_tab_id.as_deref(),
         koushi_state::EventNavigationSource::Activity,
         app,
         state,
@@ -150,7 +143,6 @@ pub async fn open_activity_event(
 
 #[tauri::command]
 pub async fn open_pinned_event(
-    account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
     app: AppHandle,
@@ -159,7 +151,6 @@ pub async fn open_pinned_event(
     navigate_to_event(
         room_id,
         event_id,
-        account_tab_id.as_deref(),
         koushi_state::EventNavigationSource::Pinned,
         app,
         state,
@@ -175,7 +166,6 @@ pub async fn open_pinned_event(
 /// webview keeps the pointer there when the event is gone.
 #[tauri::command]
 pub async fn open_notification_event(
-    account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
     app: AppHandle,
@@ -184,7 +174,6 @@ pub async fn open_notification_event(
     navigate_to_event(
         room_id,
         event_id,
-        account_tab_id.as_deref(),
         koushi_state::EventNavigationSource::Notification,
         app,
         state,
@@ -194,7 +183,6 @@ pub async fn open_notification_event(
 
 #[tauri::command]
 pub async fn select_search_result(
-    account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
     app: AppHandle,
@@ -203,7 +191,6 @@ pub async fn select_search_result(
     navigate_to_event(
         room_id,
         event_id,
-        account_tab_id.as_deref(),
         koushi_state::EventNavigationSource::Search,
         app,
         state,
@@ -214,12 +201,11 @@ pub async fn select_search_result(
 async fn navigate_to_event(
     room_id: String,
     event_id: String,
-    account_tab_id: Option<&str>,
     source: koushi_state::EventNavigationSource,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let mut event_conn = account_connection(state.inner(), account_tab_id).await?;
+    let mut event_conn = state.runtime.attach();
     let snapshot = event_conn
         .navigate_to_event_and_wait(
             room_id,
@@ -238,11 +224,10 @@ async fn navigate_to_event(
 
 #[tauri::command]
 pub async fn close_focused_context(
-    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
+    let mut event_conn = state.runtime.attach();
     let baseline_snapshot = event_conn.versioned_snapshot();
     let account_key = account_key_from_app_state(&baseline_snapshot.state);
     let room_id = baseline_snapshot.state.navigation.active_room_id.clone();
@@ -272,13 +257,12 @@ pub async fn close_focused_context(
 
 #[tauri::command]
 pub async fn open_timeline_at_timestamp(
-    account_tab_id: Option<String>,
     room_id: String,
     timestamp_ms: u64,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
+    let mut event_conn = state.runtime.attach();
     let baseline_snapshot = event_conn.versioned_snapshot();
     let account_key = account_key_from_app_state(&baseline_snapshot.state);
     let baseline_generation = baseline_snapshot.generation;
@@ -310,13 +294,12 @@ pub async fn open_timeline_at_timestamp(
 
 #[tauri::command]
 pub async fn update_navigation_scroll_anchor(
-    account_tab_id: Option<String>,
     room_id: String,
     anchor: koushi_state::TimelineScrollAnchor,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<(), String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
         build_update_navigation_scroll_anchor_command(request_id, room_id, anchor),
@@ -400,7 +383,6 @@ pub(super) fn invoke_error_from_select_room_error(error: koushi_core::SelectRoom
     reason = "Tauri command: each parameter is a named IPC argument of the renderer contract"
 )]
 pub async fn observe_timeline_viewport(
-    account_tab_id: Option<String>,
     room_id: String,
     first_visible_event_id: Option<String>,
     last_visible_event_id: Option<String>,
@@ -411,8 +393,8 @@ pub async fn observe_timeline_viewport(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<(), String> {
-    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
         build_observe_timeline_viewport_command(

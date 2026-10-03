@@ -745,11 +745,11 @@ export function checkDesktopSearchCommandContract() {
   for (const marker of ["SearchScope::CurrentSpace", "SearchScope::CurrentRoom"]) if (!resolver?.includes(marker)) failures.push(sourceContractFailure(rule, `search scope resolver lacks ${marker}`));
   if (resolver?.includes("unwrap_or(SearchScope::AllRooms)")) failures.push(sourceContractFailure(rule, "search scope resolver collapses to allRooms"));
   for (const marker of ["submit_search_production_path", "FrontendCommandSettlement", "Ok(settlement)"]) if (!command?.includes(marker)) failures.push(sourceContractFailure(rule, `submit_search lacks ${marker}`));
-  for (const marker of ["account_connection(state, account_tab_id)", "versioned_snapshot", "baseline_generation", "next_request_id_for(state, account_tab_id)", "submit_core_command", "wait_for_request_outcome", "RequestOutcomeExpectation::SearchStarted", "account_key", "query", "search_scope"]) {
+  for (const marker of ["state.runtime.attach", "versioned_snapshot", "baseline_generation", "next_request_id(state).await", "submit_core_command", "wait_for_request_outcome", "RequestOutcomeExpectation::SearchStarted", "account_key", "query", "search_scope"]) {
     if (!helper?.includes(marker)) failures.push(sourceContractFailure(rule, `search path lacks Core outcome marker ${marker}`));
   }
   const close = rustItemBody(source, "pub async fn close_search");
-  for (const marker of ["account_connection(state.inner(), account_tab_id.as_deref())", "versioned_snapshot", "baseline_generation", "next_request_id_for(state.inner(), account_tab_id.as_deref())", "submit_core_command", "wait_for_request_outcome", "RequestOutcomeExpectation::SearchClosed", "account_key"]) {
+  for (const marker of ["state.inner().runtime.attach", "versioned_snapshot", "baseline_generation", "next_request_id(state.inner()).await", "submit_core_command", "wait_for_request_outcome", "RequestOutcomeExpectation::SearchClosed", "account_key"]) {
     if (!close?.includes(marker)) failures.push(sourceContractFailure(rule, `close search lacks Core outcome marker ${marker}`));
   }
   for (const marker of ["wait_for_search_started", "wait_for_search_closed", "SearchPathIo", "timeout_at", "recv_event"]) {
@@ -774,7 +774,7 @@ export function checkDesktopNavigationContract() {
   const source = tauriCommandsSource();
   const failures = [];
   const select = rustItemBody(source, "pub async fn select_room");
-  for (const marker of ["account_connection(state.inner(), account_tab_id.as_deref())", "select_room_and_wait", "SELECT_ROOM_EVENT_TIMEOUT"]) if (!select?.includes(marker)) failures.push(sourceContractFailure(rule, `select_room lacks ${marker}`));
+  for (const marker of ["state.runtime.attach", "select_room_and_wait", "SELECT_ROOM_EVENT_TIMEOUT"]) if (!select?.includes(marker)) failures.push(sourceContractFailure(rule, `select_room lacks ${marker}`));
   for (const marker of ["build_select_room_command", "wait_for_selected_room", "build_subscribe_timeline_command", "account_key_from_snapshot"]) if (select?.includes(marker)) failures.push(sourceContractFailure(rule, `select_room contains forbidden ${marker}`));
   const trace = readTauriSource("commands/timeline.rs");
   const paginate = rustItemBody(readTauriSource("commands/timeline.rs"), "pub async fn paginate_timeline_backwards");
@@ -859,8 +859,7 @@ export function checkDesktopForwarderLagRecoveryContract() {
   const lag = sourceSection(forwarder, "Err(lag)", "Ok(event)") ?? sourceSection(forwarder, "Err(lag)");
   const failures = [];
   for (const marker of ["TimelineCommand::ReplaySubscribed", "struct CoreEventForwarderTask"]) if (!forwarder.includes(marker)) failures.push(sourceContractFailure(rule, `forwarder lacks ${marker}`));
-  const startForwarder = sourceSection(root, "pub(crate) fn restart_selected_forwarder", "pub(crate) async fn stop_selected_forwarder");
-  if (!root.includes("_forwarder_task: Mutex::new(None)") || !startForwarder?.includes("Some(task)")) failures.push(sourceContractFailure(rule, "lib.rs does not retain the forwarder task after restore"));
+  if (!root.includes("forwarder_task: Some")) failures.push(sourceContractFailure(rule, "lib.rs does not retain the forwarder task"));
   if (forwarder.includes("Box::leak")) failures.push(sourceContractFailure(rule, "forwarder counter is leaked"));
   for (const marker of ["event_conn.command_handle()", "event_conn.next_request_id()", "emit_forwarded_webview_events", "submit_timeline_replay_after_forwarder_lag"]) if (!lag?.includes(marker)) failures.push(sourceContractFailure(rule, `lag recovery lacks ${marker}`));
   if (lag?.includes("async_runtime::spawn")) failures.push(sourceContractFailure(rule, "lag replay is detached"));
@@ -895,25 +894,17 @@ export function checkDesktopNativeWindowLifecycleContract(sourceOverride) {
   // Exactly one coordinator joins the updater, awaits Core cleanup, and then
   // authorizes exit. Submission alone is not a cleanup acknowledgement.
   const shutdown = rustItemBody(source, "fn begin_graceful_shutdown");
-  for (const marker of ["finish_application_shutdown", "app_updates::shutdown", "stop_core_state_for_exit"]) if (!shutdown?.includes(marker)) failures.push(sourceContractFailure(rule, `graceful shutdown lacks ${marker}`));
-  const coreShutdown = rustItemBody(source, "async fn stop_core_state_for_exit");
-  failures.push(...orderedMarkers(rule, coreShutdown ?? "", [
-    "state.wait_for_startup_restore().await",
-    "state.close_reader_subscriptions().await",
-    "state.stop_account_tab_watchers().await",
-    "state.stop_selected_forwarder().await",
-    "state.connection.clear_cached_connections().await",
-    "state.runtime.shutdown_all_checked().await"
-  ]));
-  if (!coreShutdown?.includes("restore_result.is_err() || shutdown_result.is_err()")) failures.push(sourceContractFailure(rule, "Core cleanup must propagate restore or shutdown failure"));
-  if (!coreShutdown?.includes("await_core_exit(CORE_EXIT_TIMEOUT")) failures.push(sourceContractFailure(rule, "Core cleanup lacks bounded completion wait"));
+  for (const marker of ["finish_application_shutdown", "app_updates::shutdown", "stop_core_for_exit"]) if (!shutdown?.includes(marker)) failures.push(sourceContractFailure(rule, `graceful shutdown lacks ${marker}`));
+  const coreShutdown = rustItemBody(source, "async fn stop_core_for_exit_with_timeout");
+  failures.push(...orderedMarkers(rule, coreShutdown ?? "", ["AppCommand::Shutdown { request_id }", "runtime.wait_for_shutdown()"]));
+  if (!coreShutdown?.includes("await_core_exit")) failures.push(sourceContractFailure(rule, "Core cleanup lacks bounded completion wait"));
   const finish = rustItemBody(source, "async fn finish_application_shutdown");
   failures.push(...orderedMarkers(rule, finish ?? "", ["updater.await", "core.await", "QuitStage::ShutdownComplete", "exit.final_restart()"]));
   for (const marker of ["CoreExitOutcome::Completed", "QuitStage::ForcedExit", "restart_after_shutdown.store(false", "exit.ordinary_exit()"]) if (!finish?.includes(marker)) failures.push(sourceContractFailure(rule, `shutdown completion lacks ${marker}`));
   const restart = rustItemBody(source, "fn request_application_restart_with");
   failures.push(...orderedMarkers(rule, restart ?? "", ["restart_after_shutdown.swap(true", "exit.ordinary_exit()"]));
   if (restart?.includes("exit.final_restart()")) failures.push(sourceContractFailure(rule, "restart bypasses ordinary shutdown admission"));
-  if (source.split("state.runtime.shutdown_all_checked().await").length - 1 !== 1) failures.push(sourceContractFailure(rule, "Core runtime shutdown is not owned by one coordinator"));
+  if (source.split("AppCommand::Shutdown { request_id }").length - 1 !== 1) failures.push(sourceContractFailure(rule, "shutdown is submitted from more than one place"));
   // The barrier holds every exit request, whatever its code, until the single
   // claimant has finished shutting core down.
   const barrier = sourceSection(source, "tauri::RunEvent::ExitRequested", "QuitRequestAction::Exit");

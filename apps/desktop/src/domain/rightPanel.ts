@@ -66,6 +66,7 @@ export function rightPanelIntentForContextMenuAction(
   if (target.kind === "account") {
     switch (actionId) {
       case "openUserSettings":
+      case "switchAccount":
         return { mode: "userSettings" };
       case "openKeyboardSettings":
         return { mode: "keyboardSettings" };

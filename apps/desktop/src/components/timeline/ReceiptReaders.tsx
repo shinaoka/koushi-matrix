@@ -9,7 +9,7 @@ import {
 } from "../floatingLayer";
 import { timelineKeyIdentity, type ReceiptSourceRef, type ReaderRow } from "../../domain/coreEvents";
 import { EntityAvatar } from "../Shell";
-import { api as defaultApi } from "../../backend/appRuntime";
+import { api } from "../../backend/appRuntime";
 import type { LiveReadReceipt } from "../../domain/types";
 import { cachedDateTimeFormat } from "../../domain/intlFormatCache";
 
@@ -49,27 +49,18 @@ function containsTarget(container: Element | null, target: EventTarget | null): 
  * and focus open the same popup so keyboard users reach what pointer users see.
  */
 export function ReceiptReaders({
-  accountTabId,
   overflowCount,
   receipts,
   source,
   totalCount,
   onRequestAvatarThumbnail
 }: {
-  accountTabId?: string;
   overflowCount: number;
   receipts: LiveReadReceipt[];
   source?: ReceiptSourceRef;
   totalCount: number;
   onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
 }) {
-  const receiptApi = useMemo(
-    () =>
-      accountTabId === undefined
-        ? defaultApi
-        : defaultApi.forAccountTab?.(accountTabId) ?? defaultApi,
-    [accountTabId]
-  );
   const anchorRef = useRef<HTMLDivElement>(null);
   const popupRef = useRef<HTMLSpanElement>(null);
   const [open, setOpen] = useState(false);
@@ -124,7 +115,7 @@ export function ReceiptReaders({
       const nextStart = Math.max(0, Math.min(Math.trunc(start), readerTotal - 1));
       const sequence = String(++readerSequenceRef.current);
       setReaderWindowSequence(sequence);
-      void receiptApi.updateReceiptReaderWindow(readerScope, {
+      void api.updateReceiptReaderWindow(readerScope, {
         installed_revision: readerRevision,
         sequence,
         target: { kind: "index", start: String(nextStart) },
@@ -132,7 +123,7 @@ export function ReceiptReaders({
       });
       return sequence;
     },
-    [readerRevision, readerScope, readerTotal, receiptApi]
+    [readerRevision, readerScope, readerTotal]
   );
   const focusReaderAt = useCallback(
     (index: number) => {
@@ -186,11 +177,11 @@ export function ReceiptReaders({
     if (!open || !activeSource) return;
     let cancelled = false;
     let scope: string | null = null;
-    void receiptApi
+    void api
       .subscribeReceiptReader(activeSource, 0, 256)
       .then((nextScope) => {
         if (cancelled) {
-          void receiptApi.closeReceiptReader(nextScope);
+          void api.closeReceiptReader(nextScope);
         } else {
           scope = nextScope;
           setReaderScope(nextScope);
@@ -201,7 +192,7 @@ export function ReceiptReaders({
       });
     return () => {
       cancelled = true;
-      if (scope) void receiptApi.closeReceiptReader(scope);
+      if (scope) void api.closeReceiptReader(scope);
       setReaderScope(null);
       appliedReaderRevisionRef.current = null;
       readerSequenceRef.current = 0;
@@ -216,13 +207,13 @@ export function ReceiptReaders({
       setReaderRows([]);
       setReaderState("loading");
     };
-  }, [open, sourceIdentity, receiptApi]);
+  }, [open, sourceIdentity]);
   useEffect(() => {
     if (!readerScope) return;
     let cancelled = false;
     const receive = async (): Promise<void> => {
       while (!cancelled) {
-        const delivery = await receiptApi.receiveReceiptReader(readerScope);
+        const delivery = await api.receiveReceiptReader(readerScope);
         if (cancelled || !delivery) return;
         if (delivery.kind === "retired") {
           setReaderRows([]);
@@ -245,7 +236,7 @@ export function ReceiptReaders({
         setReaderTotal(delivery.model.total_count);
         setReaderWindowSequence(delivery.model.window_sequence);
         setReaderRows(delivery.model.rows);
-        await receiptApi.ackReceiptReader(readerScope, delivery.revision);
+        await api.ackReceiptReader(readerScope, delivery.revision);
         if (!cancelled) setReaderInstalledRevision(delivery.revision);
       }
     };
@@ -258,7 +249,7 @@ export function ReceiptReaders({
     return () => {
       cancelled = true;
     };
-  }, [readerScope, receiptApi]);
+  }, [readerScope]);
   useEffect(() => {
     if (!readerScope || !readerInstalledRevision) {
       setReaderResourceUrls({});
@@ -280,7 +271,7 @@ export function ReceiptReaders({
       for (const sourceRef of sourceRefs) {
         if (cancelled) return;
         try {
-          const content = await receiptApi.readReceiptReaderResource(
+          const content = await api.readReceiptReaderResource(
             readerScope,
             readerInstalledRevision,
             sourceRef
@@ -308,7 +299,7 @@ export function ReceiptReaders({
       cancelled = true;
       for (const url of ownedObjectUrls) URL.revokeObjectURL(url);
     };
-  }, [readerInstalledRevision, readerResourceIdentity, readerScope, receiptApi]);
+  }, [readerInstalledRevision, readerResourceIdentity, readerScope]);
   useEffect(() => {
     const popup = popupRef.current;
     if (!open || !popup || !readerScope || !readerInstalledRevision || readerInstalledRevision !== readerRevision) return;
@@ -331,7 +322,7 @@ export function ReceiptReaders({
       const geometry = JSON.stringify([visible, prefetch]);
       if (geometry === lastGeometry) return;
       lastGeometry = geometry;
-      void receiptApi.observeReceiptReaderAvatars(readerScope, {
+      void api.observeReceiptReaderAvatars(readerScope, {
         installed_revision: readerInstalledRevision,
         sequence: String(++avatarObservationSequenceRef.current),
         visible_user_ids: visible,
@@ -359,7 +350,7 @@ export function ReceiptReaders({
       window.removeEventListener("resize", schedule);
       resize?.disconnect();
     };
-  }, [open, readerInstalledRevision, readerRevision, readerRows, readerScope, receiptApi]);
+  }, [open, readerInstalledRevision, readerRevision, readerRows, readerScope]);
   const readerRemainingCount = source
     ? Math.max(readerTotal - readerStart - readerRows.length, 0)
     : Math.max(overflowCount, 0);

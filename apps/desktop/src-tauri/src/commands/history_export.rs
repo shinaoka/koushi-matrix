@@ -77,7 +77,6 @@ pub async fn history_export_time_zone() -> Result<String, String> {
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn export_history(
-    account_tab_id: Option<String>,
     scope: HistoryExportScopeInput,
     range: HistoryExportRangeInput,
     labels: HistoryExportLabels,
@@ -93,7 +92,7 @@ pub async fn export_history(
     let Some(directory) = choose_directory(&app, &window, dialog_title).await? else {
         return Ok(FrontendHistoryExportStart::Dismissed);
     };
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let command = build_export_history_command(
         request_id,
         HistoryExportRequest {
@@ -122,12 +121,11 @@ pub async fn export_history(
 
 #[tauri::command]
 pub async fn stop_history_export(
-    account_tab_id: Option<String>,
     target_request_id: u64,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let target_request_id = koushi_protocol::RequestId {
         connection_id: request_id.connection_id,
         sequence: target_request_id,
@@ -143,12 +141,11 @@ pub async fn stop_history_export(
 
 #[tauri::command]
 pub async fn retry_history_export(
-    account_tab_id: Option<String>,
     target_request_id: u64,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendHistoryExportStart, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let target_request_id = koushi_protocol::RequestId {
         connection_id: request_id.connection_id,
         sequence: target_request_id,

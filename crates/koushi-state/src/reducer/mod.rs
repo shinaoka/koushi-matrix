@@ -637,12 +637,6 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             checked_at_ms,
         } => session_status::handle_refresh_failed(state, request_id, kind, checked_at_ms),
         AppAction::SettingsLoaded { values } => settings::handle_settings_loaded(state, values),
-        AppAction::AccountSettingsLoaded { values } => {
-            settings::handle_account_settings_loaded(state, values)
-        }
-        AppAction::AppSettingsSynchronized { values } => {
-            settings::handle_app_settings_synchronized(state, values)
-        }
         AppAction::SettingsLoadFailed { message } => {
             settings::handle_settings_load_failed(state, message)
         }

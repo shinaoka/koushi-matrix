@@ -1338,7 +1338,7 @@ normal QA-title mode and cannot change product title semantics.
   `snapshot.state.e2ee_trust` and dispatch typed API methods; do not add
   React-local pending/success/failure state for verification, cross-signing, key
   backup, or identity reset.
-- Account Settings uses Rust-owned `current_session_status` as the canonical
+- User Settings uses Rust-owned `current_session_status` as the canonical
   read-only summary of the active session's verification, owner cross-signing,
   own identity, and key-backup readiness. `e2ee_trust` remains the owner of
   trust operations, continuation state, and action availability. Its `devices`

@@ -14,12 +14,11 @@ fn admit_frontend_session_status_trigger(
 
 #[tauri::command]
 pub async fn refresh_current_session_status(
-    account_tab_id: Option<String>,
     trigger: koushi_state::SessionStatusRefreshTrigger,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     let trigger = admit_frontend_session_status_trigger(trigger)?;
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         CoreCommand::Account(AccountCommand::RefreshCurrentSessionStatus {
@@ -33,10 +32,9 @@ pub async fn refresh_current_session_status(
 
 #[tauri::command]
 pub async fn load_account_management_capabilities(
-    account_tab_id: Option<String>,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         CoreCommand::Account(AccountCommand::LoadAccountManagementCapabilities { request_id }),
@@ -47,11 +45,10 @@ pub async fn load_account_management_capabilities(
 
 #[tauri::command]
 pub async fn change_password(
-    account_tab_id: Option<String>,
     new_password: String,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         CoreCommand::Account(AccountCommand::ChangePassword {
@@ -65,11 +62,10 @@ pub async fn change_password(
 
 #[tauri::command]
 pub async fn deactivate_account(
-    account_tab_id: Option<String>,
     erase_data: bool,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         CoreCommand::Account(AccountCommand::DeactivateAccount {
@@ -83,13 +79,12 @@ pub async fn deactivate_account(
 
 #[tauri::command]
 pub async fn submit_account_management_uia(
-    account_tab_id: Option<String>,
     flow_id: u64,
     password: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_submit_account_management_uia_command(request_id, flow_id, AuthSecret::new(password)),
@@ -113,10 +108,9 @@ pub(super) fn build_contact_security_command(
 
 async fn submit_contact_security(
     state: &CoreRuntimeState,
-    account_tab_id: Option<&str>,
     request: koushi_protocol::command::ContactSecurityRequest,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state, account_tab_id).await?;
+    let request_id = next_request_id(state).await;
     submit_core_command_with_admission(state, build_contact_security_command(request_id, request))
         .await
 }
@@ -125,13 +119,11 @@ async fn submit_contact_security(
 /// contact whose User info is open. Never pins, verifies, or changes trust.
 #[tauri::command]
 pub async fn load_contact_security(
-    account_tab_id: Option<String>,
     user_id: String,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     submit_contact_security(
         state.inner(),
-        account_tab_id.as_deref(),
         koushi_protocol::command::ContactSecurityRequest::Load { user_id },
     )
     .await
@@ -141,13 +133,11 @@ pub async fn load_contact_security(
 /// direct chat with them. Progress is the Rust `e2ee_trust.verification`.
 #[tauri::command]
 pub async fn request_contact_verification(
-    account_tab_id: Option<String>,
     user_id: String,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     submit_contact_security(
         state.inner(),
-        account_tab_id.as_deref(),
         koushi_protocol::command::ContactSecurityRequest::RequestVerification { user_id },
     )
     .await
@@ -155,12 +145,10 @@ pub async fn request_contact_verification(
 
 #[tauri::command]
 pub async fn close_contact_security(
-    account_tab_id: Option<String>,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     submit_contact_security(
         state.inner(),
-        account_tab_id.as_deref(),
         koushi_protocol::command::ContactSecurityRequest::Close,
     )
     .await
@@ -170,10 +158,9 @@ pub async fn close_contact_security(
 
 async fn submit_account_notifications(
     state: &CoreRuntimeState,
-    account_tab_id: Option<&str>,
     request: koushi_protocol::command::AccountNotificationsRequest,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state, account_tab_id).await?;
+    let request_id = next_request_id(state).await;
     submit_core_command_with_admission(
         state,
         build_account_notifications_command(request_id, request),
@@ -194,12 +181,10 @@ pub(super) fn build_account_notifications_command(
 /// Read-only load of the account's notification rules, emails and pushers.
 #[tauri::command]
 pub async fn load_account_notifications(
-    account_tab_id: Option<String>,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     submit_account_notifications(
         state.inner(),
-        account_tab_id.as_deref(),
         koushi_protocol::command::AccountNotificationsRequest::Load,
     )
     .await
@@ -207,14 +192,12 @@ pub async fn load_account_notifications(
 
 #[tauri::command]
 pub async fn set_notification_category(
-    account_tab_id: Option<String>,
     category: koushi_state::NotificationCategory,
     enabled: bool,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     submit_account_notifications(
         state.inner(),
-        account_tab_id.as_deref(),
         koushi_protocol::command::AccountNotificationsRequest::SetCategory { category, enabled },
     )
     .await
@@ -222,13 +205,11 @@ pub async fn set_notification_category(
 
 #[tauri::command]
 pub async fn set_account_push_enabled(
-    account_tab_id: Option<String>,
     enabled: bool,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     submit_account_notifications(
         state.inner(),
-        account_tab_id.as_deref(),
         koushi_protocol::command::AccountNotificationsRequest::SetAccountPush { enabled },
     )
     .await
@@ -236,14 +217,12 @@ pub async fn set_account_push_enabled(
 
 #[tauri::command]
 pub async fn request_notification_email_token(
-    account_tab_id: Option<String>,
     address: String,
     lang: String,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     submit_account_notifications(
         state.inner(),
-        account_tab_id.as_deref(),
         koushi_protocol::command::AccountNotificationsRequest::RequestEmailToken {
             address,
             lang: admit_notification_lang(lang),
@@ -254,12 +233,10 @@ pub async fn request_notification_email_token(
 
 #[tauri::command]
 pub async fn resend_notification_email_token(
-    account_tab_id: Option<String>,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     submit_account_notifications(
         state.inner(),
-        account_tab_id.as_deref(),
         koushi_protocol::command::AccountNotificationsRequest::ResendEmailToken,
     )
     .await
@@ -267,12 +244,10 @@ pub async fn resend_notification_email_token(
 
 #[tauri::command]
 pub async fn confirm_notification_email(
-    account_tab_id: Option<String>,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     submit_account_notifications(
         state.inner(),
-        account_tab_id.as_deref(),
         koushi_protocol::command::AccountNotificationsRequest::ConfirmEmail,
     )
     .await
@@ -280,14 +255,12 @@ pub async fn confirm_notification_email(
 
 #[tauri::command]
 pub async fn submit_notification_email_uia(
-    account_tab_id: Option<String>,
     flow_id: u64,
     password: String,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     submit_account_notifications(
         state.inner(),
-        account_tab_id.as_deref(),
         koushi_protocol::command::AccountNotificationsRequest::SubmitUia {
             flow_id,
             auth: IdentityResetAuthRequest::UiaaPassword {
@@ -300,12 +273,10 @@ pub async fn submit_notification_email_uia(
 
 #[tauri::command]
 pub async fn cancel_notification_email(
-    account_tab_id: Option<String>,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     submit_account_notifications(
         state.inner(),
-        account_tab_id.as_deref(),
         koushi_protocol::command::AccountNotificationsRequest::CancelPendingEmail,
     )
     .await
@@ -313,14 +284,12 @@ pub async fn cancel_notification_email(
 
 #[tauri::command]
 pub async fn enable_email_notifications(
-    account_tab_id: Option<String>,
     address: String,
     lang: String,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     submit_account_notifications(
         state.inner(),
-        account_tab_id.as_deref(),
         koushi_protocol::command::AccountNotificationsRequest::EnableEmailNotifications {
             address,
             lang: admit_notification_lang(lang),
@@ -331,12 +300,10 @@ pub async fn enable_email_notifications(
 
 #[tauri::command]
 pub async fn disable_email_notifications(
-    account_tab_id: Option<String>,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     submit_account_notifications(
         state.inner(),
-        account_tab_id.as_deref(),
         koushi_protocol::command::AccountNotificationsRequest::DisableEmailNotifications,
     )
     .await

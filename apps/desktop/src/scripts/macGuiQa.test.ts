@@ -319,9 +319,10 @@ describe("desktop release scripts", () => {
 
     expect(source).toContain("KOUSHI_SKIP_KEYCHAIN_PERSISTENCE");
     expect(source).toContain("keychain_persistence_disabled_from_env");
-    expect(source).toContain("fn start_account_runtime_manager_for_tauri");
-    expect(source).toContain("StoreActor::new(data_dir.clone())");
-    expect(source).toContain("StoreActor::with_os_backend(");
+    expect(source).toContain("CoreRuntime::start_with_data_dir_and_native_artifact_port");
+    expect(source).toContain(
+      "CoreRuntime::start_with_data_dir_and_os_backend_and_native_artifact_port"
+    );
   });
 
   test("Tauri production adapter does not depend on the fixture backend crate", () => {
@@ -558,7 +559,7 @@ describe("desktop release scripts", () => {
       expect(csp).toContain("http://koushi-thumbnail.localhost");
     }
     expect(tauriConfig.app.security.assetProtocol.scope).toEqual([
-      "$LOCALDATA/koushi-desktop/accounts/v2/*/media-downloads/**"
+      "$LOCALDATA/koushi-desktop/media_downloads/**"
     ]);
   });
 
@@ -694,9 +695,6 @@ describe("desktop release scripts", () => {
     );
 
     expect(source).toContain("waitForViewportRootLayout");
-    expect(source).toContain('clickNamedSystemEventsButton("App Settings")');
-    expect(source).toContain('clickNamedSystemEventsButton("Appearance")');
-    expect(source).not.toContain('clickNamedSystemEventsButton("Display")');
     expect(source).toContain("set size of window 1");
     expect(source).toContain("entire contents of window 1");
     expect(source).toContain('role of candidate is "AXButton"');

@@ -190,7 +190,6 @@ test("composer and remote-message reaction pickers share Rust-owned recent emoji
     .poll(() => page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args))
     .toEqual({
       patch: {
-        scope: "account",
         composer: { math_mode: true, recent_emojis: ["🙂", "😀"] }
       }
     });

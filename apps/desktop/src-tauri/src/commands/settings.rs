@@ -6,12 +6,11 @@ use koushi_state::{AppearanceSettings, LocaleSettings, TextDirectionPreference, 
 
 #[tauri::command]
 pub async fn update_settings(
-    account_tab_id: Option<String>,
     patch: SettingsPatch,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_update_settings_command(request_id, patch),
@@ -23,12 +22,11 @@ pub async fn update_settings(
 
 #[tauri::command]
 pub async fn import_legacy_settings(
-    account_tab_id: Option<String>,
     patch: SettingsPatch,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_import_legacy_settings_command(request_id, patch),
@@ -40,11 +38,10 @@ pub async fn import_legacy_settings(
 
 #[tauri::command]
 pub async fn rebuild_search_index(
-    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_rebuild_search_index_command(request_id),
@@ -56,13 +53,12 @@ pub async fn rebuild_search_index(
 
 #[tauri::command]
 pub async fn set_room_url_preview_override(
-    account_tab_id: Option<String>,
     room_id: String,
     enabled: bool,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_set_room_url_preview_override_command(request_id, room_id, enabled),

@@ -27,7 +27,7 @@ test("the three-pane shell exposes landmarks and reachable keyboard focus stops"
   await expect(page.getByRole("complementary", { name: "Context panel" })).toBeVisible();
 
   const labels: string[] = [];
-  for (let index = 0; index < 100; index += 1) {
+  for (let index = 0; index < 50; index += 1) {
     await page.keyboard.press("Tab");
     labels.push(await focusedLabel(page));
   }
@@ -37,7 +37,6 @@ test("the three-pane shell exposes landmarks and reachable keyboard focus stops"
   expect(labels).not.toContain("Keyboard settings");
   expect(labels).toContain("Harness Space");
   expect(labels).toContain("Create space");
-  expect(labels).toContain("Account Settings");
-  expect(labels).toContain("App Settings");
+  expect(labels).toContain("User settings");
   expect(labels).toContain("Message composer");
 });

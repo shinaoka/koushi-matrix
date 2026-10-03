@@ -103,14 +103,12 @@ pub use sliding_sync::{
 
 // ── Re-exports: settings ────────────────────────────────────────────────────
 pub use settings::{
-    AccountDisplaySettings, AccountNotificationSettings, AccountSearchCrawlerSettings,
-    AccountSettingsValues, AppDisplaySettings, AppNotificationSettings, AppSettingsValues,
     AppearanceSettings, ComposerSendShortcut, ComposerSettings, DisplayDensity, DisplaySettings,
     EmojiPreference, FontPreference, ImageUploadCompressionMode, ImageUploadCompressionPolicy,
     KeyboardSettings, LinkPreviewSettingsState, LocaleSettings, MediaSettings,
     NotificationSettings, RoomNotificationMode, RoomNotificationModeOperation,
     RoomNotificationSettings, RoomPreference, RoomPreferencesState, RoomUrlPreviews, SettingsPatch,
-    SettingsPatchScope, SettingsPersistenceState, SettingsState, SettingsValues, SidebarCategory,
+    SettingsPersistenceState, SettingsState, SettingsValues, SidebarCategory,
     SidebarCollapsedSections, SidebarScopeSettings, SidebarSectionKind, SidebarSectionPatch,
     SidebarSectionSettings, SidebarSettings, TextDirectionPreference, ThemePreference,
     ThreadListOrder, TimelineSettings, TimelineThreadRootOrder, TypographySettings,

@@ -2127,7 +2127,6 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
         "the golden must exercise a populated Space add-rooms projection"
     );
     let value = serde_json::to_value(FrontendDesktopSnapshot {
-        account_tab_id: None,
         state_generation: None,
         state: super::frontend_app_state_for_platform(state, koushi_state::DisplayPlatform::Linux),
         sidebar,

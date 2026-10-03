@@ -373,14 +373,14 @@ async fn installed_scope_owns_reader_leases_until_retirement_and_delivery_releas
 fn charged_lease_survives_eviction_without_restoring_discoverability() {
     let mut cache = RenderableThumbnailCache::default();
     cache
-        .insert("avatar/first".into(), "", vec![7; 1024], "image/png".into())
+        .insert("avatar/first".into(), vec![7; 1024], "image/png".into())
         .unwrap();
     let lease = cache.lease("avatar/first").unwrap();
     let clone = lease.clone();
     assert_eq!(*cache.lease_bytes.lock().unwrap(), 1024);
     for i in 0..MAX_RENDERABLE_THUMBNAIL_ENTRIES {
         cache
-            .insert(format!("avatar/{i}"), "", vec![0], "image/png".into())
+            .insert(format!("avatar/{i}"), vec![0], "image/png".into())
             .unwrap();
     }
     assert!(cache.get("avatar/first").is_none());
@@ -399,7 +399,6 @@ fn independent_leases_are_conservatively_capped_without_releasing_existing_charg
     cache
         .insert(
             "avatar/large".into(),
-            "",
             vec![0; MAX_RENDERABLE_THUMBNAIL_BYTES],
             "image/png".into(),
         )
@@ -434,7 +433,7 @@ fn insertion_moves_owned_thumbnail_bytes_without_copying() {
     let bytes = vec![7_u8; 64 * 1024];
     let allocation = bytes.as_ptr();
     cache
-        .insert("avatar/test".into(), "", bytes, "image/png".into())
+        .insert("avatar/test".into(), bytes, "image/png".into())
         .unwrap();
     assert_eq!(cache.entries["avatar/test"].bytes.as_ptr(), allocation);
     assert_eq!(cache.stats().retained_bytes, 64 * 1024);
@@ -588,7 +587,6 @@ fn thumbnail_cache_is_bounded_by_entry_count_and_retained_bytes() {
         cache
             .insert(
                 format!("avatar/{index}"),
-                "",
                 vec![u8::try_from(index % 251).unwrap(); 1024],
                 "image/png".to_owned(),
             )
@@ -649,71 +647,6 @@ fn clear_renderable_thumbnail_cache_drops_previous_session_bytes() {
     clear_renderable_thumbnail_cache();
 
     assert!(lookup_renderable_thumbnail(&source_ref).is_none());
-}
-
-#[test]
-fn thumbnail_cache_refs_and_clearing_are_account_scoped() {
-    let _guard = cache_test_lock();
-    clear_renderable_thumbnail_cache();
-
-    let alice = store_renderable_thumbnail_for_account(
-        RenderableThumbnailKind::LinkPreview,
-        "@alice:example.org",
-        "https://example.org/page",
-        b"alice-preview".to_vec(),
-    )
-    .expect("Alice thumbnail should be cached");
-    let bob = store_renderable_thumbnail_for_account(
-        RenderableThumbnailKind::LinkPreview,
-        "@bob:example.org",
-        "https://example.org/page",
-        b"bob-preview".to_vec(),
-    )
-    .expect("Bob thumbnail should be cached");
-    let (
-        AvatarThumbnailState::Ready {
-            source_ref: alice_ref,
-            ..
-        },
-        AvatarThumbnailState::Ready {
-            source_ref: bob_ref,
-            ..
-        },
-    ) = (alice, bob)
-    else {
-        panic!("thumbnails should be ready");
-    };
-
-    assert_ne!(alice_ref, bob_ref);
-    assert_eq!(
-        lookup_renderable_thumbnail(&alice_ref).unwrap().bytes,
-        b"alice-preview"
-    );
-    assert_eq!(
-        lookup_renderable_thumbnail(&bob_ref).unwrap().bytes,
-        b"bob-preview"
-    );
-
-    clear_renderable_thumbnail_cache_for_account("@alice:example.org");
-
-    assert!(lookup_renderable_thumbnail(&alice_ref).is_none());
-    assert_eq!(
-        lookup_renderable_thumbnail(&bob_ref).unwrap().bytes,
-        b"bob-preview"
-    );
-    clear_renderable_thumbnail_cache();
-}
-
-#[test]
-fn cleanup_legacy_media_downloads_removes_device_wide_cache() {
-    let tempdir = tempfile::tempdir().expect("tempdir");
-    let legacy = tempdir.path().join("media_downloads");
-    fs::create_dir_all(&legacy).expect("seed legacy cache");
-    fs::write(legacy.join("download.bin"), b"re-downloadable").expect("seed cache file");
-
-    cleanup_legacy_media_downloads(tempdir.path()).expect("cleanup should succeed");
-
-    assert!(!legacy.exists());
 }
 
 #[test]

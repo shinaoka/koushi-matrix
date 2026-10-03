@@ -9,7 +9,8 @@ import {
   Image,
   Link,
   LogOut,
-  Monitor
+  Monitor,
+  RefreshCcw
 } from "lucide-react";
 
 import { settingsCategories, type SettingsCategoryId } from "../domain/settingsNavigation";
@@ -35,12 +36,9 @@ import type { ShortcutLabelProfile } from "../domain/shortcuts";
 import { renderableThumbnailSourceUrl } from "../backend/linkMediaRuntime";
 import { avatarInitial } from "../app/uiShared";
 import { currentSessionStatusDetails } from "../domain/currentSessionStatus";
-import type { RuntimeAlert } from "./Shell";
-import { ModalDialog } from "./ModalDialog";
 import type {
   AccountManagementCapabilities,
   AccountManagementState,
-  DesktopSnapshot,
   AccountNotificationsState,
   CurrentSessionStatusState,
   DisplaySettings,
@@ -53,7 +51,6 @@ import type {
   SearchCrawlerState,
   SettingsPatch,
   SettingsState,
-  SessionStatusRefreshCommandTrigger,
   SecureBackupSetupIntent,
   ProfileState,
   TimelineSettings,
@@ -62,11 +59,10 @@ import type {
 
 export function UserSettingsPanel({
   initialCategory = "account",
-  settingsScope = "account",
-  onSettingsScopeChange,
   currentSession,
   currentSessionStatus = { status: "idle" },
   displayDensity = "comfortable",
+  savedSessions,
   settings,
   searchCrawlerState,
   profile,
@@ -101,14 +97,9 @@ export function UserSettingsPanel({
   onResetLocalData,
   onLogout,
   onOpenRecovery,
+  onSwitchAccount,
   onLoadAccountManagementCapabilities,
-  onRefreshCurrentSessionStatus = (_trigger: SessionStatusRefreshCommandTrigger) => undefined,
-  canRestartSync = false,
-  onRestartSync = () => undefined,
-  settingsBusy = false,
-  runtimeAlerts = [],
-  runtimeAlertRetrying = false,
-  onRetryRuntimeAlert = () => undefined,
+  onRefreshCurrentSessionStatus = () => undefined,
   onChangePassword,
   onDeactivateAccount,
   onSubmitAccountManagementUia,
@@ -122,13 +113,10 @@ export function UserSettingsPanel({
   rooms
 }: {
   initialCategory?: SettingsCategoryId;
-  settingsScope?: "account" | "app";
-  onSettingsScopeChange?: (scope: "account" | "app") => void;
   currentSession: SavedSessionInfo | null;
   currentSessionStatus?: CurrentSessionStatusState;
   displayDensity?: DisplayDensity;
-  /** @deprecated Account selection belongs to the persistent account tabs. */
-  savedSessions?: SavedSessionInfo[];
+  savedSessions: SavedSessionInfo[];
   settings: SettingsState;
   searchCrawlerState?: SearchCrawlerState;
   profile: ProfileState;
@@ -163,16 +151,9 @@ export function UserSettingsPanel({
   onResetLocalData: () => void;
   onLogout: () => void;
   onOpenRecovery: () => void;
-  /** @deprecated Account selection belongs to the persistent account tabs. */
-  onSwitchAccount?: (session: SavedSessionInfo) => void;
+  onSwitchAccount: (session: SavedSessionInfo) => void;
   onLoadAccountManagementCapabilities: () => void;
-  onRefreshCurrentSessionStatus?: (trigger: SessionStatusRefreshCommandTrigger) => void;
-  canRestartSync?: boolean;
-  onRestartSync?: () => void;
-  settingsBusy?: boolean;
-  runtimeAlerts?: RuntimeAlert[];
-  runtimeAlertRetrying?: boolean;
-  onRetryRuntimeAlert?: (kind: RuntimeAlert["kind"]) => void;
+  onRefreshCurrentSessionStatus?: () => void;
   onChangePassword: (newPassword: string) => void;
   onDeactivateAccount: (eraseData: boolean) => void;
   onSubmitAccountManagementUia: (flowId: number, password: string) => void;
@@ -197,7 +178,7 @@ export function UserSettingsPanel({
       sessionStatusRefreshOwnerRef.current !== owner
     ) {
       sessionStatusRefreshOwnerRef.current = owner;
-      onRefreshCurrentSessionStatus("open");
+      onRefreshCurrentSessionStatus();
     }
   }, [currentSession, currentSessionStatus.status, onRefreshCurrentSessionStatus]);
   const selectedTheme = settings.values.appearance.theme;
@@ -213,21 +194,8 @@ export function UserSettingsPanel({
   const closeToTrayIsConfigurable = platform !== "macos";
   const isSaving = settings.persistence.kind === "saving";
   const [displayNameDraft, setDisplayNameDraft] = useState(profile.own.display_name ?? "");
-  const visibleCategories = settingsCategories.filter((category) =>
-    settingsScope === "app"
-      ? ["appearance", "notifications", "preferences", "keyboard", "search", "help"].includes(category.id)
-      : ["account", "sessions", "notifications", "privacy", "encryption", "search"].includes(category.id)
-  );
-  const initialVisibleCategory = visibleCategories.some((category) => category.id === initialCategory)
-    ? initialCategory
-    : visibleCategories[0]?.id ?? initialCategory;
-  const [activeCategory, setActiveCategory] = useState<SettingsCategoryId>(initialVisibleCategory);
+  const [activeCategory, setActiveCategory] = useState<SettingsCategoryId>(initialCategory);
   const contentRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!visibleCategories.some((category) => category.id === activeCategory)) {
-      setActiveCategory(visibleCategories[0]?.id ?? initialCategory);
-    }
-  }, [activeCategory, initialCategory, settingsScope, visibleCategories]);
   useEffect(() => { if (contentRef.current) contentRef.current.scrollTop = 0; }, [activeCategory]);
   // Opening the Notifications page re-reads the account's server-owned
   // notification settings (read-only; it never writes rules or pushers), so
@@ -271,23 +239,9 @@ export function UserSettingsPanel({
   }
 
   return (
-    <section
-      className="settings-panel user-settings-panel"
-      aria-label={t(settingsScope === "app" ? "settings.appSettings" : "settings.accountSettings")}
-    >
+    <section className="settings-panel user-settings-panel" aria-label={t("panel.userSettings")}>
       <nav className="settings-category-list" role="tablist" aria-label={t("settings.categories")} aria-orientation="vertical">
-        <div className="settings-scope-heading">
-          <strong>{t(settingsScope === "app" ? "settings.appSettings" : "settings.accountSettings")}</strong>
-          {settingsScope !== "app" && currentSession ? (
-            <div className="settings-account-owner">
-              <span className="settings-account-owner-avatar" aria-hidden="true">
-                {profileAvatarUrl ? <img src={profileAvatarUrl} /> : profileInitial}
-              </span>
-              <span>{currentSession.user_id}</span>
-            </div>
-          ) : null}
-        </div>
-        {visibleCategories.map((category, index) => (
+        {settingsCategories.map((category, index) => (
           <button
             key={category.id}
             id={`settings-tab-${category.id}`}
@@ -298,30 +252,23 @@ export function UserSettingsPanel({
             tabIndex={activeCategory === category.id ? 0 : -1}
             onClick={() => setActiveCategory(category.id)}
             onKeyDown={(event) => {
-              const next = event.key === "ArrowDown" ? (index + 1) % visibleCategories.length
-                : event.key === "ArrowUp" ? (index + visibleCategories.length - 1) % visibleCategories.length
-                : event.key === "Home" ? 0 : event.key === "End" ? visibleCategories.length - 1 : null;
+              const next = event.key === "ArrowDown" ? (index + 1) % settingsCategories.length
+                : event.key === "ArrowUp" ? (index + settingsCategories.length - 1) % settingsCategories.length
+                : event.key === "Home" ? 0 : event.key === "End" ? settingsCategories.length - 1 : null;
               if (next !== null) {
                 event.preventDefault();
-                setActiveCategory(visibleCategories[next].id);
-                document.getElementById(`settings-tab-${visibleCategories[next].id}`)?.focus();
+                setActiveCategory(settingsCategories[next].id);
+                document.getElementById(`settings-tab-${settingsCategories[next].id}`)?.focus();
               }
             }}
           >{t(category.label)}</button>
         ))}
-        {onSettingsScopeChange ? (
-          <button
-            className="settings-scope-switch"
-            type="button"
-            disabled={settingsScope === "app" && !currentSession}
-            onClick={() => onSettingsScopeChange(settingsScope === "app" ? "account" : "app")}
-          >
-            {t(settingsScope === "app" ? "settings.accountSettings" : "settings.appSettings")}
-          </button>
-        ) : null}
       </nav>
       <div className="settings-category-content" ref={contentRef}>
         <div id="settings-page-account" role="tabpanel" aria-labelledby="settings-tab-account" className="settings-category" hidden={activeCategory !== "account"} tabIndex={0}>
+          <section className="settings-section" aria-label={t("settings.language")}>
+            <LanguageControls selectedLocale={selectedLocale} onUpdateSettings={onUpdateSettings} />
+          </section>
           <section id="settings-general" className="settings-section" aria-label={t("settings.profile")}>
             <h3>{t("settings.profile")}</h3>
             <div className="profile-settings">
@@ -379,6 +326,11 @@ export function UserSettingsPanel({
               </ImeSafeForm>
             </div>
           </section>
+          <AccountSwitcherSection
+            currentSession={currentSession}
+            savedSessions={savedSessions}
+            onSwitchAccount={onSwitchAccount}
+          />
           <AccountManagementSection
             accountManagement={accountManagement}
             accountManagementCapabilities={accountManagementCapabilities}
@@ -403,18 +355,6 @@ export function UserSettingsPanel({
               <DetailRow label={t("settings.userId")} value={currentSession?.user_id ?? t("settings.notRestored")} />
               <DetailRow label={t("settings.device")} value={currentSession?.device_id ?? t("settings.notRestored")} />
               <DetailRow
-                label={t("sessionStatus.authentication")}
-                value={currentSessionAuthenticationLabel(currentSessionDetails?.authentication_method)}
-              />
-              <DetailRow
-                label={t("sessionStatus.sync")}
-                value={currentSessionSyncLabel(currentSessionDetails?.sync_state)}
-              />
-              <DetailRow
-                label={t("sessionStatus.title")}
-                value={currentSessionCheckLabel(currentSessionStatus)}
-              />
-              <DetailRow
                 label={t("sessionStatus.deviceName")}
                 value={currentSessionDetails?.device_display_name ?? t("sessionStatus.unavailable")}
               />
@@ -434,77 +374,9 @@ export function UserSettingsPanel({
                 label={t("sessionStatus.keyBackup")}
                 value={currentSessionBackupLabel(currentSessionDetails?.key_backup)}
               />
-              <DetailRow
-                label={t("sessionStatus.lastChecked")}
-                value={currentSessionDetails
-                  ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" })
-                      .format(currentSessionDetails.checked_at_ms)
-                  : t("sessionStatus.unavailable")}
-              />
               <DetailRow label={t("settings.localStoreLabel")} value={t("settings.localStore")} />
             </div>
-            {currentSessionStatus.status === "failed" ? (
-              <p className="session-status-failure">
-                {currentSessionFailureLabel(currentSessionStatus.kind)}
-              </p>
-            ) : null}
-            {runtimeAlerts.length ? (
-              <section className="runtime-alerts" aria-label={t("sessionStatus.runtimeWarnings")}>
-                <h4>{t("sessionStatus.runtimeWarnings")}</h4>
-                <ul>
-                  {runtimeAlerts.map((alert) => (
-                    <li key={alert.kind} data-runtime-alert-severity={alert.severity}>
-                      <strong>{alert.title}</strong>
-                      <p>{alert.detail}</p>
-                      {alert.retryable ? (
-                        <button
-                          type="button"
-                          disabled={runtimeAlertRetrying}
-                          onClick={() => onRetryRuntimeAlert(alert.kind)}
-                        >
-                          {alert.kind === "secureBackup" ? t("gate.secureBackupRetry") : t("sessionStatus.retry")}
-                        </button>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            ) : null}
             <div className="profile-settings-actions">
-              <button
-                className="profile-settings-action"
-                type="button"
-                disabled={!currentSession || currentSessionStatus.status === "checking"}
-                onClick={() => onRefreshCurrentSessionStatus("manual")}
-              >
-                <span>{currentSessionStatus.status === "checking"
-                  ? t("sessionStatus.checking")
-                  : currentSessionStatus.status === "failed"
-                    ? t("sessionStatus.retry")
-                    : t("sessionStatus.recheck")}</span>
-              </button>
-              {canRestartSync ? (
-                <button
-                  className="profile-settings-action"
-                  type="button"
-                  disabled={!currentSession || settingsBusy}
-                  onClick={onRestartSync}
-                >
-                  <span>{t("action.restartSync")}</span>
-                </button>
-              ) : null}
-              <button
-                className="profile-settings-action"
-                type="button"
-                disabled={!currentSession?.device_id}
-                onClick={() => {
-                  if (currentSession?.device_id) {
-                    void navigator.clipboard?.writeText(currentSession.device_id);
-                  }
-                }}
-              >
-                <span>{t("sessionStatus.copyDeviceId")}</span>
-              </button>
               <button
                 className="profile-settings-action"
                 type="button"
@@ -518,9 +390,6 @@ export function UserSettingsPanel({
           </section>
         </div>
         <div id="settings-page-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance" className="settings-category" hidden={activeCategory !== "appearance"} tabIndex={0}>
-          <section className="settings-section" aria-label={t("settings.language")}>
-            <LanguageControls selectedLocale={selectedLocale} onUpdateSettings={onUpdateSettings} />
-          </section>
           <section id="settings-appearance" className="settings-section" aria-label={t("settings.appearance")}>
             <div className="settings-section-heading">
               <h3>{t("settings.appearance")}</h3>
@@ -544,47 +413,39 @@ export function UserSettingsPanel({
             </div>
             <h4 className="settings-subheading">{t("settings.notificationsThisDevice")}</h4>
             <div className="settings-toggle-list">
-              {settingsScope !== "app" ? (
-                <NotificationSettingToggle
-                  label={t("settings.notificationDesktop")}
-                  description={t("settings.notificationDesktopDescription")}
-                  settingKey="desktop_notifications"
-                  current={selectedNotifications}
-                  onSelect={onUpdateSettings}
-                  icon={<Bell size={15} aria-hidden="true" />}
-                />
-              ) : null}
-              {settingsScope !== "account" ? (
-                <>
-                  <NotificationSettingToggle
-                    label={t("settings.notificationSound")}
-                    settingKey="sound"
-                    current={selectedNotifications}
-                    onSelect={onUpdateSettings}
-                    icon={<Bell size={15} aria-hidden="true" />}
-                  />
-                  <NotificationSettingToggle
-                    label={t("settings.notificationBadges")}
-                    settingKey="badges"
-                    current={selectedNotifications}
-                    onSelect={onUpdateSettings}
-                    icon={<Bell size={15} aria-hidden="true" />}
-                  />
-                </>
-              ) : null}
-              {settingsScope !== "app" ? (
-                <NotificationSettingToggle
-                  label={t("settings.notificationMessagePreviews")}
-                  description={t("settings.notificationMessagePreviewsDescription")}
-                  settingKey="message_previews"
-                  current={selectedNotifications}
-                  onSelect={onUpdateSettings}
-                  icon={<Bell size={15} aria-hidden="true" />}
-                />
-              ) : null}
+              <NotificationSettingToggle
+                label={t("settings.notificationDesktop")}
+                description={t("settings.notificationDesktopDescription")}
+                settingKey="desktop_notifications"
+                current={selectedNotifications}
+                onSelect={onUpdateSettings}
+                icon={<Bell size={15} aria-hidden="true" />}
+              />
+              <NotificationSettingToggle
+                label={t("settings.notificationSound")}
+                settingKey="sound"
+                current={selectedNotifications}
+                onSelect={onUpdateSettings}
+                icon={<Bell size={15} aria-hidden="true" />}
+              />
+              <NotificationSettingToggle
+                label={t("settings.notificationBadges")}
+                settingKey="badges"
+                current={selectedNotifications}
+                onSelect={onUpdateSettings}
+                icon={<Bell size={15} aria-hidden="true" />}
+              />
+              <NotificationSettingToggle
+                label={t("settings.notificationMessagePreviews")}
+                description={t("settings.notificationMessagePreviewsDescription")}
+                settingKey="message_previews"
+                current={selectedNotifications}
+                onSelect={onUpdateSettings}
+                icon={<Bell size={15} aria-hidden="true" />}
+              />
             </div>
           </section>
-          {settingsScope !== "app" && currentSession ? (
+          {currentSession ? (
             <>
               <AccountNotificationsLoadStatus
                 state={accountNotifications}
@@ -615,6 +476,22 @@ export function UserSettingsPanel({
                 label={t("settings.codeBlockWrap")}
                 settingKey="code_block_wrap"
                 icon="code"
+                current={selectedDisplay}
+                onSelect={onUpdateSettings}
+              />
+              <DisplayToggle
+                label={t("settings.urlPreviewsUnencrypted")}
+                description={t("settings.urlPreviewsUnencryptedDescription")}
+                settingKey="url_previews_enabled"
+                icon="link"
+                current={selectedDisplay}
+                onSelect={onUpdateSettings}
+              />
+              <DisplayToggle
+                label={t("settings.urlPreviewsEncrypted")}
+                description={t("settings.urlPreviewsEncryptedDescription")}
+                settingKey="encrypted_url_previews_enabled"
+                icon="link"
                 current={selectedDisplay}
                 onSelect={onUpdateSettings}
               />
@@ -686,22 +563,6 @@ export function UserSettingsPanel({
               {isSaving ? <span className="settings-save-state">{t("settings.saving")}</span> : null}
             </div>
             <div className="settings-toggle-list">
-              <DisplayToggle
-                label={t("settings.urlPreviewsUnencrypted")}
-                description={t("settings.urlPreviewsUnencryptedDescription")}
-                settingKey="url_previews_enabled"
-                icon="link"
-                current={selectedDisplay}
-                onSelect={onUpdateSettings}
-              />
-              <DisplayToggle
-                label={t("settings.urlPreviewsEncrypted")}
-                description={t("settings.urlPreviewsEncryptedDescription")}
-                settingKey="encrypted_url_previews_enabled"
-                icon="link"
-                current={selectedDisplay}
-                onSelect={onUpdateSettings}
-              />
               <NotificationSettingToggle
                 label={t("settings.sendReadReceipts")}
                 settingKey="send_read_receipts"
@@ -766,7 +627,6 @@ export function UserSettingsPanel({
               <SearchHistorySection
                 crawlerSettings={settings.values.search_crawler}
                 crawlerState={searchCrawlerState ?? { rooms: {}, last_active: null }}
-                settingsScope={settingsScope}
               rooms={rooms}
               isSaving={isSaving}
               onUpdateSettings={onUpdateSettings}
@@ -784,68 +644,50 @@ export function UserSettingsPanel({
   );
 }
 
-export function AppSettingsDialog({
-  snapshot,
-  onUpdateSettings,
-  onClose
+function AccountSwitcherSection({
+  currentSession,
+  savedSessions,
+  onSwitchAccount
 }: {
-  snapshot: DesktopSnapshot;
-  onUpdateSettings: (patch: SettingsPatch) => void;
-  onClose: () => void;
+  currentSession: SavedSessionInfo | null;
+  savedSessions: SavedSessionInfo[];
+  onSwitchAccount: (session: SavedSessionInfo) => void;
 }) {
-  const domain = snapshot.state.domain;
-  const noop = () => undefined;
+  if (savedSessions.length === 0) {
+    return null;
+  }
+
   return (
-    <ModalDialog
-      title={t("settings.appSettings")}
-      className="user-settings-modal"
-      onClose={onClose}
-    >
-      <UserSettingsPanel
-        initialCategory="appearance"
-        settingsScope="app"
-        currentSession={null}
-        currentSessionStatus={domain.current_session_status}
-        displayDensity={domain.settings.values.appearance.density}
-        settings={domain.settings}
-        searchCrawlerState={domain.search_crawler}
-        onDisplayDensityChange={(density) => onUpdateSettings({
-          appearance: { ...domain.settings.values.appearance, density }
+    <section className="account-switcher" aria-label={t("settings.accountSwitcher")}>
+      <h3>{t("settings.accounts")}</h3>
+      <div className="account-switcher-list">
+        {savedSessions.map((session) => {
+          const isCurrent = sessionMatches(currentSession, session);
+          return (
+            <article className="account-switcher-row" key={sessionKey(session)}>
+              <div className="account-switcher-avatar" aria-hidden="true">
+                {avatarInitial(session.user_id)}
+              </div>
+              <div className="account-switcher-main">
+                <div className="account-switcher-user" dir="auto">{session.user_id}</div>
+                <div className="account-switcher-meta" dir="auto">
+                  {session.homeserver} / {session.device_id}
+                </div>
+              </div>
+              <button
+                className="account-switcher-action"
+                type="button"
+                disabled={isCurrent}
+                onClick={() => onSwitchAccount(session)}
+              >
+                <RefreshCcw size={14} />
+                <span>{isCurrent ? t("settings.current") : t("settings.switch")}</span>
+              </button>
+            </article>
+          );
         })}
-        profile={domain.profile}
-        e2eeTrust={domain.e2ee_trust}
-        localEncryption={domain.local_encryption}
-        platform={domain.locale_profile.platform}
-        accountManagement={domain.account_management}
-        accountManagementCapabilities={domain.account_management_capabilities}
-        onUpdateSettings={onUpdateSettings}
-        onSetDisplayName={noop}
-        onSetAvatar={noop}
-        onBootstrapCrossSigning={noop}
-        onEnableKeyBackup={noop}
-        onChooseRoomKeyExportDestination={async () => null}
-        onChooseRoomKeyImportSource={async () => null}
-        onExportRoomKeys={noop}
-        onImportRoomKeys={noop}
-        onBootstrapSecureBackup={noop}
-        onChangeSecureBackupPassphrase={noop}
-        onAcceptVerification={noop}
-        onConfirmSasVerification={noop}
-        onCancelVerification={noop}
-        onResetIdentity={noop}
-        onCancelIdentityReset={noop}
-        onSubmitIdentityResetPassword={noop}
-        onSubmitIdentityResetOAuth={noop}
-        onProbeLocalEncryption={noop}
-        onResetLocalData={noop}
-        onLogout={noop}
-        onOpenRecovery={noop}
-        onLoadAccountManagementCapabilities={noop}
-        onChangePassword={noop}
-        onDeactivateAccount={noop}
-        onSubmitAccountManagementUia={noop}
-      />
-    </ModalDialog>
+      </div>
+    </section>
   );
 }
 
@@ -889,47 +731,6 @@ function currentSessionBackupLabel(
       return t("sessionStatus.unknown");
     case undefined:
       return t("sessionStatus.unavailable");
-  }
-}
-
-function currentSessionAuthenticationLabel(method: string | undefined): string {
-  switch (method) {
-    case "password": return t("sessionStatus.authPassword");
-    case "sso": return t("sessionStatus.authSso");
-    case "oauth": return t("sessionStatus.authOauth");
-    case "token": return t("sessionStatus.authToken");
-    default: return t("sessionStatus.unknown");
-  }
-}
-
-function currentSessionSyncLabel(sync: string | undefined): string {
-  switch (sync) {
-    case "running": return t("sessionStatus.syncRunning");
-    case "starting": return t("sessionStatus.syncStarting");
-    case "error": return t("sessionStatus.syncError");
-    case "stopped": return t("sessionStatus.syncStopped");
-    default: return t("sessionStatus.unavailable");
-  }
-}
-
-function currentSessionCheckLabel(status: CurrentSessionStatusState): string {
-  switch (status.status) {
-    case "idle": return t("sessionStatus.notChecked");
-    case "checking": return t("sessionStatus.checking");
-    case "ready": return currentSessionVerificationLabel(status.details.verification);
-    case "failed": return t("sessionStatus.failed");
-  }
-}
-
-function currentSessionFailureLabel(kind: Extract<CurrentSessionStatusState, { status: "failed" }>["kind"]): string {
-  switch (kind) {
-    case "sdk": return t("sessionStatus.failureSdk");
-    case "timed_out": return t("sessionStatus.failureTimedOut");
-    case "unavailable": return t("sessionStatus.failureUnavailable");
-    case "connectivity_unavailable": return t("sessionStatus.failureConnectivityUnavailable");
-    case "authentication": return t("sessionStatus.failureAuthentication");
-    case "network": return t("sessionStatus.failureNetwork");
-    case "server": return t("sessionStatus.failureServer");
   }
 }
 
@@ -1164,6 +965,14 @@ function WindowToggle({
   );
 }
 
+
+function sessionMatches(left: SavedSessionInfo | null, right: SavedSessionInfo): boolean {
+  return (
+    left?.homeserver === right.homeserver &&
+    left.user_id === right.user_id &&
+    left.device_id === right.device_id
+  );
+}
 
 function sessionKey(session: SavedSessionInfo): string {
   return `${session.homeserver}|${session.user_id}|${session.device_id}`;

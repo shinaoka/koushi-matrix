@@ -29,7 +29,8 @@ export type ContextMenuActionId =
   | "leaveSpace"
   | "inviteUserToSpace"
   | "openUserSettings"
-  | "openKeyboardSettings";
+  | "openKeyboardSettings"
+  | "switchAccount";
 
 export interface ContextMenuItem {
   id: ContextMenuActionId;
@@ -156,6 +157,9 @@ export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[]
         ? [{ id: "inviteUserToSpace", labelMessageId: "spaceMembers.invite" }]
         : [];
     case "account":
-      return [{ id: "openUserSettings", labelMessageId: "context.openUserSettings" }];
+      return [
+        { id: "openUserSettings", labelMessageId: "context.openUserSettings" },
+        { id: "switchAccount", labelMessageId: "context.switchAccount" }
+      ];
   }
 }

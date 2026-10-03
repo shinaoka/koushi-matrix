@@ -7,7 +7,7 @@ import { shortcutActionFromMenuPayload, shortcutById } from "../domain/shortcuts
 afterEach(cleanup);
 
 test("help is not a question-mark shortcut button or a separate keyboard destination", () => {
-  render(<TopBar activeSpaceName="Example" searchInputRef={{ current: null }} searchQuery="" searchScope="allRooms" onSearchQueryChange={vi.fn()} onSearchScopeChange={vi.fn()} />);
+  render(<TopBar activeSpaceName="Example" isBusy={false} searchInputRef={{ current: null }} searchQuery="" searchScope="allRooms" sync="running" onRestartSync={vi.fn()} onSearchQueryChange={vi.fn()} onSearchScopeChange={vi.fn()} />);
   expect(screen.queryByRole("button", { name: "Keyboard settings" })).toBeNull();
   expect(shortcutById("showKeyboardSettings")).toBeUndefined();
   expect(contextMenuItems({ kind: "account" }).some((item) => item.id === "openKeyboardSettings")).toBe(false);

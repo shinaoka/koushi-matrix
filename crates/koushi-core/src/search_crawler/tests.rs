@@ -220,7 +220,6 @@ async fn catch_up_page_indexes_only_events_newer_than_the_boundary_from_the_cach
         checkpoint,
         messages,
         completed,
-        ..
     } = result
     else {
         panic!("catch-up should complete from the cache");

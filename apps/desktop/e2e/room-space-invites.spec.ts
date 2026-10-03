@@ -2930,7 +2930,6 @@ test("timeline sender profile navigation uses stable user ids and latest-wins se
   expect(await firstSender.evaluate((element) => element.matches(":focus-visible"))).toBe(true);
   expect(await firstSender.evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe("none");
   await firstSender.press("Enter");
-  await expect.poll(() => invocationCount(page, "load_room_settings")).toBe(1);
   await expect(page.getByRole("heading", { name: t("panel.profile") })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: t("panel.people") })).toHaveCount(0);
   await secondRow.getByRole("button", { name: "Open profile for Duplicate Name" }).click();
@@ -3166,7 +3165,6 @@ test("People reopens immediately and a late settings load cannot override Thread
   await peopleButton.click();
   await expect(page.getByRole("heading", { name: t("panel.people") })).toBeVisible();
   await actions.getByRole("button", { name: "Threads" }).click();
-  await expect.poll(() => invocationCount(page, "open_threads_list")).toBe(1);
   const threadsTitle = page
     .locator('aside[aria-label="Context panel"]')
     .getByText(t("threads.title"), { exact: true });

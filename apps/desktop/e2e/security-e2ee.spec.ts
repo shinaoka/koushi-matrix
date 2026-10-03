@@ -85,7 +85,7 @@ test("Security settings render local encryption health and dispatch probe comman
     window.__harness.clearInvocations();
   });
 
-  await page.getByRole("button", { name: "Account Settings" }).click();
+  await page.getByRole("button", { name: "User settings" }).click();
   await page.getByRole("tab", { name: "Encryption", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Security" })).toBeVisible();
   await expect(page.getByText("Secret Service")).toBeVisible();
@@ -183,7 +183,7 @@ test("our own verification request waits for the other side instead of offering 
     window.__harness.pushStateUpdate();
   });
 
-  await page.getByRole("button", { name: "Account Settings" }).click();
+  await page.getByRole("button", { name: "User settings" }).click();
   await page.getByRole("tab", { name: "Encryption", exact: true }).click();
   await expect(page.getByText(t("trust.statusVerificationWaiting"))).toBeVisible();
   await expect(page.getByRole("button", { name: t("trust.acceptVerification") })).toHaveCount(0);
@@ -208,7 +208,7 @@ test("E2EE trust controls dispatch Rust-owned commands and render snapshot updat
     window.__harness.pushStateUpdate();
   });
 
-  await page.getByRole("button", { name: "Account Settings" }).click();
+  await page.getByRole("button", { name: "User settings" }).click();
   await page.getByRole("tab", { name: "Encryption", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Encryption" })).toBeVisible();
   await expect(page.getByText("Device verification")).toBeVisible();
@@ -295,7 +295,7 @@ test("security settings drive Rust-owned room-key transfer and secure backup sta
     window.__harness.clearInvocations();
   });
 
-  await page.getByRole("button", { name: "Account Settings" }).click();
+  await page.getByRole("button", { name: "User settings" }).click();
   await page.getByRole("tab", { name: "Encryption", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Key management" })).toBeVisible();
   await page.evaluate(() => {

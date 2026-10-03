@@ -2246,7 +2246,6 @@ impl TimelineActor {
                         &self.timeline_actor_generations,
                         &source,
                         self.actor_generation,
-                        self.session.info.user_id.as_str(),
                     );
                     if !super::item_projection::prepare_receipt_window_profiles(
                         &self.session,

@@ -4,7 +4,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use koushi_state::{AppSettingsValues, UpdatesSettings};
+use koushi_core::CoreConnection;
+use koushi_state::UpdatesSettings;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{Notify, watch};
@@ -467,20 +468,15 @@ trait SettingsSource: Send + 'static {
     fn next(&mut self) -> UpdateFuture<'_, Option<PolicySnapshot>>;
 }
 
-struct AppSettingsSource {
-    updates: watch::Receiver<AppSettingsValues>,
-    generation: u64,
-}
-
-impl SettingsSource for AppSettingsSource {
+impl SettingsSource for CoreConnection {
     fn next(&mut self) -> UpdateFuture<'_, Option<PolicySnapshot>> {
         Box::pin(async move {
-            self.updates.changed().await.ok()?;
-            self.generation = self.generation.saturating_add(1);
-            Some(PolicySnapshot {
-                generation: self.generation,
-                settings: self.updates.borrow_and_update().updates,
-            })
+            self.next_versioned_snapshot()
+                .await
+                .map(|snapshot| PolicySnapshot {
+                    generation: snapshot.generation,
+                    settings: snapshot.state.settings.values.updates,
+                })
         })
     }
 }
@@ -591,17 +587,14 @@ pub(crate) fn configured_updater_public_key() -> Option<&'static str> {
     option_env!("KOUSHI_UPDATER_PUBLIC_KEY").filter(|key| !key.trim().is_empty())
 }
 
-pub fn spawn_auto_update_loop(
-    app: AppHandle,
-    mut settings_updates: watch::Receiver<AppSettingsValues>,
-) {
+pub fn spawn_auto_update_loop(app: AppHandle, connection: CoreConnection) {
     if configured_updater_public_key().is_none() {
         return;
     }
     let Some(backend) = PlatformBackend::for_app(&app) else {
         return;
     };
-    let initial_settings = settings_updates.borrow_and_update().clone();
+    let snapshot = connection.versioned_snapshot();
     let shared = app.state::<DesktopUpdateManager>().shared.clone();
     shared.transition(
         |state| {
@@ -609,19 +602,12 @@ pub fn spawn_auto_update_loop(
         },
         |lifecycle| {
             lifecycle.observe(PolicySnapshot {
-                generation: 0,
-                settings: initial_settings.updates,
+                generation: snapshot.generation,
+                settings: snapshot.state.settings.values.updates,
             });
         },
     );
-    start_owner(
-        shared,
-        backend,
-        AppSettingsSource {
-            updates: settings_updates,
-            generation: 0,
-        },
-    );
+    start_owner(shared, backend, connection);
 }
 
 pub async fn shutdown(app: &AppHandle) {

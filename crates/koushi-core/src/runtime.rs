@@ -62,12 +62,12 @@ use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, reco
 #[cfg(any(test, feature = "test-hooks"))]
 use koushi_state::ComposerDraftStore;
 use koushi_state::{
-    AccountManagementOperation, ActivityState, AppAction, AppEffect, AppSettingsValues, AppState,
-    ComposerTarget, LoginAttemptId, ProfileUpdateRequest, ScheduledSendCapability,
-    ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope,
-    SecureBackupSetupAdmission, SessionState, SpaceMembersCommandRejection, ThreadOpenIntent,
-    ThreadPaneState, UiEvent, admit_space_member_cancellation, admit_space_member_invite,
-    admit_space_member_role, admit_space_members_load, reduce,
+    AccountManagementOperation, ActivityState, AppAction, AppEffect, AppState, ComposerTarget,
+    LoginAttemptId, ProfileUpdateRequest, ScheduledSendCapability, ScheduledSendHandle,
+    ScheduledSendItem, SearchScope as AppSearchScope, SecureBackupSetupAdmission, SessionState,
+    SpaceMembersCommandRejection, ThreadOpenIntent, ThreadPaneState, UiEvent,
+    admit_space_member_cancellation, admit_space_member_invite, admit_space_member_role,
+    admit_space_members_load, reduce,
 };
 #[cfg(test)]
 use koushi_state::{NavigationState, OperationFailureKind};
@@ -99,7 +99,9 @@ use crate::executor;
 use crate::native_artifact::{NativeArtifactPort, RejectingNativeArtifactPort};
 use crate::settings::SettingsStore;
 use crate::state_delta::build_state_delta;
-use crate::store::{StoreActor, session_key_id_from_info};
+use crate::store::StoreActor;
+#[cfg(test)]
+use crate::store::session_key_id_from_info;
 use koushi_protocol::failure::{CoreFailure, RoomFailureKind, TimelineFailureKind};
 use koushi_protocol::ids::{
     AccountKey, RequestId, RuntimeConnectionId, TimelineGeneration, TimelineKey, TimelineKind,
@@ -139,8 +141,6 @@ pub const EVENT_QUEUE_CAPACITY: usize = 16384;
 /// in docs/policies/engineering-rules.md.
 pub const ACTION_QUEUE_CAPACITY: usize = 16384;
 const INTERNAL_RUNTIME_CONNECTION_ID: RuntimeConnectionId = RuntimeConnectionId(0);
-// The desktop adapter dispatches requests across account runtimes by this ID.
-static NEXT_RUNTIME_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 macro_rules! trace_runtime_sync {
     ($stage:expr, [$($field:expr),* $(,)?], $($arg:tt)*) => {{
         let event = DiagnosticEvent::new(
@@ -359,6 +359,7 @@ pub struct CoreRuntime {
     command_tx: mpsc::Sender<CoreCommandEnvelope>,
     event_tx: broadcast::Sender<CoreEvent>,
     snapshot_rx: watch::Receiver<VersionedAppStateSnapshot>,
+    next_connection_id: AtomicU64,
     composer_draft_leases: Arc<ComposerDraftLeaseRegistry>,
     sliding_sync_diagnostics: crate::SlidingSyncDiagnostics,
     native_artifacts: Arc<dyn NativeArtifactPort>,
@@ -564,50 +565,12 @@ impl CoreRuntime {
         )
     }
 
-    /// Start a per-account runtime using stores shared by the outer account
-    /// manager. Each runtime keeps independent actors/state while the shared
-    /// credential and app-settings stores serialize cross-account writes.
-    pub(crate) fn start_with_shared_stores(
-        store_actor: StoreActor,
-        settings_store: SettingsStore,
-        native_artifacts: Arc<dyn NativeArtifactPort>,
-        account_work: crate::account_work::AccountWorkScheduler,
-    ) -> Self {
-        Self::start_inner_with_settings_store(
-            EVENT_QUEUE_CAPACITY,
-            store_actor.clone(),
-            store_actor,
-            native_artifacts,
-            settings_store,
-            account_work,
-        )
-    }
-
     fn start_inner(
         event_capacity: usize,
         data_dir: PathBuf,
         store_actor: StoreActor,
         composer_draft_store_actor: StoreActor,
         native_artifacts: Arc<dyn NativeArtifactPort>,
-    ) -> Self {
-        let settings_store = SettingsStore::new(&data_dir);
-        Self::start_inner_with_settings_store(
-            event_capacity,
-            store_actor,
-            composer_draft_store_actor,
-            native_artifacts,
-            settings_store,
-            crate::account_work::AccountWorkScheduler::default(),
-        )
-    }
-
-    fn start_inner_with_settings_store(
-        event_capacity: usize,
-        store_actor: StoreActor,
-        composer_draft_store_actor: StoreActor,
-        native_artifacts: Arc<dyn NativeArtifactPort>,
-        settings_store: SettingsStore,
-        account_work: crate::account_work::AccountWorkScheduler,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(COMMAND_INBOX_CAPACITY);
         // NOTE: action_tx is the high-volume action-projection inbox; it must be
@@ -621,6 +584,7 @@ impl CoreRuntime {
             mpsc::unbounded_channel();
         #[cfg(any(test, feature = "test-hooks"))]
         let (composer_draft_test_tx, composer_draft_test_rx) = mpsc::channel(1);
+        let settings_store = SettingsStore::new(&data_dir);
         let composer_draft_leases = Arc::new(ComposerDraftLeaseRegistry::new());
         let sliding_sync_diagnostics = crate::SlidingSyncDiagnostics::default();
         let composer_draft_lease_changes = composer_draft_leases.subscribe();
@@ -640,8 +604,6 @@ impl CoreRuntime {
             ),
         };
         let _ = reduce(&mut initial_state, settings_action);
-        account_work.set_search_crawler_speed(initial_state.settings.values.search_crawler.speed);
-        let settings_updates = settings_store.subscribe();
         let (snapshot_tx, snapshot_rx) = watch::channel(VersionedAppStateSnapshot {
             generation: 0,
             state: initial_state.clone(),
@@ -660,7 +622,6 @@ impl CoreRuntime {
                 initial_send_read_receipts(&initial_state),
                 sliding_sync_diagnostics.clone(),
                 Arc::clone(&native_artifacts),
-                account_work.clone(),
             );
 
         let focused_projection_rx = account_actor
@@ -690,7 +651,6 @@ impl CoreRuntime {
             snapshot_tx,
             state: initial_state,
             settings_store,
-            settings_updates: Some(settings_updates),
             settings_load_status,
             composer_draft_store_actor,
             composer_draft_load_status: ComposerDraftLoadStatus::Unloaded,
@@ -699,7 +659,6 @@ impl CoreRuntime {
             navigation_persistence_status: NavigationPersistenceStatus::Unloaded,
             scheduled_sends_loaded_for: None,
             room_preferences_loaded_for: None,
-            account_settings_loaded_for: None,
             state_generation: 0,
             pending_composer_draft_persist: None,
             pending_navigation_persist: None,
@@ -762,6 +721,7 @@ impl CoreRuntime {
             command_tx,
             event_tx,
             snapshot_rx,
+            next_connection_id: AtomicU64::new(1),
             composer_draft_leases,
             sliding_sync_diagnostics,
             native_artifacts,
@@ -781,8 +741,8 @@ impl CoreRuntime {
         }
     }
 
-    pub fn media_preparation(&self) -> Arc<crate::media_preparation::MediaPreparationService> {
-        Arc::clone(&self.media_preparation)
+    pub fn media_preparation(&self) -> &crate::media_preparation::MediaPreparationService {
+        &self.media_preparation
     }
 
     pub fn media_staging(&self) -> &crate::media_staging::MediaStagingService {
@@ -928,23 +888,13 @@ impl CoreRuntime {
     /// Close the command inbox and wait until AppActor has completed its
     /// ordered AccountActor/store shutdown barrier.
     pub async fn shutdown(self) {
-        if self.shutdown_checked().await.is_err() {
-            record(DiagnosticEvent::new(
-                DiagnosticLevel::Warn,
-                "core.runtime",
-                "shutdown_incomplete",
-            ));
-        }
-    }
-
-    /// Same ordered shutdown as `shutdown`, returning incomplete barriers to owners.
-    pub async fn shutdown_checked(self) -> Result<(), CoreShutdownError> {
         let Self {
-            shutdown_completion,
+            shutdown_completion: _,
             view_scopes: _,
             command_tx,
             event_tx: _,
             snapshot_rx: _,
+            next_connection_id: _,
             composer_draft_leases: _,
             sliding_sync_diagnostics: _,
             native_artifacts: _,
@@ -963,15 +913,8 @@ impl CoreRuntime {
             mut actor,
         } = self;
         drop(command_tx);
-        actor
-            .take()
-            .await
-            .map_err(|_| CoreShutdownError::Incomplete)?;
-        media_lifecycle
-            .take()
-            .await
-            .map_err(|_| CoreShutdownError::Incomplete)?;
-        await_shutdown_completion(shutdown_completion).await
+        let _ = actor.take().await;
+        let _ = media_lifecycle.take().await;
     }
 }
 
@@ -1036,7 +979,6 @@ struct AppActor {
     snapshot_tx: watch::Sender<VersionedAppStateSnapshot>,
     state: AppState,
     settings_store: SettingsStore,
-    settings_updates: Option<watch::Receiver<AppSettingsValues>>,
     settings_load_status: SettingsLoadStatus,
     composer_draft_store_actor: StoreActor,
     composer_draft_load_status: ComposerDraftLoadStatus,
@@ -1047,7 +989,6 @@ struct AppActor {
     navigation_persistence_status: NavigationPersistenceStatus,
     scheduled_sends_loaded_for: Option<koushi_protocol::SessionKeyId>,
     room_preferences_loaded_for: Option<koushi_protocol::SessionKeyId>,
-    account_settings_loaded_for: Option<koushi_protocol::SessionKeyId>,
     state_generation: u64,
     pending_composer_draft_persist: Option<PendingComposerDraftPersist>,
     pending_navigation_persist: Option<PendingNavigationPersist>,
@@ -1135,21 +1076,6 @@ fn command_disposition(envelope: CoreCommandEnvelope) -> CommandDisposition {
         CommandDisposition::Shutdown
     } else {
         CommandDisposition::Handle(envelope)
-    }
-}
-
-async fn receive_app_settings_update(
-    receiver: &mut Option<watch::Receiver<AppSettingsValues>>,
-) -> Option<AppSettingsValues> {
-    let Some(active) = receiver.as_mut() else {
-        return future::pending().await;
-    };
-    match active.changed().await {
-        Ok(()) => Some(active.borrow_and_update().clone()),
-        Err(_) => {
-            *receiver = None;
-            None
-        }
     }
 }
 
@@ -1303,20 +1229,6 @@ impl AppActor {
                     let before_state = self.state.clone();
                     if self.dispatch_due_scheduled_send().await {
                         self.publish_state_change(&before_state);
-                    }
-                }
-                settings_changed = receive_app_settings_update(&mut self.settings_updates) => {
-                    if let Some(values) = settings_changed {
-                        self.account_actor
-                            .set_search_crawler_speed(values.search_crawler_speed);
-                        let before_state = self.state.clone();
-                        let effects = self
-                            .reduce_app_action(AppAction::AppSettingsSynchronized { values })
-                            .await;
-                        self.handle_ui_event_effects(&effects).await;
-                        if self.state != before_state {
-                            self.publish_state_change(&before_state);
-                        }
                     }
                 }
                 lease_change = self.composer_draft_lease_changes.changed() => {
@@ -1897,7 +1809,6 @@ impl AppActor {
         // final session's views. In particular, an old-account draft
         // save must not be overtaken by the new-account load.
         let before_post_commit_loads = self.state.clone();
-        self.load_account_settings_for_current_session().await;
         self.load_room_preferences_for_current_session().await;
         // A queued old-account navigation write must not be
         // overtaken by the new account's load (#971).
@@ -1986,58 +1897,6 @@ impl AppActor {
             AppAction::RoomPreferencesLoaded { preferences },
         );
         self.room_preferences_loaded_for = Some(key_id);
-        self.handle_ui_event_effects(&effects).await;
-    }
-
-    async fn load_account_settings_for_current_session(&mut self) {
-        let Some(key_id) = account_settings_session_key(&self.state) else {
-            if self.account_settings_loaded_for.take().is_some() {
-                let effects = self
-                    .reduce_app_action(AppAction::AccountSettingsLoaded {
-                        values: koushi_state::AccountSettingsValues::default(),
-                    })
-                    .await;
-                self.handle_ui_event_effects(&effects).await;
-            }
-            return;
-        };
-        if self.account_settings_loaded_for.as_ref() == Some(&key_id) {
-            return;
-        }
-        self.account_settings_loaded_for = None;
-        // Resolve the read before applying policy. An intermediate fallback
-        // would invalidate caches and send policy updates even on a successful
-        // load; those sends can also block the read behind a full mailbox.
-        let account_store = self.composer_draft_store_actor.clone();
-        let settings_store = self.settings_store.clone();
-        let load_key_id = key_id.clone();
-        let loaded = executor::spawn_blocking(move || {
-            let legacy = settings_store
-                .legacy_account_settings()
-                .map_err(|_| koushi_protocol::failure::CoreFailure::StoreUnavailable)?;
-            if let Some(legacy) = legacy {
-                account_store.seed_account_settings_from_legacy(&load_key_id, &legacy)?;
-            }
-            account_store.load_account_settings(&load_key_id)
-        })
-        .await;
-        let values = match loaded {
-            Ok(Ok(values)) => {
-                self.account_settings_loaded_for = Some(key_id);
-                values
-            }
-            Ok(Err(_)) | Err(_) => {
-                record(DiagnosticEvent::new(
-                    DiagnosticLevel::Warn,
-                    "core.account_settings",
-                    "load_failed",
-                ));
-                koushi_state::AccountSettingsValues::privacy_safe_fallback()
-            }
-        };
-        let effects = self
-            .reduce_app_action(AppAction::AccountSettingsLoaded { values })
-            .await;
         self.handle_ui_event_effects(&effects).await;
     }
 
@@ -3283,17 +3142,6 @@ impl AppActor {
                             true
                         }
                         AppCommand::UpdateSettings { request_id, patch } => {
-                            if patch.affects_account_settings()
-                                && !account_settings_session_key(&self.state).is_some_and(|key| {
-                                    self.account_settings_loaded_for.as_ref() == Some(&key)
-                                })
-                            {
-                                self.emit(CoreEvent::OperationFailed {
-                                    request_id,
-                                    failure: CoreFailure::StoreUnavailable,
-                                });
-                                return false;
-                            }
                             let effects = self
                                 .reduce_app_action(AppAction::SettingsUpdateRequested {
                                     request_id: request_id.sequence,
@@ -3303,10 +3151,7 @@ impl AppActor {
                             self.handle_app_effects(request_id, effects).await;
                             true
                         }
-                        AppCommand::ImportLegacySettings {
-                            request_id,
-                            mut patch,
-                        } => {
+                        AppCommand::ImportLegacySettings { request_id, patch } => {
                             if self.settings_load_status == SettingsLoadStatus::Failed {
                                 self.emit(CoreEvent::OperationFailed {
                                     request_id,
@@ -3321,34 +3166,13 @@ impl AppActor {
                             {
                                 true
                             } else {
-                                patch.legacy_frontend_preferences_imported = Some(true);
-                                let persist_account_settings = patch.affects_account_settings();
                                 let mut values = self.state.settings.values.clone();
-                                values.apply_patch(patch.clone());
+                                values.apply_patch(patch);
+                                values.legacy_frontend_preferences_imported = true;
                                 let projected_values = values.clone();
-                                let account_values = values.account_settings();
-                                let key_id = account_settings_session_key(&self.state);
-                                let account_settings_ready = key_id.as_ref().is_some_and(|key| {
-                                    self.account_settings_loaded_for.as_ref() == Some(key)
-                                });
-                                let account_store = self.composer_draft_store_actor.clone();
                                 let store = self.settings_store.clone();
-                                let saved = executor::spawn_blocking(move || {
-                                    if persist_account_settings {
-                                        if !account_settings_ready {
-                                            return Err(());
-                                        }
-                                        let Some(key_id) = key_id else {
-                                            return Err(());
-                                        };
-                                        account_store
-                                            .save_account_settings(&key_id, &account_values)
-                                            .map_err(|_| ())?;
-                                    }
-                                    store.save_patch(&patch).map_err(|_| ())?;
-                                    Ok::<_, ()>(())
-                                })
-                                .await;
+                                let saved =
+                                    executor::spawn_blocking(move || store.save(&values)).await;
                                 match saved {
                                     Ok(Ok(())) => {
                                         let effects = self
@@ -4522,33 +4346,13 @@ impl AppActor {
                 AppEffect::PersistSettings {
                     request_id: effect_request_id,
                     values,
-                    patch,
                 } => {
                     if effect_request_id != request_id.sequence {
                         continue;
                     }
-                    let persist_account_settings = patch.affects_account_settings();
-                    let account_values = values.account_settings();
-                    let key_id = account_settings_session_key(&self.state);
-                    let account_settings_ready = key_id
-                        .as_ref()
-                        .is_some_and(|key| self.account_settings_loaded_for.as_ref() == Some(key));
-                    let account_store = self.composer_draft_store_actor.clone();
                     let settings_store = self.settings_store.clone();
                     let action = match executor::spawn_blocking(move || {
-                        if persist_account_settings {
-                            if !account_settings_ready {
-                                return Err(());
-                            }
-                            let Some(key_id) = key_id else {
-                                return Err(());
-                            };
-                            account_store
-                                .save_account_settings(&key_id, &account_values)
-                                .map_err(|_| ())?;
-                        }
-                        settings_store.save_patch(&patch).map_err(|_| ())?;
-                        Ok::<_, ()>(())
+                        settings_store.save(&values)
                     })
                     .await
                     {
@@ -4936,23 +4740,52 @@ impl AppActor {
         }
     }
 
-    async fn handle_ui_event_effect(&mut self, ui_event: &UiEvent) {
+    async fn handle_ui_event_effect(&self, ui_event: &UiEvent) {
         if let UiEvent::ProfileChanged(change) = ui_event {
             self.emit_timeline_display_label_updates(&change.user_ids);
         }
         if *ui_event == UiEvent::SettingsChanged {
             self.emit_timeline_display_policy_update();
-            self.dispatch_settings_policy();
+            let _ = self
+                .account_actor
+                .send(crate::account::AccountMessage::ReadStatePolicyChanged {
+                    send_read_receipts: self.state.settings.values.notifications.send_read_receipts,
+                })
+                .await;
+            let _ = self
+                .account_actor
+                .send(crate::account::AccountMessage::DisplayPolicyChanged {
+                    thread_root_order: self.state.settings.values.timeline.thread_root_order,
+                })
+                .await;
+            self.broadcast_link_preview_policy().await;
         }
         if *ui_event == UiEvent::LinkPreviewSettingsChanged {
             self.broadcast_link_preview_policy().await;
         }
     }
 
-    async fn broadcast_link_preview_policy(&mut self) {
-        if self.current_account_key().is_some() {
-            self.dispatch_settings_policy();
+    async fn broadcast_link_preview_policy(&self) {
+        if self.current_account_key().is_none() {
+            return;
         }
+        self.send_timeline_command_or_fail(
+            RequestId {
+                connection_id: INTERNAL_RUNTIME_CONNECTION_ID,
+                sequence: 0,
+            },
+            TimelineCommand::BroadcastLinkPreviewPolicy {
+                unencrypted_global_enabled: self.state.settings.values.display.url_previews_enabled,
+                encrypted_global_enabled: self
+                    .state
+                    .settings
+                    .values
+                    .display
+                    .encrypted_url_previews_enabled,
+                room_overrides: self.state.link_preview_settings.room_overrides.clone(),
+            },
+        )
+        .await;
     }
 
     fn emit_timeline_display_label_updates(&self, user_ids: &[String]) {
@@ -5271,25 +5104,6 @@ fn is_verification_gate_command(command: &CoreCommand, session: &SessionState) -
                 | AccountCommand::CancelVerification { .. }
         )
     )
-}
-
-fn account_settings_session_key(state: &AppState) -> Option<koushi_protocol::SessionKeyId> {
-    let info = match &state.session {
-        SessionState::SwitchingAccount { info }
-        | SessionState::Provisional { info, .. }
-        | SessionState::AwaitingVerification { info, .. }
-        | SessionState::Verifying { info, .. }
-        | SessionState::AwaitingBootstrapConfirmation { info, .. }
-        | SessionState::Rejecting { info, .. }
-        | SessionState::Ready(info)
-        | SessionState::Locked(info)
-        | SessionState::CapabilityBlocked { info, .. } => info,
-        SessionState::SignedOut
-        | SessionState::Restoring
-        | SessionState::Authenticating { .. }
-        | SessionState::LoggingOut => return None,
-    };
-    Some(session_key_id_from_info(info))
 }
 
 fn room_preferences_session_key(state: &AppState) -> Option<koushi_protocol::SessionKeyId> {

@@ -3,7 +3,6 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { TimelineView, clearTimelineViewportSessionMemoryForTests } from "../components/TimelineView";
-import { setRendererSelectedAccountTabId } from "./client";
 import { KEY, baseTransport, message } from "../components/timelineViewTestSupport";
 import type { CoreEventPayload } from "../domain/coreEvents";
 
@@ -15,7 +14,6 @@ vi.mock("../backend/appRuntime", async () => {
 
 afterEach(() => {
   cleanup();
-  setRendererSelectedAccountTabId(null);
   clearTimelineViewportSessionMemoryForTests();
   vi.unstubAllGlobals();
   vi.resetAllMocks();
@@ -47,9 +45,7 @@ it.each([true, false])("shows reader timestamps on hover (committed source: %s)"
     return undefined;
   });
   let emit: (payload: CoreEventPayload) => void = () => undefined;
-  const accountTabId = "account:@alice:example.invalid";
-  setRendererSelectedAccountTabId(accountTabId);
-  render(<TimelineView accountTabId={accountTabId} timelineKey={KEY} roomId="!room:example.invalid"
+  render(<TimelineView timelineKey={KEY} roomId="!room:example.invalid"
     transport={baseTransport({ listenCoreEvents(listener) { emit = listener; return () => undefined; } })}
     liveSignals={{ presence: {}, rooms: { "!room:example.invalid": {
       fully_read_event_id: null, typing_user_ids: [], typing_users: [],
@@ -71,22 +67,9 @@ it.each([true, false])("shows reader timestamps on hover (committed source: %s)"
     expect(invoke).not.toHaveBeenCalledWith("subscribe_receipt_reader", expect.anything());
     return;
   }
-  await waitFor(() =>
-    expect(invoke).toHaveBeenCalledWith("ack_receipt_reader", {
-      scope: "1",
-      revision: "1",
-      accountTabId
-    })
-  );
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("ack_receipt_reader", { scope: "1", revision: "1" }));
   expect(invoke).toHaveBeenCalledWith("subscribe_receipt_reader", {
-    source: {
-      key: KEY,
-      projection_request_id: { connection_id: "1", sequence: "2" },
-      generation: "3",
-      event_id: "$seen"
-    },
-    start: 0,
-    limit: 256,
-    accountTabId
+    source: { key: KEY, projection_request_id: { connection_id: "1", sequence: "2" },
+      generation: "3", event_id: "$seen" }, start: 0, limit: 256
   });
 });

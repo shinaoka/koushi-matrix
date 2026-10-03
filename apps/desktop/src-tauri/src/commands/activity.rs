@@ -1,11 +1,10 @@
 use super::*;
 #[tauri::command]
 pub async fn open_activity(
-    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission =
         submit_core_command_with_admission(state.inner(), build_open_activity_command(request_id))
             .await?;
@@ -15,11 +14,10 @@ pub async fn open_activity(
 
 #[tauri::command]
 pub async fn close_activity(
-    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission =
         submit_core_command_with_admission(state.inner(), build_close_activity_command(request_id))
             .await?;
@@ -29,12 +27,11 @@ pub async fn close_activity(
 
 #[tauri::command]
 pub async fn set_activity_tab(
-    account_tab_id: Option<String>,
     tab: ActivityTab,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_set_activity_tab_command(request_id, tab),
@@ -46,13 +43,12 @@ pub async fn set_activity_tab(
 
 #[tauri::command]
 pub async fn paginate_activity(
-    account_tab_id: Option<String>,
     tab: ActivityTab,
     cursor: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_paginate_activity_command(request_id, tab, cursor),
@@ -64,11 +60,10 @@ pub async fn paginate_activity(
 
 #[tauri::command]
 pub async fn retry_activity_resolution(
-    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_retry_activity_resolution_command(request_id),
@@ -80,12 +75,11 @@ pub async fn retry_activity_resolution(
 
 #[tauri::command]
 pub async fn mark_activity_read(
-    account_tab_id: Option<String>,
     target: ActivityMarkReadTarget,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_mark_activity_read_command(request_id, target),

@@ -1,13 +1,12 @@
 import { listen } from "@tauri-apps/api/event";
 
 import type { CoreEventPayload, StateUpdateEnvelope } from "../../domain/coreEvents";
-import type { AccountTabsSnapshot, DesktopUpdateState } from "../../domain/types";
+import type { DesktopUpdateState } from "../../domain/types";
 import type { DesktopEventPort } from "../desktopEventPort";
 
 const CORE_EVENT_NAME = "koushi-desktop://event";
 const MENU_EVENT_NAME = "koushi-desktop://menu";
 const STATE_UPDATE_EVENT_NAME = "koushi-desktop://state-update";
-const ACCOUNT_TABS_EVENT_NAME = "koushi-desktop://account-tabs-update";
 const DESKTOP_UPDATE_EVENT_NAME = "koushi-desktop://update";
 
 export function createTauriDesktopEventPort(): DesktopEventPort {
@@ -20,11 +19,6 @@ export function createTauriDesktopEventPort(): DesktopEventPort {
     },
     listenStateUpdates(listener) {
       return listen<StateUpdateEnvelope>(STATE_UPDATE_EVENT_NAME, (event) =>
-        listener(event.payload)
-      );
-    },
-    listenAccountTabs(listener) {
-      return listen<AccountTabsSnapshot>(ACCOUNT_TABS_EVENT_NAME, (event) =>
         listener(event.payload)
       );
     },

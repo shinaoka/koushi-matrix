@@ -438,7 +438,7 @@ describe("desktop release scripts", () => {
       "optional synthetic send smoke message",
       "verify QA title panel token after shortcuts",
       "open Keyboard settings shortcut",
-      "open Account settings shortcut",
+      "open User settings shortcut",
       "capture private-data-free screenshots",
       "stop app process group"
     ]) {
