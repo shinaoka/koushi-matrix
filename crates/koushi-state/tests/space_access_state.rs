@@ -30,6 +30,7 @@ fn space(join_rule: Option<RoomJoinRule>) -> SpaceSummary {
         avatar: None,
         join_rule,
         child_room_ids: Vec::new(),
+        parent_side_child_room_ids: Vec::new(),
     }
 }
 

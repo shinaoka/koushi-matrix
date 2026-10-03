@@ -1237,6 +1237,7 @@ fn ready_session_ignores_recovery_availability_as_an_admission_signal() {
             avatar: None,
             join_rule: None,
             child_room_ids: vec!["room-a".to_owned()],
+            parent_side_child_room_ids: vec!["room-a".to_owned()],
         }],
         rooms: vec![RoomSummary {
             display_name_placeholder: None,

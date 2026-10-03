@@ -2,11 +2,12 @@
 //! Space (#1007).
 //!
 //! Eligibility is decided from the Space's parent-side `m.space.child`
-//! relationships (`SpaceSummary::child_room_ids`), never from a child's
-//! `m.space.parent`: a room that only claims the Space as its parent is shown
-//! inside the Space by the room list, but other clients do not list it, so it
-//! remains addable. React renders these rows and may text-filter them; it
-//! must not classify rooms or derive their status.
+//! relationships (`SpaceSummary::parent_side_child_room_ids`), never from a
+//! child's `m.space.parent`: a room that only claims the Space as its parent is
+//! shown inside the Space by the room list (`SpaceSummary::child_room_ids`
+//! unions both directions), but other clients do not list it, so it remains
+//! addable. React renders these rows and may text-filter them; it must not
+//! classify rooms or derive their status.
 
 use std::{collections::HashSet, fmt};
 
@@ -86,14 +87,18 @@ pub fn space_add_rooms_for_state(state: &AppState) -> Option<SpaceAddRoomsModel>
         .iter()
         .map(|space| space.space_id.as_str())
         .collect();
-    let child_room_ids: HashSet<&str> = space.child_room_ids.iter().map(String::as_str).collect();
+    let parent_side_children: HashSet<&str> = space
+        .parent_side_child_room_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
     let mut candidates: Vec<SpaceAddRoomCandidate> = state
         .rooms
         .iter()
         .filter(|room| !room.is_dm && room.room_id != space_id)
         .filter(|room| !space_ids.contains(room.room_id.as_str()))
         .map(|room| {
-            let is_child = child_room_ids.contains(room.room_id.as_str());
+            let is_child = parent_side_children.contains(room.room_id.as_str());
             let status = if in_flight == Some(room.room_id.as_str()) {
                 SpaceAddRoomStatus::Adding
             } else {

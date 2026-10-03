@@ -105,6 +105,7 @@ fn space(space_id: &str, child_room_ids: &[&str]) -> SpaceSummary {
         avatar: None,
         join_rule: None,
         child_room_ids: child_room_ids.iter().map(|id| (*id).to_owned()).collect(),
+        parent_side_child_room_ids: child_room_ids.iter().map(|id| (*id).to_owned()).collect(),
     }
 }
 

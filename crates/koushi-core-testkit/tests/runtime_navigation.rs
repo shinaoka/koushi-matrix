@@ -207,6 +207,10 @@ fn space_summary(space_id: &str, child_room_ids: &[&str]) -> SpaceSummary {
             .iter()
             .map(|room_id| (*room_id).to_owned())
             .collect(),
+        parent_side_child_room_ids: child_room_ids
+            .iter()
+            .map(|room_id| (*room_id).to_owned())
+            .collect(),
     }
 }
 

@@ -17,6 +17,7 @@ fn state_in_space(join_rule: Option<RoomJoinRule>) -> AppState {
             avatar: None,
             join_rule,
             child_room_ids: Vec::new(),
+            parent_side_child_room_ids: Vec::new(),
         }],
         ..AppState::default()
     };

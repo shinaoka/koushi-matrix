@@ -66,6 +66,7 @@ fn state_with_children(children: Vec<SpaceChildSummary>) -> AppState {
         avatar: None,
         join_rule: None,
         child_room_ids: vec!["!joined:example.invalid".to_owned()],
+        parent_side_child_room_ids: vec!["!joined:example.invalid".to_owned()],
     }];
     state.rooms = vec![joined_room("!joined:example.invalid", "Joined Room")];
     state.space_children = SpaceChildrenState {

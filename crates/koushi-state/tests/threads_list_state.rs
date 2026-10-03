@@ -365,6 +365,7 @@ fn space_threads_list_resolves_child_and_parent_rooms_in_rust() {
         avatar: None,
         join_rule: None,
         child_room_ids: vec!["room-a".to_owned()],
+        parent_side_child_room_ids: vec!["room-a".to_owned()],
     }];
     state.rooms[1].parent_space_ids = vec!["space-a".to_owned()];
 

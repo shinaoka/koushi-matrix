@@ -32,6 +32,7 @@ async fn space_invite_explicit_id_search_settles_after_publishing_candidate() {
                     avatar: None,
                     join_rule: None,
                     child_room_ids: vec![],
+                    parent_side_child_room_ids: vec![],
                 }],
             },
         ])
@@ -4676,6 +4677,7 @@ async fn leaving_a_selected_space_child_routes_a_space_children_reload() {
         avatar: None,
         join_rule: None,
         child_room_ids: vec![child_id.to_owned()],
+        parent_side_child_room_ids: vec![child_id.to_owned()],
     }];
     state.navigation.active_space_id = Some(space_id.to_owned());
     state.space_children = koushi_state::SpaceChildrenState {

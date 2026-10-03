@@ -216,6 +216,7 @@ fn sidebar_badges_include_plain_unread_counts_and_keep_display_semantics() {
         avatar: None,
         join_rule: None,
         child_room_ids: vec!["plain".to_owned(), "notified".to_owned()],
+        parent_side_child_room_ids: vec!["plain".to_owned(), "notified".to_owned()],
     }];
     let rooms = vec![
         RoomSummary {
@@ -412,6 +413,7 @@ fn dm_in_multiple_spaces_appears_under_each() {
             avatar: None,
             join_rule: None,
             child_room_ids: vec!["room-a".to_owned(), "dm-multi".to_owned()],
+            parent_side_child_room_ids: vec!["room-a".to_owned(), "dm-multi".to_owned()],
         },
         SpaceSummary {
             space_id: "space-b".to_owned(),
@@ -420,6 +422,7 @@ fn dm_in_multiple_spaces_appears_under_each() {
             avatar: None,
             join_rule: None,
             child_room_ids: vec!["dm-multi".to_owned()],
+            parent_side_child_room_ids: vec!["dm-multi".to_owned()],
         },
     ];
     let multi_rooms = vec![
@@ -520,6 +523,7 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
         avatar: Some(avatar("mxc://example.invalid/space-a")),
         join_rule: None,
         child_room_ids: vec!["room-a".to_owned(), "dm-a".to_owned()],
+        parent_side_child_room_ids: vec!["room-a".to_owned(), "dm-a".to_owned()],
     }];
     let rooms = vec![
         RoomSummary {
@@ -1042,6 +1046,11 @@ fn active_sort_orders_sidebar_rooms_and_dms_in_home_and_active_space() {
         avatar: None,
         join_rule: None,
         child_room_ids: vec![
+            "space-read".to_owned(),
+            "space-notification".to_owned(),
+            "space-mention".to_owned(),
+        ],
+        parent_side_child_room_ids: vec![
             "space-read".to_owned(),
             "space-notification".to_owned(),
             "space-mention".to_owned(),

@@ -67,6 +67,7 @@ fn room_address_suggestion_is_prefixed_with_the_selected_space_name() {
             avatar: None,
             join_rule: None,
             child_room_ids: Vec::new(),
+            parent_side_child_room_ids: Vec::new(),
         }],
         ..Default::default()
     };

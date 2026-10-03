@@ -562,6 +562,7 @@ fn activity_projection_context_label_uses_space_and_room_names() {
             avatar: None,
             join_rule: None,
             child_room_ids: vec!["!room:example.invalid".to_owned()],
+            parent_side_child_room_ids: vec!["!room:example.invalid".to_owned()],
         }],
         rooms: vec![RoomSummary {
             display_name_placeholder: None,

@@ -64,7 +64,8 @@ describe("SpaceInfoPanel", () => {
           display_name: "Synthetic Workspace",
           avatar: null,
           join_rule: null,
-          child_room_ids: ["!room-alpha:example.invalid", "!room-beta:example.invalid"]
+          child_room_ids: ["!room-alpha:example.invalid", "!room-beta:example.invalid"],
+          parent_side_child_room_ids: ["!room-alpha:example.invalid", "!room-beta:example.invalid"]
         }}
       />
     );
@@ -142,7 +143,8 @@ describe("SpaceInfoPanel", () => {
           display_name: "Synthetic Workspace",
           avatar: null,
           join_rule: null,
-          child_room_ids: []
+          child_room_ids: [],
+          parent_side_child_room_ids: []
         }}
         roomManagement={{
           selected_room_id: "!space-work:example.invalid",
@@ -197,7 +199,8 @@ describe("SpaceInfoPanel", () => {
           display_name: "Synthetic Workspace",
           avatar: null,
           join_rule: null,
-          child_room_ids: []
+          child_room_ids: [],
+          parent_side_child_room_ids: []
         }}
         onOpenMembers={onOpenMembers}
       />
@@ -530,7 +533,8 @@ describe("SpaceInfoPanel", () => {
           display_name: "Research Group",
           avatar: null,
           join_rule: null,
-          child_room_ids: []
+          child_room_ids: [],
+          parent_side_child_room_ids: []
         }}
       />
     );
@@ -556,7 +560,8 @@ describe("SpaceInfoPanel", () => {
           display_name: "Alice and Bob",
           avatar: null,
           join_rule: null,
-          child_room_ids: []
+          child_room_ids: [],
+          parent_side_child_room_ids: []
         }}
       />
     );
@@ -580,7 +585,8 @@ describe("SpaceInfoPanel", () => {
           display_name: "Work",
           avatar: null,
           join_rule: null,
-          child_room_ids: []
+          child_room_ids: [],
+          parent_side_child_room_ids: []
         }}
         spaceChildren={[
           {
@@ -648,7 +654,8 @@ describe("SpaceInfoPanel", () => {
             display_name: "Work",
             avatar: null,
             join_rule: null,
-            child_room_ids: []
+            child_room_ids: [],
+            parent_side_child_room_ids: []
           }}
           spaceChildren={[
             {
@@ -711,7 +718,8 @@ describe("SpaceInfoPanel", () => {
           display_name: "Work",
           avatar: null,
           join_rule: null,
-          child_room_ids: []
+          child_room_ids: [],
+          parent_side_child_room_ids: []
         }}
         spaceChildren={[
           {
@@ -761,7 +769,8 @@ describe("SpaceInfoPanel", () => {
           display_name: "Work",
           avatar: null,
           join_rule: null,
-          child_room_ids: ["!joined:example.invalid"]
+          child_room_ids: ["!joined:example.invalid"],
+          parent_side_child_room_ids: ["!joined:example.invalid"]
         }}
         spaceChildren={[
           {
@@ -788,7 +797,8 @@ function workSpace(spaceId = "!space-work:example.invalid"): SpaceSummary {
     display_name: "Synthetic Workspace",
     avatar: null,
     join_rule: null,
-    child_room_ids: []
+    child_room_ids: [],
+    parent_side_child_room_ids: []
   };
 }
 
