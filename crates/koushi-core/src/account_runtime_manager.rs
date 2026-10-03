@@ -61,6 +61,10 @@ struct ManagerState {
     /// The tab that was selected when the unbound add-account tab was opened,
     /// so cancelling it returns the user to where they came from.
     add_return_to: Option<AccountTabId>,
+    /// Cleanup joins of cancelled/removed children. Each child joins only after
+    /// every adapter connection to it drops, so the lifecycle gate is never held
+    /// across these joins; manager shutdown drains them instead.
+    retiring: Vec<executor::JoinHandle<Result<(), CoreShutdownError>>>,
     shutdown_result: Option<Result<(), CoreShutdownError>>,
 }
 
@@ -117,6 +121,7 @@ impl AccountRuntimeManager {
                 selected: first_add,
                 next_add_id: 2,
                 add_return_to: None,
+                retiring: Vec::new(),
                 shutdown_result: None,
             }),
             operation_gate: tokio::sync::Mutex::new(()),
@@ -554,7 +559,7 @@ impl AccountRuntimeManager {
         id: &AccountTabId,
     ) -> Result<bool, koushi_protocol::failure::CoreFailure> {
         let _operation = self.operation_gate.lock().await;
-        let (runtime, selected_tab_id) = {
+        let selected_tab_id = {
             let mut state = self.state.lock().expect("account runtime manager mutex");
             let Some(position) = state.tabs.iter().position(|tab| &tab.descriptor.id == id) else {
                 return Ok(false);
@@ -579,7 +584,10 @@ impl AccountRuntimeManager {
                             .clone()
                     });
             }
-            (runtime, state.selected.clone())
+            state
+                .retiring
+                .push(executor::spawn(runtime.shutdown_checked()));
+            state.selected.clone()
         };
         self.account_work
             .set_selected_account(Some(selected_tab_id.as_str()));
@@ -587,10 +595,6 @@ impl AccountRuntimeManager {
             .lock()
             .expect("OIDC attempt mutex")
             .retain(|_, tab_id| tab_id != id);
-        runtime
-            .shutdown_checked()
-            .await
-            .map_err(|_| koushi_protocol::failure::CoreFailure::StoreUnavailable)?;
         Ok(true)
     }
 
@@ -710,7 +714,7 @@ impl AccountRuntimeManager {
         if !removed {
             return Ok(false);
         }
-        let (runtime, selected_tab_id) = {
+        let selected_tab_id = {
             let mut state = self.state.lock().expect("account runtime manager mutex");
             let Some(position) = state.tabs.iter().position(|tab| &tab.descriptor.id == id) else {
                 return Ok(false);
@@ -723,11 +727,13 @@ impl AccountRuntimeManager {
             {
                 state.selected = tab.descriptor.id.clone();
             }
-            (runtime, state.selected.clone())
+            state
+                .retiring
+                .push(executor::spawn(runtime.shutdown_checked()));
+            state.selected.clone()
         };
         self.account_work
             .set_selected_account(Some(selected_tab_id.as_str()));
-        let shutdown_result = runtime.shutdown_checked().await;
         self.oidc_attempts
             .lock()
             .expect("OIDC attempt mutex")
@@ -735,7 +741,6 @@ impl AccountRuntimeManager {
         if self.tab_descriptors().is_empty() {
             self.add_account_tab_locked()?;
         }
-        shutdown_result.map_err(|_| koushi_protocol::failure::CoreFailure::StoreUnavailable)?;
         Ok(true)
     }
 
@@ -752,22 +757,30 @@ impl AccountRuntimeManager {
     pub async fn shutdown_all_checked(&self) -> Result<(), CoreShutdownError> {
         let _operation = self.operation_gate.lock().await;
         self.account_work.set_selected_account(None);
-        let runtimes = {
+        let (runtimes, retiring) = {
             let mut state = self.state.lock().expect("account runtime manager mutex");
             if let Some(result) = state.shutdown_result {
                 return result;
             }
             // Fail closed if the owning shutdown future is cancelled before completion.
             state.shutdown_result = Some(Err(CoreShutdownError::Incomplete));
-            std::mem::take(&mut state.tabs)
+            let runtimes = std::mem::take(&mut state.tabs)
                 .into_iter()
                 .map(|tab| tab.runtime)
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            (runtimes, std::mem::take(&mut state.retiring))
         };
         let mut result = Ok(());
         for runtime in runtimes {
             if let Err(error) = runtime.shutdown_checked().await {
                 result = Err(error);
+            }
+        }
+        for retiring in retiring {
+            match retiring.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => result = Err(error),
+                Err(_) => result = Err(CoreShutdownError::Incomplete),
             }
         }
         self.state
