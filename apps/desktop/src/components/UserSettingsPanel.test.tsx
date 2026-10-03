@@ -6,7 +6,6 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { UserSettingsPanel } from "./UserSettingsPanel";
 import type { E2eeTrustState, ProfileState, RoomSummary } from "../domain/types";
-import { t } from "../i18n/messages";
 
 describe("UserSettingsPanel", () => {
   const settings = {
@@ -163,7 +162,7 @@ describe("UserSettingsPanel", () => {
     cleanup();
   });
 
-  test("renders Account Settings without a second account selector", () => {
+  test("renders account switch entries and keyboard settings access", () => {
     const markup = renderToStaticMarkup(
       <UserSettingsPanel
         currentSession={{
@@ -194,20 +193,14 @@ describe("UserSettingsPanel", () => {
       />
     );
 
-    expect(markup).toContain("Account Settings");
+    expect(markup).toContain("User settings");
     expect(markup).toContain("@demo-user:example.invalid");
-    expect(markup).not.toContain("@second-user:example.invalid");
-    expect(markup).not.toContain("account-switcher");
-    const container = document.createElement("div");
-    container.innerHTML = markup;
-    expect(Array.from(container.querySelectorAll('[role="tab"]'), (tab) => tab.textContent)).toEqual([
-      "Account",
-      "Sessions",
-      "Notifications",
-      "Security & Privacy",
-      "Encryption",
-      "Search history"
-    ]);
+    expect(markup).toContain("@second-user:example.invalid");
+    expect(markup).toContain("Current");
+    expect(markup).toContain("Switch");
+    expect(markup).toContain("Keyboard");
+    expect(markup).toContain("Timeline");
+    expect(markup).toContain("Automatically load older messages");
     expect(markup).toContain("Session");
     expect(markup).toContain("Profile");
     expect(markup).toContain("Demo User");
@@ -216,13 +209,18 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain("Homeserver");
     expect(markup).toContain("Device");
     expect(markup).toContain("Local store");
+    expect(markup).toContain("Appearance");
+    expect(markup).toContain("Dark");
+    expect(markup).toContain("Typography");
+    expect(markup).toContain("UI font");
+    expect(markup).toContain("Emoji font");
     // #305 retired the Media section: image output is chosen per attachment in
     // the upload staging dialog, so no compression preference is rendered here.
     expect(markup).not.toContain("Compress images");
     expect(markup).toContain("Notifications");
     expect(markup).toContain("Desktop notifications");
-    expect(markup).not.toContain("Sound");
-    expect(markup).not.toContain("Badges");
+    expect(markup).toContain("Sound");
+    expect(markup).toContain("Badges");
     expect(markup).toContain("Send read receipts");
     expect(markup).toContain("Send typing notifications");
     const notificationsSection = markup.match(
@@ -232,14 +230,16 @@ describe("UserSettingsPanel", () => {
       /<section id="settings-messaging-privacy"[\s\S]*?<\/section>/
     )?.[0];
     expect(notificationsSection).toContain("Desktop notifications");
-    expect(notificationsSection).not.toContain("Sound");
-    expect(notificationsSection).not.toContain("Badges");
+    expect(notificationsSection).toContain("Sound");
+    expect(notificationsSection).toContain("Badges");
     expect(notificationsSection).toContain("Show message content in notifications");
     expect(notificationsSection).not.toContain("Send read receipts");
     expect(notificationsSection).not.toContain("Send typing notifications");
     expect(messagingPrivacySection).toContain("Send read receipts");
     expect(messagingPrivacySection).toContain("Send typing notifications");
     expect(markup).toContain('role="switch"');
+    expect(markup).toContain("Inter");
+    expect(markup).toContain("Twemoji COLR");
     expect(markup).toContain('aria-pressed="true"');
     expect(markup).toContain("Separate encrypted namespace");
     expect(markup).toContain("Secret Service");
@@ -256,48 +256,7 @@ describe("UserSettingsPanel", () => {
     expect(markup).not.toContain("TARGETDEVICE");
   });
 
-  test("shows only app-owned categories in App Settings", () => {
-    const markup = renderToStaticMarkup(
-      <UserSettingsPanel
-        settingsScope="app"
-        currentSession={{
-          homeserver: "https://matrix.org",
-          user_id: "@demo-user:example.invalid",
-          device_id: "FAKEDEVICE"
-        }}
-        e2eeTrust={idleE2eeTrust}
-        localEncryption={{ kind: "healthy" }}
-        platform="linux"
-        accountManagement={idleAccountManagement}
-        accountManagementCapabilities={idleAccountManagementCapabilities}
-        savedSessions={[]}
-        profile={profile}
-        settings={settings}
-        {...handlers}
-      />
-    );
-    const container = document.createElement("div");
-    container.innerHTML = markup;
-
-    expect(markup).toContain("App Settings");
-    expect(Array.from(container.querySelectorAll('[role="tab"]'), (tab) => tab.textContent)).toEqual([
-      "Appearance",
-      "Notifications",
-      "Preferences",
-      "Keyboard",
-      "Search history",
-      "Help & About"
-    ]);
-    const notificationsSection = markup.match(
-      /<section id="settings-notifications"[\s\S]*?<\/section>/
-    )?.[0];
-    expect(notificationsSection).toContain("Sound");
-    expect(notificationsSection).toContain("Badges");
-    expect(notificationsSection).not.toContain("Desktop notifications");
-    expect(notificationsSection).not.toContain("Show message content in notifications");
-  });
-
-  test("uses the shared single-grapheme initial for profile placeholders", () => {
+  test("uses the shared single-grapheme initial for profile and account placeholders", () => {
     // #1055: the same rule as the timeline, People panel, and Space members.
     const renderInitials = (displayName: string | null) => {
       const markup = renderToStaticMarkup(
@@ -326,12 +285,15 @@ describe("UserSettingsPanel", () => {
       );
       const container = document.createElement("div");
       container.innerHTML = markup;
-      return container.querySelector(".profile-settings-avatar")?.textContent;
+      return {
+        profile: container.querySelector(".profile-settings-avatar")?.textContent,
+        account: container.querySelector(".account-switcher-avatar")?.textContent
+      };
     };
 
-    expect(renderInitials("Firstname Lastname")).toBe("F");
-    expect(renderInitials("😀 Smile")).toBe("😀");
-    expect(renderInitials(null)).toBe("D");
+    expect(renderInitials("Firstname Lastname")).toEqual({ profile: "F", account: "É" });
+    expect(renderInitials("😀 Smile").profile).toBe("😀");
+    expect(renderInitials(null).profile).toBe("D");
   });
 
   test("renders Manage account & devices only when the active session has a safe URL", () => {
@@ -507,67 +469,6 @@ describe("UserSettingsPanel", () => {
     expect(degradedMarkup).not.toContain("Needs attention");
   });
 
-  test("keeps session health and recovery actions in Sessions", () => {
-    const onRefreshCurrentSessionStatus = vi.fn();
-    const onRestartSync = vi.fn();
-    const onRetryRuntimeAlert = vi.fn();
-    render(
-      <UserSettingsPanel
-        initialCategory="sessions"
-        currentSession={{
-          homeserver: "https://matrix.org",
-          user_id: "@demo-user:example.invalid",
-          device_id: "FAKEDEVICE"
-        }}
-        currentSessionStatus={{
-          status: "ready",
-          request_id: 41,
-          details: {
-            device_display_name: "Koushi on macOS",
-            device_id: "FAKEDEVICE",
-            authentication_method: "password",
-            sync_state: "running",
-            is_cross_signed_by_owner: true,
-            own_identity_verification: "unverified",
-            key_backup: "ready",
-            verification: "verified",
-            checked_at_ms: 1_787_665_620_000
-          }
-        }}
-        e2eeTrust={idleE2eeTrust}
-        localEncryption={{ kind: "healthy" }}
-        platform="linux"
-        accountManagement={idleAccountManagement}
-        accountManagementCapabilities={idleAccountManagementCapabilities}
-        runtimeAlerts={[{
-          kind: "secureBackup",
-          severity: "warning",
-          title: "Backup retry available",
-          detail: "The runtime could not inspect backup state.",
-          retryable: true
-        }]}
-        canRestartSync
-        onRefreshCurrentSessionStatus={onRefreshCurrentSessionStatus}
-        onRestartSync={onRestartSync}
-        onRetryRuntimeAlert={onRetryRuntimeAlert}
-        profile={profile}
-        settings={settings}
-        {...handlers}
-      />
-    );
-
-    expect(screen.getByText("Koushi on macOS")).toBeTruthy();
-    expect(screen.getByText(t("sessionStatus.authPassword"))).toBeTruthy();
-    expect(screen.getByText(t("sessionStatus.syncRunning"))).toBeTruthy();
-    expect(screen.getAllByText(t("sessionStatus.verified")).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole("button", { name: t("sessionStatus.recheck") }));
-    expect(onRefreshCurrentSessionStatus).toHaveBeenCalledWith("manual");
-    fireEvent.click(screen.getByRole("button", { name: t("action.restartSync") }));
-    expect(onRestartSync).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole("button", { name: t("gate.secureBackupRetry") }));
-    expect(onRetryRuntimeAlert).toHaveBeenCalledWith("secureBackup");
-  });
-
   test("dispatches the manage-account open action from the account section", () => {
     const onManageAccount = vi.fn();
 
@@ -678,11 +579,10 @@ describe("UserSettingsPanel", () => {
     expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
   });
 
-  test("exposes the shared background-work budget and pause/resume actions", () => {
+  test("exposes prominent pause and resume actions for the search crawler", () => {
     const onUpdateSettings = vi.fn();
     const { rerender } = render(
       <UserSettingsPanel
-        settingsScope="app"
         currentSession={{
           homeserver: "https://matrix.org",
           user_id: "@demo-user:example.invalid",
@@ -703,15 +603,13 @@ describe("UserSettingsPanel", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Search history" }));
 
     expect(screen.queryByRole("button", { name: "Off" })).toBeNull();
-    expect(screen.getByText("Search crawling and media prefetch share this budget across all accounts; Off pauses both.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Pause background work" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pause crawler" }));
     expect(onUpdateSettings).toHaveBeenCalledWith({
       search_crawler: { ...settings.values.search_crawler, speed: "paused" }
     });
 
     rerender(
       <UserSettingsPanel
-        settingsScope="app"
         currentSession={{
           homeserver: "https://matrix.org",
           user_id: "@demo-user:example.invalid",
@@ -736,7 +634,7 @@ describe("UserSettingsPanel", () => {
       />
     );
 
-    const resumeButton = screen.getByRole("button", { name: "Resume background work" });
+    const resumeButton = screen.getByRole("button", { name: "Resume crawler" });
     expect(resumeButton.getAttribute("aria-pressed")).toBe("true");
     expect(resumeButton.getAttribute("data-active")).toBe("true");
 
@@ -750,7 +648,6 @@ describe("UserSettingsPanel", () => {
     const onUpdateSettings = vi.fn();
     render(
       <UserSettingsPanel
-        settingsScope="app"
         currentSession={{
           homeserver: "https://matrix.org",
           user_id: "@demo-user:example.invalid",
@@ -802,7 +699,6 @@ describe("UserSettingsPanel", () => {
     };
     render(
       <UserSettingsPanel
-        settingsScope="app"
         currentSession={{
           homeserver: "https://matrix.org",
           user_id: "@demo-user:example.invalid",
@@ -1193,7 +1089,7 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain('aria-checked="false"');
   });
 
-  test("does not render a second account selector when the current session is unavailable", () => {
+  test("renders saved sessions when the current session is unavailable", () => {
     const markup = renderToStaticMarkup(
       <UserSettingsPanel
         currentSession={null}
@@ -1224,10 +1120,10 @@ describe("UserSettingsPanel", () => {
       />
     );
 
-    expect(markup).toContain("Account Settings");
+    expect(markup).toContain("Accounts");
     expect(markup).toContain("Not restored");
-    expect(markup).not.toContain("@second-user:example.invalid");
-    expect(markup).not.toContain("account-switcher");
+    expect(markup).toContain("@second-user:example.invalid");
+    expect(markup).toContain("Switch");
   });
 
   test("renders Rust-owned E2EE key-management controls and status", () => {

@@ -156,7 +156,6 @@ pub(crate) fn spawn_qa_login_pipe_reader(app: AppHandle, pipe_path: PathBuf) {
         if let Err(message) = super::session::submit_login_request(
             app.clone(),
             state.inner(),
-            None,
             request.login,
             DisplayPlatform::Linux,
         )
@@ -174,13 +173,9 @@ pub(crate) fn spawn_qa_login_pipe_reader(app: AppHandle, pipe_path: PathBuf) {
                 return;
             }
             let state = app.state::<CoreRuntimeState>();
-            if let Err(message) = super::session::submit_recovery_request(
-                app.clone(),
-                state.inner(),
-                None,
-                recovery_secret,
-            )
-            .await
+            if let Err(message) =
+                super::session::submit_recovery_request(app.clone(), state.inner(), recovery_secret)
+                    .await
             {
                 record_qa_login_failure(&app, &message).await;
             }

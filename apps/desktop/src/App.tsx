@@ -14,13 +14,12 @@ import {
   useState
 } from "react";
 
-import { api as desktopApi } from "./backend/appRuntime";
-import { setRendererSelectedAccountTabId } from "./backend/client";
+import { api } from "./backend/appRuntime";
 import { desktopEventPort } from "./backend/desktopEventRuntime";
 import { openExternalHttpUrl } from "./backend/linkMediaRuntime";
 import { isTauriRuntime } from "./backend/runtimeEnvironment";
 import { windowDialogPort } from "./backend/windowDialogRuntime";
-import { createTauriTimelineTransport } from "./backend/tauriTimelineTransport";
+import { tauriTimelineTransport } from "./backend/tauriTimelineTransport";
 import {
   classifySubmissionFailure,
   createComposerSubmissionControllerRegistry,
@@ -117,7 +116,6 @@ import {
 } from "./domain/contextMenus";
 import { shortcutActionFromMenuPayload } from "./domain/shortcuts";
 import { createLatestShortcutHandler, listenForAppShortcuts } from "./app/keyboardShortcuts";
-import { effectiveLoginServer } from "./app/loginServer";
 import { syncNativeMenuLabels } from "./backend/tauri/nativeMenuLabels";
 import {
   effectiveRightPanelModeForSnapshot,
@@ -131,10 +129,8 @@ import {
   desktopAttentionSummary,
   desktopAttentionWindowTitle
 } from "./domain/desktopAttention";
-import {
-  desktopNotificationActivationPlan,
-  type DesktopNotificationActivation
-} from "./domain/desktopNotification";
+import type { DesktopNotificationActivation } from "./domain/desktopNotification";
+import { desktopNotificationTargetPlan } from "./domain/desktopNotification";
 import {
   qaDomDiagnosticTokens,
   qaTimelineDiagnosticTokens,
@@ -173,7 +169,6 @@ import {
   planSnapshotAvatarThumbnailRequests
 } from "./domain/avatarThumbnails";
 import type {
-  AccountTabsSnapshot,
   ActivityMarkReadTarget,
   ActivityTab,
   AttachmentFilter,
@@ -193,6 +188,7 @@ import type {
   RoomModerationAction,
   RoomNotificationMode,
   RoomSettingChange,
+  SavedSessionInfo,
   SearchScopeKind,
   SecureBackupSetupIntent,
   DisplayDensity,
@@ -230,7 +226,6 @@ import {
 } from "./app/legacyPreferenceMigration";
 import {
   applyAppStoreDelta,
-  clearAppStoreSnapshot,
   getAppStoreDeltaStats,
   getAppStoreSnapshot,
   selectSnapshot,
@@ -271,15 +266,12 @@ import {
   UserIdDialog
 } from "./components/dialogs";
 import {
-  PersistentAccountShell,
   TopBar,
   WorkspaceRail,
   Sidebar,
-  avatarColorClass,
   type RuntimeAlert
 } from "./components/Shell";
 import { ContextualRightPanel } from "./components/rightPanel";
-import { AppSettingsDialog } from "./components/UserSettingsPanel";
 import type { AccountNotificationActions } from "./components/user-settings/AccountNotificationsSections";
 import type { ContactSecurityActions } from "./components/ContactSecurityDetails";
 import type { HistoryExportControls } from "./components/HistoryExportDialog";
@@ -340,6 +332,7 @@ function spaceMembersLoadDemandKey(fence: SpaceMemberFence): string {
   return `${fence.accountOwnerKey}\u0000${fence.spaceId}\u0000${fence.generation}`;
 }
 
+const DEFAULT_HOMESERVER = "https://matrix.org";
 declare global {
   interface Window {
     __matrixDesktopQaErrorCaptureInstalled?: boolean;
@@ -391,7 +384,6 @@ const DEFAULT_CREATE_ROOM_OPTIONS: CreateRoomDialogOptions = {
   visibility: "private"
 };
 const DEFAULT_SIDEBAR_WIDTH = 318;
-const LOGIN_DISCOVERY_DEBOUNCE_MS = 400;
 const MIN_SIDEBAR_WIDTH = 260;
 const MAX_SIDEBAR_WIDTH = 440;
 const DEFAULT_RIGHT_PANEL_WIDTH = 390;
@@ -770,303 +762,8 @@ export function App() {
 }
 
 function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
-  const [accountTabs, setAccountTabs] = useState<AccountTabsSnapshot | null>(null);
-  const [pendingNotificationActivation, setPendingNotificationActivation] =
-    useState<DesktopNotificationActivation | null>(null);
-  const [settingsScope, setSettingsScope] = useState<"account" | "app" | null>(null);
-  const [accountScopedContentReady, setAccountScopedContentReady] = useState(false);
-  const selectedSnapshot = useAppStore(selectSnapshot);
-  const openDiagnosticsRef = useRef<() => void>(() => undefined);
-  const appSettingsUpdateRef = useRef<(patch: SettingsPatch) => Promise<void>>(async () => undefined);
-  const beforeAccountSwitchRef = useRef<() => Promise<boolean>>(async () => true);
-  const registerOpenDiagnostics = useCallback((handler: (() => void) | null) => {
-    openDiagnosticsRef.current = handler ?? (() => undefined);
-  }, []);
-  const registerAppSettingsUpdater = useCallback((handler: ((patch: SettingsPatch) => Promise<void>) | null) => {
-    appSettingsUpdateRef.current = handler ?? (async () => undefined);
-  }, []);
-  const registerBeforeAccountSwitch = useCallback((handler: (() => Promise<boolean>) | null) => {
-    beforeAccountSwitchRef.current = handler ?? (async () => true);
-  }, []);
-  const consumeNotificationActivation = useCallback((target: DesktopNotificationActivation) => {
-    setPendingNotificationActivation((pending) => pending === target ? null : pending);
-  }, []);
-  const accountTabsRef = useRef<AccountTabsSnapshot | null>(null);
-  const selectionEpochRef = useRef(0);
-  const selectionPendingRef = useRef(false);
-  const selectedTabIntentRef = useRef<string | null>(null);
-  const tabEventRevisionRef = useRef(0);
-  const applyAccountTabs = useCallback((next: AccountTabsSnapshot) => {
-    const previous = accountTabsRef.current;
-    accountTabsRef.current = next;
-    if (!selectionPendingRef.current) selectedTabIntentRef.current = next.selectedTabId;
-    setRendererSelectedAccountTabId(next.selectedTabId);
-    if (previous?.selectedTabId !== next.selectedTabId) {
-      clearAppStoreSnapshot();
-      setAccountScopedContentReady(false);
-    }
-    setAccountTabs(next);
-  }, []);
-
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    const listening = desktopEventPort.listenAccountTabs((next) => {
-      tabEventRevisionRef.current += 1;
-      if (!disposed) applyAccountTabs(next);
-    });
-    void listening.then((dispose) => {
-      if (disposed) dispose();
-      else unlisten = dispose;
-    });
-    if (!isTauriRuntime()) {
-      applyAccountTabs({
-        selectedTabId: "add:1",
-        tabs: [{
-          id: "add:1",
-          accountKey: null,
-          homeserver: null,
-          displayName: null,
-          avatarSourceRef: null,
-          status: "addAccount",
-          unreadCount: 0
-        }],
-        badgeCount: 0
-      });
-    } else {
-      void listening.then(async () => {
-        const eventRevision = tabEventRevisionRef.current;
-        try {
-          const next = await desktopApi.listAccountTabs();
-          if (!disposed && eventRevision === tabEventRevisionRef.current) applyAccountTabs(next);
-        } catch {
-          // The state-update recovery path remains responsible for backend startup failures.
-        }
-      });
-    }
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [applyAccountTabs]);
-
-  async function drainBeforeAccountSwitch(previous: string | null, next: string | null): Promise<boolean> {
-    if (previous === null || previous === next) return true;
-    return beforeAccountSwitchRef.current();
-  }
-
-  async function selectAccountTab(tabId: string): Promise<void> {
-    const epoch = ++selectionEpochRef.current;
-    const previous = accountTabsRef.current?.selectedTabId ?? null;
-    selectionPendingRef.current = true;
-    selectedTabIntentRef.current = tabId;
-    try {
-      if (!(await drainBeforeAccountSwitch(previous, tabId))) {
-        if (epoch === selectionEpochRef.current) {
-          selectionPendingRef.current = false;
-          selectedTabIntentRef.current = previous;
-        }
-        return;
-      }
-      if (epoch !== selectionEpochRef.current) return;
-      setRendererSelectedAccountTabId(tabId);
-      const next = await desktopApi.selectAccountTab(tabId);
-      if (epoch === selectionEpochRef.current) {
-        selectionPendingRef.current = false;
-        selectedTabIntentRef.current = next.selectedTabId;
-        applyAccountTabs(next);
-      }
-    } catch {
-      if (epoch === selectionEpochRef.current) {
-        selectionPendingRef.current = false;
-        selectedTabIntentRef.current = previous;
-        setRendererSelectedAccountTabId(previous);
-      }
-    }
-  }
-
-  async function addAccountTab(): Promise<void> {
-    const epoch = ++selectionEpochRef.current;
-    const previous = accountTabsRef.current?.selectedTabId ?? null;
-    selectionPendingRef.current = true;
-    selectedTabIntentRef.current = null;
-    try {
-      if (!(await drainBeforeAccountSwitch(previous, null))) {
-        if (epoch === selectionEpochRef.current) {
-          selectionPendingRef.current = false;
-          selectedTabIntentRef.current = previous;
-        }
-        return;
-      }
-      if (epoch !== selectionEpochRef.current) return;
-      setRendererSelectedAccountTabId(null);
-      const next = await desktopApi.addAccountTab();
-      if (epoch === selectionEpochRef.current) {
-        selectionPendingRef.current = false;
-        selectedTabIntentRef.current = next.selectedTabId;
-        applyAccountTabs(next);
-      }
-    } catch {
-      if (epoch === selectionEpochRef.current) {
-        selectionPendingRef.current = false;
-        selectedTabIntentRef.current = previous;
-        setRendererSelectedAccountTabId(previous);
-      }
-    }
-  }
-
-  function receiveNotificationActivation(target: DesktopNotificationActivation): void {
-    const targetTabId = desktopNotificationActivationPlan(target).accountTabId;
-    setPendingNotificationActivation(target);
-    if (accountTabsRef.current?.selectedTabId === targetTabId) return;
-    void selectAccountTab(targetTabId).then(() => {
-      if (!accountTabsRef.current?.tabs.some((tab) => tab.id === targetTabId)) {
-        consumeNotificationActivation(target);
-      }
-    });
-  }
-
-  async function removeSignedOutAccountTab(tabId: string): Promise<void> {
-    // #1101: closing an unfinished add-account tab cancels it and returns to
-    // the previous account; it never signs out or removes a bound account.
-    const cancelling =
-      accountTabsRef.current?.tabs.find((tab) => tab.id === tabId)?.status === "addAccount";
-    const epoch = ++selectionEpochRef.current;
-    const previous = accountTabsRef.current?.selectedTabId ?? null;
-    selectionPendingRef.current = true;
-    selectedTabIntentRef.current = previous === tabId ? null : previous;
-    if (previous === tabId) setRendererSelectedAccountTabId(null);
-    try {
-      const next = cancelling
-        ? await desktopApi.cancelAddAccountTab(tabId)
-        : await desktopApi.removeSignedOutAccountTab(tabId);
-      if (epoch === selectionEpochRef.current) {
-        selectionPendingRef.current = false;
-        selectedTabIntentRef.current = next.selectedTabId;
-        applyAccountTabs(next);
-      }
-    } catch {
-      if (epoch === selectionEpochRef.current) {
-        selectionPendingRef.current = false;
-        selectedTabIntentRef.current = previous;
-        setRendererSelectedAccountTabId(previous);
-      }
-    }
-  }
-
-  const selectedTabId = accountTabs?.selectedTabId ?? null;
-  return (
-    <PersistentAccountShell
-      accountTabs={accountTabs}
-      selectedAccountTabId={selectedTabId}
-      accountScopedContentReady={accountScopedContentReady}
-      platform={selectedSnapshot?.state.domain.locale_profile.platform}
-      onSelectAccountTab={selectAccountTab}
-      onAddAccountTab={addAccountTab}
-      onRemoveSignedOutAccountTab={removeSignedOutAccountTab}
-      onOpenAppSettings={() => setSettingsScope("app")}
-      onOpenDiagnostics={() => openDiagnosticsRef.current()}
-    >
-      <>
-        {selectedTabId !== null ? <AccountContent
-          key={selectedTabId}
-          accountTabId={selectedTabId}
-          accountTabs={accountTabs}
-          pendingNotificationActivation={pendingNotificationActivation}
-          onNotificationActivationConsumed={consumeNotificationActivation}
-          onNotificationActivated={receiveNotificationActivation}
-          onRegisterBeforeAccountSwitch={registerBeforeAccountSwitch}
-          onSelectAccountTab={selectAccountTab}
-          onAddAccountTab={addAccountTab}
-          onRemoveSignedOutAccountTab={removeSignedOutAccountTab}
-          onSettingsScopeChange={(scope) => {
-            if (scope === null && selectedTabIntentRef.current !== selectedTabId) return;
-            setSettingsScope(scope);
-          }}
-          settingsScope={settingsScope}
-          onShowHelp={onShowHelp}
-          onRegisterOpenDiagnostics={registerOpenDiagnostics}
-          onRegisterAppSettingsUpdater={registerAppSettingsUpdater}
-          onAccountScopedContentReadyChange={setAccountScopedContentReady}
-        /> : null}
-        {settingsScope === "app" && selectedSnapshot ? (
-          <AppSettingsDialog
-            snapshot={selectedSnapshot}
-            onUpdateSettings={(patch) => {
-              void appSettingsUpdateRef.current(patch).catch(() => undefined);
-            }}
-            onClose={() => setSettingsScope(null)}
-          />
-        ) : null}
-      </>
-    </PersistentAccountShell>
-  );
-}
-
-function AccountContent({
-  accountTabId,
-  accountTabs,
-  pendingNotificationActivation,
-  onNotificationActivationConsumed,
-  onNotificationActivated,
-  onRegisterBeforeAccountSwitch,
-  onSelectAccountTab,
-  onAddAccountTab,
-  onRemoveSignedOutAccountTab,
-  onSettingsScopeChange,
-  settingsScope,
-  onShowHelp,
-  onRegisterOpenDiagnostics,
-  onRegisterAppSettingsUpdater,
-  onAccountScopedContentReadyChange
-}: {
-  accountTabId: string | null;
-  accountTabs: AccountTabsSnapshot | null;
-  pendingNotificationActivation: DesktopNotificationActivation | null;
-  onNotificationActivationConsumed: (target: DesktopNotificationActivation) => void;
-  onNotificationActivated: (target: DesktopNotificationActivation) => void;
-  onRegisterBeforeAccountSwitch: (handler: (() => Promise<boolean>) | null) => void;
-  onSelectAccountTab: (id: string) => void | Promise<void>;
-  onAddAccountTab: () => void;
-  onRemoveSignedOutAccountTab: (id: string) => void;
-  onSettingsScopeChange: (scope: "account" | "app" | null) => void;
-  settingsScope: "account" | "app" | null;
-  onShowHelp: () => void;
-  onRegisterOpenDiagnostics: (handler: (() => void) | null) => void;
-  onRegisterAppSettingsUpdater: (
-    handler: ((patch: SettingsPatch) => Promise<void>) | null
-  ) => void;
-  onAccountScopedContentReadyChange: (ready: boolean) => void;
-}) {
-  const api = useMemo(
-    () => accountTabId === null ? desktopApi : desktopApi.forAccountTab?.(accountTabId) ?? desktopApi,
-    [accountTabId]
-  );
-  const accountTimelineTransport = useMemo(
-    () => createTauriTimelineTransport(accountTabId ?? undefined),
-    [accountTabId]
-  );
   const snapshot = useAppStore(selectSnapshot);
-  const signedInTabCount = accountTabs?.tabs.filter(
-    (tab) => tab.accountKey !== null && tab.status !== "signedOut"
-  ).length ?? 0;
-  const selectedAccountTab = accountTabs?.tabs.find((tab) => tab.id === accountTabId);
-  const sendingAccount = signedInTabCount > 1 && selectedAccountTab?.accountKey
-    ? {
-        name: selectedAccountTab.displayName?.trim() || selectedAccountTab.accountKey,
-        colorClassName: avatarColorClass(selectedAccountTab.accountKey)
-      }
-    : null;
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
   const snapshotRef = useRef(snapshot);
-  const openDiagnosticsActionRef = useRef(openDiagnostics);
-  openDiagnosticsActionRef.current = openDiagnostics;
-  const appSettingsUpdateRef = useRef(updateSettings);
-  appSettingsUpdateRef.current = updateSettings;
   const secureBackupShellAccountRef = useRef<string | null>(null);
   const secureBackupShellExposedRef = useRef(false);
   const diagnosticLogBufferRef = useRef<ReturnType<typeof createDiagnosticLogBuffer> | null>(null);
@@ -1088,13 +785,6 @@ function AccountContent({
   if (secureBackupShellAccount !== null && secureBackupGateIsOperational) {
     secureBackupShellExposedRef.current = true;
   }
-  const accountScopedContentReady = Boolean(
-    snapshot?.state.domain.session.kind === "ready" &&
-      (secureBackupGateIsOperational || secureBackupShellExposedRef.current)
-  );
-  useEffect(() => {
-    onAccountScopedContentReadyChange(accountScopedContentReady);
-  }, [accountScopedContentReady, onAccountScopedContentReadyChange]);
   const submissionAccountOwnerRef = useRef<string | null>(
     initialAccount ? composerDraftAccountOwnerKey(initialAccount) : null
   );
@@ -1111,10 +801,6 @@ function AccountContent({
   // recovery screen below. A later compatible snapshot clears the mismatch, so the guard is
   // self-healing rather than latching the app into the recovery screen.
   const setSnapshot = useCallback((next: DesktopSnapshot | null) => {
-    if (!mountedRef.current) return;
-    if (next && accountTabId !== null && next.account_tab_id && next.account_tab_id !== accountTabId) {
-      return;
-    }
     if (next && next.state.schema_version !== SNAPSHOT_SCHEMA_VERSION) {
       diagnosticLogBuffer.append(schemaMismatchDiagnosticEntry(Date.now()));
       setSchemaMismatchVersion(next.state.schema_version ?? -1);
@@ -1126,27 +812,25 @@ function AccountContent({
       : null;
     setSchemaMismatchVersion(null);
     setAppStoreSnapshot(next);
-  }, [accountTabId, diagnosticLogBuffer]);
+  }, [diagnosticLogBuffer]);
   const commandReceiptReconcilerRef = useRef<
     ReturnType<typeof createCommandReceiptReconciler> | null
   >(null);
   commandReceiptReconcilerRef.current ??= createCommandReceiptReconciler({
     currentGeneration: () => getAppStoreSnapshot()?.state_generation ?? null,
-    settlementSnapshot: () => api.settlementSnapshot(accountTabId ?? undefined),
+    settlementSnapshot: () => api.settlementSnapshot(),
     applySnapshot: setSnapshot
   });
 
-  const applyCommandReceipt = useCallback(async (receipt: CommandReceipt): Promise<void> => {
+  async function applyCommandReceipt(receipt: CommandReceipt): Promise<void> {
     await commandReceiptReconcilerRef.current!(receipt);
-  }, []);
+  }
 
-  const settleCommand = useCallback(async <T extends CommandReceipt>(
-    operation: Promise<T>
-  ): Promise<T> => {
+  async function settleCommand<T extends CommandReceipt>(operation: Promise<T>): Promise<T> {
     const receipt = await operation;
     await applyCommandReceipt(receipt);
     return receipt;
-  }, [applyCommandReceipt]);
+  }
 
   function runInBackground(operation: Promise<unknown>): void {
     void operation.catch(() => undefined);
@@ -1195,8 +879,6 @@ function AccountContent({
     revision: ComposerDraftRevision | null;
     debounceHandle: number | null;
   } | null>(null);
-  const drainComposerForAccountSwitchRef = useRef<() => Promise<boolean>>(async () => true);
-  const openedNotificationActivationRef = useRef<DesktopNotificationActivation | null>(null);
   // The composer documents below are derived from these refs during render, so
   // dropping an overlay has to ask for a render itself. Typing does not: the
   // composer echoes keystrokes locally and must not re-render App (#969).
@@ -1319,42 +1001,18 @@ function AccountContent({
         .catch(() => undefined);
     }
   }, [snapshot]);
+  const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
   const [loginUsername, setLoginUsername] = useState("");
-  const [loginServerOverride, setLoginServerOverride] = useState<string | null>(null);
-  const loginServer = effectiveLoginServer(loginUsername, loginServerOverride);
-  const loginSessionKind = snapshot?.state.domain.session.kind;
-  const loginAuth = snapshot?.state.domain.auth;
-  const loginAuthHomeserver = loginAuth && loginAuth.kind !== "unknown" ? loginAuth.homeserver : null;
-  // #1101: login methods follow the server derived from the Matrix ID, so the
-  // single sign-on entry appears without a separate "check" step. Core keeps
-  // only the result for the latest requested server.
-  useEffect(() => {
-    if (loginSessionKind !== "signedOut" || !loginServer || loginAuthHomeserver === loginServer) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      void settleCommand(api.discoverLoginMethods(loginServer)).catch(() => undefined);
-    }, LOGIN_DISCOVERY_DEBOUNCE_MS);
-    return () => window.clearTimeout(timer);
-  }, [api, loginAuthHomeserver, loginServer, loginSessionKind, settleCommand]);
-  const addAccountTabCancellable =
-    (accountTabs?.tabs.length ?? 0) > 1 &&
-    accountTabs?.tabs.find((tab) => tab.id === accountTabId)?.status === "addAccount";
   const [loginDeviceName, setLoginDeviceName] = useState("");
   const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
   const [recoverySecretFilled, setRecoverySecretFilled] = useState(false);
-  const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>(
-    settingsScope === "account" ? "userSettings" : "closed"
-  );
+  const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("closed");
   const shortcutHandler = useRef(createLatestShortcutHandler()).current;
   const [selectedProfileUserId, setSelectedProfileUserId] = useState<string | null>(null);
   const [peoplePanelScope, setPeoplePanelScope] = useState<PeoplePanelScope | null>(null);
   const [startSpaceMembersInInviteMode, setStartSpaceMembersInInviteMode] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_RIGHT_PANEL_WIDTH);
-  useEffect(() => {
-    setRightPanelMode(settingsScope === "account" ? "userSettings" : "closed");
-  }, [settingsScope]);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [qaSendStatus, setQaSendStatus] = useState<QaSendSmokeStatus>("idle");
   // Issue #450: transient localized notice for recognized-but-unavailable
@@ -1390,6 +1048,7 @@ function AccountContent({
     useState<SpaceMemberFence | null>(null);
   const [spaceMembersRoleTransportFailure, setSpaceMembersRoleTransportFailure] =
     useState<SpaceMemberFence | null>(null);
+  const [savedSessions, setSavedSessions] = useState<SavedSessionInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [loginTransportError, setLoginTransportError] = useState<string | null>(null);
@@ -1733,11 +1392,11 @@ function AccountContent({
   const spaceMembersCancelFailureEpochRef = useRef(0);
   const spaceMembersRoleFailureEpochRef = useRef(0);
   const appTimelineTransport = useMemo<TimelineTransport | null>(() => {
-    if (!accountTimelineTransport) {
+    if (!tauriTimelineTransport) {
       return null;
     }
     return {
-      ...accountTimelineTransport,
+      ...tauriTimelineTransport,
       async pinEvent(roomId: string, eventId: string) {
         await settleCommand(api.pinEvent(roomId, eventId));
       },
@@ -1754,7 +1413,7 @@ function AccountContent({
         setRightPanelMode("closed");
       }
     };
-  }, [accountTimelineTransport, api, settleCommand]);
+  }, []);
   const appendDiagnosticLog = useCallback((entry: TimelineDiagnosticLogEntry) => {
     diagnosticLogBuffer.append(entry);
   }, [diagnosticLogBuffer]);
@@ -1978,9 +1637,9 @@ function AccountContent({
   }, [snapshot?.state.ui.timeline.room_id]);
 
   const cancelAvatarDemandRequest = useCallback((mxcUri: string, requestSequence: string) => {
-    if (!accountTimelineTransport?.cancelAvatarThumbnail) return;
-    void accountTimelineTransport.cancelAvatarThumbnail(mxcUri, requestSequence).catch(() => undefined);
-  }, [accountTimelineTransport]);
+    if (!tauriTimelineTransport?.cancelAvatarThumbnail) return;
+    void tauriTimelineTransport.cancelAvatarThumbnail(mxcUri, requestSequence).catch(() => undefined);
+  }, []);
 
   const releaseAvatarDemand = useCallback(
     (mxcUri: string) => {
@@ -2025,7 +1684,7 @@ function AccountContent({
 
   const acquireAvatarDemand = useCallback((mxcUri: string): Promise<string | void> => {
     const normalizedMxcUri = mxcUri.trim();
-    if (!normalizedMxcUri || !accountTimelineTransport?.downloadAvatarThumbnail) {
+    if (!normalizedMxcUri || !tauriTimelineTransport?.downloadAvatarThumbnail) {
       return Promise.resolve();
     }
     const existing = avatarDemandsRef.current.get(normalizedMxcUri);
@@ -2039,7 +1698,7 @@ function AccountContent({
       request: Promise.resolve() as Promise<string | void>,
       requestSequence: null as string | null
     };
-    const request = Promise.resolve(accountTimelineTransport.downloadAvatarThumbnail(normalizedMxcUri))
+    const request = Promise.resolve(tauriTimelineTransport.downloadAvatarThumbnail(normalizedMxcUri))
       .then((requestSequence) => {
         entry.requestSequence = typeof requestSequence === "string" ? requestSequence : null;
         return requestSequence;
@@ -2053,10 +1712,10 @@ function AccountContent({
     entry.request = request;
     avatarDemandsRef.current.set(normalizedMxcUri, entry);
     return request;
-  }, [accountTimelineTransport]);
+  }, []);
 
   useEffect(() => {
-    if (!snapshot || !accountTimelineTransport?.downloadAvatarThumbnail) {
+    if (!snapshot || !tauriTimelineTransport?.downloadAvatarThumbnail) {
       requestedAvatarMxcsRef.current.clear();
       cancelAllAvatarDemands();
       return;
@@ -2082,11 +1741,11 @@ function AccountContent({
         requestedAvatarMxcsRef.current.delete(mxcUri);
       });
     }
-  }, [accountTimelineTransport, acquireAvatarDemand, cancelAllAvatarDemands, releaseAvatarDemand, snapshot]);
+  }, [acquireAvatarDemand, cancelAllAvatarDemands, releaseAvatarDemand, snapshot]);
 
   const requestMemberAvatarThumbnail = useCallback(
     (mxcUri: string): Promise<() => void> => {
-      if (!AVATAR_THUMBNAIL_DOWNLOADS_ENABLED || !accountTimelineTransport?.downloadAvatarThumbnail) {
+      if (!AVATAR_THUMBNAIL_DOWNLOADS_ENABLED || !tauriTimelineTransport?.downloadAvatarThumbnail) {
         return Promise.resolve(() => undefined);
       }
       const normalizedMxcUri = mxcUri.trim();
@@ -2105,7 +1764,7 @@ function AccountContent({
         }
       );
     },
-    [accountTimelineTransport, acquireAvatarDemand, releaseAvatarDemand]
+    [acquireAvatarDemand, releaseAvatarDemand]
   );
 
   function handleShortcutAction(shortcutId: string): boolean {
@@ -2114,7 +1773,6 @@ function AccountContent({
         onShowHelp();
         return true;
       case "openUserSettings":
-        onSettingsScopeChange("account");
         runInBackground(setRightPanelModeClosingFocusedContext("userSettings"));
         return true;
       case "logout":
@@ -2189,14 +1847,9 @@ function AccountContent({
           )
         );
       },
-      resyncSnapshot: () => api.resyncSnapshot(accountTabId ?? undefined)
+      resyncSnapshot: () => api.resyncSnapshot()
     });
-    const listenerReady = desktopEventPort.listenStateUpdates((payload) => {
-      if (accountTabId !== null && payload.account_tab_id && payload.account_tab_id !== accountTabId) {
-        return;
-      }
-      stateUpdates.receive(payload);
-    });
+    const listenerReady = desktopEventPort.listenStateUpdates(stateUpdates.receive);
     runInBackground(
       listenerReady.then((dispose) => {
         if (disposed) {
@@ -2208,8 +1861,8 @@ function AccountContent({
     );
     setIsBusy(true);
     const initialSnapshot = isTauriRuntime()
-      ? listenerReady.then(() => api.getSnapshot(accountTabId ?? undefined))
-      : api.getSnapshot(accountTabId ?? undefined);
+      ? listenerReady.then(() => api.getSnapshot())
+      : api.getSnapshot();
     void initialSnapshot
       .then((snapshot) => {
         if (!disposed) stateUpdates.initialize(snapshot);
@@ -2226,19 +1879,8 @@ function AccountContent({
       stateUpdates.dispose();
       unlisten?.();
     };
-  }, [accountTabId, api, setSnapshot]);
+  }, [setSnapshot]);
 
-
-  useEffect(() => {
-    const openDiagnostics = () => { void openDiagnosticsActionRef.current(); };
-    const updateSettings = (patch: SettingsPatch) => appSettingsUpdateRef.current(patch);
-    onRegisterOpenDiagnostics(openDiagnostics);
-    onRegisterAppSettingsUpdater(updateSettings);
-    return () => {
-      onRegisterOpenDiagnostics(null);
-      onRegisterAppSettingsUpdater(null);
-    };
-  }, [onRegisterAppSettingsUpdater, onRegisterOpenDiagnostics]);
 
   useEffect(() => {
     return () => {
@@ -2253,6 +1895,12 @@ function AccountContent({
       composerDraftLifecycleRegistryRef.current?.revokeRendererGeneration();
     };
   }, []);
+
+  useEffect(() => {
+    if (rightPanelMode === "userSettings") {
+      runInBackground(refreshSavedSessions());
+    }
+  }, [rightPanelMode]);
 
   useEffect(() => {
     const roomId = snapshot?.state.ui.timeline.room_id ?? null;
@@ -2354,13 +2002,11 @@ function AccountContent({
       ? "koushi-desktop qa session=booting"
       : "Koushi";
   useDesktopAttentionEffects({
-    accountTabId,
     snapshot,
     attentionWindowTitle,
     safeAttentionSummary,
-    aggregateBadgeCount: accountTabs?.badgeCount,
     appendDiagnosticLog,
-    onNotificationActivated
+    onNotificationActivated: openNotificationTarget
   });
 
   useEffect(() => {
@@ -2455,9 +2101,6 @@ function AccountContent({
     runInBackground(
       desktopEventPort
         .listenCoreEvents((payload) => {
-          if (accountTabId !== null && payload.account_tab_id && payload.account_tab_id !== accountTabId) {
-            return;
-          }
           if (!qaSendPending.current) {
             return;
           }
@@ -2480,7 +2123,7 @@ function AccountContent({
       disposed = true;
       unlisten?.();
     };
-  }, [accountTabId]);
+  }, []);
 
   useEffect(() => listenForAppShortcuts((id) => shortcutHandler.handle(id)), [shortcutHandler]);
 
@@ -2703,10 +2346,7 @@ function AccountContent({
       });
     });
     const unsubscribe = appTimelineTransport.listenCoreEvents((payload) => {
-      if (
-        disposed ||
-        (accountTabId !== null && payload.account_tab_id && payload.account_tab_id !== accountTabId)
-      ) {
+      if (disposed) {
         return;
       }
       eventBatcher.enqueue(payload);
@@ -2717,7 +2357,7 @@ function AccountContent({
       eventBatcher.dispose();
       unsubscribe();
     };
-  }, [accountTabId, appTimelineTransport]);
+  }, [appTimelineTransport]);
 
   useEffect(() => {
     if (!snapshot || rightPanelMode !== "roomInfo") {
@@ -2861,6 +2501,21 @@ function AccountContent({
     snapshot?.state.domain.space_children?.selected_space_id
   ]);
 
+  async function refreshSavedSessions() {
+    setSavedSessions(await api.listSavedSessions());
+  }
+
+  async function switchAccount(session: SavedSessionInfo) {
+    setIsBusy(true);
+    try {
+      await settleCommand(api.switchAccount(session));
+      setRightPanelMode("thread");
+      await refreshSavedSessions();
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function requestLogout() {
     if (logoutConfirmationInFlightRef.current || isBusy) {
       return;
@@ -2883,11 +2538,10 @@ function AccountContent({
     setIsBusy(true);
     try {
       await settleCommand(api.logout());
-      if (!mountedRef.current) return;
-      onSettingsScopeChange(null);
       setRightPanelMode("thread");
+      await refreshSavedSessions();
     } finally {
-      if (mountedRef.current) setIsBusy(false);
+      setIsBusy(false);
     }
   }
 
@@ -2920,7 +2574,7 @@ function AccountContent({
         sessionKind === "locked"
           ? api.submitSoftLogoutReauth(password)
           : api.submitLogin(
-              loginServer,
+              loginHomeserver,
               loginUsername,
               password,
               loginDeviceName,
@@ -2941,7 +2595,7 @@ function AccountContent({
   async function discoverLoginMethods() {
     setIsBusy(true);
     try {
-      await settleCommand(api.discoverLoginMethods(loginServer));
+      await settleCommand(api.discoverLoginMethods(loginHomeserver));
     } finally {
       setIsBusy(false);
     }
@@ -2954,7 +2608,7 @@ function AccountContent({
       const activeHomeserver =
         snapshot?.state.domain.session.kind === "locked"
           ? snapshot.state.domain.session.homeserver
-          : loginServer;
+          : loginHomeserver;
       const launch = await api.startOidcLogin(activeHomeserver);
       await applyCommandReceipt(launch.settlement);
       if (launch.outcome === "invalid_authorization_url") {
@@ -2994,8 +2648,7 @@ function AccountContent({
   }
 
   async function updateSettings(patch: SettingsPatch) {
-    const scope = settingsScope === "app" ? "app" : "account";
-    await settleCommand(api.updateSettings({ ...patch, scope }));
+    await settleCommand(api.updateSettings(patch));
   }
 
   async function rebuildSearchIndex() {
@@ -3143,18 +2796,19 @@ function AccountContent({
   }
 
   async function retrySecureBackupInspection() {
-    if (!api.retrySecureBackupInspection || secureBackupInspectionRetryInFlightRef.current) {
+    const operation = api.retrySecureBackupInspection;
+    if (!operation || secureBackupInspectionRetryInFlightRef.current) {
       return;
     }
     secureBackupInspectionRetryInFlightRef.current = true;
     setSecureBackupInspectionRetrying(true);
     try {
-      await settleCommand(api.retrySecureBackupInspection());
+      await settleCommand(operation());
     } catch {
       // The gate remains closed; typed Rust state or the next inspection owns the copy.
     } finally {
       secureBackupInspectionRetryInFlightRef.current = false;
-      if (mountedRef.current) setSecureBackupInspectionRetrying(false);
+      setSecureBackupInspectionRetrying(false);
     }
   }
 
@@ -3467,13 +3121,6 @@ function AccountContent({
     }
     return (await Promise.all(drains)).every(Boolean);
   }
-
-  drainComposerForAccountSwitchRef.current = () =>
-    drainActiveComposerScopesForNavigation(true, true);
-  useEffect(() => {
-    onRegisterBeforeAccountSwitch(() => drainComposerForAccountSwitchRef.current());
-    return () => onRegisterBeforeAccountSwitch(null);
-  }, [onRegisterBeforeAccountSwitch]);
 
   const invalidatePeoplePanelForNavigation = useCallback((): void => {
     roomSettingsRequestRef.current += 1;
@@ -5120,56 +4767,22 @@ function AccountContent({
   // live edge. Rust decided the target and fenced the session before emitting
   // the activation.
   async function openNotificationTarget(target: DesktopNotificationActivation) {
-    const activation = desktopNotificationActivationPlan(target);
-    if (accountTabId === null || activation.accountTabId !== accountTabId) return;
-    const targetApi = api;
     setPrimaryView("timeline");
-    const plan = activation.target;
+    const plan = desktopNotificationTargetPlan(target);
     if (plan.kind === "thread") {
-      const activeRoomId = activation.accountTabId === accountTabId
-        ? getAppStoreSnapshot()?.state.ui.navigation.active_room_id
-        : null;
-      if (activeRoomId !== plan.roomId) {
-        await settleCommand(targetApi.selectRoom(plan.roomId));
-      }
-      await settleCommand(targetApi.openThread(plan.roomId, plan.rootEventId, {
+      await openThreadInRoom(plan.roomId, plan.rootEventId, {
         pinnedReply: { event_id: plan.eventId }
-      }));
-      setRightPanelMode("thread");
+      });
       return;
     }
 
     if (plan.kind === "event") {
-      await settleCommand(targetApi.openNotificationEvent(plan.roomId, plan.eventId));
+      await settleCommand(api.openNotificationEvent(plan.roomId, plan.eventId));
       return;
     }
 
-    await settleCommand(targetApi.selectRoom(plan.roomId));
+    await selectRoom(plan.roomId);
   }
-
-  useEffect(() => {
-    if (
-      !pendingNotificationActivation ||
-      accountTabId === null ||
-      desktopNotificationActivationPlan(pendingNotificationActivation).accountTabId !== accountTabId ||
-      !snapshot ||
-      snapshot.account_tab_id !== accountTabId ||
-      snapshot.state.domain.session.kind !== "ready" ||
-      openedNotificationActivationRef.current === pendingNotificationActivation
-    ) {
-      return;
-    }
-    openedNotificationActivationRef.current = pendingNotificationActivation;
-    onNotificationActivationConsumed(pendingNotificationActivation);
-    void openNotificationTarget(pendingNotificationActivation).catch(() => undefined);
-  }, [
-    accountTabId,
-    onNotificationActivationConsumed,
-    openNotificationTarget,
-    pendingNotificationActivation,
-    snapshot?.account_tab_id,
-    snapshot?.state.domain.session.kind
-  ]);
 
   async function closeThreadsListPanel() {
     await settleCommand(api.closeThreadsList());
@@ -6299,6 +5912,9 @@ function AccountContent({
       return;
     }
     runInBackground(applyIntentMode());
+    if (actionId === "switchAccount") {
+      runInBackground(refreshSavedSessions());
+    }
   }
 
   async function runSearch(query: string, scope: SearchScopeKind) {
@@ -6371,20 +5987,19 @@ function AccountContent({
   if (verificationGate) {
     return (
       <SessionVerificationGate
-        desktopApi={api}
         snapshot={snapshot}
         onReceipt={applyCommandReceipt}
         onSignOut={() => runInBackground(requestLogout())}
         operations={{
           startOwnUserSas: () => api.startOwnUserSas(),
           submitRecovery: (secret) => api.submitRecovery(secret),
-          recoverSecureBackup: api.recoverSecureBackup?.bind(api),
+          recoverSecureBackup: api.recoverSecureBackup,
           bootstrapSecureBackup: (passphrase, intent) =>
             api.bootstrapSecureBackup(passphrase, intent),
           saveSecureBackupRecoveryKey: requestSecureBackupRecoveryKeySave,
           confirmSecureBackupRecoveryKeySaved: (revealRequestId) =>
             api.confirmSecureBackupRecoveryKeySaved(revealRequestId),
-          retrySecureBackupInspection: api.retrySecureBackupInspection?.bind(api),
+          retrySecureBackupInspection: api.retrySecureBackupInspection,
           openSecureBackupDiagnostics: openDiagnostics
         }}
       />
@@ -6408,26 +6023,20 @@ function AccountContent({
     return (
       <AuthScreen
         deviceName={loginDeviceName}
-        effectiveServer={loginServer}
+        homeserver={loginHomeserver}
         isBusy={isBusy || sessionKind === "authenticating"}
-        matrixId={loginUsername}
         passwordFilled={loginPasswordFilled}
         passwordInputRef={loginPasswordRef}
-        serverOverride={loginServerOverride}
         snapshot={snapshot}
         transportError={loginTransportError}
-        onCancel={
-          addAccountTabCancellable
-            ? () => onRemoveSignedOutAccountTab(accountTabId!)
-            : undefined
-        }
+        username={loginUsername}
         onDiscoverLoginMethods={() => runInBackground(discoverLoginMethods())}
         onDeviceNameChange={setLoginDeviceName}
-        onMatrixIdChange={setLoginUsername}
+        onHomeserverChange={setLoginHomeserver}
         onPasswordPresenceChange={setLoginPasswordFilled}
-        onServerOverrideChange={setLoginServerOverride}
         onStartOidcLogin={() => runInBackground(startOidcLogin())}
         onSubmit={submitLogin}
+        onUsernameChange={setLoginUsername}
       />
     );
   }
@@ -6578,6 +6187,14 @@ function AccountContent({
     });
   }
 
+  async function copyDiagnostics(appSnapshot: DesktopSnapshot) {
+    const nextSnapshot = await api.getDiagnosticSnapshot();
+    if (!navigator.clipboard) {
+      throw new Error("clipboard unavailable");
+    }
+    await navigator.clipboard.writeText(diagnosticReportFor(appSnapshot, nextSnapshot));
+  }
+
   function beginSidebarResize(event: PointerEvent<HTMLButtonElement>) {
     event.preventDefault();
     const startX = event.clientX;
@@ -6628,24 +6245,40 @@ function AccountContent({
         data-density={displayDensity}
       >
         <TopBar
-          accountTabs={accountTabs}
-          selectedAccountTabId={accountTabId}
-          onSelectAccountTab={onSelectAccountTab}
-          onAddAccountTab={onAddAccountTab}
-          onRemoveSignedOutAccountTab={onRemoveSignedOutAccountTab}
+          accountManagementUrl={snapshot.state.domain.account_management_url ?? undefined}
           activeRoomName={activeRoom ? roomDisplayLabel(activeRoom) : null}
           activeSpaceName={activeSpaceName}
+          currentSessionStatus={snapshot.state.domain.current_session_status}
+          deviceId={snapshot.state.domain.session.device_id ?? null}
+          homeserver={snapshot.state.domain.session.homeserver ?? null}
+          isBusy={isBusy}
           platform={snapshot.state.domain.locale_profile.platform}
           searchInputRef={searchInputRef}
           searchQuery={searchQuery}
           searchScope={searchScope}
-          onOpenAppSettings={() => onSettingsScopeChange("app")}
+          sync={snapshot.state.domain.sync}
+          userId={snapshot.state.domain.session.user_id ?? null}
+          onManageAccount={(safeExternalUrl) => {
+            runInBackground(openExternalHttpUrl(safeExternalUrl));
+          }}
+          onCopyDiagnostics={() => copyDiagnostics(snapshot)}
           onOpenDiagnostics={() => {
             runInBackground(openDiagnostics());
           }}
+          onRefreshCurrentSessionStatus={(trigger) => {
+            settleCommandInBackground(api.refreshCurrentSessionStatus(trigger));
+          }}
+          onRetryRuntimeAlert={(kind) => {
+            if (kind === "secureBackup") {
+              runInBackground(retrySecureBackupInspection());
+            }
+          }}
+          onRestartSync={restartSync}
           onSearchQueryChange={setSearchQuery}
           onSearchScopeChange={setSearchScope}
           onStartWindowDrag={startWindowDrag}
+          runtimeAlertRetrying={secureBackupInspectionRetrying}
+          runtimeAlerts={runtimeAlerts}
         />
         {eventNavigation?.kind === "failed" ? (
           <div className="navigation-failure" role="alert">
@@ -6671,7 +6304,6 @@ function AccountContent({
           onCreateSpace={() => openCreateDialog("space")}
           onOpenContextMenu={openContextMenu}
           onOpenUserSettings={() => {
-            onSettingsScopeChange("account");
             runInBackground(setRightPanelModeClosingFocusedContext("userSettings"));
           }}
           onReorderSpaces={(spaceIds) => {
@@ -6803,7 +6435,6 @@ function AccountContent({
         ) : (
           <TimelinePane
             activeRoomName={activeRoom ? roomDisplayLabel(activeRoom) : t("room.noRoomSelected")}
-            sendingAccount={sendingAccount}
             composerDocument={composerDocument}
             composerNotice={
               composerNotice &&
@@ -6824,7 +6455,6 @@ function AccountContent({
             searchResults={searchResults}
             showSearchResults={false}
             snapshot={snapshot}
-            accountTabId={accountTabId ?? undefined}
             timelineTransport={appTimelineTransport}
             onRequestAvatarThumbnail={
               AVATAR_THUMBNAIL_DOWNLOADS_ENABLED ? requestMemberAvatarThumbnail : undefined
@@ -6959,23 +6589,6 @@ function AccountContent({
           activeSpace={activeSpace ?? null}
           activeSpaceName={activeSpaceName}
           accountManagementUrl={snapshot.state.domain.account_management_url}
-          accountTabs={accountTabs}
-          selectedAccountTabId={accountTabId}
-          onSelectAccountTab={onSelectAccountTab}
-          onAddAccountTab={onAddAccountTab}
-          onRemoveSignedOutAccountTab={onRemoveSignedOutAccountTab}
-          canRestartSync={syncStatePresentation(snapshot.state.domain.sync).restartable}
-          onRestartSync={() => runInBackground(restartSync())}
-          runtimeAlerts={runtimeAlerts}
-          runtimeAlertRetrying={secureBackupInspectionRetrying}
-          onRetryRuntimeAlert={(kind) => {
-            if (kind === "secureBackup") {
-              runInBackground(retrySecureBackupInspection());
-            }
-          }}
-          settingsScope={settingsScope ?? "account"}
-          sendingAccount={sendingAccount}
-          onSettingsScopeChange={onSettingsScopeChange}
           displayDensity={displayDensity}
           encryptedComposerBlocked={encryptedComposerBlocked}
           isRecoveryBusy={isBusy}
@@ -6993,13 +6606,11 @@ function AccountContent({
           searchTooShortMinChars={searchTooShortMinChars}
           searchQuery={searchResultsQuery}
           searchResults={searchResults}
+          savedSessions={savedSessions}
           onCloseThread={() => {
             runInBackground(closeThread());
           }}
           onClosePanel={() => {
-            if (effectiveRightPanelMode === "userSettings" || effectiveRightPanelMode === "keyboardSettings") {
-              onSettingsScopeChange(null);
-            }
             runInBackground(closeFocusedContextPanel());
           }}
           onOpenThread={(roomId, rootEventId, intent) => {
@@ -7074,8 +6685,8 @@ function AccountContent({
               runInBackground(openExternalHttpUrl(url));
             }
           }}
-          onRefreshCurrentSessionStatus={(trigger) => {
-            settleCommandInBackground(api.refreshCurrentSessionStatus(trigger));
+          onRefreshCurrentSessionStatus={() => {
+            settleCommandInBackground(api.refreshCurrentSessionStatus("open"));
           }}
           onProbeLocalEncryption={() => {
             runInBackground(probeLocalEncryptionHealth());
@@ -7124,6 +6735,9 @@ function AccountContent({
           }}
           onResultSelect={selectSearchResult}
           onSubmitRecovery={(event) => runInBackground(submitRecovery(event))}
+          onSwitchAccount={(session) => {
+            runInBackground(switchAccount(session));
+          }}
           onThreadComposerDocumentChange={(roomId, rootEventId, document) => {
             updateThreadComposerDraft(roomId, rootEventId, document);
           }}
@@ -7486,7 +7100,7 @@ function AccountContent({
 // dedicated modules under ./components.
 export { Composer } from "./components/composer";
 export { ContextualRightPanel } from "./components/rightPanel";
-export { PersistentAccountShell, TopBar, WorkspaceRail } from "./components/Shell";
+export { TopBar, WorkspaceRail } from "./components/Shell";
 export { ResetLocalDataConfirmationDialog } from "./components/dialogs";
 export {
   SessionVerificationGate,

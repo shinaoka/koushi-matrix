@@ -137,16 +137,12 @@ stateDiagram-v2
 Every reset to `SignedOut` that rebuilds `AppState` (`LogoutFinished`,
 `ProvisionalSessionDiscarded`, and the local-reset `DeviceCleanupCompleted`) keeps the
 process-local account epoch, the retired session-status schedule, and the
-app-owned fields of `AppState.settings` (#1057, #119). App preferences come
-from `settings/settings.json`, load once at runtime start, and merge only
-app-owned patch fields, so signed-out screens retain the saved locale.
-Account preferences load from the owning account's encrypted settings file;
-a successful load applies its values once, while a failed load applies
-privacy-safe values without marking the read successful or persisting defaults.
-Account-affecting updates require a successful load for that exact session and
-are rejected before mutating settings otherwise. Explicit app-only updates
-remain available when account settings are unreadable. Account-scoped state,
-including room link-preview overrides and room notification settings, resets.
+app-level `AppState.settings` (#1057). Settings come from the app-level
+`settings/settings.json`, are loaded once at runtime start, and are persisted
+as a whole struct, so the signed-out screen keeps the saved locale and the next
+settings save cannot overwrite saved preferences with defaults. Account-scoped
+state, including room link-preview overrides and room notification settings,
+still resets.
 
 `session_lock_reason` is an optional, separate Rust-owned authentication-lock
 projection. Current-device trust loss never enters `Locked`: authoritative
@@ -727,65 +723,6 @@ through Rust-owned account commands and settle through the same
 CSRF state are command/event artifacts only: they may be returned to the WebView
 so it can open the provider and correlate the callback, but they never enter
 `AppState`, normal `Debug`, QA title tokens, or persisted settings.
-
-## Account Tabs And Concurrent Sessions
-
-The outer Rust-owned account-tab machine is independent from each account's
-existing session/verification machine above. Each signed-in account owns one
-independent `CoreRuntime`; its state, actor work, drafts, navigation, search,
-and commands remain account-scoped. Selecting a tab changes only the selected
-runtime. It does not stop, restore, or mark a background account's room read.
-
-```mermaid
-stateDiagram-v2
-    [*] --> Shell
-    Shell --> AddAccountSelected: first launch / no saved account
-    Shell --> RestoringTabs: startup / saved account tabs
-    RestoringTabs --> Shell: each restore settles / persisted selection unchanged
-    Shell --> SelectedTab: SelectAccountTab(account key)
-    SelectedTab --> SelectedTab: selected account runtime update
-    Shell --> AddAccountSelected: AddAccountTab / no unfinished add
-    AddAccountSelected --> AddAccountSelected: AddAccountTab / focus existing unfinished add
-    AddAccountSelected --> AccountTab: authenticated identity / same tab becomes account tab
-    AddAccountSelected --> Shell: cancel / preserve existing account tabs
-    AccountTab --> SignedOutTab: LogoutAccount / selected account only
-    SignedOutTab --> Shell: RemoveAccountTab
-    SelectedTab --> SelectedTab: another account runtime update / selection unchanged
-    Shell --> ShuttingDown: ShutdownAll / serialize after lifecycle operations
-    ShuttingDown --> Closed: child cleanup joins / retain outcome
-    Closed --> Closed: add/restore rejected / repeated shutdown returns retained outcome
-```
-
-- Manager shutdown holds the same lifecycle barrier as restore/add/remove,
-  including an extracted child whose removal is still joining cleanup. It marks
-  the manager terminal before draining children; future add/restore cannot
-  recreate runtimes, and repeated shutdown retains an incomplete-cleanup result.
-- The account-tab list, persisted order, and last-selected key have one outer
-  manager owner. Startup chooses that key before restoring sessions; restore
-  completion order never selects an account.
-- There is at most one unfinished add-account context. It becomes an account
-  tab in place once the Matrix identity is known. If that MXID already has a
-  tab, the new context is rejected and the existing tab is selected; an existing
-  account session is never logged out by cancellation or duplicate-login cleanup.
-- Cancelling the unfinished add-account context is allowed only while it is
-  unbound and signed out and another tab exists. It removes that tab, shuts
-  down its temporary runtime, and selects the tab that was selected when the
-  add flow started (falling back to a neighbour). An in-flight password or OIDC
-  login cannot be cancelled this way.
-- Selecting an account binds commands and their completions to that account's
-  runtime. A result from an earlier selected tab cannot mutate another tab's
-  state. Async forms, secrets, dialogs, and local drafts are reset when their
-  owning account changes.
-- Ready, verification, restore, and failure states are per tab. A verification
-  gate or restore failure in one account does not block another ready account.
-  Logout removes only that account's local session data and leaves a signed-out
-  tab for reauthentication; removing the tab is a separate signed-out-only
-  action.
-- With concurrent sync, only the selected account is the actively viewed room.
-  Background accounts may sync and notify, but are never auto-marked read. One
-  outer owner aggregates native delivery and badges. Search crawling and media
-  prefetch share one app-wide single-flight budget, with selected-account work
-  preferred.
 
 ## Room List Filter
 
@@ -3758,15 +3695,6 @@ stateDiagram-v2
 - Discovery completion actions are accepted only while the reducer is still
   `Discovering` the same homeserver. Late completions from older discovery
   requests are ignored.
-- The sign-in target is a server name or homeserver URL, mirroring the SDK's
-  `ServerNameOrHomeserverUrl`. A bare server name (no URL path) is resolved
-  through `/.well-known/matrix/client` and falls back to the input when the
-  document is missing or invalid; a URL with a path is used as-is. Discovery,
-  password login, and OIDC start all resolve the same way in `koushi-sdk`, so
-  `@alice:example.org` signs in on the delegated homeserver (#1101). The
-  renderer derives that target from the Matrix ID's server name unless the user
-  explicitly chooses a server, and only offers single sign-on from a discovery
-  result for its current target.
 
 Active-session account management:
 
@@ -3787,7 +3715,7 @@ stateDiagram-v2
   `org.matrix.msc2965.authentication`. Only HTTP(S) account URLs are admitted.
 - Missing, malformed, unsafe, or unreachable metadata leaves the capability
   unavailable and never fails login, restore, verification, or normal runtime.
-- Account Settings renders **Manage account & devices** only while available.
+- User Settings renders **Manage account & devices** only while available.
   Koushi has no remote-device inventory, rename, or sign-out state machine; the
   server destination owns those operations. Current-device diagnostics/name
   repair and explicit rejected-provisional-device cleanup remain local.

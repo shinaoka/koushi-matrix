@@ -149,377 +149,57 @@ pub struct SettingsValues {
     pub legacy_frontend_preferences_imported: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AppSettingsValues {
-    pub locale: LocaleSettings,
-    pub appearance: AppearanceSettings,
-    pub typography: TypographySettings,
-    pub keyboard: KeyboardSettings,
-    pub composer_math_mode: bool,
-    pub notifications: AppNotificationSettings,
-    pub display: AppDisplaySettings,
-    pub media: MediaSettings,
-    pub timeline: TimelineSettings,
-    pub thread_list_order: ThreadListOrder,
-    pub search_crawler_speed: super::search_crawler::SearchCrawlerSpeed,
-    pub window: WindowSettings,
-    pub updates: UpdatesSettings,
-    pub legacy_frontend_preferences_imported: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AppNotificationSettings {
-    pub sound: bool,
-    pub badges: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AppDisplaySettings {
-    pub code_block_wrap: bool,
-    pub hide_redacted: bool,
-}
-
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AccountSettingsValues {
-    pub notifications: AccountNotificationSettings,
-    pub display: AccountDisplaySettings,
-    pub sidebar: SidebarSettings,
-    pub room_list_sort: RoomListSort,
-    pub recent_emojis: Vec<String>,
-    pub search_crawler: AccountSearchCrawlerSettings,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AccountNotificationSettings {
-    pub desktop_notifications: bool,
-    pub message_previews: bool,
-    pub send_read_receipts: bool,
-    pub send_typing_notifications: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AccountDisplaySettings {
-    pub url_previews_enabled: bool,
-    pub encrypted_url_previews_enabled: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AccountSearchCrawlerSettings {
-    pub include_media_captions: bool,
-    pub include_filenames: bool,
-}
-
 impl SettingsValues {
-    pub fn app_settings(&self) -> AppSettingsValues {
-        AppSettingsValues {
-            locale: self.locale.clone(),
-            appearance: self.appearance.clone(),
-            typography: self.typography.clone(),
-            keyboard: self.keyboard.clone(),
-            composer_math_mode: self.composer.math_mode,
-            notifications: AppNotificationSettings {
-                sound: self.notifications.sound,
-                badges: self.notifications.badges,
-            },
-            display: AppDisplaySettings {
-                code_block_wrap: self.display.code_block_wrap,
-                hide_redacted: self.display.hide_redacted,
-            },
-            media: self.media.clone(),
-            timeline: self.timeline.clone(),
-            thread_list_order: self.thread_list_order,
-            search_crawler_speed: self.search_crawler.speed,
-            window: self.window,
-            updates: self.updates,
-            legacy_frontend_preferences_imported: self.legacy_frontend_preferences_imported,
-        }
-    }
-
-    pub fn account_settings(&self) -> AccountSettingsValues {
-        AccountSettingsValues {
-            notifications: AccountNotificationSettings {
-                desktop_notifications: self.notifications.desktop_notifications,
-                message_previews: self.notifications.message_previews,
-                send_read_receipts: self.notifications.send_read_receipts,
-                send_typing_notifications: self.notifications.send_typing_notifications,
-            },
-            display: AccountDisplaySettings {
-                url_previews_enabled: self.display.url_previews_enabled,
-                encrypted_url_previews_enabled: self.display.encrypted_url_previews_enabled,
-            },
-            sidebar: self.sidebar.clone(),
-            room_list_sort: self.room_list_sort,
-            recent_emojis: self.composer.recent_emojis.clone(),
-            search_crawler: AccountSearchCrawlerSettings {
-                include_media_captions: self.search_crawler.include_media_captions,
-                include_filenames: self.search_crawler.include_filenames,
-            },
-        }
-    }
-
-    pub fn apply_app_settings(&mut self, app: &AppSettingsValues) {
-        self.locale = app.locale.clone();
-        self.appearance = app.appearance.clone();
-        self.typography = app.typography.clone();
-        self.keyboard = app.keyboard.clone();
-        self.composer.math_mode = app.composer_math_mode;
-        self.notifications.sound = app.notifications.sound;
-        self.notifications.badges = app.notifications.badges;
-        self.display.code_block_wrap = app.display.code_block_wrap;
-        self.display.hide_redacted = app.display.hide_redacted;
-        self.media = app.media.clone();
-        self.timeline = app.timeline.clone();
-        self.thread_list_order = app.thread_list_order;
-        self.search_crawler.speed = app.search_crawler_speed;
-        self.window = app.window;
-        self.updates = app.updates;
-        self.legacy_frontend_preferences_imported = app.legacy_frontend_preferences_imported;
-    }
-
-    pub fn apply_account_settings(&mut self, account: &AccountSettingsValues) {
-        self.notifications.desktop_notifications = account.notifications.desktop_notifications;
-        self.notifications.message_previews = account.notifications.message_previews;
-        self.notifications.send_read_receipts = account.notifications.send_read_receipts;
-        self.notifications.send_typing_notifications =
-            account.notifications.send_typing_notifications;
-        self.display.url_previews_enabled = account.display.url_previews_enabled;
-        self.display.encrypted_url_previews_enabled =
-            account.display.encrypted_url_previews_enabled;
-        self.sidebar = account.sidebar.clone();
-        self.room_list_sort = account.room_list_sort;
-        self.composer.recent_emojis = canonicalize_recent_emojis(account.recent_emojis.clone());
-        self.search_crawler.include_media_captions = account.search_crawler.include_media_captions;
-        self.search_crawler.include_filenames = account.search_crawler.include_filenames;
-    }
-
     pub fn apply_patch(&mut self, patch: SettingsPatch) {
-        let apply_app = patch.scope != Some(SettingsPatchScope::Account);
-        let apply_account = patch.scope != Some(SettingsPatchScope::App);
-        if apply_app {
-            if let Some(locale) = patch.locale {
-                self.locale = locale;
-            }
-            if let Some(appearance) = patch.appearance {
-                self.appearance = appearance;
-            }
-            if let Some(typography) = patch.typography {
-                self.typography = typography;
-            }
-            if let Some(keyboard) = patch.keyboard {
-                self.keyboard = keyboard;
-            }
-            if let Some(media) = patch.media {
-                self.media = media;
-            }
-            if let Some(timeline) = patch.timeline {
-                self.timeline = timeline;
-            }
-            if let Some(thread_list_order) = patch.thread_list_order {
-                self.thread_list_order = thread_list_order;
-            }
-            if let Some(window) = patch.window {
-                self.window = window;
-            }
-            if let Some(updates) = patch.updates {
-                self.updates = updates;
-            }
-            if let Some(imported) = patch.legacy_frontend_preferences_imported {
-                self.legacy_frontend_preferences_imported = imported;
-            }
+        if let Some(locale) = patch.locale {
+            self.locale = locale;
         }
-        if let Some(composer) = patch.composer {
-            if apply_app {
-                self.composer.math_mode = composer.math_mode;
-            }
-            if apply_account {
-                self.composer.recent_emojis = canonicalize_recent_emojis(composer.recent_emojis);
-            }
+        if let Some(appearance) = patch.appearance {
+            self.appearance = appearance;
+        }
+        if let Some(typography) = patch.typography {
+            self.typography = typography;
+        }
+        if let Some(keyboard) = patch.keyboard {
+            self.keyboard = keyboard;
+        }
+        if let Some(mut composer) = patch.composer {
+            composer.recent_emojis = canonicalize_recent_emojis(composer.recent_emojis);
+            self.composer = composer;
         }
         if let Some(notifications) = patch.notifications {
-            if apply_app {
-                self.notifications.sound = notifications.sound;
-                self.notifications.badges = notifications.badges;
-            }
-            if apply_account {
-                self.notifications.desktop_notifications = notifications.desktop_notifications;
-                self.notifications.message_previews = notifications.message_previews;
-                self.notifications.send_read_receipts = notifications.send_read_receipts;
-                self.notifications.send_typing_notifications =
-                    notifications.send_typing_notifications;
-            }
+            self.notifications = notifications;
         }
         if let Some(display) = patch.display {
-            if apply_app {
-                self.display.code_block_wrap = display.code_block_wrap;
-                self.display.hide_redacted = display.hide_redacted;
-            }
-            if apply_account {
-                self.display.url_previews_enabled = display.url_previews_enabled;
-                self.display.encrypted_url_previews_enabled =
-                    display.encrypted_url_previews_enabled;
-            }
+            self.display = display;
         }
-        if apply_account {
-            if let Some(room_list_sort) = patch.room_list_sort {
-                self.room_list_sort = room_list_sort;
-            }
-            if let Some(search_crawler) = &patch.search_crawler {
-                self.search_crawler.include_media_captions = search_crawler.include_media_captions;
-                self.search_crawler.include_filenames = search_crawler.include_filenames;
-            }
-            if let Some(sidebar) = patch.sidebar {
-                self.sidebar = sidebar;
-            }
-            if let Some(sidebar_section) = patch.sidebar_section {
-                self.sidebar
-                    .apply_section_patch(sidebar_section, self.room_list_sort);
-            }
+        if let Some(media) = patch.media {
+            self.media = media;
         }
-        if apply_app && let Some(search_crawler) = &patch.search_crawler {
-            self.search_crawler.speed = search_crawler.speed;
+        if let Some(timeline) = patch.timeline {
+            self.timeline = timeline;
         }
-    }
-}
-
-impl AppSettingsValues {
-    pub fn apply_patch(&mut self, patch: &SettingsPatch) {
-        if patch.scope == Some(SettingsPatchScope::Account) {
-            return;
+        if let Some(thread_list_order) = patch.thread_list_order {
+            self.thread_list_order = thread_list_order;
         }
-        if let Some(value) = &patch.locale {
-            self.locale = value.clone();
+        if let Some(room_list_sort) = patch.room_list_sort {
+            self.room_list_sort = room_list_sort;
         }
-        if let Some(value) = &patch.appearance {
-            self.appearance = value.clone();
+        if let Some(search_crawler) = patch.search_crawler {
+            self.search_crawler = search_crawler;
         }
-        if let Some(value) = &patch.typography {
-            self.typography = value.clone();
+        if let Some(sidebar) = patch.sidebar {
+            self.sidebar = sidebar;
         }
-        if let Some(value) = &patch.keyboard {
-            self.keyboard = value.clone();
+        if let Some(sidebar_section) = patch.sidebar_section {
+            self.sidebar
+                .apply_section_patch(sidebar_section, self.room_list_sort);
         }
-        if let Some(value) = &patch.composer {
-            self.composer_math_mode = value.math_mode;
+        if let Some(window) = patch.window {
+            self.window = window;
         }
-        if let Some(value) = &patch.notifications {
-            self.notifications = AppNotificationSettings {
-                sound: value.sound,
-                badges: value.badges,
-            };
-        }
-        if let Some(value) = &patch.display {
-            self.display = AppDisplaySettings {
-                code_block_wrap: value.code_block_wrap,
-                hide_redacted: value.hide_redacted,
-            };
-        }
-        if let Some(value) = &patch.media {
-            self.media = value.clone();
-        }
-        if let Some(value) = &patch.timeline {
-            self.timeline = value.clone();
-        }
-        if let Some(value) = patch.thread_list_order {
-            self.thread_list_order = value;
-        }
-        if let Some(value) = &patch.search_crawler {
-            self.search_crawler_speed = value.speed;
-        }
-        if let Some(value) = patch.window {
-            self.window = value;
-        }
-        if let Some(value) = &patch.updates {
-            self.updates = *value;
-        }
-        if let Some(value) = patch.legacy_frontend_preferences_imported {
-            self.legacy_frontend_preferences_imported = value;
-        }
-    }
-}
-
-impl Default for AppSettingsValues {
-    fn default() -> Self {
-        SettingsValues::default().app_settings()
-    }
-}
-
-impl Default for AccountSettingsValues {
-    fn default() -> Self {
-        SettingsValues::default().account_settings()
-    }
-}
-
-impl AccountSettingsValues {
-    /// In-memory fallback for a settings read failure; never persist these values.
-    pub fn privacy_safe_fallback() -> Self {
-        let mut settings = Self::default();
-        settings.notifications.desktop_notifications = false;
-        settings.notifications.message_previews = false;
-        settings.notifications.send_read_receipts = false;
-        settings.notifications.send_typing_notifications = false;
-        settings.display.url_previews_enabled = false;
-        settings.display.encrypted_url_previews_enabled = false;
-        settings.search_crawler.include_media_captions = false;
-        settings.search_crawler.include_filenames = false;
-        settings
-    }
-}
-
-impl Default for AppNotificationSettings {
-    fn default() -> Self {
-        let settings = NotificationSettings::default();
-        Self {
-            sound: settings.sound,
-            badges: settings.badges,
-        }
-    }
-}
-
-impl Default for AppDisplaySettings {
-    fn default() -> Self {
-        let settings = DisplaySettings::default();
-        Self {
-            code_block_wrap: settings.code_block_wrap,
-            hide_redacted: settings.hide_redacted,
-        }
-    }
-}
-
-impl Default for AccountNotificationSettings {
-    fn default() -> Self {
-        let settings = NotificationSettings::default();
-        Self {
-            desktop_notifications: settings.desktop_notifications,
-            message_previews: settings.message_previews,
-            send_read_receipts: settings.send_read_receipts,
-            send_typing_notifications: settings.send_typing_notifications,
-        }
-    }
-}
-
-impl Default for AccountDisplaySettings {
-    fn default() -> Self {
-        let settings = DisplaySettings::default();
-        Self {
-            url_previews_enabled: settings.url_previews_enabled,
-            encrypted_url_previews_enabled: settings.encrypted_url_previews_enabled,
-        }
-    }
-}
-
-impl Default for AccountSearchCrawlerSettings {
-    fn default() -> Self {
-        let settings = SearchCrawlerSettings::default();
-        Self {
-            include_media_captions: settings.include_media_captions,
-            include_filenames: settings.include_filenames,
+        if let Some(updates) = patch.updates {
+            self.updates = updates;
         }
     }
 }
@@ -1013,13 +693,6 @@ pub enum RoomListSort {
 // SearchCrawlerSettings and SearchCrawlerSpeed live in state/search_crawler.rs
 // and are re-exported from mod.rs.
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum SettingsPatchScope {
-    Account,
-    App,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SettingsPersistenceState {
@@ -1029,8 +702,6 @@ pub enum SettingsPersistenceState {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SettingsPatch {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<SettingsPatchScope>,
     pub locale: Option<LocaleSettings>,
     pub appearance: Option<AppearanceSettings>,
     pub typography: Option<TypographySettings>,
@@ -1051,19 +722,4 @@ pub struct SettingsPatch {
     pub window: Option<WindowSettings>,
     #[serde(default)]
     pub updates: Option<UpdatesSettings>,
-    #[serde(default)]
-    pub legacy_frontend_preferences_imported: Option<bool>,
-}
-
-impl SettingsPatch {
-    pub fn affects_account_settings(&self) -> bool {
-        self.scope != Some(SettingsPatchScope::App)
-            && (self.composer.is_some()
-                || self.notifications.is_some()
-                || self.display.is_some()
-                || self.room_list_sort.is_some()
-                || self.search_crawler.is_some()
-                || self.sidebar.is_some()
-                || self.sidebar_section.is_some())
-    }
 }

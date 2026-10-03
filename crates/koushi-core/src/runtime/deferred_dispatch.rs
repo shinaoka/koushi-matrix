@@ -29,10 +29,6 @@
 //!   newer notification replaces a held one. The lane is fenced to the
 //!   session that produced it.
 //!
-//! - Settings policies: at most three latest-value messages (read receipts,
-//!   display, link previews), fenced to the session. A newer policy replaces
-//!   any undelivered values; loading settings must not stall local navigation.
-//!
 //! The run loop waits for one mailbox slot only while something is deferred,
 //! so free capacity can never spin it.
 
@@ -161,51 +157,12 @@ fn crawler_dispatch_of_message(message: AccountMessage) -> CrawlerDispatch {
     }
 }
 
-#[derive(Clone)]
-enum SettingsPolicyMessage {
-    ReadReceipts(bool),
-    Display(koushi_state::TimelineThreadRootOrder),
-    LinkPreviews {
-        unencrypted: bool,
-        encrypted: bool,
-        overrides: std::collections::BTreeMap<String, bool>,
-    },
-}
-
-impl SettingsPolicyMessage {
-    fn into_message(self) -> AccountMessage {
-        match self {
-            Self::ReadReceipts(send_read_receipts) => {
-                AccountMessage::ReadStatePolicyChanged { send_read_receipts }
-            }
-            Self::Display(thread_root_order) => {
-                AccountMessage::DisplayPolicyChanged { thread_root_order }
-            }
-            Self::LinkPreviews {
-                unencrypted,
-                encrypted,
-                overrides,
-            } => AccountMessage::TimelineCommand(
-                koushi_protocol::command::TimelineCommand::BroadcastLinkPreviewPolicy {
-                    unencrypted_global_enabled: unencrypted,
-                    encrypted_global_enabled: encrypted,
-                    room_overrides: overrides,
-                },
-            ),
-        }
-    }
-}
-
 /// At most one held dispatch per kind.
 #[derive(Default)]
 pub(super) struct DeferredAccountDispatch {
     activity: Option<DeferredActivity>,
     space_children_reload: Option<DeferredSpaceChildrenReload>,
     crawler: Option<DeferredCrawlerLane>,
-    settings_policy: Option<(
-        Option<SessionKeyId>,
-        std::collections::VecDeque<SettingsPolicyMessage>,
-    )>,
     /// Test-only causal fence: after each dispatch decision, the held state.
     #[cfg(test)]
     pub(super) observer: Option<mpsc::UnboundedSender<DeferredDispatchObservation>>,
@@ -222,10 +179,7 @@ pub(super) struct DeferredDispatchObservation {
 
 impl DeferredAccountDispatch {
     pub(super) fn is_pending(&self) -> bool {
-        self.activity.is_some()
-            || self.space_children_reload.is_some()
-            || self.crawler.is_some()
-            || self.settings_policy.is_some()
+        self.activity.is_some() || self.space_children_reload.is_some() || self.crawler.is_some()
     }
 
     /// Test-only: start with a crawler notification already held.
@@ -294,32 +248,6 @@ pub(super) enum GuardedDispatch {
 }
 
 impl AppActor {
-    pub(super) fn dispatch_settings_policy(&mut self) {
-        let values = &self.state.settings.values;
-        let mut messages = std::collections::VecDeque::from([
-            SettingsPolicyMessage::ReadReceipts(values.notifications.send_read_receipts),
-            SettingsPolicyMessage::Display(values.timeline.thread_root_order),
-        ]);
-        if self.current_account_key().is_some() {
-            messages.push_back(SettingsPolicyMessage::LinkPreviews {
-                unencrypted: values.display.url_previews_enabled,
-                encrypted: values.display.encrypted_url_previews_enabled,
-                overrides: self.state.link_preview_settings.room_overrides.clone(),
-            });
-        }
-        self.deferred_account_dispatch.settings_policy = None;
-        while let Some(message) = messages.pop_front() {
-            if let Err(unsent) = self.account_actor.try_send(message.clone().into_message()) {
-                if let mpsc::error::TrySendError::Full(_) = *unsent {
-                    messages.push_front(message);
-                    self.deferred_account_dispatch.settings_policy =
-                        Some((super::account_settings_session_key(&self.state), messages));
-                }
-                break;
-            }
-        }
-    }
-
     pub(super) fn dispatch_activity_resolution(
         &mut self,
         generation: u64,
@@ -479,18 +407,6 @@ impl AppActor {
     /// The next held message still worth delivering, most important first.
     /// Stale held values found on the way are dropped.
     fn next_deferred_message(&mut self) -> Option<AccountMessage> {
-        if let Some((session_key, mut messages)) =
-            self.deferred_account_dispatch.settings_policy.take()
-            && session_key == super::account_settings_session_key(&self.state)
-        {
-            let message = messages
-                .pop_front()
-                .map(SettingsPolicyMessage::into_message);
-            if !messages.is_empty() {
-                self.deferred_account_dispatch.settings_policy = Some((session_key, messages));
-            }
-            return message;
-        }
         match self.deferred_account_dispatch.activity.take() {
             Some(DeferredActivity::Resolve {
                 generation,
@@ -543,7 +459,6 @@ impl AppActor {
             // exactly as an AccountActor without a session reports it, and a
             // reload fails while the cached children remain.
             self.deferred_account_dispatch.crawler = None;
-            self.deferred_account_dispatch.settings_policy = None;
             let mut failures = Vec::new();
             if let Some(DeferredActivity::Resolve {
                 generation,

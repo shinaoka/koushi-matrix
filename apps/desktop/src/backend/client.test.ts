@@ -1,10 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { setRendererSelectedAccountTabId, TauriDesktopApi } from "./client";
-import { desktopEventPort } from "./desktopEventRuntime";
-import { createTauriTimelineTransport } from "./tauriTimelineTransport";
-import type { CoreEventPayload } from "../domain/coreEvents";
+import { TauriDesktopApi } from "./client";
 import { documentFromText } from "../domain/composerDocument";
 import { parseComposerDraftRevision } from "../domain/composerDraftRevision";
 
@@ -14,7 +11,6 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 describe("TauriDesktopApi", () => {
   afterEach(() => {
-    setRendererSelectedAccountTabId(null);
     vi.unstubAllGlobals();
     vi.clearAllMocks();
   });
@@ -132,153 +128,6 @@ describe("TauriDesktopApi", () => {
       homeserver: "https://example.test",
       callbackUrl: "koushi-desktop://auth/callback?code=synthetic"
     });
-  });
-
-  test("binds OIDC login commands to the selected account tab", async () => {
-    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
-    setRendererSelectedAccountTabId("add:2");
-
-    const api = new TauriDesktopApi().forAccountTab("add:2");
-    await api.startOidcLogin("https://example.test");
-
-    expect(invoke).toHaveBeenCalledWith("start_oidc_login", {
-      homeserver: "https://example.test",
-      accountTabId: "add:2"
-    });
-
-    setRendererSelectedAccountTabId("account:other");
-    await expect(api.startOidcLogin("https://example.test")).rejects.toThrow(
-      "account tab is no longer selected"
-    );
-    expect(invoke).toHaveBeenCalledTimes(1);
-  });
-
-  test("binds account commands and no-argument calls to their owning tab", async () => {
-    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
-    setRendererSelectedAccountTabId("add:2");
-
-    const api = new TauriDesktopApi().forAccountTab("add:2");
-    await api.discoverLoginMethods("https://example.test");
-    await api.submitLogin(
-      "https://example.test",
-      "@alice:example.test",
-      "synthetic-password",
-      "",
-      "linux"
-    );
-    await api.logout();
-    await api.getSnapshot();
-    await api.probeLocalEncryptionHealth();
-    await api.resetLocalData();
-    await api.previewRoomAddress("alice", null);
-    await api.settlementSnapshot();
-    await api.resyncSnapshot();
-
-    expect(invoke).toHaveBeenCalledWith("discover_login_methods", {
-      homeserver: "https://example.test",
-      accountTabId: "add:2"
-    });
-    expect(invoke).toHaveBeenCalledWith(
-      "submit_login",
-      expect.objectContaining({
-        username: "@alice:example.test",
-        accountTabId: "add:2"
-      })
-    );
-    expect(invoke).toHaveBeenCalledWith("logout", { accountTabId: "add:2" });
-    expect(invoke).toHaveBeenCalledWith("get_snapshot", { accountTabId: "add:2" });
-    expect(invoke).toHaveBeenCalledWith("settlement_snapshot", { accountTabId: "add:2" });
-    expect(invoke).toHaveBeenCalledWith("resync_snapshot", { accountTabId: "add:2" });
-    expect(invoke).toHaveBeenCalledWith("probe_local_encryption_health", { accountTabId: "add:2" });
-    expect(invoke).toHaveBeenCalledWith("reset_local_data", { accountTabId: "add:2" });
-    expect(invoke).toHaveBeenCalledWith("preview_room_address", {
-      name: "alice",
-      aliasLocalpart: null,
-      accountTabId: "add:2"
-    });
-  });
-
-  test("keeps an in-flight command bound after the selected tab changes", async () => {
-    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
-    let resolveInvoke!: (value: unknown) => void;
-    vi.mocked(invoke).mockImplementationOnce(
-      () => new Promise((resolve) => { resolveInvoke = resolve; }) as never
-    );
-    setRendererSelectedAccountTabId("account:alice");
-    const api = new TauriDesktopApi().forAccountTab("account:alice");
-    const pending = api.submitRecovery("synthetic-secret");
-
-    expect(invoke).toHaveBeenCalledWith("submit_recovery", {
-      secret: "synthetic-secret",
-      accountTabId: "account:alice"
-    });
-    setRendererSelectedAccountTabId("account:bob");
-    resolveInvoke({ ok: true });
-    await expect(pending).resolves.toEqual({ ok: true });
-  });
-
-  test("timeline disposal fences event delivery before listener registration resolves", async () => {
-    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
-    let deliver!: (payload: CoreEventPayload) => void;
-    let resolveRegistration!: (unlisten: () => void) => void;
-    const registration = new Promise<() => void>((resolve) => { resolveRegistration = resolve; });
-    const port = vi.spyOn(desktopEventPort, "listenCoreEvents").mockImplementation((listener) => {
-      deliver = listener;
-      return registration;
-    });
-    try {
-      const listener = vi.fn();
-      const unlisten = vi.fn();
-      const dispose = createTauriTimelineTransport()!.listenCoreEvents(listener);
-      deliver({ kind: "ResyncMarker" });
-      dispose();
-      deliver({ kind: "ResyncMarker" });
-      resolveRegistration(unlisten);
-      await registration;
-      deliver({ kind: "ResyncMarker" });
-      expect(listener).toHaveBeenCalledTimes(1);
-      expect(unlisten).toHaveBeenCalledTimes(1);
-    } finally {
-      port.mockRestore();
-    }
-  });
-
-  test("binds direct timeline transport calls to the current account tab", async () => {
-    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
-    setRendererSelectedAccountTabId("account:alice");
-    const transport = createTauriTimelineTransport("account:alice");
-    expect(transport).not.toBeNull();
-
-    await transport!.sendReaction("!room:example.test", "$event", "👍");
-    expect(invoke).toHaveBeenCalledWith("send_reaction", {
-      roomId: "!room:example.test",
-      eventId: "$event",
-      reactionKey: "👍",
-      accountTabId: "account:alice"
-    });
-
-    setRendererSelectedAccountTabId("account:bob");
-    await expect(
-      transport!.sendReaction("!room:example.test", "$other", "👀")
-    ).rejects.toThrow("account tab is no longer selected");
-    expect(invoke).toHaveBeenCalledTimes(1);
-  });
-
-  test("does not block a later command behind an unresolved settings request", async () => {
-    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
-    let resolveSettings!: (value: unknown) => void;
-    const settings = new Promise<unknown>((resolve) => { resolveSettings = resolve; });
-    vi.mocked(invoke).mockReturnValueOnce(settings as never);
-    vi.mocked(invoke).mockResolvedValueOnce({ ok: true } as never);
-
-    const api = new TauriDesktopApi();
-    const pendingSettings = api.loadRoomSettings("!room:example.invalid");
-    await expect(api.openThreadsList({ kind: "room", room_id: "!room:example.invalid" }))
-      .resolves.toEqual({ ok: true });
-    expect(invoke).toHaveBeenCalledTimes(2);
-
-    resolveSettings({ ok: true });
-    await expect(pendingSettings).resolves.toEqual({ ok: true });
   });
 
   test("passes soft logout reauth to the Rust session command", async () => {

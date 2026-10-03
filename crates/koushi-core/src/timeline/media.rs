@@ -395,7 +395,7 @@ impl TimelineActor {
         // Use hashed path components so the local path is portable and private.
         let dir_name = sanitize_matrix_id_for_path(&room_id);
         let file_name = format!("{}.bin", sanitize_matrix_id_for_path(&event_id));
-        let dir = data_dir.join("media-downloads").join(dir_name);
+        let dir = data_dir.join("media_downloads").join(dir_name);
         let path = dir.join(file_name);
         if let Ok(metadata) = tokio::fs::metadata(&path).await
             && metadata.is_file()

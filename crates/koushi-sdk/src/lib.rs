@@ -54,8 +54,7 @@ pub use auth::{
     login_with_password_with_store, login_with_password_with_store_and_device, logout_blocking,
     map_login_flows_to_desktop, parse_login_discovery, parse_login_discovery_http_response,
     parse_matrix_login_flows, parse_well_known_client,
-    resolve_active_session_account_management_url, resolve_homeserver, start_oidc_login,
-    start_oidc_login_with_store,
+    resolve_active_session_account_management_url, start_oidc_login, start_oidc_login_with_store,
 };
 
 pub use login_store::{

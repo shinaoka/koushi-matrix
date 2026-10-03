@@ -33,18 +33,6 @@ If **Create account** appears, it opens the account provider's registration
 page. Availability depends on the server. If the server is unsupported or cannot
 be reached, use [sign-in troubleshooting](troubleshooting.md#cannot-sign-in).
 
-## Use more than one account
-
-Select **+** (**Add account**) in the top account tab strip and use the same
-sign-in flow. Existing accounts remain available while the new account signs in
-or waits for verification. Pressing **+** again focuses the unfinished sign-in
-tab instead of creating another one.
-
-Select a tab to view that account. Switching tabs does not sign out the other
-accounts: they continue syncing and can receive notifications. Koushi restores
-saved accounts and the selected tab on startup. **Account Settings → Sessions →
-Sign out** signs out only the selected account.
-
 ## Open a conversation
 
 Select **Home** at the top of the left rail. Select a room or direct message
@@ -56,11 +44,10 @@ search results, or a thread can appear on the right.
 
 ## Find settings
 
-Select the account icon at the bottom of the left rail to open **Account
-Settings**, or the gear at the top right to open device-wide **App Settings**.
-Both open a dialog with categories on the left and settings on the right. See
-[Settings and help](settings.md) for the location of every setting. Settings
-for a particular room are available through **Room info** in that room's header.
+Select **User settings** at the bottom of the left rail. A foreground dialog
+opens with categories on the left and the selected settings on the right. See
+[Settings and help](settings.md) for the location of every setting. Settings for
+a particular room are available through **Room info** in that room's header.
 
-For keyboard behavior, open **App Settings → Keyboard**. This shows the
+For keyboard behavior, open **User settings → Keyboard**. This shows the
 shortcuts for your platform and lets you choose how Enter sends a message.

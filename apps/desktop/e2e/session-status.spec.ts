@@ -1,10 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function gotoSessions(page: Page): Promise<void> {
+async function gotoReadyShell(page: Page): Promise<void> {
   await page.goto("/appHarness.html");
-  const settingsButton = page.getByRole("button", { name: "Account Settings", exact: true });
-  await expect(settingsButton).toBeVisible();
-  await page.evaluate(() => {
+  await expect(page.getByRole("button", { name: "Open session status" })).toBeVisible();
+}
+
+async function seedReadyStatus(page: Page, accountManagementUrl: string | null): Promise<void> {
+  await page.evaluate((managementUrl) => {
     const snapshot = window.__harness.currentSnapshot();
     window.__harness.setSnapshot({
       ...snapshot,
@@ -18,7 +20,7 @@ async function gotoSessions(page: Page): Promise<void> {
             flows: [],
             delegated: { registration_url: null }
           },
-          sync: "running",
+          account_management_url: managementUrl,
           current_session_status: {
             status: "ready",
             request_id: 369,
@@ -61,29 +63,103 @@ async function gotoSessions(page: Page): Promise<void> {
       return checking;
     });
     window.__harness.pushStateUpdate();
-  });
-  await settingsButton.click();
-  const dialog = page.getByRole("dialog", { name: "Account Settings", exact: true });
-  await dialog.getByRole("tab", { name: "Sessions", exact: true }).click();
-  await expect(dialog.locator("#settings-session")).toBeVisible();
+  }, accountManagementUrl);
 }
 
-test("session health and sync recovery live in Account Settings", async ({ page }) => {
-  await gotoSessions(page);
-  const dialog = page.getByRole("dialog", { name: "Account Settings", exact: true });
+test("session popover preserves stale facts and reflects core-owned network recovery", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await seedReadyStatus(page, "https://account.example.invalid/manage");
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  const trigger = page.getByRole("button", { name: "Open session status" });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Current session" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toBeFocused();
+  await expect(dialog).toContainText("Harness Desktop");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("refresh_current_session_status")[0]?.args
+      )
+    )
+    .toEqual({ trigger: "open" });
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          current_session_status: {
+            status: "ready",
+            request_id: 370,
+            details: {
+              device_display_name: "Harness Desktop",
+              device_id: "HARNESSDEVICE",
+              authentication_method: "oauth",
+              sync_state: "running",
+              is_cross_signed_by_owner: true,
+              own_identity_verification: "verified",
+              key_backup: "ready",
+              verification: "verified",
+              checked_at_ms: Date.UTC(2026, 6, 30, 12, 0, 0)
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateUpdate();
+  });
   await expect(dialog).toContainText("Harness Desktop");
   await expect(dialog).toContainText("HARNESSDEVICE");
   await expect(dialog).toContainText("OAuth");
   await expect(dialog).toContainText("Cross-signed");
   await expect(dialog).toContainText("Identity verified");
 
-  await page.evaluate(() => window.__harness.clearInvocations());
-  await dialog.getByRole("button", { name: "Recheck", exact: true }).click();
-  await expect(dialog.getByRole("button", { name: "Checking", exact: true })).toBeDisabled();
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText(value: string) {
+          (window as unknown as { __copiedSessionDeviceId: string }).__copiedSessionDeviceId =
+            value;
+          return Promise.resolve();
+        }
+      }
+    });
+    window.__harness.setCommandResponse("plugin:opener|open_url", null);
+  });
+  await dialog.getByRole("button", { name: "Copy Device ID" }).click();
   await expect
-    .poll(() => page.evaluate(
-      () => window.__harness.invocationsOf("refresh_current_session_status").at(-1)?.args
-    ))
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as unknown as { __copiedSessionDeviceId?: string }).__copiedSessionDeviceId
+      )
+    )
+    .toBe("HARNESSDEVICE");
+  await dialog.getByRole("button", { name: "Manage account and devices" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("plugin:opener|open_url").at(-1)?.args.url
+      )
+    )
+    .toBe("https://account.example.invalid/manage");
+
+  await dialog.getByRole("button", { name: "Recheck" }).click();
+  await expect(dialog.getByRole("button", { name: "Checking" })).toBeDisabled();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("refresh_current_session_status").at(-1)?.args
+      )
+    )
     .toEqual({ trigger: "manual" });
 
   await page.evaluate(() => {
@@ -94,7 +170,6 @@ test("session health and sync recovery live in Account Settings", async ({ page 
         ...snapshot.state,
         domain: {
           ...snapshot.state.domain,
-          sync: { failed: "transport error" },
           current_session_status: {
             status: "failed",
             request_id: 371,
@@ -121,19 +196,118 @@ test("session health and sync recovery live in Account Settings", async ({ page 
     "Could not check this session before the connection timed out"
   );
   await expect(dialog).toContainText("Harness Desktop");
-  await expect(dialog.getByRole("button", { name: "Restart sync", exact: true })).toBeVisible();
-  await dialog.getByRole("button", { name: "Restart sync", exact: true }).click();
-  await expect.poll(() => page.evaluate(
-    () => window.__harness.invocationsOf("restart_sync").length
-  )).toBe(1);
+
+  const refreshCountBeforeRecovery = await page.evaluate(
+    () => window.__harness.invocationsOf("refresh_current_session_status").length
+  );
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const status = snapshot.state.domain.current_session_status;
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          current_session_status: {
+            status: "checking",
+            request_id: 372,
+            trigger: "recovery",
+            last_known_details: status.status === "failed" ? status.last_known_details : null
+          }
+        }
+      }
+    });
+    window.__harness.pushStateUpdate();
+  });
+  await expect(dialog.getByRole("button", { name: "Checking" })).toBeDisabled();
+  await expect(dialog).toContainText("Harness Desktop");
+  expect(
+    await page.evaluate(
+      () => window.__harness.invocationsOf("refresh_current_session_status").length
+    )
+  ).toBe(refreshCountBeforeRecovery);
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const status = snapshot.state.domain.current_session_status;
+    if (status.status !== "checking" || !status.last_known_details) {
+      throw new Error("expected recovery checking with retained details");
+    }
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          current_session_status: {
+            status: "ready",
+            request_id: 372,
+            details: {
+              ...status.last_known_details,
+              checked_at_ms: Date.UTC(2026, 6, 30, 12, 1, 2)
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateUpdate();
+  });
+  await expect(dialog.getByRole("button", { name: "Recheck" })).toBeEnabled();
+  await expect(dialog).toContainText("Harness Desktop");
+
+  await dialog.getByRole("button", { name: "Open diagnostics" }).click();
+  await expect
+    .poll(() => page.evaluate(() => window.__harness.invocationsOf("get_diagnostic_snapshot").length))
+    .toBe(1);
 });
 
-test("Account Settings closes accessibly and returns focus", async ({ page }) => {
-  await gotoSessions(page);
-  const dialog = page.getByRole("dialog", { name: "Account Settings", exact: true });
-  const settingsButton = page.getByRole("button", { name: "Account Settings", exact: true });
+test("session popover dismisses accessibly and hides an unsafe account destination", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await seedReadyStatus(page, "javascript:alert(1)");
+
+  const trigger = page.getByRole("button", { name: "Open session status" });
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Current session" });
+  await expect(dialog.getByRole("button", { name: "Manage account and devices" })).toHaveCount(0);
 
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
-  await expect(settingsButton).toBeFocused();
+  await expect(trigger).toBeFocused();
+
+  await trigger.click();
+  await page.locator(".top-search").click();
+  await expect(dialog).toBeHidden();
+});
+
+test("session popover has an opaque theme-aware surface and elevation", async ({ page }) => {
+  await gotoReadyShell(page);
+  await seedReadyStatus(page, null);
+
+  const trigger = page.getByRole("button", { name: "Open session status" });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Current session" });
+  await expect(dialog).toBeVisible();
+
+  for (const theme of ["light", "dark"] as const) {
+    await page.evaluate((nextTheme) => {
+      document.documentElement.dataset.theme = nextTheme;
+    }, theme);
+
+    const styles = await dialog.evaluate((element) => {
+      const computed = getComputedStyle(element);
+      return {
+        backgroundColor: computed.backgroundColor,
+        boxShadow: computed.boxShadow
+      };
+    });
+
+    expect(styles.backgroundColor, `${theme} popover should be opaque`).not.toMatch(
+      /transparent|rgba\([^)]*,\s*0\)/
+    );
+    expect(styles.boxShadow, `${theme} popover should have elevation`).not.toBe("none");
+  }
 });

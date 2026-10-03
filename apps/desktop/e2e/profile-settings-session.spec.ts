@@ -97,7 +97,7 @@ test("SSO start reports authorization and native browser outcomes without a wind
           ...snapshot.state.domain,
           auth: {
             kind: "ready",
-            homeserver: "matrix.org",
+            homeserver: "https://matrix.org",
             flows: [
               {
                 kind: "sso",
@@ -121,9 +121,7 @@ test("SSO start reports authorization and native browser outcomes without a wind
     window.__harness.pushStateUpdate();
   });
 
-  const startSso = page.getByRole("button", {
-    name: t("auth.continueWithMethod", { method: t("auth.flowSso") })
-  });
+  const startSso = page.getByRole("button", { name: t("auth.flowSso") });
   await startSso.click();
   await expect(page.getByRole("alert")).toHaveText(t("auth.ssoInvalidAuthorizationUrl"));
 
@@ -155,49 +153,16 @@ test("SSO start reports authorization and native browser outcomes without a wind
   ).toBe(0);
 });
 
-test("auth form derives the server from one Matrix ID and discovers login methods for it", async ({
+test("auth form defaults to matrix.org and submits custom ports in the homeserver URL field", async ({
   page
 }) => {
   await gotoSignedOutAuth(page);
 
-  await expect(page.locator('input[name="homeserver"]')).toHaveCount(0);
-  await expect(page.getByTestId("auth-server-summary")).toContainText("matrix.org");
-
-  await page.getByRole("textbox", { name: t("auth.matrixId") }).fill("@alice:example.org");
-  await expect(page.getByTestId("auth-server-summary")).toContainText("example.org");
-  await expect
-    .poll(async () =>
-      page.evaluate(() =>
-        window.__harness.invocationsOf("discover_login_methods").map((call) => call.args)
-      )
-    )
-    .toContainEqual({ homeserver: "example.org" });
-
-  await page.getByLabel(t("auth.password")).fill("synthetic-password");
-  await page.getByRole("textbox", { name: t("auth.deviceName") }).fill("Koushi Test Device");
-  await page.getByRole("button", { name: t("auth.continue") }).click();
-
-  await expect.poll(() => invocationCount(page, "submit_login")).toBeGreaterThanOrEqual(1);
-  await expect
-    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("submit_login")[0]?.args))
-    .toEqual({
-      homeserver: "example.org",
-      username: "@alice:example.org",
-      password: "[REDACTED]",
-      deviceDisplayName: "Koushi Test Device",
-      platform: "linux"
-    });
-});
-
-test("auth form keeps an explicit server path for custom ports", async ({ page }) => {
-  await gotoSignedOutAuth(page);
-
-  await page.getByRole("button", { name: t("auth.changeServer") }).click();
   const homeserverInput = page.locator('input[name="homeserver"]');
-  await expect(homeserverInput).toHaveValue("matrix.org");
+  await expect(homeserverInput).toHaveValue("https://matrix.org");
 
   await homeserverInput.fill("https://example.org:8448");
-  await page.getByRole("textbox", { name: t("auth.matrixId") }).fill("alice");
+  await page.getByRole("textbox", { name: t("auth.username") }).fill("alice");
   await page.getByLabel(t("auth.password")).fill("synthetic-password");
   await page.getByRole("textbox", { name: t("auth.deviceName") }).fill("Koushi Test Device");
   await page.getByRole("button", { name: t("auth.continue") }).click();
@@ -468,7 +433,7 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
     .poll(() => page.evaluate(() => document.documentElement.dataset.catalogLocale))
     .toBe("ja");
   await expect(page.getByRole("button", { name: "ルームを作成", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "アカウント設定", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "ユーザー設定", exact: true })).toBeVisible();
   await expect(
     page.locator(".channel-actions").getByRole("button", { name: "メンバー", exact: true })
   ).toBeVisible();
@@ -697,7 +662,7 @@ test("keyboard settings update composer send shortcut through Rust-owned command
   await gotoReadyShell(page);
   await page.evaluate(() => window.__harness.clearInvocations());
 
-  await page.getByRole("button", { name: "App Settings", exact: true }).click();
+  await page.getByRole("button", { name: "User settings" }).click();
   await page.getByRole("tab", { name: "Keyboard", exact: true }).click();
   await expect(page.getByText("Composer send shortcut")).toBeVisible();
   await page.getByRole("button", { name: /^(Ctrl|Cmd)\+Enter sends$/ }).click();
@@ -709,7 +674,6 @@ test("keyboard settings update composer send shortcut through Rust-owned command
     )
     .toEqual({
       patch: {
-        scope: "app",
         keyboard: { composer_send_shortcut: "modEnter" }
       }
     });
@@ -803,7 +767,7 @@ test("typography settings dispatch Rust-owned update_settings patches", async ({
   await gotoReadyShell(page);
   await page.evaluate(() => window.__harness.clearInvocations());
 
-  await page.getByRole("button", { name: "App Settings", exact: true }).click();
+  await page.getByRole("button", { name: "User settings" }).click();
   await page.getByRole("tab", { name: "Appearance", exact: true }).click();
   await expect(page.getByText("Typography")).toBeVisible();
 
@@ -815,7 +779,6 @@ test("typography settings dispatch Rust-owned update_settings patches", async ({
     )
     .toEqual({
       patch: {
-        scope: "app",
         typography: { font: "inter", emoji: "system" }
       }
     });
@@ -832,7 +795,6 @@ test("typography settings dispatch Rust-owned update_settings patches", async ({
     )
     .toEqual({
       patch: {
-        scope: "app",
         typography: { font: "inter", emoji: "twemojiColr" }
       }
     });
@@ -847,7 +809,7 @@ test("account notification settings load read-only and dispatch typed commands",
   await gotoReadyShell(page);
   await page.evaluate(() => window.__harness.clearInvocations());
 
-  await page.getByRole("button", { name: "Account Settings" }).click();
+  await page.getByRole("button", { name: "User settings" }).click();
   await page.getByRole("tab", { name: "Notifications", exact: true }).click();
 
   await expect.poll(() => invocationCount(page, "load_account_notifications")).toBe(1);
@@ -884,74 +846,27 @@ test("account notification settings load read-only and dispatch typed commands",
   ).toEqual({ address: "harness@example.invalid", lang: "en" });
 });
 
-test("app notification settings dispatch Rust-owned update_settings patches", async ({
+test("notification settings dispatch Rust-owned update_settings patches", async ({
   page
 }) => {
   await gotoReadyShell(page);
   await page.evaluate(() => window.__harness.clearInvocations());
 
-  await page.getByRole("button", { name: "App Settings", exact: true }).click();
+  await page.getByRole("button", { name: "User settings" }).click();
   await page.getByRole("tab", { name: "Notifications", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Notifications", exact: true })).toBeVisible();
 
-  const sound = page.getByRole("switch", { name: "Sound" });
-  await expect(sound).toHaveAttribute("aria-checked", "true");
-  await sound.click();
-  await expect.poll(() => invocationCount(page, "update_settings")).toBe(1);
-  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args))
-    .toEqual({
-      patch: {
-        scope: "app",
-        notifications: {
-          desktop_notifications: true,
-          sound: false,
-          badges: true,
-          message_previews: false,
-          send_read_receipts: true,
-          send_typing_notifications: true
-        }
-      }
-    });
-  await expect(sound).toHaveAttribute("aria-checked", "false");
-
-  await page.evaluate(() => window.__harness.clearInvocations());
-  const badges = page.getByRole("switch", { name: "Badges" });
-  await expect(badges).toHaveAttribute("aria-checked", "true");
-  await badges.click();
-  await expect.poll(() => invocationCount(page, "update_settings")).toBe(1);
-  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args))
-    .toEqual({
-      patch: {
-        scope: "app",
-        notifications: {
-          desktop_notifications: true,
-          sound: false,
-          badges: false,
-          message_previews: false,
-          send_read_receipts: true,
-          send_typing_notifications: true
-        }
-      }
-    });
-  await expect(badges).toHaveAttribute("aria-checked", "false");
-});
-
-test("account notification preferences dispatch Rust-owned update_settings patches", async ({
-  page
-}) => {
-  await gotoReadyShell(page);
-  await page.evaluate(() => window.__harness.clearInvocations());
-
-  await page.getByRole("button", { name: "Account Settings" }).click();
-  await page.getByRole("tab", { name: "Notifications", exact: true }).click();
   const desktopNotifications = page.getByRole("switch", { name: "Desktop notifications" });
   await expect(desktopNotifications).toHaveAttribute("aria-checked", "true");
   await desktopNotifications.click();
-  await expect.poll(() => invocationCount(page, "update_settings")).toBe(1);
-  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args))
+
+  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
+    )
     .toEqual({
       patch: {
-        scope: "account",
         notifications: {
           desktop_notifications: false,
           sound: true,
@@ -965,20 +880,47 @@ test("account notification preferences dispatch Rust-owned update_settings patch
   await expect(desktopNotifications).toHaveAttribute("aria-checked", "false");
 
   await page.evaluate(() => window.__harness.clearInvocations());
+  const sound = page.getByRole("switch", { name: "Sound" });
+  await expect(sound).toHaveAttribute("aria-checked", "true");
+  await sound.click();
+
+  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
+    )
+    .toEqual({
+      patch: {
+        notifications: {
+          desktop_notifications: false,
+          sound: false,
+          badges: true,
+          message_previews: false,
+          send_read_receipts: true,
+          send_typing_notifications: true
+        }
+      }
+    });
+  await expect(sound).toHaveAttribute("aria-checked", "false");
+
+  await page.evaluate(() => window.__harness.clearInvocations());
   const previews = page.getByRole("switch", {
     name: "Show message content in notifications"
   });
   // #1054: message previews default OFF; the user opts in explicitly.
   await expect(previews).toHaveAttribute("aria-checked", "false");
   await previews.click();
-  await expect.poll(() => invocationCount(page, "update_settings")).toBe(1);
-  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args))
+
+  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
+    )
     .toEqual({
       patch: {
-        scope: "account",
         notifications: {
           desktop_notifications: false,
-          sound: true,
+          sound: false,
           badges: true,
           message_previews: true,
           send_read_receipts: true,
@@ -995,7 +937,7 @@ test("timeline auto-load setting dispatches a Rust-owned update_settings patch",
   await gotoReadyShell(page);
   await page.evaluate(() => window.__harness.clearInvocations());
 
-  await page.getByRole("button", { name: "App Settings", exact: true }).click();
+  await page.getByRole("button", { name: "User settings" }).click();
   await page.getByRole("tab", { name: "Preferences", exact: true }).click();
   await expect(page.getByRole("heading", { name: t("settings.timeline") })).toBeVisible();
 
@@ -1010,7 +952,6 @@ test("timeline auto-load setting dispatches a Rust-owned update_settings patch",
     )
     .toEqual({
       patch: {
-        scope: "app",
         timeline: {
           auto_load_older_messages: false,
           thread_root_order: { kind: "rootEvent" }
@@ -1119,7 +1060,7 @@ test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting"
   );
 
   await page.evaluate(() => window.__harness.clearInvocations());
-  await page.getByRole("button", { name: "App Settings", exact: true }).click();
+  await page.getByRole("button", { name: "User settings" }).click();
   await page.getByRole("tab", { name: "Preferences", exact: true }).click();
   const wrapToggle = page.getByRole("switch", { name: "Wrap long lines in code blocks" });
   await expect(wrapToggle).toHaveAttribute("aria-checked", "true");
@@ -1132,7 +1073,6 @@ test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting"
     )
     .toEqual({
       patch: {
-        scope: "app",
         display: {
           code_block_wrap: false,
           hide_redacted: true,
@@ -1224,7 +1164,7 @@ test("hide deleted messages setting hides only Rust-marked redacted timeline row
   await expect(replyRow.getByText("Visible reply to a deleted event")).toBeVisible();
 
   await page.evaluate(() => window.__harness.clearInvocations());
-  await page.getByRole("button", { name: "App Settings", exact: true }).click();
+  await page.getByRole("button", { name: "User settings" }).click();
   await page.getByRole("tab", { name: "Preferences", exact: true }).click();
   const hideDeleted = page.getByRole("switch", { name: "Hide deleted messages" });
   await expect(hideDeleted).toHaveAttribute("aria-checked", "false");
@@ -1237,7 +1177,6 @@ test("hide deleted messages setting hides only Rust-marked redacted timeline row
     )
     .toEqual({
       patch: {
-        scope: "app",
         display: {
           code_block_wrap: true,
           hide_redacted: true,
@@ -1384,7 +1323,7 @@ test("profile settings dispatch Rust-owned commands and avatars render from prof
   );
 
   await page.evaluate(() => window.__harness.clearInvocations());
-  await page.getByRole("button", { name: "Account Settings" }).click();
+  await page.getByRole("button", { name: "User settings" }).click();
   await page.getByLabel("Display name").fill("Alice Profile");
   await page.getByRole("button", { name: "Update", exact: true }).click();
   await expect.poll(() => invocationCount(page, "set_display_name")).toBe(1);
@@ -1436,7 +1375,7 @@ test("unsafe account-management destination is hidden in User Settings", async (
     });
     window.__harness.pushStateUpdate();
   });
-  await page.getByRole("button", { name: "Account Settings", exact: true }).click();
+  await page.getByRole("button", { name: "User settings", exact: true }).click();
   await page.getByRole("tab", { name: "Account", exact: true }).click();
 
   await expect(page.getByRole("button", { name: "Manage account & devices" })).toHaveCount(0);
@@ -1444,7 +1383,7 @@ test("unsafe account-management destination is hidden in User Settings", async (
 
 test("remote device management is delegated to the active server", async ({ page }) => {
   await gotoReadyShell(page);
-  await page.getByRole("button", { name: "Account Settings", exact: true }).click();
+  await page.getByRole("button", { name: "User settings", exact: true }).click();
   await page.getByRole("tab", { name: "Account", exact: true }).click();
 
   await expect(page.getByRole("button", { name: "Manage account & devices" })).toBeVisible();
@@ -1484,7 +1423,7 @@ test("privacy toggles dispatch Rust-owned update_settings patches for read recei
   await gotoReadyShell(page);
   await page.evaluate(() => window.__harness.clearInvocations());
 
-  await page.getByRole("button", { name: "Account Settings" }).click();
+  await page.getByRole("button", { name: "User settings" }).click();
   await page.getByRole("tab", { name: "Security & Privacy", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Messaging & Privacy" })).toBeVisible();
 
@@ -1499,7 +1438,6 @@ test("privacy toggles dispatch Rust-owned update_settings patches for read recei
     )
     .toEqual({
       patch: {
-        scope: "account",
         notifications: {
           desktop_notifications: true,
           sound: true,
@@ -1524,7 +1462,6 @@ test("privacy toggles dispatch Rust-owned update_settings patches for read recei
     )
     .toEqual({
       patch: {
-        scope: "account",
         notifications: {
           desktop_notifications: true,
           sound: true,
@@ -1545,8 +1482,8 @@ test("URL previews global toggle invokes update_settings", async ({ page }) => {
     window.__harness.clearInvocations();
   });
 
-  await page.getByRole("button", { name: "Account Settings" }).click();
-  await page.getByRole("tab", { name: "Security & Privacy", exact: true }).click();
+  await page.getByRole("button", { name: t("workspace.userSettings") }).click();
+  await page.getByRole("tab", { name: "Preferences", exact: true }).click();
 
   const toggle = page.getByRole("switch", { name: t("settings.urlPreviewsUnencrypted") });
   await expect(toggle).toHaveAttribute("aria-checked", "true");
@@ -1559,7 +1496,6 @@ test("URL previews global toggle invokes update_settings", async ({ page }) => {
     )
     .toEqual({
       patch: {
-        scope: "account",
         display: {
           code_block_wrap: true,
           hide_redacted: true,

@@ -18,18 +18,17 @@ afterEach(() => {
 });
 
 describe("desktop attention platform selection", () => {
-  test("creates a Tauri attention port for the owning account tab", async () => {
+  test("constructs and selects exactly one Tauri port", async () => {
     const { runtime, port, createTauriDesktopAttentionPort } = await loadRuntime(true);
 
-    expect(runtime.desktopAttentionPortForAccount("account:alice")).toBe(port);
+    expect(runtime.desktopAttentionPort).toBe(port);
     expect(createTauriDesktopAttentionPort).toHaveBeenCalledOnce();
-    expect(createTauriDesktopAttentionPort).toHaveBeenCalledWith("account:alice");
   });
 
   test("keeps browser attention native operations absent", async () => {
     const { runtime, createTauriDesktopAttentionPort } = await loadRuntime(false);
 
-    expect(runtime.desktopAttentionPortForAccount("account:alice")).toBeNull();
+    expect(runtime.desktopAttentionPort).toBeNull();
     expect(createTauriDesktopAttentionPort).not.toHaveBeenCalled();
   });
 });

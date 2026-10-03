@@ -19,7 +19,7 @@ test("Koushi update action opens results directly, including before sign-in", as
   await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("check_for_desktop_update").length)).toBe(1);
   await page.evaluate(() => window.__harness.pushDesktopUpdate({ kind: "up_to_date", version: "1.2.3" }));
   await expect(dialog.getByText("Koushi is up to date (v1.2.3).")).toBeVisible();
-  await expect(page.getByRole("dialog", { name: "Account Settings", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "User settings", exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
 });
@@ -35,8 +35,8 @@ test("manual checks keep the settings page underneath and never download or rest
       window.__harness.setCommandResponse(command, null);
     }
   });
-  await page.getByRole("button", { name: "App Settings", exact: true }).click();
-  const settings = page.getByRole("dialog", { name: "App Settings", exact: true });
+  await page.getByRole("button", { name: "User settings", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "User settings", exact: true });
   await settings.getByRole("tab", { name: "Preferences", exact: true }).click();
   await expect(settings.getByRole("switch", { name: "Automatically check for updates" })).toHaveCount(0);
   await page.evaluate(() => window.__harness.pushDesktopMenu("checkForUpdates"));

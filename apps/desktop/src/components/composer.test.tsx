@@ -120,30 +120,6 @@ describe("Composer", () => {
     }
   ];
 
-  it("shows the selected account as the sender only when account identity is supplied", () => {
-    const props = {
-      composerMode: { kind: "plain" as const },
-      isSending: false,
-      roomName: "Direct room",
-      document: documentFromText(""),
-      onCancelReply: () => undefined,
-      onSend: textSend(() => undefined),
-      onDocumentChange: textChange(() => undefined)
-    };
-    const { container, rerender } = render(
-      <Composer
-        {...props}
-        sendingAccount={{ name: "Hiroshi", colorClassName: "avatar-c4" }}
-      />
-    );
-
-    expect(container.querySelector(".composer-sending-as")?.textContent).toBe("Sending as Hiroshi");
-    expect(container.querySelector(".composer-sending-as-dot")?.classList.contains("avatar-c4")).toBe(true);
-
-    rerender(<Composer {...props} />);
-    expect(container.querySelector(".composer-sending-as")).toBeNull();
-  });
-
   it("stages ordinary files dropped on every composer region in deterministic order", async () => {
     const onAttachFiles = vi.fn(async (_files: File[]) => undefined);
     const { container } = render(

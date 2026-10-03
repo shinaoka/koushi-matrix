@@ -18,7 +18,6 @@ import type {
 export function SearchHistorySection({
   crawlerSettings,
   crawlerState,
-  settingsScope = "account",
   rooms,
   isSaving,
   onUpdateSettings,
@@ -28,7 +27,6 @@ export function SearchHistorySection({
 }: {
   crawlerSettings: SearchCrawlerSettings;
   crawlerState: SearchCrawlerState;
-  settingsScope?: "account" | "app";
   rooms?: RoomSummary[];
   isSaving: boolean;
   onUpdateSettings: (patch: SettingsPatch) => void;
@@ -73,44 +71,36 @@ export function SearchHistorySection({
 
   return (
     <>
-      {settingsScope !== "account" ? (
-        <div className="settings-control-stack">
-          <div className="settings-control-row crawler-speed-row">
-            <span>{t("settings.searchHistorySpeed")}</span>
-            <div className="segmented-control crawler-speed-control" role="group" aria-label={t("settings.searchHistorySpeed")}>
-              {(["standard", "fast", "slow"] as const).map((speed) => (
-                <CrawlerSpeedButton
-                  key={speed}
-                  value={speed}
-                  selected={crawlerSettings.speed === speed}
-                  disabled={isSaving}
-                  onSelect={onUpdateSettings}
-                  currentSettings={crawlerSettings}
-                />
-              ))}
-            </div>
+      <div className="settings-control-stack">
+        <div className="settings-control-row crawler-speed-row">
+          <span>{t("settings.searchHistorySpeed")}</span>
+          <div className="segmented-control crawler-speed-control" role="group" aria-label={t("settings.searchHistorySpeed")}>
+            {(["standard", "fast", "slow"] as const).map((speed) => (
+              <CrawlerSpeedButton
+                key={speed}
+                value={speed}
+                selected={crawlerSettings.speed === speed}
+                disabled={isSaving}
+                onSelect={onUpdateSettings}
+                currentSettings={crawlerSettings}
+              />
+            ))}
           </div>
-          <div className="settings-control-row">
-            <span>{t("settings.searchHistoryBudget")}</span>
-            <button
-              className={`dialog-button secondary crawler-pause-button ${crawlerPaused ? "is-active" : ""}`}
-              type="button"
-              disabled={isSaving}
-              aria-pressed={crawlerPaused}
-              data-active={crawlerPaused ? "true" : "false"}
-              onClick={toggleCrawlerPaused}
-            >
-              {crawlerPaused ? t("settings.searchHistoryResume") : t("settings.searchHistoryPause")}
-            </button>
-          </div>
-          <p className="settings-notice">{t("settings.searchHistoryBudgetDescription")}</p>
         </div>
-      ) : null}
-      {settingsScope !== "app" ? (
-        <div className="settings-control-stack">
-          <div className="settings-control-row">
-            <span>{t("settings.searchHistoryCrawler")}</span>
-            <div className="crawler-action-row">
+        <div className="settings-control-row">
+          <span>{t("settings.searchHistoryCrawler")}</span>
+          <div className="crawler-action-row">
+            <div className="settings-inline-actions">
+              <button
+                className={`dialog-button secondary crawler-pause-button ${crawlerPaused ? "is-active" : ""}`}
+                type="button"
+                disabled={isSaving}
+                aria-pressed={crawlerPaused}
+                data-active={crawlerPaused ? "true" : "false"}
+                onClick={toggleCrawlerPaused}
+              >
+                {crawlerPaused ? t("settings.searchHistoryResume") : t("settings.searchHistoryPause")}
+              </button>
               <button
                 className="dialog-button danger"
                 type="button"
@@ -119,12 +109,11 @@ export function SearchHistorySection({
               >
                 {t("settings.searchHistoryRebuild")}
               </button>
-              {isSaving ? <span className="settings-save-state crawler-control-status">{t("settings.saving")}</span> : null}
             </div>
+            {isSaving ? <span className="settings-save-state crawler-control-status">{t("settings.saving")}</span> : null}
           </div>
         </div>
-      ) : null}
-      {settingsScope !== "app" ? <>
+      </div>
       <section
         className="settings-section crawler-activity-section"
       aria-label={t("settings.searchHistoryActivity")}
@@ -198,7 +187,6 @@ export function SearchHistorySection({
           </div>
         </section>
       ) : null}
-      </> : null}
     </>
   );
 }

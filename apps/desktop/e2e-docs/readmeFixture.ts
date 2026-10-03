@@ -1,5 +1,4 @@
 import { roomTimelineKey, type CoreEventPayload, type TimelineItem } from "../src/domain/coreEvents";
-import type { AccountTabsSnapshot } from "../src/backend/desktopApi";
 import type { DesktopSnapshot, RoomListItem, RoomSummary } from "../src/domain/types";
 import type { StateUpdateEnvelope } from "../src/domain/coreEvents";
 
@@ -15,7 +14,6 @@ const AKI_USER_ID = "@aki:example.invalid";
 const DATE_START = Date.UTC(2026, 2, 10, 9, 0);
 
 export interface ReadmeFixture {
-  accountTabs: AccountTabsSnapshot;
   snapshot: DesktopSnapshot;
   stateUpdate: StateUpdateEnvelope;
   initialItems: CoreEventPayload;
@@ -329,18 +327,5 @@ export function createReadmeFixture(source: DesktopSnapshot): ReadmeFixture {
       }
     }
   };
-  const accountTabs: AccountTabsSnapshot = {
-    selectedTabId: "harness-account-tab",
-    tabs: [{
-      id: "harness-account-tab",
-      accountKey: "harness-account",
-      homeserver: "matrix.local",
-      displayName: "Koushi",
-      avatarSourceRef: null,
-      status: "ready",
-      unreadCount: 0
-    }],
-    badgeCount: 0
-  };
-  return { accountTabs, snapshot, stateUpdate, initialItems: initialItemsEvent };
+  return { snapshot, stateUpdate, initialItems: initialItemsEvent };
 }

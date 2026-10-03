@@ -4,26 +4,17 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cancelAll, removeAllActive } from "@tauri-apps/plugin-notification";
 
 import type { DesktopAttentionPort } from "../desktopAttentionPort";
-import { isRendererSelectedAccountTabId } from "../client";
 import type { DesktopNotificationActivation } from "../../domain/desktopNotification";
 
 /** Tauri event emitted by the Rust adapter after a notification click. */
 const NOTIFICATION_ACTIVATED_EVENT_NAME = "koushi-desktop://notification-activated";
 
-export function createTauriDesktopAttentionPort(accountTabId?: string): DesktopAttentionPort {
-  const invokeAccount = <T>(command: string): Promise<T> => {
-    if (accountTabId !== undefined && !isRendererSelectedAccountTabId(accountTabId)) {
-      return Promise.reject(new Error("account tab is no longer selected"));
-    }
-    return accountTabId === undefined
-      ? invoke<T>(command)
-      : invoke<T>(command, { accountTabId });
-  };
+export function createTauriDesktopAttentionPort(): DesktopAttentionPort {
   return {
     currentWindow: getCurrentWindow,
     notifications: {
       async show() {
-        await invokeAccount("show_native_attention_notification");
+        await invoke("show_native_attention_notification");
       },
       async clear() {
         // The plugin's desktop backend registers only notify/request_permission;
@@ -60,7 +51,7 @@ export function createTauriDesktopAttentionPort(accountTabId?: string): DesktopA
     },
     sound: {
       playAttentionSound: () =>
-        invokeAccount<"played" | "unsupported" | "failed" | "skipped">(
+        invoke<"played" | "unsupported" | "failed" | "skipped">(
           "play_native_attention_sound"
         )
     },

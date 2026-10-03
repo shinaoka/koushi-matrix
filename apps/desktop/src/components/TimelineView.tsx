@@ -315,7 +315,6 @@ export type TimelineDiagnosticLogEntry = DiagnosticLogEntry;
 
 export const TimelineView = memo(function TimelineView({
   timelineKey,
-  accountTabId,
   roomId,
   presentationContext = "room",
   transport,
@@ -365,7 +364,6 @@ export const TimelineView = memo(function TimelineView({
   onMentionQueryChange
 }: {
   timelineKey: TimelineKey;
-  accountTabId?: string;
   roomId: string;
   presentationContext?: "room" | "thread" | "focused";
   transport: TimelineTransport;
@@ -3579,7 +3577,6 @@ export const TimelineView = memo(function TimelineView({
                 />
               ) : (
                 <TimelineItemRow
-                accountTabId={accountTabId}
                 item={item}
                 onEditFormOpenChange={onEditFormOpenChange}
                 rowId={row.row_id}

@@ -4,7 +4,6 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { t } from "../../i18n/messages";
 import type { LinkMediaPort } from "../linkMediaPort";
-import { isRendererSelectedAccountTabId } from "../client";
 
 function safeDownloadFilename(filename: string): string {
   const trimmed = filename.trim();
@@ -58,10 +57,7 @@ export const tauriLinkMediaPort: LinkMediaPort = {
     }
     return `${renderableThumbnailProtocolBase()}${sourceRef}`;
   },
-  async saveMediaFile(sourceUrl, filename, accountTabId) {
-    if (accountTabId !== undefined && !isRendererSelectedAccountTabId(accountTabId)) {
-      throw new Error("account tab is no longer selected");
-    }
+  async saveMediaFile(sourceUrl, filename) {
     const safeFilename = safeDownloadFilename(filename);
     const defaultPath = await invoke<string>("default_media_save_path", {
       filename: safeFilename
@@ -73,13 +69,9 @@ export const tauriLinkMediaPort: LinkMediaPort = {
     if (!selected) {
       return;
     }
-    if (accountTabId !== undefined && !isRendererSelectedAccountTabId(accountTabId)) {
-      throw new Error("account tab is no longer selected");
-    }
     await invoke("save_downloaded_media", {
       sourceUrl,
-      destinationPath: selected,
-      ...(accountTabId === undefined ? {} : { accountTabId })
+      destinationPath: selected
     });
   }
 };

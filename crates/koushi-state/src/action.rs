@@ -6,15 +6,14 @@ use crate::{
 };
 
 use crate::state::{
-    AccountManagementOperation, AccountSettingsValues, ActivityMarkReadTarget, ActivityRow,
-    ActivityStream, ActivityTab, AppSettingsValues, AttachmentFilter, AttachmentResult,
-    AttachmentScope, AttachmentSort, AuthFailureKind, AvatarThumbnailState, BasicOperationRequest,
-    CrossSigningStatus, CurrentDeviceTrustState, CurrentSessionStatusDetails,
-    CurrentSessionStatusFailureKind, DelegatedAuthLinks, DeviceCleanupAuthMode,
-    DeviceCleanupFailureKind, DeviceCleanupRemoteOutcome, DirectoryQuery, DirectoryRoomPreview,
-    DirectoryRoomSummary, E2eeRecoveryState, EventNavigationFailureKind, EventNavigationSource,
-    FilesViewScope, IdentityResetAuthType, InviteDestinationResult, InviteScopeSelection,
-    JapaneseCatalogProfile, LiveEventReceiptSummaryUpdate, LiveEventReceipts,
+    AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab,
+    AttachmentFilter, AttachmentResult, AttachmentScope, AttachmentSort, AuthFailureKind,
+    AvatarThumbnailState, BasicOperationRequest, CrossSigningStatus, CurrentDeviceTrustState,
+    CurrentSessionStatusDetails, CurrentSessionStatusFailureKind, DelegatedAuthLinks,
+    DeviceCleanupAuthMode, DeviceCleanupFailureKind, DeviceCleanupRemoteOutcome, DirectoryQuery,
+    DirectoryRoomPreview, DirectoryRoomSummary, E2eeRecoveryState, EventNavigationFailureKind,
+    EventNavigationSource, FilesViewScope, IdentityResetAuthType, InviteDestinationResult,
+    InviteScopeSelection, JapaneseCatalogProfile, LiveEventReceiptSummaryUpdate, LiveEventReceipts,
     LocalEncryptionHealth, LoginAttemptId, LoginFlow, MentionCandidate,
     MentionCandidatesCompleteness, MentionCandidatesFailureKind, MentionSurface,
     NativeAttentionDispatchId, NativeAttentionSoundOutcome, NativeAttentionState,
@@ -232,12 +231,6 @@ pub enum AppAction {
     },
     SettingsLoaded {
         values: SettingsValues,
-    },
-    AccountSettingsLoaded {
-        values: AccountSettingsValues,
-    },
-    AppSettingsSynchronized {
-        values: AppSettingsValues,
     },
     SettingsLoadFailed {
         message: String,

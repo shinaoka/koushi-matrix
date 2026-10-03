@@ -11,9 +11,7 @@ use tauri::Emitter;
 use crate::dto::{
     FrontendDesktopSnapshotDelta, FrontendStateUpdateEnvelope, StateUpdateSnapshotReason,
 };
-use koushi_core::{
-    CoreCommandHandle, CoreConnection, EventStreamLag, account_runtime_manager::AccountTabId,
-};
+use koushi_core::{CoreCommandHandle, CoreConnection, EventStreamLag};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_protocol::{
     AccountEvent, CoreCommand, CoreEvent, SearchEvent, TimelineCommand, TimelineEvent,
@@ -30,20 +28,10 @@ enum ForwarderLagDisposition {
     ResyncAndReplay,
     ResyncAndStop,
 }
-pub(super) struct CoreEventForwarderTask(Option<tauri::async_runtime::JoinHandle<()>>);
-impl CoreEventForwarderTask {
-    pub(super) async fn stop(mut self) {
-        if let Some(task) = self.0.take() {
-            task.abort();
-            let _ = task.await;
-        }
-    }
-}
+pub(super) struct CoreEventForwarderTask(tauri::async_runtime::JoinHandle<()>);
 impl Drop for CoreEventForwarderTask {
     fn drop(&mut self) {
-        if let Some(task) = &self.0 {
-            task.abort();
-        }
+        self.0.abort();
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,18 +55,16 @@ fn forwarder_lag_disposition(lag: EventStreamLag) -> ForwarderLagDisposition {
 }
 pub(super) fn spawn_core_event_forwarder(
     app: tauri::AppHandle,
-    tab_id: AccountTabId,
     mut event_conn: CoreConnection,
     timeline_items_count: Arc<AtomicUsize>,
 ) -> CoreEventForwarderTask {
-    CoreEventForwarderTask(Some(tauri::async_runtime::spawn(async move {
+    CoreEventForwarderTask(tauri::async_runtime::spawn(async move {
         loop {
             match event_conn.recv_event().await {
                 Ok(event) => {
                     emit_forwarded_webview_events(
                         &app,
                         forwarded_webview_events_for_core_event(&event, &timeline_items_count),
-                        tab_id.as_str(),
                     );
                 }
                 Err(lag) => {
@@ -88,7 +74,6 @@ pub(super) fn spawn_core_event_forwarder(
                     emit_forwarded_webview_events(
                         &app,
                         forwarded_webview_events_for_lag_resync(&snapshot),
-                        tab_id.as_str(),
                     );
                     match forwarder_lag_disposition(lag) {
                         ForwarderLagDisposition::ResyncAndReplay => {
@@ -102,7 +87,7 @@ pub(super) fn spawn_core_event_forwarder(
                 }
             }
         }
-    })))
+    }))
 }
 async fn submit_timeline_replay_after_forwarder_lag(
     command_handle: CoreCommandHandle,
@@ -190,25 +175,9 @@ fn forwarded_webview_events_for_lag_resync(
 fn emit_forwarded_webview_events(
     app: &tauri::AppHandle,
     forwarded_events: Vec<ForwardedWebviewEvent>,
-    account_tab_id: &str,
 ) {
     let mut failed = 0_u64;
-    for mut forwarded_event in forwarded_events {
-        if let Some(payload) = forwarded_event.payload.as_object_mut() {
-            payload.insert(
-                "account_tab_id".to_owned(),
-                serde_json::Value::String(account_tab_id.to_owned()),
-            );
-            if let Some(snapshot) = payload
-                .get_mut("snapshot")
-                .and_then(serde_json::Value::as_object_mut)
-            {
-                snapshot.insert(
-                    "account_tab_id".to_owned(),
-                    serde_json::Value::String(account_tab_id.to_owned()),
-                );
-            }
-        }
+    for forwarded_event in forwarded_events {
         if app
             .emit(forwarded_event.event_name, forwarded_event.payload)
             .is_err()

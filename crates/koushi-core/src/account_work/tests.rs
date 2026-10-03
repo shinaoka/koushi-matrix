@@ -1,9 +1,8 @@
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
 use super::{AccountWorkClass, AccountWorkKind, AccountWorkScheduler};
-use koushi_state::SearchCrawlerSpeed;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -15,7 +14,6 @@ fn policy_bands_are_ordered_from_interactive_to_maintenance() {
         AccountWorkKind::VisibleGapRepair,
         AccountWorkKind::ExplicitPagination,
         AccountWorkKind::OffscreenGapRepair,
-        AccountWorkKind::MediaPrefetch,
         AccountWorkKind::SearchCrawl,
         AccountWorkKind::Maintenance,
     ];
@@ -42,7 +40,6 @@ fn policy_bands_are_ordered_from_interactive_to_maintenance() {
     }
     for kind in [
         AccountWorkKind::OffscreenGapRepair,
-        AccountWorkKind::MediaPrefetch,
         AccountWorkKind::SearchCrawl,
         AccountWorkKind::Maintenance,
     ] {
@@ -64,8 +61,6 @@ fn policy_bands_are_ordered_from_interactive_to_maintenance() {
         );
         assert_eq!(kind.policy().max_concurrency, 1);
     }
-    assert!(!AccountWorkKind::MediaPrefetch.policy().preemptible);
-    assert_eq!(AccountWorkKind::MediaPrefetch.policy().batch_limit, 1);
 }
 
 #[tokio::test]
@@ -299,187 +294,4 @@ async fn background_work_progresses_on_an_idle_account() {
         drop(permit);
     }
     assert!(scheduler.active_kinds().is_empty());
-}
-
-#[tokio::test(start_paused = true)]
-async fn search_crawler_speed_sets_one_rate_limit_for_search_and_media_work() {
-    let scheduler = AccountWorkScheduler::default();
-    scheduler.set_search_crawler_speed(SearchCrawlerSpeed::Slow);
-    drop(scheduler.acquire(AccountWorkKind::SearchCrawl).await);
-
-    let media = scheduler.for_account("second");
-    let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
-    let media_task = tokio::spawn(async move {
-        let _permit = media.acquire(AccountWorkKind::MediaPrefetch).await;
-        entered_tx.send(()).expect("receiver alive");
-    });
-    tokio::task::yield_now().await;
-    assert!(entered_rx.try_recv().is_err());
-
-    tokio::time::advance(Duration::from_millis(499)).await;
-    tokio::task::yield_now().await;
-    assert!(entered_rx.try_recv().is_err());
-
-    tokio::time::advance(Duration::from_millis(1)).await;
-    tokio::time::timeout(TEST_TIMEOUT, entered_rx.recv())
-        .await
-        .expect("slow budget admits the next account after its interval")
-        .expect("sender alive");
-    media_task.await.expect("media task finished");
-}
-
-#[tokio::test(start_paused = true)]
-async fn search_crawler_speed_does_not_gate_other_background_work() {
-    let scheduler = AccountWorkScheduler::default();
-    scheduler.set_search_crawler_speed(SearchCrawlerSpeed::Slow);
-    drop(scheduler.acquire(AccountWorkKind::SearchCrawl).await);
-
-    for kind in [
-        AccountWorkKind::OffscreenGapRepair,
-        AccountWorkKind::Maintenance,
-    ] {
-        let work = tokio::spawn({
-            let scheduler = scheduler.clone();
-            async move { scheduler.acquire(kind).await }
-        });
-        tokio::task::yield_now().await;
-        assert!(
-            work.is_finished(),
-            "{kind:?} is not part of the crawler budget"
-        );
-        drop(work.await.expect("unbudgeted work must be admitted"));
-    }
-
-    scheduler.set_search_crawler_speed(SearchCrawlerSpeed::Paused);
-    for kind in [
-        AccountWorkKind::OffscreenGapRepair,
-        AccountWorkKind::Maintenance,
-    ] {
-        let permit = scheduler.acquire(kind).await;
-        drop(permit);
-    }
-}
-
-#[tokio::test]
-async fn paused_speed_blocks_search_and_media_until_resumed() {
-    for kind in [AccountWorkKind::SearchCrawl, AccountWorkKind::MediaPrefetch] {
-        let scheduler = AccountWorkScheduler::default();
-        scheduler.set_search_crawler_speed(SearchCrawlerSpeed::Paused);
-        let task = tokio::spawn({
-            let scheduler = scheduler.clone();
-            async move { scheduler.acquire(kind).await }
-        });
-        tokio::task::yield_now().await;
-        assert!(!task.is_finished(), "{kind:?} must wait while paused");
-
-        scheduler.set_search_crawler_speed(SearchCrawlerSpeed::Fast);
-        let permit = tokio::time::timeout(TEST_TIMEOUT, task)
-            .await
-            .expect("resuming the budget wakes its waiters")
-            .expect("work task finished");
-        drop(permit);
-    }
-}
-
-#[tokio::test]
-async fn paused_speed_does_not_let_queued_budget_waiters_block_maintenance() {
-    let scheduler = AccountWorkScheduler::default();
-    scheduler.set_search_crawler_speed(SearchCrawlerSpeed::Paused);
-
-    // A budget waiter that queued while paused stays in the queue without
-    // being admissible. It must not outrank work the budget does not gate.
-    let paused_crawl = tokio::spawn({
-        let scheduler = scheduler.clone();
-        async move { scheduler.acquire(AccountWorkKind::SearchCrawl).await }
-    });
-    tokio::time::timeout(TEST_TIMEOUT, async {
-        while scheduler.waiting_count() != 1 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the paused crawl must be queued");
-    assert!(!paused_crawl.is_finished());
-
-    let maintenance = tokio::time::timeout(
-        TEST_TIMEOUT,
-        scheduler.acquire(AccountWorkKind::Maintenance),
-    )
-    .await
-    .expect("a waiting paused budget request must not block unrelated maintenance");
-    drop(maintenance);
-
-    paused_crawl.abort();
-    let _ = paused_crawl.await;
-}
-
-#[tokio::test]
-async fn shared_account_work_limits_background_load_and_prioritizes_selected_tab() {
-    let scheduler = AccountWorkScheduler::default();
-    scheduler.set_selected_account(Some("bob"));
-    let alice = scheduler.for_account("alice");
-    let bob = scheduler.for_account("bob");
-    let active = bob.acquire(AccountWorkKind::OffscreenGapRepair).await;
-    let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
-
-    let (alice_release_tx, alice_release_rx) = oneshot::channel();
-    let alice_task = tokio::spawn({
-        let entered_tx = entered_tx.clone();
-        async move {
-            let _permit = alice.acquire(AccountWorkKind::SearchCrawl).await;
-            entered_tx.send("alice").expect("receiver alive");
-            let _ = alice_release_rx.await;
-        }
-    });
-    tokio::time::timeout(TEST_TIMEOUT, async {
-        while scheduler.waiting_count() != 1 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("Alice must queue behind Bob's active work");
-
-    scheduler.set_selected_account(Some("alice"));
-    let (bob_release_tx, bob_release_rx) = oneshot::channel();
-    let bob_task = tokio::spawn({
-        let entered_tx = entered_tx.clone();
-        async move {
-            let _permit = bob.acquire(AccountWorkKind::SearchCrawl).await;
-            entered_tx.send("bob").expect("receiver alive");
-            let _ = bob_release_rx.await;
-        }
-    });
-    tokio::time::timeout(TEST_TIMEOUT, async {
-        while scheduler.waiting_count() != 2 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("both account requests must share the queue");
-
-    drop(active);
-    assert_eq!(
-        tokio::time::timeout(TEST_TIMEOUT, entered_rx.recv())
-            .await
-            .expect("selected account must be admitted")
-            .expect("sender alive"),
-        "alice"
-    );
-    tokio::task::yield_now().await;
-    assert!(
-        entered_rx.try_recv().is_err(),
-        "only one account may run at once"
-    );
-
-    alice_release_tx.send(()).expect("Alice task alive");
-    assert_eq!(
-        tokio::time::timeout(TEST_TIMEOUT, entered_rx.recv())
-            .await
-            .expect("the other account must make progress")
-            .expect("sender alive"),
-        "bob"
-    );
-    bob_release_tx.send(()).expect("Bob task alive");
-    alice_task.await.expect("Alice task finished");
-    bob_task.await.expect("Bob task finished");
 }

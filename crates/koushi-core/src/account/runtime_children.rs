@@ -390,9 +390,7 @@ impl AccountActor {
             self.action_tx.clone(),
             self.event_tx.clone(),
             search_index_tx,
-            self.session_key_id
-                .as_ref()
-                .map(|key_id| self.store.account_local_data_dir(key_id)),
+            Some(self.data_dir.clone()),
             self.link_preview_policy.clone(),
             self.account_work.clone(),
             Some(self.navigation_projection.subscribe()),

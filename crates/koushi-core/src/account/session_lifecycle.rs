@@ -545,7 +545,7 @@ impl AccountActor {
         request_id: RequestId,
         homeserver: String,
     ) {
-        let homeserver = match koushi_sdk::resolve_homeserver(&homeserver).await {
+        let homeserver = match koushi_sdk::Homeserver::parse(&homeserver) {
             Ok(homeserver) => homeserver,
             Err(error) => {
                 let kind = login_discovery_failure_kind(&error);
@@ -859,7 +859,7 @@ impl AccountActor {
     pub(super) async fn handle_login_password(
         &mut self,
         request_id: RequestId,
-        mut request: LoginRequest,
+        request: LoginRequest,
         platform: koushi_state::DisplayPlatform,
     ) {
         if self.pending_session_teardown.is_some() {
@@ -867,15 +867,8 @@ impl AccountActor {
             return;
         }
 
-        // A server name may delegate its client API through well-known; every
-        // later step (saved-device lookup, login, session identity) must use
-        // the resolved homeserver, never the typed domain.
-        let normalized_homeserver = match koushi_sdk::resolve_homeserver(&request.homeserver).await
-        {
-            Ok(homeserver) => {
-                request.homeserver = homeserver.normalized();
-                request.homeserver.clone()
-            }
+        let normalized_homeserver = match koushi_sdk::Homeserver::parse(&request.homeserver) {
+            Ok(homeserver) => homeserver.normalized(),
             Err(error) => {
                 let error = koushi_sdk::PasswordLoginError::InvalidHomeserver(error);
                 self.emit_failure(
