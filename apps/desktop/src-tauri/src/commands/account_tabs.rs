@@ -152,11 +152,11 @@ pub async fn cancel_add_account_tab(
         state.close_reader_subscriptions().await;
         state.stop_selected_forwarder().await;
     }
+    // Drop the adapter's connection first; the child runtime joins only once
+    // every connection to it is gone. An uncancelled tab reconnects lazily.
+    state.connection.remove_cached_connection(&tab_id).await;
     state.stop_account_tab_watchers().await;
     let cancelled = state.runtime.cancel_add_account_tab(&tab_id).await;
-    if matches!(cancelled, Ok(true)) {
-        state.connection.remove_cached_connection(&tab_id).await;
-    }
     let selected_tab = state.runtime.selected_tab_id();
     if selected {
         super::native_attention::transfer_native_window_focus(

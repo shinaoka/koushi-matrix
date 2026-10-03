@@ -723,7 +723,13 @@ store-backed account restore.
 
 Password login and OIDC/MAS callback completion both enter `Authenticating`
 through Rust-owned account commands and settle through the same
-`LoginSucceeded` / `LoginFailed` reducer actions. OIDC authorization URLs and
+`LoginSucceeded` / `LoginFailed` reducer actions. Settlement is correlated by
+`attempt_id` alone. `Authenticating.homeserver` is the user's requested input
+(a bare server name, an MXID domain, or a URL) and Core may resolve it through
+`.well-known` delegation or URL normalization before contacting the server, so
+the SDK-reported `SessionInfo.homeserver` of a same-attempt success is
+authoritative and is never compared with the requested text. Stale, cancelled,
+or superseded attempts are fenced by their attempt id. OIDC authorization URLs and
 CSRF state are command/event artifacts only: they may be returned to the WebView
 so it can open the provider and correlate the callback, but they never enter
 `AppState`, normal `Debug`, QA title tokens, or persisted settings.
@@ -760,6 +766,17 @@ stateDiagram-v2
   including an extracted child whose removal is still joining cleanup. It marks
   the manager terminal before draining children; future add/restore cannot
   recreate runtimes, and repeated shutdown retains an incomplete-cleanup result.
+- Cancel and signed-out removal extract the child runtime under the lifecycle
+  gate, update selection, and hand the child to a manager-owned retiring set
+  whose cleanup join runs in a task the manager retains. The gate is never held
+  across that join: a child joins only after every adapter connection to it is
+  dropped, so waiting there would let a retained connection block selection,
+  add, and later removals. Adapters drop their cached connection to the tab
+  before asking Core to cancel or remove it; Core never depends on that order
+  for liveness. Manager shutdown joins every retiring child as well as the
+  remaining tabs, and a retiring child's cleanup failure becomes the retained
+  incomplete-cleanup result. Only signed-out children retire this way, so a
+  retiring child never owns a live Matrix client.
 - The account-tab list, persisted order, and last-selected key have one outer
   manager owner. Startup chooses that key before restoring sessions; restore
   completion order never selects an account.
@@ -768,8 +785,8 @@ stateDiagram-v2
   tab, the new context is rejected and the existing tab is selected; an existing
   account session is never logged out by cancellation or duplicate-login cleanup.
 - Cancelling the unfinished add-account context is allowed only while it is
-  unbound and signed out and another tab exists. It removes that tab, shuts
-  down its temporary runtime, and selects the tab that was selected when the
+  unbound and signed out and another tab exists. It removes that tab, retires
+  its temporary runtime as above, and selects the tab that was selected when the
   add flow started (falling back to a neighbour). An in-flight password or OIDC
   login cannot be cancelled this way.
 - Selecting an account binds commands and their completions to that account's

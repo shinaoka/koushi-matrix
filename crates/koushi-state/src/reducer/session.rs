@@ -91,25 +91,21 @@ pub(crate) fn handle_restore_session_succeeded(
     install_provisional_session(state, info)
 }
 
-fn homeservers_match(expected: &str, actual: &str) -> bool {
-    expected
-        .trim_end_matches('/')
-        .eq_ignore_ascii_case(actual.trim_end_matches('/'))
-}
-
 pub(crate) fn handle_login_succeeded(
     state: &mut AppState,
     attempt_id: LoginAttemptId,
     info: crate::state::SessionInfo,
 ) -> Vec<AppEffect> {
+    // The requested homeserver is user input that Core may resolve through
+    // well-known delegation; the attempt id alone correlates the success.
     let SessionState::Authenticating {
-        homeserver,
         attempt_id: active_attempt_id,
+        ..
     } = &state.session
     else {
         return Vec::new();
     };
-    if *active_attempt_id != attempt_id || !homeservers_match(homeserver, &info.homeserver) {
+    if *active_attempt_id != attempt_id {
         return Vec::new();
     }
     install_provisional_session(state, info)
