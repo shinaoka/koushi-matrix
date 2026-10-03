@@ -3,6 +3,7 @@ use super::room::ROOM_OPERATION_EVENT_TIMEOUT;
 use super::*;
 #[tauri::command]
 pub async fn query_directory(
+    account_tab_id: Option<String>,
     term: Option<String>,
     server_name: Option<String>,
     limit: Option<u32>,
@@ -10,7 +11,7 @@ pub async fn query_directory(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let mut event_conn = state.runtime.attach();
+    let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
     let baseline = event_conn.versioned_snapshot();
     let account_key = account_key_from_app_state(&baseline.state);
     let request_id = event_conn.next_request_id();
@@ -47,12 +48,13 @@ pub async fn query_directory(
 
 #[tauri::command]
 pub async fn join_directory_room(
+    account_tab_id: Option<String>,
     room_id_or_alias: String,
     via_servers: Vec<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let mut event_conn = state.runtime.attach();
+    let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
     let baseline = event_conn.versioned_snapshot();
     let account_key = account_key_from_app_state(&baseline.state);
     let request_id = event_conn.next_request_id();
@@ -98,12 +100,13 @@ pub async fn join_directory_room(
 
 #[tauri::command]
 pub async fn preview_join_target(
+    account_tab_id: Option<String>,
     room_id_or_alias: String,
     via_servers: Vec<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let mut event_conn = state.runtime.attach();
+    let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
     let baseline = event_conn.versioned_snapshot();
     let account_key = account_key_from_app_state(&baseline.state);
     let request_id = event_conn.next_request_id();
@@ -140,10 +143,11 @@ pub async fn preview_join_target(
 
 #[tauri::command]
 pub async fn dismiss_directory_preview(
+    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_dismiss_directory_preview_command(request_id),

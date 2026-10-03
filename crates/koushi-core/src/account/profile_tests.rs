@@ -123,7 +123,7 @@ async fn avatar_actor_bounds_distinct_demand_and_rejects_capacity() {
                 .set_body_raw(b"delayed-avatar", "image/jpeg")
                 .set_delay(Duration::from_secs(5)),
         )
-        .expect(6)
+        .expect(1)
         .mount()
         .await;
     let session = test_session(&server).await;
@@ -131,6 +131,7 @@ async fn avatar_actor_bounds_distinct_demand_and_rejects_capacity() {
     let data_dir = tempdir().expect("data tempdir");
     let (handle, mut action_rx, mut event_rx) =
         spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    handle.set_search_crawler_speed(koushi_state::SearchCrawlerSpeed::Fast);
     assert!(
         handle
             .install_residency_test_session(std::sync::Arc::new(session))
@@ -162,7 +163,7 @@ async fn avatar_actor_bounds_distinct_demand_and_rejects_capacity() {
                     .iter()
                     .filter(|request| request.url.path().contains("/avatar-"))
                     .count()
-                    == super::profile::AVATAR_DOWNLOAD_CONCURRENCY
+                    == 1
             }) {
                 break;
             }
@@ -170,7 +171,7 @@ async fn avatar_actor_bounds_distinct_demand_and_rejects_capacity() {
         }
     })
     .await
-    .expect("all active avatar requests should reach the delayed server");
+    .expect("the shared media permit should reach the delayed server");
     for sequence in
         (super::profile::AVATAR_DOWNLOAD_CONCURRENCY as u64 + 1)..=capacity_sequence as u64
     {
@@ -222,7 +223,7 @@ async fn canceling_last_avatar_waiter_aborts_active_fetch_and_admits_pending_wor
                 .set_body_raw(b"delayed-avatar", "image/jpeg")
                 .set_delay(Duration::from_secs(5)),
         )
-        .expect(7)
+        .expect(2)
         .mount()
         .await;
     let session = test_session(&server).await;
@@ -230,6 +231,7 @@ async fn canceling_last_avatar_waiter_aborts_active_fetch_and_admits_pending_wor
     let data_dir = tempdir().expect("data tempdir");
     let (handle, _action_rx, mut event_rx) =
         spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    handle.set_search_crawler_speed(koushi_state::SearchCrawlerSpeed::Fast);
     assert!(
         handle
             .install_residency_test_session(std::sync::Arc::new(session))
@@ -258,7 +260,7 @@ async fn canceling_last_avatar_waiter_aborts_active_fetch_and_admits_pending_wor
                     .iter()
                     .filter(|request| request.url.path().contains("/cancel-avatar-"))
                     .count()
-                    == super::profile::AVATAR_DOWNLOAD_CONCURRENCY
+                    == 1
             }) {
                 break;
             }
@@ -266,7 +268,7 @@ async fn canceling_last_avatar_waiter_aborts_active_fetch_and_admits_pending_wor
         }
     })
     .await
-    .expect("all active avatar requests should reach the delayed server");
+    .expect("the single shared media permit should reach the delayed server");
 
     let pending_sequence = super::profile::AVATAR_DOWNLOAD_CONCURRENCY as u64 + 1;
     assert!(
@@ -316,6 +318,27 @@ async fn canceling_last_avatar_waiter_aborts_active_fetch_and_admits_pending_wor
         .is_err(),
         "a different connection cannot cancel another avatar waiter"
     );
+    // Queued URI requests are waiting on the shared account-wide media permit.
+    // Cancel them so the actor-level pending URI becomes the next scheduler waiter.
+    for sequence in 2..=super::profile::AVATAR_DOWNLOAD_CONCURRENCY as u64 {
+        assert!(
+            handle
+                .send(AccountMessage::Command(
+                    AccountCommand::CancelAvatarThumbnail {
+                        request_id: RequestId {
+                            connection_id: RuntimeConnectionId(11),
+                            sequence: 100 + sequence,
+                        },
+                        target_request_id: RequestId {
+                            connection_id: RuntimeConnectionId(11),
+                            sequence,
+                        },
+                        mxc_uri: format!("mxc://localhost/cancel-avatar-{sequence}"),
+                    },
+                ))
+                .await
+        );
+    }
     assert!(
         handle
             .send(AccountMessage::Command(
@@ -376,6 +399,7 @@ async fn scoped_avatar_capacity_defers_without_losing_demand_and_reuses_terminal
     let cred_dir = tempdir().unwrap();
     let data_dir = tempdir().unwrap();
     let (handle, mut actions, _events) = spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    handle.set_search_crawler_speed(koushi_state::SearchCrawlerSpeed::Fast);
     assert!(
         handle
             .install_residency_test_session(std::sync::Arc::new(session))
@@ -636,6 +660,7 @@ async fn scoped_avatar_watch_cancels_active_and_queued_demand() {
     let cred_dir = tempdir().unwrap();
     let data_dir = tempdir().unwrap();
     let (handle, _actions, _events) = spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    handle.set_search_crawler_speed(koushi_state::SearchCrawlerSpeed::Fast);
     assert!(
         handle
             .install_residency_test_session(std::sync::Arc::new(session))
@@ -666,17 +691,17 @@ async fn scoped_avatar_watch_cancels_active_and_queued_demand() {
             .count()
     }
     timeout(Duration::from_secs(3), async {
-        while requests(&server).await < 6 {
+        while requests(&server).await < 1 {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("six scoped fetches start");
+    .expect("the single shared media fetch starts");
     handle.publish_avatar_demand(None);
     tokio::time::sleep(Duration::from_millis(1200)).await;
     assert_eq!(
         requests(&server).await,
-        6,
+        1,
         "closed demand must neither retry nor start queued fetches"
     );
     shutdown_and_ack(&handle).await;

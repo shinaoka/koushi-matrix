@@ -25,6 +25,7 @@ const COMPOSER_DRAFTS_INFO: &[u8] = b"koushi-desktop:composer-drafts";
 const SCHEDULED_SENDS_INFO: &[u8] = b"koushi-desktop:scheduled-sends";
 const NAVIGATION_INFO: &[u8] = b"koushi-desktop:navigation";
 const ROOM_PREFERENCES_INFO: &[u8] = b"koushi-desktop:room-preferences";
+const ACCOUNT_SETTINGS_INFO: &[u8] = b"koushi-desktop:account-settings";
 const READ_STATE_OUTBOX_INFO: &[u8] = b"koushi-desktop:read-state-outbox";
 const LAST_SESSION_ACCOUNT_NAME: &str = "koushi-desktop:last-session:v1";
 const SAVED_SESSIONS_ACCOUNT_NAME: &str = "koushi-desktop:saved-sessions:v1";
@@ -393,12 +394,22 @@ impl fmt::Debug for LastSessionPointer {
 #[derive(Clone, Eq, PartialEq)]
 pub struct SavedSessionIndex {
     sessions: Vec<SessionKeyId>,
+    tabs: Vec<SavedAccountTab>,
+    selected_account: Option<koushi_protocol::AccountKey>,
+}
+
+#[derive(Clone, Eq, PartialEq, Deserialize, Serialize)]
+pub struct SavedAccountTab {
+    pub account_key: koushi_protocol::AccountKey,
+    pub homeserver: String,
 }
 
 impl SavedSessionIndex {
     pub fn new() -> Self {
         Self {
             sessions: Vec::new(),
+            tabs: Vec::new(),
+            selected_account: None,
         }
     }
 
@@ -406,11 +417,78 @@ impl SavedSessionIndex {
         &self.sessions
     }
 
-    pub fn upsert(&mut self, session: SessionKeyId) {
-        if self.sessions.iter().any(|existing| existing == &session) {
-            return;
+    pub fn tabs(&self) -> &[SavedAccountTab] {
+        &self.tabs
+    }
+
+    pub fn selected_account(&self) -> Option<&koushi_protocol::AccountKey> {
+        self.selected_account.as_ref()
+    }
+
+    pub fn select_account(&mut self, account_key: &koushi_protocol::AccountKey) -> bool {
+        if self.tabs.iter().any(|tab| &tab.account_key == account_key) {
+            self.selected_account = Some(account_key.clone());
+            true
+        } else {
+            false
         }
-        self.sessions.push(session);
+    }
+
+    pub fn ensure_account_tab(
+        &mut self,
+        account_key: koushi_protocol::AccountKey,
+        homeserver: impl Into<String>,
+    ) {
+        if let Some(tab) = self
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.account_key == account_key)
+        {
+            tab.homeserver = homeserver.into();
+        } else {
+            self.tabs.push(SavedAccountTab {
+                account_key,
+                homeserver: homeserver.into(),
+            });
+        }
+    }
+
+    pub fn remove_account_tab(&mut self, account_key: &koushi_protocol::AccountKey) -> bool {
+        if self
+            .sessions
+            .iter()
+            .any(|session| session.user_id == account_key.0)
+        {
+            return false;
+        }
+        let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| &tab.account_key == account_key)
+        else {
+            return false;
+        };
+        self.tabs.remove(index);
+        if self.selected_account.as_ref() == Some(account_key) {
+            self.selected_account = self
+                .tabs
+                .get(index.min(self.tabs.len().saturating_sub(1)))
+                .map(|tab| tab.account_key.clone());
+        }
+        true
+    }
+
+    pub fn upsert(&mut self, session: SessionKeyId) {
+        if !self.sessions.iter().any(|existing| existing == &session) {
+            self.sessions.push(session.clone());
+        }
+        let account_key = koushi_protocol::AccountKey(session.user_id.clone());
+        if !self.tabs.iter().any(|tab| tab.account_key == account_key) {
+            self.tabs.push(SavedAccountTab {
+                account_key,
+                homeserver: session.homeserver,
+            });
+        }
     }
 
     pub fn remove(&mut self, session: &SessionKeyId) {
@@ -421,6 +499,8 @@ impl SavedSessionIndex {
         serde_json::to_string(&SavedSessionIndexPayload {
             version: 1,
             sessions: self.sessions.clone(),
+            tabs: self.tabs.clone(),
+            selected_account: self.selected_account.clone(),
         })
         .map_err(LocalSecretError::Json)
     }
@@ -428,9 +508,22 @@ impl SavedSessionIndex {
     pub fn from_json(value: &str) -> Result<Self, LocalSecretError> {
         let payload: SavedSessionIndexPayload =
             serde_json::from_str(value).map_err(LocalSecretError::Json)?;
-        Ok(Self {
-            sessions: payload.sessions,
-        })
+        let mut index = Self {
+            sessions: Vec::new(),
+            tabs: payload.tabs,
+            selected_account: payload.selected_account,
+        };
+        for session in payload.sessions {
+            index.upsert(session);
+        }
+        if !index
+            .tabs
+            .iter()
+            .any(|tab| Some(&tab.account_key) == index.selected_account.as_ref())
+        {
+            index.selected_account = None;
+        }
+        Ok(index)
     }
 }
 
@@ -450,6 +543,10 @@ impl fmt::Debug for SavedSessionIndex {
 struct SavedSessionIndexPayload {
     version: u8,
     sessions: Vec<SessionKeyId>,
+    #[serde(default)]
+    tabs: Vec<SavedAccountTab>,
+    #[serde(default)]
+    selected_account: Option<koushi_protocol::AccountKey>,
 }
 
 pub struct SdkStoreKey {
@@ -544,6 +641,10 @@ pub struct RoomPreferencesKey {
     key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
 }
 
+pub struct AccountSettingsKey {
+    key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
+}
+
 pub struct ReadStateOutboxKey {
     key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
 }
@@ -554,6 +655,12 @@ impl ReadStateOutboxKey {
     }
 }
 
+impl fmt::Debug for AccountSettingsKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AccountSettingsKey(..)")
+    }
+}
+
 impl fmt::Debug for ReadStateOutboxKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ReadStateOutboxKey(..)")
@@ -561,6 +668,12 @@ impl fmt::Debug for ReadStateOutboxKey {
 }
 
 impl RoomPreferencesKey {
+    pub fn as_bytes(&self) -> &[u8; LOCAL_UNLOCK_SECRET_LEN] {
+        &self.key
+    }
+}
+
+impl AccountSettingsKey {
     pub fn as_bytes(&self) -> &[u8; LOCAL_UNLOCK_SECRET_LEN] {
         &self.key
     }
@@ -744,6 +857,14 @@ impl LocalUnlockSecret {
         RoomPreferencesKey {
             key: self
                 .derive_key(ROOM_PREFERENCES_INFO)
+                .expect("32-byte HKDF output length is valid"),
+        }
+    }
+
+    pub fn derive_account_settings_key(&self) -> AccountSettingsKey {
+        AccountSettingsKey {
+            key: self
+                .derive_key(ACCOUNT_SETTINGS_INFO)
                 .expect("32-byte HKDF output length is valid"),
         }
     }

@@ -195,7 +195,7 @@ test("Rust display updates keep an old root whole without room backfill", async 
   await expect(page.locator(`[data-content-event-id="${LATEST_REPLY_EVENT_ID}"]`)).toHaveCount(0);
 
   await clearInvocations(page);
-  await page.getByRole("button", { name: t("workspace.userSettings") }).click();
+  await page.getByRole("button", { name: "App Settings", exact: true }).click();
   await page.getByRole("tab", { name: "Preferences", exact: true }).click();
   const placementToggle = page.getByRole("switch", {
     name: t("settings.threadRootLatestReply")
@@ -205,6 +205,7 @@ test("Rust display updates keep an old root whole without room backfill", async 
   await expect.poll(() => invocationCount(page, "update_settings")).toBe(1);
   await expect.poll(() => latestInvocationArgs(page, "update_settings")).toEqual({
     patch: {
+      scope: "app",
       timeline: {
         auto_load_older_messages: true,
         thread_root_order: { kind: "latestReply" }

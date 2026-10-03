@@ -33,6 +33,87 @@ pub(crate) fn handle_settings_loaded(
     effects
 }
 
+pub(crate) fn handle_account_settings_loaded(
+    state: &mut AppState,
+    values: crate::state::AccountSettingsValues,
+) -> Vec<AppEffect> {
+    let previous = state.settings.values.clone();
+    let previous_crawler = previous.search_crawler.clone();
+    state.settings.values.apply_account_settings(&values);
+    if state.settings.values == previous {
+        return Vec::new();
+    }
+
+    recompute_room_list_projection(state);
+    let mut effects = vec![
+        AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
+        AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+    ];
+    let crawler = &state.settings.values.search_crawler;
+    let content_changed = previous_crawler.include_media_captions != crawler.include_media_captions
+        || previous_crawler.include_filenames != crawler.include_filenames;
+    if content_changed {
+        for room_state in state.search_crawler.rooms.values_mut() {
+            if matches!(
+                room_state,
+                crate::state::SearchCrawlerRoomState::Completed { .. }
+            ) {
+                *room_state = crate::state::SearchCrawlerRoomState::Idle;
+            }
+        }
+        effects.push(AppEffect::InvalidateSearchCrawlerCache);
+        let (room_ids, latest_event_ids) = super::search::search_crawler_rooms(state);
+        if !room_ids.is_empty() {
+            effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids,
+                latest_event_ids,
+                settings: crawler.clone(),
+            });
+        }
+        effects.push(AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged));
+    }
+    effects
+}
+
+pub(crate) fn handle_app_settings_synchronized(
+    state: &mut AppState,
+    values: crate::state::AppSettingsValues,
+) -> Vec<AppEffect> {
+    let previous_crawler = state.settings.values.search_crawler.clone();
+    let previous_thread_order = state.settings.values.thread_list_order;
+    let previous = state.settings.values.clone();
+    state.settings.values.apply_app_settings(&values);
+    if state.settings.values == previous {
+        return Vec::new();
+    }
+
+    let new_crawler = state.settings.values.search_crawler.clone();
+    let mut effects = vec![
+        AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
+        AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+    ];
+    if super::native_attention::apply_badge_setting(state) {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged));
+    }
+    if state.settings.values.thread_list_order != previous_thread_order
+        && let crate::state::ThreadsListState::Open { items, .. } = &mut state.threads_list
+    {
+        sort_threads_list_items(items, state.settings.values.thread_list_order);
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged));
+    }
+    if previous_crawler.speed != new_crawler.speed {
+        let (room_ids, latest_event_ids) = super::search::search_crawler_rooms(state);
+        if !room_ids.is_empty() || new_crawler.speed == crate::state::SearchCrawlerSpeed::Paused {
+            effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids,
+                latest_event_ids,
+                settings: new_crawler,
+            });
+        }
+    }
+    effects
+}
+
 pub(crate) fn handle_settings_load_failed(
     state: &mut AppState,
     _message: String,
@@ -61,7 +142,7 @@ pub(crate) fn handle_settings_update_requested(
     let prev_thread_list_order = state.settings.values.thread_list_order;
     let prev_sidebar = state.settings.values.sidebar.clone();
 
-    state.settings.values.apply_patch(patch);
+    state.settings.values.apply_patch(patch.clone());
     state.settings.persistence = SettingsPersistenceState::Saving { request_id };
 
     let new_crawler = state.settings.values.search_crawler.clone();
@@ -69,6 +150,7 @@ pub(crate) fn handle_settings_update_requested(
         AppEffect::PersistSettings {
             request_id,
             values: state.settings.values.clone(),
+            patch: Box::new(patch),
         },
         AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
     ];

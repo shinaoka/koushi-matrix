@@ -10,23 +10,25 @@
 //!
 //! Sync and other SDK-owned essential traffic stay outside this scheduler.
 
+use crate::executor::Instant;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Instant;
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
+use koushi_state::SearchCrawlerSpeed;
 use tokio::sync::Notify;
+
+use crate::executor;
 
 /// Diagnostics source for every scheduler stage.
 const DIAGNOSTIC_SOURCE: &str = "core.account_work";
 
-/// Account-wide ceiling on scheduled history requests in flight.
+/// Cross-account ceiling on expensive scheduled work in flight.
 ///
-/// History pagination, gap repair, and crawling all page the same
-/// `/rooms/{roomId}/messages` endpoint, so the account keeps one page in flight
-/// regardless of per-kind policy. `max_concurrency` bounds a single kind below
-/// this ceiling; it can never raise work above it.
-const ACCOUNT_HISTORY_CONCURRENCY: usize = 1;
+/// History requests and background media fetches share one slot across the
+/// account runtimes owned by the desktop manager. `search_crawler.speed` also
+/// sets the shared interval between background permits.
+const SHARED_WORK_CONCURRENCY: usize = 1;
 
 /// Semantic classification every scheduled or interactive caller submits.
 ///
@@ -51,6 +53,8 @@ pub(crate) enum AccountWorkKind {
     OffscreenGapRepair,
     /// Search history crawling and non-visible history hydration.
     SearchCrawl,
+    /// Avatar/media fetches admitted under the shared background-work budget.
+    MediaPrefetch,
     /// Housekeeping that may wait for an idle account.
     Maintenance,
 }
@@ -80,7 +84,7 @@ pub(crate) struct AccountWorkPolicy {
     /// Whether better-priority work may ask this work to yield.
     pub(crate) preemptible: bool,
     /// Ceiling on concurrent work of this kind, bounded by
-    /// [`ACCOUNT_HISTORY_CONCURRENCY`].
+    /// [`SHARED_WORK_CONCURRENCY`].
     pub(crate) max_concurrency: u8,
     /// Events one permit may fetch before yielding and re-entering scheduling.
     pub(crate) batch_limit: u16,
@@ -126,6 +130,13 @@ impl AccountWorkKind {
                 max_concurrency: 1,
                 batch_limit: 64,
             },
+            Self::MediaPrefetch => AccountWorkPolicy {
+                priority: 112,
+                class: AccountWorkClass::Background,
+                preemptible: false,
+                max_concurrency: 1,
+                batch_limit: 1,
+            },
             Self::SearchCrawl => AccountWorkPolicy {
                 priority: 128,
                 class: AccountWorkClass::Background,
@@ -152,6 +163,7 @@ impl AccountWorkKind {
             Self::ExplicitPagination => "explicit_pagination",
             Self::OffscreenGapRepair => "offscreen_gap_repair",
             Self::SearchCrawl => "search_crawl",
+            Self::MediaPrefetch => "media_prefetch",
             Self::Maintenance => "maintenance",
         }
     }
@@ -160,11 +172,18 @@ impl AccountWorkKind {
     pub(crate) const fn is_interactive(self) -> bool {
         matches!(self.policy().class, AccountWorkClass::Interactive)
     }
+
+    /// The app-wide search-crawl speed budget covers history indexing and media
+    /// prefetch, not unrelated background maintenance or timeline repair.
+    const fn uses_shared_background_budget(self) -> bool {
+        matches!(self, Self::SearchCrawl | Self::MediaPrefetch)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AccountWorkScheduler {
     inner: Arc<SchedulerInner>,
+    account_tab_id: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -180,12 +199,16 @@ struct SchedulerState {
     active: Vec<ActiveWork>,
     waiting: Vec<WaitingWork>,
     interactive: Vec<InteractiveWork>,
+    selected_account_tab_id: Option<String>,
+    search_crawler_speed: SearchCrawlerSpeed,
+    last_background_completed: Option<Instant>,
 }
 
 #[derive(Debug)]
 struct ActiveWork {
     id: u64,
     kind: AccountWorkKind,
+    account_tab_id: Option<String>,
     priority: u8,
     preemptible: bool,
     cancel: Arc<Notify>,
@@ -196,14 +219,16 @@ struct ActiveWork {
 #[derive(Debug)]
 struct WaitingWork {
     id: u64,
-    priority: u8,
+    kind: AccountWorkKind,
+    account_tab_id: Option<String>,
     seq: u64,
 }
 
 #[derive(Debug)]
 struct InteractiveWork {
     id: u64,
-    priority: u8,
+    kind: AccountWorkKind,
+    account_tab_id: Option<String>,
 }
 
 /// Held while scheduled work runs. Dropping it releases the slot and wakes
@@ -246,6 +271,9 @@ impl Drop for AccountWorkPermit {
         {
             let mut state = lock_state(&self.inner);
             state.active.retain(|active| active.id != self.id);
+            if self.kind.uses_shared_background_budget() {
+                state.last_background_completed = Some(Instant::now());
+            }
             state.preempt_locked();
         }
         self.inner.notify.notify_waiters();
@@ -294,6 +322,38 @@ impl Drop for InteractiveWorkGuard {
 }
 
 impl AccountWorkScheduler {
+    pub(crate) fn for_account(&self, account_tab_id: &str) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            account_tab_id: Some(account_tab_id.to_owned()),
+        }
+    }
+
+    pub(crate) fn set_selected_account(&self, account_tab_id: Option<&str>) {
+        {
+            let mut state = lock_state(&self.inner);
+            state.selected_account_tab_id = account_tab_id.map(str::to_owned);
+            state.preempt_locked();
+        }
+        self.inner.notify.notify_waiters();
+    }
+
+    /// Apply the app-wide background budget to every account sharing this gate.
+    pub(crate) fn set_search_crawler_speed(&self, speed: SearchCrawlerSpeed) {
+        let changed = {
+            let mut state = lock_state(&self.inner);
+            if state.search_crawler_speed == speed {
+                false
+            } else {
+                state.search_crawler_speed = speed;
+                true
+            }
+        };
+        if changed {
+            self.inner.notify.notify_waiters();
+        }
+    }
+
     /// Admit interactive work immediately and ask worse-priority preemptible
     /// work to yield.
     pub(crate) fn begin_interactive(&self, kind: AccountWorkKind) -> InteractiveWorkGuard {
@@ -307,7 +367,8 @@ impl AccountWorkScheduler {
             let mut state = lock_state(&self.inner);
             state.interactive.push(InteractiveWork {
                 id,
-                priority: policy.priority,
+                kind,
+                account_tab_id: self.account_tab_id.clone(),
             });
             state.preempt_locked();
             state.active_priority_counts(policy.priority)
@@ -347,7 +408,8 @@ impl AccountWorkScheduler {
             self.inner.clone(),
             WaitingWork {
                 id,
-                priority: policy.priority,
+                kind,
+                account_tab_id: self.account_tab_id.clone(),
                 seq: self.next_seq(),
             },
         ));
@@ -355,17 +417,30 @@ impl AccountWorkScheduler {
 
         loop {
             let notified = self.inner.notify.notified();
+            let wait_until;
             {
                 let mut state = lock_state(&self.inner);
                 let waiting = slot
                     .as_ref()
                     .map(|slot| &slot.work)
                     .expect("waiting slot is retained until admission");
-                if state.can_admit_locked(kind, policy, waiting) {
+                let now = Instant::now();
+                let uses_budget = kind.uses_shared_background_budget();
+                let paused = state.paused_budget_waiter(kind);
+                let rate_limit = uses_budget
+                    .then(|| {
+                        state
+                            .last_background_completed
+                            .map(|last| last + background_interval(state.search_crawler_speed))
+                    })
+                    .flatten();
+                let rate_limit_elapsed = rate_limit.is_none_or(|deadline| deadline <= now);
+                if !paused && rate_limit_elapsed && state.can_admit_locked(kind, policy, waiting) {
                     let cancel = Arc::new(Notify::new());
                     state.active.push(ActiveWork {
                         id,
                         kind,
+                        account_tab_id: self.account_tab_id.clone(),
                         priority: policy.priority,
                         preemptible: policy.preemptible,
                         cancel: cancel.clone(),
@@ -394,8 +469,17 @@ impl AccountWorkScheduler {
                     };
                 }
                 state.preempt_locked();
+                wait_until = rate_limit.filter(|deadline| *deadline > now);
             }
-            notified.await;
+            tokio::select! {
+                _ = notified => {}
+                _ = async {
+                    match wait_until {
+                        Some(deadline) => executor::sleep(deadline.saturating_duration_since(Instant::now())).await,
+                        None => std::future::pending().await,
+                    }
+                } => {}
+            }
         }
     }
 
@@ -415,6 +499,11 @@ impl AccountWorkScheduler {
             .map(|active| active.kind)
             .collect()
     }
+
+    #[cfg(test)]
+    fn waiting_count(&self) -> usize {
+        lock_state(&self.inner).waiting.len()
+    }
 }
 
 impl SchedulerState {
@@ -424,7 +513,7 @@ impl SchedulerState {
         policy: AccountWorkPolicy,
         waiting: &WaitingWork,
     ) -> bool {
-        if self.active.len() >= ACCOUNT_HISTORY_CONCURRENCY {
+        if self.active.len() >= SHARED_WORK_CONCURRENCY {
             return false;
         }
         let same_kind = self
@@ -435,11 +524,21 @@ impl SchedulerState {
         if same_kind >= usize::from(policy.max_concurrency) {
             return false;
         }
-        // A strictly better-priority waiter goes first; equal priority is FIFO.
+        let waiting_rank = work_rank(
+            self.selected_account_tab_id.as_deref(),
+            waiting.kind,
+            waiting.account_tab_id.as_deref(),
+        );
         let outranked = self.waiting.iter().any(|other| {
-            other.id != waiting.id
-                && (other.priority < waiting.priority
-                    || (other.priority == waiting.priority && other.seq < waiting.seq))
+            if other.id == waiting.id || self.paused_budget_waiter(other.kind) {
+                return false;
+            }
+            let other_rank = work_rank(
+                self.selected_account_tab_id.as_deref(),
+                other.kind,
+                other.account_tab_id.as_deref(),
+            );
+            other_rank < waiting_rank || (other_rank == waiting_rank && other.seq < waiting.seq)
         });
         if outranked {
             return false;
@@ -448,23 +547,32 @@ impl SchedulerState {
         // instead of re-contending right after yielding; foreground work is
         // user-visible too and is never deferred behind it.
         if matches!(policy.class, AccountWorkClass::Background)
-            && self
-                .interactive
-                .iter()
-                .any(|entry| entry.priority < waiting.priority)
+            && self.interactive.iter().any(|entry| {
+                work_rank(
+                    self.selected_account_tab_id.as_deref(),
+                    entry.kind,
+                    entry.account_tab_id.as_deref(),
+                ) < waiting_rank
+            })
         {
             return false;
         }
         true
     }
 
-    /// Ask active preemptible work to yield for the best pending priority.
+    /// Ask active preemptible work to yield for the best pending work rank.
     fn preempt_locked(&mut self) {
-        let Some(best_pending) = self.best_pending_priority() else {
+        let Some(best_pending) = self.best_pending_rank() else {
             return;
         };
+        let selected_account_tab_id = self.selected_account_tab_id.clone();
         for active in &mut self.active {
-            if active.preemptible && active.priority > best_pending && !active.preempted {
+            let active_rank = work_rank(
+                selected_account_tab_id.as_deref(),
+                active.kind,
+                active.account_tab_id.as_deref(),
+            );
+            if active.preemptible && active_rank > best_pending && !active.preempted {
                 active.preempted = true;
                 active.cancel.notify_waiters();
                 active.cancel.notify_one();
@@ -481,12 +589,34 @@ impl SchedulerState {
         }
     }
 
-    fn best_pending_priority(&self) -> Option<u8> {
+    fn best_pending_rank(&self) -> Option<(u8, u8, u8)> {
         self.waiting
             .iter()
-            .map(|waiting| waiting.priority)
-            .chain(self.interactive.iter().map(|entry| entry.priority))
+            .filter(|waiting| !self.paused_budget_waiter(waiting.kind))
+            .map(|waiting| {
+                work_rank(
+                    self.selected_account_tab_id.as_deref(),
+                    waiting.kind,
+                    waiting.account_tab_id.as_deref(),
+                )
+            })
+            .chain(self.interactive.iter().map(|entry| {
+                work_rank(
+                    self.selected_account_tab_id.as_deref(),
+                    entry.kind,
+                    entry.account_tab_id.as_deref(),
+                )
+            }))
             .min()
+    }
+
+    /// A shared-budget waiter that the paused budget currently refuses to
+    /// admit. It stays queued so resuming wakes it, but it must not rank above
+    /// work the budget does not gate: otherwise one paused crawler request
+    /// starves unrelated maintenance and preempts it on every re-evaluation.
+    fn paused_budget_waiter(&self, kind: AccountWorkKind) -> bool {
+        kind.uses_shared_background_budget()
+            && self.search_crawler_speed == SearchCrawlerSpeed::Paused
     }
 
     /// Active counts strictly better and strictly worse than `priority`.
@@ -505,6 +635,39 @@ impl SchedulerState {
     }
 }
 
+/// Minimum gap after a background permit completes. Paused is handled as a
+/// closed gate in `acquire`; its interval is therefore unused.
+fn background_interval(speed: SearchCrawlerSpeed) -> std::time::Duration {
+    match speed {
+        SearchCrawlerSpeed::Fast => std::time::Duration::ZERO,
+        SearchCrawlerSpeed::Standard => std::time::Duration::from_millis(100),
+        SearchCrawlerSpeed::Slow => std::time::Duration::from_millis(500),
+        SearchCrawlerSpeed::Paused => std::time::Duration::ZERO,
+    }
+}
+
+fn work_rank(
+    selected_account_tab_id: Option<&str>,
+    kind: AccountWorkKind,
+    account_tab_id: Option<&str>,
+) -> (u8, u8, u8) {
+    let policy = kind.policy();
+    let class = match policy.class {
+        AccountWorkClass::Interactive => 0,
+        AccountWorkClass::Foreground => 1,
+        AccountWorkClass::Background => 2,
+    };
+    let account_priority = if matches!(policy.class, AccountWorkClass::Background)
+        && selected_account_tab_id.is_some()
+        && account_tab_id != selected_account_tab_id
+    {
+        1
+    } else {
+        0
+    };
+    (class, account_priority, policy.priority)
+}
+
 /// Keeps a waiter visible to the scheduler until it is admitted, and removes it
 /// again if the waiting future is dropped.
 struct WaitingSlot {
@@ -518,7 +681,8 @@ impl WaitingSlot {
             let mut state = lock_state(&inner);
             state.waiting.push(WaitingWork {
                 id: work.id,
-                priority: work.priority,
+                kind: work.kind,
+                account_tab_id: work.account_tab_id.clone(),
                 seq: work.seq,
             });
             state.preempt_locked();

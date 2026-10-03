@@ -13,7 +13,8 @@ use matrix_sdk::ruma::{MxcUri, OwnedMxcUri};
 use tokio::sync::Semaphore;
 
 use crate::renderable_thumbnail::{
-    RenderableThumbnailKind, clear_renderable_thumbnail_cache, store_renderable_thumbnail,
+    RenderableThumbnailKind, clear_renderable_thumbnail_cache_for_account,
+    store_renderable_thumbnail_for_account,
 };
 use crate::room::RoomMessage;
 use crate::timeline::TimelineMessage;
@@ -169,8 +170,13 @@ async fn download_avatar_thumbnail(
         .await
         .map_err(|_| AvatarThumbnailFailureKind::Network)?;
 
-    store_renderable_thumbnail(RenderableThumbnailKind::Avatar, mxc_uri, bytes)
-        .map_err(|_| AvatarThumbnailFailureKind::Unsupported)
+    store_renderable_thumbnail_for_account(
+        RenderableThumbnailKind::Avatar,
+        session.info.user_id.as_str(),
+        mxc_uri,
+        bytes,
+    )
+    .map_err(|_| AvatarThumbnailFailureKind::Unsupported)
 }
 
 fn classify_profile_error(error: &koushi_sdk::MatrixProfileError) -> ProfileFailureKind {
@@ -387,13 +393,17 @@ impl AccountActor {
             .avatar_session_generation
             .load(std::sync::atomic::Ordering::Acquire);
         let semaphore = self.avatar_download_semaphore.clone();
+        let account_work = self.account_work.clone();
         let tx = self.self_tx.clone();
         let mxc_uri_clone = mxc_uri;
         let abort_key = mxc_uri_clone.clone();
 
         let abort_handle = self.avatar_fetch_tasks.spawn(async move {
-            // The actor starts no more than AVATAR_DOWNLOAD_CONCURRENCY tasks;
-            // the semaphore remains a defensive SDK-side concurrency fence.
+            // The shared scheduler limits expensive media work across account
+            // runtimes; this semaphore remains a per-account defensive bound.
+            let _work_permit = account_work
+                .acquire(crate::account_work::AccountWorkKind::MediaPrefetch)
+                .await;
             let _permit = semaphore.acquire().await;
             let thumbnail = retry_avatar_thumbnail_fetch(|| {
                 download_avatar_thumbnail(&session, &mxc_uri_clone)
@@ -680,7 +690,9 @@ impl AccountActor {
         self.avatar_pending.clear();
         self.avatar_active_fetches = 0;
         self.avatar_cache.clear();
-        clear_renderable_thumbnail_cache();
+        if let Some(session) = &self.session {
+            clear_renderable_thumbnail_cache_for_account(session.info.user_id.as_str());
+        }
         // Replace the semaphore so any task that manages to run after abort
         // cannot accidentally re-use a poisoned permit count.
         self.avatar_download_semaphore = Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY));

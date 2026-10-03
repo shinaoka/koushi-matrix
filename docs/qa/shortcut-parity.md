@@ -13,7 +13,7 @@ It uses synthetic application state only.
 | Search in room | `Ctrl/Cmd+F` | Moves focus to the search box and narrows scope to the active room. |
 | Find rooms | `Ctrl/Cmd+K` | Moves focus to the search box and restores all-room scope. |
 | Toggle right panel | `Ctrl/Cmd+.` | Opens or closes the contextual right panel. |
-| User settings | `Cmd+,` on macOS | Opens the modal user settings dialog. |
+| Account Settings | `Cmd+,` on macOS | Opens the modal Account Settings dialog. |
 | Go home | `Ctrl+Alt+H` | Current cross-platform row for the home action. |
 | Select room | `Enter` | Selects the focused room list entry. |
 | Previous room | `ArrowUp` | Moves within the room list. |
@@ -38,5 +38,5 @@ It uses synthetic application state only.
 - Native menu accelerators are checked by the same registry audit.
 - Keyboard reachability of the shell is covered by `apps/desktop/e2e/desktop-shell-a11y.spec.ts`.
 
-Keyboard shortcuts are listed under **User settings → Keyboard**. The Help menu
+Keyboard shortcuts are listed under **App Settings → Keyboard**. The Help menu
 opens the GitHub URL copying guide, with no keyboard-settings accelerator.

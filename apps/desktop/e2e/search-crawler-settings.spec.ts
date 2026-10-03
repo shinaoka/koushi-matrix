@@ -28,8 +28,13 @@ async function gotoReadyShell(page: import("@playwright/test").Page): Promise<vo
   await expect(page.getByRole("main", { name: t("timeline.conversation") })).toBeVisible();
 }
 
-async function openUserSettings(page: import("@playwright/test").Page): Promise<void> {
-  await page.getByRole("button", { name: t("workspace.userSettings") }).click();
+async function openUserSettings(
+  page: import("@playwright/test").Page,
+  scope: "account" | "app" = "account"
+): Promise<void> {
+  await page.getByRole("button", {
+    name: scope === "app" ? t("settings.appSettings") : t("workspace.userSettings")
+  }).click();
   await page.getByRole("tab", { name: "Search history", exact: true }).click();
   // Wait for the settings panel to be open and the search history section to be present
   await expect(page.getByRole("region", { name: t("settings.searchHistory") })).toBeVisible();
@@ -69,9 +74,9 @@ async function latestUpdateSettingsArgs(
 //  Section navigation
 // ─────────────────────────────────────────────────────────────
 
-test("Search history nav item opens the section in User Settings", async ({ page }) => {
+test("Search history speed settings are reachable from App Settings", async ({ page }) => {
   await gotoReadyShell(page);
-  await openUserSettings(page);
+  await openUserSettings(page, "app");
 
   const section = page.getByRole("region", { name: t("settings.searchHistory") });
   await expect(section).toBeVisible();
@@ -95,7 +100,7 @@ test("selecting Fast speed dispatches update_settings with search_crawler.speed=
       window as unknown as { __harness: { clearInvocations(): void } }
     ).__harness.clearInvocations()
   );
-  await openUserSettings(page);
+  await openUserSettings(page, "app");
 
   const speedGroup = page.getByRole("group", { name: t("settings.searchHistorySpeed") });
   const fastButton = speedGroup.getByRole("button", {
@@ -109,6 +114,7 @@ test("selecting Fast speed dispatches update_settings with search_crawler.speed=
   const args = await latestUpdateSettingsArgs(page);
   expect(args).toEqual({
     patch: {
+      scope: "app",
       search_crawler: {
         speed: "fast",
         include_media_captions: true,
@@ -122,7 +128,7 @@ test("speed button shows aria-pressed=true for the active speed from the Rust sn
   page
 }) => {
   await gotoReadyShell(page);
-  await openUserSettings(page);
+  await openUserSettings(page, "app");
 
   // Default snapshot has speed: "standard"
   const speedGroup = page.getByRole("group", { name: t("settings.searchHistorySpeed") });
@@ -161,7 +167,7 @@ test("speed button pressed state updates only after the Rust snapshot changes", 
     );
   });
 
-  await openUserSettings(page);
+  await openUserSettings(page, "app");
 
   const speedGroup = page.getByRole("group", { name: t("settings.searchHistorySpeed") });
   const fastButton = speedGroup.getByRole("button", {
@@ -203,6 +209,7 @@ test("toggling 'Index media captions' dispatches update_settings with the flippe
   const args = await latestUpdateSettingsArgs(page);
   expect(args).toEqual({
     patch: {
+      scope: "account",
       search_crawler: {
         speed: "standard",
         include_media_captions: false,
@@ -233,6 +240,7 @@ test("toggling 'Index file names' dispatches update_settings with the flipped va
   const args = await latestUpdateSettingsArgs(page);
   expect(args).toEqual({
     patch: {
+      scope: "account",
       search_crawler: {
         speed: "standard",
         include_media_captions: true,

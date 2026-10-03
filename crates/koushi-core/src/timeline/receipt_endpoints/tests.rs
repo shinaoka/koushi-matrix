@@ -55,7 +55,7 @@ async fn source_removal_waits_for_commit_and_invalidates_upgraded_witness() {
         owner: None,
         epoch: index.window_epoch(),
     };
-    raw.bind_owner(&gate, &serde_json::from_value(serde_json::json!({"key": key, "projection_request_id": {"connection_id":"1", "sequence":"1"}, "generation":"1", "event_id":"$event"})).unwrap(), generation);
+    raw.bind_owner(&gate, &serde_json::from_value(serde_json::json!({"key": key, "projection_request_id": {"connection_id":"1", "sequence":"1"}, "generation":"1", "event_id":"$event"})).unwrap(), generation, "");
     let window = raw.into_resolved(koushi_state::CatalogLocale::En);
     let upgraded = window.epoch.upgrade().unwrap();
     let (attempted_tx, attempted_rx) = std::sync::mpsc::channel();
@@ -112,7 +112,7 @@ async fn raw_window_does_not_keep_replaced_actor_authority() {
         revision: Some(1),
     }));
     window.epoch = Arc::downgrade(&epoch);
-    window.bind_owner(&gate, &serde_json::from_value(serde_json::json!({"key": key, "projection_request_id": {"connection_id":"1", "sequence":"1"}, "generation":"1", "event_id":"$event"})).unwrap(), generation);
+    window.bind_owner(&gate, &serde_json::from_value(serde_json::json!({"key": key, "projection_request_id": {"connection_id":"1", "sequence":"1"}, "generation":"1", "event_id":"$event"})).unwrap(), generation, "");
     assert!(window.acquire_source().is_some());
     assert_eq!(window.commit_if_current(|| 42), Some(42));
     epoch.lock().unwrap().valid = false;

@@ -17,10 +17,11 @@ import { t } from "../src/i18n/messages";
 
 /** Every interactive control in the top bar, in visual order. */
 const TOP_BAR_CONTROLS = [
+  ".account-tab-strip .account-tab-add",
   ".top-search input",
   ".scope-select",
-  ".top-actions .sync-status",
-  ".top-actions .icon-button"
+  ".top-actions .app-settings-button",
+  ".top-actions .icon-button:not(.app-settings-button)"
 ] as const;
 
 async function gotoReadyShell(page: Page): Promise<void> {
@@ -73,7 +74,7 @@ test("every top-bar control shares one vertical center line", async ({ page }) =
   expect(Math.abs(values[0]! - barCenter)).toBeLessThanOrEqual(0.5);
 });
 
-test("session status and Diagnostics stay reachable at the minimum width", async ({ page }) => {
+test("account status and Diagnostics stay reachable at the minimum width", async ({ page }) => {
   await page.setViewportSize({ width: 760, height: 800 });
   await gotoReadyShell(page);
   await page.evaluate(() => {
@@ -91,7 +92,7 @@ test("session status and Diagnostics stay reachable at the minimum width", async
     window.__harness.pushStateUpdate();
   });
 
-  await expect(page.locator(".top-actions .sync-status")).toBeVisible();
+  await expect(page.locator('.account-tab[data-status="ready"] .account-tab-ready-dot')).toBeVisible();
   await expect(page.getByRole("button", { name: t("diagnostics.open") })).toBeVisible();
 
   const layout = await page.evaluate(() => {

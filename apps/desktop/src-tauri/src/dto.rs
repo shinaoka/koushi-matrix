@@ -42,6 +42,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize)]
 pub struct FrontendDesktopSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_tab_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub state_generation: Option<u64>,
     pub state: FrontendAppState,
     pub sidebar: SidebarModel,
@@ -60,6 +62,7 @@ impl From<AppState> for FrontendDesktopSnapshot {
         // same state.
         let sidebar = koushi_state::compose_sidebar_for_state(&state);
         Self {
+            account_tab_id: None,
             state_generation: None,
             state: state.into(),
             sidebar,
@@ -73,6 +76,16 @@ impl FrontendDesktopSnapshot {
     pub fn from_versioned(state: AppState, generation: u64) -> Self {
         let mut snapshot = Self::from(state);
         snapshot.state_generation = Some(generation);
+        snapshot
+    }
+
+    pub fn from_versioned_for_account(
+        state: AppState,
+        generation: u64,
+        account_tab_id: String,
+    ) -> Self {
+        let mut snapshot = Self::from_versioned(state, generation);
+        snapshot.account_tab_id = Some(account_tab_id);
         snapshot
     }
 }

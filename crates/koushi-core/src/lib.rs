@@ -10,6 +10,7 @@
 //! Migration spec: `docs/superpowers/specs/2026-06-12-headless-core-runtime-design.md`.
 
 pub mod account;
+pub mod account_runtime_manager;
 
 /// Inter-actor command/message inboxes (AppActor -> AccountActor ->
 /// Room/Timeline actors). Sized so that forwarding a command under heavy sync

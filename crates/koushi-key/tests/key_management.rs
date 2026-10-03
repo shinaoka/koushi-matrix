@@ -179,6 +179,53 @@ fn saved_session_index_tracks_unique_sessions_and_redacts_debug() {
 }
 
 #[test]
+fn saved_session_index_persists_one_account_tab_per_matrix_user() {
+    let alpha = SessionKeyId {
+        homeserver: "https://matrix.example".into(),
+        user_id: "@user-a:example.invalid".into(),
+        device_id: "DEVICE-A".into(),
+    };
+    let alpha_other_device = SessionKeyId {
+        device_id: "DEVICE-A2".into(),
+        ..alpha.clone()
+    };
+    let beta = SessionKeyId {
+        homeserver: "https://matrix.example".into(),
+        user_id: "@user-b:example.invalid".into(),
+        device_id: "DEVICE-B".into(),
+    };
+
+    let mut index = SavedSessionIndex::new();
+    index.upsert(alpha.clone());
+    index.upsert(beta.clone());
+    index.upsert(alpha_other_device.clone());
+
+    let alpha_key = koushi_protocol::AccountKey(alpha.user_id.clone());
+    let beta_key = koushi_protocol::AccountKey(beta.user_id.clone());
+    assert!(index.select_account(&alpha_key));
+    let payload: serde_json::Value = serde_json::from_str(&index.to_json().unwrap()).unwrap();
+    let tabs = payload["tabs"].as_array().expect("persisted account tabs");
+    assert_eq!(tabs.len(), 2);
+    assert_eq!(tabs[0]["account_key"], "@user-a:example.invalid");
+    assert_eq!(tabs[1]["account_key"], "@user-b:example.invalid");
+    assert_eq!(payload["selected_account"], "@user-a:example.invalid");
+
+    let mut restored = SavedSessionIndex::from_json(&payload.to_string()).unwrap();
+    assert_eq!(restored.selected_account(), Some(&alpha_key));
+    assert!(restored.select_account(&beta_key));
+    assert_eq!(restored.selected_account(), Some(&beta_key));
+    assert!(!restored.remove_account_tab(&alpha_key));
+
+    let mut signed_out = restored;
+    signed_out.remove(&alpha);
+    signed_out.remove(&alpha_other_device);
+    assert_eq!(signed_out.tabs().len(), 2);
+    assert!(signed_out.remove_account_tab(&alpha_key));
+    assert_eq!(signed_out.tabs().len(), 1);
+    assert_eq!(signed_out.selected_account(), Some(&beta_key));
+}
+
+#[test]
 fn saved_session_index_account_name_is_global_and_versioned() {
     assert_eq!(
         saved_sessions_account_name(),

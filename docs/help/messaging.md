@@ -10,7 +10,7 @@
 4. Check the message's status. A failed or pending send is not confirmation that
    the server accepted it.
 
-Choose the send shortcut in **User settings → Keyboard**. The available modes
+Choose the send shortcut in **App Settings → Keyboard**. The available modes
 are **Enter sends** and the platform modifier plus Enter. The keyboard page
 lists the current platform's shortcuts. Confirming an IME candidate is separate
 from sending the composed message.

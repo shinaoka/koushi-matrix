@@ -106,11 +106,12 @@ export function NativeModal({ onDismiss, dismissible = true, initialFocusRef, re
 }
 
 /** Browser top layer: escapes pane clipping and supplies modal focus containment. */
-export function ModalDialog({ title, className = "", dismissible = true, showCloseButton = true, onClose, children }: {
+export function ModalDialog({ title, className = "", dismissible = true, showCloseButton = true, headerContent, onClose, children }: {
   title: string;
   className?: string;
   dismissible?: boolean;
   showCloseButton?: boolean;
+  headerContent?: ReactNode;
   onClose: () => void;
   children: ReactNode;
 }) {
@@ -122,6 +123,7 @@ export function ModalDialog({ title, className = "", dismissible = true, showClo
           <X size={20} aria-hidden="true" />
         </button> : null}
       </header>
+      {headerContent ? <div className="app-modal-header-content">{headerContent}</div> : null}
       {children}
     </NativeModal>
   );

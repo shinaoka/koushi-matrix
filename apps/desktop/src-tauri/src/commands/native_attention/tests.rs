@@ -229,7 +229,7 @@ async fn command_helper_crosses_core_runtime_and_settles_the_matching_dispatch()
         calls: Cell::new(0),
         outcome: NativeAttentionSoundOutcome::Played,
     };
-    let (outcome, dispatch_id) = dispatch_native_attention_sound(&runtime, &backend).await;
+    let (outcome, dispatch_id) = dispatch_native_attention_sound(runtime.attach(), &backend).await;
     assert_eq!(outcome, NativeAttentionSoundOutcome::Played);
     let dispatch_id = dispatch_id.expect("submitted dispatch id");
 
@@ -312,8 +312,8 @@ async fn concurrent_command_helpers_admit_only_one_native_backend_call() {
     };
 
     let lock = tokio::sync::Mutex::new(());
-    let first = dispatch_native_attention_sound_with_lock(&runtime, &backend, &lock);
-    let second = dispatch_native_attention_sound_with_lock(&runtime, &backend, &lock);
+    let first = dispatch_native_attention_sound_with_lock(runtime.attach(), &backend, &lock);
+    let second = dispatch_native_attention_sound_with_lock(runtime.attach(), &backend, &lock);
     let release = async {
         backend.entered.notified().await;
         backend.release.notify_one();
