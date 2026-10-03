@@ -1139,6 +1139,8 @@ export interface SpaceSummary {
   /** The join rule as last synced; null until a room-list update projects it (#935). */
   join_rule: RoomJoinRule | null;
   child_room_ids: string[];
+  /** The Space's own parent-side `m.space.child` rooms; add-existing eligibility uses this list, while `child_room_ids` is the display union (#1098). */
+  parent_side_child_room_ids: string[];
 }
 
 /**

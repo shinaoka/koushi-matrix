@@ -1078,6 +1078,11 @@
           ],
           "display_name": "Fixture Space",
           "join_rule": "knockRestricted",
+          "parent_side_child_room_ids": [
+            "!room:example.invalid",
+            "!low-priority-room:example.invalid",
+            "!not-joined-room:example.invalid"
+          ],
           "raw_name": "Fixture Space Canonical Name",
           "space_id": "!space:example.invalid"
         }

@@ -776,6 +776,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
             avatar: None,
             join_rule: None,
             child_room_ids: vec!["room-a".to_owned()],
+            parent_side_child_room_ids: vec!["room-a".to_owned()],
         }],
         rooms: vec![
             RoomSummary {
@@ -864,6 +865,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 avatar: None,
                 join_rule: None,
                 child_room_ids: vec!["room-b".to_owned()],
+                parent_side_child_room_ids: vec!["room-b".to_owned()],
             }],
             rooms: vec![
                 RoomSummary {
@@ -954,6 +956,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
             avatar: None,
             join_rule: None,
             child_room_ids: vec!["room-a".to_owned()],
+            parent_side_child_room_ids: vec!["room-a".to_owned()],
         }],
         rooms: vec![RoomSummary {
             display_name_placeholder: None,
@@ -1009,6 +1012,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
                 avatar: None,
                 join_rule: None,
                 child_room_ids: vec!["room-b".to_owned()],
+                parent_side_child_room_ids: vec!["room-b".to_owned()],
             }],
             rooms: vec![RoomSummary {
                 display_name_placeholder: None,
@@ -1101,6 +1105,7 @@ fn room_list_update_keeps_active_dm_global_with_selected_space() {
                 avatar: None,
                 join_rule: None,
                 child_room_ids: vec!["room-a".to_owned()],
+                parent_side_child_room_ids: vec!["room-a".to_owned()],
             }],
             rooms: rooms(),
         },

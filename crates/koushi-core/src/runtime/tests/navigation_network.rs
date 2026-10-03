@@ -61,6 +61,7 @@ fn navigation_state() -> AppState {
                 avatar: None,
                 join_rule: None,
                 child_room_ids: vec![SPACE_ROOM.to_owned()],
+                parent_side_child_room_ids: vec![SPACE_ROOM.to_owned()],
             },
             koushi_state::SpaceSummary {
                 space_id: EMPTY_SPACE.to_owned(),
@@ -69,6 +70,7 @@ fn navigation_state() -> AppState {
                 avatar: None,
                 join_rule: None,
                 child_room_ids: Vec::new(),
+                parent_side_child_room_ids: Vec::new(),
             },
         ],
         ..AppState::default()

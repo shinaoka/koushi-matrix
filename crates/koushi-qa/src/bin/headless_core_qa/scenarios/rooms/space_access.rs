@@ -100,6 +100,11 @@ pub(super) async fn verify(
             ));
         }
         wait_for_observed_join_rule(conn_b, &space_id, target, "space_access B observes").await?;
+        // The reload below reads the SDK's synced room state, and
+        // `send_state_event` does not apply the local write, so wait for A's own
+        // projection before reloading. Otherwise a busy sync loop can still
+        // report the previous rule (#1098).
+        wait_for_observed_join_rule(conn_a, &space_id, target, "space_access A observes").await?;
         let persisted =
             load_room_settings_for_qa(conn_a, &space_id, "space_access A reload").await?;
         if persisted.join_rule != target {

@@ -31,6 +31,7 @@ fn account_switch_request_enters_switching_state_and_clears_views() {
             avatar: None,
             join_rule: None,
             child_room_ids: vec!["room-a".to_owned()],
+            parent_side_child_room_ids: vec!["room-a".to_owned()],
         }],
         rooms: vec![RoomSummary {
             display_name_placeholder: None,
@@ -164,6 +165,7 @@ fn logout_clears_session_views_and_notifies_ui() {
             avatar: None,
             join_rule: None,
             child_room_ids: vec!["room-a".to_owned()],
+            parent_side_child_room_ids: vec!["room-a".to_owned()],
         }],
         rooms: vec![RoomSummary {
             display_name_placeholder: None,
@@ -318,6 +320,7 @@ fn authentication_invalidation_locks_ready_with_closed_reason_and_preserves_soft
             avatar: None,
             join_rule: None,
             child_room_ids: Vec::new(),
+            parent_side_child_room_ids: Vec::new(),
         });
         let effects = reduce(
             &mut state,
@@ -406,6 +409,7 @@ fn session_locked_stops_sync_and_clears_session_views() {
             avatar: None,
             join_rule: None,
             child_room_ids: vec![],
+            parent_side_child_room_ids: vec![],
         }],
         ..AppState::default()
     };

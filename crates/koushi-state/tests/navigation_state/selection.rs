@@ -173,6 +173,7 @@ fn room_list_update_keeps_empty_selected_space_empty() {
                 avatar: None,
                 join_rule: None,
                 child_room_ids: Vec::new(),
+                parent_side_child_room_ids: Vec::new(),
             },
             SpaceSummary {
                 space_id: "space-a".to_owned(),
@@ -181,6 +182,7 @@ fn room_list_update_keeps_empty_selected_space_empty() {
                 avatar: None,
                 join_rule: None,
                 child_room_ids: vec!["room-a".to_owned()],
+                parent_side_child_room_ids: vec!["room-a".to_owned()],
             },
         ],
         rooms: rooms(),
@@ -268,6 +270,11 @@ fn selecting_space_restores_last_non_dm_room_for_that_space() {
         avatar: None,
         join_rule: None,
         child_room_ids: vec!["room-a".to_owned(), "room-b".to_owned(), "dm-a".to_owned()],
+        parent_side_child_room_ids: vec![
+            "room-a".to_owned(),
+            "room-b".to_owned(),
+            "dm-a".to_owned(),
+        ],
     }];
     let mut state = AppState {
         session: SessionState::Ready(session_info()),

@@ -335,6 +335,10 @@ fn space_scope_resolves_to_attachment_scope_with_child_room_ids() {
             "!room-a:example.invalid".to_owned(),
             "!room-b:example.invalid".to_owned(),
         ],
+        parent_side_child_room_ids: vec![
+            "!room-a:example.invalid".to_owned(),
+            "!room-b:example.invalid".to_owned(),
+        ],
     }];
 
     let scope = FilesViewScope::Space {

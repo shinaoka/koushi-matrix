@@ -117,6 +117,7 @@ fn ready_room_with_parent_space() -> AppState {
         avatar: None,
         join_rule: None,
         child_room_ids: vec![ROOM_A.to_owned()],
+        parent_side_child_room_ids: vec![ROOM_A.to_owned()],
     });
     state
         .rooms
@@ -1149,6 +1150,7 @@ fn invite_space_open_first_query_select_and_batch_flow_is_admitted() {
         avatar: None,
         join_rule: None,
         child_room_ids: Vec::new(),
+        parent_side_child_room_ids: Vec::new(),
     });
     reduce(
         &mut opened,
@@ -1174,6 +1176,7 @@ fn invite_space_open_first_query_select_and_batch_flow_is_admitted() {
         avatar: None,
         join_rule: None,
         child_room_ids: Vec::new(),
+        parent_side_child_room_ids: Vec::new(),
     });
     first_query.profile.users.insert(
         ALICE.to_owned(),

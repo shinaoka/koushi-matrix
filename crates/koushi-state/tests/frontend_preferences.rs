@@ -161,6 +161,12 @@ fn rust_sidebar_projects_complete_sections_order_and_local_space_presentation() 
             "!fav:example.invalid".to_owned(),
             "!low:example.invalid".to_owned(),
         ],
+        parent_side_child_room_ids: vec![
+            "!normal-b:example.invalid".to_owned(),
+            "!normal-a:example.invalid".to_owned(),
+            "!fav:example.invalid".to_owned(),
+            "!low:example.invalid".to_owned(),
+        ],
     }];
     state.rooms = vec![
         room(
@@ -272,6 +278,7 @@ fn rust_sidebar_projects_complete_sections_order_and_local_space_presentation() 
         avatar: None,
         join_rule: None,
         child_room_ids: Vec::new(),
+        parent_side_child_room_ids: Vec::new(),
     });
     state.navigation.space_order = vec![
         "!other:example.invalid".to_owned(),

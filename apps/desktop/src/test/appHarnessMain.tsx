@@ -165,7 +165,8 @@ function readySnapshot(
       display_name: SPACE_NAME,
       avatar: null,
       join_rule: null,
-      child_room_ids: [ROOM_ID]
+      child_room_ids: [ROOM_ID],
+      parent_side_child_room_ids: [ROOM_ID]
     },
     ...(overrides.extraSpaces ?? [])
   ];
@@ -744,7 +745,8 @@ function afterCreateSpaceSnapshot(): DesktopSnapshot {
     display_name: "Created Space",
     avatar: null,
     join_rule: null,
-    child_room_ids: []
+    child_room_ids: [],
+    parent_side_child_room_ids: []
   });
   snapshot.state.ui.navigation.active_space_id = newSpaceId;
   snapshot.sidebar.active_space_id = newSpaceId;

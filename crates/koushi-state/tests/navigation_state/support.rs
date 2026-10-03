@@ -35,6 +35,7 @@ pub(super) fn spaces() -> Vec<SpaceSummary> {
         avatar: None,
         join_rule: None,
         child_room_ids: vec!["room-a".to_owned(), "dm-a".to_owned()],
+        parent_side_child_room_ids: vec!["room-a".to_owned(), "dm-a".to_owned()],
     }]
 }
 
