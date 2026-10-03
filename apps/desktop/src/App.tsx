@@ -117,7 +117,6 @@ import {
 } from "./domain/contextMenus";
 import { shortcutActionFromMenuPayload } from "./domain/shortcuts";
 import { createLatestShortcutHandler, listenForAppShortcuts } from "./app/keyboardShortcuts";
-import { effectiveLoginServer } from "./app/loginServer";
 import { syncNativeMenuLabels } from "./backend/tauri/nativeMenuLabels";
 import {
   effectiveRightPanelModeForSnapshot,
@@ -340,6 +339,7 @@ function spaceMembersLoadDemandKey(fence: SpaceMemberFence): string {
   return `${fence.accountOwnerKey}\u0000${fence.spaceId}\u0000${fence.generation}`;
 }
 
+const DEFAULT_HOMESERVER = "https://matrix.org";
 declare global {
   interface Window {
     __matrixDesktopQaErrorCaptureInstalled?: boolean;
@@ -391,7 +391,6 @@ const DEFAULT_CREATE_ROOM_OPTIONS: CreateRoomDialogOptions = {
   visibility: "private"
 };
 const DEFAULT_SIDEBAR_WIDTH = 318;
-const LOGIN_DISCOVERY_DEBOUNCE_MS = 400;
 const MIN_SIDEBAR_WIDTH = 260;
 const MAX_SIDEBAR_WIDTH = 440;
 const DEFAULT_RIGHT_PANEL_WIDTH = 390;
@@ -927,19 +926,13 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
   }
 
   async function removeSignedOutAccountTab(tabId: string): Promise<void> {
-    // #1101: closing an unfinished add-account tab cancels it and returns to
-    // the previous account; it never signs out or removes a bound account.
-    const cancelling =
-      accountTabsRef.current?.tabs.find((tab) => tab.id === tabId)?.status === "addAccount";
     const epoch = ++selectionEpochRef.current;
     const previous = accountTabsRef.current?.selectedTabId ?? null;
     selectionPendingRef.current = true;
     selectedTabIntentRef.current = previous === tabId ? null : previous;
     if (previous === tabId) setRendererSelectedAccountTabId(null);
     try {
-      const next = cancelling
-        ? await desktopApi.cancelAddAccountTab(tabId)
-        : await desktopApi.removeSignedOutAccountTab(tabId);
+      const next = await desktopApi.removeSignedOutAccountTab(tabId);
       if (epoch === selectionEpochRef.current) {
         selectionPendingRef.current = false;
         selectedTabIntentRef.current = next.selectedTabId;
@@ -1319,27 +1312,8 @@ function AccountContent({
         .catch(() => undefined);
     }
   }, [snapshot]);
+  const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
   const [loginUsername, setLoginUsername] = useState("");
-  const [loginServerOverride, setLoginServerOverride] = useState<string | null>(null);
-  const loginServer = effectiveLoginServer(loginUsername, loginServerOverride);
-  const loginSessionKind = snapshot?.state.domain.session.kind;
-  const loginAuth = snapshot?.state.domain.auth;
-  const loginAuthHomeserver = loginAuth && loginAuth.kind !== "unknown" ? loginAuth.homeserver : null;
-  // #1101: login methods follow the server derived from the Matrix ID, so the
-  // single sign-on entry appears without a separate "check" step. Core keeps
-  // only the result for the latest requested server.
-  useEffect(() => {
-    if (loginSessionKind !== "signedOut" || !loginServer || loginAuthHomeserver === loginServer) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      void settleCommand(api.discoverLoginMethods(loginServer)).catch(() => undefined);
-    }, LOGIN_DISCOVERY_DEBOUNCE_MS);
-    return () => window.clearTimeout(timer);
-  }, [api, loginAuthHomeserver, loginServer, loginSessionKind, settleCommand]);
-  const addAccountTabCancellable =
-    (accountTabs?.tabs.length ?? 0) > 1 &&
-    accountTabs?.tabs.find((tab) => tab.id === accountTabId)?.status === "addAccount";
   const [loginDeviceName, setLoginDeviceName] = useState("");
   const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
   const [recoverySecretFilled, setRecoverySecretFilled] = useState(false);
@@ -2920,7 +2894,7 @@ function AccountContent({
         sessionKind === "locked"
           ? api.submitSoftLogoutReauth(password)
           : api.submitLogin(
-              loginServer,
+              loginHomeserver,
               loginUsername,
               password,
               loginDeviceName,
@@ -2941,7 +2915,7 @@ function AccountContent({
   async function discoverLoginMethods() {
     setIsBusy(true);
     try {
-      await settleCommand(api.discoverLoginMethods(loginServer));
+      await settleCommand(api.discoverLoginMethods(loginHomeserver));
     } finally {
       setIsBusy(false);
     }
@@ -2954,7 +2928,7 @@ function AccountContent({
       const activeHomeserver =
         snapshot?.state.domain.session.kind === "locked"
           ? snapshot.state.domain.session.homeserver
-          : loginServer;
+          : loginHomeserver;
       const launch = await api.startOidcLogin(activeHomeserver);
       await applyCommandReceipt(launch.settlement);
       if (launch.outcome === "invalid_authorization_url") {
@@ -6408,26 +6382,20 @@ function AccountContent({
     return (
       <AuthScreen
         deviceName={loginDeviceName}
-        effectiveServer={loginServer}
+        homeserver={loginHomeserver}
         isBusy={isBusy || sessionKind === "authenticating"}
-        matrixId={loginUsername}
         passwordFilled={loginPasswordFilled}
         passwordInputRef={loginPasswordRef}
-        serverOverride={loginServerOverride}
         snapshot={snapshot}
         transportError={loginTransportError}
-        onCancel={
-          addAccountTabCancellable
-            ? () => onRemoveSignedOutAccountTab(accountTabId!)
-            : undefined
-        }
+        username={loginUsername}
         onDiscoverLoginMethods={() => runInBackground(discoverLoginMethods())}
         onDeviceNameChange={setLoginDeviceName}
-        onMatrixIdChange={setLoginUsername}
+        onHomeserverChange={setLoginHomeserver}
         onPasswordPresenceChange={setLoginPasswordFilled}
-        onServerOverrideChange={setLoginServerOverride}
         onStartOidcLogin={() => runInBackground(startOidcLogin())}
         onSubmit={submitLogin}
+        onUsernameChange={setLoginUsername}
       />
     );
   }

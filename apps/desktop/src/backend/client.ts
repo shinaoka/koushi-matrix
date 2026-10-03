@@ -133,10 +133,6 @@ export class TauriDesktopApi implements DesktopApi {
     return this.invokeCommand("remove_signed_out_account_tab", { tabId });
   }
 
-  async cancelAddAccountTab(tabId: string): Promise<AccountTabsSnapshot> {
-    return this.invokeCommand("cancel_add_account_tab", { tabId });
-  }
-
   async getDesktopUpdateState(): Promise<DesktopUpdateState> {
     return this.invokeCommand<DesktopUpdateState>("get_desktop_update_state");
   }

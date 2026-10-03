@@ -23,7 +23,6 @@ export type MessageId =
   | "accountTabs.loggingOut"
   | "accountTabs.error"
   | "accountTabs.removeFromList"
-  | "accountTabs.cancelAddAccount"
 
   | "action.add"
   | "action.back"
@@ -101,6 +100,7 @@ export type MessageId =
   | "auth.flowSso"
   | "auth.flowToken"
   | "auth.flowUnknown"
+  | "auth.loginFailureUsernameHint"
   | "auth.matrixAccount"
   | "auth.matrixDesktop"
   | "auth.noLoginMethods"
@@ -115,18 +115,10 @@ export type MessageId =
   | "auth.ssoInvalidAuthorizationUrl"
   | "auth.signIn"
   | "auth.supportedRecoveryMethods"
+  | "auth.username"
+  | "auth.usernameHelp"
   | "auth.usernameOrMatrixId"
-  | "auth.changeServer"
-  | "auth.continueWithMethod"
-  | "auth.loginFailureMatrixIdHint"
-  | "auth.matrixId"
-  | "auth.matrixIdHelp"
-  | "auth.matrixIdPlaceholder"
-  | "auth.orSignInWithPassword"
-  | "auth.passwordSignInUnavailable"
-  | "auth.server"
-  | "auth.ssoHelp"
-  | "auth.useServerFromMatrixId"
+  | "auth.usernamePlaceholder"
   | "composer.attachedFile"
   | "composer.attachmentFallback"
   | "composer.attachFile"
@@ -1753,7 +1745,6 @@ const en: Catalog = {
   "accountTabs.loggingOut": "Signing out",
   "accountTabs.error": "Account error",
   "accountTabs.removeFromList": "Remove {account} from list",
-  "accountTabs.cancelAddAccount": "Cancel adding account",
 
   "action.add": "Add",
   "action.back": "Back",
@@ -1834,6 +1825,8 @@ const en: Catalog = {
   "auth.flowSso": "Single sign-on",
   "auth.flowToken": "Token",
   "auth.flowUnknown": "Unknown method",
+  "auth.loginFailureUsernameHint":
+    "For @alice:matrix.org, enter alice here and keep matrix.org in Homeserver.",
   "auth.matrixAccount": "Matrix account",
   "auth.matrixDesktop": "Koushi",
   "auth.noLoginMethods": "No login methods",
@@ -1848,20 +1841,10 @@ const en: Catalog = {
   "auth.ssoInvalidAuthorizationUrl": "The single sign-on address is invalid",
   "auth.signIn": "Sign in",
   "auth.supportedRecoveryMethods": "Supported recovery methods",
+  "auth.username": "Username",
+  "auth.usernameHelp": "Enter only the localpart. Do not include @ or the server name.",
   "auth.usernameOrMatrixId": "Username or Matrix ID",
-  "auth.changeServer": "Change server",
-  "auth.continueWithMethod": "Continue with {method}",
-  "auth.loginFailureMatrixIdHint":
-    "Check your Matrix ID, for example @alice:matrix.org, and your password.",
-  "auth.matrixId": "Matrix ID",
-  "auth.matrixIdHelp":
-    "Your server is found from your Matrix ID. A username alone signs in on the server shown below.",
-  "auth.matrixIdPlaceholder": "@alice:matrix.org",
-  "auth.orSignInWithPassword": "or sign in with a password",
-  "auth.passwordSignInUnavailable": "This server does not offer password sign-in.",
-  "auth.server": "Server",
-  "auth.ssoHelp": "Opens your browser to sign in on your server's page.",
-  "auth.useServerFromMatrixId": "Use the server from my Matrix ID",
+  "auth.usernamePlaceholder": "alice",
   "composer.attachedFile": "Attached file",
   "composer.attachmentFallback": "Attachment",
   "composer.attachFile": "Attach file",
@@ -3412,7 +3395,6 @@ const ja: Catalog = {
   "accountTabs.loggingOut": "サインアウト中",
   "accountTabs.error": "アカウントエラー",
   "accountTabs.removeFromList": "{account}を一覧から削除",
-  "accountTabs.cancelAddAccount": "アカウントの追加をキャンセル",
 
   "action.add": "追加",
   "action.back": "戻る",
@@ -3503,20 +3485,13 @@ const ja: Catalog = {
   "auth.ssoInvalidAuthorizationUrl": "シングルサインオンのアドレスが無効です",
   "auth.signIn": "サインイン",
   "auth.supportedRecoveryMethods": "対応している復旧方法",
+  "auth.loginFailureUsernameHint":
+    "例: @alice:matrix.org の場合は alice だけを入力し、matrix.org はホームサーバー欄に入れます。",
+  "auth.username": "ユーザー名",
+  "auth.usernameHelp":
+    "ローカル部だけを入力します。先頭の @ とサーバー名は入れません。",
   "auth.usernameOrMatrixId": "ユーザー名またはMatrix ID",
-  "auth.changeServer": "サーバーを変更",
-  "auth.continueWithMethod": "{method}で続行",
-  "auth.loginFailureMatrixIdHint":
-    "Matrix ID（例: @alice:matrix.org）とパスワードを確認してください。",
-  "auth.matrixId": "Matrix ID",
-  "auth.matrixIdHelp":
-    "Matrix IDからサーバーを自動で見つけます。ユーザー名だけの場合は下に表示されたサーバーでサインインします。",
-  "auth.matrixIdPlaceholder": "例: @alice:matrix.org",
-  "auth.orSignInWithPassword": "またはパスワードでサインイン",
-  "auth.passwordSignInUnavailable": "このサーバーはパスワードでのサインインに対応していません。",
-  "auth.server": "サーバー",
-  "auth.ssoHelp": "ブラウザーが開き、サーバーのページでサインインします。",
-  "auth.useServerFromMatrixId": "Matrix IDのサーバーを使う",
+  "auth.usernamePlaceholder": "例: alice",
   "composer.attachedFile": "添付ファイル",
   "composer.attachmentFallback": "添付",
   "composer.attachFile": "ファイルを添付",

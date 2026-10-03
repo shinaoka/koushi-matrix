@@ -492,104 +492,9 @@ button:disabled {
 
 .auth-discovery {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
   align-items: center;
-  margin-top: -8px;
-}
-
-.auth-server-summary {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface-hover);
-}
-
-.auth-server-summary-text {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.auth-server-summary-text span {
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.auth-server-summary-text strong {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--text);
-  font-size: 14px;
-}
-
-.auth-server-override {
-  display: grid;
-  gap: 6px;
-  justify-items: start;
-}
-
-.auth-server-override .auth-field {
-  width: 100%;
-}
-
-.auth-link-button {
-  padding: 0;
-  border: 0;
-  color: var(--brand);
-  background: transparent;
-  font-size: 13px;
-  font-weight: 700;
-  text-align: start;
-}
-
-.auth-link-button:hover:not(:disabled) {
-  text-decoration: underline;
-}
-
-.auth-link-button:disabled {
-  cursor: default;
-  opacity: 0.55;
-}
-
-.auth-sso {
-  display: grid;
-  gap: 8px;
-}
-
-.auth-sso-button {
-  height: 44px;
-  border-radius: 6px;
-  color: var(--brand-contrast);
-  background: var(--brand);
-  font-size: 15px;
-  font-weight: 800;
-}
-
-.auth-sso-button:disabled {
-  cursor: default;
-  opacity: 0.55;
-}
-
-.auth-divider {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  gap: 10px;
-  align-items: center;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.auth-divider::before,
-.auth-divider::after {
-  content: "";
-  border-top: 1px solid var(--line);
 }
 
 .auth-session-summary {
@@ -666,13 +571,6 @@ button:disabled {
 .auth-submit:disabled {
   cursor: default;
   opacity: 0.55;
-}
-
-/* With single sign-on offered, password sign-in is the secondary path. */
-.auth-submit-secondary {
-  border: 1px solid var(--line);
-  color: var(--text);
-  background: var(--surface);
 }
 
 .recovery-panel-body {

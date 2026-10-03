@@ -132,58 +132,6 @@ test("adding an account and a verification gate leave other accounts available",
   await expect(page.locator("main.session-verification-gate")).toHaveCount(0);
 });
 
-for (const control of ["auth Cancel button", "tab close button"] as const) {
-  test(`cancelling an unfinished add-account tab via the ${control} returns to the previous account`, async ({
-    page
-  }) => {
-    await gotoReadyShell(page);
-    const withAdd = accountTabs(true);
-    const withoutAdd = accountTabs(false);
-
-    await page.evaluate(({ tabs, previousTabs }) => {
-      const harness = window.__harness as any;
-      const setSession = (session: unknown) => {
-        const snapshot = harness.currentSnapshot();
-        harness.setSnapshot({
-          ...snapshot,
-          state: {
-            ...snapshot.state,
-            domain: { ...snapshot.state.domain, session, auth: { kind: "unknown" } }
-          }
-        });
-      };
-      harness.setCommandResponse("add_account_tab", () => {
-        setSession({ kind: "signedOut" });
-        return { ...tabs, selectedTabId: "new-account-tab" };
-      });
-      harness.setCommandResponse("cancel_add_account_tab", () => {
-        setSession({ kind: "ready", homeserver: "https://harness.example.invalid" });
-        return previousTabs;
-      });
-    }, { tabs: withAdd, previousTabs: withoutAdd });
-
-    await page.getByRole("button", { name: "Add account", exact: true }).click();
-    await expect(page.getByTestId("auth-screen")).toBeVisible();
-    await page.evaluate(() => window.__harness.clearInvocations());
-
-    if (control === "auth Cancel button") {
-      await page.getByTestId("auth-screen").getByRole("button", { name: "Cancel", exact: true }).click();
-    } else {
-      await page.getByRole("button", { name: "Cancel adding account", exact: true }).click();
-    }
-
-    await expect
-      .poll(() => page.evaluate(() => window.__harness.invocationsOf("cancel_add_account_tab").map((call) => call.args)))
-      .toEqual([{ tabId: "new-account-tab" }]);
-    expect(await page.evaluate(() => window.__harness.invocationsOf("remove_signed_out_account_tab").length)).toBe(0);
-    expect(await page.evaluate(() => window.__harness.invocationsOf("logout").length)).toBe(0);
-    await expect(page.getByRole("main", { name: "Conversation timeline" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Harness: Ready", exact: true }))
-      .toHaveAttribute("aria-current", "page");
-    await expect(page.getByRole("button", { name: "New account: Add account", exact: true })).toHaveCount(0);
-  });
-}
-
 test("switching accounts flushes the active composer draft on its owning tab", async ({ page }) => {
   await gotoReadyShell(page);
   const tabs = accountTabs(false, true, "ready");

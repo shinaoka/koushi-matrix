@@ -1571,7 +1571,6 @@ pub fn run() {
             commands::account_tabs::select_account_tab,
             commands::account_tabs::add_account_tab,
             commands::account_tabs::remove_signed_out_account_tab,
-            commands::account_tabs::cancel_add_account_tab,
             commands::session::get_snapshot,
             commands::session::settlement_snapshot,
             commands::session::resync_snapshot,
