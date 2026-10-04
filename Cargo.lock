@@ -3386,7 +3386,7 @@ dependencies = [
 
 [[package]]
 name = "koushi-desktop"
-version = "0.17.2"
+version = "0.18.0"
 dependencies = [
  "dirs",
  "gtk",
