@@ -331,16 +331,36 @@ export function createReadmeFixture(source: DesktopSnapshot): ReadmeFixture {
   };
   const accountTabs: AccountTabsSnapshot = {
     selectedTabId: "harness-account-tab",
-    tabs: [{
-      id: "harness-account-tab",
-      accountKey: "harness-account",
-      homeserver: "matrix.local",
-      displayName: "Koushi",
-      avatarSourceRef: null,
-      status: "ready",
-      unreadCount: 0
-    }],
-    badgeCount: 0
+    tabs: [
+      {
+        id: "harness-account-tab",
+        accountKey: "@koushi:work.local",
+        homeserver: "work.local",
+        displayName: "Work",
+        avatarSourceRef: null,
+        status: "ready",
+        unreadCount: 0
+      },
+      {
+        id: "readme-personal-tab",
+        accountKey: "@koushi:home.local",
+        homeserver: "home.local",
+        displayName: "Home",
+        avatarSourceRef: null,
+        status: "ready",
+        unreadCount: 4
+      },
+      {
+        id: "readme-community-tab",
+        accountKey: "@koushi:club.local",
+        homeserver: "club.local",
+        displayName: "Club",
+        avatarSourceRef: null,
+        status: "ready",
+        unreadCount: 12
+      }
+    ],
+    badgeCount: 16
   };
   return { accountTabs, snapshot, stateUpdate, initialItems: initialItemsEvent };
 }
