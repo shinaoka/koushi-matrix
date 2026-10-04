@@ -379,6 +379,7 @@ describe("i18n message catalog", () => {
       ...contextMenuItems({
         kind: "message",
         canManage: true,
+        canEdit: true,
         canReply: true,
         hasThread: true,
         senderUserId: "@a:example.invalid",

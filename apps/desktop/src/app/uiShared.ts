@@ -46,6 +46,12 @@ export type ContextMenuTarget =
         TimelineMessage,
         "sender" | "room_id" | "event_id" | "body" | "reply_count"
       >;
+      /**
+       * Opens the requesting row's own inline editor (#1100). The row owns both
+       * the Edit affordance and the editing surface, so it supplies the action
+       * instead of the shell synthesizing an edit from the menu.
+       */
+      onOpenEdit?: () => void;
     }
   | { kind: "room"; roomId: string; dmUserId?: string | null }
   | { kind: "space"; spaceId: string }

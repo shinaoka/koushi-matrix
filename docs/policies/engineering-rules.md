@@ -405,7 +405,10 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    section order, counts, unread badges, and mention dots from Rust-shaped
    `SidebarModel` fields. The formatted-message renderer keeps direct list
    element children as `li`. `SettingsValues.display.hide_redacted` defaults to
-   `true` and `SettingsValues.media.image_upload_compression` defaults to `ask`.
+   `true`. `SettingsValues.media` holds only
+   `image_upload_compression_policy`: #305 retired the automatic-compression
+   preference, and resize/format is chosen per attachment in the upload-staging
+   dialog.
 4. Operational GUI-smoke safety (FIFO credential entry, `Cmd+Q`, AppleScript
    process names, Keychain-suppressing environment, `--allow-empty-timeline`)
    is in [QA lanes](../agents/qa-lanes.md#real-account-lanes) and

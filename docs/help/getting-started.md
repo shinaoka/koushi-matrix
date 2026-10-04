@@ -12,22 +12,29 @@
    distribution or make the AppImage executable and run it.
 3. Use the checksum alongside the release asset when checking a download.
 
-Koushi is a client for an existing Matrix account. Have your homeserver address
-and the sign-in method supplied by your account provider ready.
+Koushi is a client for an existing Matrix account. Have your Matrix ID and the
+sign-in method supplied by your account provider ready.
 
 ## Sign in
 
-1. Enter your server address in **Homeserver** and select **Check login methods**.
+1. Enter your full Matrix ID in **Matrix ID**, for example `@alice:example.org`.
+   Koushi reads the server from its server name and checks the login methods
+   that server offers.
 2. Use the method offered by your server:
-   - **OIDC** or **Single sign-on** opens the browser. Complete the provider's
-     sign-in flow and return to Koushi.
-   - For **Password** sign-in, enter your username, password, and device name,
-     then select **Sign in**. The username is the local part: for the example
-     Matrix ID `@alice:example.org`, enter `alice` in **Username**.
+   - **Continue with OIDC** or **Continue with Single sign-on** opens the
+     browser. Complete the provider's flow and return to Koushi.
+   - For **Password** sign-in, enter your password and device name, then select
+     **Continue**.
 3. Complete **Verify this session** and any secure backup setup shown before
    entering the workspace. See [Security and recovery](security-and-recovery.md).
 4. Wait for your rooms to load. Older messages may take additional time to
    retrieve and decrypt.
+
+The server summary under **Matrix ID** names the server Koushi is using. To sign
+in with only your local username instead of a full Matrix ID, select **Change
+server**, enter the server address in **Homeserver**, and type the username
+(`alice` for the example above). **Check login methods** appears when Koushi
+reports that the automatic check failed; select it to retry.
 
 If **Create account** appears, it opens the account provider's registration
 page. Availability depends on the server. If the server is unsupported or cannot

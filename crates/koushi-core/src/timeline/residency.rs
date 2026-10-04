@@ -372,6 +372,7 @@ impl TimelineManagerActor {
             link_preview_policy: LinkPreviewContext::default(),
             composer_formatting_options: ComposerFormattingOptions::default(),
             thread_root_order: koushi_state::TimelineThreadRootOrder::LatestReply,
+            hide_redacted: false,
             account_work: AccountWorkScheduler::default(),
             thread_root_projection_service: Arc::new(Mutex::new(
                 ThreadRootProjectionService::default(),

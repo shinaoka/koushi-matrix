@@ -199,6 +199,9 @@ pub(crate) enum AccountMessage {
     },
     DisplayPolicyChanged {
         thread_root_order: koushi_state::TimelineThreadRootOrder,
+        /// #1110: applied inside Rust so the renderer never recomputes
+        /// visibility from a display preference.
+        hide_redacted: bool,
     },
     TimelineCommandWithComposerFormatting {
         command: TimelineCommand,
@@ -1686,10 +1689,13 @@ impl AccountActor {
                         )
                         .await;
                 }
-                AccountMessage::DisplayPolicyChanged { thread_root_order } => {
+                AccountMessage::DisplayPolicyChanged {
+                    thread_root_order,
+                    hide_redacted,
+                } => {
                     let _ = self
                         .timeline_manager
-                        .set_display_policy(thread_root_order)
+                        .set_display_policy(thread_root_order, hide_redacted)
                         .await;
                 }
                 AccountMessage::TimelineCommandWithComposerFormatting {

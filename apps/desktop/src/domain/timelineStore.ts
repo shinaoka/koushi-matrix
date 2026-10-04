@@ -751,24 +751,21 @@ function applyResyncRequired(
   return withKeys(store, next);
 }
 
+/**
+ * `DisplayPolicyUpdated` is an acknowledgement, not a recomputation request.
+ *
+ * #1110: Rust owns the whole row-visibility policy (deliberate content
+ * suppression, the ignored-sender reason, and the `hide_redacted` preference).
+ * A display-policy change re-derives every affected row in Core and arrives as
+ * the ordinary `ItemsUpdated` diffs, so recomputing `is_hidden` here from only
+ * `hide_redacted` is what used to resurrect bodyless technical events and
+ * ignored senders. Keeping this handler would be a second visibility policy.
+ */
 function applyDisplayPolicyUpdated(
-  store: TimelineStoreState,
-  payload: Extract<TimelineEvent, { DisplayPolicyUpdated: unknown }>["DisplayPolicyUpdated"]
+  _store: TimelineStoreState,
+  _payload: Extract<TimelineEvent, { DisplayPolicyUpdated: unknown }>["DisplayPolicyUpdated"]
 ): TimelineStoreState {
-  let changed = false;
-  const next = new Map<string, TimelineKeyState>();
-  for (const [key, state] of store.keys) {
-    let itemsChanged = false;
-    const items = state.items.map((item) => {
-      const isHidden = payload.hide_redacted && item.is_redacted;
-      if (item.is_hidden === isHidden) return item;
-      itemsChanged = true;
-      return { ...item, is_hidden: isHidden };
-    });
-    changed ||= itemsChanged;
-    next.set(key, itemsChanged ? { ...state, items } : state);
-  }
-  return changed ? withKeys(store, next) : store;
+  return _store;
 }
 
 function applyDisplayLabelsUpdated(

@@ -561,7 +561,6 @@ function MessageArticle({
   message,
   highlights,
   onOpenContextMenu,
-  onEditMessage,
   onOpenThread,
   onRedactMessage,
   profileUsers,
@@ -571,7 +570,6 @@ function MessageArticle({
   message: TimelineMessage;
   highlights: TextRange[];
   onOpenContextMenu?: OpenContextMenu;
-  onEditMessage: (message: { body: string | null; room_id: string; event_id: string }) => void;
   onOpenThread: TimelineRowActionHandlers["onOpenThread"];
   onRedactMessage: (roomId: string, eventId: string) => void;
   profileUsers: Record<string, UserProfile>;
@@ -598,6 +596,10 @@ function MessageArticle({
                 contextMenuItems({
                   kind: "message",
                   canManage,
+                  // This article renders `TimelineMessage`, which carries no
+                  // Rust-owned `can_edit`, and it has no inline editing surface
+                  // (#1100). Editing belongs to the timeline row.
+                  canEdit: false,
                   canReply: false,
                   hasThread: true,
                   senderUserId: message.sender,
@@ -619,14 +621,6 @@ function MessageArticle({
           <span className="time">{formatTime(message.timestamp_ms)}</span>
           {canManage ? (
             <span className="message-actions">
-              <button
-                className="message-action"
-                type="button"
-                aria-label={t("timeline.editMessage")}
-                onClick={() => onEditMessage(message)}
-              >
-                <Edit3 size={ICON_SIZE.micro} />
-              </button>
               <button
                 className="message-action"
                 type="button"

@@ -4950,17 +4950,6 @@ function AccountContent({
     await settleCommand(api.clearUploadStaging({ kind: "main", room_id: roomId }));
   }
 
-  async function editMessage(message: { body: string | null; room_id: string; event_id: string }) {
-    const body = window.prompt(t("timeline.editMessage"), message.body ?? undefined);
-    if (body === null || !body.trim()) {
-      return;
-    }
-
-    await settleCommand(
-      api.editMessage(message.room_id, message.event_id, documentFromText(body))
-    );
-  }
-
   async function redactMessage(roomId: string, eventId: string) {
     await settleCommand(api.redactMessage(roomId, eventId));
   }
@@ -6176,7 +6165,10 @@ function AccountContent({
           );
           return;
         case "editMessage":
-          runInBackground(editMessage(target.message));
+          // #1100: the row owns the editing surface. Open its inline editor
+          // (which preserves formatting and mentions) instead of synthesizing
+          // a plain-text edit from the shell.
+          target.onOpenEdit?.();
           return;
         case "redactMessage":
           runInBackground(redactMessage(target.message.room_id, target.message.event_id));
@@ -6900,7 +6892,6 @@ function AccountContent({
               runInBackground(scheduleSend(sendAtMs, body));
             }}
             onSendText={sendText}
-            onEditMessage={editMessage}
             onOpenContextMenu={openContextMenu}
             onRedactMessage={redactMessage}
             onResultSelect={selectSearchResult}

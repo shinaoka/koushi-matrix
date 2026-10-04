@@ -4,9 +4,12 @@
 
 ## Cannot sign in
 
-Check **Homeserver** and run **Check login methods** again. For password login,
-use the username's local part, not the full Matrix ID. For browser sign-in,
-complete the provider's flow and return to Koushi. See the full
+Check that **Matrix ID** holds your full Matrix ID, for example
+`@alice:example.org`, and that the server named below it is your account's
+server. To sign in with only a local username, select **Change server** and enter
+the server address in **Homeserver** first. For browser sign-in, complete the
+provider's flow and return to Koushi. **Check login methods** appears when the
+automatic check fails; select it to retry. See the full
 [sign-in steps](getting-started.md#sign-in).
 
 If the server cannot be reached, check your connection and server address.

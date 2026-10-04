@@ -467,6 +467,45 @@ test("overflow count is shown when overflow_count > 0", async ({ page }) => {
 // 7. Edited marker and re-edit capability
 // ---------------------------------------------------------------------------
 
+test("message context menu Edit opens the row's inline editor (#1100)", async ({ page }) => {
+  await gotoReadyShell(page);
+  const eventId = "$context-edit-item:example.invalid";
+  await seedTimelineItems(page, [
+    makeEventItem(eventId, { can_edit: true, body: "Context menu edit body" })
+  ]);
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  await expect(article).toBeVisible();
+  await expect(article.getByRole("textbox", { name: t("timeline.editBody") })).toHaveCount(0);
+
+  await article.click({ button: "right" });
+  await page.getByRole("menuitem", { name: t("context.editMessage") }).click();
+
+  // The menu must open the same inline editor the hover action bar opens.
+  const editTextarea = article.getByRole("textbox", { name: t("timeline.editBody") });
+  await expect(editTextarea).toBeVisible();
+  await expect(editTextarea).toHaveText("Context menu edit body");
+  await expect(article.getByRole("button", { name: t("timeline.saveEdit") })).toBeVisible();
+});
+
+test("message context menu omits Edit when Rust reports can_edit=false (#1100)", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  const eventId = "$context-edit-blocked:example.invalid";
+  await seedTimelineItems(page, [
+    makeEventItem(eventId, { can_edit: false, body: "Not editable" })
+  ]);
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  await expect(article).toBeVisible();
+
+  await article.click({ button: "right" });
+  // Redact is still offered: can_redact is true for this own message.
+  await expect(page.getByRole("menuitem", { name: t("context.redactMessage") })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: t("context.editMessage") })).toHaveCount(0);
+});
+
 test("edited marker is shown and row is re-editable when is_edited=true and can_edit=true", async ({
   page
 }) => {

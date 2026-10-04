@@ -41,6 +41,9 @@ export type ContextMenuRequest =
   | {
       kind: "message";
       canManage: boolean;
+      /** Rust-owned `TimelineItem.can_edit`; gates Edit exactly like the row's
+       * own action button (#1100). */
+      canEdit: boolean;
       canReply: boolean;
       hasThread: boolean;
       senderUserId: string;
@@ -81,8 +84,10 @@ export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[]
       if (request.hasThread) {
         items.push({ id: "openThread", labelMessageId: "context.openThread" });
       }
-      if (request.canManage) {
+      if (request.canEdit) {
         items.push({ id: "editMessage", labelMessageId: "context.editMessage" });
+      }
+      if (request.canManage) {
         items.push({
           id: "redactMessage",
           labelMessageId: "context.redactMessage",

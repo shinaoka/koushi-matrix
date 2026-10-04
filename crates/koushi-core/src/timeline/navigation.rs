@@ -1925,11 +1925,20 @@ fn replay_initial_items_window_range(
     start..items.len()
 }
 
+/// #1110: a room timeline with no *displayed* row needs the ordinary guarded
+/// backfill, not only a literally empty one.
+///
+/// A snapshot can be nonempty while every item is a suppressed technical state
+/// event, so counting raw items left the reader with an empty conversation and
+/// no path to the displayable history behind it.
 pub(super) fn should_hydrate_empty_initial_room_timeline(
     kind: &TimelineKind,
-    item_count: usize,
+    items: &[TimelineItem],
 ) -> bool {
-    matches!(kind, TimelineKind::Room { .. }) && item_count == 0
+    matches!(kind, TimelineKind::Room { .. })
+        && !items
+            .iter()
+            .any(super::display_projection::item_occupies_display_row)
 }
 
 pub(super) fn activity_rows_from_timeline_items(

@@ -1118,8 +1118,9 @@ describe("UserSettingsPanel", () => {
   });
 
   test("confirms search index rebuild before invoking the destructive action", () => {
+    // #1100: the guard is an in-app confirmation. A native `window.confirm`
+    // never renders in the Tauri macOS webview.
     const onRebuildSearchIndex = vi.fn();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(
       <UserSettingsPanel
         currentSession={{
@@ -1142,13 +1143,18 @@ describe("UserSettingsPanel", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Search history" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Rebuild search database" }));
-    expect(confirmSpy).toHaveBeenCalledWith(
-      "Rebuild the search database? This clears the local search index and re-crawls room history."
-    );
+    // Nothing runs until the in-app guard is confirmed.
     expect(onRebuildSearchIndex).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(
+        "Rebuild the search database? This clears the local search index and re-crawls room history."
+      )
+    ).toBeTruthy();
 
-    confirmSpy.mockReturnValue(true);
-    fireEvent.click(screen.getByRole("button", { name: "Rebuild search database" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Rebuild search database" })
+    );
     expect(onRebuildSearchIndex).toHaveBeenCalledTimes(1);
   });
 

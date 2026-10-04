@@ -736,7 +736,6 @@ export function TimelinePane({
   onComposerMathModeChange,
   onRecentEmojisChange = () => undefined,
   onMentionQueryChange,
-  onEditMessage,
   onOpenContextMenu,
   onOpenThread,
   onRedactMessage,
@@ -793,7 +792,6 @@ export function TimelinePane({
     surface: MentionSurface,
     query: string | null
   ) => void;
-  onEditMessage: (message: { body: string | null; room_id: string; event_id: string }) => void;
   onOpenContextMenu: OpenContextMenu;
   onOpenThread: TimelineRowActionHandlers["onOpenThread"];
   onRedactMessage: (roomId: string, eventId: string) => void;
@@ -938,7 +936,6 @@ export function TimelinePane({
       onMentionQueryChangeStable(timelineRoomId, "main", query);
     }
   });
-  const onEditMessageStable = useStableEvent(onEditMessage);
   const onOpenContextMenuStable = useStableEvent(onOpenContextMenu);
   const onOpenThreadStable = useStableEvent(onOpenThread);
   const onRedactMessageStable = useStableEvent(onRedactMessage);
@@ -1139,7 +1136,6 @@ export function TimelinePane({
                   }
                   currentUserId={currentUserId}
                   onOpenContextMenu={onOpenContextMenuStable}
-                  onEditMessage={onEditMessageStable}
                   onOpenThread={onOpenThreadStable}
                   onRedactMessage={onRedactMessageStable}
                   profileUsers={snapshot.state.domain.profile.users}

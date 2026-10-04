@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { useNowMs } from "../../app/useNowMs";
+import { ResetLocalDataConfirmationDialog } from "../dialogs";
 import { t } from "../../i18n/messages";
 import { roomDisplayLabel } from "../../domain/roomDisplayLabel";
 import type {
@@ -38,6 +40,10 @@ export function SearchHistorySection({
 }) {
   // Minute granularity: half a minute keeps "N minutes ago" within one step.
   const nowMs = useNowMs(30_000);
+  // #1100: the rebuild guard is an in-app confirmation. `window.confirm` never
+  // renders in the Tauri macOS webview, so the destructive action would look
+  // like a dead button.
+  const [rebuildConfirmOpen, setRebuildConfirmOpen] = useState(false);
   const roomEntries = crawlerRoomEntries(crawlerState.rooms, rooms);
   const crawlerSummary = summarizeCrawlerRooms(roomEntries);
   const crawlerPaused = crawlerSettings.speed === "paused";
@@ -66,9 +72,7 @@ export function SearchHistorySection({
   }
 
   function confirmRebuildSearchIndex() {
-    if (window.confirm(t("settings.searchHistoryRebuildConfirm"))) {
-      onRebuildSearchIndex?.();
-    }
+    setRebuildConfirmOpen(true);
   }
 
   return (
@@ -199,6 +203,19 @@ export function SearchHistorySection({
         </section>
       ) : null}
       </> : null}
+      {rebuildConfirmOpen ? (
+        <ResetLocalDataConfirmationDialog
+          isBusy={false}
+          title={t("settings.searchHistoryRebuild")}
+          copy={t("settings.searchHistoryRebuildConfirm")}
+          confirmLabel={t("settings.searchHistoryRebuild")}
+          onCancel={() => setRebuildConfirmOpen(false)}
+          onConfirm={() => {
+            setRebuildConfirmOpen(false);
+            onRebuildSearchIndex?.();
+          }}
+        />
+      ) : null}
     </>
   );
 }

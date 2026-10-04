@@ -175,6 +175,7 @@ async fn exercise_ignored_reset(case: ResetCase) {
         manager.account_work.clone(),
         manager.thread_root_projection_service.clone(),
         manager.thread_root_order,
+        false,
         manager.timeline_actor_generations.clone(),
         generation,
         None,

@@ -59,7 +59,7 @@ use matrix_sdk_ui::timeline::ReactionInfo;
 
 use super::super::diagnostics::timeline_item_diagnostic_event;
 use super::{
-    apply_ignored_sender_suppression, composer_document_from_event_json,
+    apply_timeline_item_visibility, composer_document_from_event_json,
     edited_content_for_edit_target, edited_document_content_for_edit_target,
     has_user_visible_content, link_ranges_for_message_projection,
     megolm_message_index_from_original_json, membership_change_projection,
@@ -120,16 +120,16 @@ fn ignored_sender_suppression_preserves_divider_and_restores_event() {
     let mut event = timeline_item("$ignored:test", Some("body"), "@ignored:test", false);
     let ignored = BTreeSet::from(["@ignored:test".to_owned()]);
 
-    apply_ignored_sender_suppression(&mut divider, &ignored);
-    apply_ignored_sender_suppression(&mut event, &ignored);
+    apply_timeline_item_visibility(&mut divider, false, &ignored);
+    apply_timeline_item_visibility(&mut event, false, &ignored);
     assert!(
         !divider.is_hidden,
         "ignoring a sender must not hide a date divider"
     );
     assert!(event.is_hidden);
 
-    apply_ignored_sender_suppression(&mut divider, &BTreeSet::new());
-    apply_ignored_sender_suppression(&mut event, &BTreeSet::new());
+    apply_timeline_item_visibility(&mut divider, false, &BTreeSet::new());
+    apply_timeline_item_visibility(&mut event, false, &BTreeSet::new());
     assert!(
         !divider.is_hidden,
         "unignore must leave the date divider visible"
