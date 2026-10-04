@@ -38,7 +38,8 @@ be reached, use [sign-in troubleshooting](troubleshooting.md#cannot-sign-in).
 Select **+** (**Add account**) in the top account tab strip and use the same
 sign-in flow. Existing accounts remain available while the new account signs in
 or waits for verification. Pressing **+** again focuses the unfinished sign-in
-tab instead of creating another one.
+tab instead of creating another one. To give up, select the close button on
+that tab (**Cancel adding account**); Koushi returns to your previous account.
 
 Select a tab to view that account. Switching tabs does not sign out the other
 accounts: they continue syncing and can receive notifications. Koushi restores

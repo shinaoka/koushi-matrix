@@ -61,7 +61,10 @@ submission correlations against the authoritative versioned snapshot. It uses
 one absolute deadline and one final snapshot check after timeout, disconnect,
 or lag; expectation-specific lag policy distinguishes recoverable lag from
 terminal `Lagged`. `select_room_and_wait` delegates to this service without
-changing its behavior. No `AppState`, `AppAction`, reducer transition, or
+changing its behavior. The `Authenticated` expectation settles on the
+non-held `LoginAdmitted` event (or held `LoggedIn` / `SessionRestored`) once
+the snapshot is a login-transport terminal session; admission, not promotion,
+completes sign-in. No `AppState`, `AppAction`, reducer transition, or
 Tauri waiter migration is part of Phase A; later issue #755 phases consume the
 service from adapters.
 
@@ -231,8 +234,16 @@ stateDiagram-v2
     Abandoning --> Abandoning: invalid or ambiguous root / fail closed for explicit local reset
 ```
 
-At most one resumable allocation exists per normalized homeserver/auth method
-and eight total. There is no TTL. Immediate non-journal cleanup requires closed
+At most one unbound `PreAuth` allocation exists per normalized homeserver/auth
+method, and eight allocations total. A fresh attempt resumes that unbound
+allocation, or a `BoundTokenless` allocation only when its bound user matches
+the requested user (full Matrix ID, or localpart on the same homeserver); OIDC,
+whose user is unknown before authorization, resumes only `PreAuth`. Another
+identity's bound allocation is never resumed, reset, or rebound, so a second
+account on the same homeserver allocates its own store while the first awaits
+verification. A fresh device whose crypto DB exists but holds no Olm account is
+authenticated as a fresh identity, so a retry after a rejected attempt reaches
+the server. There is no TTL. Immediate non-journal cleanup requires closed
 `NoRequestSent` or `ServerRejectedBeforeSession` evidence; transport failure,
 timeout, browser cancellation, callback loss, and token-exchange ambiguity stay
 resumable. `Abandoning` is persisted before root deletion and resumes after process
@@ -723,7 +734,13 @@ store-backed account restore.
 
 Password login and OIDC/MAS callback completion both enter `Authenticating`
 through Rust-owned account commands and settle through the same
-`LoginSucceeded` / `LoginFailed` reducer actions. OIDC authorization URLs and
+`LoginSucceeded` / `LoginFailed` reducer actions. Settlement is correlated by
+`attempt_id` alone. `Authenticating.homeserver` is the user's requested input
+(a bare server name, an MXID domain, or a URL) and Core may resolve it through
+`.well-known` delegation or URL normalization before contacting the server, so
+the SDK-reported `SessionInfo.homeserver` of a same-attempt success is
+authoritative and is never compared with the requested text. Stale, cancelled,
+or superseded attempts are fenced by their attempt id. OIDC authorization URLs and
 CSRF state are command/event artifacts only: they may be returned to the WebView
 so it can open the provider and correlate the callback, but they never enter
 `AppState`, normal `Debug`, QA title tokens, or persisted settings.
@@ -760,6 +777,17 @@ stateDiagram-v2
   including an extracted child whose removal is still joining cleanup. It marks
   the manager terminal before draining children; future add/restore cannot
   recreate runtimes, and repeated shutdown retains an incomplete-cleanup result.
+- Cancel and signed-out removal extract the child runtime under the lifecycle
+  gate, update selection, and hand the child to a manager-owned retiring set
+  whose cleanup join runs in a task the manager retains. The gate is never held
+  across that join: a child joins only after every adapter connection to it is
+  dropped, so waiting there would let a retained connection block selection,
+  add, and later removals. Adapters drop their cached connection to the tab
+  before asking Core to cancel or remove it; Core never depends on that order
+  for liveness. Manager shutdown joins every retiring child as well as the
+  remaining tabs, and a retiring child's cleanup failure becomes the retained
+  incomplete-cleanup result. Only signed-out children retire this way, so a
+  retiring child never owns a live Matrix client.
 - The account-tab list, persisted order, and last-selected key have one outer
   manager owner. Startup chooses that key before restoring sessions; restore
   completion order never selects an account.
@@ -768,8 +796,8 @@ stateDiagram-v2
   tab, the new context is rejected and the existing tab is selected; an existing
   account session is never logged out by cancellation or duplicate-login cleanup.
 - Cancelling the unfinished add-account context is allowed only while it is
-  unbound and signed out and another tab exists. It removes that tab, shuts
-  down its temporary runtime, and selects the tab that was selected when the
+  unbound and signed out and another tab exists. It removes that tab, retires
+  its temporary runtime as above, and selects the tab that was selected when the
   add flow started (falling back to a neighbour). An in-flight password or OIDC
   login cannot be cancelled this way.
 - Selecting an account binds commands and their completions to that account's

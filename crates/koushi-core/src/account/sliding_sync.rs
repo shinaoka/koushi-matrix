@@ -435,6 +435,7 @@ impl AccountActor {
                     .await;
                 self.install_provisional_session(login_session, persistable, key_id, action)
                     .await;
+                self.emit_login_admitted(&ready_events);
                 self.pending_ready_events.extend(ready_events);
             }
             PendingSlidingSyncAdmission::StoredSessionRestore {

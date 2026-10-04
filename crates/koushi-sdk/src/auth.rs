@@ -501,13 +501,17 @@ pub async fn login_with_password_with_store_and_device(
 
 /// Authenticate a newly allocated device on its already-journaled persistent
 /// store. The missing crypto database is expected here; SDK activation creates
-/// it for this fresh identity.
+/// it for this fresh identity. A database left without an Olm account by a
+/// failed earlier attempt is still a fresh identity.
 pub async fn login_with_password_with_new_device(
     request: &LoginRequest,
     store_config: &MatrixClientStoreConfig,
     device_id: &str,
 ) -> Result<MatrixClientSession, PasswordLoginError> {
-    let resumes_existing_identity = store_config.crypto_database_path().is_file();
+    let resumes_existing_identity = !matches!(
+        crate::login_store::preflight_saved_crypto_store(store_config, None, Some(device_id)).await,
+        crate::SavedCryptoStorePreflight::Missing | crate::SavedCryptoStorePreflight::Empty
+    );
     login_with_password_on_store(
         request,
         Some(store_config),

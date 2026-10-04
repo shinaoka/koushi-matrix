@@ -979,7 +979,11 @@ fn event_progress(
                     sessions,
                 }))
             }
-            AccountEvent::LoggedIn {
+            AccountEvent::LoginAdmitted {
+                request_id: event_request_id,
+                account_key,
+            }
+            | AccountEvent::LoggedIn {
                 request_id: event_request_id,
                 account_key,
             }

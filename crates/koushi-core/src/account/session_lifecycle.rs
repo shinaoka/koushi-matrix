@@ -588,6 +588,7 @@ impl AccountActor {
                 let pending = match self.store.pending_login_owner().resume_or_create(
                     normalized_homeserver.clone(),
                     "oidc",
+                    None,
                     device_id,
                 ) {
                     Ok(pending) => pending,
@@ -1007,6 +1008,7 @@ impl AccountActor {
             let pending = match self.store.pending_login_owner().resume_or_create(
                 normalized_homeserver.clone(),
                 "password",
+                Some(&request.username),
                 device_id.clone(),
             ) {
                 Ok(record) => record,
@@ -1449,6 +1451,8 @@ impl AccountActor {
             },
         )
         .await;
+        let held = self.pending_ready_events.clone();
+        self.emit_login_admitted(&held);
         self.send_actions(vec![AppAction::SoftLogoutReauthSucceeded {
             request_id: request_id.sequence,
         }])

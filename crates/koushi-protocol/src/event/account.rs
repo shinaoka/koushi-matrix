@@ -46,6 +46,13 @@ pub enum AccountEvent {
         request_id: RequestId,
         homeserver: String,
     },
+    /// A new login's authenticated session was admitted (provisional session
+    /// installed). Emitted immediately, unlike `LoggedIn`, which is held until
+    /// trust promotion; it settles the login request outcome.
+    LoginAdmitted {
+        request_id: RequestId,
+        account_key: AccountKey,
+    },
     LoggedIn {
         request_id: RequestId,
         account_key: AccountKey,
@@ -105,6 +112,14 @@ impl fmt::Debug for AccountEvent {
                 .debug_struct("AuthDiscoveryChanged")
                 .field("request_id", request_id)
                 .field("homeserver", &"Homeserver(..)")
+                .finish(),
+            Self::LoginAdmitted {
+                request_id,
+                account_key,
+            } => formatter
+                .debug_struct("LoginAdmitted")
+                .field("request_id", request_id)
+                .field("account_key", account_key)
                 .finish(),
             Self::LoggedIn {
                 request_id,
