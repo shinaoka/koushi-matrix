@@ -710,7 +710,14 @@ async fn versioned_snapshot_generation_matches_state_delta_generation() {
 
 #[tokio::test]
 async fn rejected_space_invites_are_fenced_before_room_actor_route() {
-    let runtime = CoreRuntime::start_with_event_capacity(64);
+    // Isolated stores: the default data dir resolves to the real user store,
+    // whose account-settings load races the expected-state capture under load.
+    let data_dir = tempfile::tempdir().expect("data tempdir");
+    let credential_dir = tempfile::tempdir().expect("credential tempdir");
+    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
     let mut connection = runtime.attach();
     let space_id = "!space-a:example.invalid".to_owned();
     let duplicate_user_id = "@duplicate:example.invalid".to_owned();

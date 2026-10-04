@@ -388,7 +388,10 @@ async fn select_room_commits_within_one_second_during_background_action_flood() 
         .find(|room_id| Some(*room_id) != ready.navigation.active_room_id.as_deref())
         .expect("a non-active room should be available");
 
-    let flood_runtime = runtime;
+    // Share the runtime with the flood task: moving it would drop the runtime
+    // as soon as the flood finishes, closing the connection before selection.
+    let runtime = std::sync::Arc::new(runtime);
+    let flood_runtime = std::sync::Arc::clone(&runtime);
     let flood = tokio::spawn(async move {
         for batch_index in 0..256 {
             flood_runtime
