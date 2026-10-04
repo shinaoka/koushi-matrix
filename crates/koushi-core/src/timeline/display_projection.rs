@@ -186,12 +186,14 @@ impl DisplayMembershipCell {
         usize::from(matches!(self, Self::Slot(_)))
     }
 
-    /// #873: a visible slot that becomes a displayed row. Thread replies are
-    /// suppressed by the projection, so they must not consume display capacity.
+    /// #873 / #1110: a visible slot that becomes a displayed row. Thread
+    /// replies are suppressed by the projection and the authoritative
+    /// visibility policy hides bodyless technical events and ignored senders,
+    /// so none of them may consume display capacity.
     fn renderable_len(&self) -> usize {
         match self {
             Self::Gap(_) => 0,
-            Self::Slot(item) => usize::from(item.thread_root.is_none()),
+            Self::Slot(item) => usize::from(item_occupies_display_row(item)),
         }
     }
 }
@@ -981,6 +983,16 @@ fn normalize_display_projection_slots(slots: &[DisplayProjectionSlot]) -> Vec<Ti
         .collect()
 }
 
+/// True when a canonical item occupies a displayed timeline row.
+///
+/// #873 sized display capacity in displayed rows; #1110 extends the same rule
+/// to every reason the authoritative visibility policy hides a row. Counting a
+/// suppressed row would let a run of technical updates evict real messages from
+/// the bounded live-edge window.
+pub(super) fn item_occupies_display_row(item: &TimelineItem) -> bool {
+    item.thread_root.is_none() && !item.is_hidden
+}
+
 /// #873: first canonical index of the live-edge window.
 ///
 /// The window is sized in *displayed rows*, so a run of suppressed thread
@@ -990,7 +1002,7 @@ fn normalize_display_projection_slots(slots: &[DisplayProjectionSlot]) -> Vec<Ti
 pub(super) fn live_edge_window_start(items: &[TimelineItem], max_items: usize) -> usize {
     let mut rows = 0_usize;
     for index in (0..items.len()).rev() {
-        if items[index].thread_root.is_none() {
+        if item_occupies_display_row(&items[index]) {
             if rows == max_items {
                 return index + 1;
             }
@@ -1823,6 +1835,8 @@ pub(super) fn timeline_diffs_include_prepend(diffs: &[TimelineDiff]) -> bool {
     })
 }
 
+#[cfg(test)]
+mod issue_1110_tests;
 #[cfg(test)]
 mod tests;
 

@@ -594,6 +594,21 @@ impl TimelineActor {
         if self.ignored_user_ids == user_ids {
             return;
         }
+        self.reapply_item_visibility(user_ids).await;
+    }
+
+    /// #1110: recompute the one authoritative row-visibility policy over the
+    /// canonical window and publish the rows whose visibility changed.
+    ///
+    /// Ignore/unignore and the redaction display preference share this path, so
+    /// neither reason can be lost while the other is recomputed, and both stay
+    /// reversible. The supplied ignored set is committed only once the canonical
+    /// activity lane has admitted the recomputation, so a refused admission can
+    /// still be retried by the next delivery.
+    pub(super) async fn reapply_item_visibility(
+        &mut self,
+        ignored_user_ids: std::collections::BTreeSet<String>,
+    ) {
         let activity_permit = reserve_canonical_activity_action(&self.action_tx, &self.key).await;
         let activity_commit_lease = if activity_permit.is_some() {
             self.timeline_actor_generations
@@ -606,12 +621,13 @@ impl TimelineActor {
         {
             return;
         }
-        self.ignored_user_ids = user_ids;
-
+        self.ignored_user_ids = ignored_user_ids;
+        let hide_redacted = self.hide_redacted;
+        let ignored_user_ids = self.ignored_user_ids.clone();
         let mut core_diffs = Vec::new();
         for (index, item) in self.navigation_items.iter_mut().enumerate() {
             let was_hidden = item.is_hidden;
-            apply_ignored_sender_suppression(item, &self.ignored_user_ids);
+            apply_timeline_item_visibility(item, hide_redacted, &ignored_user_ids);
             if item.is_hidden != was_hidden {
                 core_diffs.push(TimelineDiff::Set {
                     index,
@@ -631,7 +647,7 @@ impl TimelineActor {
             if let Some(activity_permit) = activity_permit {
                 activity_permit.send(vec![
                     canonical_activity_window_action(&self.key, &self.navigation_items)
-                        .expect("room ignored-user Activity action"),
+                        .expect("room visibility-change Activity action"),
                 ]);
             }
             self.emit_navigation_if_changed();
@@ -1343,8 +1359,27 @@ pub(super) fn timeline_room_id(key: &TimelineKey) -> Option<String> {
     }
 }
 
-pub(super) fn apply_ignored_sender_suppression(
+/// The single authoritative timeline-row visibility policy (#1110).
+///
+/// Every reason is derived from the current content and viewer state, never
+/// from a previously projected `is_hidden`. That keeps redaction toggles and
+/// ignore/unignore reversible, and it keeps deliberate content suppression from
+/// being lost when another reason is recomputed.
+pub(crate) fn timeline_item_is_hidden(
+    item: &TimelineItem,
+    hide_redacted: bool,
+    sender_ignored: bool,
+) -> bool {
+    // A redacted message keeps its redaction placeholder, so `hide_redacted`
+    // alone decides it; any other event with no renderable content is
+    // suppressed by the content policy itself.
+    let content_suppressed = !item.is_redacted && !has_user_visible_content(item);
+    content_suppressed || (hide_redacted && item.is_redacted) || sender_ignored
+}
+
+pub(super) fn apply_timeline_item_visibility(
     item: &mut TimelineItem,
+    hide_redacted: bool,
     ignored_user_ids: &std::collections::BTreeSet<String>,
 ) {
     if !matches!(&item.id, TimelineItemId::Event { .. }) {
@@ -1354,14 +1389,12 @@ pub(super) fn apply_ignored_sender_suppression(
         .sender
         .as_deref()
         .is_some_and(|sender| ignored_user_ids.contains(sender));
-    // Recompute from projected content, not the previous ignored result. This
-    // keeps ignore→unignore reversible while retaining the normal bodyless
-    // suppression baseline.
-    item.is_hidden = (!has_user_visible_content(item) && !item.is_redacted) || sender_ignored;
+    item.is_hidden = timeline_item_is_hidden(item, hide_redacted, sender_ignored);
 }
 
-pub(super) fn apply_ignored_sender_suppression_to_diff(
+pub(super) fn apply_timeline_item_visibility_to_diff(
     diff: &mut TimelineDiff,
+    hide_redacted: bool,
     ignored_user_ids: &std::collections::BTreeSet<String>,
 ) {
     match diff {
@@ -1369,11 +1402,11 @@ pub(super) fn apply_ignored_sender_suppression_to_diff(
         | TimelineDiff::PushBack { item }
         | TimelineDiff::Insert { item, .. }
         | TimelineDiff::Set { item, .. } => {
-            apply_ignored_sender_suppression(item, ignored_user_ids);
+            apply_timeline_item_visibility(item, hide_redacted, ignored_user_ids);
         }
         TimelineDiff::Reset { items } => {
             for item in items {
-                apply_ignored_sender_suppression(item, ignored_user_ids);
+                apply_timeline_item_visibility(item, hide_redacted, ignored_user_ids);
             }
         }
         TimelineDiff::Remove { .. } | TimelineDiff::Truncate { .. } | TimelineDiff::Clear => {}

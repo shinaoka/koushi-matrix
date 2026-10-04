@@ -1721,13 +1721,17 @@ describe("DisplayLabelsUpdated", () => {
 });
 
 describe("DisplayPolicyUpdated", () => {
-  test("marks only redacted rows hidden while preserving non-redacted rows", () => {
+  test("never recomputes row visibility in the renderer (#1110)", () => {
+    // Rust owns the whole visibility policy (content suppression, ignored
+    // senders, and the redaction preference) and pushes the changed rows as
+    // `ItemsUpdated` diffs. Recomputing `is_hidden` here from `hide_redacted`
+    // alone is what used to resurrect bodyless technical events.
     let store = createTimelineStore();
-    const redacted: TimelineItem = {
-      ...makeMsg("$redacted", ""),
+    const suppressed: TimelineItem = {
+      ...makeMsg("$acl", ""),
       body: null,
-      is_redacted: true,
-      is_hidden: false
+      is_redacted: false,
+      is_hidden: true
     };
     const visible = makeMsg("$visible", "Visible message");
 
@@ -1736,7 +1740,7 @@ describe("DisplayPolicyUpdated", () => {
         request_id: null,
         key: KEY,
         generation: 0,
-        items: [redacted, visible],
+        items: [suppressed, visible],
       },
     });
 
@@ -1747,9 +1751,25 @@ describe("DisplayPolicyUpdated", () => {
     });
 
     let items = getItems(store, KEY);
-    expect(items[0]).toMatchObject({ is_redacted: true, is_hidden: true });
+    expect(items[0]).toMatchObject({ is_redacted: false, is_hidden: true });
     expect(items[1]).toMatchObject({ is_redacted: false, is_hidden: false });
 
+    // The same acknowledgement must not reveal a redacted row either: Rust
+    // sends the corrected row.
+    const redacted: TimelineItem = {
+      ...makeMsg("$redacted", ""),
+      body: null,
+      is_redacted: true,
+      is_hidden: true
+    };
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [redacted],
+      },
+    });
     store = applyTimelineEvent(store, {
       DisplayPolicyUpdated: {
         hide_redacted: false,
@@ -1757,8 +1777,7 @@ describe("DisplayPolicyUpdated", () => {
     });
 
     items = getItems(store, KEY);
-    expect(items[0]).toMatchObject({ is_redacted: true, is_hidden: false });
-    expect(items[1]).toMatchObject({ is_redacted: false, is_hidden: false });
+    expect(items[0]).toMatchObject({ is_redacted: true, is_hidden: true });
   });
 
 });

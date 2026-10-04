@@ -195,6 +195,7 @@ pub(super) fn live_tail_test_manager(
         composer_formatting_options: ComposerFormattingOptions::default(),
         account_work: AccountWorkScheduler::default(),
         thread_root_order: koushi_state::TimelineThreadRootOrder::LatestReply,
+        hide_redacted: false,
         thread_root_projection_service: Arc::new(
             Mutex::new(ThreadRootProjectionService::default()),
         ),

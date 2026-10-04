@@ -57,7 +57,7 @@ use super::gap_repair::{
     room_checkpoint_advances_global_fence, should_record_gap_repair_evaluation,
 };
 use super::item_projection::{
-    ReceiptObservationTarget, apply_ignored_sender_suppression, apply_link_previews_to_item,
+    ReceiptObservationTarget, apply_link_previews_to_item, apply_timeline_item_visibility,
     cache_sdk_item_media_source, emit_receipt_observation_actions,
     live_event_receipts_from_sdk_items, remember_local_echo, sdk_item_to_timeline_item,
     thread_auto_requestable_event_id, timeline_room_id, withheld_update_should_publish,
@@ -379,6 +379,9 @@ pub(super) enum TimelineActorMessage {
     },
     DisplayPolicyChanged {
         thread_root_order: TimelineThreadRootOrder,
+        /// #1110: the redaction display preference, applied by Rust so the
+        /// renderer never owns a second visibility policy.
+        hide_redacted: bool,
     },
     RefreshPendingSendProjection {
         actor_generation: u64,
@@ -480,6 +483,7 @@ pub(super) enum TimelineActorControl {
     },
     DisplayPolicyChanged {
         thread_root_order: TimelineThreadRootOrder,
+        hide_redacted: bool,
     },
     BeginGapRepairDemand,
     EndGapRepairDemand,
@@ -577,13 +581,40 @@ impl From<TimelineActorControl> for TimelineActorMessage {
             TimelineActorControl::ReadStatePolicyChanged { send_read_receipts } => {
                 Self::ReadStatePolicyChanged { send_read_receipts }
             }
-            TimelineActorControl::DisplayPolicyChanged { thread_root_order } => {
-                Self::DisplayPolicyChanged { thread_root_order }
-            }
+            TimelineActorControl::DisplayPolicyChanged {
+                thread_root_order,
+                hide_redacted,
+            } => Self::DisplayPolicyChanged {
+                thread_root_order,
+                hide_redacted,
+            },
             TimelineActorControl::BeginGapRepairDemand => Self::BeginGapRepairDemand,
             TimelineActorControl::EndGapRepairDemand => Self::EndGapRepairDemand,
         }
     }
+}
+
+/// #1110: project a raw SDK item window into canonical items with the one
+/// authoritative visibility policy already applied.
+///
+/// The initial-hydration decision and the actor's first item list must agree on
+/// which rows a reader can actually see, so both use this projection instead of
+/// counting raw SDK items.
+fn project_initial_items<'a>(
+    key: &TimelineKey,
+    sdk_items: impl IntoIterator<Item = &'a Arc<matrix_sdk_ui::timeline::TimelineItem>>,
+    own_user_id: Option<&matrix_sdk::ruma::UserId>,
+    hide_redacted: bool,
+    ignored_user_ids: &std::collections::BTreeSet<String>,
+) -> Vec<TimelineItem> {
+    sdk_items
+        .into_iter()
+        .map(|item| sdk_item_to_timeline_item(key, item, own_user_id))
+        .map(|mut item| {
+            apply_timeline_item_visibility(&mut item, hide_redacted, ignored_user_ids);
+            item
+        })
+        .collect()
 }
 
 pub(super) fn canonical_activity_window_action(
@@ -885,6 +916,9 @@ pub(super) struct TimelineActor {
     pub(super) thread_summary_projection: ThreadSummaryProjectionIngress,
     thread_summary_projection_rx: watch::Receiver<BTreeMap<String, ThreadSummaryProjectionWake>>,
     pub(super) thread_root_order: TimelineThreadRootOrder,
+    /// #1110: the redaction display preference. It participates in the one
+    /// authoritative row-visibility policy, so a change re-emits item diffs.
+    pub(super) hide_redacted: bool,
     /// Manager-owned serial fence for display events and their actor generation.
     pub(super) timeline_actor_generations: Arc<TimelineActorGenerationGate>,
     pub(super) actor_generation: u64,
@@ -1303,6 +1337,7 @@ impl TimelineActor {
         account_work: AccountWorkScheduler,
         thread_root_projection_service: Arc<Mutex<ThreadRootProjectionService>>,
         thread_root_order: TimelineThreadRootOrder,
+        hide_redacted: bool,
         timeline_actor_generations: Arc<TimelineActorGenerationGate>,
         actor_generation: u64,
         subscription_generation: Option<u64>,
@@ -1361,7 +1396,18 @@ impl TimelineActor {
             subscribe_started,
             initial_sdk_items.len(),
         );
-        if should_hydrate_empty_initial_room_timeline(&key.kind, initial_sdk_items.len()) {
+        let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
+        // #1110: decide the initial-hydration need from the *projected* rows. A
+        // snapshot whose items are all suppressed technical state events is
+        // empty for the reader even though the SDK item count is not.
+        let mut projected_initial_items = project_initial_items(
+            &key,
+            &initial_sdk_items,
+            own_user_id.as_deref(),
+            hide_redacted,
+            &ignored_user_ids,
+        );
+        if should_hydrate_empty_initial_room_timeline(&key.kind, &projected_initial_items) {
             let gate_started = Some(std::time::Instant::now());
             let hydrate_result = {
                 let _permit = account_work
@@ -1415,9 +1461,15 @@ impl TimelineActor {
                 );
                 initial_sdk_items = hydrated_items;
                 diff_stream = hydrated_stream;
+                projected_initial_items = project_initial_items(
+                    &key,
+                    &initial_sdk_items,
+                    own_user_id.as_deref(),
+                    hide_redacted,
+                    &ignored_user_ids,
+                );
             }
         }
-        let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
         let mut initial_read_receipt_changes = if own_user_id.is_some() {
             Some(timeline.subscribe_own_user_read_receipts_changed().await)
         } else {
@@ -1437,15 +1489,7 @@ impl TimelineActor {
             cache_sdk_item_media_source(&mut media_sources, item);
         }
 
-        let initial_items: Vec<TimelineItem> = initial_sdk_items
-            .iter()
-            .map(|item| sdk_item_to_timeline_item(&key, item, own_user_id.as_deref()))
-            .map(|mut item| {
-                apply_ignored_sender_suppression(&mut item, &ignored_user_ids);
-                item
-            })
-            .collect();
-        let mut initial_items = initial_items;
+        let mut initial_items = projected_initial_items;
         for item in &mut initial_items {
             apply_link_previews_to_item(&mut *item, &room_id, &link_preview_policy, &session).await;
         }
@@ -1825,6 +1869,7 @@ impl TimelineActor {
             thread_summary_projection: thread_summary_projection.clone(),
             thread_summary_projection_rx,
             thread_root_order,
+            hide_redacted,
             timeline_actor_generations,
             actor_generation,
             subscription_generation,
@@ -2590,7 +2635,19 @@ impl TimelineActor {
                     .await;
                 let _ = acknowledged.send(accepted);
             }
-            TimelineActorMessage::DisplayPolicyChanged { thread_root_order } => {
+            TimelineActorMessage::DisplayPolicyChanged {
+                thread_root_order,
+                hide_redacted,
+            } => {
+                // #1110: the redaction preference belongs to the one
+                // authoritative visibility policy, so changing it re-emits the
+                // affected rows instead of leaving the renderer to recompute
+                // `is_hidden` from the setting on its own.
+                if self.hide_redacted != hide_redacted {
+                    self.hide_redacted = hide_redacted;
+                    let ignored_user_ids = self.ignored_user_ids.clone();
+                    self.reapply_item_visibility(ignored_user_ids).await;
+                }
                 if self.thread_root_order != thread_root_order {
                     self.thread_root_order = thread_root_order;
                     let diffs = self.reproject_display_items();

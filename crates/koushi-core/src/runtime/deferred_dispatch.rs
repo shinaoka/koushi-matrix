@@ -164,7 +164,10 @@ fn crawler_dispatch_of_message(message: AccountMessage) -> CrawlerDispatch {
 #[derive(Clone)]
 enum SettingsPolicyMessage {
     ReadReceipts(bool),
-    Display(koushi_state::TimelineThreadRootOrder),
+    Display {
+        thread_root_order: koushi_state::TimelineThreadRootOrder,
+        hide_redacted: bool,
+    },
     LinkPreviews {
         unencrypted: bool,
         encrypted: bool,
@@ -178,9 +181,13 @@ impl SettingsPolicyMessage {
             Self::ReadReceipts(send_read_receipts) => {
                 AccountMessage::ReadStatePolicyChanged { send_read_receipts }
             }
-            Self::Display(thread_root_order) => {
-                AccountMessage::DisplayPolicyChanged { thread_root_order }
-            }
+            Self::Display {
+                thread_root_order,
+                hide_redacted,
+            } => AccountMessage::DisplayPolicyChanged {
+                thread_root_order,
+                hide_redacted,
+            },
             Self::LinkPreviews {
                 unencrypted,
                 encrypted,
@@ -298,7 +305,10 @@ impl AppActor {
         let values = &self.state.settings.values;
         let mut messages = std::collections::VecDeque::from([
             SettingsPolicyMessage::ReadReceipts(values.notifications.send_read_receipts),
-            SettingsPolicyMessage::Display(values.timeline.thread_root_order),
+            SettingsPolicyMessage::Display {
+                thread_root_order: values.timeline.thread_root_order,
+                hide_redacted: values.display.hide_redacted,
+            },
         ]);
         if self.current_account_key().is_some() {
             messages.push_back(SettingsPolicyMessage::LinkPreviews {

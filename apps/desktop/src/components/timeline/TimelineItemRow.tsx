@@ -27,12 +27,10 @@ import {
   avatarInitial,
   ignoreComposerKeyAction,
   peopleFacingLabel,
-  type MentionCandidate
+  type MentionCandidate,
+  type OpenContextMenu
 } from "../../app/uiShared";
-import {
-  contextMenuItems,
-  type ContextMenuItem
-} from "../../domain/contextMenus";
+import { contextMenuItems } from "../../domain/contextMenus";
 import { getActiveLocale, t } from "../../i18n/messages";
 import { onMenuKeyDown } from "../ContextMenuSurface";
 import { LazyEmojiPicker } from "../LazyEmojiPicker";
@@ -355,20 +353,9 @@ export function TimelineItemRow({
   receiptOverflowCount?: number;
   currentUserId?: string;
   ignoredUserIds?: string[];
-  onOpenContextMenu?: (
-    event: MouseEvent<HTMLElement>,
-    target: {
-      kind: "message";
-      message: {
-        sender: string;
-        room_id: string;
-        event_id: string;
-        body: string;
-        reply_count: number;
-      };
-    },
-    items: ContextMenuItem[]
-  ) => void;
+  /** Shared shell contract (#1100): a message target may carry the requesting
+   * row's own inline-edit action. */
+  onOpenContextMenu?: OpenContextMenu;
   threadAttention?: TimelineThreadAttention | null;
   mediaDownload?: TimelineMediaDownloadState;
 }) {
@@ -875,6 +862,7 @@ export function TimelineItemRow({
     const items = contextMenuItems({
       kind: "message",
       canManage: currentUserId === item.sender,
+      canEdit: item.can_edit,
       canReply: canShowReply,
       hasThread: item.thread_summary != null && canComposeReply,
       senderUserId: item.sender,
@@ -896,7 +884,8 @@ export function TimelineItemRow({
         event_id: eventId,
         body: item.body ?? "",
         reply_count: item.thread_summary?.reply_count ?? 0
-      }
+      },
+      onOpenEdit: openEditForm
     }, items);
   }
 

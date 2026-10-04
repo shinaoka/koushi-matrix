@@ -1093,7 +1093,6 @@ export function ContextualRightPanel({
                     : []
                 }
                 currentUserId={currentUserId}
-                onEditMessage={() => undefined}
                 onOpenThread={() => undefined}
                 onRedactMessage={() => undefined}
                 profileUsers={snapshot.state.domain.profile.users}

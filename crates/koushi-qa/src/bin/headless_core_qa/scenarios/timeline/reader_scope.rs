@@ -77,7 +77,7 @@ pub(super) async fn verify_live_reader_scope(
                 0,
                 ReaderWindowLimit::try_from(16).unwrap(),
             )
-            .map_err(|_| "reader scope: admission failed".to_owned())?;
+            .map_err(|error| format!("reader scope: {phase} admission failed ({error:?})"))?;
         let mut ready_resource = None;
         let revision = tokio::time::timeout(EVENT_TIMEOUT, async {
             loop {
@@ -85,9 +85,9 @@ pub(super) async fn verify_live_reader_scope(
                     Some(ViewDelivery::Model {
                         revision, model, ..
                     }) => {
-                        reader
-                            .ack_model(revision)
-                            .map_err(|_| "reader scope: ACK failed".to_owned())?;
+                        reader.ack_model(revision).map_err(|error| {
+                            format!("reader scope: {phase} ACK failed ({error:?})")
+                        })?;
                         if let ViewModel::ReaderReady(window) = model
                             && let Some(row) = window
                                 .rows
@@ -105,15 +105,22 @@ pub(super) async fn verify_live_reader_scope(
                             return Ok::<_, String>(revision);
                         }
                     }
-                    _ => return Err("reader scope: retired before matching model".to_owned()),
+                    _ => {
+                        return Err(format!(
+                            "reader scope: {phase} retired before matching model"
+                        ));
+                    }
                 }
             }
         })
         .await
         .map_err(|_| "reader scope: model timed out".to_owned())??;
+        // #1103: name the phase and the concrete scope error. The nightly lane
+        // reported only "observation rejected", which left the failing phase and
+        // the rejected precondition indistinguishable.
         reader
             .observe_avatars(revision, 1, &[expected_reader.to_owned()], &[])
-            .map_err(|_| "reader scope: observation rejected".to_owned())?;
+            .map_err(|error| format!("reader scope: {phase} observation rejected ({error:?})"))?;
         if ready_resource.is_none() {
             tokio::time::timeout(EVENT_TIMEOUT, async {
                 loop {

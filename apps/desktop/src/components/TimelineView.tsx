@@ -112,16 +112,16 @@ useState,
 type Dispatch,
 type FormEvent,
 type KeyboardEvent,
-type MouseEvent,
 type PointerEvent as ReactPointerEvent,
 type SetStateAction
 } from "react";
 import { flushSync } from "react-dom";
 
-import { peopleFacingLabel, type MentionCandidate } from "../app/uiShared";
 import {
-type ContextMenuItem
-} from "../domain/contextMenus";
+  peopleFacingLabel,
+  type MentionCandidate,
+  type OpenContextMenu
+} from "../app/uiShared";
 import type { DiagnosticLogEntry } from "../domain/diagnostics";
 import { t } from "../i18n/messages";
 
@@ -381,20 +381,7 @@ export const TimelineView = memo(function TimelineView({
   pinnedEventIds?: readonly string[];
   forwardDestinations?: readonly TimelineForwardDestination[];
   onSetLocalUserAlias?: TimelineRowActionHandlers["onSetLocalUserAlias"];
-  onOpenContextMenu?: (
-    event: MouseEvent<HTMLElement>,
-    target: {
-      kind: "message";
-      message: {
-        sender: string;
-        room_id: string;
-        event_id: string;
-        body: string;
-        reply_count: number;
-      };
-    },
-    items: ContextMenuItem[]
-  ) => void;
+  onOpenContextMenu?: OpenContextMenu;
   currentUserId?: string;
   ignoredUserIds?: string[];
   suppressPaginationUi?: boolean;

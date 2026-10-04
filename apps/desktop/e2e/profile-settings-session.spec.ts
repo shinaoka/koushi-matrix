@@ -6,6 +6,7 @@ import {
   HARNESS_ROOM_ID,
   gotoReadyShell,
   invocationCount,
+  pushTimelineDiffs,
   seedTimelineItems
 } from "./support/basicOperations";
 
@@ -1248,32 +1249,47 @@ test("hide deleted messages setting hides only Rust-marked redacted timeline row
     });
   await expect(redactedRow.getByText(t("timeline.redactedMessage"))).toBeVisible();
 
-  await page.evaluate(async () => {
-    await window.__harness.pushCoreEvent({
-      kind: "Timeline",
-      event: {
-        DisplayPolicyUpdated: {
-          hide_redacted: true
-        }
-      }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
-  });
+  // #1110: Rust owns row visibility. A preference change arrives as the
+  // corrected rows (`ItemsUpdated`) beside the `DisplayPolicyUpdated`
+  // acknowledgement, never as a renderer-side recomputation.
+  const redactedItem = {
+    id: { Event: { event_id: redactedEventId } },
+    sender: "@harness-user:example.invalid",
+    body: null,
+    timestamp_ms: 1_800_000_000_950,
+    in_reply_to_event_id: null,
+    thread_root: null,
+    thread_summary: null,
+    reactions: [],
+    can_react: false,
+    is_redacted: true,
+    is_hidden: false,
+    can_redact: false,
+    is_edited: false,
+    can_edit: false
+  };
+  const pushVisibilityUpdate = async (is_hidden: boolean, hide_redacted: boolean, batchId: number) => {
+    await pushTimelineDiffs(
+      page,
+      [{ Set: { index: 0, item: { ...redactedItem, is_hidden } } }],
+      2,
+      batchId
+    );
+    await page.evaluate(async (payload) => {
+      await window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: { DisplayPolicyUpdated: { hide_redacted: payload.hide_redacted } }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    }, { hide_redacted });
+  };
+
+  await pushVisibilityUpdate(true, true, 3);
   await expect(redactedRow).toHaveCount(0);
   await expect(replyRow.getByText(t("timeline.redactedMessage"))).toBeVisible();
 
   await hideDeleted.click();
-  await page.evaluate(async () => {
-    await window.__harness.pushCoreEvent({
-      kind: "Timeline",
-      event: {
-        DisplayPolicyUpdated: {
-          hide_redacted: false
-        }
-      }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
-  });
+  await pushVisibilityUpdate(false, false, 4);
   await expect(redactedRow.getByText(t("timeline.redactedMessage"))).toBeVisible();
 });
 

@@ -1085,10 +1085,13 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   keys include target/item identity and clear/send invalidates them so late
   results cannot restore removed items. Browser snapshots have no caption revision,
   so do not delete these lanes without a separately reviewed Rust editor revision.
-- Rust owns image upload compression end to end: authoritative
-  `SettingsValues.media.image_upload_compression` policy, source/candidate bytes,
-  executor-hosted pixel transforms, original-vs-selected variant metadata,
-  metadata-stripped assertion, and thumbnail-refresh assertion. Core builds the
+- Rust owns image upload compression end to end: the authoritative
+  `SettingsValues.media.image_upload_compression_policy` thresholds and quality,
+  the per-attachment resize/format choice made in the upload-staging dialog,
+  source/candidate bytes, executor-hosted pixel transforms, original-vs-selected
+  variant metadata, metadata-stripped assertion, and thumbnail-refresh
+  assertion. No stored compression mode remains: #305 retired it, so the dialog
+  always asks and starts from the untouched output. Core builds the
   final `UploadMediaRequest` from the selected prepared registry entry and uses
   the actual byte-vector length rather than renderer metadata. Tauri only
   serializes staging inputs, preview bytes, and settled snapshots.

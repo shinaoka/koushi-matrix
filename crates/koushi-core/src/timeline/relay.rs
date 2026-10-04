@@ -41,12 +41,12 @@ use super::gap_repair::{
     rendered_live_edge_target,
 };
 use super::item_projection::{
-    ReceiptObservationTarget, apply_ignored_sender_suppression,
-    apply_ignored_sender_suppression_to_diff, apply_link_previews_to_item,
-    cache_sdk_item_media_source, emit_live_receipt_observation_actions,
-    emit_receipt_observation_actions, live_event_receipts_from_sdk_items,
-    sdk_item_to_timeline_item_with_send_states, sdk_vector_diffs_to_timeline_diffs,
-    thread_auto_requestable_event_id, timeline_item_event_id, timeline_room_id,
+    ReceiptObservationTarget, apply_link_previews_to_item, apply_timeline_item_visibility,
+    apply_timeline_item_visibility_to_diff, cache_sdk_item_media_source,
+    emit_live_receipt_observation_actions, emit_receipt_observation_actions,
+    live_event_receipts_from_sdk_items, sdk_item_to_timeline_item_with_send_states,
+    sdk_vector_diffs_to_timeline_diffs, thread_auto_requestable_event_id, timeline_item_event_id,
+    timeline_room_id,
 };
 use super::media::{PrivateMediaEntry, authoritative_media_gallery_replacement};
 use super::navigation::{
@@ -424,7 +424,11 @@ impl TimelineActor {
             Some(&self.withheld_codes),
         );
         for diff in &mut core_diffs {
-            apply_ignored_sender_suppression_to_diff(diff, &self.ignored_user_ids);
+            apply_timeline_item_visibility_to_diff(
+                diff,
+                self.hide_redacted,
+                &self.ignored_user_ids,
+            );
         }
         let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
         for diff in &mut core_diffs {
@@ -1062,7 +1066,11 @@ impl TimelineActor {
                 )
             })
             .map(|mut item| {
-                apply_ignored_sender_suppression(&mut item, &self.ignored_user_ids);
+                apply_timeline_item_visibility(
+                    &mut item,
+                    self.hide_redacted,
+                    &self.ignored_user_ids,
+                );
                 item
             })
             .collect();
@@ -1618,6 +1626,8 @@ pub(super) async fn run_diff_relay(
     }
 }
 
+#[cfg(test)]
+mod display_policy_visibility_tests;
 #[cfg(test)]
 mod ignored_reset_tests;
 #[cfg(test)]

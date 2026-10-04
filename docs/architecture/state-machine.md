@@ -1258,8 +1258,9 @@ stateDiagram-v2
   It replaces the whole invite snapshot and emits `RoomListChanged`; duplicate
   or stale SDK deliveries must be folded into the next Rust-owned snapshot.
 - `InvitePreview` carries room id for command correlation plus display name,
-  optional topic, optional inviter display name, and `is_dm`. GUI code must
-  treat those fields as render data, not as a local membership state machine.
+  `display_name_placeholder`, optional topic, optional inviter display name,
+  and `is_dm`. GUI code must treat those fields as render data, not as a local
+  membership state machine.
 - `AcceptInvite` joins the invited room/space and emits
   `RoomEvent::InviteAccepted`; `DeclineInvite` leaves/forgets the invite and
   emits `RoomEvent::InviteDeclined`; `StartDirectMessage` creates a direct room
@@ -2745,6 +2746,19 @@ sanitizes it before exposing it through `TimelineItem.formatted`.
   the preference is enabled. React omits rows only from that DTO flag and must
   not filter redacted events from a local preference. `DisplayPolicyUpdated`
   reprojects already-loaded rows without removing non-redacted items.
+- Exactly one Rust policy decides whether a timeline row is visible (#1110).
+  It combines three reasons: deliberate content suppression (a bodyless
+  technical, moderation, or unsupported state event), the ignored-sender
+  reason, and the `hide_redacted` preference. Every reason is derived from
+  current content and viewer state, never from a previously projected
+  `is_hidden`, so redaction toggles and ignore/unignore stay reversible and no
+  reason is lost while another is recomputed. The timeline actor owns the
+  decision: when the ignored set or the redaction preference changes it
+  recomputes the canonical rows and publishes the changed ones as ordinary
+  `ItemsUpdated` diffs. `DisplayPolicyUpdated` is an acknowledgement of the
+  stored preference, not a request for the renderer to recompute visibility.
+  The same policy sizes the bounded display projection, so a row that renders
+  nothing never consumes a displayed-row slot.
 - The React timeline renderer is a presentation adapter over this DTO. It may
   map sanitized tags into React nodes, attach copy-code controls using the
   Rust-provided code-block body, and highlight search terms over rendered text.

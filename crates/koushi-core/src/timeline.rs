@@ -73,6 +73,9 @@ mod thread_projection;
 pub(crate) use diagnostics::record_thread_summary_reconciliation;
 
 pub use item_projection::sdk_item_to_timeline_item;
+/// #1110: the single authoritative row-visibility policy, shared by the
+/// timeline actor's projection and the consumer export.
+pub(crate) use item_projection::timeline_item_is_hidden;
 pub(crate) use manager::TimelineMessage;
 pub use manager::{TIMELINE_DIFF_QUEUE_CAPACITY, TimelineManagerActor, TimelineManagerHandle};
 #[cfg(any(test, feature = "test-hooks"))]

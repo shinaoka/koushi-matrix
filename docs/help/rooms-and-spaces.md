@@ -111,7 +111,7 @@ an invitation before participating.
 1. Open the room and select **Room info** in its header.
 2. Choose **Invite people**, search for or enter the person's Matrix ID, and
    select the intended person.
-3. Review the offered scope and history options, then choose **Send invite**.
+3. Review the offered scope and history options, then choose **Invite**.
 
 If the action is unavailable, your role or the current room state may not allow
 it. Room history visibility and room entry rules are separate settings.

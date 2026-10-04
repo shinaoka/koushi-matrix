@@ -305,8 +305,39 @@ fn resubscribe_replay_keeps_focused_timeline_context_complete() {
 fn empty_room_initial_snapshot_needs_initial_backfill() {
     let key = room_key();
 
-    assert!(should_hydrate_empty_initial_room_timeline(&key.kind, 0));
-    assert!(!should_hydrate_empty_initial_room_timeline(&key.kind, 1));
+    assert!(should_hydrate_empty_initial_room_timeline(&key.kind, &[]));
+    assert!(!should_hydrate_empty_initial_room_timeline(
+        &key.kind,
+        &[timeline_item(
+            "$visible:example.test",
+            Some("visible"),
+            "@alice:example.test",
+            false,
+        )],
+    ));
+}
+
+/// #1110: a snapshot whose items are all suppressed technical updates is still
+/// empty for the reader, so it must take the same guarded backfill instead of
+/// leaving the conversation blank with no path to real history.
+#[test]
+fn technical_only_room_initial_snapshot_needs_initial_backfill() {
+    let key = room_key();
+    let hidden_technical_updates: Vec<_> = (0..8)
+        .map(|index| {
+            timeline_item(
+                &format!("$acl-{index}:example.test"),
+                None,
+                "@moderator:example.test",
+                true,
+            )
+        })
+        .collect();
+
+    assert!(should_hydrate_empty_initial_room_timeline(
+        &key.kind,
+        &hidden_technical_updates,
+    ));
 }
 
 #[test]
@@ -320,8 +351,8 @@ fn non_room_empty_initial_snapshots_do_not_use_room_live_backfill() {
         event_id: "$event:test".to_owned(),
     };
 
-    assert!(!should_hydrate_empty_initial_room_timeline(&thread, 0));
-    assert!(!should_hydrate_empty_initial_room_timeline(&focused, 0));
+    assert!(!should_hydrate_empty_initial_room_timeline(&thread, &[]));
+    assert!(!should_hydrate_empty_initial_room_timeline(&focused, &[]));
 }
 
 fn cleanup_probe_timeline_actor_handle() -> (
@@ -1384,6 +1415,7 @@ async fn room_actor_hydrates_a_historical_sender_without_a_live_event() {
         manager.account_work.clone(),
         Arc::clone(&manager.thread_root_projection_service),
         manager.thread_root_order,
+        false,
         Arc::clone(&manager.timeline_actor_generations),
         actor_generation,
         None,
@@ -1535,6 +1567,7 @@ async fn live_tail_restore_actor_flush_hands_completion_to_manager_once() {
         manager.account_work.clone(),
         Arc::clone(&manager.thread_root_projection_service),
         manager.thread_root_order,
+        false,
         Arc::clone(&manager.timeline_actor_generations),
         actor_generation,
         None,
@@ -1854,6 +1887,7 @@ async fn timeline_actor_spawn_returns_before_authoritative_publish_waits_for_man
             AccountWorkScheduler::default(),
             Arc::new(Mutex::new(ThreadRootProjectionService::default())),
             koushi_state::TimelineThreadRootOrder::LatestReply,
+            false,
             generations,
             actor_generation,
             None,
@@ -2934,6 +2968,7 @@ async fn replay_initial_items_republishes_unchanged_read_navigation() {
         manager.account_work.clone(),
         Arc::clone(&manager.thread_root_projection_service),
         manager.thread_root_order,
+        false,
         Arc::clone(&manager.timeline_actor_generations),
         generation,
         None,

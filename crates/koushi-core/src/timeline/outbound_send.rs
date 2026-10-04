@@ -48,7 +48,7 @@ use super::composer::{
 use super::diagnostics::trace_timeline_items;
 use super::display_projection::{DisplayProjectionContext, DisplayProjectionState};
 use super::item_projection::{
-    apply_ignored_sender_suppression, apply_link_previews_to_item, attachment_info_for_upload,
+    apply_link_previews_to_item, apply_timeline_item_visibility, attachment_info_for_upload,
     attachment_reply_for_key, is_attention_eligible_event, remember_local_echo,
     sdk_item_to_timeline_item_with_send_states, send_failure_reason, thumbnail_for_upload,
     timeline_media_source_from_sdk, timeline_room_id, validate_cancel_send, validate_retry_send,
@@ -2074,7 +2074,11 @@ impl TimelineActor {
                 )
             })
             .map(|mut item| {
-                apply_ignored_sender_suppression(&mut item, &self.ignored_user_ids);
+                apply_timeline_item_visibility(
+                    &mut item,
+                    self.hide_redacted,
+                    &self.ignored_user_ids,
+                );
                 item
             })
             .collect();
