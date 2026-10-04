@@ -6,18 +6,23 @@
 
 **Koushi is a desktop Matrix client for conversations in many languages.**
 
-It began with scientists who wanted to discuss equations, share files, and
-find past conversations, and it is open to everyone. Koushi uses
+Keep your work, personal, and community Matrix accounts open side by side in
+one window — each in its own tab, each signed in and syncing. Koushi uses
 [Matrix](https://matrix.org), the open protocol for secure, decentralized
 communication.
 
-<img src="assets/screenshots/koushi-main.png" alt="Koushi desktop client showing a three-pane Matrix room with spaces, rooms, messages, replies, reactions, and an empty composer" width="800">
+<img src="assets/screenshots/koushi-main.png" alt="Koushi desktop client with three account tabs (Work, Home with 4 unread, Club with 12 unread) above a three-pane Matrix room with spaces, rooms, messages, replies, reactions, and a composer showing the sending account" width="800">
 
 Join our public Matrix room:
 [#koushi-matrix:matrix.org](https://matrix.to/#/#koushi-matrix:matrix.org).
 
 ## Why Koushi?
 
+- **All your accounts, one window.** Add each Matrix account as a tab. Every
+  tab stays signed in and keeps syncing in the background, with its own unread
+  count, so you can see where new messages arrived and switch without signing
+  out. When several accounts are open, the composer shows which account you
+  are sending as.
 - **Desktop first.** A three-pane workspace keeps Spaces, conversations, and
   threads or search results close at hand. Keyboard shortcuts, a system tray,
   and native notifications fit the way you work at a computer.
@@ -27,9 +32,9 @@ Join our public Matrix room:
   history search supports text without spaces between words and folds
   full-width and half-width variants. The interface is available in English
   and Japanese.
-- **Made for scientific conversation.** Write LaTeX-style inline and display
-  equations, use Markdown and code blocks, share figures and files, and follow
-  discussions in threads. You do not need to be a scientist to use Koushi.
+- **Rich messages.** Use Markdown and code blocks, write LaTeX-style math
+  when you need it, share images and files, and follow discussions in
+  threads.
 - **Find the conversation again.** Search locally indexed message history,
   including encrypted conversations, across all rooms, a Space, or one
   conversation, then open a result in context.
@@ -40,11 +45,11 @@ can use it with a compatible Matrix homeserver of your choice.
 
 ## Features
 
-- End-to-end encrypted text chat, with your session kept signed in across
+- Several accounts side by side in account tabs, each staying signed in and
+  syncing, with per-account unread counts
+- End-to-end encrypted text chat, with your sessions kept signed in across
   restarts
 - Sign in through your normal browser (OIDC)
-- Several accounts side by side in account tabs, each staying signed in and
-  syncing while you switch between them
 - A familiar three-pane layout: Spaces, rooms, and direct messages
 - Room timelines with threads, replies, reactions, edits, and read receipts
 - Markdown, code blocks, and LaTeX-style math rendering
