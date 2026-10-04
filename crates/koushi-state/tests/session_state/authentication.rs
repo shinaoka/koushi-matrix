@@ -309,16 +309,6 @@ fn stale_or_wrong_state_authentication_success_is_ignored() {
         ),
         (
             SessionState::Authenticating {
-                homeserver: "https://other.example.org".to_owned(),
-                attempt_id: login_attempt_id(),
-            },
-            AppAction::LoginSucceeded {
-                attempt_id: login_attempt_id(),
-                info: info.clone(),
-            },
-        ),
-        (
-            SessionState::Authenticating {
                 homeserver: info.homeserver.clone(),
                 attempt_id: login_attempt_id(),
             },

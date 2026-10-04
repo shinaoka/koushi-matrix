@@ -2,10 +2,11 @@ use super::*;
 
 #[tauri::command]
 pub async fn probe_local_encryption_health(
+    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_probe_local_encryption_health_command(request_id),
@@ -17,10 +18,11 @@ pub async fn probe_local_encryption_health(
 
 #[tauri::command]
 pub async fn reset_local_data(
+    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     koushi_diagnostics::record_and_stderr(
         DiagnosticEvent::new(
             DiagnosticLevel::Info,

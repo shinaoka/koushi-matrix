@@ -50,8 +50,10 @@ room.
 ## Search returns no results
 
 Check **All / Space / Room/DM**, try a longer or more distinctive term, and
-inspect **User settings → Search history** for paused or incomplete indexing.
-See [Search](search.md). Rebuilding the index does not recover missing keys.
+inspect **Account Settings → Search history** for that account's indexing
+status, and **App Settings → Search history** for the shared background-work
+speed or pause control. See [Search](search.md). Rebuilding the index does not
+recover missing keys.
 
 ## Message will not send
 
@@ -73,8 +75,9 @@ unexpected.
 
 ## Notifications are missing
 
-Check **Room info** for **Mute** or **Mentions only**, then check global
-notification settings in **User settings → Notifications** and the operating system's
+Check **Room info** for **Mute** or **Mentions only**, then check **Account
+Settings → Notifications** for desktop notifications and **App Settings →
+Notifications** for sounds and badges. Also check the operating system's
 notification permission for Koushi. An unread badge and a desktop notification
 are different signals.
 

@@ -8,7 +8,7 @@ use std::sync::{
 #[cfg(any(debug_assertions, test, feature = "test-hooks"))]
 use koushi_key::SessionKeyIdCredentialNames;
 use koushi_key::{CredentialStore, LocalUnlockSecret};
-use koushi_protocol::SessionKeyId;
+use koushi_protocol::{AccountKey, SessionKeyId};
 use koushi_state::LocalEncryptionHealth;
 
 use crate::CREDENTIAL_STORE_SERVICE_NAME;
@@ -325,16 +325,103 @@ impl CredentialStoreBackend {
         match self {
             Self::OsKeychain(store) => store.load_saved_sessions(),
             #[cfg(any(debug_assertions, test, feature = "test-hooks"))]
-            Self::FileDir(store) => {
-                match store.load_named(koushi_key::saved_sessions_account_name()) {
-                    Ok(json) => koushi_key::SavedSessionIndex::from_json(&json),
-                    Err(err) if koushi_key::is_missing_credential_error(&err) => {
-                        Ok(koushi_key::SavedSessionIndex::new())
-                    }
-                    Err(err) => Err(err),
-                }
-            }
+            Self::FileDir(store) => store.load_saved_sessions_index(),
             Self::InMemory(store) => store.load_saved_sessions(),
+        }
+    }
+
+    pub fn save_saved_sessions(
+        &self,
+        index: &koushi_key::SavedSessionIndex,
+    ) -> Result<(), koushi_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.save_saved_sessions(index),
+            #[cfg(any(debug_assertions, test, feature = "test-hooks"))]
+            Self::FileDir(store) => store
+                .update_saved_sessions(|current| {
+                    *current = index.clone();
+                    true
+                })
+                .map(|_| ()),
+            Self::InMemory(store) => store.save_saved_sessions(index),
+        }
+    }
+
+    pub fn select_saved_account(
+        &self,
+        account_key: &koushi_protocol::AccountKey,
+    ) -> Result<bool, koushi_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.select_saved_account(account_key),
+            #[cfg(any(debug_assertions, test, feature = "test-hooks"))]
+            Self::FileDir(store) => {
+                store.update_saved_sessions(|index| index.select_account(account_key))
+            }
+            Self::InMemory(store) => {
+                let mut index = store.load_saved_sessions()?;
+                let changed = index.select_account(account_key);
+                if changed {
+                    store.save_saved_sessions(&index)?;
+                }
+                Ok(changed)
+            }
+        }
+    }
+
+    pub fn ensure_saved_account_tab(
+        &self,
+        account_key: &AccountKey,
+        homeserver: &str,
+        select: bool,
+    ) -> Result<(), koushi_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.mutate_vault(|data| {
+                let mut index = data.saved_sessions();
+                index.ensure_account_tab(account_key.clone(), homeserver);
+                if select {
+                    index.select_account(account_key);
+                }
+                data.set_saved_sessions(index);
+            }),
+            #[cfg(any(debug_assertions, test, feature = "test-hooks"))]
+            Self::FileDir(store) => store
+                .update_saved_sessions(|index| {
+                    index.ensure_account_tab(account_key.clone(), homeserver);
+                    if select {
+                        index.select_account(account_key);
+                    }
+                    true
+                })
+                .map(|_| ()),
+            Self::InMemory(store) => {
+                let mut index = store.load_saved_sessions()?;
+                index.ensure_account_tab(account_key.clone(), homeserver);
+                if select {
+                    index.select_account(account_key);
+                }
+                store.save_saved_sessions(&index)
+            }
+        }
+    }
+
+    pub fn remove_saved_account_tab(
+        &self,
+        account_key: &koushi_protocol::AccountKey,
+    ) -> Result<bool, koushi_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.remove_saved_account_tab(account_key),
+            #[cfg(any(debug_assertions, test, feature = "test-hooks"))]
+            Self::FileDir(store) => {
+                store.update_saved_sessions(|index| index.remove_account_tab(account_key))
+            }
+            Self::InMemory(store) => {
+                let mut index = store.load_saved_sessions()?;
+                let changed = index.remove_account_tab(account_key);
+                if changed {
+                    store.save_saved_sessions(&index)?;
+                }
+                Ok(changed)
+            }
         }
     }
 
@@ -345,11 +432,12 @@ impl CredentialStoreBackend {
         match self {
             Self::OsKeychain(store) => store.remember_saved_session(key_id),
             #[cfg(any(debug_assertions, test, feature = "test-hooks"))]
-            Self::FileDir(store) => {
-                let mut index = self.load_saved_sessions()?;
-                index.upsert(key_id.clone());
-                store.save_named(koushi_key::saved_sessions_account_name(), &index.to_json()?)
-            }
+            Self::FileDir(store) => store
+                .update_saved_sessions(|index| {
+                    index.upsert(key_id.clone());
+                    true
+                })
+                .map(|_| ()),
             Self::InMemory(store) => store.remember_saved_session(key_id),
         }
     }
@@ -361,11 +449,12 @@ impl CredentialStoreBackend {
         match self {
             Self::OsKeychain(store) => store.forget_saved_session(key_id),
             #[cfg(any(debug_assertions, test, feature = "test-hooks"))]
-            Self::FileDir(store) => {
-                let mut index = self.load_saved_sessions()?;
-                index.remove(key_id);
-                store.save_named(koushi_key::saved_sessions_account_name(), &index.to_json()?)
-            }
+            Self::FileDir(store) => store
+                .update_saved_sessions(|index| {
+                    index.remove(key_id);
+                    true
+                })
+                .map(|_| ()),
             Self::InMemory(store) => store.forget_saved_session(key_id),
         }
     }
@@ -543,6 +632,43 @@ impl OsCredentialStore {
         &self,
     ) -> Result<koushi_key::SavedSessionIndex, koushi_key::LocalSecretError> {
         self.read_vault(|data| Ok(data.saved_sessions()))
+    }
+
+    fn save_saved_sessions(
+        &self,
+        index: &koushi_key::SavedSessionIndex,
+    ) -> Result<(), koushi_key::LocalSecretError> {
+        self.mutate_vault(|data| data.set_saved_sessions(index.clone()))
+    }
+
+    fn select_saved_account(
+        &self,
+        account_key: &koushi_protocol::AccountKey,
+    ) -> Result<bool, koushi_key::LocalSecretError> {
+        let mut changed = false;
+        self.mutate_vault(|data| {
+            let mut index = data.saved_sessions();
+            changed = index.select_account(account_key);
+            if changed {
+                data.set_saved_sessions(index);
+            }
+        })?;
+        Ok(changed)
+    }
+
+    fn remove_saved_account_tab(
+        &self,
+        account_key: &koushi_protocol::AccountKey,
+    ) -> Result<bool, koushi_key::LocalSecretError> {
+        let mut changed = false;
+        self.mutate_vault(|data| {
+            let mut index = data.saved_sessions();
+            changed = index.remove_account_tab(account_key);
+            if changed {
+                data.set_saved_sessions(index);
+            }
+        })?;
+        Ok(changed)
     }
 
     fn remember_saved_session(
@@ -812,12 +938,16 @@ pub fn local_secret_error_health(error: &koushi_key::LocalSecretError) -> LocalE
 #[derive(Clone)]
 pub struct FileCredentialStore {
     dir: PathBuf,
+    saved_sessions_lock: Arc<Mutex<()>>,
 }
 
 #[cfg(any(debug_assertions, test, feature = "test-hooks"))]
 impl FileCredentialStore {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
+        Self {
+            dir: dir.into(),
+            saved_sessions_lock: Arc::new(Mutex::new(())),
+        }
     }
 
     fn account_file(&self, key_id: &SessionKeyId) -> PathBuf {
@@ -880,6 +1010,44 @@ impl FileCredentialStore {
     fn delete_named(&self, name: &str) -> Result<(), koushi_key::LocalSecretError> {
         let _ = std::fs::remove_file(self.named_file(name));
         Ok(())
+    }
+
+    fn load_saved_sessions_index(
+        &self,
+    ) -> Result<koushi_key::SavedSessionIndex, koushi_key::LocalSecretError> {
+        let _guard = self
+            .saved_sessions_lock
+            .lock()
+            .map_err(|_| unavailable_credential_error())?;
+        match self.load_named(koushi_key::saved_sessions_account_name()) {
+            Ok(json) => koushi_key::SavedSessionIndex::from_json(&json),
+            Err(error) if koushi_key::is_missing_credential_error(&error) => {
+                Ok(koushi_key::SavedSessionIndex::new())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn update_saved_sessions(
+        &self,
+        update: impl FnOnce(&mut koushi_key::SavedSessionIndex) -> bool,
+    ) -> Result<bool, koushi_key::LocalSecretError> {
+        let _guard = self
+            .saved_sessions_lock
+            .lock()
+            .map_err(|_| unavailable_credential_error())?;
+        let mut index = match self.load_named(koushi_key::saved_sessions_account_name()) {
+            Ok(json) => koushi_key::SavedSessionIndex::from_json(&json)?,
+            Err(error) if koushi_key::is_missing_credential_error(&error) => {
+                koushi_key::SavedSessionIndex::new()
+            }
+            Err(error) => return Err(error),
+        };
+        let changed = update(&mut index);
+        if changed {
+            self.save_named(koushi_key::saved_sessions_account_name(), &index.to_json()?)?;
+        }
+        Ok(changed)
     }
 
     fn ensure_dir(&self) -> Result<(), koushi_key::LocalSecretError> {

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 
 // This hook is the React-owned platform-lifecycle seam for desktop attention.
-import { desktopAttentionPort } from "../backend/desktopAttentionRuntime";
+import { desktopAttentionPortForAccount } from "../backend/desktopAttentionRuntime";
 import type { TimelineDiagnosticLogEntry } from "../components/TimelineView";
 import {
   applyDesktopAttentionToWindow,
@@ -18,9 +18,11 @@ import type { DesktopAttentionSummary } from "../domain/desktopAttention";
 import type { DesktopSnapshot } from "../domain/types";
 
 type DesktopAttentionEffectsInput = {
+  accountTabId: string | null;
   snapshot: DesktopSnapshot | null;
   attentionWindowTitle: string;
   safeAttentionSummary: DesktopAttentionSummary;
+  aggregateBadgeCount?: number;
   appendDiagnosticLog: (entry: TimelineDiagnosticLogEntry) => void;
   /** Present a completed notification click through the existing flows. */
   onNotificationActivated: (activation: DesktopNotificationActivation) => void;
@@ -29,12 +31,19 @@ type DesktopAttentionEffectsInput = {
 const desktopCandidateSoundDispatcher = createDesktopCandidateSoundDispatcher();
 
 export function useDesktopAttentionEffects({
+  accountTabId,
   snapshot,
   attentionWindowTitle,
   safeAttentionSummary,
+  aggregateBadgeCount,
   appendDiagnosticLog,
   onNotificationActivated
 }: DesktopAttentionEffectsInput): void {
+  const desktopAttentionPort = useMemo(
+    () => desktopAttentionPortForAccount(accountTabId ?? undefined),
+    [accountTabId]
+  );
+  const badgeCount = aggregateBadgeCount ?? safeAttentionSummary.badgeCount;
   const notificationActivationHandler = useRef(onNotificationActivated);
   const attentionCapabilities = useMemo(
     () => snapshot?.state.domain.native_attention.summary.capabilities,
@@ -57,7 +66,7 @@ export function useDesktopAttentionEffects({
     void applyDesktopAttentionToWindow(
       desktopAttentionPort.currentWindow(),
       attentionWindowTitle,
-      safeAttentionSummary.badgeCount,
+      badgeCount,
       attentionCapabilities,
       (token) => appendDiagnosticLog({
         timestampMs: Date.now(),
@@ -73,7 +82,8 @@ export function useDesktopAttentionEffects({
   }, [
     attentionCapabilities,
     attentionWindowTitle,
-    safeAttentionSummary.badgeCount,
+    badgeCount,
+    desktopAttentionPort,
     snapshot?.state.domain.session.kind
   ]);
 
@@ -124,7 +134,8 @@ export function useDesktopAttentionEffects({
     snapshot?.state.domain.native_attention.summary.candidate?.room_display_name,
     snapshot?.state.domain.native_attention.summary.candidate?.kind,
     snapshot?.state.domain.native_attention.summary.candidate?.unread_count,
-    snapshot?.state.domain.native_attention.summary.candidate?.highlight_count
+    snapshot?.state.domain.native_attention.summary.candidate?.highlight_count,
+    desktopAttentionPort
   ]);
 
   useEffect(() => {
@@ -144,15 +155,15 @@ export function useDesktopAttentionEffects({
       });
       notificationActivationHandler.current(activation);
     });
-  }, [appendDiagnosticLog]);
+  }, [appendDiagnosticLog, desktopAttentionPort]);
 
   useEffect(() => {
-    if (!desktopAttentionPort || safeAttentionSummary.badgeCount !== 0) {
+    if (!desktopAttentionPort || badgeCount !== 0) {
       return;
     }
 
     void clearDesktopAttentionNotifications(desktopAttentionPort.notifications, (token) =>
       appendDiagnosticLog({ timestampMs: Date.now(), source: "native.attention", message: token })
     );
-  }, [safeAttentionSummary.badgeCount]);
+  }, [badgeCount, desktopAttentionPort]);
 }

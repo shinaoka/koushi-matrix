@@ -2031,7 +2031,7 @@ test("edit composer respects the Rust-owned composer shortcut resolver", async (
 }) => {
   await gotoReadyShell(page);
 
-  await page.getByRole("button", { name: "User settings" }).click();
+  await page.getByRole("button", { name: "App Settings" }).click();
   await page.getByRole("tab", { name: "Keyboard", exact: true }).click();
   await page.getByRole("button", { name: /^(Ctrl|Cmd)\+Enter sends$/ }).click();
   await page.keyboard.press("Escape");

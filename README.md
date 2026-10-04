@@ -43,6 +43,8 @@ can use it with a compatible Matrix homeserver of your choice.
 - End-to-end encrypted text chat, with your session kept signed in across
   restarts
 - Sign in through your normal browser (OIDC)
+- Several accounts side by side in account tabs, each staying signed in and
+  syncing while you switch between them
 - A familiar three-pane layout: Spaces, rooms, and direct messages
 - Room timelines with threads, replies, reactions, edits, and read receipts
 - Markdown, code blocks, and LaTeX-style math rendering

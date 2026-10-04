@@ -220,6 +220,7 @@ export function ThreadRootStatusPlaceholder({
 
 export function TimelineItemRow({
   item,
+  accountTabId,
   rowId,
   contentEventId,
   activityEventId,
@@ -284,6 +285,7 @@ export function TimelineItemRow({
   keyRequestPending = false
 }: {
   item: TimelineItem;
+  accountTabId?: string;
   /** Stable presentation identity used by DOM/virtualization rows. */
   rowId?: string;
   /** Root/content identity for every message action. */
@@ -1179,6 +1181,7 @@ export function TimelineItemRow({
             ) : null}
             {receiptTotalCount > 0 ? (
               <ReceiptReaders
+                accountTabId={accountTabId}
                 overflowCount={receiptOverflowCount}
                 receipts={receipts}
                 source={receiptSource}

@@ -247,8 +247,8 @@ Lane scope notes:
   do not provide a reliable app-world command recorder. The lane uses synthetic
   filenames and content only.
 - `local-image-compression` uses a binary-safe `DataTransfer` fallback for the
-  synthetic PNG. User Settings can unmount the timeline surface in the real
-  WebView, so the lane must reselect the QA Seed Room before attaching media.
+  synthetic PNG. Settings can unmount the timeline surface in the real WebView,
+  so the lane must reselect the QA Seed Room before attaching media.
 - `local-room-tags` must wait until the row is observed in the expected section.
   Do not mutate React state, monkeypatch Tauri IPC, or treat menu click
   completion as evidence.
@@ -326,8 +326,9 @@ slots on a real homeserver.
 - `npm --prefix apps/desktop run qa:mac-gui` — macOS GUI smoke driven through
   `System Events`.
 
-The macOS smoke opens User Settings, selects Display, and activates the
-semantic `Compact`, `Default`, and `Comfortable` buttons. It then resizes
+The macOS smoke opens Account Settings with **Cmd+,**, switches to App
+Settings, selects Appearance, and activates the semantic `Compact`, `Default`,
+and `Comfortable` buttons. It then resizes
 `window 1` through System Events' native `set size` command and restores the
 original size best-effort. After each transition it polls the private-data-free
 Rust receipt title token:
@@ -347,9 +348,8 @@ Safety rules:
   `KOUSHI_SKIP_SAVED_SESSIONS=1` only prevents saved-session reads; a successful
   login can still prompt macOS Keychain during session persistence or encrypted
   SDK store key creation.
-- First-run GUI smoke sets `KOUSHI_SKIP_SAVED_SESSIONS=1`, or opening User
-  Settings can read the macOS Keychain and show a confirmation prompt that
-  blocks unattended automation. Real-login smoke additionally sets
+- First-run GUI smoke sets `KOUSHI_SKIP_SAVED_SESSIONS=1` to avoid Keychain
+  reads while restoring saved sessions. Real-login smoke additionally sets
   `KOUSHI_SKIP_KEYCHAIN_PERSISTENCE=1` and `KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR`.
 - Filter the child environment before spawning `npm run tauri dev`
   ([engineering rules](../policies/engineering-rules.md#secrets-and-private-data) Secrets 4), and attempt logout cleanup after any

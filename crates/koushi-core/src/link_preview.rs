@@ -11,7 +11,9 @@ use matrix_sdk::ruma::html::Html;
 use regex::Regex;
 use url::Url;
 
-use crate::renderable_thumbnail::{RenderableThumbnailKind, store_renderable_thumbnail};
+use crate::renderable_thumbnail::{
+    RenderableThumbnailKind, store_renderable_thumbnail_for_account,
+};
 use koushi_protocol::event::{LinkPreview, LinkPreviewImage, LinkPreviewState, TimelineLinkRange};
 use koushi_protocol::event::{TimelineFormattedBody, TimelineMediaSource};
 
@@ -502,8 +504,13 @@ async fn download_preview_image(
         .await
         .map_err(|_| PreviewImageDownloadError::Network)?;
 
-    store_renderable_thumbnail(RenderableThumbnailKind::LinkPreview, url, bytes)
-        .map_err(|_| PreviewImageDownloadError::TooLarge)
+    store_renderable_thumbnail_for_account(
+        RenderableThumbnailKind::LinkPreview,
+        session.info.user_id.as_str(),
+        url,
+        bytes,
+    )
+    .map_err(|_| PreviewImageDownloadError::TooLarge)
 }
 
 #[cfg(test)]

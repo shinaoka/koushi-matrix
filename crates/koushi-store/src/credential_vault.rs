@@ -1,7 +1,7 @@
 use std::{fmt, fs, path::PathBuf};
 
-use koushi_key::{CredentialVaultMasterKey, LocalStoreId, SavedSessionIndex};
-use koushi_protocol::SessionKeyId;
+use koushi_key::{CredentialVaultMasterKey, LocalStoreId, SavedAccountTab, SavedSessionIndex};
+use koushi_protocol::{AccountKey, SessionKeyId};
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -13,6 +13,8 @@ const CREDENTIAL_VAULT_MAX_BYTES: usize = 16 * 1024 * 1024;
 pub struct CredentialVaultData {
     last_session: Option<SessionKeyId>,
     saved_sessions: Vec<SessionKeyId>,
+    saved_tabs: Vec<SavedAccountTab>,
+    selected_account: Option<AccountKey>,
     entries: Vec<CredentialVaultEntry>,
     legacy_cleanup_pending: Vec<SessionKeyId>,
     pending_logins: Vec<PendingLoginRecord>,
@@ -25,6 +27,8 @@ impl Default for CredentialVaultData {
         Self {
             last_session: None,
             saved_sessions: Vec::new(),
+            saved_tabs: Vec::new(),
+            selected_account: None,
             entries: Vec::new(),
             legacy_cleanup_pending: Vec::new(),
             pending_logins: Vec::new(),
@@ -105,6 +109,10 @@ struct CredentialVaultPayload {
     version: u8,
     last_session: Option<SessionKeyId>,
     saved_sessions: Vec<SessionKeyId>,
+    #[serde(default)]
+    saved_tabs: Vec<SavedAccountTab>,
+    #[serde(default)]
+    selected_account: Option<AccountKey>,
     entries: Vec<CredentialVaultEntry>,
     #[serde(default)]
     legacy_cleanup_pending: Vec<SessionKeyId>,
@@ -131,16 +139,35 @@ impl CredentialVaultData {
 
     pub fn saved_sessions(&self) -> SavedSessionIndex {
         let mut index = SavedSessionIndex::new();
+        for tab in &self.saved_tabs {
+            index.ensure_account_tab(tab.account_key.clone(), tab.homeserver.clone());
+        }
         for key_id in &self.saved_sessions {
             index.upsert(key_id.clone());
+        }
+        if let Some(selected) = self.selected_account.clone().or_else(|| {
+            self.last_session
+                .as_ref()
+                .map(|session| AccountKey(session.user_id.clone()))
+        }) {
+            index.select_account(&selected);
         }
         index
     }
 
+    pub fn set_saved_sessions(&mut self, index: SavedSessionIndex) {
+        self.saved_sessions = index.sessions().to_vec();
+        self.saved_tabs = index.tabs().to_vec();
+        self.selected_account = index.selected_account().cloned();
+    }
+
     pub fn remember_session(&mut self, key_id: SessionKeyId) {
         if !self.saved_sessions.contains(&key_id) {
-            self.saved_sessions.push(key_id);
+            self.saved_sessions.push(key_id.clone());
         }
+        let mut index = self.saved_sessions();
+        index.upsert(key_id);
+        self.set_saved_sessions(index);
     }
 
     pub fn forget_session(&mut self, key_id: &SessionKeyId) {
@@ -358,6 +385,8 @@ fn encrypt_payload(
         version,
         last_session: data.last_session.clone(),
         saved_sessions: data.saved_sessions.clone(),
+        saved_tabs: data.saved_tabs.clone(),
+        selected_account: data.selected_account.clone(),
         entries: data.entries.clone(),
         legacy_cleanup_pending: data.legacy_cleanup_pending.clone(),
         pending_logins: data.pending_logins.clone(),
@@ -398,6 +427,8 @@ fn decrypt_payload(
     Ok(CredentialVaultData {
         last_session: payload.last_session,
         saved_sessions: payload.saved_sessions,
+        saved_tabs: payload.saved_tabs,
+        selected_account: payload.selected_account,
         entries: payload.entries,
         legacy_cleanup_pending: payload.legacy_cleanup_pending,
         pending_logins: payload.pending_logins,
@@ -416,8 +447,8 @@ fn zeroize_replaced_string(value: &mut Option<String>) {
 mod tests {
     use std::fs;
 
-    use koushi_key::{CredentialVaultMasterKey, LocalUnlockSecret};
-    use koushi_protocol::SessionKeyId;
+    use koushi_key::{CredentialVaultMasterKey, LocalUnlockSecret, SavedSessionIndex};
+    use koushi_protocol::{AccountKey, SessionKeyId};
     use tempfile::tempdir;
 
     use super::{CredentialVaultData, CredentialVaultFile};
@@ -442,6 +473,16 @@ mod tests {
         let bob_unlock = LocalUnlockSecret::generate().to_storage_string();
         let mut data = CredentialVaultData::default();
         data.set_last_session(Some(alice.clone()));
+        let mut index = SavedSessionIndex::new();
+        index.upsert(alice.clone());
+        index.upsert(bob.clone());
+        index.ensure_account_tab(
+            AccountKey("@signedout:invalid".into()),
+            "https://signedout.invalid",
+        );
+        let selected = AccountKey(bob.user_id.clone());
+        assert!(index.select_account(&selected));
+        data.set_saved_sessions(index);
         data.upsert_matrix_session(alice.clone(), "alice-session");
         data.upsert_local_unlock_secret(alice.clone(), alice_unlock.as_str());
         data.upsert_matrix_session(bob.clone(), "bob-session");
@@ -472,6 +513,9 @@ mod tests {
             restored.local_unlock_secret(&bob),
             Some(bob_unlock.as_str())
         );
+        let saved = restored.saved_sessions();
+        assert_eq!(saved.tabs().len(), 3);
+        assert_eq!(saved.selected_account(), Some(&selected));
     }
 
     #[test]
