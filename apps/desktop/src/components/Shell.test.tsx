@@ -2,9 +2,9 @@
 
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EntityAvatar, Sidebar, WorkspaceRail } from "./Shell";
+import { EntityAvatar, Sidebar, WorkspaceRail, composerSendingAccount } from "./Shell";
 import { readyDesktopSnapshotFixture } from "../test/desktopApiFixture";
-import type { RoomListItem } from "../domain/types";
+import type { AccountTabSummary, RoomListItem } from "../domain/types";
 import { setActiveLocaleProfile, t } from "../i18n/messages";
 
 function room(room_id: string, display_name: string): RoomListItem {
@@ -446,5 +446,37 @@ describe("Rust-projected workspace shell", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: t("spaceAddRooms.action") }));
     expect(onAddExistingRoom).toHaveBeenCalledWith("!space:example.invalid");
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+});
+
+describe("composerSendingAccount", () => {
+  const tab = (
+    id: string,
+    accountKey: string | null,
+    status: AccountTabSummary["status"] = "ready"
+  ): AccountTabSummary => ({
+    id,
+    accountKey,
+    homeserver: null,
+    displayName: "Same Name",
+    avatarSourceRef: null,
+    status,
+    unreadCount: 0
+  });
+
+  it("hides the sender when only one account is signed in", () => {
+    expect(composerSendingAccount([tab("a", "@a:one.invalid")], "a")).toBeNull();
+    expect(
+      composerSendingAccount(
+        [tab("a", "@a:one.invalid"), tab("b", "@b:two.invalid", "signedOut"), tab("c", null, "addAccount")],
+        "a"
+      )
+    ).toBeNull();
+  });
+
+  it("names the sender by Matrix ID when several accounts are signed in", () => {
+    expect(
+      composerSendingAccount([tab("a", "@a:one.invalid"), tab("b", "@a:two.invalid")], "b")
+    ).toMatchObject({ name: "Same Name", userId: "@a:two.invalid" });
   });
 });

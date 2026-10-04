@@ -1430,3 +1430,25 @@ export function avatarColorClass(seed: string): string {
   }
   return `avatar-c${(hash % 8) + 1}`;
 }
+
+/**
+ * The composer names its sender only when more than one account is signed in;
+ * a single account needs no disambiguation. The Matrix ID is always included
+ * because display names alone do not distinguish accounts.
+ */
+export function composerSendingAccount(
+  tabs: readonly AccountTabSummary[] | undefined,
+  selectedTabId: string | null
+): { name: string; userId: string; colorClassName: string } | null {
+  if (!tabs) return null;
+  const signedInCount = tabs.filter(
+    (tab) => tab.accountKey !== null && tab.status !== "signedOut"
+  ).length;
+  const selected = tabs.find((tab) => tab.id === selectedTabId);
+  if (signedInCount <= 1 || !selected?.accountKey) return null;
+  return {
+    name: selected.displayName?.trim() || selected.accountKey,
+    userId: selected.accountKey,
+    colorClassName: avatarColorClass(selected.accountKey)
+  };
+}

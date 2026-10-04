@@ -275,7 +275,7 @@ import {
   TopBar,
   WorkspaceRail,
   Sidebar,
-  avatarColorClass,
+  composerSendingAccount,
   type RuntimeAlert
 } from "./components/Shell";
 import { ContextualRightPanel } from "./components/rightPanel";
@@ -1047,16 +1047,7 @@ function AccountContent({
     [accountTabId]
   );
   const snapshot = useAppStore(selectSnapshot);
-  const signedInTabCount = accountTabs?.tabs.filter(
-    (tab) => tab.accountKey !== null && tab.status !== "signedOut"
-  ).length ?? 0;
-  const selectedAccountTab = accountTabs?.tabs.find((tab) => tab.id === accountTabId);
-  const sendingAccount = signedInTabCount > 1 && selectedAccountTab?.accountKey
-    ? {
-        name: selectedAccountTab.displayName?.trim() || selectedAccountTab.accountKey,
-        colorClassName: avatarColorClass(selectedAccountTab.accountKey)
-      }
-    : null;
+  const sendingAccount = composerSendingAccount(accountTabs?.tabs, accountTabId);
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;

@@ -74,7 +74,7 @@ import {
   type SpaceInviteCancellationAvailabilityReason
 } from "./SpaceMembersPanel";
 import { MessageArticle, PinnedEventsList, SearchResults } from "./mediaLists";
-import { ThreadComposer } from "./composer";
+import { ThreadComposer, type ComposerSendingAccount } from "./composer";
 import { UploadStagingDialog, uploadStagingItemsAreSendable } from "./dialogs";
 import type { OpenContextMenu } from "../app/uiShared";
 import { useStableEvent } from "./useStableEvent";
@@ -299,7 +299,7 @@ export function ContextualRightPanel({
   runtimeAlertRetrying?: boolean;
   onRetryRuntimeAlert?: (kind: RuntimeAlert["kind"]) => void;
   settingsScope?: "account" | "app";
-  sendingAccount?: { name: string; colorClassName: string } | null;
+  sendingAccount?: ComposerSendingAccount | null;
   onSettingsScopeChange?: (scope: "account" | "app") => void;
   onProbeLocalEncryption: () => void;
   onResetLocalData: () => void;

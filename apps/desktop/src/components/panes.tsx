@@ -67,7 +67,7 @@ import {
   PinnedMessagesEntry,
   SearchResults
 } from "./mediaLists";
-import { Composer } from "./composer";
+import { Composer, type ComposerSendingAccount } from "./composer";
 import { UploadStagingDialog, uploadStagingItemsAreSendable } from "./dialogs";
 import { ImeSafeForm, ImeTextField } from "./ImeTextControl";
 import { useStableEvent } from "./useStableEvent";
@@ -760,7 +760,7 @@ export function TimelinePane({
   onTimelineDiagnosticLogEntry
 }: {
   activeRoomName: string;
-  sendingAccount?: { name: string; colorClassName: string } | null;
+  sendingAccount?: ComposerSendingAccount | null;
   canEdit?: boolean;
   composerDocument: ComposerDocument;
   composerDraftKey?: string;

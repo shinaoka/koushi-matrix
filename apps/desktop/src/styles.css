@@ -5028,13 +5028,20 @@ mark {
 }
 
 .composer-sending-as {
-  display: flex;
+  display: inline-flex;
+  flex: 0 1 auto;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
-  border-bottom: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 11px;
+  min-inline-size: 0;
+  margin-inline-start: 8px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.composer-sending-as-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .composer-sending-as-dot {

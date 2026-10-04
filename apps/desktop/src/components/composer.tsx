@@ -83,6 +83,12 @@ import {
   type DocumentSelection
 } from "../domain/composerDocument";
 
+export interface ComposerSendingAccount {
+  name: string;
+  userId: string;
+  colorClassName: string;
+}
+
 export const Composer = memo(function Composer({
   surface = "main",
   editorOnly = false,
@@ -121,7 +127,7 @@ export const Composer = memo(function Composer({
   editorOnly?: boolean;
   canEdit?: boolean;
   composerMode: ComposerModeProp;
-  sendingAccount?: { name: string; colorClassName: string } | null;
+  sendingAccount?: ComposerSendingAccount | null;
   hasStagedUploads?: boolean;
   stagedUploadsReady?: boolean;
   isSending: boolean;
@@ -791,6 +797,14 @@ export const Composer = memo(function Composer({
     </button>
   );
 
+  const sendingAccountLabel = sendingAccount
+    ? t("composer.sendingAs", {
+        account: sendingAccount.name === sendingAccount.userId
+          ? sendingAccount.userId
+          : `${sendingAccount.name} (${sendingAccount.userId})`
+      })
+    : undefined;
+
   return (
     <section
       ref={sectionRef}
@@ -805,15 +819,6 @@ export const Composer = memo(function Composer({
       <div className="composer-drop-overlay" aria-hidden={!fileDragActive}>
         {t("composer.dropFiles")}
       </div>
-      {!editorOnly && sendingAccount ? (
-        <div className="composer-sending-as">
-          <span
-            className={`composer-sending-as-dot ${sendingAccount.colorClassName}`}
-            aria-hidden="true"
-          />
-          <span>{t("composer.sendingAs", { account: sendingAccount.name })}</span>
-        </div>
-      ) : null}
       {notice ? (
         <p className="composer-notice" role="status">
           {notice}
@@ -878,6 +883,23 @@ export const Composer = memo(function Composer({
         >
           <Code2 size={ICON_SIZE.input} />
         </button>
+        {/* Multi-account only: the toolbar row names the sender by Matrix ID,
+            since display names alone do not tell accounts apart. */}
+        {!editorOnly && sendingAccount ? (
+          <span
+            className="composer-sending-as"
+            title={sendingAccountLabel}
+            aria-label={sendingAccountLabel}
+          >
+            <span
+              className={`composer-sending-as-dot ${sendingAccount.colorClassName}`}
+              aria-hidden="true"
+            />
+            <span className="composer-sending-as-id" aria-hidden="true">
+              {sendingAccount.userId}
+            </span>
+          </span>
+        ) : null}
         {/* #453: this is an on/off switch for `SettingsValues.composer.math_mode`,
             not an insert-markup action like the buttons beside it. It speaks the
             same switch vocabulary as the settings panels so the state is
@@ -1122,7 +1144,7 @@ const ThreadComposer = memo(function ThreadComposer({
   onSend: (document: ComposerDocument) => void | Promise<void>;
   onSendStagedUploads?: () => void;
   onDiagnosticLogEntry?: (entry: DiagnosticLogEntry) => void;
-  sendingAccount?: { name: string; colorClassName: string } | null;
+  sendingAccount?: ComposerSendingAccount | null;
 }) {
   return (
     <Composer

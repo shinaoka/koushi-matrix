@@ -133,11 +133,19 @@ describe("Composer", () => {
     const { container, rerender } = render(
       <Composer
         {...props}
-        sendingAccount={{ name: "Hiroshi", colorClassName: "avatar-c4" }}
+        sendingAccount={{
+          name: "Hiroshi",
+          userId: "@hiroshi:example.invalid",
+          colorClassName: "avatar-c4"
+        }}
       />
     );
 
-    expect(container.querySelector(".composer-sending-as")?.textContent).toBe("Sending as Hiroshi");
+    const sendingAs = container.querySelector(".composer-tools .composer-sending-as");
+    expect(sendingAs?.textContent).toBe("@hiroshi:example.invalid");
+    expect(sendingAs?.getAttribute("aria-label")).toBe(
+      "Sending as Hiroshi (@hiroshi:example.invalid)"
+    );
     expect(container.querySelector(".composer-sending-as-dot")?.classList.contains("avatar-c4")).toBe(true);
 
     rerender(<Composer {...props} />);
