@@ -710,7 +710,14 @@ async fn versioned_snapshot_generation_matches_state_delta_generation() {
 
 #[tokio::test]
 async fn rejected_space_invites_are_fenced_before_room_actor_route() {
-    let runtime = CoreRuntime::start_with_event_capacity(64);
+    // Isolated stores: the default data dir resolves to the real user store,
+    // whose account-settings load races the expected-state capture under load.
+    let data_dir = tempfile::tempdir().expect("data tempdir");
+    let credential_dir = tempfile::tempdir().expect("credential tempdir");
+    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
     let mut connection = runtime.attach();
     let space_id = "!space-a:example.invalid".to_owned();
     let duplicate_user_id = "@duplicate:example.invalid".to_owned();
@@ -989,6 +996,7 @@ async fn settings_update_emits_timeline_display_policy_update() {
             koushi_protocol::command::AppCommand::UpdateSettings {
                 request_id,
                 patch: SettingsPatch {
+                    scope: Some(koushi_state::SettingsPatchScope::App),
                     display: Some(DisplaySettings {
                         code_block_wrap: true,
                         hide_redacted: true,
@@ -1065,28 +1073,26 @@ async fn local_alias_clear_command_emits_target_display_label_update() {
         .await
         .expect("alias clear command should be accepted");
 
-    let mut saw_clear_update = false;
-    for _ in 0..4 {
-        let event =
-            tokio::time::timeout(std::time::Duration::from_secs(1), connection.recv_event())
+    // Account hydration may publish unrelated events before this command's
+    // result. Correlate by the required target, not an arbitrary event count.
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let event = connection
+                .recv_event()
                 .await
-                .expect("runtime should emit alias-clear events")
                 .expect("event stream should stay open");
-        if let CoreEvent::Timeline(TimelineEvent::DisplayLabelsUpdated { labels }) = event
-            && labels
-                .iter()
-                .any(|label| label.user_id == user_id && label.display_label == user_id)
-        {
-            assert_eq!(labels.len(), 1, "alias clear must publish only its target");
-            saw_clear_update = true;
-            break;
+            if let CoreEvent::Timeline(TimelineEvent::DisplayLabelsUpdated { labels }) = event
+                && labels
+                    .iter()
+                    .any(|label| label.user_id == user_id && label.display_label == user_id)
+            {
+                assert_eq!(labels.len(), 1, "alias clear must publish only its target");
+                break;
+            }
         }
-    }
-
-    assert!(
-        saw_clear_update,
-        "alias clear must relabel rows even when the target user is absent from profile.users"
-    );
+    })
+    .await
+    .expect("alias clear must relabel rows even when the target user is absent from profile.users");
     runtime.shutdown_handle().abort();
 }
 
@@ -1293,6 +1299,7 @@ async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
         state,
         settings_store: SettingsStore::new(data_dir.path()),
         settings_load_status: SettingsLoadStatus::Loaded,
+        settings_updates: None,
         composer_draft_store_actor: StoreActor::new(data_dir.path().to_owned()),
         composer_draft_load_status: ComposerDraftLoadStatus::Loaded(session_key.clone()),
         composer_draft_reload_required: false,
@@ -1300,6 +1307,7 @@ async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
         navigation_persistence_status: NavigationPersistenceStatus::Loaded(session_key.clone()),
         scheduled_sends_loaded_for: Some(session_key.clone()),
         room_preferences_loaded_for: Some(session_key),
+        account_settings_loaded_for: None,
         state_generation: 0,
         pending_composer_draft_persist: None,
         pending_navigation_persist: None,
@@ -1475,6 +1483,7 @@ async fn same_batch_select_room_settles_only_final_selection() {
         state,
         settings_store: SettingsStore::new(data_dir.path()),
         settings_load_status: SettingsLoadStatus::Loaded,
+        settings_updates: None,
         composer_draft_store_actor: StoreActor::new(data_dir.path().to_owned()),
         composer_draft_load_status: ComposerDraftLoadStatus::Loaded(session_key.clone()),
         composer_draft_reload_required: false,
@@ -1482,6 +1491,7 @@ async fn same_batch_select_room_settles_only_final_selection() {
         navigation_persistence_status: NavigationPersistenceStatus::Loaded(session_key.clone()),
         scheduled_sends_loaded_for: Some(session_key.clone()),
         room_preferences_loaded_for: Some(session_key),
+        account_settings_loaded_for: None,
         state_generation: 0,
         pending_composer_draft_persist: None,
         pending_navigation_persist: None,
@@ -2493,7 +2503,10 @@ async fn first_shutdown_publishes_preceding_state_and_ignores_duplicate_and_late
             command: CoreCommand::App(AppCommand::UpdateSettings {
                 request_id: later_request_id,
                 patch: SettingsPatch {
-                    room_list_sort: Some(koushi_state::RoomListSort::RecentFirst),
+                    appearance: Some(koushi_state::AppearanceSettings {
+                        theme: koushi_state::ThemePreference::Light,
+                        ..Default::default()
+                    }),
                     ..SettingsPatch::default()
                 },
             }),
@@ -2522,8 +2535,8 @@ async fn first_shutdown_publishes_preceding_state_and_ignores_duplicate_and_late
         koushi_state::ThreadListOrder::RootChronology
     );
     assert_eq!(
-        snapshot.state.settings.values.room_list_sort,
-        koushi_state::RoomListSort::Activity,
+        snapshot.state.settings.values.appearance.theme,
+        koushi_state::ThemePreference::System,
         "commands queued after the first Shutdown must not be handled"
     );
     drop(snapshot);
@@ -2545,7 +2558,10 @@ async fn command_turn_publishes_before_dequeuing_command_33() {
             }
         } else {
             SettingsPatch {
-                room_list_sort: Some(koushi_state::RoomListSort::RecentFirst),
+                appearance: Some(koushi_state::AppearanceSettings {
+                    theme: koushi_state::ThemePreference::Light,
+                    ..Default::default()
+                }),
                 ..SettingsPatch::default()
             }
         };
@@ -2572,9 +2588,9 @@ async fn command_turn_publishes_before_dequeuing_command_33() {
         })
         .expect("queued shutdown barrier");
 
-    for expected_sort in [
-        koushi_state::RoomListSort::Activity,
-        koushi_state::RoomListSort::RecentFirst,
+    for expected_theme in [
+        koushi_state::ThemePreference::System,
+        koushi_state::ThemePreference::Light,
     ] {
         let settings = tokio::time::timeout(Duration::from_secs(3), async {
             loop {
@@ -2595,8 +2611,8 @@ async fn command_turn_publishes_before_dequeuing_command_33() {
             koushi_state::ThreadListOrder::RootChronology
         );
         assert_eq!(
-            settings.values.room_list_sort, expected_sort,
-            "the first turn must publish before command 33 changes room order"
+            settings.values.appearance.theme, expected_theme,
+            "the first turn must publish before command 33 changes app appearance"
         );
     }
     wait_for_app_actor_shutdown(&runtime).await;
@@ -2607,8 +2623,8 @@ async fn command_turn_publishes_before_dequeuing_command_33() {
             koushi_state::ThreadListOrder::RootChronology
         );
         assert_eq!(
-            snapshot.state.settings.values.room_list_sort,
-            koushi_state::RoomListSort::RecentFirst
+            snapshot.state.settings.values.appearance.theme,
+            koushi_state::ThemePreference::Light
         );
     }
     runtime.shutdown().await;
@@ -3148,6 +3164,7 @@ fn app_actor_fixture_with_account_capacity(
         state,
         settings_store: SettingsStore::new(data_dir),
         settings_load_status: SettingsLoadStatus::Loaded,
+        settings_updates: None,
         composer_draft_store_actor: StoreActor::new(data_dir.to_owned()),
         composer_draft_load_status: ComposerDraftLoadStatus::Loaded(session_key.clone()),
         composer_draft_reload_required: false,
@@ -3155,6 +3172,7 @@ fn app_actor_fixture_with_account_capacity(
         navigation_persistence_status: NavigationPersistenceStatus::Loaded(session_key.clone()),
         scheduled_sends_loaded_for: Some(session_key.clone()),
         room_preferences_loaded_for: Some(session_key),
+        account_settings_loaded_for: None,
         state_generation: 0,
         pending_composer_draft_persist: None,
         pending_navigation_persist: None,
@@ -4728,6 +4746,169 @@ async fn leaving_a_selected_space_child_routes_a_space_children_reload() {
     actor_task.abort();
 }
 
+#[tokio::test]
+async fn account_settings_load_failure_is_retryable_and_never_persists_defaults() {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let info = SessionInfo {
+        homeserver: "https://example.invalid".to_owned(),
+        user_id: "@settings:example.invalid".to_owned(),
+        device_id: "SYNTHETIC".to_owned(),
+        authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+    };
+    let key_id = session_key_id_from_info(&info);
+    let mut stored = koushi_state::AccountSettingsValues::default();
+    stored.notifications.send_read_receipts = false;
+    let state = AppState {
+        session: SessionState::Ready(info),
+        ..AppState::default()
+    };
+    let (mut actor, ..) = app_actor_event_navigation_fixture(data_dir.path(), state);
+    actor
+        .composer_draft_store_actor
+        .save_account_settings(&key_id, &stored)
+        .expect("seed account settings");
+    let account_settings_file = actor
+        .composer_draft_store_actor
+        .account_local_data_dir(&key_id)
+        .join("settings/account-settings.v1.enc");
+    std::fs::write(&account_settings_file, b"corrupt settings").expect("corrupt test file");
+
+    actor.load_account_settings_for_current_session().await;
+    assert!(actor.account_settings_loaded_for.is_none());
+    assert!(
+        !actor
+            .state
+            .settings
+            .values
+            .notifications
+            .desktop_notifications
+    );
+    assert!(!actor.state.settings.values.notifications.message_previews);
+    assert!(!actor.state.settings.values.notifications.send_read_receipts);
+    assert!(
+        !actor
+            .state
+            .settings
+            .values
+            .notifications
+            .send_typing_notifications
+    );
+    assert!(!actor.state.settings.values.display.url_previews_enabled);
+    assert!(
+        !actor
+            .state
+            .settings
+            .values
+            .display
+            .encrypted_url_previews_enabled
+    );
+    assert!(
+        !actor
+            .state
+            .settings
+            .values
+            .search_crawler
+            .include_media_captions
+    );
+    assert!(!actor.state.settings.values.search_crawler.include_filenames);
+
+    let request_id = RequestId {
+        connection_id: koushi_protocol::ids::RuntimeConnectionId(1),
+        sequence: 17,
+    };
+    let patch = SettingsPatch {
+        appearance: Some(koushi_state::AppearanceSettings {
+            theme: koushi_state::ThemePreference::Dark,
+            ..koushi_state::AppearanceSettings::default()
+        }),
+        notifications: Some(actor.state.settings.values.notifications.clone()),
+        ..SettingsPatch::default()
+    };
+    actor
+        .handle_app_effects(
+            request_id,
+            vec![AppEffect::PersistSettings {
+                request_id: request_id.sequence,
+                values: actor.state.settings.values.clone(),
+                patch: Box::new(patch),
+            }],
+        )
+        .await;
+    assert_eq!(
+        std::fs::read(&account_settings_file).expect("account settings remain untouched"),
+        b"corrupt settings"
+    );
+    assert_eq!(
+        actor
+            .settings_store
+            .load()
+            .expect("global settings remain untouched")
+            .appearance
+            .theme,
+        koushi_state::ThemePreference::System
+    );
+
+    let mut app_values = actor.state.settings.values.clone();
+    app_values.notifications.sound = false;
+    let app_patch = SettingsPatch {
+        scope: Some(koushi_state::SettingsPatchScope::App),
+        notifications: Some(app_values.notifications.clone()),
+        ..SettingsPatch::default()
+    };
+    let app_request_id = RequestId {
+        connection_id: koushi_protocol::ids::RuntimeConnectionId(1),
+        sequence: 18,
+    };
+    actor
+        .handle_app_effects(
+            app_request_id,
+            vec![AppEffect::PersistSettings {
+                request_id: app_request_id.sequence,
+                values: app_values,
+                patch: Box::new(app_patch),
+            }],
+        )
+        .await;
+    assert!(
+        !actor
+            .settings_store
+            .load()
+            .expect("app-only patch persists without account settings")
+            .notifications
+            .sound
+    );
+    assert_eq!(
+        std::fs::read(&account_settings_file).expect("account settings remain untouched"),
+        b"corrupt settings"
+    );
+
+    actor
+        .composer_draft_store_actor
+        .save_account_settings(&key_id, &stored)
+        .expect("repair account settings");
+    assert!(
+        actor
+            .composer_draft_store_actor
+            .load_account_settings(&key_id)
+            .is_ok()
+    );
+    assert!(
+        actor
+            .settings_store
+            .legacy_account_settings()
+            .expect("global settings are readable")
+            .is_none()
+    );
+    assert_eq!(
+        account_settings_session_key(&actor.state),
+        Some(key_id.clone())
+    );
+    actor.load_account_settings_for_current_session().await;
+    assert_eq!(actor.account_settings_loaded_for, Some(key_id));
+    assert!(!actor.state.settings.values.notifications.send_read_receipts);
+}
+
 mod activity_renderer_states;
 mod anchored_send;
 mod navigation_network;
+mod settings_loading;

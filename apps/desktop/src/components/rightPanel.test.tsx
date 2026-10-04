@@ -5,6 +5,7 @@ import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type {
+  AccountTabsSnapshot,
   DesktopSnapshot,
   RoomManagementState,
   RoomMemberSummary,
@@ -23,6 +24,7 @@ import {
 import { threadTimelineKey } from "../domain/coreEvents";
 import { applyTimelineEvent, createTimelineStore } from "../domain/timelineStore";
 import { t } from "../i18n/messages";
+import { createDesktopApiFixture } from "../test/desktopApiFixture";
 import { ContextualRightPanel, PanelHeader } from "./rightPanel";
 import { TimelineStoreContext } from "./timelineStoreContext";
 import { baseTransport, message } from "./timelineViewTestSupport";
@@ -366,6 +368,44 @@ describe("PanelHeader", () => {
     expect(screen.queryByRole("button", { name: "More" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: t("action.close", { title }) }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ContextualRightPanel settings modal", () => {
+  test("keeps the account tab strip inside account settings", async () => {
+    const onSelectAccountTab = vi.fn();
+    const settingsSnapshot = await createDesktopApiFixture().getSnapshot();
+    const accountTabs = {
+      selectedTabId: "work",
+      tabs: [{
+        id: "work",
+        accountKey: "@work:matrix.org",
+        homeserver: "https://matrix.org",
+        displayName: "Work",
+        avatarSourceRef: null,
+        status: "ready",
+        unreadCount: 0
+      }],
+      badgeCount: 0
+    } satisfies AccountTabsSnapshot;
+
+    renderPanel({
+      mode: "userSettings",
+      snapshot: settingsSnapshot,
+      accountTabs,
+      selectedAccountTabId: "work",
+      onSelectAccountTab
+    });
+
+    expect(screen.getByRole("dialog", { name: t("settings.accountSettings") })).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: t("settings.accountSettings") })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", {
+      name: t("accountTabs.select", {
+        account: "Work",
+        status: t("accountTabs.ready")
+      })
+    }));
+    expect(onSelectAccountTab).toHaveBeenCalledWith("work");
   });
 });
 

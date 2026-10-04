@@ -13,6 +13,8 @@ export const testkitTargets = [
   "composer_draft_wire.rs",
   "dm_space_ids.rs",
   "event_redaction.rs",
+  "issue_1105_authentication_audit.rs",
+  "issue_1105_lifecycle_audit.rs",
   "local_store_migration.rs",
   "login_store_lifecycle.rs",
   "media_staging.rs",

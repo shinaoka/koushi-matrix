@@ -23,16 +23,20 @@ history indexing is running. An empty result does not prove the message is
 absent from the server.
 
 Check the scope, use a distinctive phrase from the message, and inspect
-**User settings → Search history**. If the message cannot be decrypted, address
+**Account Settings → Search history** for that account's indexing status. Use
+**App Settings → Search history** to change the shared cross-account background
+budget. If the message cannot be decrypted, address
 [recovery](security-and-recovery.md#recover-missing-encrypted-history) first.
 
 ## Manage history indexing
 
-1. Open **User settings** at the bottom of the left rail.
+1. Open **Account Settings** from the account icon at the bottom of the left rail.
 2. Choose **Search history**.
-3. Check the activity summary and **Room index status**.
-4. Use **Resume crawler** if paused. Choose **Standard**, **Fast**, or **Slow**
-   for the crawl speed; room rows offer **Start** and **Stop** when available.
+3. Check the activity summary and **Room index status**. Use the room actions
+   to start or stop indexing when available.
+4. To change the shared work rate or resume paused work, open **App Settings →
+   Search history**. Choose **Standard**, **Fast**, or **Slow**; **Off** pauses
+   search crawling and media prefetch across all accounts.
    New messages in a room marked complete are indexed automatically, including
    messages that arrived while Koushi was closed; the room shows as queued
    while it catches up. **Index again** re-indexes the room from the start.

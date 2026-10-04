@@ -863,7 +863,8 @@ pub(super) async fn wait_for_operation_failed<S: QaEventSource + ?Sized>(
             }
             CoreEvent::Account(account_event) => {
                 let matches_id = match &account_event {
-                    AccountEvent::LoggedIn { request_id: id, .. }
+                    AccountEvent::LoginAdmitted { request_id: id, .. }
+                    | AccountEvent::LoggedIn { request_id: id, .. }
                     | AccountEvent::SessionRestored { request_id: id, .. }
                     | AccountEvent::SavedSessionsListed { request_id: id, .. }
                     | AccountEvent::RecoveryCompleted { request_id: id, .. }
@@ -919,7 +920,8 @@ pub(super) async fn wait_for_operation_failed_and_signed_out<S: QaSnapshotEventS
             }
             CoreEvent::Account(account_event) => {
                 let matches_request = match &account_event {
-                    AccountEvent::LoggedIn { request_id: id, .. }
+                    AccountEvent::LoginAdmitted { request_id: id, .. }
+                    | AccountEvent::LoggedIn { request_id: id, .. }
                     | AccountEvent::SessionRestored { request_id: id, .. }
                     | AccountEvent::SavedSessionsListed { request_id: id, .. }
                     | AccountEvent::RecoveryCompleted { request_id: id, .. }

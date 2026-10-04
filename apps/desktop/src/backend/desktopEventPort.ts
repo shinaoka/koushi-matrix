@@ -1,5 +1,5 @@
 import type { CoreEventPayload, StateUpdateEnvelope } from "../domain/coreEvents";
-import type { DesktopUpdateState } from "../domain/types";
+import type { AccountTabsSnapshot, DesktopUpdateState } from "../domain/types";
 
 export type DesktopEventUnlisten = () => void;
 
@@ -10,6 +10,9 @@ export interface DesktopEventPort {
   listenMenuActions(listener: (payload: string) => void): Promise<DesktopEventUnlisten>;
   listenStateUpdates(
     listener: (payload: StateUpdateEnvelope) => void
+  ): Promise<DesktopEventUnlisten>;
+  listenAccountTabs(
+    listener: (payload: AccountTabsSnapshot) => void
   ): Promise<DesktopEventUnlisten>;
   listenDesktopUpdates(
     listener: (payload: DesktopUpdateState) => void

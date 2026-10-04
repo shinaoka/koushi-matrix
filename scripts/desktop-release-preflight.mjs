@@ -95,10 +95,9 @@ requireCheck(
   "broad app-local data asset scope is not allowed"
 );
 requireCheck(
-  assetProtocolScope.includes("$LOCALDATA/koushi-desktop/media_downloads/**") ||
-    assetProtocolScope.includes("$LOCALDATA/koushi-desktop/media_downloads/*"),
+  assetProtocolScope.includes("$LOCALDATA/koushi-desktop/accounts/v2/*/media-downloads/**"),
   "security.assetProtocol.scope.mediaDownloads",
-  "only explicit media downloads are statically exposed through the asset protocol"
+  "only account-local media downloads are statically exposed through the asset protocol"
 );
 for (const [label, csp] of [
   ["security.csp", security.csp],

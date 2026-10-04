@@ -3371,6 +3371,7 @@ dependencies = [
  "image",
  "koushi-core",
  "koushi-diagnostics",
+ "koushi-key",
  "koushi-protocol",
  "koushi-sdk",
  "koushi-state",

@@ -489,7 +489,12 @@ async fn run_login_store_async(case: LoginStoreCase) -> LoginStoreReport {
                     .expect("bind journal");
             }
             let resumed = owner
-                .resume_or_create(&key_id.homeserver, "password", &key_id.device_id)
+                .resume_or_create(
+                    &key_id.homeserver,
+                    "password",
+                    Some(&key("bound").user_id),
+                    &key_id.device_id,
+                )
                 .expect("resume journal");
             let current = owner.records().expect("journal records");
             report.allocations = current.len();

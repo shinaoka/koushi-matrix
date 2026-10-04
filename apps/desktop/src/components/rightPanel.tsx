@@ -24,7 +24,9 @@ import type {
   SpaceMemberRoleOption,
   SecureBackupSetupIntent,
   ThreadOpenIntent,
-  ThreadsListScope
+  ThreadsListScope,
+  AccountTabsSnapshot,
+  SessionStatusRefreshCommandTrigger
 } from "../domain/types";
 import {
   focusedTimelineKey,
@@ -62,6 +64,7 @@ import type { HistoryExportControls } from "./HistoryExportDialog";
 import { SpaceInfoPanel } from "./SpaceInfoPanel";
 import { ThreadsListView } from "./ThreadsListView";
 import { UserSettingsPanel } from "./UserSettingsPanel";
+import { AccountTabStrip, type RuntimeAlert } from "./Shell";
 import type { AccountNotificationActions } from "./user-settings/AccountNotificationsSections";
 import { PeoplePanel, ProfilePanel } from "./PeoplePanel";
 import type { ContactSecurityActions } from "./ContactSecurityDetails";
@@ -71,7 +74,7 @@ import {
   type SpaceInviteCancellationAvailabilityReason
 } from "./SpaceMembersPanel";
 import { MessageArticle, PinnedEventsList, SearchResults } from "./mediaLists";
-import { ThreadComposer } from "./composer";
+import { ThreadComposer, type ComposerSendingAccount } from "./composer";
 import { UploadStagingDialog, uploadStagingItemsAreSendable } from "./dialogs";
 import type { OpenContextMenu } from "../app/uiShared";
 import { useStableEvent } from "./useStableEvent";
@@ -96,6 +99,9 @@ export function ContextualRightPanel({
   activeSpace,
   activeSpaceName,
   accountManagementUrl = null,
+  settingsScope = "account",
+  sendingAccount = null,
+  onSettingsScopeChange = () => undefined,
   displayDensity = "comfortable",
   encryptedComposerBlocked = false,
   isRecoveryBusy,
@@ -112,7 +118,6 @@ export function ContextualRightPanel({
   searchTooShortMinChars = null,
   searchQuery,
   searchResults,
-  savedSessions,
   onCloseThread,
   onClosePanel,
   onOpenThread,
@@ -138,6 +143,16 @@ export function ContextualRightPanel({
   onOpenRecovery,
   onManageAccount = () => undefined,
   onRefreshCurrentSessionStatus = () => undefined,
+  accountTabs = null,
+  selectedAccountTabId = null,
+  onSelectAccountTab = () => undefined,
+  onAddAccountTab = () => undefined,
+  onRemoveSignedOutAccountTab = () => undefined,
+  canRestartSync = false,
+  onRestartSync = () => undefined,
+  runtimeAlerts = [],
+  runtimeAlertRetrying = false,
+  onRetryRuntimeAlert = () => undefined,
   onProbeLocalEncryption,
   onResetLocalData,
   onLogout = () => undefined,
@@ -163,7 +178,6 @@ export function ContextualRightPanel({
   onOpenMatrixTarget,
   onResultSelect,
   onSubmitRecovery,
-  onSwitchAccount,
   onAcceptVerification,
   onBootstrapCrossSigning,
   onCancelVerification,
@@ -243,7 +257,8 @@ export function ContextualRightPanel({
   searchTooShortMinChars?: number | null;
   searchQuery: string;
   searchResults: SearchResult[];
-  savedSessions: SavedSessionInfo[];
+  /** @deprecated Account selection belongs to the persistent account tabs. */
+  savedSessions?: SavedSessionInfo[];
   onCloseThread: () => void;
   onClosePanel: () => void;
   onOpenThread: (
@@ -271,8 +286,21 @@ export function ContextualRightPanel({
   onPaginateThreadsList: (scope: ThreadsListScope) => void;
   onOpenRecovery: () => void;
   onManageAccount?: () => void;
-  onRefreshCurrentSessionStatus?: () => void;
+  onRefreshCurrentSessionStatus?: (trigger: SessionStatusRefreshCommandTrigger) => void;
   accountManagementUrl?: string | null;
+  accountTabs?: AccountTabsSnapshot | null;
+  selectedAccountTabId?: string | null;
+  onSelectAccountTab?: (id: string) => void;
+  onAddAccountTab?: () => void;
+  onRemoveSignedOutAccountTab?: (id: string) => void;
+  canRestartSync?: boolean;
+  onRestartSync?: () => void;
+  runtimeAlerts?: RuntimeAlert[];
+  runtimeAlertRetrying?: boolean;
+  onRetryRuntimeAlert?: (kind: RuntimeAlert["kind"]) => void;
+  settingsScope?: "account" | "app";
+  sendingAccount?: ComposerSendingAccount | null;
+  onSettingsScopeChange?: (scope: "account" | "app") => void;
   onProbeLocalEncryption: () => void;
   onResetLocalData: () => void;
   onLogout?: () => void;
@@ -308,7 +336,6 @@ export function ContextualRightPanel({
   onOpenMatrixTarget?: TimelineRowActionHandlers["onOpenMatrixTarget"];
   onResultSelect: (roomId: string, eventId: string) => void;
   onSubmitRecovery: (event: FormEvent<HTMLFormElement>) => void;
-  onSwitchAccount: (session: SavedSessionInfo) => void;
   onAcceptVerification: (flowId: number) => void;
   onBootstrapCrossSigning: () => void;
   onCancelVerification: (flowId: number) => void;
@@ -537,9 +564,24 @@ export function ContextualRightPanel({
 
   if (mode === "userSettings" || mode === "keyboardSettings") {
     return (
-      <ModalDialog title={t("panel.userSettings")} className="user-settings-modal" onClose={onClosePanel}>
+      <ModalDialog
+        title={t(settingsScope === "app" ? "settings.appSettings" : "settings.accountSettings")}
+        className="user-settings-modal"
+        headerContent={settingsScope === "account" ? (
+          <AccountTabStrip
+            tabs={accountTabs?.tabs ?? []}
+            selectedTabId={selectedAccountTabId ?? accountTabs?.selectedTabId ?? null}
+            onSelect={onSelectAccountTab}
+            onAdd={onAddAccountTab}
+            onRemove={onRemoveSignedOutAccountTab}
+          />
+        ) : null}
+        onClose={onClosePanel}
+      >
         <UserSettingsPanel
-          initialCategory={mode === "keyboardSettings" ? "keyboard" : "account"}
+          settingsScope={settingsScope}
+          onSettingsScopeChange={onSettingsScopeChange}
+          initialCategory={mode === "keyboardSettings" ? "keyboard" : settingsScope === "app" ? "appearance" : "account"}
           currentSession={currentSavedSession(snapshot)}
           currentSessionStatus={snapshot.state.domain.current_session_status}
           displayDensity={displayDensity}
@@ -548,7 +590,6 @@ export function ContextualRightPanel({
           keyboardLabelProfile={shortcutLabelProfileFromLocaleProfile(snapshot.state.domain.locale_profile)}
           platform={snapshot.state.domain.locale_profile.platform}
           profile={snapshot.state.domain.profile}
-          savedSessions={savedSessions}
           searchCrawlerState={snapshot.state.domain.search_crawler}
           settings={snapshot.state.domain.settings}
           onAcceptVerification={onAcceptVerification}
@@ -576,12 +617,17 @@ export function ContextualRightPanel({
           onSubmitIdentityResetPassword={onSubmitIdentityResetPassword}
           onUpdateSettings={onUpdateSettings}
           onRebuildSearchIndex={onRebuildSearchIndex}
-          onSwitchAccount={onSwitchAccount}
           accountManagement={snapshot.state.domain.account_management}
           accountManagementCapabilities={snapshot.state.domain.account_management_capabilities}
           accountManagementUrl={accountManagementUrl}
           onManageAccount={onManageAccount}
           onRefreshCurrentSessionStatus={onRefreshCurrentSessionStatus}
+          canRestartSync={canRestartSync}
+          onRestartSync={onRestartSync}
+          settingsBusy={isRecoveryBusy}
+          runtimeAlerts={runtimeAlerts}
+          runtimeAlertRetrying={runtimeAlertRetrying}
+          onRetryRuntimeAlert={onRetryRuntimeAlert}
           onLoadAccountManagementCapabilities={
             onLoadAccountManagementCapabilities ?? (() => undefined)
           }
@@ -898,6 +944,7 @@ export function ContextualRightPanel({
             <TimelineView
               roomId={focusedRoomId}
               timelineKey={focusedTimelineKeyValue}
+              accountTabId={selectedAccountTabId ?? undefined}
               transport={focusedTimelineTransport}
               suppressPaginationUi={true}
               onReply={onReply}
@@ -994,6 +1041,7 @@ export function ContextualRightPanel({
         {threadTimelineKeyValue && threadRoomId && timelineTransport ? (
           <TimelineView
             key={`${threadRoomId}:${rootEventId}`}
+            accountTabId={selectedAccountTabId ?? undefined}
             presentationContext="thread"
             roomId={threadRoomId}
             timelineKey={threadTimelineKeyValue}
@@ -1106,6 +1154,7 @@ export function ContextualRightPanel({
         />
       ) : null}
       <ThreadComposer
+        sendingAccount={sendingAccount}
         stagedUploadsReady={uploadStagingItemsAreSendable(threadStagedUploads)}
         onSendStagedUploads={threadSendStagedUploadsStable}
         notice={threadComposerNotice}

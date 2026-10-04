@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { SessionVerificationGate } from "./components/SessionVerificationGate";
+import { setRendererSelectedAccountTabId } from "./backend/client";
 import { createDesktopApiFixture } from "./test/desktopApiFixture";
 import { defaultSnapshotResponse } from "./test/tauriIpcMock";
 import type {
@@ -106,7 +107,10 @@ describe("SessionVerificationGate interactions", () => {
     };
   }
 
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    setRendererSelectedAccountTabId(null);
+  });
 
   test.each([true, false])(
     "renders authentication-specific locked copy and sign-out-only controls for soft_logout=%s",
@@ -157,6 +161,38 @@ describe("SessionVerificationGate interactions", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /verify|recovery|remove/i })).toBeNull();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
+  });
+
+  test("routes fallback trust commands through the supplied account API", async () => {
+    const snapshot = sessionSnapshot("needsRecovery");
+    snapshot.state.domain.session = {
+      kind: "provisional",
+      user_id: "@u:example.invalid",
+      homeserver: "https://example.invalid",
+      device_id: "D",
+      phase: { kind: "recheckingTrust" }
+    };
+    const fixture = createDesktopApiFixture(snapshot);
+    const accountApi = fixture.forAccountTab?.("account:@u:example.invalid");
+    expect(accountApi).toBeDefined();
+    setRendererSelectedAccountTabId("account:@u:example.invalid");
+
+    render(
+      <SessionVerificationGate
+        desktopApi={accountApi}
+        snapshot={snapshot}
+        onReceipt={async () => undefined}
+        onSignOut={() => undefined}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await vi.waitFor(() =>
+      expect(fixture.ipc.invocationsOf("retry_current_device_trust_discovery")).toHaveLength(1)
+    );
+    expect(
+      fixture.ipc.invocationsOf("retry_current_device_trust_discovery")[0]?.args
+    ).toEqual({ accountTabId: "account:@u:example.invalid" });
   });
 
   test("production requires warning confirmation before starting device verification", async () => {

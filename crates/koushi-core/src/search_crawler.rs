@@ -14,7 +14,7 @@ use koushi_state::{
 };
 use serde_json::Value;
 
-use crate::account_work::{AccountWorkKind, AccountWorkScheduler};
+use crate::account_work::{AccountWorkKind, AccountWorkPermit, AccountWorkScheduler};
 use crate::executor;
 use crate::search::SearchIndexMessage;
 use crate::startup_trace::{self, StartupPhase};
@@ -88,6 +88,7 @@ pub(crate) enum HistoryCrawlPageResult {
         checkpoint: HistoryCrawlCheckpoint,
         messages: Vec<SearchIndexMessage>,
         completed: bool,
+        work_permit: Option<AccountWorkPermit>,
     },
     Failed {
         checkpoint: HistoryCrawlCheckpoint,
@@ -138,6 +139,7 @@ async fn run_history_crawl_page(
             checkpoint,
             messages: Vec::new(),
             completed: true,
+            work_permit: None,
         };
     }
 
@@ -161,7 +163,7 @@ async fn run_history_crawl_page(
         }
     };
 
-    let (batch_size, delay_ms) = crawl_batch_and_delay(checkpoint.settings.speed);
+    let batch_size = crawl_batch_size(checkpoint.settings.speed);
     // Cleared only once a page succeeds: a preempted or failed page must run
     // its first-page work (cached events, catch-up boundary) again.
     let first_page = checkpoint.first_page;
@@ -170,14 +172,14 @@ async fn run_history_crawl_page(
     // `Room::messages` here would populate only the search index and leave
     // linked chunks untouched, forcing the normal timeline to fetch the same
     // history again when the room is opened after restart.
+    let work_permit = account_work.acquire(AccountWorkKind::SearchCrawl).await;
     let messages = {
-        let permit = account_work.acquire(AccountWorkKind::SearchCrawl).await;
         let page_started = Some(startup_trace::now());
         let page_result = tokio::select! {
             biased;
             // A waiting timeline pagination cancels the crawler: yield the gate
             // immediately and re-queue this checkpoint (no progress lost).
-            _ = permit.cancelled() => {
+            _ = work_permit.cancelled() => {
                 startup_trace::trace_crawler_preempted();
                 return HistoryCrawlPageResult::Preempted { checkpoint };
             }
@@ -304,22 +306,21 @@ async fn run_history_crawl_page(
         chunk_len,
     );
 
-    if !completed && delay_ms > 0 {
-        executor::sleep(std::time::Duration::from_millis(delay_ms)).await;
-    }
-
     HistoryCrawlPageResult::Success {
         checkpoint,
         messages: index_messages,
         completed,
+        work_permit: Some(work_permit),
     }
 }
 
-fn crawl_batch_and_delay(speed: SearchCrawlerSpeed) -> (u32, u64) {
+/// The shared scheduler controls work rate; this controls one admitted page's
+/// bounded size.
+fn crawl_batch_size(speed: SearchCrawlerSpeed) -> u32 {
     match speed {
-        SearchCrawlerSpeed::Fast => (BATCH_SIZE_FAST, 0),
-        SearchCrawlerSpeed::Slow => (BATCH_SIZE_SLOW, 500),
-        SearchCrawlerSpeed::Paused | SearchCrawlerSpeed::Standard => (BATCH_SIZE_STANDARD, 100),
+        SearchCrawlerSpeed::Fast => BATCH_SIZE_FAST,
+        SearchCrawlerSpeed::Slow => BATCH_SIZE_SLOW,
+        SearchCrawlerSpeed::Paused | SearchCrawlerSpeed::Standard => BATCH_SIZE_STANDARD,
     }
 }
 

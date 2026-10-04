@@ -78,7 +78,12 @@ describe("DesktopApi command contract", () => {
         "submitNotificationEmailUia",
         "cancelNotificationEmail",
         "enableEmailNotifications",
-        "disableEmailNotifications"
+        "disableEmailNotifications",
+        "addAccountTab",
+        "cancelAddAccountTab",
+        "listAccountTabs",
+        "removeSignedOutAccountTab",
+        "selectAccountTab"
       )
       .sort();
     expect(new Set(current).size).toBe(current.length);

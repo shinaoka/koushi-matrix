@@ -1,5 +1,7 @@
 use super::*;
+use koushi_core::account_runtime_manager::{AccountRuntimeManager, AccountTabId};
 use koushi_state::{NativeAttentionDispatchId, NativeAttentionSoundOutcome};
+use std::sync::atomic::AtomicU64;
 
 pub(crate) mod notification;
 
@@ -59,8 +61,57 @@ pub(crate) fn build_observe_native_window_focus_command(
     })
 }
 
+pub(crate) async fn transfer_native_window_focus(
+    runtime: &AccountRuntimeManager,
+    generation: &AtomicU64,
+    previous_tab: &AccountTabId,
+    selected_tab: &AccountTabId,
+    window_focused: bool,
+) {
+    if previous_tab == selected_tab {
+        return;
+    }
+    observe_native_window_focus_for_tab(runtime, generation, previous_tab, false).await;
+    observe_native_window_focus_for_tab(runtime, generation, selected_tab, window_focused).await;
+}
+
+pub(crate) async fn observe_native_window_focus_for_tab(
+    runtime: &AccountRuntimeManager,
+    generation: &AtomicU64,
+    tab_id: &AccountTabId,
+    focused: bool,
+) {
+    let Some(connection) = runtime.tab_connection(tab_id) else {
+        return;
+    };
+    let Some(observation_generation) = crate::next_native_window_focus_generation(generation)
+    else {
+        return;
+    };
+    let request_id = connection.next_request_id();
+    let command =
+        build_observe_native_window_focus_command(request_id, focused, observation_generation);
+    let _ = connection.command(command).await;
+}
+
+pub(crate) async fn dispatch_native_attention_sound_for_connection(
+    app: AppHandle,
+    connection: koushi_core::CoreConnection,
+) -> NativeAttentionSoundOutcome {
+    #[cfg(target_os = "macos")]
+    let backend = PlatformNativeAttentionSoundBackend { app };
+    #[cfg(not(target_os = "macos"))]
+    let backend = PlatformNativeAttentionSoundBackend;
+    #[cfg(not(target_os = "macos"))]
+    let _ = &app;
+    dispatch_native_attention_sound(connection, &backend)
+        .await
+        .0
+}
+
 #[tauri::command]
 pub(crate) async fn play_native_attention_sound(
+    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<NativeAttentionSoundOutcome, &'static str> {
@@ -70,7 +121,10 @@ pub(crate) async fn play_native_attention_sound(
     let backend = PlatformNativeAttentionSoundBackend;
     #[cfg(not(target_os = "macos"))]
     let _ = &app;
-    Ok(dispatch_native_attention_sound(&state.runtime, &backend)
+    let connection = account_connection(state.inner(), account_tab_id.as_deref())
+        .await
+        .map_err(|_| "account tab does not exist")?;
+    Ok(dispatch_native_attention_sound(connection, &backend)
         .await
         .0)
 }
@@ -191,17 +245,18 @@ fn native_attention_badge_outcome_token(outcome: NativeAttentionBadgeOutcome) ->
 }
 
 async fn dispatch_native_attention_sound(
-    runtime: &koushi_core::CoreRuntime,
+    connection: koushi_core::CoreConnection,
     backend: &impl NativeAttentionSoundBackend,
 ) -> (
     NativeAttentionSoundOutcome,
     Option<NativeAttentionDispatchId>,
 ) {
-    dispatch_native_attention_sound_with_lock(runtime, backend, &NATIVE_ATTENTION_SOUND_LOCK).await
+    dispatch_native_attention_sound_with_lock(connection, backend, &NATIVE_ATTENTION_SOUND_LOCK)
+        .await
 }
 
 async fn dispatch_native_attention_sound_with_lock(
-    runtime: &koushi_core::CoreRuntime,
+    mut connection: koushi_core::CoreConnection,
     backend: &impl NativeAttentionSoundBackend,
     lock: &tokio::sync::Mutex<()>,
 ) -> (
@@ -211,7 +266,6 @@ async fn dispatch_native_attention_sound_with_lock(
     let Ok(_guard) = lock.try_lock() else {
         return (NativeAttentionSoundOutcome::Skipped, None);
     };
-    let mut connection = runtime.attach();
     let start_request = connection.next_request_id();
     let dispatch_id =
         NativeAttentionDispatchId::new(start_request.connection_id.0, start_request.sequence);

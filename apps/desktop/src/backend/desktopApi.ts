@@ -28,6 +28,7 @@ import type {
   HistoryExportRangeInput,
   HistoryExportScopeInput,
   HistoryExportStart,
+  AccountTabsSnapshot,
   DesktopSnapshot,
   DesktopUpdateState,
   DirectoryQuery,
@@ -117,13 +118,19 @@ export interface ReceiptReaderResourceContent {
 }
 
 export interface DesktopApi {
-  getSnapshot(): Promise<DesktopSnapshot>;
+  forAccountTab?(tabId: string): DesktopApi;
+  getSnapshot(accountTabId?: string): Promise<DesktopSnapshot>;
+  listAccountTabs(): Promise<AccountTabsSnapshot>;
+  selectAccountTab(tabId: string): Promise<AccountTabsSnapshot>;
+  addAccountTab(): Promise<AccountTabsSnapshot>;
+  removeSignedOutAccountTab(tabId: string): Promise<AccountTabsSnapshot>;
+  cancelAddAccountTab(tabId: string): Promise<AccountTabsSnapshot>;
   getDesktopUpdateState(): Promise<DesktopUpdateState>;
   checkForDesktopUpdate(): Promise<void>;
   downloadDesktopUpdate(expectedGeneration: number): Promise<void>;
   restartToInstallDesktopUpdate(): Promise<void>;
-  settlementSnapshot(): Promise<DesktopSnapshot>;
-  resyncSnapshot(): Promise<DesktopSnapshot>;
+  settlementSnapshot(accountTabId?: string): Promise<DesktopSnapshot>;
+  resyncSnapshot(accountTabId?: string): Promise<DesktopSnapshot>;
   getDiagnosticSnapshot(): Promise<DiagnosticLogSnapshot>;
   observeViewportSync(observation: ViewportSyncObservation): Promise<ViewportSyncReceipt>;
   discoverLoginMethods(homeserver: string): Promise<CommandSettlement>;

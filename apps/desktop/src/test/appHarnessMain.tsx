@@ -33,6 +33,7 @@ import type {
   ViewDelivery
 } from "../domain/coreEvents";
 import { roomTimelineKey } from "../domain/coreEvents";
+import type { DesktopNotificationActivation } from "../domain/desktopNotification";
 import { applyDeltaToState, useAppStore } from "../domain/appStore";
 import {
   SNAPSHOT_SCHEMA_VERSION,
@@ -47,6 +48,7 @@ import {
   type DesktopSnapshot,
   type DesktopUpdateState,
   type E2eeTrustState,
+  type AccountTabsSnapshot,
   type LocaleDisplayProfile,
   type LocaleSettings,
   type NavigationPreferenceUpdate,
@@ -101,7 +103,9 @@ function roleOptionsForHarnessResponse(powerLevel: number) {
 // exactly one entry module, so a local interface + a single assignment cast is
 // sufficient and keeps the two harnesses independent.
 interface AppHarnessControl {
+  /** Raw Tauri calls, including transport metadata such as accountTabId. */
   invocations(): readonly IpcInvocation[];
+  /** Command arguments without transport metadata, for behavior assertions. */
   invocationsOf(command: string): IpcInvocation[];
   clearInvocations(): void;
   invoke(command: string, args?: Record<string, unknown>): Promise<unknown>;
@@ -114,6 +118,8 @@ interface AppHarnessControl {
   setSnapshot(snapshot: DesktopSnapshot): void;
   pushCoreEvent(event: CoreEventPayload): Promise<void>;
   pushDesktopMenu(action: string): Promise<void>;
+  pushNotificationActivation(activation: DesktopNotificationActivation): Promise<void>;
+  pushAccountTabs(snapshot: AccountTabsSnapshot): Promise<void>;
   pushDesktopUpdate(state: DesktopUpdateState): Promise<void>;
   pushStateUpdate(envelope?: StateUpdateEnvelope): void;
   currentSnapshot(): DesktopSnapshot;
@@ -760,6 +766,22 @@ function afterCreateSpaceSnapshot(): DesktopSnapshot {
 // ---------------------------------------------------------------------------
 
 const mock = new TauriIpcMock();
+const HARNESS_ACCOUNT_TAB_ID = "harness-account-tab";
+function harnessAccountTabsSnapshot() {
+  return {
+    selectedTabId: HARNESS_ACCOUNT_TAB_ID,
+    tabs: [{
+      id: HARNESS_ACCOUNT_TAB_ID,
+      accountKey: "harness-account",
+      homeserver: HOMESERVER,
+      displayName: USER_ID,
+      avatarSourceRef: null,
+      status: "ready" as const,
+      unreadCount: 0
+    }],
+    badgeCount: 0
+  };
+}
 // Native confirmation dialogs are accepted by default in the unattended app
 // harness. Individual dialog behavior belongs in focused unit tests; existing
 // end-to-end flows should continue past an explicit destructive confirmation.
@@ -1264,6 +1286,8 @@ function rejectDeferredCommand(command: string, index: number): void {
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
 // any unanticipated snapshot read still renders the shell.
 mock.setCommandResponse("get_snapshot", () => currentSnapshot);
+mock.setCommandResponse("list_account_tabs", harnessAccountTabsSnapshot);
+mock.setCommandResponse("select_account_tab", harnessAccountTabsSnapshot);
 // Explicit adapter projections: tests publish later states rather than emulate the updater.
 mock.setCommandResponse("get_desktop_update_state", () => ({ kind: "idle" }));
 mock.setCommandResponse("check_for_desktop_update", () => null);
@@ -3901,7 +3925,13 @@ const bootSettlement = new Promise<void>((resolve) => {
 
 const harnessControl: AppHarnessControl = {
   invocations: () => mock.recordedInvocations(),
-  invocationsOf: (command) => mock.invocationsOf(command),
+  invocationsOf: (command) =>
+    mock.invocationsOf(command).map((invocation) => ({
+      ...invocation,
+      args: Object.fromEntries(
+        Object.entries(invocation.args).filter(([key]) => key !== "accountTabId")
+      )
+    })),
   clearInvocations: () => mock.clearInvocations(),
   invoke: async (command, args = {}) => {
     await bootSettlement;
@@ -3923,6 +3953,9 @@ const harnessControl: AppHarnessControl = {
     mock.setCommandResponse("get_snapshot", () => currentSnapshot);
   },
   pushDesktopMenu: (action) => emit("koushi-desktop://menu", action),
+  pushNotificationActivation: (activation) =>
+    emit("koushi-desktop://notification-activated", activation),
+  pushAccountTabs: (snapshot) => emit("koushi-desktop://account-tabs-update", snapshot),
   pushDesktopUpdate: (state) => emit("koushi-desktop://update", state),
   pushCoreEvent: (event) => {
     // Records that a test now owns the CoreEvent stream so the boot seed

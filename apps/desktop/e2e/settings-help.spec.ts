@@ -6,38 +6,47 @@ for (const viewport of [{ width: 1334, height: 852 }, { width: 700, height: 480 
     await page.setViewportSize(viewport);
     await gotoReadyShell(page);
     await expect(page.getByRole("button", { name: "Keyboard settings" })).toHaveCount(0);
-    const opener = page.getByRole("button", { name: "User settings", exact: true });
-    await opener.click();
-    const dialog = page.getByRole("dialog", { name: "User settings" });
-    await expect(dialog).toBeVisible();
-    expect(await dialog.evaluate(el => el.matches(":modal"))).toBe(true);
-    const bounds = await dialog.boundingBox();
+
+    const accountOpener = page.getByRole("button", { name: "Account Settings", exact: true });
+    await accountOpener.click();
+    const accountDialog = page.getByRole("dialog", { name: "Account Settings" });
+    await expect(accountDialog).toBeVisible();
+    expect(await accountDialog.evaluate(el => el.matches(":modal"))).toBe(true);
+    const bounds = await accountDialog.boundingBox();
     expect(bounds!.x).toBeGreaterThanOrEqual(0);
     expect(bounds!.y).toBeGreaterThanOrEqual(0);
     expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
     expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
     await expect(page.locator(".app-grid-right-resizer")).toHaveCount(0);
-    await expect(dialog.getByRole("group", { name: "Language" })).toBeVisible();
-    await dialog.getByRole("tab", { name: "Account", exact: true }).focus();
+    await accountDialog.getByRole("tab", { name: "Account", exact: true }).focus();
     await page.keyboard.press("ArrowDown");
-    await expect(dialog.getByRole("tab", { name: "Sessions", exact: true })).toBeFocused();
-    await expect(dialog.getByRole("tabpanel", { name: "Sessions", exact: true })).toBeVisible();
+    await expect(accountDialog.getByRole("tab", { name: "Sessions", exact: true })).toBeFocused();
+    await expect(accountDialog.getByRole("tabpanel", { name: "Sessions", exact: true })).toBeVisible();
     await page.keyboard.press("End");
-    await expect(dialog.getByRole("tabpanel", { name: "Help & About", exact: true })).toBeVisible();
-    await dialog.getByRole("tab", { name: "Keyboard", exact: true }).click();
-    await expect(dialog.getByText("Composer send shortcut", { exact: true })).toBeVisible();
-    await expect(dialog.getByRole("tabpanel")).toHaveCount(1);
+    await expect(accountDialog.getByRole("tabpanel", { name: "Search history", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(accountDialog).toHaveCount(0);
+    await expect(accountOpener).toBeFocused();
+
+    const appOpener = page.getByRole("button", { name: "App Settings", exact: true });
+    await appOpener.click();
+    const appDialog = page.getByRole("dialog", { name: "App Settings" });
+    await expect(appDialog).toBeVisible();
+    await expect(appDialog.getByRole("group", { name: "Language" })).toBeVisible();
+    await appDialog.getByRole("tab", { name: "Keyboard", exact: true }).click();
+    await expect(appDialog.getByText("Composer send shortcut", { exact: true })).toBeVisible();
+    await expect(appDialog.getByRole("tabpanel")).toHaveCount(1);
     for (let i = 0; i < 16; i++) {
       await page.keyboard.press("Tab");
-      expect(await dialog.evaluate(el => el.contains(document.activeElement))).toBe(true);
+      expect(await appDialog.evaluate(el => el.contains(document.activeElement))).toBe(true);
     }
     // Window-level shortcuts must not navigate the shell under a modal.
     await page.keyboard.press("Control+k");
-    await expect(dialog).toBeVisible();
-    expect(await dialog.evaluate(el => el.contains(document.activeElement))).toBe(true);
+    await expect(appDialog).toBeVisible();
+    expect(await appDialog.evaluate(el => el.contains(document.activeElement))).toBe(true);
     await page.keyboard.press("Escape");
-    await expect(dialog).toHaveCount(0);
-    await expect(opener).toBeFocused();
+    await expect(appDialog).toHaveCount(0);
+    await expect(appOpener).toBeFocused();
   });
 }
 

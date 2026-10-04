@@ -32,12 +32,18 @@ describe("link/media platform selection", () => {
     await runtime.openExternalHttpUrl("https://example.com/path");
     expect(runtime.mediaSourceUrl("/tmp/media.png")).toBe("converted:/tmp/media.png");
     await runtime.saveReadyMediaFile("asset://media", "media.png");
+    await runtime.saveReadyMediaFile("asset://account-media", "account.png", "tab-alice");
 
     expect(tauriLinkMediaPort.openHttpUrl).toHaveBeenCalledWith("https://example.com/path");
     expect(tauriLinkMediaPort.mediaSourceUrl).toHaveBeenCalledWith("/tmp/media.png");
     expect(tauriLinkMediaPort.saveMediaFile).toHaveBeenCalledWith(
       "asset://media",
       "media.png"
+    );
+    expect(tauriLinkMediaPort.saveMediaFile).toHaveBeenCalledWith(
+      "asset://account-media",
+      "account.png",
+      "tab-alice"
     );
     expect(browserLinkMediaPort.openHttpUrl).not.toHaveBeenCalled();
     expect(browserLinkMediaPort.mediaSourceUrl).not.toHaveBeenCalled();
