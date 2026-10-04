@@ -302,6 +302,14 @@ expectation variant, and `Lagged`, `Disconnected`, `TimedOut`, operation
 failure, and typed no-op outcomes remain distinct. `select_room_and_wait` is a
 convenience wrapper over this service.
 
+Authentication settles when the authenticated session is admitted, not when it
+becomes Ready. Admission of a new password, OIDC, or reauth login installs the
+provisional session and immediately emits the non-held `LoginAdmitted` event
+for that request; the held `LoggedIn` still waits for trust promotion. The
+`Authenticated` expectation accepts either event and settles once the snapshot
+reaches a login-transport terminal session, so sign-in IPC returns while the
+account waits for verification instead of timing out behind the gate.
+
 Settlement outcomes return the committed published generation and their existing
 matched request/result identities, not an embedded AppState. Core convenience
 methods that only settle an operation return that generation; callers needing
@@ -694,7 +702,12 @@ an opaque random local store ID and builds the authentication client with it.
 Fresh authentication journals that store, its unlock secret, and a generated
 Matrix device ID before network authorization; `PreAuth` and bound-tokenless
 journal states remain resumable until verified promotion atomically persists
-tokens. The exact authenticated client is promoted directly through capability
+tokens. A journal allocation is owned by its identity once bound: a
+fresh attempt resumes only an unbound `PreAuth` allocation, or a
+`BoundTokenless` allocation whose bound user matches the requested user, so a
+second account never resumes or rebinds another account's store. A fresh
+device's crypto DB that exists but holds no Olm account (a failed earlier
+attempt created it) is still a fresh identity, not a saved-device resume. The exact authenticated client is promoted directly through capability
 and verification admission—Koushi never authenticates a disposable client or
 transplants its session into another client.
 

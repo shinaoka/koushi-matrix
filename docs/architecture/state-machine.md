@@ -61,7 +61,10 @@ submission correlations against the authoritative versioned snapshot. It uses
 one absolute deadline and one final snapshot check after timeout, disconnect,
 or lag; expectation-specific lag policy distinguishes recoverable lag from
 terminal `Lagged`. `select_room_and_wait` delegates to this service without
-changing its behavior. No `AppState`, `AppAction`, reducer transition, or
+changing its behavior. The `Authenticated` expectation settles on the
+non-held `LoginAdmitted` event (or held `LoggedIn` / `SessionRestored`) once
+the snapshot is a login-transport terminal session; admission, not promotion,
+completes sign-in. No `AppState`, `AppAction`, reducer transition, or
 Tauri waiter migration is part of Phase A; later issue #755 phases consume the
 service from adapters.
 
@@ -231,8 +234,16 @@ stateDiagram-v2
     Abandoning --> Abandoning: invalid or ambiguous root / fail closed for explicit local reset
 ```
 
-At most one resumable allocation exists per normalized homeserver/auth method
-and eight total. There is no TTL. Immediate non-journal cleanup requires closed
+At most one unbound `PreAuth` allocation exists per normalized homeserver/auth
+method, and eight allocations total. A fresh attempt resumes that unbound
+allocation, or a `BoundTokenless` allocation only when its bound user matches
+the requested user (full Matrix ID, or localpart on the same homeserver); OIDC,
+whose user is unknown before authorization, resumes only `PreAuth`. Another
+identity's bound allocation is never resumed, reset, or rebound, so a second
+account on the same homeserver allocates its own store while the first awaits
+verification. A fresh device whose crypto DB exists but holds no Olm account is
+authenticated as a fresh identity, so a retry after a rejected attempt reaches
+the server. There is no TTL. Immediate non-journal cleanup requires closed
 `NoRequestSent` or `ServerRejectedBeforeSession` evidence; transport failure,
 timeout, browser cancellation, callback loss, and token-exchange ambiguity stay
 resumable. `Abandoning` is persisted before root deletion and resumes after process

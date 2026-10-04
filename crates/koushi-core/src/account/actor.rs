@@ -3111,6 +3111,25 @@ impl AccountActor {
         let _ = self.event_tx.send(event);
     }
 
+    /// Announces admission for each held `LoggedIn`; the held event itself
+    /// still waits for trust promotion.
+    pub(super) fn emit_login_admitted(&self, ready_events: &[CoreEvent]) {
+        for event in ready_events {
+            if let CoreEvent::Account(koushi_protocol::event::AccountEvent::LoggedIn {
+                request_id,
+                account_key,
+            }) = event
+            {
+                self.emit(CoreEvent::Account(
+                    koushi_protocol::event::AccountEvent::LoginAdmitted {
+                        request_id: *request_id,
+                        account_key: account_key.clone(),
+                    },
+                ));
+            }
+        }
+    }
+
     pub(super) fn emit_failure(&self, request_id: RequestId, failure: CoreFailure) {
         self.emit(CoreEvent::OperationFailed {
             request_id,

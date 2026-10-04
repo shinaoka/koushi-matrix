@@ -677,6 +677,7 @@ export interface SessionInfo {
 
 export type AccountEvent =
   | { OidcAuthorizationCreated: { request_id: RequestId } }
+  | { LoginAdmitted: { request_id: RequestId; account_key: string } }
   | { LoggedIn: { request_id: RequestId; account_key: string } }
   | { SessionRestored: { request_id: RequestId; account_key: string } }
   | { SavedSessionsListed: { request_id: RequestId; sessions: SessionInfo[] } }
