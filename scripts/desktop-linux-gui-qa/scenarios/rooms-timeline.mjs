@@ -5,7 +5,7 @@ import { parseQaTitle,safeTimestamp,timestamp } from "../evidence.mjs";
 import { cleanupLocalGuiScenario,recordLocalGuiEvidence,startLocalGuiScenario,waitForAuthScreen,waitForComposerSendSettled,waitForLocalLoginReady,waitForLocalSendSuccess,writeLocalLoginPipe } from "../local-session.mjs";
 import { timeoutMs } from "../options.mjs";
 import { sleep } from "../runtime.mjs";
-import { MESSAGE_COMPOSER_SELECTOR,clickLatestMessageRedactButtonByText,clickMenuItemByText,clickRoomMemberAliasClear,clickVisibleButtonByAriaLabelInElement,clickVisibleButtonByTextPrefix,clickVisibleMenuItemByText,clickWorkspaceButton,driveTimelineToBottom,elementCount,getRoomEvent,localDatetimeInputValue,openRoomContextMenu,scrollTimelineToTop,selectComposerText,selectRoomByName,setDatetimeLocalValue,timelineDateJumpDiagnostics,waitForActiveRoomName,waitForCjkVisualContract,waitForDocumentText,waitForElementAttribute,waitForElementCount,waitForElementCountGreaterThan,waitForLatestEventMessageRow,waitForLatestMessageActionButton,waitForMessageSourceDialog,waitForPinnedRegionCleared,waitForPinnedRegionVisible,waitForQaTitle,waitForReplyLanded,waitForRichFormattedTimeline,waitForRoomInSection,waitForRoomManagementTopic,waitForRoomMemberAlias,waitForRoomMemberRole,waitForEditableValue,waitForTimelineAwayFromBottom,waitForTimelineFocusedContextReady,waitForTimelineScrollable,waitForTimelineScrolledToBottom,waitForTimelineSenderLabel,waitForTimelineViewMounted,waitForWorkspaceActive,waitForWorkspaceButton } from "../webdriver.mjs";
+import { MESSAGE_COMPOSER_SELECTOR,clickLatestMessageRedactButtonByText,clickMenuItemByText,clickRoomMemberAliasClear,clickVisibleButtonByAriaLabel,clickVisibleButtonByAriaLabelInElement,clickVisibleButtonByTextPrefix,clickVisibleMenuItemByText,clickWorkspaceButton,driveTimelineToBottom,elementCount,getRoomEvent,localDatetimeInputValue,openRoomContextMenu,scrollTimelineToTop,selectComposerText,selectRoomByName,setDatetimeLocalValue,timelineDateJumpDiagnostics,waitForActiveRoomName,waitForCjkVisualContract,waitForDocumentText,waitForElementAttribute,waitForElementCount,waitForElementCountGreaterThan,waitForLatestEventMessageRow,waitForLatestEventMessageRowByText,waitForLatestMessageActionButton,waitForMessageSourceDialog,waitForPinnedRegionCleared,waitForPinnedRegionVisible,waitForQaTitle,waitForReplyLanded,waitForRichFormattedTimeline,waitForRoomInSection,waitForRoomManagementTopic,waitForRoomMemberAlias,waitForRoomMemberRole,waitForEditableValue,waitForTimelineAwayFromBottom,waitForTimelineFocusedContextReady,waitForTimelineScrollable,waitForTimelineScrolledToBottom,waitForTimelineSenderLabel,waitForTimelineViewMounted,waitForWorkspaceActive,waitForWorkspaceButton } from "../webdriver.mjs";
 
 export async function runLocalSendScenario() {
   const session = await startLocalGuiScenario();
@@ -780,6 +780,31 @@ export async function runLocalComposerScenario() {
   }
 }
 
+/**
+ * Closes the scheduled-message edit form. Its Cancel button has no accessible
+ * name of its own and its text (`Cancel`) is a prefix of every other row's
+ * `Cancel scheduled send`, so click it inside the form element only.
+ */
+async function clickScheduledEditCancel(browser) {
+  const clicked = await browser.execute(() => {
+    const form = document.querySelector("form.scheduled-message-edit");
+    if (!form) {
+      return false;
+    }
+    const button = Array.from(form.querySelectorAll("button")).find(
+      (candidate) => (candidate.textContent ?? "").trim() === "Cancel"
+    );
+    if (!(button instanceof HTMLButtonElement)) {
+      return false;
+    }
+    button.click();
+    return true;
+  });
+  if (!clicked) {
+    throw new Error("scheduled send edit Cancel button was not found");
+  }
+}
+
 export async function runLocalScheduledSendScenario() {
   const session = await startLocalGuiScenario();
   try {
@@ -832,7 +857,9 @@ export async function runLocalScheduledSendScenario() {
       Date.now() + 48 * 60 * 60_000
     );
     await setDatetimeLocalValue(session.browser, editedValue, "Scheduled send time");
-    await clickVisibleButtonByTextPrefix(
+    // The edit form's submit is labelled `Save scheduled send` but its visible
+    // text is `Save`, so match the accessible name instead of the text.
+    await clickVisibleButtonByAriaLabel(
       session.browser,
       "Save scheduled send",
       timeoutMs,
@@ -845,6 +872,20 @@ export async function runLocalScheduledSendScenario() {
       timeoutMs,
       "local GUI scheduled send reschedule"
     );
+    // The edit form closes itself as soon as the command is dispatched, so the
+    // save click alone proves nothing. Reopen the row and read the time back
+    // from the Rust-projected item before claiming the reschedule landed.
+    const reopenEdit = await session.browser.$('button[aria-label="Edit scheduled send"]');
+    await reopenEdit.waitForDisplayed({ timeout: timeoutMs });
+    await reopenEdit.click();
+    await waitForEditableValue(
+      session.browser,
+      'input[aria-label="Scheduled send time"]',
+      editedValue,
+      timeoutMs,
+      "local GUI scheduled send reschedule"
+    );
+    await clickScheduledEditCancel(session.browser);
     console.log("gui_local_scheduled_reschedule=ok");
 
     const cancelButton = await session.browser.$('button[aria-label="Cancel scheduled send"]');
@@ -859,6 +900,44 @@ export async function runLocalScheduledSendScenario() {
     );
     await recordLocalGuiEvidence(session);
     console.log("gui_local_scheduled_cancel=ok");
+
+    // #1124: prove the scheduled message actually leaves the client on Linux.
+    // The create/reschedule/cancel steps above never observe a fired message.
+    const fireBody = `QA scheduled fire ${safeTimestamp()}`;
+    await composer.click();
+    await composer.setValue(fireBody);
+    const fireLater = await session.browser.$('button[aria-label="Send later"]');
+    await fireLater.waitForDisplayed({ timeout: timeoutMs });
+    await fireLater.click();
+    const fireInput = await session.browser.$('input[aria-label="Scheduled send time"]');
+    await fireInput.waitForDisplayed({ timeout: timeoutMs });
+    // The shared formatter truncates seconds, so keep the fuse far enough ahead
+    // that a truncated value is still in the future.
+    const fireValue = await localDatetimeInputValue(
+      session.browser,
+      Date.now() + 90_000
+    );
+    await setDatetimeLocalValue(session.browser, fireValue, "Scheduled send time");
+    await clickVisibleButtonByTextPrefix(
+      session.browser,
+      "Schedule send",
+      timeoutMs,
+      "local GUI scheduled send fire create"
+    );
+    await waitForEditableValue(
+      session.browser,
+      MESSAGE_COMPOSER_SELECTOR,
+      "",
+      timeoutMs,
+      "local GUI scheduled send fire draft clear"
+    );
+    await waitForLatestEventMessageRowByText(
+      session.browser,
+      fireBody,
+      timeoutMs + 120_000,
+      "local GUI scheduled send fire"
+    );
+    console.log("gui_local_scheduled_fire=ok");
   } finally {
     await cleanupLocalGuiScenario(session);
   }

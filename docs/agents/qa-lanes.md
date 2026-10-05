@@ -218,7 +218,7 @@ scenario run. See [environment.md](environment.md#reusing-a-debug-build) for the
 | `local-pins` | pin affordances | — |
 | `local-message-types` | injects `m.emote`, `m.notice`, and formatted spoiler events; checks `data-message-kind`, collapsed spoiler, reveal | — |
 | `local-composer` | mention autocomplete from `AppState.mention_candidates`, Bold toolbar, slash input, then Rust-owned `send=sent` plus composer clear | `gui_local_mention=ok`, `gui_local_markdown=ok`, `gui_local_slash=ok` |
-| `local-scheduled-send` | `Send later`, `datetime-local` via the shared setter, create/edit/cancel | `gui_local_scheduled_create=ok`, `gui_local_scheduled_reschedule=ok`, `gui_local_scheduled_cancel=ok` |
+| `local-scheduled-send` | `Send later`, `datetime-local` via the shared setter, create/edit/cancel, then a short-fuse schedule that must actually fire | `gui_local_scheduled_create=ok`, `gui_local_scheduled_reschedule=ok`, `gui_local_scheduled_cancel=ok`, `gui_local_scheduled_fire=ok` |
 | `local-timeline-navigation` | first-unread pill, bottom pill, jump-to-date focused context | `gui_local_timeline_unread_jump=ok`, `gui_local_timeline_bottom_jump=ok`, `gui_local_timeline_date_jump=ok` |
 | `local-rich-formatting` | sanitized Matrix HTML rendering (`strong`, blockquote, list, link, code block, copy control), then toggles `display.code_block_wrap` and waits for the code block CSS to switch from `pre-wrap` to `pre` | — |
 | `local-alias` | sets a local alias through `set_local_user_alias`, waits for Rust-projected timeline/member labels, clears it, waits for both surfaces to revert | `gui_local_alias_set=ok`, `gui_local_alias_clear=ok` |
