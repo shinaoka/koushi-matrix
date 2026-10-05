@@ -80,6 +80,128 @@ fn pending_notification_fences_the_ready_account() {
 }
 
 #[test]
+fn dispatch_diagnostics_name_the_click_waiter() {
+    let _guard = koushi_diagnostics::test_support::lock();
+    record_notification_outcome(NativeNotificationOutcome::Delivered, "candidate");
+    record_notification_outcome(NativeNotificationOutcome::DisplayOnly, "candidate");
+    record_notification_outcome(NativeNotificationOutcome::Skipped, "no_candidate");
+    let snapshot = koushi_diagnostics::test_support::detail_snapshot();
+    let click_waiters: Vec<&str> = snapshot
+        .records
+        .iter()
+        .filter(|record| {
+            record.event.source == "desktop.native_notification"
+                && record.event.stage == "dispatch_settled"
+        })
+        .filter_map(|record| {
+            record
+                .event
+                .fields
+                .iter()
+                .find_map(|field| match (&field.key, &field.value) {
+                    (&"click_waiter", koushi_diagnostics::DiagnosticValue::Token(token)) => {
+                        Some(*token)
+                    }
+                    _ => None,
+                })
+        })
+        .collect();
+    assert!(
+        click_waiters.contains(&"configured"),
+        "a delivered banner must report a configured click waiter: {click_waiters:?}"
+    );
+    assert!(
+        click_waiters.contains(&"unattached"),
+        "a display-only or skipped dispatch must report no click waiter: {click_waiters:?}"
+    );
+    assert_eq!(
+        click_waiters
+            .iter()
+            .filter(|token| **token == "configured")
+            .count(),
+        1,
+        "only a delivered banner configures a click waiter: {click_waiters:?}"
+    );
+}
+
+/// Structural guard for the #1128 defect: the pinned macOS `notify-rust`
+/// backend never sets this flag, so the macOS sender must ask for the click
+/// response itself. This proves the request, not the OS behaviour; the live
+/// smoke below is the behavioural evidence.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_banner_requests_a_click_waiter() {
+    assert!(macos_click_wait_requested());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_banner_activates_only_on_a_direct_click() {
+    use mac_notification_sys::NotificationResponse;
+
+    assert!(macos_banner_activates(&NotificationResponse::Click));
+    assert!(!macos_banner_activates(&NotificationResponse::None));
+    assert!(!macos_banner_activates(&NotificationResponse::CloseButton(
+        "Close".to_owned()
+    )));
+    assert!(!macos_banner_activates(
+        &NotificationResponse::ActionButton("Show".to_owned())
+    ));
+    assert!(!macos_banner_activates(&NotificationResponse::Reply(
+        "reply".to_owned()
+    )));
+}
+
+/// #1128's reproduction against the production macOS send path.
+///
+/// A banner with a click waiter does **not** settle on its own: the pinned
+/// fire-and-forget path returned after `mac-notification-sys`'s ~2 s delivery
+/// confirmation, which is what let the adapter treat a click as never arriving.
+/// This is the issue's headless oracle — no click and no visual assertion — and
+/// it leaves the banner to dismiss.
+///
+/// Run on demand: `cargo test -p koushi-desktop --lib -- --ignored macos_click_waiter`
+///
+/// The dismissal half of this path (a dismissed banner must settle the waiter
+/// with a non-activating response) needs the application's main run loop: the
+/// pinned backend schedules its dismissal poll on `NSRunLoop mainRunLoop`, which
+/// no `cargo test` harness runs. It is therefore covered by the packaged-build
+/// check in #1128 rather than by a test here.
+///
+/// A dev/test binary has no bundle identifier, so the banner is attributed to
+/// the development terminal identity; the packaged build is covered by the
+/// manual check in #1128. Passing this proves the waiter did not settle by
+/// itself; it does not prove the process registered a click handler for a
+/// banner it never displayed.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "shows a real macOS banner"]
+fn macos_click_waiter_does_not_settle_without_interaction() {
+    assert!(
+        mac_notification_sys::set_application("com.apple.Terminal").is_ok(),
+        "the smoke needs a bundle identity for the banner"
+    );
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("koushi-notification-smoke".to_owned())
+        .spawn(move || {
+            let _ = sender.send(send_macos_banner_awaiting_click(
+                "Koushi notification smoke",
+                "Dismiss this banner when the run finishes",
+            ));
+        })
+        .expect("smoke sender thread");
+
+    // Long enough that the fire-and-forget path has already returned.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    match receiver.try_recv() {
+        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        Ok(response) => panic!("the banner settled with no click and no dismissal: {response:?}"),
+        Err(error) => panic!("the smoke sender stopped early: {error}"),
+    }
+}
+
+#[test]
 fn activation_waiter_budget_is_bounded_and_released() {
     let mut held = Vec::new();
     for _ in 0..MAX_PENDING_ACTIVATION_WAITERS {
