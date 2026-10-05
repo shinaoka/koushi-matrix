@@ -295,8 +295,21 @@ pub(super) enum TimelineActorMessage {
         request_id: RequestId,
         event_id: String,
     },
-    ReplyDetailsFetchFinished {
+    ReplyQuoteOriginalLoaded {
         event_id: String,
+        token: super::reply_quote_hydration::HydrationToken,
+        outcome: super::reply_quote_hydration::OriginalLookupOutcome,
+    },
+    ReplyQuoteRetryDue {
+        event_id: String,
+        token: super::reply_quote_hydration::HydrationToken,
+    },
+    /// Test-only: settle a ledger entry from an authoritative observation, as
+    /// a completed batch or an edit would, without an SDK lookup.
+    #[cfg(test)]
+    TestSettleReplyQuoteOriginal {
+        quote: koushi_state::ReplyQuote,
+        acknowledged: tokio::sync::oneshot::Sender<()>,
     },
     RequestRoomKey {
         request_id: Option<RequestId>,
@@ -908,8 +921,17 @@ pub(super) struct TimelineActor {
     pub(super) link_preview_policy: LinkPreviewContext,
     /// In-flight URL preview fetch workers keyed by event_id.
     pub(super) link_preview_fetches: HashMap<String, executor::JoinHandle<()>>,
-    /// In-flight reply detail fetch workers keyed by the reply event_id.
-    pub(super) reply_detail_fetches: HashMap<String, executor::JoinHandle<()>>,
+    /// In-flight reply quote hydration lookups and retry wakes, keyed by the
+    /// original event id and fenced by their ledger token. A result whose token
+    /// no longer matches is ignored, so an evicted or superseded lookup can
+    /// never settle a later entry for the same original.
+    pub(super) reply_quote_tasks: HashMap<
+        String,
+        (
+            super::reply_quote_hydration::HydrationToken,
+            executor::JoinHandle<()>,
+        ),
+    >,
     /// Manager-owned bounded hydration state shared by replacement Room
     /// actors. This is not a `Timeline` and cannot paginate.
     pub(super) thread_root_projection_service: Arc<Mutex<ThreadRootProjectionService>>,
@@ -935,7 +957,15 @@ pub(super) struct TimelineActor {
     pub(super) terminal_ingress: TimelineSendTerminalIngress,
     /// Reply event IDs already handed to the SDK for replied-to details during
     /// this actor lifetime. This avoids retry loops on every viewport tick.
-    pub(super) reply_detail_fetch_attempted_event_ids: HashSet<String>,
+    pub(super) reply_quote_hydration: super::reply_quote_hydration::ReplyQuoteHydration,
+    /// Originals whose settled quote changed (an edit or redaction): every
+    /// dependent quote must be re-derived, resolved or not, until the next
+    /// republish consumes the set.
+    pub(super) reply_quote_refresh: HashSet<String>,
+    /// A republish was requested while an anchor restore was buffering its
+    /// coalesced emission; it runs at the end of the loop once the restore has
+    /// flushed.
+    pub(super) reply_quote_republish_pending: bool,
     pub(super) pagination_task: Option<ActivePaginationTask>,
     pub(super) cache_reset_refill_pending: bool,
     pub(super) next_pagination_serial: u64,
@@ -1015,7 +1045,7 @@ impl Drop for TimelineActor {
         for task in self.link_preview_fetches.values() {
             task.abort();
         }
-        for task in self.reply_detail_fetches.values() {
+        for (_token, task) in self.reply_quote_tasks.values() {
             task.abort();
         }
         for task in self.media_download_tasks.values() {
@@ -1136,11 +1166,13 @@ impl TimelineActor {
             .expect("send completion coordinator lock must not be poisoned")
             .settled_transaction_ids(self.key.room_id());
         self.pending_send_projections = projections;
-        let pending_items = self
+        let mut pending_items = self
             .pending_send_projections
             .iter()
             .map(|projection| projection.item.clone())
-            .collect();
+            .collect::<Vec<_>>();
+        // No batch is being committed here: the canonical items are current.
+        self.overlay_reply_quotes_on_pending(&mut pending_items, &HashMap::new());
         let mut suppressed = self
             .pending_send_projections
             .iter()
@@ -1159,6 +1191,9 @@ impl TimelineActor {
             suppressed,
             &self.display_projection_context(),
         );
+        // Manager-owned pending sends can carry quotes whose originals are not
+        // in the canonical batch; start their lookups here too.
+        self.maybe_hydrate_reply_quotes();
         if !diffs.is_empty() {
             let batch_id = self.next_batch_id;
             if super::navigation::emit_items_updated_for_generation(
@@ -1811,6 +1846,13 @@ impl TimelineActor {
         let (position_tx, position_rx) = watch::channel(Arc::new(
             TimelinePositionIndex::from_items(actor_generation, generation, &navigation_items),
         ));
+        let mut reply_quote_hydration =
+            super::reply_quote_hydration::ReplyQuoteHydration::default();
+        if let TimelineKind::Thread { root_event_id, .. } = &key.kind {
+            // A Thread actor's root is never evicted: replies to it must always
+            // resolve even after the ledger fills up.
+            reply_quote_hydration.retain(root_event_id);
+        }
         let mut actor = TimelineActor {
             key: key.clone(),
             timeline,
@@ -1864,7 +1906,7 @@ impl TimelineActor {
             ignored_user_ids,
             link_preview_policy,
             link_preview_fetches: HashMap::new(),
-            reply_detail_fetches: HashMap::new(),
+            reply_quote_tasks: HashMap::new(),
             thread_root_projection_service,
             thread_summary_projection: thread_summary_projection.clone(),
             thread_summary_projection_rx,
@@ -1879,7 +1921,9 @@ impl TimelineActor {
             missing_committed_response_retry: None,
             manager_tx,
             terminal_ingress,
-            reply_detail_fetch_attempted_event_ids: HashSet::new(),
+            reply_quote_hydration,
+            reply_quote_refresh: HashSet::new(),
+            reply_quote_republish_pending: false,
             pagination_task: None,
             cache_reset_refill_pending: false,
             next_pagination_serial: 0,
@@ -1952,6 +1996,7 @@ impl TimelineActor {
         if matches!(self.key.kind, TimelineKind::Room { .. }) {
             self.maybe_hydrate_missing_thread_roots(None).await;
         }
+        self.maybe_hydrate_reply_quotes();
         if matches!(self.key.kind, TimelineKind::Thread { .. }) {
             let initial_items = self.navigation_items.clone();
             let _ = self
@@ -2024,6 +2069,16 @@ impl TimelineActor {
             }
             self.finish_ready_causal_projection_handoffs().await;
             self.maybe_refill_reset_room_cache().await;
+            self.flush_deferred_reply_quote_republish();
+        }
+    }
+    /// Run a republish that was requested while an anchor restore was buffering
+    /// its coalesced emission, once that restore has flushed. This runs at the
+    /// loop tail so a relay batch that flushes the restore in the same turn
+    /// cannot leave the republish pending indefinitely.
+    fn flush_deferred_reply_quote_republish(&mut self) {
+        if self.reply_quote_republish_pending && self.restore_anchor.is_none() {
+            self.republish_reply_quote_dependents();
         }
     }
     async fn finish_ready_causal_projection_handoffs(&mut self) {
@@ -2344,7 +2399,7 @@ impl TimelineActor {
                         })
                         .await;
                 }
-                self.maybe_fetch_visible_reply_details();
+                self.maybe_hydrate_reply_quotes();
                 self.emit_navigation_if_changed();
                 let viewport_range = self.viewport_item_range();
                 let decision = self.gap_repair.evaluate_viewport_wake(
@@ -2445,8 +2500,31 @@ impl TimelineActor {
             } => {
                 self.handle_load_message_source(request_id, event_id).await;
             }
-            TimelineActorMessage::ReplyDetailsFetchFinished { event_id } => {
-                self.reply_detail_fetches.remove(&event_id);
+            TimelineActorMessage::ReplyQuoteOriginalLoaded {
+                event_id,
+                token,
+                outcome,
+            } => {
+                self.handle_reply_quote_original_loaded(event_id, token, outcome);
+            }
+            TimelineActorMessage::ReplyQuoteRetryDue { event_id, token } => {
+                self.handle_reply_quote_retry_due(event_id, token);
+            }
+            #[cfg(test)]
+            TimelineActorMessage::TestSettleReplyQuoteOriginal {
+                quote,
+                acknowledged,
+            } => {
+                let mut refreshes = super::reply_quote_hydration::ReplyQuoteRefreshes::default();
+                let outcome = self.reply_quote_hydration.learn(quote.clone());
+                super::reply_quote_hydration::record_learn(
+                    &mut refreshes,
+                    quote.event_id.clone(),
+                    outcome,
+                );
+                self.apply_reply_quote_refreshes(refreshes);
+                self.republish_reply_quote_dependents();
+                let _ = acknowledged.send(());
             }
             TimelineActorMessage::RequestRoomKey {
                 request_id,

@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_sdk::MatrixClientSession;
-use koushi_state::{AppAction, ComposerDocument, ComposerFormattingOptions, MediaTransferProgress};
+use koushi_state::{
+    AppAction, ComposerDocument, ComposerFormattingOptions, MediaTransferProgress, ReplyQuoteState,
+};
 
 use crate::send_diagnostics::{SendFailureDiagnostic, classify_send_failure};
 use matrix_sdk::attachment::AttachmentConfig;
@@ -432,9 +434,13 @@ pub(super) fn pending_send_item(
                 .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
                 .unwrap_or_default(),
         ),
+        // The owning actor resolves this from its known originals before the
+        // pending send is displayed (#1120).
+        reply_quote: in_reply_to_event_id.as_deref().map(|event_id| {
+            super::reply_quote_hydration::placeholder_quote(event_id, ReplyQuoteState::Loading)
+        }),
         in_reply_to_event_id,
         formatted: None,
-        reply_quote: None,
         thread_root,
         thread_summary: None,
         media: None,

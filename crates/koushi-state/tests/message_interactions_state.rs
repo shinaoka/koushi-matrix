@@ -697,3 +697,21 @@ fn reply_quote_dto_can_represent_absent_non_reply_quote() {
     assert!(reply_quote.is_none());
     assert_eq!(ReplyQuoteState::Ready.as_str(), "ready");
 }
+
+#[test]
+fn reply_quote_state_wire_names_cover_hydration_lifecycle() {
+    for (state, wire) in [
+        (ReplyQuoteState::Loading, "loading"),
+        (ReplyQuoteState::Ready, "ready"),
+        (ReplyQuoteState::Redacted, "redacted"),
+        (ReplyQuoteState::Missing, "missing"),
+        (ReplyQuoteState::Unsupported, "unsupported"),
+        (ReplyQuoteState::Failed, "failed"),
+    ] {
+        assert_eq!(state.as_str(), wire);
+        assert_eq!(
+            serde_json::to_value(state).expect("serialize reply quote state"),
+            serde_json::Value::String(wire.to_owned())
+        );
+    }
+}

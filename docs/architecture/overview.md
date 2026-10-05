@@ -622,7 +622,10 @@ Each account remains an in-process actor system in `koushi-core`:
   renders the grouped DTO and dispatches typed reaction commands only, while
   Rust guards current state before delegating to the SDK toggle helper.
   Reply quote previews are projected into `TimelineItem.reply_quote`; React
-  renders the quote state and does not resolve Matrix reply bodies. Pinned
+  renders the quote state and does not resolve Matrix reply bodies. Each
+  `TimelineActor` owns a bounded hydration ledger for quoted originals
+  (`Loading` until settled, then `Ready`/`Redacted`/`Missing`/`Unsupported`/
+  `Failed`); see the state machine's reply quote hydration contract. Pinned
   events live in `AppState.room_interactions`, and pin/unpin commands route
   through `RoomActor` before the Rust snapshot/event stream updates the GUI.
   Fully-read markers and typing notifications remain room-scoped Rust state in

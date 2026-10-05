@@ -64,6 +64,7 @@ pub(crate) use receipt_endpoints::{RawReceiptWindow, ReaderAvatarResource, Resol
 mod receipt_index;
 mod recovery_model;
 mod relay;
+mod reply_quote_hydration;
 mod residency;
 mod room_key_recovery;
 #[cfg(test)]

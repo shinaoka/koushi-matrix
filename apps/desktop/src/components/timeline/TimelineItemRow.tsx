@@ -747,9 +747,11 @@ export function TimelineItemRow({
   const replyQuoteContent =
     !isRedacted && item.reply_quote ? (
       <div className="reply-quote" data-reply-state={item.reply_quote.state}>
-        <div className="reply-quote-sender" dir="auto">
-          {peopleFacingLabel(item.reply_quote.sender_label)}
-        </div>
+        {replyQuoteShowsSender(item.reply_quote) ? (
+          <div className="reply-quote-sender" dir="auto">
+            {peopleFacingLabel(item.reply_quote.sender_label)}
+          </div>
+        ) : null}
         <div className="reply-quote-body" dir="auto">
           {item.reply_quote.formatted
             ? renderFormattedBody(
@@ -1479,9 +1481,20 @@ function thumbnailSourceUrl(thumbnail: AvatarThumbnailState | null | undefined):
     : null;
 }
 
+// An unresolved original has no sender yet; avoid presenting it as an unknown user.
+function replyQuoteShowsSender(quote: NonNullable<TimelineItem["reply_quote"]>): boolean {
+  return Boolean(quote.sender_label) || (quote.state !== "loading" && quote.state !== "failed");
+}
+
 function replyQuoteBody(quote: NonNullable<TimelineItem["reply_quote"]>): string {
   if (quote.body_preview) {
     return quote.body_preview;
+  }
+  if (quote.state === "loading") {
+    return t("timeline.replyQuoteLoading");
+  }
+  if (quote.state === "failed") {
+    return t("timeline.replyQuoteFailed");
   }
   if (quote.state === "redacted") {
     return t("timeline.redactedMessage");

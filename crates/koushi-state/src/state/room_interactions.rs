@@ -111,19 +111,26 @@ impl fmt::Debug for ReplyQuote {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ReplyQuoteState {
+    /// The original is unresolved and Rust still owns a bounded lookup.
+    Loading,
     Ready,
     Redacted,
+    /// Terminal: the homeserver reported the original as not found or forbidden.
     Missing,
     Unsupported,
+    /// Terminal for this timeline actor: the bounded lookup exhausted retries.
+    Failed,
 }
 
 impl ReplyQuoteState {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Loading => "loading",
             Self::Ready => "ready",
             Self::Redacted => "redacted",
             Self::Missing => "missing",
             Self::Unsupported => "unsupported",
+            Self::Failed => "failed",
         }
     }
 }

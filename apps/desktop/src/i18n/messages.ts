@@ -1342,6 +1342,8 @@ export type MessageId =
   | "timeline.pinnedMessagesEmpty"
   | "timeline.pinnedEventUnableToDecrypt"
   | "timeline.pinnedEventUnavailable"
+  | "timeline.replyQuoteFailed"
+  | "timeline.replyQuoteLoading"
   | "timeline.replyQuoteMissing"
   | "timeline.replyQuoteUnavailable"
   | "timeline.replyQuoteUnknownSender"
@@ -3117,6 +3119,8 @@ const en: Catalog = {
   "timeline.pinnedMessagesEmpty": "No pinned messages",
   "timeline.pinnedEventUnableToDecrypt": "Unable to decrypt this message",
   "timeline.pinnedEventUnavailable": "Pinned message unavailable",
+  "timeline.replyQuoteFailed": "Couldn't load the original message",
+  "timeline.replyQuoteLoading": "Loading original message…",
   "timeline.replyQuoteMissing": "Original message unavailable",
   "timeline.replyQuoteUnavailable": "Original message unavailable",
   "timeline.replyQuoteUnknownSender": "Unknown sender",
@@ -4783,6 +4787,8 @@ const ja: Catalog = {
   "timeline.pinnedMessagesEmpty": "ピン留めメッセージはありません",
   "timeline.pinnedEventUnableToDecrypt": "このメッセージを復号できません",
   "timeline.pinnedEventUnavailable": "ピン留めメッセージを利用できません",
+  "timeline.replyQuoteFailed": "元のメッセージを読み込めませんでした",
+  "timeline.replyQuoteLoading": "元のメッセージを読み込み中…",
   "timeline.replyQuoteMissing": "元のメッセージを利用できません",
   "timeline.replyQuoteUnavailable": "元のメッセージを利用できません",
   "timeline.replyQuoteUnknownSender": "不明な送信者",

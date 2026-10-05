@@ -430,6 +430,8 @@ impl TimelineActor {
                 &self.ignored_user_ids,
             );
         }
+        let batch = self.overlay_reply_quotes_on_batch(&mut core_diffs);
+        self.apply_reply_quote_refreshes(batch.refreshes);
         let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
         for diff in &mut core_diffs {
             match diff {
@@ -482,16 +484,19 @@ impl TimelineActor {
             })
             .collect::<std::collections::HashSet<_>>();
         if !incoming_transaction_ids.is_empty() {
-            let coordinator = self
-                .send_completion
-                .lock()
-                .expect("send completion coordinator lock must not be poisoned");
-            let projections = coordinator.projections_for_key(&self.key);
-            let (pending_items, suppressed) = pending_display_inputs_for_incoming_transactions(
-                &projections,
-                &incoming_transaction_ids,
-                coordinator.settled_transaction_ids(self.key.room_id()),
-            );
+            let (mut pending_items, suppressed) = {
+                let coordinator = self
+                    .send_completion
+                    .lock()
+                    .expect("send completion coordinator lock must not be poisoned");
+                let projections = coordinator.projections_for_key(&self.key);
+                pending_display_inputs_for_incoming_transactions(
+                    &projections,
+                    &incoming_transaction_ids,
+                    coordinator.settled_transaction_ids(self.key.room_id()),
+                )
+            };
+            self.overlay_reply_quotes_on_pending(&mut pending_items, &batch.originals);
             self.display_projection
                 .set_pending_inputs(pending_items, suppressed);
         }
@@ -666,11 +671,12 @@ impl TimelineActor {
                 .lock()
                 .expect("send completion coordinator lock must not be poisoned")
                 .projections_for_key(&self.key);
-            let pending_items = self
+            let mut pending_items = self
                 .pending_send_projections
                 .iter()
                 .map(|projection| projection.item.clone())
-                .collect();
+                .collect::<Vec<_>>();
+            self.overlay_reply_quotes_on_pending(&mut pending_items, &batch.originals);
             let mut suppressed = self
                 .pending_send_projections
                 .iter()
@@ -760,7 +766,8 @@ impl TimelineActor {
             &self.navigation_items,
             &thread_attention_provenance,
         );
-        self.maybe_fetch_visible_reply_details();
+        self.republish_reply_quote_dependents();
+        self.maybe_hydrate_reply_quotes();
         drop(continuation_lease);
 
         if let Some(action) = thread_activity_action
@@ -1630,5 +1637,7 @@ pub(super) async fn run_diff_relay(
 mod display_policy_visibility_tests;
 #[cfg(test)]
 mod ignored_reset_tests;
+#[cfg(test)]
+mod reply_quote_actor_tests;
 #[cfg(test)]
 mod tests;

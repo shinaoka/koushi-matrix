@@ -277,6 +277,61 @@ describe("TimelineView", () => {
   });
 
 
+  it.each([
+    ["loading", "Loading original message…"],
+    ["failed", "Couldn't load the original message"]
+  ] as const)(
+    "renders a %s reply quote as catalog text without an unknown sender",
+    (state, text) => {
+      const key = threadTimelineKey(
+        "@alice:example.invalid",
+        "!room:example.invalid",
+        "$thread-root:example.invalid"
+      );
+      const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+        InitialItems: {
+          request_id: null,
+          key,
+          generation: 1,
+          items: [
+            {
+              ...message("$thread-quoted-reply", "Reply to the thread root"),
+              thread_root: "$thread-root:example.invalid",
+              in_reply_to_event_id: "$thread-root:example.invalid",
+              reply_quote: {
+                event_id: "$thread-root:example.invalid",
+                sender: null,
+                sender_label: null,
+                body_preview: null,
+                state
+              }
+            }
+          ]
+        }
+      });
+
+      render(
+        <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+          <TimelineView
+            presentationContext="thread"
+            timelineKey={key}
+            roomId="!room:example.invalid"
+            transport={baseTransport({})}
+            onReply={vi.fn()}
+            onOpenThread={vi.fn()}
+          />
+        </TimelineStoreContext.Provider>
+      );
+
+      const row = screen.getByText("Reply to the thread root").closest("article");
+      const quote = row!.querySelector<HTMLElement>(".reply-quote");
+      expect(quote?.getAttribute("data-reply-state")).toBe(state);
+      expect(quote?.querySelector(".reply-quote-sender")).toBeNull();
+      expect(quote?.textContent).toBe(text);
+    }
+  );
+
+
   it("preserves gap identity when the same thread root crosses it in latestReply mode", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const observeViewport = vi.fn().mockResolvedValue(undefined);
