@@ -15,7 +15,9 @@
 //!   server-confirmed read boundary and a cleared unread count.
 //!
 //! A fresh subscription after `Unsubscribe` is not covered: its initial
-//! hydration reads a bounded event count and is tracked separately.
+//! hydration reads a bounded event count once, so more hidden updates than that
+//! window hide the message. That is tracked as #1125 and is deliberately not
+//! asserted here (§"Finding" in the #1117 worklog).
 
 use std::collections::HashSet;
 use std::time::Duration;
