@@ -921,6 +921,7 @@
             "mentioned_user_ids": [
               "@mentioned:example.test"
             ],
+            "mentions_room": false,
             "message_kind": "emote",
             "reactions": [
               {
@@ -1022,6 +1023,7 @@
             "mentioned_user_ids": [
               "@mentioned:example.test"
             ],
+            "mentions_room": false,
             "message_kind": "emote",
             "notice_i18n": {
               "key": "timeline.notice.roomUpgraded",
@@ -1152,6 +1154,7 @@
                 "mentioned_user_ids": [
                   "@mentioned:example.test"
                 ],
+                "mentions_room": false,
                 "message_kind": "emote",
                 "reactions": [
                   {
@@ -1266,6 +1269,7 @@
                 "url": "https://example.invalid/page"
               }
             ],
+            "mentions_room": false,
             "message_kind": "text",
             "reactions": [],
             "sender": "@u:example.test",
@@ -1415,6 +1419,7 @@
               },
               "width": 2
             },
+            "mentions_room": false,
             "message_kind": "text",
             "reactions": [],
             "sender": "@u:example.test",
@@ -1621,6 +1626,7 @@
             "is_edited": false,
             "is_hidden": false,
             "is_redacted": false,
+            "mentions_room": false,
             "message_kind": "text",
             "reactions": [],
             "reply_quote": {
@@ -1708,6 +1714,7 @@
             "is_edited": false,
             "is_hidden": false,
             "is_redacted": false,
+            "mentions_room": false,
             "message_kind": "text",
             "reactions": [],
             "send_state": {

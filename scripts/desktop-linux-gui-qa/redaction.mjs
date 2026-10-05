@@ -69,8 +69,13 @@ export function childEnvironment(dataDir, qaLoginPipePath = null, qaControlPipeP
 
 
 function nssWrapperEnvironment(dataDir) {
-  const libraryPath = "/usr/lib/x86_64-linux-gnu/libnss_wrapper.so";
-  if (!existsSync(libraryPath)) {
+  // The image is built for either architecture; pick whichever library this
+  // container actually ships instead of assuming the x86_64 path.
+  const libraryPath = [
+    "/usr/lib/x86_64-linux-gnu/libnss_wrapper.so",
+    "/usr/lib/aarch64-linux-gnu/libnss_wrapper.so"
+  ].find((candidate) => existsSync(candidate));
+  if (!libraryPath) {
     return {};
   }
 

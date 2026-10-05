@@ -568,8 +568,9 @@ For media/file Phase B, the harness uses a plain hidden `<input type="file">`
 and Playwright `setInputFiles()`; do not open a native file dialog in headless
 tests. The GUI proof asserts file selection invokes `stage_upload_bytes`, caption
 edits go through the Rust-owned Upload attachments staging dialog, and one Send
-invokes `send_prepared_uploads` with the staged caption and composer admission
-tokens. There is no direct renderer upload command and no separate `send_text`
+invokes `send_prepared_uploads` with the staged caption and the renderer
+admission tokens, leaving the typed composer draft in place (#1130). There is no
+direct renderer upload command and no separate `send_text`
 dispatch; `download_media` keeps its typed command shape. It also covers
 paste/drop staging and the Rust-owned room
 media gallery/viewer projection. It then injects Rust-shaped `TimelineEvent` payloads to

@@ -1605,9 +1605,12 @@ stateDiagram-v2
   boundary; JavaScript numeric conversion, wrapping, and saturation are
   forbidden. A draft
   write with a revision at or below the target's stored revision is stale and
-  is ignored. Accepted plain/reply sends, scheduled sends, and prepared-upload
-  sends advance the target to `max(stored, submitted) + 1`, clear content, and
-  retain that revision as an encrypted tombstone. A captured draft write may
+  is ignored. Accepted plain/reply sends and scheduled sends advance the target
+  to `max(stored, submitted) + 1`, clear content, and retain that revision as an
+  encrypted tombstone. A prepared-upload (staged attachment) send settles the
+  draft the same way — same revision successor, same accepted-send navigation —
+  but keeps the content, because its payload is built from the staged items and
+  their own captions and never dispatched the typed text (#1130). A captured draft write may
   still persist after its room/thread is no longer visible, but it never
   mutates another active composer. Each write and draft-accepting operation also
   captures its complete account owner (homeserver, user, and device);

@@ -63,13 +63,14 @@ use super::{
     edited_content_for_edit_target, edited_document_content_for_edit_target,
     has_user_visible_content, link_ranges_for_message_projection,
     megolm_message_index_from_original_json, membership_change_projection,
-    mentioned_user_ids_from_event_json, message_edit_target_token, message_projection_from_msgtype,
-    msgtype_carries_editable_caption, project_local_megolm_rotation_reason,
-    reaction_groups_from_sdk, reply_quote_from_message_projection,
-    reset_loading_link_previews_to_pending, room_name_notice_projection, state_event_notice_body,
-    state_event_notice_projection, timeline_item_can_edit, timeline_item_can_react,
-    timeline_item_can_redact, timeline_item_should_be_hidden, validate_cancel_send,
-    validate_redact_reaction, validate_retry_send, validate_send_reaction,
+    mentioned_user_ids_from_event_json, mentions_room_from_event_json, message_edit_target_token,
+    message_projection_from_msgtype, msgtype_carries_editable_caption,
+    project_local_megolm_rotation_reason, reaction_groups_from_sdk,
+    reply_quote_from_message_projection, reset_loading_link_previews_to_pending,
+    room_name_notice_projection, state_event_notice_body, state_event_notice_projection,
+    timeline_item_can_edit, timeline_item_can_react, timeline_item_can_redact,
+    timeline_item_should_be_hidden, validate_cancel_send, validate_redact_reaction,
+    validate_retry_send, validate_send_reaction,
 };
 
 use super::super::test_support::{fake_rid, room_key, timeline_item};
@@ -285,6 +286,46 @@ fn mentioned_user_ids_ignore_room_mentions() {
         }))
         .is_empty()
     );
+}
+
+/// #1123: the spec-standard Element room mention carries only the plain body
+/// and the flag, so the flag itself has to drive the pill.
+#[test]
+fn room_mentions_come_from_the_event_mentions_metadata() {
+    assert!(mentions_room_from_event_json(&serde_json::json!({
+        "content": { "body": "@room ", "m.mentions": { "room": true }, "msgtype": "m.text" }
+    })));
+    // A text that only looks like one, and a flag that is false or missing,
+    // never become a room mention.
+    assert!(!mentions_room_from_event_json(&serde_json::json!({
+        "content": { "body": "@room" }
+    })));
+    assert!(!mentions_room_from_event_json(&serde_json::json!({
+        "content": { "body": "@room", "m.mentions": { "room": false } }
+    })));
+    assert!(!mentions_room_from_event_json(&serde_json::json!({
+        "content": { "body": "@Alice", "m.mentions": { "user_ids": ["@alice:example.test"] } }
+    })));
+}
+
+#[test]
+fn room_mentions_follow_the_edit_replacement() {
+    assert!(mentions_room_from_event_json(&serde_json::json!({
+        "content": {
+            "body": "* plain",
+            "m.relates_to": { "rel_type": "m.replace", "event_id": "$original:example.test" },
+            "m.new_content": { "body": "@room", "m.mentions": { "room": true } }
+        }
+    })));
+    // The edited-away room mention no longer applies.
+    assert!(!mentions_room_from_event_json(&serde_json::json!({
+        "content": {
+            "body": "* @room",
+            "m.mentions": { "room": true },
+            "m.relates_to": { "rel_type": "m.replace", "event_id": "$original:example.test" },
+            "m.new_content": { "body": "plain", "m.mentions": {} }
+        }
+    })));
 }
 
 #[test]

@@ -4503,6 +4503,9 @@ function AccountContent({
    *
    * Deliberately separate from `sendText`: the composer draft is never read,
    * sent, or cleared here, just as `sendText` never dispatches attachments.
+   * #1130: Core does not accept the room's composer draft for this send, so the
+   * text a user typed before pasting an image stays in the composer instead of
+   * being deleted without ever having been sent.
    */
   async function sendStagedAttachments() {
     if (stagedUploadSendInFlightRef.current) {
@@ -4528,40 +4531,31 @@ function AccountContent({
     if (!uploadStagingItemsAreSendable(uploads)) {
       return;
     }
+    // A busy or retired renderer must not enqueue; the renderer lease fences it.
     const scope = composerDraftScope(account, target);
     const admitted = beginComposerOperation(scope);
     if (!admitted) return;
+    // #1130: the send settles this revision without consuming the draft text, and
+    // nothing here clears the local overlay, so the typed text stays visible.
     const draftRevision = currentComposerDraftRevision(scope, admitted.lease);
-    if (!reserveComposerAcceptedRevision(admitted, draftRevision)) return;
-    const localRevisionAtSubmission = mainComposerOverlayRef.current?.revision;
     for (const item of uploads) {
       latestTextMutationQueueRef.current.invalidate(
         `caption:main:${roomId}:${item.staged_id}`
       );
     }
-    let response;
     try {
-      response = await api.sendPreparedUploads(
+      const settlement = await api.sendPreparedUploads(
         account,
         admitted.lease.leaseId,
         admitted.lease.rendererGeneration,
         target,
         draftRevision
       );
+      await applyCommandReceipt(settlement);
     } catch {
+      // Command failures are surfaced through the Rust-owned error/event path.
+    } finally {
       settleComposerOperation(admitted);
-      return;
-    }
-    await applyCommandReceipt(response.settlement);
-    const canApply = composerOperationCanApply(admitted, draftRevision);
-    if (!canApply || submissionAccountOwnerRef.current !== accountOwner) return;
-    const accepted = compareComposerDraftRevisions(response.acceptedRevision, draftRevision) > 0;
-    const hasNewerDraft =
-      mainComposerOverlayRef.current?.revision !== localRevisionAtSubmission;
-    if (accepted && !hasNewerDraft) {
-      cancelComposerDraftPersist(scope);
-      clearLocalComposerDraft(scope);
-      updateComposerTypingSignal(roomId, "");
     }
   }
 
@@ -5290,39 +5284,30 @@ function AccountContent({
       return;
     }
     if (!uploadStagingItemsAreSendable(uploads)) return;
+    // A busy or retired renderer must not enqueue; the renderer lease fences it.
     const scope = composerDraftScope(account, target);
     const admitted = beginComposerOperation(scope);
     if (!admitted) return;
+    // #1130: as above; the thread draft is settled, never consumed.
     const draftRevision = currentComposerDraftRevision(scope, admitted.lease);
-    if (!reserveComposerAcceptedRevision(admitted, draftRevision)) return;
-    const localRevisionAtSubmission = threadComposerOverlayRef.current?.revision ?? null;
     for (const item of uploads) {
       latestTextMutationQueueRef.current.invalidate(
         `caption:thread:${roomId}:${rootEventId}:${item.staged_id}`
       );
     }
-    let response;
     try {
-      response = await api.sendPreparedUploads(
+      const settlement = await api.sendPreparedUploads(
         account,
         admitted.lease.leaseId,
         admitted.lease.rendererGeneration,
         target,
         draftRevision
       );
+      await applyCommandReceipt(settlement);
     } catch {
+      // Command failures are surfaced through the Rust-owned error/event path.
+    } finally {
       settleComposerOperation(admitted);
-      return;
-    }
-    await applyCommandReceipt(response.settlement);
-    const canApply = composerOperationCanApply(admitted, draftRevision);
-    if (!canApply || submissionAccountOwnerRef.current !== accountOwner) return;
-    const accepted = compareComposerDraftRevisions(response.acceptedRevision, draftRevision) > 0;
-    const hasNewerDraft =
-      threadComposerOverlayRef.current?.revision !== localRevisionAtSubmission;
-    if (accepted && !hasNewerDraft) {
-      cancelThreadComposerDraftPersist(scope);
-      clearLocalThreadComposerDraft(scope);
     }
   }
 

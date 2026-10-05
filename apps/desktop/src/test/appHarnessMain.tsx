@@ -3593,13 +3593,16 @@ mock.setCommandResponse("send_prepared_uploads", ({
     accountUserId,
     accountDeviceId
   })) {
-    return { acceptedRevision: null, snapshot: currentSnapshot };
+    return currentSnapshot;
   }
   for (const key of preparedUploadBytes.keys()) {
     if (key.startsWith(`${composerTargetKey(target)}:`)) preparedUploadBytes.delete(key);
   }
+  // #1130: the staged-attachment send settles the composer draft revision
+  // without consuming its text, so it removes the sent items and leaves the
+  // typed draft in the composer.
   const withoutUploads = replaceStagedUploadsForTarget(currentSnapshot, target, []);
-  const next =
+  const settled =
     target.kind === "main"
       ? {
           ...withoutUploads,
@@ -3611,80 +3614,17 @@ mock.setCommandResponse("send_prepared_uploads", ({
                 ...withoutUploads.state.ui.timeline,
                 composer: {
                   ...withoutUploads.state.ui.timeline.composer,
-                  draft:
-                    compareComposerDraftRevisions(
-                      withoutUploads.state.ui.timeline.composer.draft_revision,
-                      draftRevision
-                    ) > 0
-                      ? withoutUploads.state.ui.timeline.composer.draft
-                      : "",
                   draft_revision: nextComposerDraftRevision(
                     withoutUploads.state.ui.timeline.composer.draft_revision,
                     draftRevision
-                  ),
-                  last_accepted_clear_revision:
-                    compareComposerDraftRevisions(
-                      withoutUploads.state.ui.timeline.composer.draft_revision,
-                      draftRevision
-                    ) <= 0
-                      ? nextComposerDraftRevision(
-                          withoutUploads.state.ui.timeline.composer.draft_revision,
-                          draftRevision
-                        )
-                      : withoutUploads.state.ui.timeline.composer.last_accepted_clear_revision
+                  )
                 }
               }
             }
           }
         }
-      : withoutUploads.state.ui.thread.kind === "open" &&
-          withoutUploads.state.ui.thread.composer
-        ? {
-            ...withoutUploads,
-            state: {
-              ...withoutUploads.state,
-              ui: {
-                ...withoutUploads.state.ui,
-                thread: {
-                  ...withoutUploads.state.ui.thread,
-                  composer: {
-                    ...withoutUploads.state.ui.thread.composer,
-                    draft:
-                      compareComposerDraftRevisions(
-                        withoutUploads.state.ui.thread.composer.draft_revision,
-                        draftRevision
-                      ) > 0
-                        ? withoutUploads.state.ui.thread.composer.draft
-                        : "",
-                    draft_revision: nextComposerDraftRevision(
-                      withoutUploads.state.ui.thread.composer.draft_revision,
-                      draftRevision
-                    ),
-                    last_accepted_clear_revision:
-                      compareComposerDraftRevisions(
-                        withoutUploads.state.ui.thread.composer.draft_revision,
-                        draftRevision
-                      ) <= 0
-                        ? nextComposerDraftRevision(
-                            withoutUploads.state.ui.thread.composer.draft_revision,
-                            draftRevision
-                          )
-                        : withoutUploads.state.ui.thread.composer
-                            .last_accepted_clear_revision
-                  }
-                }
-              }
-            }
-          }
-        : withoutUploads;
-  const snapshot = setCurrentSnapshot(next);
-  const acceptedRevision =
-    target.kind === "main"
-      ? snapshot.state.ui.timeline.composer.draft_revision
-      : snapshot.state.ui.thread.kind === "open" && snapshot.state.ui.thread.composer
-        ? snapshot.state.ui.thread.composer.draft_revision
-        : null;
-  return { acceptedRevision, snapshot };
+      : withoutUploads;
+  return setCurrentSnapshot(settled);
 });
 mock.setCommandResponse("update_staged_upload_caption", ({ target, stagedId, document }: {
   target: ComposerTarget;

@@ -68,10 +68,10 @@ use super::media::{
     media_gallery_updated_action,
 };
 use super::navigation::{
-    ActivePaginationTask, INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT, InitialItemsRequestIdentity,
-    PaginationCompletion, RestoreTimelineAnchorState, TimelineActorGenerationGate,
-    activity_rows_from_timeline_items, emit_initial_items_for_generation,
-    emit_timeline_events_for_generation, send_generation_fenced,
+    ActivePaginationTask, INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT,
+    INITIAL_EMPTY_ROOM_HYDRATION_MAX_ROUNDS, InitialItemsRequestIdentity, PaginationCompletion,
+    RestoreTimelineAnchorState, TimelineActorGenerationGate, activity_rows_from_timeline_items,
+    emit_initial_items_for_generation, emit_timeline_events_for_generation, send_generation_fenced,
     should_hydrate_empty_initial_room_timeline,
 };
 use super::outbound_send::{
@@ -1443,50 +1443,64 @@ impl TimelineActor {
             &ignored_user_ids,
         );
         if should_hydrate_empty_initial_room_timeline(&key.kind, &projected_initial_items) {
-            let gate_started = Some(std::time::Instant::now());
-            let hydrate_result = {
-                let _permit = account_work
-                    .acquire(AccountWorkKind::ExplicitPagination)
-                    .await;
-                let gate_wait = gate_started.map(|started| started.elapsed());
-                trace_timeline_paginate(
-                    "initial_hydrate_gate_acquired",
-                    subscribe_request_id,
-                    &key,
-                    PaginationDirection::Backward,
-                    INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT,
-                    None,
-                    gate_wait.map(|duration| duration.as_millis()),
-                    None,
-                );
-                let paginate_started = Some(startup_trace::now());
-                let trace_started = Some(std::time::Instant::now());
-                let outcome = timeline
-                    .paginate_backwards(INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT)
-                    .await;
-                let outcome_token = match &outcome {
-                    Ok(true) => "end_reached",
-                    Ok(false) => "idle",
-                    Err(_) => "failed",
+            // #1125: the window can be entirely hidden technical state events, so
+            // one guarded pass does not always reach a displayed row. Keep taking
+            // passes while the projection is still empty; the round cap is the
+            // bound, because a page can also reach the timeline after its
+            // pagination call returns, so a "the edges did not move" check could
+            // stop one pass too early.
+            let mut hydrate_rounds = 0_u8;
+            while should_hydrate_empty_initial_room_timeline(&key.kind, &projected_initial_items)
+                && hydrate_rounds < INITIAL_EMPTY_ROOM_HYDRATION_MAX_ROUNDS
+            {
+                hydrate_rounds += 1;
+                let gate_started = Some(std::time::Instant::now());
+                let hydrate_result = {
+                    let _permit = account_work
+                        .acquire(AccountWorkKind::ExplicitPagination)
+                        .await;
+                    let gate_wait = gate_started.map(|started| started.elapsed());
+                    trace_timeline_paginate(
+                        "initial_hydrate_gate_acquired",
+                        subscribe_request_id,
+                        &key,
+                        PaginationDirection::Backward,
+                        INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT,
+                        None,
+                        gate_wait.map(|duration| duration.as_millis()),
+                        None,
+                    );
+                    let paginate_started = Some(startup_trace::now());
+                    let trace_started = Some(std::time::Instant::now());
+                    let outcome = timeline
+                        .paginate_backwards(INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT)
+                        .await;
+                    let outcome_token = match &outcome {
+                        Ok(true) => "end_reached",
+                        Ok(false) => "idle",
+                        Err(_) => "failed",
+                    };
+                    trace_timeline_paginate(
+                        "initial_hydrate_sdk_finish",
+                        subscribe_request_id,
+                        &key,
+                        PaginationDirection::Backward,
+                        INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT,
+                        trace_started.map(|started| started.elapsed().as_millis()),
+                        gate_wait.map(|duration| duration.as_millis()),
+                        Some(outcome_token),
+                    );
+                    startup_trace::trace_paginate(
+                        paginate_started,
+                        gate_wait,
+                        matches!(outcome, Ok(true)),
+                    );
+                    outcome
                 };
-                trace_timeline_paginate(
-                    "initial_hydrate_sdk_finish",
-                    subscribe_request_id,
-                    &key,
-                    PaginationDirection::Backward,
-                    INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT,
-                    trace_started.map(|started| started.elapsed().as_millis()),
-                    gate_wait.map(|duration| duration.as_millis()),
-                    Some(outcome_token),
-                );
-                startup_trace::trace_paginate(
-                    paginate_started,
-                    gate_wait,
-                    matches!(outcome, Ok(true)),
-                );
-                outcome
-            };
-            if hydrate_result.is_ok() {
+                let reached_start = matches!(&hydrate_result, Ok(true));
+                if hydrate_result.is_err() {
+                    break;
+                }
                 let resubscribe_started = Some(startup_trace::now());
                 let (hydrated_items, hydrated_stream) = timeline.subscribe().await;
                 startup_trace::trace_phase_items(
@@ -1503,6 +1517,9 @@ impl TimelineActor {
                     hide_redacted,
                     &ignored_user_ids,
                 );
+                if reached_start {
+                    break;
+                }
             }
         }
         let mut initial_read_receipt_changes = if own_user_id.is_some() {

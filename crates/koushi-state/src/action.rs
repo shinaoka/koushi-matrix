@@ -1415,6 +1415,8 @@ pub enum AppAction {
     ComposerDraftAccepted {
         target: crate::ComposerTarget,
         submitted_revision: ComposerDraftRevision,
+        /// #1130: see `AppCommand::AcceptComposerDraft`.
+        consumes_draft: bool,
     },
     ThreadReplyFinished {
         room_id: String,

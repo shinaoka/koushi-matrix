@@ -1669,7 +1669,13 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::ComposerDraftAccepted {
             target,
             submitted_revision,
-        } => timeline::handle_composer_draft_accepted(state, target, submitted_revision),
+            consumes_draft,
+        } => timeline::handle_composer_draft_accepted(
+            state,
+            target,
+            submitted_revision,
+            consumes_draft,
+        ),
         AppAction::ThreadReplyFinished {
             room_id,
             root_event_id,
