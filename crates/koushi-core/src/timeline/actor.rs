@@ -1171,7 +1171,8 @@ impl TimelineActor {
             .iter()
             .map(|projection| projection.item.clone())
             .collect::<Vec<_>>();
-        self.overlay_reply_quotes_on_pending(&mut pending_items);
+        // No batch is being committed here: the canonical items are current.
+        self.overlay_reply_quotes_on_pending(&mut pending_items, &HashMap::new());
         let mut suppressed = self
             .pending_send_projections
             .iter()

@@ -252,6 +252,58 @@ fn mixed_undecryptable_and_transient_failures_keep_their_own_delays() {
 }
 
 #[test]
+fn pending_overlay_prefers_the_batch_original_over_the_committed_one() {
+    // While a batch is being committed, the actor's canonical items still hold
+    // the previous original. A pre-commit consumer must prefer the batch value,
+    // or learning it would overwrite the newer observation the batch just made.
+    let mut committed = HashMap::new();
+    committed.insert(
+        ORIGINAL.to_owned(),
+        ready_quote(ORIGINAL, "before redaction"),
+    );
+    let mut batch = HashMap::new();
+    batch.insert(
+        ORIGINAL.to_owned(),
+        placeholder_quote(ORIGINAL, ReplyQuoteState::Redacted),
+    );
+    let merged = merge_originals_for(&[ORIGINAL.to_owned()], &batch, committed);
+    assert_eq!(
+        merged.get(ORIGINAL).map(|quote| quote.state),
+        Some(ReplyQuoteState::Redacted),
+        "the batch value wins over the committed one"
+    );
+
+    // Learning through the pending overlay must not regress a ledger that
+    // already holds the batch observation.
+    let mut hydration = ReplyQuoteHydration::default();
+    hydration.learn(placeholder_quote(ORIGINAL, ReplyQuoteState::Redacted));
+    let mut refreshes = ReplyQuoteRefreshes::default();
+    learn_derived_originals(&mut hydration, &mut refreshes, &merged);
+    assert_eq!(
+        hydration.settled_quote(ORIGINAL).map(|quote| quote.state),
+        Some(ReplyQuoteState::Redacted)
+    );
+    assert!(!refreshes.changed.contains(ORIGINAL));
+}
+
+#[test]
+fn pending_overlay_still_learns_an_original_only_the_canonical_items_hold() {
+    // The complement: when the batch does not touch the original, the committed
+    // value is the newest one and must still teach the ledger.
+    let committed = HashMap::from([(ORIGINAL.to_owned(), ready_quote(ORIGINAL, "canonical"))]);
+    let merged = merge_originals_for(&[ORIGINAL.to_owned()], &HashMap::new(), committed);
+    let mut hydration = ReplyQuoteHydration::default();
+    let mut refreshes = ReplyQuoteRefreshes::default();
+    learn_derived_originals(&mut hydration, &mut refreshes, &merged);
+    assert_eq!(
+        hydration
+            .settled_quote(ORIGINAL)
+            .and_then(|quote| quote.body_preview.clone()),
+        Some("canonical".to_owned())
+    );
+}
+
+#[test]
 fn not_found_and_forbidden_settle_missing_without_retry() {
     for kind in [
         OperationFailureKind::NotFound,

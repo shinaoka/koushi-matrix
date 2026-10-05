@@ -430,8 +430,8 @@ impl TimelineActor {
                 &self.ignored_user_ids,
             );
         }
-        let refreshes = self.overlay_reply_quotes_on_batch(&mut core_diffs);
-        self.apply_reply_quote_refreshes(refreshes);
+        let batch = self.overlay_reply_quotes_on_batch(&mut core_diffs);
+        self.apply_reply_quote_refreshes(batch.refreshes);
         let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
         for diff in &mut core_diffs {
             match diff {
@@ -496,7 +496,7 @@ impl TimelineActor {
                     coordinator.settled_transaction_ids(self.key.room_id()),
                 )
             };
-            self.overlay_reply_quotes_on_pending(&mut pending_items);
+            self.overlay_reply_quotes_on_pending(&mut pending_items, &batch.originals);
             self.display_projection
                 .set_pending_inputs(pending_items, suppressed);
         }
@@ -676,7 +676,7 @@ impl TimelineActor {
                 .iter()
                 .map(|projection| projection.item.clone())
                 .collect::<Vec<_>>();
-            self.overlay_reply_quotes_on_pending(&mut pending_items);
+            self.overlay_reply_quotes_on_pending(&mut pending_items, &batch.originals);
             let mut suppressed = self
                 .pending_send_projections
                 .iter()

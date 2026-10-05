@@ -554,15 +554,54 @@ fn known_originals(
     originals
 }
 
+/// Originals a batch projects plus the changes they caused.
+#[derive(Debug, Default)]
+pub(super) struct BatchReplyQuotes {
+    /// Learned changes and superseded lookups.
+    pub(super) refreshes: ReplyQuoteRefreshes,
+    /// Originals this batch projects (batch items preferred over the actor's
+    /// canonical items). While a batch is being committed the canonical items
+    /// still hold the previous value, so a pre-commit consumer must prefer
+    /// these over the canonical fallback.
+    pub(super) originals: HashMap<String, ReplyQuote>,
+}
+
+/// Merge a batch's originals over the canonical fallback for `targets`. The
+/// batch value wins for a target it projects, so a pre-commit consumer cannot
+/// overwrite a newer observation with the previous committed one.
+fn merge_originals_for(
+    targets: &[String],
+    batch: &HashMap<String, ReplyQuote>,
+    canonical: HashMap<String, ReplyQuote>,
+) -> HashMap<String, ReplyQuote> {
+    let mut merged: HashMap<String, ReplyQuote> = targets
+        .iter()
+        .filter_map(|target| {
+            batch
+                .get(target)
+                .map(|quote| (target.clone(), quote.clone()))
+        })
+        .collect();
+    for target in targets {
+        if merged.contains_key(target) {
+            continue;
+        }
+        if let Some(quote) = canonical.get(target) {
+            merged.insert(target.clone(), quote.clone());
+        }
+    }
+    merged
+}
+
 impl TimelineActor {
     /// Resolve unresolved quotes on an SDK batch before it is committed, so a
     /// reply to a known original is published with a resolved quote. Returns
-    /// the originals whose settled content changed, so callers refresh every
-    /// dependent quote (resolved or not) and abort superseded lookups.
+    /// the originals whose settled content changed (so callers refresh every
+    /// dependent quote, resolved or not) and the originals this batch projects.
     pub(super) fn overlay_reply_quotes_on_batch(
         &mut self,
         diffs: &mut [TimelineDiff],
-    ) -> ReplyQuoteRefreshes {
+    ) -> BatchReplyQuotes {
         let mut refreshes = ReplyQuoteRefreshes::default();
         let targets = {
             let mut items = Vec::new();
@@ -580,7 +619,10 @@ impl TimelineActor {
                 .collect::<Vec<_>>()
         };
         if targets.is_empty() {
-            return refreshes;
+            return BatchReplyQuotes {
+                refreshes,
+                originals: HashMap::new(),
+            };
         }
         let originals = {
             let mut items = Vec::new();
@@ -599,17 +641,25 @@ impl TimelineActor {
             &self.reply_quote_hydration,
             &refreshes.changed,
         );
-        refreshes
+        BatchReplyQuotes {
+            refreshes,
+            originals,
+        }
     }
 
-    /// Resolve unresolved quotes on manager-owned pending sends before they are
-    /// handed to the display projection.
     /// Resolve unresolved quotes on manager-owned pending sends before they are
     /// handed to the display projection. The originals this overlay derives are
     /// also taught to the ledger: a pending reply can resolve from a canonical
     /// original without any lookup, and that original's later edit or redaction
     /// needs a previous value in the ledger to be detected against.
-    pub(super) fn overlay_reply_quotes_on_pending(&mut self, items: &mut [TimelineItem]) {
+    ///
+    /// `batch_originals` are the originals a not-yet-committed batch projects;
+    /// they win over the canonical items, which still hold the previous value.
+    pub(super) fn overlay_reply_quotes_on_pending(
+        &mut self,
+        items: &mut [TimelineItem],
+        batch_originals: &HashMap<String, ReplyQuote>,
+    ) {
         let targets = quote_targets(items.iter())
             .into_iter()
             .map(str::to_owned)
@@ -617,7 +667,8 @@ impl TimelineActor {
         if targets.is_empty() {
             return;
         }
-        let originals = known_originals(&targets, &[], &self.navigation_items);
+        let canonical = known_originals(&targets, &[], &self.navigation_items);
+        let originals = merge_originals_for(&targets, batch_originals, canonical);
         let mut refreshes = ReplyQuoteRefreshes::default();
         learn_derived_originals(&mut self.reply_quote_hydration, &mut refreshes, &originals);
         for event_id in refreshes.superseded {

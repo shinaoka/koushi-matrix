@@ -285,6 +285,41 @@ async fn reply_quote_republish_is_deferred_until_the_restore_flush() {
     );
     restore_rx.await.expect("restore fixture acknowledged");
 
+    // A live batch that arrives during the restore must be buffered, not
+    // emitted: this is what the deferred republish must not overtake.
+    server
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(room_id).add_timeline_event(
+                factory
+                    .text_msg("Synthetic during restore")
+                    .sender(alice)
+                    .event_id(event_id!("$during:example.invalid"))
+                    .into_raw_sync(),
+            ),
+        )
+        .await;
+    let buffered = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (state_tx, state_rx) = oneshot::channel();
+            assert!(
+                fixture
+                    .actor
+                    .send(TimelineActorMessage::TestRestoreCausalState(state_tx))
+                    .await
+            );
+            let (_live_tail_pending, _completion_waiting, buffered_diffs, _projections) =
+                state_rx.await.expect("restore state");
+            if buffered_diffs > 0 {
+                return buffered_diffs;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("a live batch must reach the restore buffer");
+    assert!(buffered > 0);
+
     // Settling the original now would republish the reply's resolved quote.
     let mut quote = placeholder_quote(ROOT, ReplyQuoteState::Ready);
     quote.sender = Some(alice.to_string());
@@ -294,9 +329,10 @@ async fn reply_quote_republish_is_deferred_until_the_restore_flush() {
     expect_no_items_updated(&mut fixture.events, Duration::from_millis(300)).await;
 
     // Ending the restore on an in-window anchor clears the anchor and publishes
-    // the settlement; the deferred republish runs at the loop tail of the same
-    // actor turn, after that settlement.
+    // the settlement (buffered items first, then the terminal); the deferred
+    // republish runs at the loop tail of the same actor turn, after both.
     let mut restore_finished = false;
+    let mut buffered_before_terminal = false;
     assert!(
         fixture
             .actor
@@ -315,6 +351,10 @@ async fn reply_quote_republish_is_deferred_until_the_restore_flush() {
                 CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished { .. })
             ) {
                 restore_finished = true;
+                buffered_before_terminal = items.iter().any(|item| {
+                    matches!(&item.id, TimelineItemId::Event { event_id } if event_id == "$during:example.invalid")
+                        && !item.is_hidden
+                });
             }
             event_quote_body(items, REPLY).as_deref() == Some("Synthetic edited original")
         })
@@ -323,6 +363,10 @@ async fn reply_quote_republish_is_deferred_until_the_restore_flush() {
     assert!(
         restore_finished,
         "the deferred republish must not overtake the restore's terminal event"
+    );
+    assert!(
+        buffered_before_terminal,
+        "the buffered restore publication must precede the terminal event"
     );
     assert_eq!(
         event_quote_state(&fixture.items, REPLY),

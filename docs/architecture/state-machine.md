@@ -2375,7 +2375,10 @@ settles.
   settled entry. While an anchor restore is buffering its coalesced
   `restore_emit_buffer`, the republish is deferred and runs once at the end of
   the actor loop after that buffer has flushed, so a republished `Set` diff can
-  never overtake the restore's single settled update.
+  never overtake the restore's single settled update. A deferred republish also
+  retains the changed-original refresh set until it runs, so that set can hold
+  one entry per changed original for the duration of a restore; the ledger's
+  256-entry cap does not bound it.
 
 `AppState.room_interactions[room_id]` carries the room's pinned-event
 projection plus the current pin/unpin operation state:
