@@ -19,10 +19,16 @@ behavior is unchanged.
   through a fresh subscription under the same absolute deadline, feeding items
   that arrive while that snapshot is awaited to the same observer.
 - The hidden updates must leave the room list alone: A requires an explicit
-  `RoomListUpdated` publication newer than the burst (a general state delta does
-  not count, and the item wait counts publications instead of discarding them),
-  then asserts the summary holds `latest_event` = the message with
-  `unread_count >= 1`.
+  `RoomListUpdated` publication observed after the burst (the queue is drained
+  before the writes, a general state delta does not count, and the item wait
+  counts publications instead of discarding them), then asserts the summary
+  holds `latest_event` = the message with `unread_count >= 1`.
+
+  Limit: `RoomListUpdated` is emitted when the room-list projection enqueues its
+  reducer actions, and Core exposes no per-burst projection revision. The fence
+  therefore proves that the room list published after the burst and that the
+  summary still points at the message; it does not prove that the reducer had
+  already applied the burst's own projection before that read.
 - A then subscribes again. The Core-held timeline is replayed through the
   live-edge window. The replay held 136 raw items in the passing run, and it
   must still contain the visible message.

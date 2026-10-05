@@ -63,6 +63,10 @@ async fn room_list_publication_waiter_ignores_an_unrelated_state_delta() {
     )
     .await
     .expect("an explicit room-list publication satisfies the fence");
+    assert_eq!(
+        source.received, 2,
+        "both events were consumed: the state delta did not satisfy the fence"
+    );
 }
 
 #[tokio::test]
@@ -91,10 +95,14 @@ async fn room_list_publication_waiter_reports_the_final_summary_on_timeout() {
         snapshot: qa_state_with_session(SessionState::SignedOut),
         received: 0,
     };
+    let observations = std::sync::atomic::AtomicUsize::new(0);
     let error = wait_for_room_list_publication_from_source(
         &mut source,
         0,
-        |_| false,
+        |_| {
+            observations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            false
+        },
         "test room list publication",
         Duration::from_millis(1),
     )
@@ -102,6 +110,11 @@ async fn room_list_publication_waiter_reports_the_final_summary_on_timeout() {
     .expect_err("a state delta alone is not a room-list publication");
     assert!(error.contains("summary_matches=false"), "{error}");
     assert!(error.contains("skipped=0"), "{error}");
+    assert_eq!(
+        observations.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the failure must read the authoritative summary exactly once"
+    );
 }
 
 #[test]

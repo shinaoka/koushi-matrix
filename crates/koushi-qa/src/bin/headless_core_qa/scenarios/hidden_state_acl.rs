@@ -184,6 +184,9 @@ async fn run_hidden_state_acl_flow(
     )
     .await?;
 
+    // Empty the queue before writing the burst, so the publication counted
+    // below cannot be a pre-burst wake.
+    drain_queued_reader_events(reader).await;
     let acl_event_ids = send_acl_updates(auditor, &room_id).await?;
     let acl_set: HashSet<&str> = acl_event_ids.iter().map(String::as_str).collect();
     let last_acl = acl_event_ids
@@ -206,10 +209,15 @@ async fn run_hidden_state_acl_flow(
     acl_observation.require_all_hidden()?;
     // Hidden updates must not move the room list off the message. The summary
     // already matched before the burst, so require a room-list publication
-    // newer than the burst before accepting it: the burst is fully written
-    // before the item wait started, and that wait counts publications instead
-    // of discarding them, so any publication it saw or that arrives now is
-    // causally after the burst. A general state delta is not accepted.
+    // observed after the burst before accepting it: the queue was emptied
+    // before the writes and the item wait counts publications instead of
+    // discarding them, so a counted publication was judged after them.
+    //
+    // Limit: `RoomListUpdated` is emitted when the room-list projection
+    // enqueues its reducer actions, and Core exposes no per-burst projection
+    // revision, so this proves that the room list published after the burst and
+    // that the summary still points at the message — not that the reducer had
+    // already applied the burst's own projection.
     let summary_has_message = |room: &RoomSummary| {
         room.unread_count > 0
             && room
@@ -320,6 +328,18 @@ async fn run_hidden_state_acl_flow(
         "hidden-state acl read",
     )
     .await
+}
+
+/// Drain events already queued on the reader, so a room-list publication counted
+/// after the burst cannot be a pre-burst wake that was merely still queued. The
+/// stream is ordered and `CoreConnection` exposes no burst marker, so emptying
+/// the queue before the writes is the only way to attribute a later wake to
+/// them. The loop ends on a bounded quiet window; it never waits for an effect.
+async fn drain_queued_reader_events(conn: &mut CoreConnection) {
+    while tokio::time::timeout(Duration::from_millis(20), conn.recv_event())
+        .await
+        .is_ok()
+    {}
 }
 
 fn room_key(account_key: &koushi_core::AccountKey, room_id: &str) -> TimelineKey {
@@ -528,7 +548,12 @@ async fn reobserve_replay_snapshot(
             wait.skipped
         )
     })?
-    .map_err(|_| format!("{label}: replay subscribe failed"))?;
+    .map_err(|_| {
+        format!(
+            "{label}: replay subscribe failed (skipped={})",
+            wait.skipped
+        )
+    })?;
     let mut matched = false;
     loop {
         let event = match deadline.recv(conn).await {
