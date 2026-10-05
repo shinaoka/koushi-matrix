@@ -2787,6 +2787,7 @@ pub(super) fn projection_timeline_item(event_id: &str, is_redacted: bool) -> Tim
         link_previews: None,
         link_ranges: Vec::new(),
         mentioned_user_ids: Vec::new(),
+        mentions_room: false,
         reactions: Vec::new(),
         can_react: false,
         is_redacted,

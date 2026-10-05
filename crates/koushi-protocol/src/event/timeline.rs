@@ -886,6 +886,11 @@ pub struct TimelineItem {
     /// items that are not messages.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mentioned_user_ids: Vec<String>,
+    /// The message's `m.mentions.room` flag (#1123). The renderer draws the
+    /// spec-standard room mention as a pill from the message itself, wherever
+    /// it was sent from, exactly as it does for `mentioned_user_ids`.
+    #[serde(default)]
+    pub mentions_room: bool,
     #[serde(default)]
     pub reactions: Vec<ReactionGroup>,
     #[serde(default)]

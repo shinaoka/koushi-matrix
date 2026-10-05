@@ -347,6 +347,8 @@ export interface TimelineItem {
   link_ranges?: TimelineLinkRange[];
   /** User ids this message's `m.mentions` named (#874). Absent when none. */
   mentioned_user_ids?: string[];
+  /** The message's `m.mentions.room` flag (#1123). Absent when not set. */
+  mentions_room?: boolean;
   reactions: ReactionGroup[];
   can_react: boolean;
   is_redacted: boolean;

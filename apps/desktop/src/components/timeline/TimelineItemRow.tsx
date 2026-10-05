@@ -715,8 +715,12 @@ export function TimelineItemRow({
   ]
     .filter(Boolean)
     .join(" ");
-  // #874: the message's own `m.mentions` decides which text may render as a pill.
-  const mentionedUserIds = new Set(item.mentioned_user_ids ?? []);
+  // #874/#1123: the message's own `m.mentions` decides which text may render as
+  // a pill: the user ids it named, and whether it flagged the whole room.
+  const mentions = {
+    userIds: new Set(item.mentioned_user_ids ?? []),
+    room: item.mentions_room === true
+  };
   const messageBodyContent = item.formatted
     ? renderFormattedBody(
         item.formatted,
@@ -726,7 +730,7 @@ export function TimelineItemRow({
         searchHighlights,
         spoilerState,
         onOpenMatrixTarget,
-        mentionedUserIds
+        mentions
       )
     : renderPlainTextBody(
         displayBody,
@@ -736,7 +740,7 @@ export function TimelineItemRow({
         mentionProfileUsers,
         spoilerState,
         onOpenMatrixTarget,
-        mentionedUserIds
+        mentions
       );
   const emotePrefix =
     messageKind === "emote" ? (

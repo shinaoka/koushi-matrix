@@ -1582,6 +1582,18 @@ pub(super) fn mentioned_user_ids_from_event_json(raw: &serde_json::Value) -> Vec
         .unwrap_or_default()
 }
 
+/// #1123: whether the effective content asked for a room-wide notification.
+/// Shares `mention_intent_from_event_json` with the user-id reader, so the
+/// room mention follows the same `m.mentions` and edit-effective-content rules.
+pub(super) fn mentions_room_from_event_json(raw: &serde_json::Value) -> bool {
+    mention_intent_from_event_json(raw).is_some_and(|intent| {
+        intent
+            .targets
+            .iter()
+            .any(|target| matches!(target, MentionTarget::RoomMention { .. }))
+    })
+}
+
 fn mention_intent_from_event_json(raw: &serde_json::Value) -> Option<MentionIntent> {
     let effective_content = effective_message_content(raw)?;
     let mentions = effective_content.get("m.mentions")?;
@@ -2423,6 +2435,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 is_redacted,
             );
             let mut mentioned_user_ids = Vec::new();
+            let mut mentions_room = false;
             // Editing uses the effective revision; source/crypto projections
             // deliberately continue to use original_json_for_event_item.
             if let Some(raw) = event_item
@@ -2431,6 +2444,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
             {
                 actions.editable_document = composer_document_from_event_json(&raw);
                 mentioned_user_ids = mentioned_user_ids_from_event_json(&raw);
+                mentions_room = mentions_room_from_event_json(&raw);
             }
             let is_hidden = timeline_item_should_be_hidden_for_key(
                 key,
@@ -2466,6 +2480,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 link_previews: None,
                 link_ranges,
                 mentioned_user_ids,
+                mentions_room,
                 reactions,
                 can_react,
                 is_redacted,
@@ -2507,6 +2522,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 link_previews: None,
                 link_ranges: Vec::new(),
                 mentioned_user_ids: Vec::new(),
+                mentions_room: false,
                 reactions: Vec::new(),
                 can_react: false,
                 is_redacted: false,
