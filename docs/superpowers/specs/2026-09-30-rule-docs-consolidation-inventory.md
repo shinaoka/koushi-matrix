@@ -413,7 +413,7 @@ profiles/aliases, room management, activity, formatted rendering, credential hea
 | RR:316-326 pane-level thread attention | RR:316-326 (11) | SO "Threads and attention" | Delete from RR. |
 | RR:388-393 receipt avatars; RR:394-414 search-index rules | RR:388-414 | OV Security Model "Search" | Search-index rules are genuine security prohibitions → keep, but compress 21 → ~10 lines. Delete receipt-avatar bullet. |
 | RR:429-462 auth/device-ID/journal/Megolm | RR:429-462 (34) | OV Security Model | Keep 4 lines. |
-| RR:249-258 Tauri command registration explanation | RR:249-258 (10) | test `every_tauri_command_is_registered_in_generate_handler` | Keep 2 lines. |
+| RR:249-258 Tauri command registration explanation | RR:249-258 (10) | checker rule `desktop.commands.tauri_command_registration` (`scripts/check-rust-test-structure.mjs`; the former Rust test was removed by #753) | Keep 2 lines. |
 | troubleshooting:209-226 trust-recheck coalescing contract | 18 | none found | Move to SO/OV (follow-up); keep test commands. |
 | qa-lanes:77-85 timeline_stress oracle vs runtime contract | 9 | — | Fine where it is (QA oracle). |
 
