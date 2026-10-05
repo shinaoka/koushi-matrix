@@ -3397,6 +3397,7 @@ dependencies = [
  "koushi-key",
  "koushi-protocol",
  "koushi-state",
+ "mac-notification-sys",
  "notify-rust",
  "objc2",
  "objc2-app-kit",

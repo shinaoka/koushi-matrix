@@ -384,6 +384,29 @@ Prompt order differs between the two entry points:
   lines; leave the fifth empty to accept `needsRecovery` as a post-login sync QA
   state, and provide it only when verifying recovery completion to `ready`.
 
+## macOS notification activation smoke
+
+Opt-in, attended checks for the banner click path (#1128). Both show a real
+banner, so run them on a macOS session and dismiss what they show; they are
+`#[ignore]`d so the ordinary test run never fires a banner.
+
+```bash
+cargo test -p koushi-desktop --lib -- --ignored macos_click_waiter_does_not_settle_without_interaction
+cargo test -p koushi-desktop --lib -- --ignored macos_click_waiter_settles_on_dismissal
+```
+
+- The first is the headless oracle: a banner with a click waiter must **not**
+settle by itself. The pinned fire-and-forget path returned after
+`mac-notification-sys`'s ~2 s delivery confirmation, so this fails (with
+`Ok(None)`) whenever the click wait is dropped again.
+- The second proves the dismissal half: dismiss the banner, and the waiter must
+settle with a non-activating response so a dismissal never navigates and the
+bounded waiter pool cannot leak.
+
+A dev/test binary has no bundle identifier, so the banner is attributed to the
+development terminal identity; the packaged-build click behavior (window raise,
+room/event navigation, highlight) remains an attended check on a packaged app.
+
 ## Credential-health tiers
 
 - Tier 1, fast and local — see

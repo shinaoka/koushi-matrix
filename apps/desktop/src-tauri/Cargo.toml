@@ -31,9 +31,11 @@ tauri-plugin-opener = "2"
 url = "2"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
-# Desktop notification display plus click activation. `tauri-plugin-notification`
-# can show a banner on desktop but has no activation path, and this is the same
-# backend it uses underneath.
+# Desktop notification display plus click activation on Linux and Windows.
+# `tauri-plugin-notification` can show a banner on desktop but has no activation
+# path, and this is the same backend it uses underneath. macOS does not use it:
+# its macOS backend never attaches a click waiter (#1128) and the macOS path
+# sends through `mac-notification-sys` directly instead.
 notify-rust = "4.18"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
@@ -46,6 +48,10 @@ gtk = "0.18"
 webkit2gtk = "2.0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# macOS banner display with a click waiter. `notify-rust`'s macOS backend never
+# sets `wait_for_click(true)`, so its banner is fire-and-forget and a click can
+# never activate it (#1128); this is the same backend it uses underneath.
+mac-notification-sys = "0.6.15"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSWindow", "NSSound", "NSView"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSUserDefaults"] }

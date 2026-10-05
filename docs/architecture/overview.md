@@ -1354,13 +1354,23 @@ and `NativeAttentionSummary` stays free of message bodies and identifiers.
 
 The desktop notification adapter is the only owner of the platform banner. It
 honors `SettingsValues.notifications.desktop_notifications` (app notifications
-OFF raises no banner) and uses `notify-rust` directly because
-`tauri-plugin-notification` has no desktop activation path: on macOS, Linux,
-and Windows it shows a banner but never reports
-a click. The adapter keeps a bounded pool of click waiters, so a burst of banners
-cannot grow threads without bound; a banner beyond the bound is still shown but
-its click cannot navigate. A completed click restores the main window, re-checks
-the account fence captured when the banner was shown, and publishes the target.
+OFF raises no banner) and uses `notify-rust` directly on Linux and Windows
+because `tauri-plugin-notification` has no desktop activation path: it shows a
+banner but never reports a click. macOS does not use `notify-rust`'s macOS
+backend: that backend never attaches a click waiter to a banner with no action
+button, so its banner is fire-and-forget and a click can never reach Koushi
+(#1128). The macOS path sends through `mac-notification-sys` with
+`wait_for_click(true)` — the same backend `notify-rust` uses underneath — and
+activates only on a direct click, never on a dismissal, a close button, an
+action button, or a text reply. The adapter keeps a bounded pool of click
+waiters, so a burst of banners cannot grow threads without bound; a banner
+beyond the bound is still shown but its click cannot navigate. `delivered`
+means the banner was handed to the platform with a click wait configured: it is
+dispatch acceptance, not proof that the platform displayed the banner or armed
+a click, and the diagnostic log records `click_waiter=configured|unattached`
+accordingly. A rejected banner is reported by `show_failed`. A completed click
+restores the main window, re-checks the
+account fence captured when the banner was shown, and publishes the target.
 A click that arrives after logout, an account switch, or a session change is
 dropped instead of navigating into the wrong session.
 
