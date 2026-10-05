@@ -43,6 +43,13 @@ use super::thread_projection::{ThreadAttentionObservation, ThreadAttentionTracke
 
 pub(super) const INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT: u16 = 100;
 
+/// #1125: upper bound on the guarded backward passes a fresh subscription takes
+/// while its projected window still holds no displayed row. One pass is not
+/// always enough, because the window can be entirely hidden technical state
+/// events; the round budget keeps a hidden-event burst from paginating without
+/// end.
+pub(super) const INITIAL_EMPTY_ROOM_HYDRATION_MAX_ROUNDS: u8 = 8;
+
 pub(super) const ROOM_REPLAY_INITIAL_ITEMS_MAX: usize = 120;
 
 /// Backstop tick count for the anchor-relay wait. After the SDK signals

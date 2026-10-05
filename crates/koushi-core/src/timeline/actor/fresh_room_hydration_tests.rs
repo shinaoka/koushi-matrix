@@ -1,12 +1,12 @@
-//! #1125 RED stage: a fresh room subscription must reach a visible message
-//! that sits behind more hidden state events than the initial hydration window.
+//! #1125: a fresh room subscription must reach a visible message that sits
+//! behind more hidden state events than the initial hydration window.
 //!
 //! The shipped `hidden_state_acl` scenario re-subscribes the live actor, so the
 //! Core-held replay keeps the message and the scenario stays green. This test
-//! builds the fresh-subscription case instead and is ignored because it
-//! currently fails: the initial hydration is one bounded
-//! `INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT` pass, so a window that is entirely
-//! hidden state events leaves the reader with no displayed row.
+//! builds the fresh-subscription case instead: the initial window is one bounded
+//! hydration pass, so a window that is entirely hidden state events would leave
+//! the reader with no displayed row unless the hydration keeps taking guarded
+//! passes while the projection is still empty.
 
 use std::{sync::Arc, time::Duration};
 
@@ -39,7 +39,6 @@ const VISIBLE_EVENT_ID: &str = "$visible:example.invalid";
 const HIDDEN_UPDATE_COUNT: usize = ROOM_REPLAY_INITIAL_ITEMS_MAX + 5;
 
 #[tokio::test]
-#[ignore = "#1125: a fresh room subscription hydrates one bounded window, so a visible message behind more hidden state events than that window is not reached"]
 async fn fresh_room_subscription_reaches_a_message_behind_hidden_state_events() {
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
