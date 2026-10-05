@@ -41,13 +41,14 @@ use super::scenario_search::{
 };
 use super::scenario_thread_late_joiner::run_thread_late_joiner_scenario;
 use super::scenario_timeline::{
-    assert_thread_reply_relation, run_activity_stage, run_cache_restore_scenario,
-    run_composer_stage, run_focused_send_queue_scenario, run_link_preview_stage,
-    run_live_signals_stage, run_media_stage, run_scheduled_send_stage, run_send_queue_stage,
-    run_timeline_reconnect_scenario, run_timeline_stress_replay_stage, run_timeline_stress_stage,
-    thread_initial_items_need_paginate_backfill, wait_for_edit_diff, wait_for_redact_diff,
-    wait_for_room_timeline_thread_summary, wait_for_thread_panel_and_room_summary,
-    wait_for_thread_reply_item, wait_for_timeline_navigation,
+    assert_thread_reply_relation, observe_reply_quote_lifecycle, run_activity_stage,
+    run_cache_restore_scenario, run_composer_stage, run_focused_send_queue_scenario,
+    run_link_preview_stage, run_live_signals_stage, run_media_stage, run_scheduled_send_stage,
+    run_send_queue_stage, run_timeline_reconnect_scenario, run_timeline_stress_replay_stage,
+    run_timeline_stress_stage, thread_initial_items_need_paginate_backfill, wait_for_edit_diff,
+    wait_for_redact_diff, wait_for_room_timeline_thread_summary,
+    wait_for_thread_panel_and_room_summary, wait_for_thread_reply_item,
+    wait_for_timeline_navigation,
 };
 use super::scenario_user_verification::run_user_verification_stage;
 use super::{
@@ -952,13 +953,21 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
             .await
             .map_err(|e| format!("submit B thread reply: {e}"))?;
 
-        let (_thread_b_echo_txn, thread_b_reply_event_id) = wait_for_send_completed(
+        // #1120: the sender's own thread pane already holds the readable root,
+        // so every projection of the reply must carry a ready quote.
+        let (thread_quote_lifecycle, thread_b_reply_event_id) = observe_reply_quote_lifecycle(
             &mut conn_b,
-            send_b_thread_reply_id,
             &thread_key_b,
-            "B thread reply completed",
+            send_b_thread_reply_id,
+            THREAD_REPLY_BODY,
+            &event1_id,
+            "B thread reply quote lifecycle",
         )
         .await?;
+        if let Some(violation) = thread_quote_lifecycle.lifecycle_violation() {
+            return Err(format!("thread_reply_quote_lifecycle failed: {violation}"));
+        }
+        println!("thread_reply_quote_lifecycle=ok");
 
         let refresh_room_a_id = conn_a.next_request_id();
         conn_a

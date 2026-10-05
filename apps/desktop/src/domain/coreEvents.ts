@@ -801,7 +801,13 @@ export interface ReplyQuote {
   state: ReplyQuoteState;
 }
 
-export type ReplyQuoteState = "ready" | "redacted" | "missing" | "unsupported";
+export type ReplyQuoteState =
+  | "loading"
+  | "ready"
+  | "redacted"
+  | "missing"
+  | "unsupported"
+  | "failed";
 
 export interface DirectoryQuery {
   term: string | null;

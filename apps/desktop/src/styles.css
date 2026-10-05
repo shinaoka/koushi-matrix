@@ -5029,7 +5029,7 @@ mark {
 
 .composer-sending-as {
   display: inline-flex;
-  flex: 0 1 auto;
+  flex: 1 1 var(--composer-sending-as-basis, 10ch);
   align-items: center;
   gap: 6px;
   min-inline-size: 0;
@@ -5084,11 +5084,17 @@ mark {
   background: color-mix(in srgb, var(--surface) 88%, var(--brand));
 }
 
+/* #1119: the toolbar shrinks to the composer. The sending-account identity
+   yields width first (ellipsis, full ID in its title/accessible name) down to a
+   short readable basis; past that, at the narrowest panel widths, the trailing
+   math switch wraps onto a second row instead of overflowing the composer. */
 .composer-tools {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   align-items: center;
-  height: 36px;
+  min-inline-size: 0;
+  min-block-size: 36px;
   padding: 0 8px;
   border-bottom: 1px solid var(--line);
   color: var(--text-faint);
@@ -5107,6 +5113,7 @@ mark {
 
 .composer-math-toggle {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 6px;
   block-size: 28px;
@@ -5501,6 +5508,7 @@ mark {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  min-inline-size: 0;
   height: 36px;
   padding: 0 8px 8px;
 }
@@ -5528,6 +5536,7 @@ mark {
 
 .send-button {
   order: 2;
+  flex: none;
   display: grid;
   place-items: center;
   width: 34px;
@@ -5672,7 +5681,7 @@ mark {
 .upload-staging-caption .composer-tools {
   --icon-button-size: 26px;
 
-  height: 30px;
+  min-block-size: 30px;
   padding-inline: 6px;
 }
 
@@ -6396,13 +6405,24 @@ dialog.timeline-media-viewer-overlay::backdrop { background: transparent; }
   color: var(--text-muted);
 }
 
+/* #1119: every right-panel mode renders inside this one shell. Its single
+   column is an explicit shrinkable track and its direct children may shrink to
+   it, so no descendant's intrinsic width (a long sending-account ID, an
+   unbroken URL) can widen the column past the allocated inline size and push
+   the header's close button or the composer's send button out of the panel.
+   See engineering rules "Right Panel And Composer Containment". */
 .thread-pane {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
   border-inline-start: 1px solid var(--line);
   background: var(--brand-weak);
+}
+
+.thread-pane > * {
+  min-inline-size: 0;
 }
 
 .thread-closed .thread-pane {

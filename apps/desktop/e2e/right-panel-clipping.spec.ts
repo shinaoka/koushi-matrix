@@ -18,10 +18,15 @@
  * drives it from a real user action, and they measure rendered geometry, so they
  * fail on the symptom (an unreachable close control) rather than on a
  * breakpoint number.
+ *
+ * These are the OUTER-fit checks. The panel's inner fit (its own tracks
+ * growing to a descendant's intrinsic width, #1119) is covered by
+ * `right-panel-containment.spec.ts`; both share `support/panelGeometry.ts`.
  */
 
 import { expect, test, type Page } from "@playwright/test";
 import { t } from "../src/i18n/messages";
+import { dragResizer, panelGeometry } from "./support/panelGeometry";
 
 const HARNESS_ROOM_ID = "!harness-room:example.invalid";
 /** Inside the reported dead band: past the overlay breakpoint, below the grid minimum. */
@@ -73,42 +78,6 @@ async function openRightPanel(page: Page): Promise<void> {
 
   await page.locator(".top-search input").fill("layout");
   await expect(page.locator(".thread-pane")).toBeVisible();
-}
-
-/** Rendered geometry of the right panel and its close control. */
-async function dragResizer(page: Page, label: string, deltaX: number): Promise<void> {
-  const resizer = page.getByRole("button", { name: label });
-  const box = await resizer.boundingBox();
-  expect(box).not.toBeNull();
-  await page.mouse.move(box!.x + box!.width / 2, box!.y + 4);
-  await page.mouse.down();
-  await page.mouse.move(box!.x + box!.width / 2 + deltaX, box!.y + 4);
-  await page.mouse.up();
-}
-
-async function panelGeometry(page: Page) {
-  return page.evaluate(() => {
-    const panel = document.querySelector<HTMLElement>(".thread-pane");
-    if (!panel) {
-      return null;
-    }
-    // Every control in the panel must be reachable — the reporter's escape
-    // hatch was its close button, but any clipped control is the same fault.
-    // Measured by role rather than class so the assertion does not depend on
-    // which panel content happens to be open.
-    const controls = Array.from(panel.querySelectorAll<HTMLElement>("button"));
-    const panelRect = panel.getBoundingClientRect();
-    return {
-      viewportWidth: window.innerWidth,
-      panelLeft: panelRect.left,
-      panelRight: panelRect.right,
-      controlCount: controls.length,
-      widestControlRight: controls.reduce(
-        (max, control) => Math.max(max, control.getBoundingClientRect().right),
-        0
-      )
-    };
-  });
 }
 
 test("the right context panel and its close control stay on-screen in the grid-minimum dead band", async ({

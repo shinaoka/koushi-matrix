@@ -740,7 +740,9 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
 
 - `TimelineItem.reply_quote` is a Rust-owned projection. React renders the
   `ReplyQuoteState` and optional preview only; it must not look up reply bodies,
-  classify redactions, or patch quote state after a send.
+  classify redactions, retry lookups, or patch quote state after a send.
+  `Loading` and `Failed` are rendered as their catalog text, never as an
+  unknown sender or a missing original.
 - `TimelineItem.actions` is a Rust-owned action-affordance projection. React may
   render/copy only the DTO-provided body/permalink affordances; it must not build
   `matrix.to` permalinks, infer copy/forward/source eligibility from event ids,

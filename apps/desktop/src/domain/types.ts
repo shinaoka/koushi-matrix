@@ -1539,7 +1539,13 @@ export interface ReplyQuoteFormattedBody {
   code_blocks: ReplyQuoteCodeBlock[];
 }
 
-export type ReplyQuoteState = "ready" | "redacted" | "missing" | "unsupported";
+export type ReplyQuoteState =
+  | "loading"
+  | "ready"
+  | "redacted"
+  | "missing"
+  | "unsupported"
+  | "failed";
 
 export type OperationFailureKind =
   | "forbidden"

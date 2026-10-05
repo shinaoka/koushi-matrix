@@ -692,6 +692,7 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "live_signals=ok",
         ],
         QaStage::Thread => &[
+            "thread_reply_quote_lifecycle=ok",
             "thread_projection_lifecycle=stable",
             "thread_summary=ok",
             "thread_recv=ok",
@@ -813,6 +814,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "pin_event=ok",
         "pinned_state=ok",
         "unpin_event=ok",
+        "thread_reply_quote_lifecycle=ok",
         "thread_projection_lifecycle=stable",
         "thread_summary=ok",
         "thread_recv=ok",

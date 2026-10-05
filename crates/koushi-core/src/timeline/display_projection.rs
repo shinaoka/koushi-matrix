@@ -82,6 +82,23 @@ impl DisplayProjectionState {
         finalize_display_projection_diffs(&before, &self.display_items, false).0
     }
 
+    pub(super) fn pending_items(&self) -> &[TimelineItem] {
+        &self.pending_items
+    }
+
+    /// Mutate pending-send inputs in place (reply quote hydration) and
+    /// reproject when anything changed.
+    pub(super) fn overlay_pending_items(
+        &mut self,
+        overlay: impl FnOnce(&mut [TimelineItem]) -> bool,
+        context: &DisplayProjectionContext,
+    ) -> Vec<TimelineDiff> {
+        if !overlay(&mut self.pending_items) {
+            return Vec::new();
+        }
+        self.reproject(context)
+    }
+
     pub(super) fn set_pending_inputs(
         &mut self,
         pending_items: Vec<TimelineItem>,

@@ -2318,6 +2318,68 @@ and destination identifiers only; it must not copy the body, inspect raw event
 JSON, or synthesize forward content. Media-only forwarding remains disabled
 until a separate Rust-owned media-forward contract exists.
 
+### Reply quote hydration
+
+Each `TimelineActor` owns the lifecycle of the originals its reply quotes
+point at (#1120). SDK `InReplyToDetails` are an input, not the authority:
+`Ready` details project `Ready`/`Redacted`/`Unsupported`, while `Unavailable`,
+`Pending`, and `Error` all project `Loading` until the actor's own lookup
+settles.
+
+- **Known originals.** Before an item is committed or a pending send is
+  projected, an unresolved quote (`Loading`/`Failed`) is resolved from the
+  original when that original is in the actor's canonical items or in the same
+  batch, otherwise from the actor's hydration ledger. An original the ledger
+  already tracks is re-learned from each batch, and an original that a pending
+  send resolves from canonical items is learned at that point, so an edit or
+  redaction that reaches this actor's timeline replaces the stored content and
+  refreshes the dependents. A pending send
+  that replies to an event starts as `Loading` and receives the same overlay,
+  so a reply to a known original is `Ready` from its first projection through
+  its remote echo. A Thread actor seeds the ledger with its root at start, and
+  that root is never evicted.
+- **Hydration ledger.** The ledger is keyed by original event id and holds at
+  most 256 entries; settled entries are evicted oldest first and new lookups
+  are skipped while the ledger is full of unsettled entries. Eligible originals
+  are the targets of `Loading` quotes among the actor's display items (the
+  bounded display window plus pending sends), independent of viewport
+  observation. At most 4 lookups are in flight. Each attempt loads the exact
+  event cache-first through `executor::spawn` with a 30 s `executor::timeout`.
+  Not-found and forbidden results settle as `Missing`; an event that cannot be
+  projected settles as `Unsupported`. Network and timeout results retry after
+  about 2 s and then 10 s and settle as `Failed` on the third transient
+  failure. An undecryptable result has its own budget, because room keys often
+  arrive late: it retries after about 15 s, 60 s, 180 s, then 300 s, and
+  settles as `Failed` only after the eighth undecryptable attempt (an
+  `executor::sleep` task posts every retry to the actor mailbox).
+- **Fencing.** Ledger tokens are unique for the actor's lifetime. Each lookup
+  and retry wake carries its token and is ignored unless it still matches the
+  entry's live token, so a result from an evicted or superseded entry can never
+  settle a later entry for the same original; the actor tracks each lookup and
+  retry task by original with that token and removes it only on a token match.
+  Learning an observation that supersedes an in-flight lookup aborts its task.
+  All lookup and retry tasks are owned by the actor and aborted when it is
+  dropped; a new actor generation starts with an empty ledger, which is the
+  only way an exhausted (`Failed`) entry is retried.
+- **Changed originals.** Learning an edit or redaction replaces the settled
+  entry and records that original as changed, and every dependent quote whose
+  target is that original is re-derived, whether it had already resolved or
+  not, in both the batch overlay and the republish. An original outside this
+  actor's timeline updates the ledger only when it appears in the actor's
+  batch or canonical items, or when the actor is replaced; the rejoinder's
+  quote cannot be kept current from a source the actor never observes.
+- **Publication.** When a ledger entry settles, or a batch commits or changes
+  an original that quotes already point at, the actor republishes the dependent
+  canonical items as non-SDK `Set` diffs and reprojects pending sends. A
+  resolved quote never regresses to `Loading` while the same actor keeps the
+  settled entry. While an anchor restore is buffering its coalesced
+  `restore_emit_buffer`, the republish is deferred and runs once at the end of
+  the actor loop after that buffer has flushed, so a republished `Set` diff can
+  never overtake the restore's single settled update. A deferred republish also
+  retains the changed-original refresh set until it runs, so that set can hold
+  one entry per changed original for the duration of a restore; the ledger's
+  256-entry cap does not bound it.
+
 `AppState.room_interactions[room_id]` carries the room's pinned-event
 projection plus the current pin/unpin operation state:
 
@@ -2341,10 +2403,14 @@ stateDiagram-v2
     FailedUnpin --> [*]: LogoutRequested/LogoutFinished/SessionCleared
 ```
 
-- `ReplyQuoteState` is one of `Ready`, `Redacted`, `Missing`, or
-  `Unsupported`. `Ready` may include a sender and body preview; redacted,
-  missing, and unsupported quotes never require React to inspect Matrix event
-  content.
+- `ReplyQuoteState` is one of `Loading`, `Ready`, `Redacted`, `Missing`,
+  `Unsupported`, or `Failed`. `Ready` may include a sender and body preview;
+  the other states never require React to inspect Matrix event content.
+  `Missing` is terminal and means the homeserver reported the original as not
+  found or forbidden; it is never used for an original that has not been
+  loaded yet. `Loading` means the original is unresolved and Rust still owns a
+  bounded lookup for it. `Failed` means that lookup exhausted its retries.
+  See [Reply quote hydration](#reply-quote-hydration).
 - `TimelineItem.actions` is populated only for event-backed timeline items.
   Synthetic and transaction-backed items receive all-false affordances. Redacted
   event items keep event-scoped affordances such as permalink/source visibility
