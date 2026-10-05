@@ -3546,6 +3546,9 @@ pub(super) async fn wait_for_cancelled_or_removed_send(
 mod ignored_reset;
 #[path = "timeline/reader_scope.rs"]
 mod reader_scope;
+#[path = "timeline/reply_quote.rs"]
+mod reply_quote;
+pub(super) use reply_quote::observe_reply_quote_lifecycle;
 
 pub(super) async fn run_live_signals_stage(
     conn_a: &mut CoreConnection,
