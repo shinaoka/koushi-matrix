@@ -1,11 +1,11 @@
 use super::{
-    BodyWaitObserver, InitialItemsWaitMatch, PairedEventWaitError, SendFlowWaiter,
-    WithheldEventProjectionOrigin, find_timeline_item_with_body, is_room_list_publication,
-    match_initial_items_wait_event, projection_timeline_item, visit_timeline_diff_items,
-    wait_for_initial_items_from_source, wait_for_logged_in, wait_for_logged_out,
-    wait_for_operation_failed, wait_for_paired_event_until,
-    wait_for_room_list_publication_from_source, wait_for_session_restored,
-    wait_for_withheld_event_projection_from_source,
+    BodyWaitObserver, InitialItemsWaitMatch, PairedEventWaitError, QaEventFuture, QaEventSource,
+    SendFlowWaiter, WithheldEventProjectionOrigin, drain_queued_events_from_source,
+    find_timeline_item_with_body, is_room_list_publication, match_initial_items_wait_event,
+    projection_timeline_item, visit_timeline_diff_items, wait_for_initial_items_from_source,
+    wait_for_logged_in, wait_for_logged_out, wait_for_operation_failed,
+    wait_for_paired_event_until, wait_for_room_list_publication_from_source,
+    wait_for_session_restored, wait_for_withheld_event_projection_from_source,
 };
 use crate::contracts::{
     IntervalQaEventSource, IntervalQaSnapshotEventSource, ScriptedQaEventSource,
@@ -15,10 +15,107 @@ use crate::contracts::{
 };
 use crate::registry::{EVENT_TIMEOUT, LOGIN_EVENT_TIMEOUT};
 use crate::{
-    AccountEvent, AccountKey, Arc, CoreEvent, CoreFailure, Duration, Mutex, RequestId, RoomEvent,
-    SessionInfo, SessionState, SyncEvent, TimelineDiff, TimelineEvent, TimelineKey,
-    TimelineMessageActions, TimelineSendState,
+    AccountEvent, AccountKey, Arc, CoreEvent, CoreFailure, Duration, EventStreamLag, Mutex,
+    RequestId, RoomEvent, SessionInfo, SessionState, SyncEvent, TimelineDiff, TimelineEvent,
+    TimelineKey, TimelineMessageActions, TimelineSendState,
 };
+
+/// A stream that keeps delivering events, one per millisecond, like a live
+/// subscription under load.
+struct BusyQaEventSource;
+
+impl QaEventSource for BusyQaEventSource {
+    fn recv_event(&mut self) -> QaEventFuture<'_> {
+        Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            Ok(CoreEvent::Sync(SyncEvent::Running))
+        })
+    }
+}
+
+/// A stream that is already closed: every receive fails immediately with
+/// nothing skipped.
+struct ClosingQaEventSource;
+
+impl QaEventSource for ClosingQaEventSource {
+    fn recv_event(&mut self) -> QaEventFuture<'_> {
+        Box::pin(async { Err(EventStreamLag { skipped: 0 }) })
+    }
+}
+
+#[tokio::test]
+async fn queued_event_drain_stops_on_a_closed_stream() {
+    let mut source = ClosingQaEventSource;
+    drain_queued_events_from_source(
+        &mut source,
+        "test drain",
+        Duration::from_millis(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("a closed stream ends the drain instead of looping forever");
+}
+
+#[tokio::test]
+async fn queued_event_drain_fails_when_the_stream_never_goes_quiet() {
+    let mut source = BusyQaEventSource;
+    let error = drain_queued_events_from_source(
+        &mut source,
+        "test drain",
+        Duration::from_millis(5),
+        Duration::from_millis(30),
+    )
+    .await
+    .expect_err("a continuously busy stream must fail on the absolute deadline");
+    assert!(error.contains("never went quiet"), "{error}");
+    assert!(error.contains("drained="), "{error}");
+    assert!(!error.contains(":example.invalid"), "{error}");
+}
+
+#[tokio::test]
+async fn queued_event_drain_fails_when_the_stream_skipped_events() {
+    struct LaggingQaEventSource;
+    impl QaEventSource for LaggingQaEventSource {
+        fn recv_event(&mut self) -> QaEventFuture<'_> {
+            Box::pin(async { Err(EventStreamLag { skipped: 3 }) })
+        }
+    }
+    let mut source = LaggingQaEventSource;
+    let error = drain_queued_events_from_source(
+        &mut source,
+        "test drain",
+        Duration::from_millis(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect_err("a stream that skipped events cannot be drained reliably");
+    assert!(error.contains("skipped=3"), "{error}");
+}
+
+#[tokio::test]
+async fn queued_event_drain_consumes_the_queue_and_returns_when_quiet() {
+    let mut source = ScriptedQaSnapshotEventSource {
+        events: [
+            (qa_state_delta_event(), SessionState::SignedOut),
+            (
+                CoreEvent::Room(RoomEvent::RoomListUpdated),
+                SessionState::SignedOut,
+            ),
+        ]
+        .into(),
+        snapshot: qa_state_with_session(SessionState::SignedOut),
+        received: 0,
+    };
+    drain_queued_events_from_source(
+        &mut source,
+        "test drain",
+        Duration::from_millis(10),
+        EVENT_TIMEOUT,
+    )
+    .await
+    .expect("an empty queue ends the drain");
+    assert_eq!(source.received, 2);
+}
 
 #[test]
 fn only_an_explicit_room_list_update_counts_as_a_room_list_publication() {

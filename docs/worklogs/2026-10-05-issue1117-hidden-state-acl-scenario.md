@@ -24,11 +24,12 @@ behavior is unchanged.
   counts publications instead of discarding them), then asserts the summary
   holds `latest_event` = the message with `unread_count >= 1`.
 
-  Limit: `RoomListUpdated` is emitted when the room-list projection enqueues its
-  reducer actions, and Core exposes no per-burst projection revision. The fence
-  therefore proves that the room list published after the burst and that the
-  summary still points at the message; it does not prove that the reducer had
-  already applied the burst's own projection before that read.
+  Limit: after a pre-write quiet drain, the scenario receives an explicit
+  room-list publication and checks the current summary. Publication causality
+  (the wake could have been produced by an earlier update in the burst) and
+  applied-projection freshness (Core emits `RoomListUpdated` when the room-list
+  projection enqueues its reducer actions and exposes no per-burst projection
+  revision) are not established.
 - A then subscribes again. The Core-held timeline is replayed through the
   live-edge window. The replay held 136 raw items in the passing run, and it
   must still contain the visible message.

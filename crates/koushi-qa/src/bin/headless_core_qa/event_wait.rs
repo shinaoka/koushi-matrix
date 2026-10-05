@@ -427,6 +427,51 @@ pub(super) async fn wait_for_room_list_publication_from_source<
     }
 }
 
+/// Drain events already queued on `source`, so a publication counted later
+/// cannot be one that was merely still queued.
+///
+/// One absolute deadline bounds the whole drain and `quiet_window` bounds a
+/// single receive. A receive error ends the drain: a closed stream reports an
+/// immediate error with nothing skipped, and a stream that skipped events cannot
+/// be drained reliably. A stream that never goes quiet fails with counts only in
+/// the diagnostic. This never waits for an effect; it consumes what is queued.
+pub(super) async fn drain_queued_events_from_source<S: QaEventSource + ?Sized>(
+    source: &mut S,
+    label: &str,
+    quiet_window: Duration,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = QaEventDeadline::after(timeout);
+    let mut drained = 0u64;
+    let mut skipped = 0u64;
+    loop {
+        let remaining = deadline
+            .instant
+            .saturating_duration_since(tokio::time::Instant::now());
+        let window = remaining.min(quiet_window);
+        match tokio::time::timeout(window, source.recv_event()).await {
+            // Quiet for the whole window: nothing is queued.
+            Err(_) if window == quiet_window => return Ok(()),
+            // The deadline clipped the window: the stream never went quiet.
+            Err(_) => {
+                return Err(format!(
+                    "{label}: the reader never went quiet (drained={drained}, skipped={skipped})"
+                ));
+            }
+            // A closed stream cannot be drained further.
+            Ok(Err(lag)) if lag.skipped == 0 => return Ok(()),
+            // A stream that skipped events cannot be drained reliably.
+            Ok(Err(lag)) => {
+                skipped += lag.skipped;
+                return Err(format!(
+                    "{label}: the reader lagged while draining (drained={drained}, skipped={skipped})"
+                ));
+            }
+            Ok(Ok(_event)) => drained += 1,
+        }
+    }
+}
+
 pub(super) async fn wait_for_encrypted_room_projection_for_qa(
     conn: &mut CoreConnection,
     expected_room_id: &str,
