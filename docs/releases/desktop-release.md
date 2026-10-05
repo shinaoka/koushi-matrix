@@ -60,6 +60,13 @@ Generate this keypair offline with the Tauri signer. Never commit or print the
 private key or password. A normal local build without the public key keeps the
 update adapter in `unsupported` and does not make update requests.
 
+Distribution packagers who repackage the Linux artifacts (for example an AUR
+package built from the `.deb`) install the empty marker file
+`/usr/share/koushi-desktop/package-managed`. With the marker present the update
+adapter reports `unsupported` with reason `package_managed`, selects no install
+backend, makes no update request, and never spawns `pkexec`, `sudo`, `dpkg`, or
+`rpm`; see overview "Desktop Application Updates".
+
 ## Prepare the release PR
 
 1. Fetch `origin/main` and confirm the worktree state. Preserve unrelated user

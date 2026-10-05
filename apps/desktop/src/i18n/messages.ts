@@ -768,6 +768,7 @@ export type MessageId =
   | "settings.updateIdle"
   | "settings.updateTitle"
   | "settings.updateUnsupported"
+  | "settings.updatePackageManaged"
   | "settings.updateCommandFailed"
   | "settings.updateCheck"
   | "settings.updateUpToDate"
@@ -2528,6 +2529,7 @@ const en: Catalog = {
   "settings.updateIdle": "Check for a new version of Koushi.",
   "settings.updateTitle": "Software update",
   "settings.updateUnsupported": "In-app updates are unavailable in this build.",
+  "settings.updatePackageManaged": "Updates for this installation are provided by your package manager.",
   "settings.updateCommandFailed": "The update action could not be completed. Please try again.",
   "settings.updateCheck": "Check for updates",
   "settings.updateUpToDate": "Koushi is up to date (v{version}).",
@@ -4195,6 +4197,7 @@ const ja: Catalog = {
   "settings.updateIdle": "Koushiの新しいバージョンを確認できます。",
   "settings.updateTitle": "ソフトウェアアップデート",
   "settings.updateUnsupported": "このビルドではアプリ内アップデートを利用できません。",
+  "settings.updatePackageManaged": "このインストールのアップデートはパッケージマネージャーから提供されます。",
   "settings.updateCommandFailed": "アップデートの操作を完了できませんでした。もう一度お試しください。",
   "settings.updateCheck": "アップデートを確認",
   "settings.updateUpToDate": "Koushiは最新です（v{version}）。",

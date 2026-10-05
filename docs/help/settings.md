@@ -68,7 +68,10 @@ Use **Check for updates** for an immediate result; when no newer version is
 found, the result says that the current version is up to date. An automatic
 discovery opens the same screen. Downloading and restarting are separate,
 explicit actions; automatic checks do not automatically install or restart.
-Unsupported builds show that in-app updates are unavailable.
+Unsupported builds show that in-app updates are unavailable. When Koushi was
+installed by a distribution package that manages its files (for example an AUR
+package), the dialog instead says that updates are provided by your package
+manager; update Koushi through that package manager.
 Changing the pre-release setting discards an unapproved candidate and checks the
 new channel when automatic checks are enabled. Once you choose Download update,
 that release stays selected; the pre-release switch is disabled until the

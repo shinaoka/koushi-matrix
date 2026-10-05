@@ -107,6 +107,11 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         run_read_state_convergence_scenario(&config).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
+    if scenario == QaScenario::HiddenStateAcl {
+        println!("safety=ok");
+        super::scenario_hidden_state_acl::run_hidden_state_acl_scenario(&config).await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
     if scenario == QaScenario::SearchCrawlerCatchup {
         println!("safety=ok");
         super::scenario_search_catchup::run_search_crawler_catchup_scenario(&config).await?;

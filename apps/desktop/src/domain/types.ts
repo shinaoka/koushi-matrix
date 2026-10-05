@@ -353,7 +353,7 @@ export interface UpdatesSettings {
 }
 
 export type DesktopUpdateState =
-  | { kind: "unsupported" }
+  | { kind: "unsupported"; reason: "build" | "package_managed" }
   | { kind: "idle" }
   | { kind: "up_to_date"; version: string }
   | { kind: "checking" }

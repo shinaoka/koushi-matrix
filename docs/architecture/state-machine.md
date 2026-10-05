@@ -5518,8 +5518,9 @@ preferences.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Unsupported: platform is not enabled
-    [*] --> Idle: platform is enabled
+    [*] --> Unsupported: packager marker present (reason=package_managed)
+    [*] --> Unsupported: no install backend or updater trust material (reason=build)
+    [*] --> Idle: platform enabled with an install backend
     Idle --> Checking: startup/24h/setting enabled/manual check
     Checking --> UpToDate: check has no newer release
     Checking --> Idle: update channel changes
@@ -5567,6 +5568,16 @@ stateDiagram-v2
   stage/kind and is recoverable; it never blocks startup or login.
 - Installation and relaunch require explicit user intent. macOS is the only
   enabled platform in this phase; Windows and Linux remain `unsupported`.
+- `unsupported` carries a `reason`. `reason: build` means this target has no
+  install backend or this build has no updater trust material; `reason:
+  package_managed` means a distribution package that owns the installed files
+  installed the empty marker `/usr/share/koushi-desktop/package-managed`. The
+  marker is probed once at startup, only on Linux, and its contents are
+  ignored: presence alone forces `unsupported{reason: package_managed}` before
+  any backend selection. The marker wins over an otherwise capable build, and
+  `unsupported` never transitions to `idle`, `checking`, or any other state at
+  runtime: no trigger in it claims work, emits a feed request, or constructs an
+  installer process (`pkexec`, `sudo`, `dpkg`, `rpm`).
 - A successful installation records relaunch intent and enters the ordinary
   graceful-shutdown barrier. The updater owner must finish and Core shutdown
   must settle before the final native restart request. A native restart event

@@ -1,5 +1,6 @@
 use std::{
     future::Future,
+    path::Path,
     pin::Pin,
     sync::{Arc, Mutex},
 };
@@ -28,16 +29,47 @@ const UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 *
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DesktopUpdateState {
-    Unsupported,
+    Unsupported {
+        reason: DesktopUpdateUnsupportedReason,
+    },
     Idle,
-    UpToDate { version: String },
+    UpToDate {
+        version: String,
+    },
     Checking,
-    Available { version: String, generation: u64 },
-    Downloading { version: String },
-    Ready { version: String },
-    Failed { stage: DesktopUpdateFailureStage },
-    Installing { version: String },
+    Available {
+        version: String,
+        generation: u64,
+    },
+    Downloading {
+        version: String,
+    },
+    Ready {
+        version: String,
+    },
+    Failed {
+        stage: DesktopUpdateFailureStage,
+    },
+    Installing {
+        version: String,
+    },
 }
+
+/// Why this installation cannot update itself. `Build` covers targets without
+/// an install backend and builds without updater trust material;
+/// `PackageManaged` is the packager opt-out (#1063).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopUpdateUnsupportedReason {
+    Build,
+    PackageManaged,
+}
+
+/// Packager opt-out marker (#1063). A distribution package that owns the
+/// installed files (for example a repackaged `.deb` under `/usr`) installs this
+/// file so the app never selects an install backend or issues update requests.
+/// Its contents are ignored; only its presence matters.
+pub const LINUX_PACKAGE_MANAGED_MARKER: &str = "/usr/share/koushi-desktop/package-managed";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -163,7 +195,7 @@ impl<C> Lifecycle<C> {
         if channel_changed
             && !matches!(
                 self.state,
-                DesktopUpdateState::Unsupported
+                DesktopUpdateState::Unsupported { .. }
                     | DesktopUpdateState::Downloading { .. }
                     | DesktopUpdateState::Ready { .. }
                     | DesktopUpdateState::Installing { .. }
@@ -578,12 +610,42 @@ async fn run_owner<C: Send + 'static>(
 }
 
 fn initial_state() -> DesktopUpdateState {
+    initial_state_for(package_managed_marker())
+}
+
+/// The marker probed on this target. Only Linux distribution packages can opt
+/// out today; other targets have no marker and never read the filesystem here.
+fn package_managed_marker() -> Option<&'static Path> {
+    cfg!(target_os = "linux").then(|| Path::new(LINUX_PACKAGE_MANAGED_MARKER))
+}
+
+fn initial_state_for(marker: Option<&Path>) -> DesktopUpdateState {
     // `Unsupported` is the capability of this installation, not a permanent
     // platform policy: it changes once the target has an install backend.
-    if cfg!(koushi_updater_backend) && configured_updater_public_key().is_some() {
+    // The packager opt-out is checked at runtime because a repackaged binary is
+    // byte-identical to the upstream one (#1063); it wins over every backend.
+    if marker.is_some_and(Path::exists) {
+        DesktopUpdateState::Unsupported {
+            reason: DesktopUpdateUnsupportedReason::PackageManaged,
+        }
+    } else if cfg!(koushi_updater_backend) && configured_updater_public_key().is_some() {
         DesktopUpdateState::Idle
     } else {
-        DesktopUpdateState::Unsupported
+        DesktopUpdateState::Unsupported {
+            reason: DesktopUpdateUnsupportedReason::Build,
+        }
+    }
+}
+
+/// Selects the install backend only for an installation whose owned state can
+/// update. An `Unsupported` lifecycle (no backend, no trust material, or the
+/// packager opt-out) never constructs a backend, so no owner, feed request, or
+/// installer process (`pkexec`, `sudo`, `dpkg`, `rpm`) can start.
+fn select_backend<B>(state: &DesktopUpdateState, for_app: impl FnOnce() -> Option<B>) -> Option<B> {
+    if matches!(state, DesktopUpdateState::Unsupported { .. }) {
+        None
+    } else {
+        for_app()
     }
 }
 
@@ -598,11 +660,11 @@ pub fn spawn_auto_update_loop(
     if configured_updater_public_key().is_none() {
         return;
     }
-    let Some(backend) = PlatformBackend::for_app(&app) else {
+    let shared = app.state::<DesktopUpdateManager>().shared.clone();
+    let Some(backend) = select_backend(&shared.state(), || PlatformBackend::for_app(&app)) else {
         return;
     };
     let initial_settings = settings_updates.borrow_and_update().clone();
-    let shared = app.state::<DesktopUpdateManager>().shared.clone();
     shared.transition(
         |state| {
             let _ = app.emit(DESKTOP_UPDATE_EVENT_NAME, state);
@@ -680,5 +742,7 @@ pub fn install_and_restart(app: &AppHandle) -> Result<(), ()> {
     )
 }
 
+#[cfg(test)]
+mod package_managed_tests;
 #[cfg(test)]
 mod regression_tests;

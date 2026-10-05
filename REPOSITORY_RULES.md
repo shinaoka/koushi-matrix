@@ -162,9 +162,11 @@ to upstream or revert.
   expose only opaque references and typed ports.
 - Every public `#[tauri::command]` in `apps/desktop/src-tauri/src/commands/` is
   registered in `tauri::generate_handler!` in `apps/desktop/src-tauri/src/lib.rs`;
-  an unregistered command compiles yet never reaches Rust. Keep the exhaustive
-  `every_tauri_command_is_registered_in_generate_handler` test in
-  `apps/desktop/src-tauri/src/commands/mod.rs` green.
+  an unregistered command compiles yet never reaches Rust. The exhaustive guard
+  is rule `desktop.commands.tauri_command_registration`
+  (`checkDesktopTauriCommandRegistrationContract()` in
+  `scripts/check-rust-test-structure.mjs`), run by the CI step "Rust test
+  structure checker"; keep it green.
 - Crate ownership follows engineering rules "Crate Ownership And Projection Authority": `koushi-sdk`,
   `koushi-store`, `koushi-search`, `koushi-media`, `koushi-qa`, and
   `koushi-core-testkit` own only their stated leaf concerns, and product policy

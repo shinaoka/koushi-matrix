@@ -440,7 +440,12 @@ fn channel_policy_selects_feeds_and_greatest_candidate_on_every_platform() {
 #[test]
 fn installations_without_an_install_backend_stay_unsupported_and_idle() {
     // No backend means no owner: commands observe policy but never admit work.
-    assert_eq!(initial_state(), DesktopUpdateState::Unsupported);
+    assert_eq!(
+        initial_state(),
+        DesktopUpdateState::Unsupported {
+            reason: DesktopUpdateUnsupportedReason::Build,
+        }
+    );
     let mut lifecycle = Lifecycle::<Candidate>::new(initial_state());
     assert!(!lifecycle.request_check(policy(1, true, true)));
     assert_eq!(
@@ -449,7 +454,12 @@ fn installations_without_an_install_backend_stay_unsupported_and_idle() {
     );
     assert_eq!(lifecycle.begin_install(), Err(()));
     assert!(lifecycle.claim_work().is_none());
-    assert_eq!(lifecycle.state, DesktopUpdateState::Unsupported);
+    assert_eq!(
+        lifecycle.state,
+        DesktopUpdateState::Unsupported {
+            reason: DesktopUpdateUnsupportedReason::Build,
+        }
+    );
 }
 
 struct DropSignal(Option<oneshot::Sender<()>>);

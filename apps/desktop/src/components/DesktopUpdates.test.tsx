@@ -85,6 +85,17 @@ test("a failed IPC action is visible and retry does not invent an updater result
   fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   expect(screen.queryByText(/up to date/)).toBeNull();
-  act(() => fixture.updateListeners.forEach(listener => listener({ kind: "unsupported" })));
+  act(() => fixture.updateListeners.forEach(listener => listener({ kind: "unsupported", reason: "build" })));
   expect(screen.getByText("In-app updates are unavailable in this build.")).toBeTruthy();
+});
+
+test("a package-managed installation renders the packager opt-out reason without update actions", async () => {
+  render(<DesktopUpdates />);
+  await waitFor(() => expect(fixture.getState).toHaveBeenCalledOnce());
+  await act(async () => fixture.menuListeners.forEach(listener => listener("checkForUpdates")));
+  act(() => fixture.updateListeners.forEach(listener => listener({ kind: "unsupported", reason: "package_managed" })));
+  expect(screen.getByText("Updates for this installation are provided by your package manager.")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Download update" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Check for updates" })).toBeNull();
+  expect((screen.getByRole("switch", { name: "Automatically check for updates" }) as HTMLButtonElement).disabled).toBe(true);
 });
