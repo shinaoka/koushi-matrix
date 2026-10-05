@@ -33,6 +33,16 @@ impl QaEventSource for BusyQaEventSource {
     }
 }
 
+/// A stream whose receive is always ready: it never yields to the runtime, so
+/// only an explicit deadline check can stop a drain.
+struct ImmediateQaEventSource;
+
+impl QaEventSource for ImmediateQaEventSource {
+    fn recv_event(&mut self) -> QaEventFuture<'_> {
+        Box::pin(async { Ok(CoreEvent::Sync(SyncEvent::Running)) })
+    }
+}
+
 /// A stream that is already closed: every receive fails immediately with
 /// nothing skipped.
 struct ClosingQaEventSource;
@@ -54,6 +64,21 @@ async fn queued_event_drain_stops_on_a_closed_stream() {
     )
     .await
     .expect("a closed stream ends the drain instead of looping forever");
+}
+
+#[tokio::test]
+async fn queued_event_drain_fails_when_an_always_ready_stream_never_goes_quiet() {
+    let mut source = ImmediateQaEventSource;
+    let error = drain_queued_events_from_source(
+        &mut source,
+        "test drain",
+        Duration::from_millis(5),
+        Duration::from_millis(30),
+    )
+    .await
+    .expect_err("an always-ready stream must fail on the absolute deadline");
+    assert!(error.contains("never went quiet"), "{error}");
+    assert!(error.contains("drained="), "{error}");
 }
 
 #[tokio::test]

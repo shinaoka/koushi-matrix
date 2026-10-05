@@ -445,10 +445,16 @@ pub(super) async fn drain_queued_events_from_source<S: QaEventSource + ?Sized>(
     let mut drained = 0u64;
     let mut skipped = 0u64;
     loop {
-        let remaining = deadline
-            .instant
-            .saturating_duration_since(tokio::time::Instant::now());
-        let window = remaining.min(quiet_window);
+        // Check the deadline before receiving: `timeout` polls a ready future
+        // first, so a source that is always ready would otherwise keep draining
+        // past the deadline instead of failing.
+        let now = tokio::time::Instant::now();
+        if now >= deadline.instant {
+            return Err(format!(
+                "{label}: the reader never went quiet (drained={drained}, skipped={skipped})"
+            ));
+        }
+        let window = (deadline.instant - now).min(quiet_window);
         match tokio::time::timeout(window, source.recv_event()).await {
             // Quiet for the whole window: nothing is queued.
             Err(_) if window == quiet_window => return Ok(()),
