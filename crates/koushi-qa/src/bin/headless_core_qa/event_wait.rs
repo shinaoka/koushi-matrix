@@ -380,6 +380,53 @@ pub(super) async fn wait_for_room_in_room_list(
     }
 }
 
+/// Whether an event is an explicit room-list publication. Only
+/// `RoomListUpdated` counts as a room-list reconciliation: a general state delta
+/// is not evidence that the room list reconciled anything.
+pub(super) fn is_room_list_publication(event: &CoreEvent) -> bool {
+    matches!(event, CoreEvent::Room(RoomEvent::RoomListUpdated))
+}
+
+/// Waits for one explicit room-list publication newer than the caller's
+/// baseline, then reports success. `observed_before` counts publications the
+/// caller already observed (for example while waiting for timeline items), so a
+/// wake that arrived earlier still counts and is never demanded twice.
+///
+/// On timeout the authoritative summary is read once more before failing; the
+/// failure carries only private-data-free booleans and counts.
+pub(super) async fn wait_for_room_list_publication_from_source<
+    S: QaSnapshotEventSource + ?Sized,
+>(
+    source: &mut S,
+    observed_before: u64,
+    summary_matches: impl Fn(&AppState) -> bool,
+    label: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    if observed_before > 0 {
+        return Ok(());
+    }
+    let deadline = QaEventDeadline::after(timeout);
+    let mut skipped = 0u64;
+    loop {
+        match deadline.recv(source).await {
+            Err(_) => {
+                let matches = summary_matches(&source.snapshot());
+                return Err(format!(
+                    "{label}: no room-list publication after the burst \
+                     (summary_matches={matches}, skipped={skipped})"
+                ));
+            }
+            Ok(Ok(event)) => {
+                if is_room_list_publication(&event) {
+                    return Ok(());
+                }
+            }
+            Ok(Err(lag)) => skipped += lag.skipped,
+        }
+    }
+}
+
 pub(super) async fn wait_for_encrypted_room_projection_for_qa(
     conn: &mut CoreConnection,
     expected_room_id: &str,

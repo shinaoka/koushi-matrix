@@ -18,9 +18,11 @@ behavior is unchanged.
   stream is not skipped: the item waiter re-observes the Core-held timeline
   through a fresh subscription under the same absolute deadline, feeding items
   that arrive while that snapshot is awaited to the same observer.
-- The hidden updates must leave the room list alone: after a post-burst
-  room-list reconciliation A asserts that the room summary still shows the
-  message as `latest_event` with `unread_count >= 1`.
+- The hidden updates must leave the room list alone: A requires an explicit
+  `RoomListUpdated` publication newer than the burst (a general state delta does
+  not count, and the item wait counts publications instead of discarding them),
+  then asserts the summary holds `latest_event` = the message with
+  `unread_count >= 1`.
 - A then subscribes again. The Core-held timeline is replayed through the
   live-edge window. The replay held 136 raw items in the passing run, and it
   must still contain the visible message.
