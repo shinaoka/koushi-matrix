@@ -857,6 +857,10 @@ export class TauriDesktopApi implements DesktopApi {
     return this.invokeCommand<CommandAdmission>("leave_room", { roomId });
   }
 
+  async leaveSpace(spaceId: string, childRoomIds: string[]): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("leave_space", { spaceId, childRoomIds });
+  }
+
   async forgetRoom(roomId: string): Promise<CommandAdmission> {
     return this.invokeCommand<CommandAdmission>("forget_room", { roomId });
   }

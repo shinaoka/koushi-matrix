@@ -200,7 +200,8 @@ describe("ContextualRightPanel", () => {
         avatar: null,
         unread_count: 13,
         highlight_count: 2,
-        is_active: false
+        is_active: false,
+        leave_candidates: []
       }
     ];
 

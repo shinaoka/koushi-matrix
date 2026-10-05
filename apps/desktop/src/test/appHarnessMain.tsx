@@ -177,7 +177,13 @@ function readySnapshot(
       avatar: null,
       unread_count: 0,
       highlight_count: 0,
-      is_active: false
+      is_active: false,
+      leave_candidates: [{
+        room_id: ROOM_ID,
+        display_name: ROOM_NAME,
+        avatar: null,
+        in_other_space: false
+      }]
     },
     ...(overrides.extraRailItems ?? [])
   ];
@@ -756,7 +762,8 @@ function afterCreateSpaceSnapshot(): DesktopSnapshot {
     avatar: null,
     unread_count: 0,
     highlight_count: 0,
-    is_active: true
+    is_active: true,
+    leave_candidates: []
   });
   return snapshot;
 }
@@ -1877,7 +1884,7 @@ mock.setCommandResponse(
 );
 mock.setCommandResponse("mark_room_as_read", () => currentSnapshot);
 mock.setCommandResponse("mark_room_as_unread", () => currentSnapshot);
-mock.setCommandResponse("leave_room", ({ roomId }: { roomId: string }) => {
+function applyHarnessLeave(roomId: string): DesktopSnapshot {
   const removedSpace = currentSnapshot.state.domain.spaces.find((space) => space.space_id === roomId);
   const nextSpaces = currentSnapshot.state.domain.spaces.filter((space) => space.space_id !== roomId);
   const nextRooms = removedSpace
@@ -1943,7 +1950,17 @@ mock.setCommandResponse("leave_room", ({ roomId }: { roomId: string }) => {
           }
     }
   });
-});
+}
+mock.setCommandResponse("leave_room", ({ roomId }: { roomId: string }) => applyHarnessLeave(roomId));
+mock.setCommandResponse(
+  "leave_space",
+  ({ spaceId, childRoomIds }: { spaceId: string; childRoomIds: string[] }) => {
+    for (const roomId of childRoomIds) {
+      applyHarnessLeave(roomId);
+    }
+    return applyHarnessLeave(spaceId);
+  }
+);
 mock.setCommandResponse(
   "set_room_notification_mode",
   ({ roomId, mode }: { roomId: string; mode: RoomNotificationMode }) => {

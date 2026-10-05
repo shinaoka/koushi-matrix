@@ -12,6 +12,7 @@ mod reducer;
 mod room_address;
 mod sidebar;
 mod space_add_rooms;
+mod space_leave;
 mod state;
 mod submission;
 mod typography_profile;
@@ -177,6 +178,10 @@ pub use space_add_rooms::{
     SpaceAddRoomCandidate, SpaceAddRoomStatus, SpaceAddRoomsModel, space_add_rooms_for_state,
 };
 pub use state::{SpaceChildLinkOutcome, SpaceChildLinkResult, SpaceChildLinkResults};
+// Leaving a Space together with its joined child rooms.
+pub use space_leave::{
+    SpaceLeaveCandidate, admit_space_leave_room_ids, space_leave_candidates_for_state,
+};
 // History export keeps its own block so the feature does not edit the shared
 // list above.
 pub use state::{

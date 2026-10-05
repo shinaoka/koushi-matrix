@@ -267,6 +267,7 @@ import {
   InviteTargetsDialog,
   ReportReasonDialog,
   ResetLocalDataConfirmationDialog,
+  LeaveSpaceDialog,
   uploadStagingItemsAreSendable,
   UserIdDialog
 } from "./components/dialogs";
@@ -1174,6 +1175,11 @@ function AccountContent({
     isDm: boolean;
   } | null>(null);
   const [roomLeaveInFlight, setRoomLeaveInFlight] = useState(false);
+  // Space leave with an optional subset of its joined child rooms. React owns
+  // only dialog visibility, the choice, and the in-flight guard; the candidate
+  // rooms are `SpaceRailItem.leave_candidates` and Rust re-admits the choice.
+  const [pendingSpaceLeave, setPendingSpaceLeave] = useState<{ spaceId: string } | null>(null);
+  const [spaceLeaveInFlight, setSpaceLeaveInFlight] = useState(false);
   const mainComposerOverlayRef = useRef<{
     scope: ComposerDraftScope;
     document: ComposerDocument;
@@ -3306,6 +3312,32 @@ function AccountContent({
       // On failure the dialog stays open with the room and selection unchanged,
       // so the user can retry without losing context.
       setRoomLeaveInFlight(false);
+    }
+  }
+
+  async function leavePendingSpace(childRoomIds: string[]) {
+    const target = pendingSpaceLeave;
+    if (!target || spaceLeaveInFlight) {
+      return;
+    }
+    setSpaceLeaveInFlight(true);
+    try {
+      const nextSnapshot = await settleCommandSnapshot(
+        api.leaveSpace(target.spaceId, childRoomIds)
+      );
+      const stillJoined = nextSnapshot.state.domain.spaces.some(
+        (space) => space.space_id === target.spaceId
+      );
+      if (!stillJoined) {
+        setPendingSpaceLeave(null);
+        if (rightPanelMode === "spaceInfo" || ROOM_BOUND_RIGHT_PANEL_MODES.has(effectiveRightPanelMode)) {
+          await setRightPanelModeClosingFocusedContext("closed");
+        }
+      }
+    } finally {
+      // A child or the Space itself failed to leave: the Space stays joined and
+      // the dialog stays open with the remaining candidates, so retry is safe.
+      setSpaceLeaveInFlight(false);
     }
   }
 
@@ -6245,13 +6277,9 @@ function AccountContent({
     }
 
     if (target.kind === "space" && actionId === "leaveSpace") {
-      void settleCommand(api.leaveRoom(target.spaceId))
-        .then(() => {
-          if (rightPanelMode === "spaceInfo") {
-            runInBackground(setRightPanelModeClosingFocusedContext("closed"));
-          }
-        })
-        .catch(() => undefined);
+      // Never leave straight from the menu click: the confirmation lets the
+      // user choose whether the Space's joined rooms are left with it.
+      setPendingSpaceLeave({ spaceId: target.spaceId });
       return;
     }
 
@@ -7453,6 +7481,23 @@ function AccountContent({
           }}
         />
       ) : null}
+      {pendingSpaceLeave ? (() => {
+        const railItem = snapshot.sidebar.space_rail.find(
+          (space) => space.space_id === pendingSpaceLeave.spaceId
+        );
+        return (
+          <LeaveSpaceDialog
+            key={pendingSpaceLeave.spaceId}
+            spaceName={railItem?.display_name ?? pendingSpaceLeave.spaceId}
+            candidates={railItem?.leave_candidates ?? []}
+            isBusy={spaceLeaveInFlight}
+            onCancel={() => setPendingSpaceLeave(null)}
+            onConfirm={(childRoomIds) => {
+              runInBackground(leavePendingSpace(childRoomIds));
+            }}
+          />
+        );
+      })() : null}
       {diagnosticsOpen ? (() => {
         return <DiagnosticDialog
           report={diagnosticReportFor(snapshot, runtimeDiagnosticSnapshot)}

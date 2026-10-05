@@ -928,6 +928,14 @@ impl RoomActor {
             } => {
                 self.handle_leave_room(request_id, room_id).await;
             }
+            RoomCommand::LeaveSpace {
+                request_id,
+                space_id,
+                child_room_ids,
+            } => {
+                self.handle_leave_space(request_id, space_id, child_room_ids)
+                    .await;
+            }
             RoomCommand::ForgetRoom {
                 request_id,
                 room_id,

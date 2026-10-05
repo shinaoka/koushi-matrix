@@ -9445,6 +9445,31 @@ kbd {
 
 .confirmation-modal { width: 480px; }
 .confirmation-content { padding: 0 20px 20px; overflow-y: auto; }
+.leave-space-content { display: grid; gap: 12px; }
+.leave-space-content p { margin: 0; }
+.leave-space-choices { display: grid; gap: 8px; }
+.leave-space-rooms {
+  display: grid;
+  gap: 2px;
+  max-height: 240px;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  list-style: none;
+}
+.leave-space-room {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 6px;
+  font-size: 13px;
+}
+.leave-space-room-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.leave-space-room-note { color: var(--text-muted); font-size: 12px; }
 
 /* #1006 advisory address availability under the address field. */
 .create-room-address-availability p { margin: 4px 0 0; }

@@ -2795,6 +2795,21 @@ export interface SpaceRailItem {
   unread_count: number;
   highlight_count: number;
   is_active: boolean;
+  /**
+   * Joined, non-DM rooms this Space shows, which a Space leave may take with
+   * it. Rust projection; the `leave_space` command re-admits against it.
+   */
+  leave_candidates: SpaceLeaveCandidate[];
+}
+
+export interface SpaceLeaveCandidate {
+  room_id: string;
+  display_name: string;
+  /** Mirrors `RoomSummary.display_label_placeholder`; render via `roomListItemLabel`. */
+  display_name_placeholder?: RoomNamePlaceholder | null;
+  avatar: AvatarImage | null;
+  /** Another joined Space also shows this room. */
+  in_other_space: boolean;
 }
 
 export interface RoomListItem {

@@ -99,7 +99,8 @@ describe("Rust-projected workspace shell", () => {
       avatar: null,
       unread_count: 0,
       highlight_count: 0,
-      is_active: true
+      is_active: true,
+      leave_candidates: []
     }];
 
     render(
@@ -437,7 +438,8 @@ describe("Rust-projected workspace shell", () => {
       avatar: null,
       unread_count: 0,
       highlight_count: 0,
-      is_active: true
+      is_active: true,
+      leave_candidates: []
     }];
     render(<Sidebar snapshot={snapshot} {...sidebarProps()} onAddExistingRoom={onAddExistingRoom} />);
     fireEvent.click(screen.getByRole("button", {

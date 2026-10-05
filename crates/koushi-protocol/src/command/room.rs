@@ -156,6 +156,13 @@ pub enum RoomCommand {
         request_id: RequestId,
         room_id: String,
     },
+    /// Leave a Space, first leaving the chosen joined child rooms. Core admits
+    /// only `child_room_ids` that are current leave candidates of the Space.
+    LeaveSpace {
+        request_id: RequestId,
+        space_id: String,
+        child_room_ids: Vec<String>,
+    },
     ForgetRoom {
         request_id: RequestId,
         room_id: String,
@@ -421,6 +428,16 @@ impl fmt::Debug for RoomCommand {
                 .debug_struct("LeaveRoom")
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::LeaveSpace {
+                request_id,
+                child_room_ids,
+                ..
+            } => formatter
+                .debug_struct("LeaveSpace")
+                .field("request_id", request_id)
+                .field("space_id", &"RoomId(..)")
+                .field("child_room_count", &child_room_ids.len())
                 .finish(),
             Self::ForgetRoom { request_id, .. } => formatter
                 .debug_struct("ForgetRoom")

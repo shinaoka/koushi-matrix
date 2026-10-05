@@ -1388,6 +1388,16 @@ stateDiagram-v2
   `LeavePendingObservation`, removes the room from the desired SDK set, and
   blocks both restored and visible evidence from re-adding it. A failed
   operation leaves `Resident` unchanged.
+- `RoomCommand::LeaveSpace { space_id, child_room_ids }` leaves a Space
+  together with a chosen subset of its joined child rooms. The candidates are
+  the Rust projection `SpaceRailItem.leave_candidates` (joined, non-DM rooms in
+  `SpaceSummary::child_room_ids`, with `in_other_space` when another joined
+  Space also shows the room); AppActor re-admits `child_room_ids` against the
+  same projection, dropping anything else. RoomActor leaves each admitted child
+  as a direct leave in order and stops at the first failure with
+  `OperationFailed`, keeping the Space joined so a retry offers only the rooms
+  still joined. After every child succeeds it leaves the Space and emits the
+  ordinary `RoomLeft` for the Space. Subspaces are never left recursively.
 - External membership transitions preserve SDK receipt order. Only `left`
   followed later by `joined|invited` clears leave state; `joined` before `left`,
   duplicate updates, delayed projections, and stale core generations cannot.
@@ -3594,7 +3604,8 @@ stateDiagram-v2
   default idle state and drop selected-room settings.
 - Headless core QA covers this with the `room_management` scenario and
   private-data-free tokens `room_settings=ok`, `permission_guard=ok`,
-  `moderation=ok`, `space_access=ok`, and `space_add_existing=ok`. The lane uses a disposable management
+  `moderation=ok`, `space_access=ok`, `space_add_existing=ok`, and
+  `space_leave_children=ok`. The lane uses a disposable management
   room so timeline and room/space stages are not disrupted. `space_access=ok`
   proves a disposable Space's join rule switches invite ↔ public for its
   creator, reaches a second member's open settings through sync, is refused for
@@ -3603,6 +3614,9 @@ stateDiagram-v2
   child-side `m.space.parent` is offered, added through `SetSpaceChild`, and
   projected as added, and that the homeserver then holds a routed
   `m.space.child` for it and for a room created inside the Space (#1007).
+  `space_leave_children=ok` proves `LeaveSpace` leaves only the admitted
+  children of a disposable Space (a room outside the Space named in the
+  command stays joined), then the Space, while an unselected child stays joined.
 
 ## Space Members
 

@@ -189,6 +189,29 @@
         "display_name": "Local Space",
         "highlight_count": 1,
         "is_active": true,
+        "leave_candidates": [
+          {
+            "avatar": null,
+            "display_name": "Fixture Low Priority Room",
+            "in_other_space": false,
+            "room_id": "!low-priority-room:example.invalid"
+          },
+          {
+            "avatar": {
+              "mxc_uri": "mxc://example.invalid/fixture-avatar",
+              "thumbnail": {
+                "height": 64,
+                "kind": "ready",
+                "mime_type": "image/png",
+                "source_ref": "avatar/2222222222222222",
+                "width": 64
+              }
+            },
+            "display_name": "Fixture Room",
+            "in_other_space": false,
+            "room_id": "!room:example.invalid"
+          }
+        ],
         "local_icon": "L",
         "space_id": "!space:example.invalid",
         "unread_count": 3

@@ -52,6 +52,36 @@ pub(crate) enum RoomOperationKind {
     JoinDirectoryRoom,
 }
 
+/// Why one room leave did not settle.
+enum LeaveFailure {
+    /// The homeserver accepted the leave but residency did not acknowledge it.
+    Ack,
+    Room(RoomFailureKind),
+}
+
+fn record_space_leave_outcome(
+    outcome: &'static str,
+    child_room_count: usize,
+    left_child_count: usize,
+) {
+    record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.room_operation",
+            "space_leave_settled",
+        )
+        .field(DiagnosticField::token("outcome", outcome))
+        .field(DiagnosticField::count(
+            "child_room_count",
+            child_room_count as u64,
+        ))
+        .field(DiagnosticField::count(
+            "left_child_count",
+            left_child_count as u64,
+        )),
+    );
+}
+
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) struct RoomOperationTestControl {
     pub(crate) kind: RoomOperationKind,
@@ -991,38 +1021,117 @@ impl RoomActor {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
-        let Some((operation, result)) = self
-            .leave_room_with_residency(RoomOperationKind::LeaveRoom, &room_id)
-            .await
-        else {
+        // The admitted operation is held through the final reducer action and
+        // CoreEvent so a completion cannot outlive its account session.
+        let Ok(operation) = self.begin_residency_operation() else {
             self.reject_residency_operation(request_id);
             return;
         };
-        match result {
+        match self
+            .leave_room_and_settle_locally(&operation, &room_id)
+            .await
+        {
             Ok(left_room_id) => {
-                if !operation
-                    .room_left(&left_room_id, RoomRemovalCause::DirectLeave)
-                    .await
-                {
-                    self.reject_residency_ack(request_id);
-                    return;
-                }
-                self.reduce_reliable(vec![AppAction::SpaceOrderPreferenceRemoved {
-                    space_id: left_room_id.clone(),
-                }])
-                .await;
-                self.reduce_reliable(vec![AppAction::RoomLeftLocally {
-                    room_id: left_room_id.clone(),
-                }])
-                .await;
                 self.emit(CoreEvent::Room(RoomEvent::RoomLeft {
                     request_id,
                     room_id: left_room_id,
                 }));
                 self.refresh_room_list();
             }
-            Err(error) => {
-                let kind = classify_room_error(&error);
+            Err(failure) => self.emit_leave_failure(request_id, failure),
+        }
+        drop(operation);
+    }
+
+    /// Leave the admitted child rooms in order, then the Space itself. The
+    /// first failure settles the request and keeps the Space joined, so a
+    /// retry offers exactly the rooms that are still joined.
+    pub(super) async fn handle_leave_space(
+        &mut self,
+        request_id: RequestId,
+        space_id: String,
+        child_room_ids: Vec<String>,
+    ) {
+        let Some(_session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        // One admitted operation covers every leave of this request and is held
+        // through the final reducer action and CoreEvent.
+        let Ok(operation) = self.begin_residency_operation() else {
+            self.reject_residency_operation(request_id);
+            return;
+        };
+        let child_room_count = child_room_ids.len();
+        let mut left_child_count = 0_usize;
+        for child_room_id in child_room_ids {
+            if let Err(failure) = self
+                .leave_room_and_settle_locally(&operation, &child_room_id)
+                .await
+            {
+                record_space_leave_outcome("child_failed", child_room_count, left_child_count);
+                self.refresh_room_list();
+                self.emit_leave_failure(request_id, failure);
+                return;
+            }
+            left_child_count += 1;
+        }
+        match self
+            .leave_room_and_settle_locally(&operation, &space_id)
+            .await
+        {
+            Ok(left_space_id) => {
+                record_space_leave_outcome("left", child_room_count, left_child_count);
+                self.emit(CoreEvent::Room(RoomEvent::RoomLeft {
+                    request_id,
+                    room_id: left_space_id,
+                }));
+                self.refresh_room_list();
+            }
+            Err(failure) => {
+                record_space_leave_outcome("space_failed", child_room_count, left_child_count);
+                self.refresh_room_list();
+                self.emit_leave_failure(request_id, failure);
+            }
+        }
+        drop(operation);
+    }
+
+    /// Leave one room and apply the local consequences a successful leave has
+    /// for residency, Space order, and the room list projection.
+    async fn leave_room_and_settle_locally(
+        &mut self,
+        operation: &AdmittedRoomOperation,
+        room_id: &str,
+    ) -> Result<String, LeaveFailure> {
+        let left_room_id = self
+            .call_room_operation(
+                RoomOperationKind::LeaveRoom,
+                koushi_sdk::leave_room(&operation.session, room_id),
+            )
+            .await
+            .map_err(|error| LeaveFailure::Room(classify_room_error(&error)))?;
+        if !operation
+            .room_left(&left_room_id, RoomRemovalCause::DirectLeave)
+            .await
+        {
+            return Err(LeaveFailure::Ack);
+        }
+        self.reduce_reliable(vec![AppAction::SpaceOrderPreferenceRemoved {
+            space_id: left_room_id.clone(),
+        }])
+        .await;
+        self.reduce_reliable(vec![AppAction::RoomLeftLocally {
+            room_id: left_room_id.clone(),
+        }])
+        .await;
+        Ok(left_room_id)
+    }
+
+    fn emit_leave_failure(&self, request_id: RequestId, failure: LeaveFailure) {
+        match failure {
+            LeaveFailure::Ack => self.reject_residency_ack(request_id),
+            LeaveFailure::Room(kind) => {
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }

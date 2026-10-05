@@ -208,6 +208,17 @@ export type MessageId =
   | "room.leaveConfirmCopyDm"
   | "room.leaveConfirmAction"
   | "room.leaveConfirmActionDm"
+  | "space.leaveConfirmTitle"
+  | "space.leaveConfirmCopy"
+  | "space.leaveConfirmCopyNoRooms"
+  | "space.leaveRoomsChoice"
+  | "space.leaveSpaceOnly"
+  | "space.leaveAllRooms"
+  | "space.leaveSelectedRooms"
+  | "space.leaveRoomsList"
+  | "space.leaveRoomInOtherSpace"
+  | "space.leaveConfirmAction"
+  | "space.leaveConfirmActionWithRooms"
   | "context.openKeyboardSettings"
   | "context.openRoomInfo"
   | "context.openSpaceInfo"
@@ -1934,7 +1945,7 @@ const en: Catalog = {
   "context.addToFavourites": "Add to Favourites",
   "context.addToLowPriority": "Move to Low priority",
   "context.ignoreUser": "Ignore",
-  "context.leaveSpace": "Leave Space",
+  "context.leaveSpace": "Leave Space…",
   "context.leaveRoom": "Leave room…",
   "context.leaveConversation": "Leave conversation…",
   "room.leaveConfirmTitle": "Leave {name}?",
@@ -1945,6 +1956,17 @@ const en: Catalog = {
     "This removes your conversation with {name} from your joined rooms. Messages already on the homeserver are not deleted. You may need a new invitation to return.",
   "room.leaveConfirmAction": "Leave room",
   "room.leaveConfirmActionDm": "Leave conversation",
+  "space.leaveConfirmTitle": "Leave {name}?",
+  "space.leaveConfirmCopy": "You can also leave rooms in this Space. Rooms you keep stay in your room list. Subspaces and rooms you have not joined are not affected.",
+  "space.leaveConfirmCopyNoRooms": "You have not joined any rooms in {name}. Leaving removes the Space from your Space list.",
+  "space.leaveRoomsChoice": "Rooms in this Space",
+  "space.leaveSpaceOnly": "Leave only the Space",
+  "space.leaveAllRooms": "Also leave all rooms ({count})",
+  "space.leaveSelectedRooms": "Choose rooms to leave",
+  "space.leaveRoomsList": "Rooms to leave",
+  "space.leaveRoomInOtherSpace": "Also in another Space",
+  "space.leaveConfirmAction": "Leave Space",
+  "space.leaveConfirmActionWithRooms": "Leave Space and rooms ({count})",
   "context.openKeyboardSettings": "Keyboard shortcuts",
   "context.openRoomInfo": "Room info",
   "context.openSpaceInfo": "Space info",
@@ -3589,7 +3611,7 @@ const ja: Catalog = {
   "context.addToFavourites": "お気に入りに追加",
   "context.addToLowPriority": "低優先度に移動",
   "context.ignoreUser": "無視",
-  "context.leaveSpace": "スペースから退出",
+  "context.leaveSpace": "スペースから退出…",
   "context.leaveRoom": "ルームから退出…",
   "context.leaveConversation": "会話から退出…",
   "room.leaveConfirmTitle": "{name} から退出しますか？",
@@ -3600,6 +3622,17 @@ const ja: Catalog = {
     "{name} との会話が参加中のルーム一覧から削除されます。ホームサーバー上のメッセージは削除されません。再開には新しい招待が必要になることがあります。",
   "room.leaveConfirmAction": "ルームから退出",
   "room.leaveConfirmActionDm": "会話から退出",
+  "space.leaveConfirmTitle": "{name} から退出しますか？",
+  "space.leaveConfirmCopy": "このスペースのルームからも一緒に退出できます。残したルームは参加中のルーム一覧に残ります。サブスペースや未参加のルームは対象外です。",
+  "space.leaveConfirmCopyNoRooms": "{name} で参加中のルームはありません。退出するとスペース一覧から削除されます。",
+  "space.leaveRoomsChoice": "このスペースのルーム",
+  "space.leaveSpaceOnly": "スペースのみ退出",
+  "space.leaveAllRooms": "ルーム {count} 件すべてからも退出",
+  "space.leaveSelectedRooms": "退出するルームを選ぶ",
+  "space.leaveRoomsList": "退出するルーム",
+  "space.leaveRoomInOtherSpace": "他のスペースにも含まれています",
+  "space.leaveConfirmAction": "スペースから退出",
+  "space.leaveConfirmActionWithRooms": "スペースとルーム {count} 件から退出",
   "context.openKeyboardSettings": "キーボードショートカット",
   "context.openRoomInfo": "ルーム情報",
   "context.openSpaceInfo": "スペース情報",
