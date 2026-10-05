@@ -25,7 +25,7 @@ import {
   Smile,
   X
 } from "lucide-react";
-import { t } from "../i18n/messages";
+import { t, type MessageId } from "../i18n/messages";
 import type {
   ComposerDocument,
   ComposerSurface,
@@ -55,6 +55,7 @@ import {
   avatarInitial,
   defaultScheduleDateTimeValue,
   scheduledSendTimestampFromInput,
+  shiftScheduledSendValue,
   type MentionCandidate,
   type ComposerModeProp
 } from "../app/uiShared";
@@ -421,11 +422,18 @@ export const Composer = memo(function Composer({
     if (!activeMention) {
       return;
     }
-    const displayLabel = peopleFacingLabel(candidate.label);
-    const target =
-      candidate.target.kind === "user"
-        ? { ...candidate.target, display_label: displayLabel }
-        : candidate.target;
+    // #1122: Rust renders an inline as `@` + its display label, so the label has
+    // to be the bare token. The room-notification candidate's own label already
+    // carries the `@` its autocomplete row shows (`@room`), while its target's
+    // label is the `room` half of the token.
+    const isRoomMention = candidate.target.kind === "roomMention";
+    const isUserTarget = candidate.target.kind === "user";
+    const displayLabel = isRoomMention
+      ? candidate.target.display_label
+      : peopleFacingLabel(candidate.label);
+    const target = isUserTarget
+      ? { ...candidate.target, display_label: displayLabel }
+      : candidate.target;
     const withMention = insertMention(
       localDocument,
       activeMention.start,
@@ -983,6 +991,7 @@ export const Composer = memo(function Composer({
               onChange={(event) => setScheduleValue(event.currentTarget.value)}
             />
           </label>
+          <ScheduledSendTimeAdjustments value={scheduleValue} onChange={setScheduleValue} />
           <div className="scheduled-send-form-actions">
             <button className="dialog-button" type="button" onClick={() => setScheduleOpen(false)}>
               {t("action.cancel")}
@@ -1000,6 +1009,37 @@ export const Composer = memo(function Composer({
     </section>
   );
 });
+
+/** Mouse-driven adjusted to a native `datetime-local` scheduled-send value (#1124). */
+export function ScheduledSendTimeAdjustments({
+  value,
+  onChange
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const adjustments: Array<{ id: MessageId; deltaMinutes: number }> = [
+    { id: "scheduled.timeEarlierHour", deltaMinutes: -60 },
+    { id: "scheduled.timeEarlierTenMinutes", deltaMinutes: -10 },
+    { id: "scheduled.timeLaterTenMinutes", deltaMinutes: 10 },
+    { id: "scheduled.timeLaterHour", deltaMinutes: 60 }
+  ];
+  return (
+    <div className="scheduled-send-adjustments">
+      {adjustments.map(({ id, deltaMinutes }) => (
+        <button
+          key={id}
+          className="dialog-button scheduled-send-adjustment"
+          type="button"
+          aria-label={t(id)}
+          onClick={() => onChange(shiftScheduledSendValue(value, deltaMinutes))}
+        >
+          {t(id)}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 type MentionSection = {
   key: "users" | "room";
