@@ -21,8 +21,17 @@ use crate::executor;
 pub(super) const REPLY_QUOTE_LEDGER_MAX_ENTRIES: usize = 256;
 pub(super) const REPLY_QUOTE_MAX_IN_FLIGHT: usize = 4;
 pub(super) const REPLY_QUOTE_MAX_ATTEMPTS: u32 = 3;
+pub(super) const REPLY_QUOTE_MAX_UNDECRYPTABLE_ATTEMPTS: u32 = 8;
 pub(super) const REPLY_QUOTE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
 const REPLY_QUOTE_RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(10)];
+/// Room keys often arrive late, so undecryptable originals back off slowly and
+/// are not counted against the transient-failure budget.
+const REPLY_QUOTE_UNDECRYPTABLE_RETRY_DELAYS: [Duration; 4] = [
+    Duration::from_secs(15),
+    Duration::from_secs(60),
+    Duration::from_secs(180),
+    Duration::from_secs(300),
+];
 
 /// Classified result of one exact-event lookup.
 #[derive(Clone, Debug)]
@@ -32,30 +41,77 @@ pub(super) enum OriginalLookupOutcome {
     TimedOut,
 }
 
+/// Fences one lookup or retry wait. Tokens are unique for the lifetime of a
+/// ledger, so a result from an evicted or superseded entry can never match a
+/// later entry for the same original.
+pub(super) type HydrationToken = u64;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum HydrationStep {
     Start {
         event_id: String,
-        attempt: u32,
+        token: HydrationToken,
     },
     ScheduleRetry {
         event_id: String,
-        attempt: u32,
+        token: HydrationToken,
         delay: Duration,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct Attempts {
+    /// Completed attempts that failed transiently (network, timeout).
+    transient: u32,
+    /// Completed attempts that loaded an undecryptable original.
+    undecryptable: u32,
+}
+
+/// Result of learning one authoritative original.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct LearnOutcome {
+    /// An existing settled quote was replaced (an edit or redaction).
+    pub(super) updated: bool,
+    /// An in-flight lookup or retry wait was superseded and must be aborted.
+    pub(super) superseded_task: bool,
+}
+
+/// Originals whose authoritative content changed while overlaying one batch.
+#[derive(Debug, Default)]
+pub(super) struct ReplyQuoteRefreshes {
+    /// Settled entries that changed: every dependent quote must be re-derived,
+    /// resolved or not.
+    pub(super) changed: HashSet<String>,
+    /// Lookups a change superseded: their actor tasks must be aborted.
+    pub(super) superseded: HashSet<String>,
+}
+
+pub(super) fn record_learn(
+    refreshes: &mut ReplyQuoteRefreshes,
+    event_id: String,
+    outcome: LearnOutcome,
+) {
+    if outcome.updated {
+        refreshes.changed.insert(event_id.clone());
+    }
+    if outcome.superseded_task {
+        refreshes.superseded.insert(event_id);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum EntryState {
     InFlight {
-        attempt: u32,
+        attempts: Attempts,
+        token: HydrationToken,
     },
     RetryWait {
-        attempt: u32,
+        attempts: Attempts,
+        token: HydrationToken,
     },
     /// Waiting for an in-flight slot.
     Queued {
-        attempt: u32,
+        attempts: Attempts,
     },
     Settled(ReplyQuote),
 }
@@ -65,6 +121,9 @@ pub(super) struct ReplyQuoteHydration {
     entries: HashMap<String, EntryState>,
     /// Insertion order of entries, used to evict settled entries oldest first.
     order: VecDeque<String>,
+    next_token: HydrationToken,
+    /// An original that is never evicted (a Thread actor's root).
+    retained: Option<String>,
 }
 
 impl ReplyQuoteHydration {
@@ -76,29 +135,57 @@ impl ReplyQuoteHydration {
         }
     }
 
-    /// Record an original learned from an authoritative source (a `Ready` SDK
-    /// detail or a projected canonical item). Never overrides an entry that is
-    /// still being looked up, so stale attempts are fenced by attempt number.
-    pub(super) fn learn(&mut self, quote: ReplyQuote) {
-        if quote.state != ReplyQuoteState::Ready && quote.state != ReplyQuoteState::Redacted {
-            return;
+    pub(super) fn tracks(&self, original_event_id: &str) -> bool {
+        self.entries.contains_key(original_event_id)
+    }
+
+    pub(super) fn retain(&mut self, original_event_id: &str) {
+        if self.retained.as_deref() != Some(original_event_id) {
+            self.retained = Some(original_event_id.to_owned());
+        }
+    }
+
+    /// Record an original observed from an authoritative source (a `Ready` or
+    /// `Redacted` SDK detail, or a projected item of this actor's timeline).
+    /// The observation supersedes any lookup or retry wait for the original;
+    /// a changed settled value is reported as `updated`, so newer edits and
+    /// redactions of an observed original reach every dependent quote.
+    pub(super) fn learn(&mut self, quote: ReplyQuote) -> LearnOutcome {
+        if !matches!(
+            quote.state,
+            ReplyQuoteState::Ready | ReplyQuoteState::Redacted | ReplyQuoteState::Unsupported
+        ) {
+            return LearnOutcome::default();
         }
         let event_id = quote.event_id.clone();
         match self.entries.get_mut(&event_id) {
-            Some(EntryState::Settled(existing)) => *existing = quote,
-            Some(EntryState::Queued { .. } | EntryState::RetryWait { .. }) => {
-                self.entries.insert(event_id, EntryState::Settled(quote));
+            Some(EntryState::Settled(existing)) => {
+                if *existing == quote {
+                    return LearnOutcome::default();
+                }
+                *existing = quote;
+                LearnOutcome {
+                    updated: true,
+                    superseded_task: false,
+                }
             }
-            Some(EntryState::InFlight { .. }) => {
-                // The in-flight result will be ignored because the entry is no
-                // longer in flight with a matching attempt.
-                self.entries.insert(event_id, EntryState::Settled(quote));
+            Some(state) => {
+                let superseded_task = matches!(
+                    state,
+                    EntryState::InFlight { .. } | EntryState::RetryWait { .. }
+                );
+                *state = EntryState::Settled(quote);
+                LearnOutcome {
+                    updated: false,
+                    superseded_task,
+                }
             }
             None => {
                 if self.make_room() {
                     self.order.push_back(event_id.clone());
                     self.entries.insert(event_id, EntryState::Settled(quote));
                 }
+                LearnOutcome::default()
             }
         }
     }
@@ -114,27 +201,46 @@ impl ReplyQuoteHydration {
                 continue;
             }
             self.order.push_back(event_id.to_owned());
-            self.entries
-                .insert(event_id.to_owned(), EntryState::Queued { attempt: 1 });
+            self.entries.insert(
+                event_id.to_owned(),
+                EntryState::Queued {
+                    attempts: Attempts::default(),
+                },
+            );
         }
         self.start_queued()
     }
 
-    /// Apply a lookup result. Results whose attempt no longer matches the entry
-    /// are ignored.
+    /// Apply a lookup result. Results whose token no longer matches the
+    /// entry's in-flight lookup are ignored.
     pub(super) fn complete(
         &mut self,
         event_id: &str,
-        attempt: u32,
+        token: HydrationToken,
         outcome: OriginalLookupOutcome,
     ) -> Vec<HydrationStep> {
-        if self.entries.get(event_id) != Some(&EntryState::InFlight { attempt }) {
+        let Some(EntryState::InFlight {
+            attempts,
+            token: current,
+        }) = self.entries.get(event_id).cloned()
+        else {
+            return Vec::new();
+        };
+        if current != token {
             return Vec::new();
         }
-        let mut steps = Vec::new();
-        let terminal = match outcome {
-            // `None` means undecryptable or hidden: worth another attempt.
-            OriginalLookupOutcome::Loaded(item) => reply_quote_from_timeline_item(event_id, &item),
+        let mut attempts = attempts;
+        let settled = match outcome {
+            OriginalLookupOutcome::Loaded(item) => {
+                match reply_quote_from_timeline_item(event_id, &item) {
+                    Some(quote) => Some(quote),
+                    None => {
+                        attempts.undecryptable += 1;
+                        (attempts.undecryptable >= REPLY_QUOTE_MAX_UNDECRYPTABLE_ATTEMPTS)
+                            .then(|| placeholder_quote(event_id, ReplyQuoteState::Failed))
+                    }
+                }
+            }
             OriginalLookupOutcome::Failed(
                 OperationFailureKind::NotFound | OperationFailureKind::Forbidden,
             ) => Some(placeholder_quote(event_id, ReplyQuoteState::Missing)),
@@ -144,28 +250,29 @@ impl ReplyQuoteHydration {
             OriginalLookupOutcome::Failed(
                 OperationFailureKind::Network | OperationFailureKind::Timeout,
             )
-            | OriginalLookupOutcome::TimedOut => None,
+            | OriginalLookupOutcome::TimedOut => {
+                attempts.transient += 1;
+                (attempts.transient >= REPLY_QUOTE_MAX_ATTEMPTS)
+                    .then(|| placeholder_quote(event_id, ReplyQuoteState::Failed))
+            }
         };
-        match terminal {
+        let mut steps = Vec::new();
+        match settled {
             Some(quote) => {
                 self.entries
                     .insert(event_id.to_owned(), EntryState::Settled(quote));
             }
-            None if attempt >= REPLY_QUOTE_MAX_ATTEMPTS => {
+            None => {
+                let delay = retry_delay(attempts);
+                let token = self.issue_token();
                 self.entries.insert(
                     event_id.to_owned(),
-                    EntryState::Settled(placeholder_quote(event_id, ReplyQuoteState::Failed)),
+                    EntryState::RetryWait { attempts, token },
                 );
-            }
-            None => {
-                let next = attempt + 1;
-                self.entries
-                    .insert(event_id.to_owned(), EntryState::RetryWait { attempt: next });
                 steps.push(HydrationStep::ScheduleRetry {
                     event_id: event_id.to_owned(),
-                    attempt: next,
-                    delay: REPLY_QUOTE_RETRY_DELAYS
-                        [usize::try_from(attempt - 1).unwrap_or(0).min(1)],
+                    token,
+                    delay,
                 });
             }
         }
@@ -174,18 +281,34 @@ impl ReplyQuoteHydration {
     }
 
     /// A retry delay elapsed.
-    pub(super) fn retry_due(&mut self, event_id: &str, attempt: u32) -> Vec<HydrationStep> {
-        if self.entries.get(event_id) != Some(&EntryState::RetryWait { attempt }) {
+    pub(super) fn retry_due(
+        &mut self,
+        event_id: &str,
+        token: HydrationToken,
+    ) -> Vec<HydrationStep> {
+        let Some(EntryState::RetryWait {
+            attempts,
+            token: current,
+        }) = self.entries.get(event_id).cloned()
+        else {
+            return Vec::new();
+        };
+        if current != token {
             return Vec::new();
         }
         self.entries
-            .insert(event_id.to_owned(), EntryState::Queued { attempt });
+            .insert(event_id.to_owned(), EntryState::Queued { attempts });
         self.start_queued()
     }
 
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    fn issue_token(&mut self) -> HydrationToken {
+        self.next_token += 1;
+        self.next_token
     }
 
     fn in_flight(&self) -> usize {
@@ -198,19 +321,24 @@ impl ReplyQuoteHydration {
     fn start_queued(&mut self) -> Vec<HydrationStep> {
         let mut available = REPLY_QUOTE_MAX_IN_FLIGHT.saturating_sub(self.in_flight());
         let mut steps = Vec::new();
-        for event_id in &self.order {
+        let queued = self
+            .order
+            .iter()
+            .filter(|event_id| {
+                matches!(self.entries.get(*event_id), Some(EntryState::Queued { .. }))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for event_id in queued {
             if available == 0 {
                 break;
             }
-            let Some(state) = self.entries.get_mut(event_id) else {
-                continue;
-            };
-            if let EntryState::Queued { attempt } = *state {
-                *state = EntryState::InFlight { attempt };
-                steps.push(HydrationStep::Start {
-                    event_id: event_id.clone(),
-                    attempt,
-                });
+            let token = self.issue_token();
+            if let Some(state) = self.entries.get_mut(&event_id)
+                && let EntryState::Queued { attempts } = *state
+            {
+                *state = EntryState::InFlight { attempts, token };
+                steps.push(HydrationStep::Start { event_id, token });
                 available -= 1;
             }
         }
@@ -218,7 +346,8 @@ impl ReplyQuoteHydration {
     }
 
     /// Ensure there is space for one more entry, evicting the oldest settled
-    /// entry when full. Returns false when every entry is still unsettled.
+    /// entry other than the retained original when full. Returns false when
+    /// no entry can be evicted.
     fn make_room(&mut self) -> bool {
         self.order
             .retain(|event_id| self.entries.contains_key(event_id));
@@ -226,7 +355,8 @@ impl ReplyQuoteHydration {
             return true;
         }
         let Some(position) = self.order.iter().position(|event_id| {
-            matches!(self.entries.get(event_id), Some(EntryState::Settled(_)))
+            self.retained.as_deref() != Some(event_id.as_str())
+                && matches!(self.entries.get(event_id), Some(EntryState::Settled(_)))
         }) else {
             return false;
         };
@@ -234,6 +364,17 @@ impl ReplyQuoteHydration {
             self.entries.remove(&event_id);
         }
         true
+    }
+}
+
+fn retry_delay(attempts: Attempts) -> Duration {
+    if attempts.undecryptable > 0 {
+        let index = usize::try_from(attempts.undecryptable - 1).unwrap_or(usize::MAX);
+        REPLY_QUOTE_UNDECRYPTABLE_RETRY_DELAYS
+            [index.min(REPLY_QUOTE_UNDECRYPTABLE_RETRY_DELAYS.len() - 1)]
+    } else {
+        let index = usize::try_from(attempts.transient.saturating_sub(1)).unwrap_or(usize::MAX);
+        REPLY_QUOTE_RETRY_DELAYS[index.min(REPLY_QUOTE_RETRY_DELAYS.len() - 1)]
     }
 }
 
@@ -262,13 +403,17 @@ pub(super) fn overlay_reply_quotes<'a>(
     items: impl IntoIterator<Item = &'a mut TimelineItem>,
     original_for: impl Fn(&str) -> Option<ReplyQuote>,
     hydration: &ReplyQuoteHydration,
+    refresh: &HashSet<String>,
 ) -> bool {
     let mut changed = false;
     for item in items {
         let Some(quote) = item.reply_quote.as_ref() else {
             continue;
         };
-        if !reply_quote_is_unresolved(quote) {
+        // An unresolved quote always takes the newest value. A resolved quote
+        // is re-derived only when its original changed (an edit or redaction),
+        // so stale content cannot survive in the rejoinder.
+        if !reply_quote_is_unresolved(quote) && !refresh.contains(&quote.event_id) {
             continue;
         }
         let resolved = original_for(&quote.event_id)
@@ -297,16 +442,46 @@ pub(super) fn loading_reply_quote_targets<'a>(
         .collect()
 }
 
-/// Ready quotes in `items` that teach the ledger an original.
-pub(super) fn learn_ready_reply_quotes<'a>(
+/// Every original event id that a quote in `items` points at, resolved or not.
+pub(super) fn quote_targets<'a>(items: impl IntoIterator<Item = &'a TimelineItem>) -> Vec<&'a str> {
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .filter_map(|item| item.reply_quote.as_ref())
+        .map(|quote| quote.event_id.as_str())
+        .filter(|event_id| seen.insert(*event_id))
+        .collect()
+}
+
+/// Learn every authoritative original the items project: a `Ready`/`Redacted`
+/// quote a rejoinder carries, and the original itself when a quote already
+/// tracks it, so an edit or redaction refreshes the stored content. A target
+/// outside this actor's timeline only updates when it appears here or the
+/// actor is replaced.
+pub(super) fn learn_projected_originals<'a>(
     hydration: &mut ReplyQuoteHydration,
     items: impl IntoIterator<Item = &'a TimelineItem>,
+    refreshes: &mut ReplyQuoteRefreshes,
 ) {
     for item in items {
         if let Some(quote) = item.reply_quote.as_ref()
-            && quote.state == ReplyQuoteState::Ready
+            && matches!(
+                quote.state,
+                ReplyQuoteState::Ready | ReplyQuoteState::Redacted
+            )
         {
-            hydration.learn(quote.clone());
+            let outcome = hydration.learn(quote.clone());
+            record_learn(refreshes, quote.event_id.clone(), outcome);
+        }
+        let Some(event_id) = super::item_projection::timeline_item_event_id(item) else {
+            continue;
+        };
+        if !hydration.tracks(event_id) {
+            continue;
+        }
+        if let Some(quote) = reply_quote_from_timeline_item(event_id, item) {
+            let outcome = hydration.learn(quote);
+            record_learn(refreshes, event_id.to_owned(), outcome);
         }
     }
 }
@@ -322,53 +497,60 @@ fn timeline_diff_items_mut(diffs: &mut [TimelineDiff]) -> impl Iterator<Item = &
     })
 }
 
-fn unresolved_targets<'a>(items: impl IntoIterator<Item = &'a TimelineItem>) -> Vec<String> {
-    let mut seen = HashSet::new();
-    items
-        .into_iter()
-        .filter_map(|item| item.reply_quote.as_ref())
-        .filter(|quote| reply_quote_is_unresolved(quote))
-        .filter(|quote| seen.insert(quote.event_id.as_str()))
-        .map(|quote| quote.event_id.clone())
-        .collect()
-}
-
 /// Project the originals for `targets` found in `batch` (preferred) or in
-/// `canonical`.
+/// `canonical`, in a single pass per source.
 fn known_originals(
     targets: &[String],
     batch: &[&TimelineItem],
     canonical: &[TimelineItem],
 ) -> HashMap<String, ReplyQuote> {
-    targets
-        .iter()
-        .filter_map(|target| {
-            let original = batch
-                .iter()
-                .copied()
-                .find(|item| super::item_projection::timeline_item_event_id(item) == Some(target))
-                .or_else(|| {
-                    item_index_for_event_id(canonical, target).map(|index| &canonical[index])
-                })?;
-            reply_quote_from_timeline_item(target, original).map(|quote| (target.clone(), quote))
-        })
-        .collect()
+    let wanted: HashSet<&str> = targets.iter().map(String::as_str).collect();
+    if wanted.is_empty() {
+        return HashMap::new();
+    }
+    let mut originals = HashMap::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for item in batch.iter().copied().chain(canonical.iter()) {
+        let Some(event_id) = super::item_projection::timeline_item_event_id(item) else {
+            continue;
+        };
+        if !wanted.contains(event_id) || !seen.insert(event_id.to_owned()) {
+            continue;
+        }
+        if let Some(quote) = reply_quote_from_timeline_item(event_id, item) {
+            originals.insert(event_id.to_owned(), quote);
+        }
+    }
+    originals
 }
 
 impl TimelineActor {
     /// Resolve unresolved quotes on an SDK batch before it is committed, so a
-    /// reply to a known original is published with a resolved quote.
-    pub(super) fn overlay_reply_quotes_on_batch(&mut self, diffs: &mut [TimelineDiff]) {
+    /// reply to a known original is published with a resolved quote. Returns
+    /// the originals whose settled content changed, so callers refresh every
+    /// dependent quote (resolved or not) and abort superseded lookups.
+    pub(super) fn overlay_reply_quotes_on_batch(
+        &mut self,
+        diffs: &mut [TimelineDiff],
+    ) -> ReplyQuoteRefreshes {
+        let mut refreshes = ReplyQuoteRefreshes::default();
         let targets = {
             let mut items = Vec::new();
             for item in timeline_diff_items_mut(diffs) {
                 items.push(&*item);
             }
-            learn_ready_reply_quotes(&mut self.reply_quote_hydration, items.iter().copied());
-            unresolved_targets(items.iter().copied())
+            learn_projected_originals(
+                &mut self.reply_quote_hydration,
+                items.iter().copied(),
+                &mut refreshes,
+            );
+            quote_targets(items.iter().copied())
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
         };
         if targets.is_empty() {
-            return;
+            return refreshes;
         }
         let originals = {
             let mut items = Vec::new();
@@ -377,17 +559,26 @@ impl TimelineActor {
             }
             known_originals(&targets, &items, &self.navigation_items)
         };
+        for (target, quote) in &originals {
+            let outcome = self.reply_quote_hydration.learn(quote.clone());
+            record_learn(&mut refreshes, target.clone(), outcome);
+        }
         overlay_reply_quotes(
             timeline_diff_items_mut(diffs),
             |event_id| originals.get(event_id).cloned(),
             &self.reply_quote_hydration,
+            &refreshes.changed,
         );
+        refreshes
     }
 
     /// Resolve unresolved quotes on manager-owned pending sends before they are
     /// handed to the display projection.
     pub(super) fn overlay_reply_quotes_on_pending(&self, items: &mut [TimelineItem]) {
-        let targets = unresolved_targets(items.iter());
+        let targets = quote_targets(items.iter())
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
         if targets.is_empty() {
             return;
         }
@@ -396,13 +587,30 @@ impl TimelineActor {
             items.iter_mut(),
             |event_id| originals.get(event_id).cloned(),
             &self.reply_quote_hydration,
+            &self.reply_quote_refresh,
         );
     }
 
-    /// Republish canonical items and pending sends whose unresolved quotes can
-    /// now be resolved from a committed original or a settled ledger entry.
+    /// Republish canonical items and pending sends whose quotes can now be
+    /// resolved from a committed original or a settled ledger entry, including
+    /// already-resolved quotes whose original changed in the retained refresh
+    /// set.
+    ///
+    /// While an anchor restore is buffering its coalesced emission, the
+    /// republish is deferred: emitting item sets now would overtake
+    /// `restore_emit_buffer` and reorder the UI's settled update.
     pub(super) fn republish_reply_quote_dependents(&mut self) {
-        let targets = unresolved_targets(self.navigation_items.iter());
+        if self.restore_anchor.is_some() {
+            self.reply_quote_republish_pending = true;
+            return;
+        }
+        self.reply_quote_republish_pending = false;
+        let refresh = std::mem::take(&mut self.reply_quote_refresh);
+        let refresh = &refresh;
+        let targets = quote_targets(self.navigation_items.iter())
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
         if !targets.is_empty() {
             let originals = known_originals(&targets, &[], &self.navigation_items);
             let mut core_diffs = Vec::new();
@@ -411,6 +619,7 @@ impl TimelineActor {
                     std::iter::once(&mut *item),
                     |event_id| originals.get(event_id).cloned(),
                     &self.reply_quote_hydration,
+                    refresh,
                 ) {
                     core_diffs.push(TimelineDiff::Set {
                         index,
@@ -424,7 +633,10 @@ impl TimelineActor {
         }
 
         let originals = {
-            let pending_targets = unresolved_targets(self.display_projection.pending_items());
+            let pending_targets = quote_targets(self.display_projection.pending_items())
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
             known_originals(&pending_targets, &[], &self.navigation_items)
         };
         let hydration = &self.reply_quote_hydration;
@@ -435,6 +647,7 @@ impl TimelineActor {
                     items.iter_mut(),
                     |event_id| originals.get(event_id).cloned(),
                     hydration,
+                    refresh,
                 )
             },
             &context,
@@ -478,13 +691,15 @@ impl TimelineActor {
     pub(super) fn handle_reply_quote_original_loaded(
         &mut self,
         event_id: String,
-        attempt: u32,
+        token: HydrationToken,
         outcome: OriginalLookupOutcome,
     ) {
-        self.reply_quote_tasks.remove(&event_id);
+        if !self.clear_reply_quote_task(&event_id, token) {
+            return;
+        }
         let steps = self
             .reply_quote_hydration
-            .complete(&event_id, attempt, outcome);
+            .complete(&event_id, token, outcome);
         self.execute_reply_quote_steps(steps);
         if self
             .reply_quote_hydration
@@ -496,17 +711,52 @@ impl TimelineActor {
         }
     }
 
-    pub(super) fn handle_reply_quote_retry_due(&mut self, event_id: String, attempt: u32) {
-        self.reply_quote_tasks.remove(&event_id);
-        let steps = self.reply_quote_hydration.retry_due(&event_id, attempt);
+    pub(super) fn handle_reply_quote_retry_due(&mut self, event_id: String, token: HydrationToken) {
+        if !self.clear_reply_quote_task(&event_id, token) {
+            return;
+        }
+        let steps = self.reply_quote_hydration.retry_due(&event_id, token);
         self.execute_reply_quote_steps(steps);
+    }
+
+    /// Drop the tracked task for `event_id` only while `token` is still current,
+    /// so a result or wake from a superseded or evicted lookup is ignored.
+    fn clear_reply_quote_task(&mut self, event_id: &str, token: HydrationToken) -> bool {
+        if self
+            .reply_quote_tasks
+            .get(event_id)
+            .map(|(tracked, _)| *tracked)
+            != Some(token)
+        {
+            return false;
+        }
+        self.reply_quote_tasks.remove(event_id);
+        true
+    }
+
+    /// Abort and drop the tracked task for an original whose observation
+    /// superseded it.
+    fn abort_reply_quote_task(&mut self, event_id: &str) {
+        if let Some((_token, task)) = self.reply_quote_tasks.remove(event_id) {
+            task.abort();
+        }
+    }
+
+    /// Retain the originals a batch changed and abort the lookups it
+    /// superseded, so a settled edit or redaction refreshes dependents and a
+    /// stale lookup result can never overwrite it.
+    pub(super) fn apply_reply_quote_refreshes(&mut self, refreshes: ReplyQuoteRefreshes) {
+        for event_id in refreshes.superseded {
+            self.abort_reply_quote_task(&event_id);
+        }
+        self.reply_quote_refresh.extend(refreshes.changed);
     }
 
     fn execute_reply_quote_steps(&mut self, steps: Vec<HydrationStep>) {
         for step in steps {
             let msg_tx = self.msg_tx.clone();
-            let (event_id, task) = match step {
-                HydrationStep::Start { event_id, attempt } => {
+            let (event_id, token, task) = match step {
+                HydrationStep::Start { event_id, token } => {
                     let session = Arc::clone(&self.session);
                     let key = self.key.clone();
                     let lookup_event_id = event_id.clone();
@@ -528,16 +778,16 @@ impl TimelineActor {
                         let _ = msg_tx
                             .send(TimelineActorMessage::ReplyQuoteOriginalLoaded {
                                 event_id: lookup_event_id,
-                                attempt,
+                                token,
                                 outcome,
                             })
                             .await;
                     });
-                    (event_id, task)
+                    (event_id, token, task)
                 }
                 HydrationStep::ScheduleRetry {
                     event_id,
-                    attempt,
+                    token,
                     delay,
                 } => {
                     let retry_event_id = event_id.clone();
@@ -546,14 +796,15 @@ impl TimelineActor {
                         let _ = msg_tx
                             .send(TimelineActorMessage::ReplyQuoteRetryDue {
                                 event_id: retry_event_id,
-                                attempt,
+                                token,
                             })
                             .await;
                     });
-                    (event_id, task)
+                    (event_id, token, task)
                 }
             };
-            if let Some(previous) = self.reply_quote_tasks.insert(event_id, task) {
+            if let Some((_token, previous)) = self.reply_quote_tasks.insert(event_id, (token, task))
+            {
                 previous.abort();
             }
         }

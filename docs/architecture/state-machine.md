@@ -2329,10 +2329,13 @@ settles.
 - **Known originals.** Before an item is committed or a pending send is
   projected, an unresolved quote (`Loading`/`Failed`) is resolved from the
   original when that original is in the actor's canonical items or in the same
-  batch, otherwise from the actor's hydration ledger. A pending send that
-  replies to an event starts as `Loading` and receives the same overlay, so a
-  reply to a known original is `Ready` from its first projection through its
-  remote echo. A Thread actor seeds the ledger with its root at start.
+  batch, otherwise from the actor's hydration ledger. An original the ledger
+  already tracks is re-learned from each batch, so an edit or redaction that
+  reaches this actor's timeline replaces the stored content. A pending send
+  that replies to an event starts as `Loading` and receives the same overlay,
+  so a reply to a known original is `Ready` from its first projection through
+  its remote echo. A Thread actor seeds the ledger with its root at start, and
+  that root is never evicted.
 - **Hydration ledger.** The ledger is keyed by original event id and holds at
   most 256 entries; settled entries are evicted oldest first and new lookups
   are skipped while the ledger is full of unsettled entries. Eligible originals
@@ -2341,19 +2344,36 @@ settles.
   observation. At most 4 lookups are in flight. Each attempt loads the exact
   event cache-first through `executor::spawn` with a 30 s `executor::timeout`.
   Not-found and forbidden results settle as `Missing`; an event that cannot be
-  projected settles as `Unsupported`; network, timeout, or undecryptable
-  results retry after about 2 s and then 10 s (an `executor::sleep` task posts
-  the retry to the actor mailbox), and the third failure settles as `Failed`.
-- **Fencing.** Lookup results and retry wakes carry the attempt number and are
-  ignored unless they match the ledger entry's current attempt. All lookup and
-  retry tasks are owned by the actor and aborted when it is dropped; a new
-  actor generation starts with an empty ledger, which is the only way an
-  exhausted (`Failed`) entry is retried.
-- **Publication.** When a ledger entry settles, or a batch commits an original
-  that unresolved quotes already point at, the actor republishes the dependent
+  projected settles as `Unsupported`. Network and timeout results retry after
+  about 2 s and then 10 s and settle as `Failed` on the third transient
+  failure. An undecryptable result has its own budget, because room keys often
+  arrive late: it retries after about 15 s, 60 s, 180 s, then 300 s, and
+  settles as `Failed` only after the eighth undecryptable attempt (an
+  `executor::sleep` task posts every retry to the actor mailbox).
+- **Fencing.** Ledger tokens are unique for the actor's lifetime. Each lookup
+  and retry wake carries its token and is ignored unless it still matches the
+  entry's live token, so a result from an evicted or superseded entry can never
+  settle a later entry for the same original; the actor tracks each lookup and
+  retry task by original with that token and removes it only on a token match.
+  Learning an observation that supersedes an in-flight lookup aborts its task.
+  All lookup and retry tasks are owned by the actor and aborted when it is
+  dropped; a new actor generation starts with an empty ledger, which is the
+  only way an exhausted (`Failed`) entry is retried.
+- **Changed originals.** Learning an edit or redaction replaces the settled
+  entry and records that original as changed, and every dependent quote whose
+  target is that original is re-derived, whether it had already resolved or
+  not, in both the batch overlay and the republish. An original outside this
+  actor's timeline updates the ledger only when it appears in the actor's
+  batch or canonical items, or when the actor is replaced; the rejoinder's
+  quote cannot be kept current from a source the actor never observes.
+- **Publication.** When a ledger entry settles, or a batch commits or changes
+  an original that quotes already point at, the actor republishes the dependent
   canonical items as non-SDK `Set` diffs and reprojects pending sends. A
   resolved quote never regresses to `Loading` while the same actor keeps the
-  settled entry.
+  settled entry. While an anchor restore is buffering its coalesced
+  `restore_emit_buffer`, the republish is deferred and runs once at the end of
+  the actor loop after that buffer has flushed, so a republished `Set` diff can
+  never overtake the restore's single settled update.
 
 `AppState.room_interactions[room_id]` carries the room's pinned-event
 projection plus the current pin/unpin operation state:

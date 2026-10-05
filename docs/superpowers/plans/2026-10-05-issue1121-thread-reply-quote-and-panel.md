@@ -32,14 +32,19 @@ the delivery order.
 3. `koushi-state`: `ReplyQuoteState::{Loading, Failed}` and wire names.
 4. `koushi-core`:
    - `timeline/reply_quote_hydration.rs`: bounded per-actor ledger (256
-     entries, 4 in flight, 30 s attempt timeout, retries after 2 s and 10 s,
-     `Failed` after the third failure), attempt fencing, and the
-     known-original overlay for canonical batches and pending sends.
+     entries, 4 in flight, 30 s attempt timeout, retries after 2 s and 10 s
+     with `Failed` after the third transient failure; undecryptable originals
+     get their own budget, retrying after 15 s, 60 s, 180 s, then 300 s and
+     settling `Failed` only after the eighth undecryptable attempt), token
+     fencing, the changed-original refresh set, and the known-original overlay
+     for canonical batches and pending sends.
    - Lookups use `load_exact_timeline_event_projection` through
      `koushi_core::executor` (`spawn`, `timeout`, `sleep`); tasks are aborted
      on actor drop.
    - Resolved quotes are republished with non-SDK `Set` diffs and pending
-     reprojection; the viewport-driven fetch is removed.
+     reprojection; the viewport-driven fetch is removed. A republish requested
+     while an anchor restore is buffering is deferred until the restore's
+     coalesced update has flushed.
    - Pending reply sends start with a `Loading` quote.
 5. Frontend: TS mirrors, catalog text for `loading`/`failed` (en + ja), and
    no "unknown sender" row while the original is unresolved.

@@ -430,7 +430,8 @@ impl TimelineActor {
                 &self.ignored_user_ids,
             );
         }
-        self.overlay_reply_quotes_on_batch(&mut core_diffs);
+        let refreshes = self.overlay_reply_quotes_on_batch(&mut core_diffs);
+        self.apply_reply_quote_refreshes(refreshes);
         let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
         for diff in &mut core_diffs {
             match diff {
@@ -1634,5 +1635,7 @@ pub(super) async fn run_diff_relay(
 mod display_policy_visibility_tests;
 #[cfg(test)]
 mod ignored_reset_tests;
+#[cfg(test)]
+mod reply_quote_restore_tests;
 #[cfg(test)]
 mod tests;
