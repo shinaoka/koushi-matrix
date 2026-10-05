@@ -104,6 +104,8 @@ mod registry;
 mod scenario_account_notifications;
 #[path = "headless_core_qa/scenarios/avatars.rs"]
 mod scenario_avatars;
+#[path = "headless_core_qa/scenarios/hidden_state_acl.rs"]
+mod scenario_hidden_state_acl;
 #[path = "headless_core_qa/scenarios/history_export.rs"]
 mod scenario_history_export;
 #[path = "headless_core_qa/scenarios/identity.rs"]

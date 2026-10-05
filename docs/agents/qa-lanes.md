@@ -127,6 +127,7 @@ qa-bin`; plain `cargo test` does not compile that binary.
 | `link_preview` | link preview projection | — |
 | `cache_restore` | deep-history anchor restored from cache within a bounded number of backward-paginate cycles while the network is blocked | — |
 | `read_state_convergence` | local viewed boundary advances while receipt/read-marker writes are held or failed, then converges through the bounded Rust dispatcher | `read_state_convergence=ok` |
+| `hidden_state_acl` | one ordinary message followed by 125 real `m.room.server_acl` updates (#1110/#1117): every update stays a hidden item, a re-subscription replay of the Core-held timeline (more raw items than the 120-row live-edge capacity) still contains the message, and viewing only the message converges to a server-confirmed read boundary and a zero unread count; requires `--core`, separate from `all` | `hidden_state_acl=ok` |
 | `thread_late_joiner` | in a `joined`-history room, a member who joins after the thread root was sent sees a permanent not-visible root row (`NotFound`/`Forbidden`, never a retryable failure) and can still open the thread and read the reply sent after they joined | `thread_late_joiner_root_not_visible=ok`, `thread_late_joiner_thread_panel=ok`, `thread_late_joiner=ok` |
 
 Key-backup scope: `joined_room_restore=ok` is the #30 MVP proof token for

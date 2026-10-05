@@ -354,7 +354,7 @@ async fn wait_for_remote_event(
     }
 }
 
-async fn send_text_and_wait_event(
+pub(super) async fn send_text_and_wait_event(
     conn: &mut CoreConnection,
     key: &TimelineKey,
     transaction_id: &str,
@@ -412,7 +412,7 @@ async fn set_fully_read_and_wait(
     }
 }
 
-async fn observe_viewport(
+pub(super) async fn observe_viewport(
     conn: &mut CoreConnection,
     key: &TimelineKey,
     event_id: &str,
