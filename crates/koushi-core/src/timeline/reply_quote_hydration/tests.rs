@@ -197,6 +197,61 @@ fn undecryptable_originals_back_off_slowly_then_settle_failed() {
 }
 
 #[test]
+fn mixed_undecryptable_and_transient_failures_keep_their_own_delays() {
+    let mut hydration = ReplyQuoteHydration::default();
+    assert_eq!(hydration.request([ORIGINAL]), vec![start(ORIGINAL, 1)]);
+    // An undecryptable result retries on the slow family…
+    assert_eq!(
+        hydration.complete(
+            ORIGINAL,
+            1,
+            OriginalLookupOutcome::Loaded(Box::new(undecryptable_item(ORIGINAL))),
+        ),
+        vec![retry(ORIGINAL, 2, Duration::from_secs(15))]
+    );
+    assert_eq!(hydration.retry_due(ORIGINAL, 2), vec![start(ORIGINAL, 3)]);
+    // …but a transient failure right after it still uses 2 s, not 15 s.
+    assert_eq!(
+        hydration.complete(
+            ORIGINAL,
+            3,
+            OriginalLookupOutcome::Failed(OperationFailureKind::Network),
+        ),
+        vec![retry(ORIGINAL, 4, Duration::from_secs(2))]
+    );
+    assert_eq!(hydration.retry_due(ORIGINAL, 4), vec![start(ORIGINAL, 5)]);
+    assert_eq!(
+        hydration.complete(ORIGINAL, 5, OriginalLookupOutcome::TimedOut),
+        vec![retry(ORIGINAL, 6, Duration::from_secs(10))]
+    );
+    assert_eq!(hydration.retry_due(ORIGINAL, 6), vec![start(ORIGINAL, 7)]);
+    // The undecryptable progress is kept: the second one waits 60 s.
+    assert_eq!(
+        hydration.complete(
+            ORIGINAL,
+            7,
+            OriginalLookupOutcome::Loaded(Box::new(undecryptable_item(ORIGINAL))),
+        ),
+        vec![retry(ORIGINAL, 8, Duration::from_secs(60))]
+    );
+    assert_eq!(hydration.retry_due(ORIGINAL, 8), vec![start(ORIGINAL, 9)]);
+    // The transient budget is still three: the third transient failure settles.
+    assert!(
+        hydration
+            .complete(
+                ORIGINAL,
+                9,
+                OriginalLookupOutcome::Failed(OperationFailureKind::Network),
+            )
+            .is_empty()
+    );
+    assert_eq!(
+        hydration.settled_quote(ORIGINAL).map(|quote| quote.state),
+        Some(ReplyQuoteState::Failed)
+    );
+}
+
+#[test]
 fn not_found_and_forbidden_settle_missing_without_retry() {
     for kind in [
         OperationFailureKind::NotFound,

@@ -35,9 +35,11 @@ the delivery order.
      entries, 4 in flight, 30 s attempt timeout, retries after 2 s and 10 s
      with `Failed` after the third transient failure; undecryptable originals
      get their own budget, retrying after 15 s, 60 s, 180 s, then 300 s and
-     settling `Failed` only after the eighth undecryptable attempt), token
-     fencing, the changed-original refresh set, and the known-original overlay
-     for canonical batches and pending sends.
+     settling `Failed` only after the eighth undecryptable attempt; each retry
+     uses the delay family of the attempt that just failed), token fencing, the
+     changed-original refresh set (a pending send that resolved from canonical
+     items also teaches the ledger, so a later edit or redaction refreshes it),
+     and the known-original overlay for canonical batches and pending sends.
    - Lookups use `load_exact_timeline_event_projection` through
      `koushi_core::executor` (`spawn`, `timeout`, `sleep`); tasks are aborted
      on actor drop.

@@ -2330,8 +2330,10 @@ settles.
   projected, an unresolved quote (`Loading`/`Failed`) is resolved from the
   original when that original is in the actor's canonical items or in the same
   batch, otherwise from the actor's hydration ledger. An original the ledger
-  already tracks is re-learned from each batch, so an edit or redaction that
-  reaches this actor's timeline replaces the stored content. A pending send
+  already tracks is re-learned from each batch, and an original that a pending
+  send resolves from canonical items is learned at that point, so an edit or
+  redaction that reaches this actor's timeline replaces the stored content and
+  refreshes the dependents. A pending send
   that replies to an event starts as `Loading` and receives the same overlay,
   so a reply to a known original is `Ready` from its first projection through
   its remote echo. A Thread actor seeds the ledger with its root at start, and

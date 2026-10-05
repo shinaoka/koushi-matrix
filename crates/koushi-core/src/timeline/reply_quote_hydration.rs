@@ -67,6 +67,15 @@ struct Attempts {
     undecryptable: u32,
 }
 
+/// Which budget the attempt that just finished belongs to. The retry delay
+/// family follows the current outcome, so an earlier undecryptable result can
+/// never slow a later transient retry (or the other way round).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RetryKind {
+    Transient,
+    Undecryptable,
+}
+
 /// Result of learning one authoritative original.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct LearnOutcome {
@@ -96,6 +105,19 @@ pub(super) fn record_learn(
     }
     if outcome.superseded_task {
         refreshes.superseded.insert(event_id);
+    }
+}
+
+/// Teach the ledger the originals a projection derived, so a later edit or
+/// redaction of one is detected against the value the actor last projected.
+fn learn_derived_originals(
+    hydration: &mut ReplyQuoteHydration,
+    refreshes: &mut ReplyQuoteRefreshes,
+    originals: &HashMap<String, ReplyQuote>,
+) {
+    for (target, quote) in originals {
+        let outcome = hydration.learn(quote.clone());
+        record_learn(refreshes, target.clone(), outcome);
     }
 }
 
@@ -230,12 +252,14 @@ impl ReplyQuoteHydration {
             return Vec::new();
         }
         let mut attempts = attempts;
+        let mut retry_kind = RetryKind::Transient;
         let settled = match outcome {
             OriginalLookupOutcome::Loaded(item) => {
                 match reply_quote_from_timeline_item(event_id, &item) {
                     Some(quote) => Some(quote),
                     None => {
                         attempts.undecryptable += 1;
+                        retry_kind = RetryKind::Undecryptable;
                         (attempts.undecryptable >= REPLY_QUOTE_MAX_UNDECRYPTABLE_ATTEMPTS)
                             .then(|| placeholder_quote(event_id, ReplyQuoteState::Failed))
                     }
@@ -263,7 +287,7 @@ impl ReplyQuoteHydration {
                     .insert(event_id.to_owned(), EntryState::Settled(quote));
             }
             None => {
-                let delay = retry_delay(attempts);
+                let delay = retry_delay(retry_kind, attempts);
                 let token = self.issue_token();
                 self.entries.insert(
                     event_id.to_owned(),
@@ -367,15 +391,21 @@ impl ReplyQuoteHydration {
     }
 }
 
-fn retry_delay(attempts: Attempts) -> Duration {
-    if attempts.undecryptable > 0 {
-        let index = usize::try_from(attempts.undecryptable - 1).unwrap_or(usize::MAX);
-        REPLY_QUOTE_UNDECRYPTABLE_RETRY_DELAYS
-            [index.min(REPLY_QUOTE_UNDECRYPTABLE_RETRY_DELAYS.len() - 1)]
-    } else {
-        let index = usize::try_from(attempts.transient.saturating_sub(1)).unwrap_or(usize::MAX);
-        REPLY_QUOTE_RETRY_DELAYS[index.min(REPLY_QUOTE_RETRY_DELAYS.len() - 1)]
-    }
+fn retry_delay(kind: RetryKind, attempts: Attempts) -> Duration {
+    let (index, delays) = match kind {
+        RetryKind::Transient => (
+            attempts.transient.saturating_sub(1),
+            &REPLY_QUOTE_RETRY_DELAYS[..],
+        ),
+        RetryKind::Undecryptable => (
+            attempts.undecryptable.saturating_sub(1),
+            &REPLY_QUOTE_UNDECRYPTABLE_RETRY_DELAYS[..],
+        ),
+    };
+    let index = usize::try_from(index)
+        .unwrap_or(usize::MAX)
+        .min(delays.len() - 1);
+    delays[index]
 }
 
 pub(super) fn placeholder_quote(event_id: &str, state: ReplyQuoteState) -> ReplyQuote {
@@ -574,7 +604,12 @@ impl TimelineActor {
 
     /// Resolve unresolved quotes on manager-owned pending sends before they are
     /// handed to the display projection.
-    pub(super) fn overlay_reply_quotes_on_pending(&self, items: &mut [TimelineItem]) {
+    /// Resolve unresolved quotes on manager-owned pending sends before they are
+    /// handed to the display projection. The originals this overlay derives are
+    /// also taught to the ledger: a pending reply can resolve from a canonical
+    /// original without any lookup, and that original's later edit or redaction
+    /// needs a previous value in the ledger to be detected against.
+    pub(super) fn overlay_reply_quotes_on_pending(&mut self, items: &mut [TimelineItem]) {
         let targets = quote_targets(items.iter())
             .into_iter()
             .map(str::to_owned)
@@ -583,6 +618,12 @@ impl TimelineActor {
             return;
         }
         let originals = known_originals(&targets, &[], &self.navigation_items);
+        let mut refreshes = ReplyQuoteRefreshes::default();
+        learn_derived_originals(&mut self.reply_quote_hydration, &mut refreshes, &originals);
+        for event_id in refreshes.superseded {
+            self.abort_reply_quote_task(&event_id);
+        }
+        self.reply_quote_refresh.extend(refreshes.changed);
         overlay_reply_quotes(
             items.iter_mut(),
             |event_id| originals.get(event_id).cloned(),

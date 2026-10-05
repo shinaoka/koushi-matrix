@@ -2068,6 +2068,16 @@ impl TimelineActor {
             }
             self.finish_ready_causal_projection_handoffs().await;
             self.maybe_refill_reset_room_cache().await;
+            self.flush_deferred_reply_quote_republish();
+        }
+    }
+    /// Run a republish that was requested while an anchor restore was buffering
+    /// its coalesced emission, once that restore has flushed. This runs at the
+    /// loop tail so a relay batch that flushes the restore in the same turn
+    /// cannot leave the republish pending indefinitely.
+    fn flush_deferred_reply_quote_republish(&mut self) {
+        if self.reply_quote_republish_pending && self.restore_anchor.is_none() {
+            self.republish_reply_quote_dependents();
         }
     }
     async fn finish_ready_causal_projection_handoffs(&mut self) {
@@ -2864,9 +2874,6 @@ impl TimelineActor {
         if self.hydrate_after_restore_flush && self.restore_anchor.is_none() {
             self.hydrate_after_restore_flush = false;
             self.maybe_hydrate_missing_thread_roots(None).await;
-        }
-        if self.reply_quote_republish_pending && self.restore_anchor.is_none() {
-            self.republish_reply_quote_dependents();
         }
     }
     pub(super) fn emit(&self, event: CoreEvent) {
