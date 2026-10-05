@@ -966,6 +966,10 @@ export type MessageId =
   | "scheduled.sendLater"
   | "scheduled.serverDelayedEvents"
   | "scheduled.timeInput"
+  | "scheduled.timeEarlierHour"
+  | "scheduled.timeEarlierTenMinutes"
+  | "scheduled.timeLaterTenMinutes"
+  | "scheduled.timeLaterHour"
   | "scheduled.title"
   | "scheduled.unknownCapability"
   | "trust.acceptVerification"
@@ -1426,6 +1430,7 @@ export type MessageId =
   | "timeline.resendAll"
   | "timeline.cancelAll"
   | "timeline.downloadMedia"
+  | "timeline.downloadDefaultImageName"
   | "timeline.encryptedMedia"
   | "timeline.mediaUploadProgress"
   | "timeline.mediaDownloadPending"
@@ -2740,6 +2745,11 @@ const en: Catalog = {
   "scheduled.sendLater": "Send later",
   "scheduled.serverDelayedEvents": "Server scheduled",
   "scheduled.timeInput": "Scheduled send time",
+  // #1124: mouse-driven adjustments for the native scheduled-send time field.
+  "scheduled.timeEarlierHour": "1 hour earlier",
+  "scheduled.timeEarlierTenMinutes": "10 minutes earlier",
+  "scheduled.timeLaterTenMinutes": "10 minutes later",
+  "scheduled.timeLaterHour": "1 hour later",
   "scheduled.title": "Scheduled messages",
   "scheduled.unknownCapability": "Checking support",
   "trust.acceptVerification": "Accept",
@@ -3204,6 +3214,10 @@ const en: Catalog = {
   "timeline.resendAll": "Resend all",
   "timeline.cancelAll": "Cancel all",
   "timeline.downloadMedia": "Download {filename}",
+  // #1135: prefix of a generated save name for an image whose own name is a
+  // generic upload default. Deliberately identical in every locale: it is part
+  // of a locale-independent filename, not prose.
+  "timeline.downloadDefaultImageName": "Koushi_Image",
   "timeline.encryptedMedia": "Encrypted",
   "timeline.mediaUploadProgress": "{percent}%",
   "timeline.mediaDownloadPending": "Downloading…",
@@ -4411,6 +4425,10 @@ const ja: Catalog = {
   "scheduled.sendLater": "あとで送信",
   "scheduled.serverDelayedEvents": "サーバー予約",
   "scheduled.timeInput": "予約送信日時",
+  "scheduled.timeEarlierHour": "1 時間前",
+  "scheduled.timeEarlierTenMinutes": "10 分前",
+  "scheduled.timeLaterTenMinutes": "10 分後",
+  "scheduled.timeLaterHour": "1 時間後",
   "scheduled.title": "予約メッセージ",
   "scheduled.unknownCapability": "対応状況を確認中",
   "trust.acceptVerification": "承認",
@@ -4873,6 +4891,7 @@ const ja: Catalog = {
   "timeline.resendAll": "すべて再送信",
   "timeline.cancelAll": "すべてキャンセル",
   "timeline.downloadMedia": "{filename}をダウンロード",
+  "timeline.downloadDefaultImageName": "Koushi_Image",
   "timeline.encryptedMedia": "暗号化済み",
   "timeline.mediaDownloadPending": "ダウンロード中…",
   "timeline.mediaDownloadFailed": "ダウンロードに失敗しました",
@@ -5089,6 +5108,15 @@ const pseudo: Catalog = Object.fromEntries(
 ) as Catalog;
 
 export const catalogs: Record<Locale, Catalog> = { en, ja, pseudo };
+
+/**
+ * Resolve a catalog-owned string that becomes part of a generated artifact and
+ * must not be translated or pseudo-localized (#1135). The id stays in the
+ * catalog so product text keeps one owner.
+ */
+export function tInvariant(id: MessageId): string {
+  return en[id];
+}
 
 export function t(
   id: MessageId,

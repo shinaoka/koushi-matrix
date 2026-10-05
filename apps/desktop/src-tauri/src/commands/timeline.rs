@@ -1410,8 +1410,28 @@ pub async fn save_downloaded_media(
 }
 
 #[tauri::command]
-pub async fn default_media_save_path(filename: String, app: AppHandle) -> Result<String, String> {
+pub async fn default_media_save_path(
+    filename: String,
+    media_kind: String,
+    timestamp_ms: Option<i64>,
+    utc_offset_minutes: i32,
+    local_name_prefix: String,
+    app: AppHandle,
+) -> Result<String, String> {
     let downloads_dir = app.path().download_dir().ok();
+    // #1135: the renderer resolves the catalog-owned prefix and the event's local
+    // offset; the naming decision itself stays in Core.
+    let facts = koushi_core::MediaSaveNameFacts {
+        local_name_prefix: &local_name_prefix,
+        kind: if media_kind == "image" {
+            koushi_core::MediaSaveKind::Image
+        } else {
+            koushi_core::MediaSaveKind::File
+        },
+        timestamp_ms: timestamp_ms.and_then(|value| u64::try_from(value).ok()),
+        utc_offset_minutes,
+    };
+    let filename = koushi_core::default_media_save_filename(&filename, facts);
     Ok(
         koushi_core::default_media_save_path(&filename, downloads_dir.as_deref())
             .to_string_lossy()

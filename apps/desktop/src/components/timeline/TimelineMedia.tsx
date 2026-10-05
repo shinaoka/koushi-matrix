@@ -21,6 +21,7 @@ import type { MediaTransferProgress, TimelineItem } from "../../domain/coreEvent
 import type { TimelineMediaDownloadState } from "../../domain/types";
 import type { TimelineForwardDestination } from "../../domain/projectionTypes";
 import { mediaSourceUrl } from "../../backend/linkMediaRuntime";
+import type { MediaSaveNameFacts } from "../../backend/linkMediaPort";
 import type { TimelineTransport } from "./TimelineTransport";
 
 export type TimelineMediaViewerItem = {
@@ -33,6 +34,7 @@ export type TimelineMediaViewerItem = {
   height: number | null;
   encrypted: boolean;
   actions: TimelineMediaViewerActions;
+  saveName: MediaSaveNameFacts | null;
   saveMediaFile?: TimelineTransport["saveMediaFile"];
 };
 
@@ -95,10 +97,11 @@ async function saveMediaSource(
   sourceUrl: string,
   displayUrl: string,
   filename: string,
+  saveName: MediaSaveNameFacts | null,
   saveMediaFile?: TimelineTransport["saveMediaFile"]
 ): Promise<void> {
   if (saveMediaFile) {
-    await saveMediaFile(sourceUrl, filename);
+    await saveMediaFile(sourceUrl, filename, saveName);
     return;
   }
   await downloadMediaSource(displayUrl, filename);
@@ -112,6 +115,7 @@ export function TimelineMediaAttachment({
   onDownload,
   onOpenMediaViewer,
   onSaveMediaFile,
+  saveName,
   viewerActions
 }: {
   media: NonNullable<TimelineItem["media"]>;
@@ -121,6 +125,7 @@ export function TimelineMediaAttachment({
   onDownload: () => void;
   onOpenMediaViewer: (item: TimelineMediaViewerItem) => void;
   onSaveMediaFile?: TimelineTransport["saveMediaFile"];
+  saveName: MediaSaveNameFacts | null;
   viewerActions: TimelineMediaViewerActions;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -163,6 +168,7 @@ export function TimelineMediaAttachment({
           height: readyImagePreview.height,
           encrypted: media.source.encrypted,
           actions: viewerActions,
+          saveName,
           saveMediaFile: onSaveMediaFile
         };
   const progressPercent =
@@ -185,9 +191,10 @@ export function TimelineMediaAttachment({
       downloadState.source_url,
       mediaSourceUrl(downloadState.source_url),
       media.filename,
+      saveName,
       onSaveMediaFile
     );
-  }, [downloadState, media.filename, onSaveMediaFile]);
+  }, [downloadState, media.filename, onSaveMediaFile, saveName]);
   useEffect(() => {
     if (!detailsOpen) {
       return;
@@ -304,6 +311,7 @@ export function TimelineMediaAttachment({
                     readyImageDownload.source_url,
                     readyImagePreview.sourceUrl,
                     media.filename,
+                    saveName,
                     onSaveMediaFile
                   );
                 }}
@@ -423,6 +431,7 @@ export function TimelineMediaAttachment({
                 downloadState.source_url,
                 mediaSourceUrl(downloadState.source_url),
                 media.filename,
+                saveName,
                 onSaveMediaFile
               );
             }}
@@ -550,6 +559,7 @@ export function TimelineMediaViewer({
                   item.downloadSourceUrl,
                   item.sourceUrl,
                   item.filename,
+                  item.saveName,
                   item.saveMediaFile
                 );
               }}

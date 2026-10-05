@@ -341,3 +341,131 @@ fn real_symlink_escape_is_rejected_by_canonical_results() {
         Err(MediaSaveError::SourceOutsideCache)
     );
 }
+
+/// #1135: a generic image upload name becomes a timestamped one, so successive
+/// saves do not all propose the same Downloads path.
+mod default_save_filename {
+    use koushi_core::{MediaSaveKind, MediaSaveNameFacts, default_media_save_filename};
+
+    /// 2026-10-05T09:19:00Z, saved at UTC+09:00, so the local stamp is 18:19:00.
+    const TIMESTAMP_MS: u64 = 1_791_191_940_000;
+    const TOKYO_OFFSET_MINUTES: i32 = 540;
+
+    fn image(filename: &str) -> String {
+        default_media_save_filename(
+            filename,
+            MediaSaveNameFacts {
+                local_name_prefix: "Koushi_Image",
+                kind: MediaSaveKind::Image,
+                timestamp_ms: Some(TIMESTAMP_MS),
+                utc_offset_minutes: TOKYO_OFFSET_MINUTES,
+            },
+        )
+    }
+
+    #[test]
+    fn generic_image_names_become_the_local_timestamped_name() {
+        for generic in [
+            "image.png",
+            "  image.png  ",
+            "clipboard.png",
+            "clipboard-2026-10-05.png",
+            "Pasted image 1.png",
+            "pasted image.png",
+            "screenshot.png",
+            "download.png",
+        ] {
+            assert_eq!(
+                image(generic),
+                "Koushi_Image_20261005_181900.png",
+                "generic name {generic:?}"
+            );
+        }
+        // The extension is kept exactly as the client wrote it.
+        assert_eq!(image("IMAGE.PNG"), "Koushi_Image_20261005_181900.PNG");
+        // A generic name with no extension generates one with no extension, and an
+        // empty name is sanitized to `download` first.
+        assert_eq!(image("image"), "Koushi_Image_20261005_181900");
+        assert_eq!(image("   "), "Koushi_Image_20261005_181900");
+    }
+
+    #[test]
+    fn meaningful_names_and_other_kinds_are_kept() {
+        assert_eq!(image("quarterly-report.png"), "quarterly-report.png");
+        assert_eq!(image("holiday.jpg"), "holiday.jpg");
+        // A non-image keeps its name even when the name looks generic.
+        assert_eq!(
+            default_media_save_filename(
+                "clipboard.txt",
+                MediaSaveNameFacts {
+                    local_name_prefix: "Koushi_Image",
+                    kind: MediaSaveKind::File,
+                    timestamp_ms: Some(TIMESTAMP_MS),
+                    utc_offset_minutes: TOKYO_OFFSET_MINUTES,
+                },
+            ),
+            "clipboard.txt"
+        );
+    }
+
+    #[test]
+    fn the_local_stamp_uses_the_offset_it_is_given() {
+        let utc = default_media_save_filename(
+            "image.png",
+            MediaSaveNameFacts {
+                local_name_prefix: "Koushi_Image",
+                kind: MediaSaveKind::Image,
+                timestamp_ms: Some(TIMESTAMP_MS),
+                utc_offset_minutes: 0,
+            },
+        );
+        assert_eq!(utc, "Koushi_Image_20261005_091900.png");
+    }
+
+    #[test]
+    fn a_missing_timestamp_or_prefix_never_invents_a_name() {
+        assert_eq!(
+            default_media_save_filename(
+                "image.png",
+                MediaSaveNameFacts {
+                    local_name_prefix: "Koushi_Image",
+                    kind: MediaSaveKind::Image,
+                    timestamp_ms: None,
+                    utc_offset_minutes: TOKYO_OFFSET_MINUTES,
+                },
+            ),
+            "image.png"
+        );
+        assert_eq!(
+            default_media_save_filename(
+                "image.png",
+                MediaSaveNameFacts {
+                    local_name_prefix: "  ",
+                    kind: MediaSaveKind::Image,
+                    timestamp_ms: Some(TIMESTAMP_MS),
+                    utc_offset_minutes: TOKYO_OFFSET_MINUTES,
+                },
+            ),
+            "download_20261005_181900.png"
+        );
+    }
+
+    #[test]
+    fn calendar_boundaries_and_hidden_names_are_handled() {
+        // 2026-12-31T15:30:00Z at UTC+09:00 is 2027-01-01T00:30:00.
+        assert_eq!(
+            default_media_save_filename(
+                "image.png",
+                MediaSaveNameFacts {
+                    local_name_prefix: "Koushi_Image",
+                    kind: MediaSaveKind::Image,
+                    timestamp_ms: Some(1_798_731_000_000),
+                    utc_offset_minutes: TOKYO_OFFSET_MINUTES,
+                },
+            ),
+            "Koushi_Image_20270101_003000.png"
+        );
+        // A hidden name is not a known generic upload name, so it is kept.
+        assert_eq!(image(".png"), ".png");
+    }
+}

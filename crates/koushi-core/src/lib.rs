@@ -70,8 +70,9 @@ pub use koushi_protocol::ids::*;
 pub use koushi_protocol::state_update::*;
 pub use koushi_state::MediaTransferProgress;
 pub use media_save::{
-    MediaSaveError, MediaSaveFilesystem, MediaSaveIoError, default_media_save_path,
-    safe_media_save_filename, save_downloaded_media,
+    MediaSaveError, MediaSaveFilesystem, MediaSaveIoError, MediaSaveKind, MediaSaveNameFacts,
+    default_media_save_filename, default_media_save_path, safe_media_save_filename,
+    save_downloaded_media,
 };
 pub use native_artifact::{
     NativeArtifactError, NativeArtifactKind, NativeArtifactPort, NativeArtifactRegistry,

@@ -417,6 +417,8 @@ const japaneseIdenticalMessageAllowlist = new Set<MessageId>([
   "upload.resizeEighth",
   "upload.previewActualSize",
   "upload.formatWebp",
+  // #1135: part of a generated, locale-independent filename rather than prose.
+  "timeline.downloadDefaultImageName",
   "upload.formatJpeg",
   "upload.formatPng",
   "auth.flowOidc",

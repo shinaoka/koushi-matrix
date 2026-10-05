@@ -23,7 +23,7 @@ test("browser link/media operations use native web behavior", async () => {
   expect(
     browserLinkMediaPort.renderableThumbnailSourceUrl("avatar/0123456789abcdef")
   ).toBeNull();
-  await expect(browserLinkMediaPort.saveMediaFile("/tmp/media.png", "media.png")).resolves.toBe(
-    undefined
-  );
+  await expect(
+    browserLinkMediaPort.saveMediaFile("/tmp/media.png", "media.png", null)
+  ).resolves.toBe(undefined);
 });

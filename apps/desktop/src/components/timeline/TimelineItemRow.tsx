@@ -30,6 +30,7 @@ import {
   type MentionCandidate,
   type OpenContextMenu
 } from "../../app/uiShared";
+import type { MediaSaveNameFacts } from "../../backend/linkMediaPort";
 import { contextMenuItems } from "../../domain/contextMenus";
 import { getActiveLocale, t } from "../../i18n/messages";
 import { onMenuKeyDown } from "../ContextMenuSurface";
@@ -377,6 +378,14 @@ export function TimelineItemRow({
   const itemEventId = "Event" in item.id ? item.id.Event.event_id : null;
   const eventId = contentEventId ?? itemEventId;
   const activityId = activityEventId ?? eventId;
+  // #1135: the save-name policy distinguishes images from other attachments, and
+  // timestamps a generic image name from the event's own time.
+  const mediaSaveName: MediaSaveNameFacts | null = item.media
+    ? {
+        kind: item.media.kind === "Image" ? "image" : "file",
+        timestampMs: item.timestamp_ms
+      }
+    : null;
   const isRedacted = item.is_redacted;
   // Render only cards with content; pending requests still load through the effect below.
   const visibleLinkPreviews = item.link_previews?.filter((preview) =>
@@ -850,6 +859,7 @@ export function TimelineItemRow({
         onDownload={submitDownloadMedia}
         onOpenMediaViewer={onOpenMediaViewer}
         onSaveMediaFile={onSaveMediaFile}
+        saveName={mediaSaveName}
         viewerActions={{
           canForward,
           forwardDestinations,
