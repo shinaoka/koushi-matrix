@@ -291,6 +291,42 @@ test("room mention candidates stay Rust-owned and send typed mention intent", as
   });
 });
 
+test("room notification mention keeps a single @room token (#1122)", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await composer.fill("@");
+  await expect(page.getByRole("listbox", { name: "Mention suggestions" })).toBeVisible();
+  const roomOption = page.getByRole("option", { name: "@room Notify the whole room" });
+  await expect(roomOption).toBeVisible();
+  await roomOption.click();
+
+  // Rust renders an inline as `@` + the inline's label, and the room candidate's
+  // own label already carries the `@` its suggestion row shows, so the inline
+  // label has to be the target's `room` half.
+  await expect(page.getByRole("link", { name: "Mention: room" })).toHaveText("@room");
+
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect.poll(() => invocationCount(page, "send_text")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("send_text")[0]?.args))
+    .toMatchObject({
+      roomId: HARNESS_ROOM_ID,
+      document: {
+        version: 2,
+        inlines: [
+          {
+            kind: "mention",
+            target: { kind: "roomMention", display_label: "room" },
+            display_label: "room"
+          },
+          { kind: "text", text: " " }
+        ]
+      }
+    });
+});
+
 test("room mention candidates keep main and thread composer targets independent", async ({
   page
 }) => {
@@ -430,6 +466,27 @@ test("composer string revision stays exact above Number.MAX_SAFE_INTEGER", async
         inlines: [{ kind: "text", text: "exact revision" }]
       },
       draftRevision: "9007199254740994"
+    });
+});
+
+test("rapid composer edits persist exactly one draft (#1132)", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  // Every keystroke lands inside the 350 ms debounce window. Only the last draft
+  // may reach Rust: the previous timer has to be cancelled by its owner.
+  await composer.pressSequentially("abcdefghijklmnopqrst", { delay: 10 });
+  await expect(composer).toHaveText("abcdefghijklmnopqrst");
+
+  await expect
+    .poll(() => invocationCount(page, "set_composer_draft"), { timeout: 5_000 })
+    .toBe(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("set_composer_draft")[0]?.args))
+    .toMatchObject({
+      roomId: HARNESS_ROOM_ID,
+      document: { inlines: [{ kind: "text", text: "abcdefghijklmnopqrst" }] }
     });
 });
 
@@ -1176,6 +1233,36 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
     window.__harness.pushStateUpdate();
   });
   await expect(page.getByRole("region", { name: "Scheduled messages" })).toBeHidden();
+});
+
+test("scheduled send time adjustments move the moment without the native picker (#1124)", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("schedule_send", () => window.__harness.currentSnapshot());
+    window.__harness.clearInvocations();
+  });
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await composer.fill("adjusted scheduled body");
+  await page.getByRole("button", { name: "Send later" }).click();
+  const scheduleInput = page.getByLabel("Scheduled send time");
+  await scheduleInput.fill("2030-01-02T03:04");
+
+  // The buttons move the value the app already owns; the native field is kept.
+  await page.getByRole("button", { name: "1 hour later" }).click();
+  await expect(scheduleInput).toHaveValue("2030-01-02T04:04");
+  await page.getByRole("button", { name: "10 minutes earlier" }).click();
+  await expect(scheduleInput).toHaveValue("2030-01-02T03:54");
+
+  await page.getByRole("button", { name: "Schedule send" }).click();
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("schedule_send")[0]?.args))
+    .toMatchObject({
+      body: "adjusted scheduled body",
+      sendAtMs: new Date("2030-01-02T03:54:00").getTime()
+    });
 });
 
 test("main composer composing Enter never sends or accepts mention autocomplete", async ({

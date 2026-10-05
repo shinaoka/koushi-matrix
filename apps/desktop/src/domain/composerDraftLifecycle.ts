@@ -73,7 +73,22 @@ export interface ComposerDraftLifecycleRegistry {
     capturedRevision: ComposerDraftRevision
   ): boolean;
   setDebounce(scope: ComposerDraftScope, handle: number): void;
-  clearDebounce(scope: ComposerDraftScope): void;
+  /**
+   * Forget the pending persist for `scope` and hand back the timer handle that
+   * was registered for it, so the caller can clear the real window timer.
+   *
+   * #1132: this registry is the only owner of that handle. Keeping a second copy
+   * on the composer overlay meant an edit that replaced the overlay before
+   * cancelling looked at the new copy (`null`) and left the previous timer alive,
+   * so every keystroke scheduled its own `set_composer_draft`.
+   */
+  clearDebounce(scope: ComposerDraftScope): number | null;
+  /**
+   * Forget every pending persist and hand back their handles. Renderer
+   * retirement must clear the real timers even for scopes whose overlay is
+   * already gone (#1132).
+   */
+  clearAllDebounces(): number[];
   setActiveOverlay(
     scope: ComposerDraftScope,
     document: ComposerDocument | null,
@@ -449,11 +464,24 @@ export function createComposerDraftLifecycleRegistry(
     entry.lruSequence = null;
   }
 
-  function clearDebounce(scope: ComposerDraftScope): void {
+  function clearAllDebounces(): number[] {
+    const handles: number[] = [];
+    for (const entry of entries()) {
+      if (entry.debounce === null) continue;
+      handles.push(entry.debounce);
+      entry.debounce = null;
+      reconcile(entry);
+    }
+    return handles;
+  }
+
+  function clearDebounce(scope: ComposerDraftScope): number | null {
     const entry = lookup(scope);
-    if (!entry) return;
+    if (!entry) return null;
+    const handle = entry.debounce;
     entry.debounce = null;
     reconcile(entry);
+    return handle;
   }
 
   function setActiveOverlay(
@@ -546,6 +574,7 @@ export function createComposerDraftLifecycleRegistry(
     settleOperationCompletion,
     setDebounce,
     clearDebounce,
+    clearAllDebounces,
     setActiveOverlay,
     activeOverlay: (scope) => {
       const overlay = lookup(scope)?.activeOverlay;

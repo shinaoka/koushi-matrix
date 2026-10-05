@@ -1184,13 +1184,11 @@ function AccountContent({
     scope: ComposerDraftScope;
     document: ComposerDocument;
     revision: ComposerDraftRevision | null;
-    debounceHandle: number | null;
   } | null>(null);
   const threadComposerOverlayRef = useRef<{
     scope: ComposerDraftScope;
     document: ComposerDocument;
     revision: ComposerDraftRevision | null;
-    debounceHandle: number | null;
   } | null>(null);
   const drainComposerForAccountSwitchRef = useRef<() => Promise<boolean>>(async () => true);
   const openedNotificationActivationRef = useRef<DesktopNotificationActivation | null>(null);
@@ -1217,16 +1215,7 @@ function AccountContent({
     submissionRegistryRef.current = createComposerSubmissionControllerRegistry();
   }
   function retireComposerRendererGeneration(): void {
-    const mainOverlay = mainComposerOverlayRef.current;
-    if (mainOverlay?.debounceHandle !== null && mainOverlay) {
-      window.clearTimeout(mainOverlay.debounceHandle);
-      composerDraftLifecycleRegistryRef.current!.clearDebounce(mainOverlay.scope);
-    }
-    const threadOverlay = threadComposerOverlayRef.current;
-    if (threadOverlay?.debounceHandle !== null && threadOverlay) {
-      window.clearTimeout(threadOverlay.debounceHandle);
-      composerDraftLifecycleRegistryRef.current!.clearDebounce(threadOverlay.scope);
-    }
+    clearAllComposerDraftPersistTimers();
     composerDraftLifecycleRegistryRef.current!.revokeRendererGeneration();
     submissionRegistryRef.current?.reset();
     mainComposerOverlayRef.current = null;
@@ -2239,14 +2228,7 @@ function AccountContent({
 
   useEffect(() => {
     return () => {
-      const mainOverlay = mainComposerOverlayRef.current;
-      if (mainOverlay && mainOverlay.debounceHandle !== null) {
-        window.clearTimeout(mainOverlay.debounceHandle);
-      }
-      const threadOverlay = threadComposerOverlayRef.current;
-      if (threadOverlay && threadOverlay.debounceHandle !== null) {
-        window.clearTimeout(threadOverlay.debounceHandle);
-      }
+      clearAllComposerDraftPersistTimers();
       composerDraftLifecycleRegistryRef.current?.revokeRendererGeneration();
     };
   }, []);
@@ -3443,6 +3425,10 @@ function AccountContent({
         }
         settleComposerOperation(admitted);
         if (overlayForScope() !== activeOverlay) continue;
+        // #1132: an edit made while the write was in flight registered its own
+        // persist timer; this overlay is about to be dropped, so cancel it.
+        if (kind === "main") cancelComposerDraftPersist(scope);
+        else cancelThreadComposerDraftPersist(scope);
         registry.setActiveOverlay(scope, null, null);
         if (kind === "main") mainComposerOverlayRef.current = null;
         else threadComposerOverlayRef.current = null;
@@ -4805,8 +4791,7 @@ function AccountContent({
     mainComposerOverlayRef.current = {
       scope,
       document,
-      revision,
-      debounceHandle: null
+      revision
     };
     composerDraftLifecycleRegistryRef.current!.setActiveOverlay(scope, document, revision);
     updateComposerTypingSignal(roomId, value);
@@ -4823,14 +4808,26 @@ function AccountContent({
     void api.setTyping(roomId, isTyping).catch(() => undefined);
   }
 
-  function cancelComposerDraftPersist(scope: ComposerDraftScope) {
-    const overlay = mainComposerOverlayRef.current;
-    if (!overlay || !composerDraftScopesEqual(overlay.scope, scope)) return;
-    if (overlay.debounceHandle !== null) {
-      window.clearTimeout(overlay.debounceHandle);
-      overlay.debounceHandle = null;
+  /**
+   * #1132: the registry owns the pending persist handle, so cancellation has to
+   * go through it. Reading the handle from the overlay missed the timer whenever
+   * an edit had already replaced the overlay.
+   */
+  function clearComposerDraftPersistTimer(scope: ComposerDraftScope) {
+    const handle = composerDraftLifecycleRegistryRef.current!.clearDebounce(scope);
+    if (handle !== null) {
+      window.clearTimeout(handle);
     }
-    composerDraftLifecycleRegistryRef.current!.clearDebounce(scope);
+  }
+
+  function clearAllComposerDraftPersistTimers() {
+    for (const handle of composerDraftLifecycleRegistryRef.current!.clearAllDebounces()) {
+      window.clearTimeout(handle);
+    }
+  }
+
+  function cancelComposerDraftPersist(scope: ComposerDraftScope) {
+    clearComposerDraftPersistTimer(scope);
   }
 
   function queueComposerDraftPersist(
@@ -4841,11 +4838,7 @@ function AccountContent({
     if (scope.target.kind !== "main") return;
     cancelComposerDraftPersist(scope);
     const handle = window.setTimeout(() => {
-      const overlay = mainComposerOverlayRef.current;
-      if (overlay && composerDraftScopesEqual(overlay.scope, scope)) {
-        overlay.debounceHandle = null;
-      }
-      composerDraftLifecycleRegistryRef.current!.clearDebounce(scope);
+      clearComposerDraftPersistTimer(scope);
       const admitted = beginComposerOperation(scope);
       if (!admitted) return;
       const account = composerDraftApiAccount(scope);
@@ -4873,10 +4866,6 @@ function AccountContent({
         })
         .catch(() => settleComposerOperation(admitted));
     }, 350);
-    const overlay = mainComposerOverlayRef.current;
-    if (overlay && composerDraftScopesEqual(overlay.scope, scope)) {
-      overlay.debounceHandle = handle;
-    }
     composerDraftLifecycleRegistryRef.current!.setDebounce(scope, handle);
   }
 
@@ -5223,8 +5212,7 @@ function AccountContent({
     threadComposerOverlayRef.current = {
       scope,
       document,
-      revision,
-      debounceHandle: null
+      revision
     };
     composerDraftLifecycleRegistryRef.current!.setActiveOverlay(scope, document, revision);
     if (revision) queueThreadComposerDraftPersist(scope, document, revision);
@@ -5593,11 +5581,7 @@ function AccountContent({
     const target = scope.target;
     cancelThreadComposerDraftPersist(scope);
     const handle = window.setTimeout(() => {
-      const overlay = threadComposerOverlayRef.current;
-      if (overlay && composerDraftScopesEqual(overlay.scope, scope)) {
-        overlay.debounceHandle = null;
-      }
-      composerDraftLifecycleRegistryRef.current!.clearDebounce(scope);
+      clearComposerDraftPersistTimer(scope);
       const admitted = beginComposerOperation(scope);
       if (!admitted) return;
       const account = composerDraftApiAccount(scope);
@@ -5626,21 +5610,11 @@ function AccountContent({
         })
         .catch(() => settleComposerOperation(admitted));
     }, 350);
-    const overlay = threadComposerOverlayRef.current;
-    if (overlay && composerDraftScopesEqual(overlay.scope, scope)) {
-      overlay.debounceHandle = handle;
-    }
     composerDraftLifecycleRegistryRef.current!.setDebounce(scope, handle);
   }
 
   function cancelThreadComposerDraftPersist(scope: ComposerDraftScope) {
-    const overlay = threadComposerOverlayRef.current;
-    if (!overlay || !composerDraftScopesEqual(overlay.scope, scope)) return;
-    if (overlay.debounceHandle !== null) {
-      window.clearTimeout(overlay.debounceHandle);
-      overlay.debounceHandle = null;
-    }
-    composerDraftLifecycleRegistryRef.current!.clearDebounce(scope);
+    clearComposerDraftPersistTimer(scope);
   }
 
   function clearLocalThreadComposerDraft(scope: ComposerDraftScope) {
