@@ -24,6 +24,7 @@ import type {
   InviteWorkflowState,
   ResolveComposerKeyAction,
   ComposerDocument,
+  SpaceLeaveCandidate,
   StagedUploadFormatChoice,
   StagedUploadItem,
   StagedUploadOutputSelection,
@@ -43,6 +44,7 @@ import { Composer } from "./composer";
 import { FloatingLayer } from "./floatingLayer";
 import { documentFromText } from "../domain/composerDocument";
 import { diagnosticReportPreview } from "../domain/diagnostics";
+import { roomListItemLabel } from "../domain/roomDisplayLabel";
 
 async function writeClipboardText(value: string): Promise<void> {
   if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
@@ -77,6 +79,141 @@ export function ResetLocalDataConfirmationDialog({
           </button>
           <button type="button" className="dialog-button danger" disabled={isBusy} onClick={onConfirm}>
             {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </ModalDialog>
+  );
+}
+
+// ===== LeaveSpaceDialog =====
+
+export type LeaveSpaceChildChoice = "none" | "all" | "selected";
+
+/**
+ * Space-leave confirmation. The candidate rooms are the Rust projection
+ * `SpaceRailItem.leave_candidates`; React owns only the user's choice and
+ * passes the chosen room IDs to the Rust `leave_space` command, which
+ * re-admits them against the same projection.
+ */
+export function LeaveSpaceDialog({
+  spaceName,
+  candidates,
+  isBusy,
+  onCancel,
+  onConfirm
+}: {
+  spaceName: string;
+  candidates: SpaceLeaveCandidate[];
+  isBusy: boolean;
+  onCancel: () => void;
+  onConfirm: (childRoomIds: string[]) => void;
+}) {
+  const [choice, setChoice] = useState<LeaveSpaceChildChoice>("none");
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+  const chosenRoomIds =
+    choice === "all"
+      ? candidates.map((candidate) => candidate.room_id)
+      : choice === "selected"
+        ? candidates
+            .map((candidate) => candidate.room_id)
+            .filter((roomId) => selected.has(roomId))
+        : [];
+  const toggle = (roomId: string) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(roomId)) {
+        next.delete(roomId);
+      } else {
+        next.add(roomId);
+      }
+      return next;
+    });
+  };
+  return (
+    <ModalDialog
+      title={t("space.leaveConfirmTitle", { name: spaceName })}
+      className="confirmation-modal"
+      showCloseButton={false}
+      dismissible={!isBusy}
+      onClose={onCancel}
+    >
+      <div className="confirmation-content leave-space-content">
+        <p>
+          {t(candidates.length > 0 ? "space.leaveConfirmCopy" : "space.leaveConfirmCopyNoRooms", {
+            name: spaceName
+          })}
+        </p>
+        {candidates.length > 0 ? (
+          <div className="leave-space-choices" role="radiogroup" aria-label={t("space.leaveRoomsChoice")}>
+            <label className="create-room-option">
+              <input
+                type="radio"
+                name="leave-space-children"
+                checked={choice === "none"}
+                disabled={isBusy}
+                onChange={() => setChoice("none")}
+              />
+              <span>{t("space.leaveSpaceOnly")}</span>
+            </label>
+            <label className="create-room-option">
+              <input
+                type="radio"
+                name="leave-space-children"
+                checked={choice === "all"}
+                disabled={isBusy}
+                onChange={() => setChoice("all")}
+              />
+              <span>{t("space.leaveAllRooms", { count: candidates.length })}</span>
+            </label>
+            <label className="create-room-option">
+              <input
+                type="radio"
+                name="leave-space-children"
+                checked={choice === "selected"}
+                disabled={isBusy}
+                onChange={() => setChoice("selected")}
+              />
+              <span>{t("space.leaveSelectedRooms")}</span>
+            </label>
+          </div>
+        ) : null}
+        {choice !== "none" ? (
+          <ul className="leave-space-rooms" aria-label={t("space.leaveRoomsList")}>
+            {candidates.map((candidate) => {
+              const label = roomListItemLabel(candidate);
+              return (
+                <li key={candidate.room_id}>
+                  <label className="leave-space-room">
+                    <input
+                      type="checkbox"
+                      checked={choice === "all" || selected.has(candidate.room_id)}
+                      disabled={isBusy || choice === "all"}
+                      onChange={() => toggle(candidate.room_id)}
+                    />
+                    <span className="leave-space-room-name">{label}</span>
+                    {candidate.in_other_space ? (
+                      <span className="leave-space-room-note">{t("space.leaveRoomInOtherSpace")}</span>
+                    ) : null}
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
+        <div className="dialog-actions">
+          <button type="button" className="dialog-button" disabled={isBusy} onClick={onCancel}>
+            {t("action.cancel")}
+          </button>
+          <button
+            type="button"
+            className="dialog-button danger"
+            disabled={isBusy}
+            onClick={() => onConfirm(chosenRoomIds)}
+          >
+            {chosenRoomIds.length > 0
+              ? t("space.leaveConfirmActionWithRooms", { count: chosenRoomIds.length })
+              : t("space.leaveConfirmAction")}
           </button>
         </div>
       </div>

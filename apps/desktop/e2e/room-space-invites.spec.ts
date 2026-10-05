@@ -317,14 +317,24 @@ test("space rail separates system buttons, reorders Spaces, and leaves a Space h
   await rail.getByRole("button", { name: "Second Harness Space", exact: true }).click({
     button: "right"
   });
-  await page.getByRole("menuitem", { name: "Leave Space", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Leave Space…", exact: true }).click();
+  const leaveDialog = page.getByRole("dialog", { name: "Leave Second Harness Space?" });
+  await expect(leaveDialog).toBeVisible();
+  // No joined rooms in this Space: only the Space itself is offered.
+  await expect(leaveDialog.getByRole("radiogroup")).toHaveCount(0);
+  await leaveDialog.getByRole("button", { name: "Leave Space", exact: true }).click();
   await expect
     .poll(() =>
-      page.evaluate(
-        () => window.__harness.invocationsOf("leave_room").at(-1)?.args.roomId ?? null
-      )
+      page.evaluate(() => {
+        const args = window.__harness.invocationsOf("leave_space").at(-1)?.args;
+        return args ? { spaceId: args.spaceId, childRoomIds: args.childRoomIds } : null;
+      })
     )
-    .toBe("!second-harness-space:example.invalid");
+    .toEqual({
+      spaceId: "!second-harness-space:example.invalid",
+      childRoomIds: []
+    });
+  await expect(leaveDialog).toHaveCount(0);
   await expect(
     rail.getByRole("button", { name: "Second Harness Space", exact: true })
   ).toHaveCount(0);

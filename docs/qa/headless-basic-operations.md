@@ -99,6 +99,7 @@ moderation=ok
 permission_guard=ok
 space_access=ok
 space_add_existing=ok
+space_leave_children=ok
 timeline=ok
 hide_redacted=ok
 activity_recent=ok
@@ -166,7 +167,9 @@ existing room version 12 room that only claims the Space as its parent through
 Core `SetSpaceChild`, then reads the Space's `m.space.child` from the
 homeserver with a disposable auditor device of the same user and requires
 nonempty routing; a room created inside the Space must be linked the same way
-(#1007). The core lane creates a disposable management room,
+(#1007). `space_leave_children=ok` leaves a disposable Space together with two
+of its three joined rooms through Core `LeaveSpace`; the unselected child and a
+room outside the Space named in the command must stay joined. The core lane creates a disposable management room,
 loads Rust-owned settings/permission facts, updates a setting through
 `RoomCommand`, rejects an unauthorized moderation command before SDK mutation,
 and performs an authorized moderation action. The lane must not print room IDs,

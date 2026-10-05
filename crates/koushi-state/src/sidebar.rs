@@ -86,6 +86,10 @@ pub struct SpaceRailItem {
     pub unread_count: u64,
     pub highlight_count: u64,
     pub is_active: bool,
+    /// The joined child rooms the Space-leave confirmation offers to leave
+    /// with this Space.
+    #[serde(default)]
+    pub leave_candidates: Vec<crate::space_leave::SpaceLeaveCandidate>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -235,6 +239,11 @@ fn compose_sidebar_with_preferences(
                     room_notification_settings,
                 ),
                 is_active: active_space_id == Some(space.space_id.as_str()),
+                leave_candidates: crate::space_leave::space_leave_candidates(
+                    space,
+                    spaces,
+                    &rooms_by_id,
+                ),
             }
         })
         .collect();

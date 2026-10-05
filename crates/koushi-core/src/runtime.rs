@@ -76,8 +76,9 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use crate::account::{AccountActorHandle, AccountMessage};
 use crate::activity_resolution::ActivityResolutionRequest;
 use crate::command_policy::{
-    CoreCommandPolicy, native_artifact_for_account_command, native_artifact_for_command,
-    search_scope_to_state, space_member_forward_failure_action, timeline_composer_account_fence,
+    CoreCommandPolicy, admit_leave_space_command, native_artifact_for_account_command,
+    native_artifact_for_command, search_scope_to_state, space_member_forward_failure_action,
+    timeline_composer_account_fence,
 };
 use crate::composer_draft_lifecycle::{ComposerDraftCommandPermit, ComposerDraftLeaseRegistry};
 pub use activity::ACTIVITY_RECENT_MAX_ROWS;
@@ -4054,6 +4055,7 @@ impl AppActor {
                     }
                     _ => {}
                 }
+                let room_command = admit_leave_space_command(&self.state, room_command);
                 let forward_failure = space_member_forward_failure_action(&room_command);
                 // Route to AccountActor (which forwards to RoomActor).
                 let forwarded = self

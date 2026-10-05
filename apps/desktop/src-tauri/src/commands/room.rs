@@ -359,6 +359,24 @@ pub async fn leave_room(
 }
 
 #[tauri::command]
+pub async fn leave_space(
+    account_tab_id: Option<String>,
+    space_id: String,
+    child_room_ids: Vec<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let admission = submit_core_command_with_admission(
+        state.inner(),
+        build_leave_space_command(request_id, space_id, child_room_ids),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    Ok(admission)
+}
+
+#[tauri::command]
 pub async fn forget_room(
     account_tab_id: Option<String>,
     room_id: String,
@@ -1333,6 +1351,18 @@ pub(super) fn build_leave_room_command(
     CoreCommand::Room(RoomCommand::LeaveRoom {
         request_id,
         room_id,
+    })
+}
+
+pub(super) fn build_leave_space_command(
+    request_id: koushi_protocol::RequestId,
+    space_id: String,
+    child_room_ids: Vec<String>,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::LeaveSpace {
+        request_id,
+        space_id,
+        child_room_ids,
     })
 }
 

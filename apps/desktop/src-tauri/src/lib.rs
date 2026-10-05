@@ -1715,6 +1715,7 @@ pub fn run() {
             commands::profile::download_avatar_thumbnail,
             commands::profile::cancel_avatar_thumbnail,
             commands::room::leave_room,
+            commands::room::leave_space,
             commands::room::forget_room,
             commands::room::set_room_tag,
             commands::room::remove_room_tag,

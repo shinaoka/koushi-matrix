@@ -4,7 +4,31 @@ use koushi_protocol::command::{
     AccountCommand, AppCommand, CoreCommand, SearchScope, TimelineCommand,
 };
 use koushi_protocol::ids::{RequestId, TimelineKind};
-use koushi_state::{AppAction, OperationFailureKind};
+use koushi_state::{AppAction, AppState, OperationFailureKind, admit_space_leave_room_ids};
+
+/// Narrow a `LeaveSpace` command's child rooms to the Space's current leave
+/// candidates, so a stale or forged ID never leaves a room outside the Space.
+/// Every other command passes through unchanged.
+pub(crate) fn admit_leave_space_command(
+    state: &AppState,
+    command: koushi_protocol::command::RoomCommand,
+) -> koushi_protocol::command::RoomCommand {
+    match command {
+        koushi_protocol::command::RoomCommand::LeaveSpace {
+            request_id,
+            space_id,
+            child_room_ids,
+        } => {
+            let child_room_ids = admit_space_leave_room_ids(state, &space_id, &child_room_ids);
+            koushi_protocol::command::RoomCommand::LeaveSpace {
+                request_id,
+                space_id,
+                child_room_ids,
+            }
+        }
+        other => other,
+    }
+}
 
 pub(crate) fn space_member_forward_failure_action(
     command: &koushi_protocol::command::RoomCommand,
@@ -429,5 +453,89 @@ mod tests {
             timeline_composer_account_fence(&timeline),
             Some((id, &expected_account))
         );
+    }
+
+    fn synthetic_room(room_id: &str) -> koushi_state::RoomSummary {
+        koushi_state::RoomSummary {
+            display_name_placeholder: None,
+            display_label_placeholder: None,
+            room_id: room_id.to_owned(),
+            display_name: "Synthetic".to_owned(),
+            display_label: "Synthetic".to_owned(),
+            original_display_label: "Synthetic".to_owned(),
+            avatar: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: koushi_state::RoomTags::default(),
+            unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
+            marked_unread: false,
+            recency_stamp: None,
+            conversation_activity: None,
+            latest_event: None,
+            parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 1,
+        }
+    }
+
+    #[test]
+    fn leave_space_admission_keeps_only_joined_children_of_that_space() {
+        let space_id = "!space:example.invalid";
+        let state = AppState {
+            spaces: vec![koushi_state::SpaceSummary {
+                space_id: space_id.to_owned(),
+                raw_name: None,
+                display_name: "Synthetic Workspace".to_owned(),
+                avatar: None,
+                join_rule: None,
+                child_room_ids: vec!["!child:example.invalid".to_owned()],
+                parent_side_child_room_ids: vec!["!child:example.invalid".to_owned()],
+            }],
+            rooms: vec![
+                synthetic_room("!child:example.invalid"),
+                synthetic_room("!outside:example.invalid"),
+            ],
+            ..AppState::default()
+        };
+        let id = request(7);
+        let admitted = admit_leave_space_command(
+            &state,
+            koushi_protocol::command::RoomCommand::LeaveSpace {
+                request_id: id,
+                space_id: space_id.to_owned(),
+                child_room_ids: vec![
+                    "!outside:example.invalid".to_owned(),
+                    "!child:example.invalid".to_owned(),
+                ],
+            },
+        );
+        match admitted {
+            koushi_protocol::command::RoomCommand::LeaveSpace {
+                request_id,
+                space_id: admitted_space_id,
+                child_room_ids,
+            } => {
+                assert_eq!(request_id, id);
+                assert_eq!(admitted_space_id, space_id);
+                assert_eq!(child_room_ids, ["!child:example.invalid"]);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let passthrough = admit_leave_space_command(
+            &state,
+            koushi_protocol::command::RoomCommand::LeaveRoom {
+                request_id: id,
+                room_id: "!outside:example.invalid".to_owned(),
+            },
+        );
+        assert!(matches!(
+            passthrough,
+            koushi_protocol::command::RoomCommand::LeaveRoom { room_id, .. }
+                if room_id == "!outside:example.invalid"
+        ));
     }
 }

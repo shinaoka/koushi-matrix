@@ -16,10 +16,15 @@ import {
   CreateEntityDialog,
   DirectoryPreviewDialog,
   InviteTargetsDialog,
+  LeaveSpaceDialog,
   ResetLocalDataConfirmationDialog,
   UploadStagingDialog
 } from "./dialogs";
-import type { DirectoryPreviewState, InviteWorkflowState } from "../domain/types";
+import type {
+  DirectoryPreviewState,
+  InviteWorkflowState,
+  SpaceLeaveCandidate
+} from "../domain/types";
 
 afterEach(() => {
   cleanup();
@@ -1083,5 +1088,75 @@ describe("UploadStagingDialog send action", () => {
     expect(
       screen.getByRole<HTMLButtonElement>("button", { name: "Send attachments" }).disabled
     ).toBe(true);
+  });
+});
+
+describe("LeaveSpaceDialog", () => {
+  const candidates: SpaceLeaveCandidate[] = [
+    { room_id: "!alpha:example.invalid", display_name: "Alpha", avatar: null, in_other_space: false },
+    { room_id: "!beta:example.invalid", display_name: "Beta", avatar: null, in_other_space: true },
+    { room_id: "!gamma:example.invalid", display_name: "Gamma", avatar: null, in_other_space: false }
+  ];
+
+  function renderDialog(onConfirm = vi.fn(), roomCandidates = candidates, isBusy = false) {
+    render(
+      <LeaveSpaceDialog
+        spaceName="Synthetic Workspace"
+        candidates={roomCandidates}
+        isBusy={isBusy}
+        onCancel={vi.fn()}
+        onConfirm={onConfirm}
+      />
+    );
+    return onConfirm;
+  }
+
+  it("leaves only the Space by default", () => {
+    const onConfirm = renderDialog();
+    expect(screen.getByRole("radio", { name: t("space.leaveSpaceOnly") })).toHaveProperty("checked", true);
+    expect(screen.queryByRole("list", { name: t("space.leaveRoomsList") })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: t("space.leaveConfirmAction") }));
+    expect(onConfirm).toHaveBeenCalledWith([]);
+  });
+
+  it("leaves every candidate room when all rooms are chosen", () => {
+    const onConfirm = renderDialog();
+    fireEvent.click(screen.getByRole("radio", { name: t("space.leaveAllRooms", { count: 3 }) }));
+    const checkboxes = within(screen.getByRole("list", { name: t("space.leaveRoomsList") }))
+      .getAllByRole("checkbox");
+    expect(checkboxes.map((box) => (box as HTMLInputElement).checked)).toEqual([true, true, true]);
+    fireEvent.click(
+      screen.getByRole("button", { name: t("space.leaveConfirmActionWithRooms", { count: 3 }) })
+    );
+    expect(onConfirm).toHaveBeenCalledWith([
+      "!alpha:example.invalid",
+      "!beta:example.invalid",
+      "!gamma:example.invalid"
+    ]);
+  });
+
+  it("leaves only the selected rooms, in candidate order, and marks shared rooms", () => {
+    const onConfirm = renderDialog();
+    fireEvent.click(screen.getByRole("radio", { name: t("space.leaveSelectedRooms") }));
+    expect(screen.getByText(t("space.leaveRoomInOtherSpace"))).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox", { name: /Gamma/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Alpha/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: t("space.leaveConfirmActionWithRooms", { count: 2 }) })
+    );
+    expect(onConfirm).toHaveBeenCalledWith(["!alpha:example.invalid", "!gamma:example.invalid"]);
+  });
+
+  it("offers no room choice when the Space has no joined rooms", () => {
+    const onConfirm = renderDialog(vi.fn(), []);
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: t("space.leaveConfirmAction") }));
+    expect(onConfirm).toHaveBeenCalledWith([]);
+  });
+
+  it("disables every control while the leave is in flight", () => {
+    renderDialog(vi.fn(), candidates, true);
+    expect(screen.getByRole("button", { name: t("space.leaveConfirmAction") })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("radio", { name: t("space.leaveSpaceOnly") })).toHaveProperty("disabled", true);
   });
 });
