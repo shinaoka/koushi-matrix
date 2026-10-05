@@ -69,7 +69,7 @@ test("automatic availability and unsupported builds use the same nonempty update
   await expect(dialog).toHaveCount(0);
   await page.evaluate(() => window.__harness.pushDesktopMenu("checkForUpdates"));
   await expect(dialog).toBeVisible();
-  await page.evaluate(() => window.__harness.pushDesktopUpdate({ kind: "unsupported" }));
+  await page.evaluate(() => window.__harness.pushDesktopUpdate({ kind: "unsupported", reason: "build" }));
   await expect(dialog.getByText("In-app updates are unavailable in this build.")).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Download update" })).toHaveCount(0);
 });

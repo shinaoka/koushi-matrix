@@ -1265,6 +1265,18 @@ targets compile against an uninhabited placeholder, so they report
 the same trait and enables that cfg. It reuses the engine unchanged and must
 first settle which distribution formats it owns.
 
+`unsupported` carries a reason: `build` (no install backend or no updater trust
+material in this build) or `package_managed`. The packager opt-out (#1063) is a
+runtime capability check because a repackaged binary is byte-identical to the
+upstream package: on Linux, when the marker file
+`/usr/share/koushi-desktop/package-managed` exists (contents ignored), the
+initial state is `unsupported` with reason `package_managed` regardless of any
+backend, the adapter never constructs a backend or starts the update owner, and
+it therefore makes no feed request and spawns no installer or privilege
+escalation (`pkexec`, `sudo`, `dpkg`, `rpm`). The marker is read once when the
+update adapter is created. React renders the reason through the message catalog;
+other targets do not probe a marker.
+
 The update adapter owns one serialized lifecycle and one cancellable worker.
 Generation-fenced completions and candidate-specific download approval prevent
 overlapping triggers or channel changes from substituting an unapproved release.
