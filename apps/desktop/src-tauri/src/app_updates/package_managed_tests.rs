@@ -63,6 +63,19 @@ fn absent_marker_keeps_the_build_capability() {
 }
 
 #[test]
+fn updatable_state_still_selects_the_backend() {
+    // The complement of the marker case: a state whose owned state can update
+    // keeps constructing its backend, so the opt-out narrows that path only.
+    let constructed = Cell::new(false);
+    let backend = select_backend(&DesktopUpdateState::Idle, || {
+        constructed.set(true);
+        Some(())
+    });
+    assert!(backend.is_some());
+    assert!(constructed.get());
+}
+
+#[test]
 fn package_managed_state_serializes_its_reason() {
     assert_eq!(
         serde_json::to_value(PACKAGE_MANAGED).unwrap(),
