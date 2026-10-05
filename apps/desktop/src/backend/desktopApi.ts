@@ -293,7 +293,7 @@ export interface DesktopApi {
     rendererGeneration: string,
     target: ComposerTarget,
     draftRevision: ComposerDraftRevision
-  ): Promise<ComposerDraftAcceptanceResponse>;
+  ): Promise<CommandSettlement>;
   updateStagedUploadCaption(
     target: ComposerTarget,
     stagedId: string,

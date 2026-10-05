@@ -1420,12 +1420,7 @@ test("attach control stages media caption and renders Rust-owned media progress"
     .poll(async () =>
       page.evaluate(() => {
         const args = window.__harness.invocationsOf("send_prepared_uploads")[0]?.args;
-        return args
-          ? {
-              target: args.target,
-              draftRevision: args.draftRevision
-            }
-          : null;
+        return args ? { target: args.target, draftRevision: args.draftRevision } : null;
       })
     )
     .toEqual({
@@ -1564,6 +1559,31 @@ test("attach control stages media caption and renders Rust-owned media progress"
       roomId: "!harness-room:example.invalid",
       eventId: "$media-event:example.invalid"
     });
+});
+
+test("sending staged attachments never wipes the typed composer draft (#1130)", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await composer.fill("Here is the error:");
+  await attachFile(page, {
+    name: "draft-fixture.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("browser-headless draft fixture")
+  });
+  await expect(page.getByText("draft-fixture.txt", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Send attachments" }).click();
+
+  await expect.poll(() => invocationCount(page, "send_prepared_uploads")).toBe(1);
+  // The staged-attachment send only ever carried the staged items; the typed
+  // draft was never dispatched, so it must still be in the composer.
+  await expect.poll(() => invocationCount(page, "send_text")).toBe(0);
+  await expect(composer).toHaveText("Here is the error:");
+  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0);
 });
 
 test("paste/drop upload UX stages ordinary files for the captured main composer target", async ({

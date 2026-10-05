@@ -1217,7 +1217,7 @@ pub async fn send_prepared_uploads(
     draft_revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<ComposerDraftAcceptanceResponse, String> {
+) -> Result<FrontendCommandSettlement, String> {
     let expected_account = koushi_protocol::SessionKeyId {
         homeserver: account_homeserver,
         user_id: account_user_id,
@@ -1230,10 +1230,10 @@ pub async fn send_prepared_uploads(
         .await
         .map_err(|error| error.to_string())?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(ComposerDraftAcceptanceResponse {
-        accepted_revision: settled.accepted_revision,
-        settlement: command_settlement(settled.generation),
-    })
+    // #1130: the send settles the composer draft without consuming it, so the
+    // renderer only needs the plain command settlement: it must not clear the
+    // draft text it still has to send.
+    Ok(command_settlement(settled.generation))
 }
 
 #[tauri::command]

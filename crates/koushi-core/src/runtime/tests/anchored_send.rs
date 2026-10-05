@@ -519,6 +519,7 @@ async fn accepted_attachment_send_returns_anchored_pane_to_live_and_releases_foc
                 room_id: ROOM.to_owned(),
             },
             submitted_revision,
+            consumes_draft: false,
         })
         .await;
     actor.handle_app_effects(request(6), effects).await;

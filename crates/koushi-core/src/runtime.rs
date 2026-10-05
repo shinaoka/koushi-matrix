@@ -2583,6 +2583,7 @@ impl AppActor {
                             expected_account,
                             target,
                             submitted_revision,
+                            consumes_draft,
                         } => {
                             if !composer_draft_account_matches(&self.state, &expected_account) {
                                 return false;
@@ -2604,6 +2605,7 @@ impl AppActor {
                                 .reduce_app_action(AppAction::ComposerDraftAccepted {
                                     target,
                                     submitted_revision,
+                                    consumes_draft,
                                 })
                                 .await;
                             self.handle_app_effects(request_id, effects).await;

@@ -103,7 +103,7 @@ pub enum PreparedUploadSendError {
     PreparedBytesUnavailable,
     #[error("composer draft revision is stale or exhausted")]
     DraftRevision,
-    #[error("composer draft permit is invalid")]
+    #[error("composer permit is invalid")]
     ComposerPermit,
     #[error("prepared upload item is no longer available")]
     StaleItem,
@@ -114,8 +114,10 @@ pub enum PreparedUploadSendError {
 }
 
 pub struct PreparedUploadSendResult {
-    pub accepted_revision: ComposerDraftRevision,
-    /// Published generation at acceptance; state is inspected separately.
+    /// Revision the composer draft settled to. The draft content is preserved.
+    pub settled_revision: ComposerDraftRevision,
+    /// Published generation after the attachments were enqueued; state is
+    /// inspected separately.
     ///
     /// ```
     /// # fn inspect(result: &koushi_core::media_staging::PreparedUploadSendResult) {
@@ -694,6 +696,15 @@ impl MediaStagingService {
         Ok(bytes)
     }
 
+    /// Sends the staged attachments for `target`.
+    ///
+    /// #1130: the outgoing payload is built from the staged items and their own
+    /// captions, so the send settles the room's composer draft *without*
+    /// consuming it: text typed before pasting an image used to be destroyed
+    /// without ever being sent. The send still settles the draft so the accepted
+    /// revision, the tombstones and the #1037 return-to-live transition stay
+    /// exactly as an accepted send leaves them. The renderer lease still fences
+    /// a stale renderer.
     pub async fn send_prepared_uploads(
         &self,
         connection: &mut CoreConnection,
@@ -735,6 +746,8 @@ impl MediaStagingService {
             if ready_account(&current).as_ref() != Some(&expected_account) {
                 return Err(PreparedUploadSendError::AccountMismatch);
             }
+            // The settled revision, not the draft content, is what this send
+            // reports against: a mid-send draft edit must not re-target it.
             if composer_draft_revision(&current, &target) != draft_revision {
                 return Err(PreparedUploadSendError::DraftRevision);
             }
@@ -823,11 +836,14 @@ impl MediaStagingService {
         if ready_account(&current).as_ref() != Some(&expected_account) {
             return Err(PreparedUploadSendError::AccountMismatch);
         }
-        if !target_is_active(&current, &target)
-            || composer_draft_revision(&current, &target) != draft_revision
-        {
-            return Err(PreparedUploadSendError::DraftRevision);
+        if !target_is_active(&current, &target) {
+            return Err(PreparedUploadSendError::TargetInactive);
         }
+        // #1037/#1130: an accepted main-composer send returns the main pane to
+        // live and releases the navigation Core still owns for this room. The
+        // staged attachments were queued above, so that transition applies here
+        // as it does for a text send — but the draft is settled without being
+        // consumed, because this send never dispatched the typed text.
         let request_id = connection.next_request_id();
         let baseline = connection.state_generation();
         connection
@@ -836,14 +852,15 @@ impl MediaStagingService {
                 lease,
                 CoreCommand::App(AppCommand::AcceptComposerDraft {
                     request_id,
-                    expected_account,
+                    expected_account: expected_account.clone(),
                     target: target.clone(),
                     submitted_revision: draft_revision,
+                    consumes_draft: false,
                 }),
             )
             .await
             .map_err(PreparedUploadSendError::CommandSubmit)?;
-        let outcome = connection
+        connection
             .wait_for_request_outcome(
                 OutcomeCorrelation::Request(request_id),
                 RequestOutcomeExpectation::ComposerAccepted {
@@ -857,19 +874,10 @@ impl MediaStagingService {
             )
             .await
             .map_err(PreparedUploadSendError::Outcome)?;
-        match outcome {
-            RequestOutcome::ComposerAccepted {
-                revision,
-                generation,
-                ..
-            } => Ok(PreparedUploadSendResult {
-                accepted_revision: revision,
-                generation,
-            }),
-            _ => Err(PreparedUploadSendError::Outcome(
-                RequestOutcomeError::InvalidOutcome,
-            )),
-        }
+        Ok(PreparedUploadSendResult {
+            settled_revision: expected_revision,
+            generation: connection.state_generation(),
+        })
     }
 
     async fn wait_prepared_media_queue(

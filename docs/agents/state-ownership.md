@@ -1079,7 +1079,11 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   `send_prepared_uploads`; there is no direct renderer upload command. Each staged caption is a nullable
   `ComposerDocument`, edited through the staging dialog
   (`TimelinePaneState.staged_uploads[*].caption`), not inferred from the
-  ordinary Composer draft. At the media-send boundary Rust derives the
+  ordinary Composer draft. The staged-attachment send settles the composer draft
+  revision without consuming its content (#1130): it dispatches only the staged
+  items and their captions, so text typed before pasting an image survives the
+  send while the revision, tombstones and accepted-send navigation stay exactly
+  as a text send leaves them. At the media-send boundary Rust derives the
   `FormattedMessageDraft` from that document's plain body, formatted body, and
   mention intent. Rust exclusively owns staged items, caption DTOs, residency,
   and send content. The bounded main/thread `caption:*` mutation lanes own only
