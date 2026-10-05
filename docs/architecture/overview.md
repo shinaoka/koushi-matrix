@@ -243,6 +243,16 @@ Crate responsibilities:
   `StoreActor` remains in Core as the sole policy/lifecycle owner: it selects
   account paths, obtains and derives secrets, owns migrations and generation
   fences, maps coarse failures, and supplies SDK store/search configuration.
+  Store roots are owned exclusively only where that is guaranteed (#1134): the
+  packaged app's runtime paths call `StoreActor::with_exclusive_store_root()`,
+  because the shell refuses a second instance for its identifier and each account
+  has its own store directory. That declaration makes the SDK's store locks
+  no-ops (`CrossProcessLockConfig::SingleProcess`) instead of paying their 50 ms
+  cross-process lease heartbeat, which otherwise wrote to the crypto, state,
+  event-cache and media stores for the whole life of an idle session. Every other
+  entry point — QA, smoke, tests, `KOUSHI_QA_DATA_DIR` reuse — keeps the SDK's
+  cross-process coordination, because those can be pointed at a store root another
+  process already owns.
 - `koushi-key` — platform-neutral credential-store port, key derivation (HKDF
   from the local unlock secret), and zeroizing secret wrappers. The OS keyring
   backend lives in Tauri.

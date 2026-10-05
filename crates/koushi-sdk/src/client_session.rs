@@ -12,6 +12,7 @@ use matrix_sdk::{
             registration::{ApplicationType, ClientMetadata, Localized, OAuthGrantType},
         },
     },
+    cross_process_lock::CrossProcessLockConfig,
     encryption::{BackupDownloadStrategy, EncryptionSettings},
     ruma::serde::Raw,
 };
@@ -30,6 +31,8 @@ pub struct MatrixClientStoreConfig {
     cache_path: Option<PathBuf>,
     key: MatrixClientStoreKey,
     search_index_store: Option<MatrixSearchIndexStoreConfig>,
+    /// #1134: whether this process is the only owner of `path`.
+    exclusive_store_root: bool,
 }
 
 impl MatrixClientStoreConfig {
@@ -39,7 +42,28 @@ impl MatrixClientStoreConfig {
             cache_path: None,
             key,
             search_index_store: None,
+            // The SDK's multi-process store coordination stays on by default:
+            // every entry point that can be pointed at a shared store root keeps
+            // its cross-process locks.
+            exclusive_store_root: false,
         }
+    }
+
+    /// Declare that this process is the only owner of `path`.
+    ///
+    /// #1134: only the packaged desktop app can promise that — the shell refuses
+    /// a second instance for its identifier, each account has its own store
+    /// directory, and the user cannot point two processes at one store. In that
+    /// case the SDK's cross-process locks are switched off, because their
+    /// multiprocess mode holds a crypto-store lease for the whole encryption-sync
+    /// stream and renews it every 50 ms with a store transaction, which never
+    /// stops while the session is idle.
+    ///
+    /// Anything that accepts a reusable store root (QA and smoke entry points,
+    /// tests) must stay on the default.
+    pub fn with_exclusive_store_root(mut self) -> Self {
+        self.exclusive_store_root = true;
+        self
     }
 
     pub fn with_cache_path(mut self, cache_path: impl Into<PathBuf>) -> Self {
@@ -84,6 +108,11 @@ impl MatrixClientStoreConfig {
             .key(Some(self.key.expose_key()));
         let builder = builder
             .sqlite_store_with_config_and_cache_path(sqlite_config, self.cache_path.as_deref());
+        let builder = if self.exclusive_store_root {
+            builder.cross_process_store_config(CrossProcessLockConfig::SingleProcess)
+        } else {
+            builder
+        };
         match &self.search_index_store {
             Some(search_index_store) => {
                 builder.search_index_store(search_index_store.as_sdk_store_kind())
@@ -567,6 +596,7 @@ pub enum ProvisionalEncryptionSyncError {
 #[cfg(test)]
 mod tests {
     use super::MatrixEventCacheError;
+    use matrix_sdk::cross_process_lock::CrossProcessLockConfig;
 
     #[test]
     fn matrix_client_store_config_uses_the_required_key_for_sqlite_builder() {
@@ -576,6 +606,52 @@ mod tests {
         );
         assert!(config.encrypted_at_rest_configured());
     }
+    /// #1134: an exclusive store root switches the SDK's cross-process locks off,
+    /// and every other store root keeps them on.
+    #[tokio::test]
+    async fn only_an_exclusive_store_root_disables_the_cross_process_locks() {
+        let exclusive = crate::MatrixClientStoreConfig::new(
+            tempfile::tempdir().expect("store directory").path(),
+            crate::MatrixClientStoreKey::new([7; 32]),
+        )
+        .with_exclusive_store_root();
+        let client = exclusive
+            .apply_to_builder(super::desktop_client_builder_defaults(
+                matrix_sdk::Client::builder(),
+            ))
+            .homeserver_url("https://example.invalid")
+            .build()
+            .await
+            .expect("client builds");
+        assert!(
+            matches!(
+                client.cross_process_lock_config(),
+                CrossProcessLockConfig::SingleProcess
+            ),
+            "an exclusive store root must not enable the multi-process store lock"
+        );
+
+        let shared = crate::MatrixClientStoreConfig::new(
+            tempfile::tempdir().expect("store directory").path(),
+            crate::MatrixClientStoreKey::new([8; 32]),
+        );
+        let shared_client = shared
+            .apply_to_builder(super::desktop_client_builder_defaults(
+                matrix_sdk::Client::builder(),
+            ))
+            .homeserver_url("https://example.invalid")
+            .build()
+            .await
+            .expect("client builds");
+        assert!(
+            matches!(
+                shared_client.cross_process_lock_config(),
+                CrossProcessLockConfig::MultiProcess { .. }
+            ),
+            "a shared store root must keep the SDK's cross-process coordination"
+        );
+    }
+
     #[test]
     fn event_cache_error_is_private_data_free() {
         let error = MatrixEventCacheError::SubscribeFailed;
