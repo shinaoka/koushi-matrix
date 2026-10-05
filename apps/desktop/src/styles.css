@@ -3691,6 +3691,13 @@ button:disabled {
   background: var(--surface);
 }
 
+/* #1124: mouse-driven adjustments beside the scheduled-send time field. */
+.scheduled-send-adjustments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--scheduled-action-gap);
+}
+
 .scheduled-send-field input:focus {
   border-color: var(--brand);
   outline: 0;
