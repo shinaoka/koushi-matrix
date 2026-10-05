@@ -16,8 +16,10 @@
 //!
 //! A fresh subscription after `Unsubscribe` is not covered: its initial
 //! hydration reads a bounded event count once, so more hidden updates than that
-//! window hide the message. That is tracked as #1125 and is deliberately not
-//! asserted here (§"Finding" in the #1117 worklog).
+//! window hide the message. That is tracked as #1125; the executable RED
+//! reproducer is
+//! `crates/koushi-core/src/timeline/actor/fresh_room_hydration_tests.rs`
+//! (`cargo test -p koushi-core --lib -- --ignored fresh_room_subscription`).
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -26,7 +28,8 @@ use koushi_state::RoomSummary;
 
 use super::cleanup::cleanup_logged_in_runtime;
 use super::event_wait::{
-    subscribe_timeline_for_qa, visit_timeline_diff_items, wait_for_invite_in_snapshot,
+    QaEventDeadline, subscribe_timeline_for_qa, visit_timeline_diff_items,
+    wait_for_invite_in_snapshot,
 };
 use super::fixtures::{accept_invite_for_qa, create_room_for_qa, invite_user_for_qa};
 use super::participants::{QaParticipantLoginGate, login_synced_participant_for_qa, qa_data_dir};
@@ -34,8 +37,8 @@ use super::registry::{EVENT_TIMEOUT, QaConfig};
 use super::scenario_identity::cleanup_qa_auditor_device;
 use super::scenario_read_state::{observe_viewport, send_text_and_wait_event};
 use super::{
-    CoreConnection, CoreEvent, TimelineEvent, TimelineItem, TimelineItemId, TimelineKey,
-    TimelineKind, TimelineReadStateSync,
+    CoreCommand, CoreConnection, CoreEvent, RoomEvent, TimelineCommand, TimelineEvent,
+    TimelineItem, TimelineItemId, TimelineKey, TimelineKind, TimelineReadStateSync,
 };
 use matrix_sdk::ruma::{
     OwnedRoomId,
@@ -201,8 +204,10 @@ async fn run_hidden_state_acl_flow(
     )
     .await?;
     acl_observation.require_all_hidden()?;
-    // Hidden updates must not move the room list off the message.
-    wait_for_room(
+    // Hidden updates must not move the room list off the message. The summary
+    // already matched before the burst, so require a post-burst room-list
+    // reconciliation before accepting it.
+    wait_for_room_reconciled(
         reader,
         &room_id,
         |room| {
@@ -389,20 +394,22 @@ async fn wait_for_reader_items(
     label: &str,
     mut predicate: impl FnMut(&TimelineItem) -> bool,
 ) -> Result<(), String> {
-    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
+    let mut lag_count = 0u64;
     loop {
-        let event = match tokio::time::timeout_at(deadline, conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out"))?
-        {
-            Ok(event) => event,
-            Err(_lag) => {
-                let replay = subscribe_timeline_for_qa(conn, key, label).await?;
-                let mut matched = false;
-                for item in &replay {
-                    matched |= predicate(item);
-                }
-                if matched {
+        let event = match deadline.recv(conn).await {
+            Err(_) => {
+                return Err(format!(
+                    "{label}: timed out (event stream skipped={lag_count})"
+                ));
+            }
+            Ok(Ok(event)) => event,
+            Ok(Err(lag)) => {
+                // Lag skips events, so the Core-held timeline is re-observed
+                // authoritatively under the same deadline instead of continuing
+                // as if nothing were missed.
+                lag_count += lag.skipped;
+                if reobserve_replay_snapshot(conn, key, label, deadline, &mut predicate).await? {
                     return Ok(());
                 }
                 continue;
@@ -437,6 +444,83 @@ async fn wait_for_reader_items(
     }
 }
 
+/// Re-observe the Core-held timeline after a lag: request a fresh subscription
+/// snapshot and feed every item the actor exports (including diffs that arrive
+/// while the snapshot is awaited) into `predicate`. Command submission and the
+/// snapshot wait both run under the caller's absolute `deadline`.
+///
+/// Returns whether the predicate matched; a timeout is a failure, never a
+/// silent continue.
+async fn reobserve_replay_snapshot(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    label: &str,
+    deadline: QaEventDeadline,
+    predicate: &mut impl FnMut(&TimelineItem) -> bool,
+) -> Result<bool, String> {
+    let request_id = conn.next_request_id();
+    let initial_backfill = if matches!(key.kind, TimelineKind::Thread { .. }) {
+        koushi_protocol::command::InitialBackfillPolicy::RequiredForExistingThread
+    } else {
+        koushi_protocol::command::InitialBackfillPolicy::Disabled
+    };
+    tokio::time::timeout_at(
+        deadline.instant,
+        conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+            request_id,
+            key: key.clone(),
+            initial_backfill,
+        })),
+    )
+    .await
+    .map_err(|_| format!("{label}: replay subscribe timed out"))?
+    .map_err(|_| format!("{label}: replay subscribe failed"))?;
+    let mut matched = false;
+    loop {
+        let event = match deadline.recv(conn).await {
+            Err(_) => return Err(format!("{label}: replay snapshot timed out")),
+            Ok(Ok(event)) => event,
+            Ok(Err(_lag)) => continue,
+        };
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                cause_request_id: Some(cause_request_id),
+                key: event_key,
+                items,
+                ..
+            }) if event_key == *key && cause_request_id == request_id => {
+                for item in &items {
+                    matched |= predicate(item);
+                }
+                return Ok(matched);
+            }
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: event_key,
+                items,
+                ..
+            }) if event_key == *key => {
+                for item in &items {
+                    matched |= predicate(item);
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: event_key,
+                diffs,
+                ..
+            }) if event_key == *key => {
+                visit_timeline_diff_items(&diffs, |item| {
+                    matched |= predicate(item);
+                    Ok(())
+                })?;
+            }
+            _ => {}
+        }
+        if matched {
+            return Ok(true);
+        }
+    }
+}
+
 async fn wait_for_synced_read(
     conn: &mut CoreConnection,
     key: &TimelineKey,
@@ -449,11 +533,11 @@ async fn wait_for_synced_read(
             .map_err(|_| "hidden-state acl: read boundary did not converge".to_owned())?
         {
             Ok(event) => event,
-            Err(_lag) => {
-                return Err(
-                    "hidden-state acl: event stream lagged before the read boundary converged"
-                        .to_owned(),
-                );
+            Err(lag) => {
+                return Err(format!(
+                    "hidden-state acl: read boundary event stream lagged (skipped={})",
+                    lag.skipped
+                ));
             }
         };
         if let CoreEvent::Timeline(TimelineEvent::NavigationUpdated {
@@ -466,6 +550,55 @@ async fn wait_for_synced_read(
             && snapshot.read_state_sync == TimelineReadStateSync::Synced
         {
             return Ok(());
+        }
+    }
+}
+
+/// Waits for the room list to reconcile a change and then asserts the summary.
+///
+/// The predicate can already hold before the change, so a snapshot read before
+/// any room-list event would accept a projection the change never reconciled.
+/// This requires one room-list event first, then reads the authoritative
+/// summary; a summary that no longer matches fails instead of waiting.
+async fn wait_for_room_reconciled(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    predicate: impl Fn(&RoomSummary) -> bool,
+    label: &str,
+) -> Result<(), String> {
+    let matches = |conn: &CoreConnection| {
+        conn.snapshot()
+            .rooms
+            .iter()
+            .any(|room| room.room_id == room_id && predicate(room))
+    };
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    loop {
+        match tokio::time::timeout_at(deadline, conn.recv_event()).await {
+            Err(_) => {
+                return Err(format!(
+                    "{label}: the room list never reconciled after the change"
+                ));
+            }
+            Ok(Err(lag)) => {
+                // Lag only skips wake signals; the summary is authoritative, so
+                // re-read it to fail fast on a projection the change broke.
+                if !matches(conn) {
+                    return Err(format!(
+                        "{label}: the room summary does not match after a lag (skipped={})",
+                        lag.skipped
+                    ));
+                }
+            }
+            Ok(Ok(CoreEvent::Room(RoomEvent::RoomListUpdated) | CoreEvent::StateDelta(_))) => {
+                if !matches(conn) {
+                    return Err(format!(
+                        "{label}: the room summary does not match after reconciliation"
+                    ));
+                }
+                return Ok(());
+            }
+            Ok(Ok(_)) => {}
         }
     }
 }

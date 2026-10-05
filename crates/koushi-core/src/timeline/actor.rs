@@ -2877,4 +2877,7 @@ impl TimelineActor {
 }
 
 #[cfg(test)]
+#[path = "actor/fresh_room_hydration_tests.rs"]
+mod fresh_room_hydration_tests;
+#[cfg(test)]
 mod tests;

@@ -13,12 +13,14 @@ behavior is unchanged.
 - A disposable second SDK device of B (the room creator) writes 125 distinct
   ACL updates. Each update denies a different `example.invalid` host, because
   homeservers may drop a state write that changes nothing.
-- A must receive every ACL update as a hidden item. Lag on the reader's event
+- A must receive every observed ACL update as a hidden item, and the scenario
+  fails if any received one is exported visibly. Lag on the reader's event
   stream is not skipped: the item waiter re-observes the Core-held timeline
-  through a fresh subscription, and the count of received ACL updates with any
-  visible one is a failure.
-- The hidden updates must leave the room list alone: A asserts that the room
-  summary still shows the message as `latest_event` with `unread_count >= 1`.
+  through a fresh subscription under the same absolute deadline, feeding items
+  that arrive while that snapshot is awaited to the same observer.
+- The hidden updates must leave the room list alone: after a post-burst
+  room-list reconciliation A asserts that the room summary still shows the
+  message as `latest_event` with `unread_count >= 1`.
 - A then subscribes again. The Core-held timeline is replayed through the
   live-edge window. The replay held 136 raw items in the passing run, and it
   must still contain the visible message.
@@ -45,11 +47,19 @@ no displayed row.
 Whether the renderer's viewport-fill pagination recovers the message in the GUI
 was not checked. The scenario covers the Core-held replay path only.
 
-This gap is tracked as #1125. It is not automated yet: the `hidden_state_acl`
-scenario keeps the live-actor replay path green, and the scenario's module doc
-states that the fresh-subscription path is not covered. The RED stage would be
-run by repeating the burst with a `Unsubscribe` before the final `Subscribe`
-and asserting the message is still visible, which currently fails.
+This gap is tracked as #1125 and is kept as an executable RED stage:
+`crates/koushi-core/src/timeline/actor/fresh_room_hydration_tests.rs` builds a
+fresh room subscription whose live-edge window is entirely hidden state events
+and is `#[ignore]`d because it fails today. Run it with:
+
+```bash
+cargo test -p koushi-core --lib -- --ignored fresh_room_subscription
+```
+
+Observed RED output: `items=120, hidden=120, window=120` — the fresh
+subscription's initial window holds no displayed row, so the visible message is
+unreachable. The `hidden_state_acl` scenario keeps covering the live-actor
+replay path only, and its module doc says so.
 
 ## Verification
 
