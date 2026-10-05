@@ -392,16 +392,18 @@ banner, so run them on a macOS session and dismiss what they show; they are
 
 ```bash
 cargo test -p koushi-desktop --lib -- --ignored macos_click_waiter_does_not_settle_without_interaction
-cargo test -p koushi-desktop --lib -- --ignored macos_click_waiter_settles_on_dismissal
 ```
 
-- The first is the headless oracle: a banner with a click waiter must **not**
-settle by itself. The pinned fire-and-forget path returned after
-`mac-notification-sys`'s ~2 s delivery confirmation, so this fails (with
-`Ok(None)`) whenever the click wait is dropped again.
-- The second proves the dismissal half: dismiss the banner, and the waiter must
-settle with a non-activating response so a dismissal never navigates and the
-bounded waiter pool cannot leak.
+This is the headless oracle: a banner with a click waiter must **not** settle by
+itself. The pinned fire-and-forget path returned after `mac-notification-sys`'s
+~2 s delivery confirmation, so it fails (with `Ok(None)`) whenever the click wait
+is dropped again.
+
+The dismissal half of the same path — a dismissed banner settles the waiter with
+a non-activating response, so a dismissal never navigates and the bounded waiter
+pool cannot leak — needs the application's main run loop: the pinned backend
+schedules its dismissal poll on `NSRunLoop mainRunLoop`, which no `cargo test`
+harness runs. Cover it in the packaged-build check instead.
 
 A dev/test binary has no bundle identifier, so the banner is attributed to the
 development terminal identity; the packaged-build click behavior (window raise,

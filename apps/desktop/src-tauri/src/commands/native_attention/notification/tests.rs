@@ -162,6 +162,12 @@ fn macos_banner_activates_only_on_a_direct_click() {
 ///
 /// Run on demand: `cargo test -p koushi-desktop --lib -- --ignored macos_click_waiter`
 ///
+/// The dismissal half of this path (a dismissed banner must settle the waiter
+/// with a non-activating response) needs the application's main run loop: the
+/// pinned backend schedules its dismissal poll on `NSRunLoop mainRunLoop`, which
+/// no `cargo test` harness runs. It is therefore covered by the packaged-build
+/// check in #1128 rather than by a test here.
+///
 /// A dev/test binary has no bundle identifier, so the banner is attributed to
 /// the development terminal identity; the packaged build is covered by the
 /// manual check in #1128. Passing this proves the waiter did not settle by
@@ -193,42 +199,6 @@ fn macos_click_waiter_does_not_settle_without_interaction() {
         Ok(response) => panic!("the banner settled with no click and no dismissal: {response:?}"),
         Err(error) => panic!("the smoke sender stopped early: {error}"),
     }
-}
-
-/// The dismissal half of the same path: dismissing a banner must settle the
-/// waiter with a non-activating response, so the bounded waiter pool cannot
-/// leak and a dismissal can never navigate.
-///
-/// Run on demand and dismiss the banner when it appears:
-/// `cargo test -p koushi-desktop --lib -- --ignored macos_click_waiter_settles_on_dismissal`
-#[cfg(target_os = "macos")]
-#[test]
-#[ignore = "shows a real macOS banner; dismiss it to finish the check"]
-fn macos_click_waiter_settles_on_dismissal() {
-    assert!(
-        mac_notification_sys::set_application("com.apple.Terminal").is_ok(),
-        "the smoke needs a bundle identity for the banner"
-    );
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let thread = std::thread::Builder::new()
-        .name("koushi-notification-dismissal-smoke".to_owned())
-        .spawn(move || {
-            let _ = sender.send(send_macos_banner_awaiting_click(
-                "Koushi notification smoke",
-                "Dismiss this banner to finish the check",
-            ));
-        })
-        .expect("smoke sender thread");
-
-    let response = receiver
-        .recv_timeout(std::time::Duration::from_secs(60))
-        .expect("dismiss the smoke banner to finish the check")
-        .expect("the macOS sender reported a response");
-    assert!(
-        !macos_banner_activates(&response),
-        "a dismissal must not activate the banner: {response:?}"
-    );
-    thread.join().expect("smoke sender thread joined");
 }
 
 #[test]

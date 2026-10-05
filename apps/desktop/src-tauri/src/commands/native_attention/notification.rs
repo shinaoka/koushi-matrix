@@ -57,9 +57,11 @@ pub(crate) enum NativeNotificationOutcome {
     /// The banner was handed to the platform with a click wait configured.
     ///
     /// This is dispatch acceptance, not proof that the platform displayed the
-    /// banner or armed a click: a platform that refuses it is reported
-    /// afterwards by the `show_failed` diagnostic, and a completed click by
-    /// `activation_settled`.
+    /// banner or armed a click. An explicit backend send error is reported
+    /// afterwards by the `show_failed` diagnostic and a completed click by
+    /// `activation_settled`; a banner the platform silently drops or never
+    /// confirms is reported by neither (the pinned macOS backend turns a
+    /// missing delivery confirmation into an auto-dismissal).
     Delivered,
     /// Handed to the platform, but no click waiter was available.
     DisplayOnly,
