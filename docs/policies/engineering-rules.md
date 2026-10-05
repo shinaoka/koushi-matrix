@@ -708,6 +708,35 @@ To reduce conflicts on these files:
   confirm native-button clearance separately on macOS. Do not impose the
   macOS inset on Windows or Linux.
 
+### Right Panel And Composer Containment
+
+- Every right-panel mode (thread, search, focused context, room info, people,
+  profile, Space info and members, files, pinned, threads list, recovery)
+  renders inside the one shared panel shell. A mode must not introduce its own
+  outer container, width, or positioning.
+- Layout tracks inside the shell and the composer shrink to the allocated
+  inline size: grid columns are explicit `minmax(0, 1fr)` tracks (never an
+  implicit `auto` column) and grid or flex children that may hold long text set
+  `min-inline-size: 0`. A descendant's intrinsic width (a long Matrix ID, an
+  unbroken URL, expanded localized text) must never widen the panel's or the
+  composer's content past its own edge.
+- The panel header with its close action, and the composer toolbar and footer
+  with the send action, stay inside the panel at every supported width,
+  density, and locale. When a toolbar row cannot fit its fixed controls, it
+  wraps; it does not overflow or hide controls.
+- A long account identity truncates with an ellipsis in place; the full value
+  stays available through `title` and the accessible name.
+- Fix containment at the shared shell and composer primitives. Do not hide
+  overflow globally (on the shell, the app grid, or `body`) to mask an
+  escaping child, and do not tune media-query breakpoints to dodge a width
+  that overflows.
+- Rust/Tauri keeps ownership of native window geometry (minimum window size,
+  zoom, display scale); CSS containment must hold for any viewport the native
+  layer allows.
+- Headless regressions measure the panel and descendant rectangles, hit-test
+  the close and send actions with `elementFromPoint`, and click them; a
+  `toBeVisible()` check or a screenshot alone is not containment evidence.
+
 ## Search Index And Room-Key Export
 
 - Manual room-key file export/import MUST use the Matrix key-export file
