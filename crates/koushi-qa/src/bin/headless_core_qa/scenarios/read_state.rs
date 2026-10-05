@@ -430,7 +430,7 @@ pub(super) async fn observe_viewport(
         },
     }))
     .await
-    .map_err(|_| "read-state convergence viewport submission failed".to_owned())
+    .map_err(|_| "viewport submission failed".to_owned())
 }
 
 async fn wait_for_navigation(

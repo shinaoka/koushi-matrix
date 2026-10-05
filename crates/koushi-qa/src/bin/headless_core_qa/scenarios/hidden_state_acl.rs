@@ -5,15 +5,22 @@
 //! creator) writes the ACL state, so every update is real homeserver state that
 //! reaches the reader through sync. The reader must then:
 //!
-//! - receive every ACL update as a hidden item, never a resurrected blank row;
+//! - export every observed ACL update as a hidden item, never a resurrected
+//!   blank row (a lagged stream is re-observed through a replay);
+//! - keep the room list's latest event and unread count on the message;
 //! - keep the ordinary message in a re-subscription replay even though more
 //!   hidden updates than the replay capacity follow it;
-//! - acknowledge the message from a viewport that shows only that message,
-//!   converging to the server-confirmed read boundary and a cleared unread
-//!   count.
+//! - show a message sent after the burst in the timeline and the room list;
+//! - acknowledge that message from the viewport, converging to the
+//!   server-confirmed read boundary and a cleared unread count.
+//!
+//! A fresh subscription after `Unsubscribe` is not covered: its initial
+//! hydration reads a bounded event count and is tracked separately.
 
 use std::collections::HashSet;
 use std::time::Duration;
+
+use koushi_state::RoomSummary;
 
 use super::cleanup::cleanup_logged_in_runtime;
 use super::event_wait::{
@@ -38,6 +45,7 @@ use matrix_sdk::ruma::{
 /// capacity that counted hidden rows would evict the message.
 const ACL_UPDATE_COUNT: usize = 125;
 const MESSAGE_BODY: &str = "Synthetic hidden-state message";
+const FOLLOW_UP_BODY: &str = "Synthetic message after hidden state";
 
 pub(super) async fn run_hidden_state_acl_scenario(config: &QaConfig) -> Result<(), String> {
     let participant_a = login_synced_participant_for_qa(
@@ -163,10 +171,10 @@ async fn run_hidden_state_acl_flow(
         |item| item_event_id(item) == Some(message_event_id.as_str()) && !item.is_hidden,
     )
     .await?;
-    wait_for_unread(
+    wait_for_room(
         reader,
         &room_id,
-        |count| count > 0,
+        |room| room.unread_count > 0,
         "hidden-state acl unread",
     )
     .await?;
@@ -177,24 +185,34 @@ async fn run_hidden_state_acl_flow(
         .last()
         .ok_or_else(|| "hidden-state acl: no ACL update was sent".to_owned())?
         .clone();
-    // Every exported ACL item must stay hidden; the last one proves arrival.
-    let mut resurrected = false;
+    // Every observed ACL item must stay hidden; the last one proves arrival.
+    // A lagged stream is re-observed through a replay inside the wait.
+    let mut acl_observation = AclObservation::default();
     wait_for_reader_items(
         reader,
         &key,
         "hidden-state acl reader receives updates",
         |item| {
-            let id = item_event_id(item);
-            if id.is_some_and(|id| acl_set.contains(id)) && !item.is_hidden {
-                resurrected = true;
-            }
-            id == Some(last_acl.as_str())
+            acl_observation.observe(item, &acl_set);
+            item_event_id(item) == Some(last_acl.as_str())
         },
     )
     .await?;
-    if resurrected {
-        return Err("hidden-state acl: an ACL update was exported as a visible row".to_owned());
-    }
+    acl_observation.require_all_hidden()?;
+    // Hidden updates must not move the room list off the message.
+    wait_for_room(
+        reader,
+        &room_id,
+        |room| {
+            room.unread_count > 0
+                && room
+                    .latest_event
+                    .as_ref()
+                    .is_some_and(|latest| latest.event_id == message_event_id)
+        },
+        "hidden-state acl room list after updates",
+    )
+    .await?;
 
     // Subscribing again replays the Core-held timeline through the live-edge
     // window, which must still contain the message.
@@ -233,13 +251,47 @@ async fn run_hidden_state_acl_flow(
         return Err("hidden-state acl: replay exported an ACL update as a visible row".to_owned());
     }
 
-    // The renderer can only show the message, so the viewport reports it.
-    observe_viewport(reader, &key, &message_event_id).await?;
-    wait_for_synced_read(reader, &key, &message_event_id).await?;
-    wait_for_unread(
+    // A message after the burst reaches the timeline and the room list.
+    let follow_up_event_id = send_text_and_wait_event(
+        sender,
+        &sender_key,
+        "hidden-state-follow-up",
+        FOLLOW_UP_BODY,
+        "hidden-state acl follow-up",
+    )
+    .await?;
+    wait_for_reader_items(
+        reader,
+        &key,
+        "hidden-state acl reader receives follow-up",
+        |item| {
+            item_event_id(item) == Some(follow_up_event_id.as_str())
+                && !item.is_hidden
+                && item.body.as_deref() == Some(FOLLOW_UP_BODY)
+        },
+    )
+    .await?;
+    wait_for_room(
         reader,
         &room_id,
-        |count| count == 0,
+        |room| {
+            room.unread_count > 0
+                && room
+                    .latest_event
+                    .as_ref()
+                    .is_some_and(|latest| latest.event_id == follow_up_event_id)
+        },
+        "hidden-state acl room list after follow-up",
+    )
+    .await?;
+
+    // The viewport reports the newest visible message.
+    observe_viewport(reader, &key, &follow_up_event_id).await?;
+    wait_for_synced_read(reader, &key, &follow_up_event_id).await?;
+    wait_for_room(
+        reader,
+        &room_id,
+        |room| room.unread_count == 0,
         "hidden-state acl read",
     )
     .await
@@ -289,9 +341,46 @@ async fn send_acl_updates(
     Ok(event_ids)
 }
 
-/// Waits until `predicate` matches an item exported for `key`. Lag is
-/// tolerated because the ACL burst can outrun the event stream; the caller
-/// then relies on later items (or a fresh replay) for its evidence.
+/// Counts the ACL updates observed on the event stream and records any that
+/// were exported as visible rows.
+#[derive(Default)]
+struct AclObservation {
+    seen: HashSet<String>,
+    visible: HashSet<String>,
+}
+
+impl AclObservation {
+    fn observe(&mut self, item: &TimelineItem, acl_set: &HashSet<&str>) {
+        let Some(id) = item_event_id(item) else {
+            return;
+        };
+        if !acl_set.contains(id) {
+            return;
+        }
+        self.seen.insert(id.to_owned());
+        if !item.is_hidden {
+            self.visible.insert(id.to_owned());
+        }
+    }
+
+    fn require_all_hidden(&self) -> Result<(), String> {
+        if !self.visible.is_empty() {
+            return Err(format!(
+                "hidden-state acl: {} of {} observed ACL updates were exported as visible rows",
+                self.visible.len(),
+                self.seen.len()
+            ));
+        }
+        if self.seen.is_empty() {
+            return Err("hidden-state acl: no ACL update was observed".to_owned());
+        }
+        Ok(())
+    }
+}
+
+/// Waits until `predicate` matches an item exported for `key`. The ACL burst
+/// can outrun the event stream; after a lag the Core-held timeline is replayed
+/// and the predicate sees the replayed items before waiting resumes.
 async fn wait_for_reader_items(
     conn: &mut CoreConnection,
     key: &TimelineKey,
@@ -305,7 +394,17 @@ async fn wait_for_reader_items(
             .map_err(|_| format!("{label}: timed out"))?
         {
             Ok(event) => event,
-            Err(_lag) => continue,
+            Err(_lag) => {
+                let replay = subscribe_timeline_for_qa(conn, key, label).await?;
+                let mut matched = false;
+                for item in &replay {
+                    matched |= predicate(item);
+                }
+                if matched {
+                    return Ok(());
+                }
+                continue;
+            }
         };
         let mut matched = false;
         match event {
@@ -348,7 +447,12 @@ async fn wait_for_synced_read(
             .map_err(|_| "hidden-state acl: read boundary did not converge".to_owned())?
         {
             Ok(event) => event,
-            Err(_lag) => continue,
+            Err(_lag) => {
+                return Err(
+                    "hidden-state acl: event stream lagged before the read boundary converged"
+                        .to_owned(),
+                );
+            }
         };
         if let CoreEvent::Timeline(TimelineEvent::NavigationUpdated {
             key: event_key,
@@ -365,10 +469,10 @@ async fn wait_for_synced_read(
 }
 
 /// Polls the published room summary while draining the event stream.
-async fn wait_for_unread(
+async fn wait_for_room(
     conn: &mut CoreConnection,
     room_id: &str,
-    predicate: impl Fn(u64) -> bool,
+    predicate: impl Fn(&RoomSummary) -> bool,
     label: &str,
 ) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
@@ -377,12 +481,12 @@ async fn wait_for_unread(
             .snapshot()
             .rooms
             .iter()
-            .any(|room| room.room_id == room_id && predicate(room.unread_count))
+            .any(|room| room.room_id == room_id && predicate(room))
         {
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(format!("{label}: room unread count did not converge"));
+            return Err(format!("{label}: room summary did not converge"));
         }
         let _ = tokio::time::timeout(Duration::from_millis(100), conn.recv_event()).await;
     }
