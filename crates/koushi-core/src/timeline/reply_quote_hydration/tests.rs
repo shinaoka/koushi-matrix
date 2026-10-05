@@ -252,6 +252,32 @@ fn mixed_undecryptable_and_transient_failures_keep_their_own_delays() {
 }
 
 #[test]
+fn batch_originals_include_a_changed_original_only_a_pending_send_quotes() {
+    // The batch changes O (redaction) and carries an unrelated transaction item;
+    // no batch item quotes O, but a pending send does. The batch must still
+    // project O's newest value, or the pre-commit pending overlay would fall
+    // back to the previous committed value.
+    let mut redacted = original_item(ORIGINAL, "gone");
+    redacted.is_redacted = true;
+    let unrelated = reply_item("txn", "$other:example.invalid");
+    let batch = [&redacted, &unrelated];
+
+    let targets = batch_original_targets(&batch, [ORIGINAL, "$other:example.invalid"]);
+    assert!(
+        targets.contains(&ORIGINAL.to_owned()),
+        "a changed original a displayed quote points at must be a target: {targets:?}"
+    );
+    assert!(
+        targets.contains(&"$other:example.invalid".to_owned()),
+        "the batch's own quote target stays included: {targets:?}"
+    );
+
+    // A displayed target this batch does not change is not collected.
+    let targets = batch_original_targets(&batch, ["$absent:example.invalid"]);
+    assert!(!targets.contains(&"$absent:example.invalid".to_owned()));
+}
+
+#[test]
 fn pending_overlay_prefers_the_batch_original_over_the_committed_one() {
     // While a batch is being committed, the actor's canonical items still hold
     // the previous original. A pre-commit consumer must prefer the batch value,

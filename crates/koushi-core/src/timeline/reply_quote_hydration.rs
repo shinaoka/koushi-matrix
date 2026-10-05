@@ -593,6 +593,34 @@ fn merge_originals_for(
     merged
 }
 
+/// The original targets a batch overlay must derive: the batch's own quote
+/// targets, plus every displayed quote target (the actor's canonical items or a
+/// pending send) that this batch changes.
+///
+/// A batch can change an original that only a canonical item or a pending send
+/// quotes — for example an unrelated transaction-backed item shares the batch
+/// with the redaction — and a pre-commit consumer must see that newest value
+/// instead of the previous committed one.
+fn batch_original_targets<'b, 'd>(
+    batch: &[&'b TimelineItem],
+    displayed: impl IntoIterator<Item = &'d str>,
+) -> Vec<String> {
+    let mut targets: HashSet<String> = quote_targets(batch.iter().copied())
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let batch_event_ids: HashSet<&str> = batch
+        .iter()
+        .filter_map(|item| super::item_projection::timeline_item_event_id(item))
+        .collect();
+    for target in displayed {
+        if batch_event_ids.contains(target) {
+            targets.insert(target.to_owned());
+        }
+    }
+    targets.into_iter().collect()
+}
+
 impl TimelineActor {
     /// Resolve unresolved quotes on an SDK batch before it is committed, so a
     /// reply to a known original is published with a resolved quote. Returns
@@ -613,10 +641,12 @@ impl TimelineActor {
                 items.iter().copied(),
                 &mut refreshes,
             );
-            quote_targets(items.iter().copied())
-                .into_iter()
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
+            batch_original_targets(
+                &items,
+                quote_targets(self.navigation_items.iter())
+                    .into_iter()
+                    .chain(quote_targets(self.display_projection.pending_items())),
+            )
         };
         if targets.is_empty() {
             return BatchReplyQuotes {
