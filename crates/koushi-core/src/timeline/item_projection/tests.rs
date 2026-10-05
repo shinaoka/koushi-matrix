@@ -1,8 +1,8 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 
 use koushi_state::{
     ComposerDocument, ComposerInline, LiveEventReceipts, LiveReadReceipt, MentionIntent,
-    MentionTarget, ReplyQuote, ReplyQuoteState,
+    MentionTarget, ReplyQuoteState,
 };
 
 use matrix_sdk::room::edit::EditedContent;
@@ -42,9 +42,9 @@ fn live_receipt_summary_compacts_large_reader_input_with_exact_total() {
     assert_eq!(summaries[0].total_count, 1_500);
 }
 use koushi_protocol::event::{
-    LinkPreview, LinkPreviewState, TimelineBottomArrival, TimelineFormattedBody, TimelineItemId,
-    TimelineMessageKind, TimelineNoticeI18n, TimelineNoticeI18nKey, TimelineSendFailureReason,
-    TimelineSendState, TimelineSpoilerSpan, TimelineViewportObservation,
+    LinkPreview, LinkPreviewState, TimelineFormattedBody, TimelineItemId, TimelineMessageKind,
+    TimelineNoticeI18n, TimelineNoticeI18nKey, TimelineSendFailureReason, TimelineSendState,
+    TimelineSpoilerSpan,
 };
 
 use koushi_protocol::failure::TimelineFailureKind;
@@ -70,7 +70,6 @@ use super::{
     state_event_notice_projection, timeline_item_can_edit, timeline_item_can_react,
     timeline_item_can_redact, timeline_item_should_be_hidden, validate_cancel_send,
     validate_redact_reaction, validate_retry_send, validate_send_reaction,
-    visible_missing_reply_detail_event_ids,
 };
 
 use super::super::test_support::{fake_rid, room_key, timeline_item};
@@ -188,85 +187,6 @@ fn local_megolm_reason_is_exact_and_missing_evidence_is_unavailable() {
             Some(expected)
         );
     }
-}
-
-#[test]
-fn visible_missing_reply_detail_event_ids_only_returns_visible_unrequested_missing_replies() {
-    let mut before = timeline_item("$before:test", Some("before"), "@alice:test", false);
-    before.reply_quote = Some(ReplyQuote {
-        event_id: "$root-before:test".to_owned(),
-        sender: None,
-        sender_label: None,
-        body_preview: None,
-        formatted: None,
-        state: ReplyQuoteState::Missing,
-    });
-    let first_visible = timeline_item("$first-visible:test", Some("first"), "@alice:test", false);
-    let mut missing = timeline_item("$missing:test", Some("missing"), "@alice:test", false);
-    missing.reply_quote = Some(ReplyQuote {
-        event_id: "$root-missing:test".to_owned(),
-        sender: None,
-        sender_label: None,
-        body_preview: None,
-        formatted: None,
-        state: ReplyQuoteState::Missing,
-    });
-    let mut ready = timeline_item("$ready:test", Some("ready"), "@alice:test", false);
-    ready.reply_quote = Some(ReplyQuote {
-        event_id: "$root-ready:test".to_owned(),
-        sender: Some("@bob:test".to_owned()),
-        sender_label: None,
-        body_preview: Some("loaded".to_owned()),
-        formatted: None,
-        state: ReplyQuoteState::Ready,
-    });
-    let mut already_requested = timeline_item(
-        "$already-requested:test",
-        Some("already"),
-        "@alice:test",
-        false,
-    );
-    already_requested.reply_quote = Some(ReplyQuote {
-        event_id: "$root-already:test".to_owned(),
-        sender: None,
-        sender_label: None,
-        body_preview: None,
-        formatted: None,
-        state: ReplyQuoteState::Missing,
-    });
-    let mut after = timeline_item("$after:test", Some("after"), "@alice:test", false);
-    after.reply_quote = Some(ReplyQuote {
-        event_id: "$root-after:test".to_owned(),
-        sender: None,
-        sender_label: None,
-        body_preview: None,
-        formatted: None,
-        state: ReplyQuoteState::Missing,
-    });
-
-    let items = vec![
-        before,
-        first_visible,
-        missing,
-        ready,
-        already_requested,
-        after,
-    ];
-    let requested = HashSet::from(["$already-requested:test".to_owned()]);
-
-    let event_ids = visible_missing_reply_detail_event_ids(
-        &items,
-        &TimelineViewportObservation {
-            first_visible_event_id: Some("$first-visible:test".to_owned()),
-            last_visible_event_id: Some("$already-requested:test".to_owned()),
-            visible_gap_ids: Vec::new(),
-            bottom_arrival: TimelineBottomArrival::User,
-            at_bottom: false,
-        },
-        &requested,
-    );
-
-    assert_eq!(event_ids, vec!["$missing:test".to_owned()]);
 }
 
 fn reaction_groups_fixture() -> ReactionsByKeyBySender {

@@ -30,8 +30,8 @@ use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, SendHandle};
 use matrix_sdk_ui::timeline::{
     AnyOtherStateEventContentChange, EmbeddedEvent, EncryptedMessage,
     EventSendState as SdkEventSendState, EventTimelineItem, InReplyToDetails, MembershipChange,
-    Profile, ReactionStatus, ReactionsByKeyBySender, Timeline, TimelineDetails,
-    TimelineEventItemId, TimelineItem as SdkTimelineItem, TimelineItemContent, TimelineItemKind,
+    Profile, ReactionStatus, ReactionsByKeyBySender, TimelineDetails, TimelineEventItemId,
+    TimelineItem as SdkTimelineItem, TimelineItemContent, TimelineItemKind,
 };
 use tokio::sync::mpsc;
 
@@ -50,7 +50,7 @@ use koushi_protocol::event::{
     TimelineMediaSource, TimelineMediaThumbnail, TimelineMegolmSessionReason,
     TimelineMessageActions, TimelineMessageKind, TimelineMessageSource, TimelineNoticeI18n,
     TimelineNoticeI18nKey, TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
-    TimelineUnableToDecrypt, TimelineUnableToDecryptReason, TimelineViewportObservation,
+    TimelineUnableToDecrypt, TimelineUnableToDecryptReason,
 };
 use koushi_protocol::failure::{CoreFailure, TimelineFailureKind};
 use koushi_protocol::ids::{RequestId, TimelineKey, TimelineKind};
@@ -130,21 +130,6 @@ fn spawn_link_preview_fetch(
                 failed_count,
                 elapsed_ms: started.elapsed().as_millis(),
             })
-            .await;
-    })
-}
-
-fn spawn_reply_detail_fetch(
-    timeline: Arc<Timeline>,
-    msg_tx: mpsc::Sender<TimelineActorMessage>,
-    event_id: String,
-) -> executor::JoinHandle<()> {
-    executor::spawn(async move {
-        if let Ok(parsed_event_id) = matrix_sdk::ruma::EventId::parse(event_id.as_str()) {
-            let _ = timeline.fetch_details_for_event(&parsed_event_id).await;
-        }
-        let _ = msg_tx
-            .send(TimelineActorMessage::ReplyDetailsFetchFinished { event_id })
             .await;
     })
 }
@@ -937,29 +922,6 @@ impl TimelineActor {
         }
 
         let _ = self.emit_non_sdk_item_sets(core_diffs);
-    }
-    pub(super) fn maybe_fetch_visible_reply_details(&mut self) {
-        let event_ids = visible_missing_reply_detail_event_ids(
-            &self.navigation_items,
-            &self.viewport_observation,
-            &self.reply_detail_fetch_attempted_event_ids,
-        );
-        for event_id in event_ids {
-            if !self
-                .reply_detail_fetch_attempted_event_ids
-                .insert(event_id.clone())
-            {
-                continue;
-            }
-            let task = spawn_reply_detail_fetch(
-                self.timeline.clone(),
-                self.msg_tx.clone(),
-                event_id.clone(),
-            );
-            if let Some(previous) = self.reply_detail_fetches.insert(event_id, task) {
-                previous.abort();
-            }
-        }
     }
     /// Forward SDK diff mutations to the search index channel reliably.
     /// Redactions are privacy-sensitive removals and must not be silently
@@ -1848,39 +1810,6 @@ pub(super) fn item_index_for_event_id(items: &[TimelineItem], event_id: &str) ->
         .position(|item| timeline_item_event_id(item) == Some(event_id))
 }
 
-fn visible_missing_reply_detail_event_ids(
-    items: &[TimelineItem],
-    observation: &TimelineViewportObservation,
-    already_requested_event_ids: &HashSet<String>,
-) -> Vec<String> {
-    let Some(first_visible_event_id) = observation.first_visible_event_id.as_deref() else {
-        return Vec::new();
-    };
-    let Some(last_visible_event_id) = observation.last_visible_event_id.as_deref() else {
-        return Vec::new();
-    };
-    let Some(first_visible_index) = item_index_for_event_id(items, first_visible_event_id) else {
-        return Vec::new();
-    };
-    let Some(last_visible_index) = item_index_for_event_id(items, last_visible_event_id) else {
-        return Vec::new();
-    };
-
-    let start = first_visible_index.min(last_visible_index);
-    let end = first_visible_index.max(last_visible_index);
-    items[start..=end]
-        .iter()
-        .filter_map(|item| {
-            let event_id = timeline_item_event_id(item)?;
-            if already_requested_event_ids.contains(event_id) {
-                return None;
-            }
-            let quote = item.reply_quote.as_ref()?;
-            (quote.state == ReplyQuoteState::Missing).then(|| event_id.to_owned())
-        })
-        .collect()
-}
-
 pub(super) fn timeline_item_event_id(item: &TimelineItem) -> Option<&str> {
     match &item.id {
         TimelineItemId::Event { event_id } => Some(event_id.as_str()),
@@ -2708,17 +2637,65 @@ pub(super) fn link_ranges_for_message_projection(
 fn reply_quote_from_details(details: &InReplyToDetails) -> ReplyQuote {
     match &details.event {
         TimelineDetails::Ready(event) => reply_quote_from_embedded_event(details, event),
+        // SDK details are an input, not the authority: the owning actor's
+        // reply quote hydration settles unresolved originals (#1120).
         TimelineDetails::Unavailable | TimelineDetails::Pending | TimelineDetails::Error(_) => {
-            ReplyQuote {
-                event_id: details.event_id.to_string(),
-                sender: None,
-                sender_label: None,
-                body_preview: None,
-                formatted: None,
-                state: ReplyQuoteState::Missing,
-            }
+            super::reply_quote_hydration::placeholder_quote(
+                details.event_id.as_str(),
+                ReplyQuoteState::Loading,
+            )
         }
     }
+}
+
+/// Project a reply quote from an original this actor already holds as a
+/// `TimelineItem`. Returns `None` while the original cannot be rendered yet
+/// (undecryptable), so the caller keeps the quote unresolved.
+pub(super) fn reply_quote_from_timeline_item(
+    event_id: &str,
+    item: &TimelineItem,
+) -> Option<ReplyQuote> {
+    let sender = item.sender.clone();
+    if item.is_redacted {
+        return Some(ReplyQuote {
+            event_id: event_id.to_owned(),
+            sender,
+            sender_label: item.sender_label.clone(),
+            body_preview: None,
+            formatted: None,
+            state: ReplyQuoteState::Redacted,
+        });
+    }
+    if item.unable_to_decrypt.is_some() {
+        return None;
+    }
+    let (body_preview, formatted) = if item.notice_i18n.is_some() {
+        (None, None)
+    } else {
+        let source = item
+            .body
+            .as_deref()
+            .or_else(|| item.media.as_ref().map(|media| media.filename.as_str()));
+        (
+            source.and_then(|source| collapsed_preview(source, REPLY_QUOTE_PREVIEW_MAX_CHARS)),
+            item.formatted
+                .as_ref()
+                .map(reply_quote_formatted_body_from_timeline),
+        )
+    };
+    let state = if body_preview.is_some() || formatted.is_some() {
+        ReplyQuoteState::Ready
+    } else {
+        ReplyQuoteState::Unsupported
+    };
+    Some(ReplyQuote {
+        event_id: event_id.to_owned(),
+        sender,
+        sender_label: item.sender_label.clone(),
+        body_preview,
+        formatted,
+        state,
+    })
 }
 
 fn reply_quote_from_embedded_event(

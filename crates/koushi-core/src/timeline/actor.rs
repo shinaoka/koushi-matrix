@@ -295,8 +295,14 @@ pub(super) enum TimelineActorMessage {
         request_id: RequestId,
         event_id: String,
     },
-    ReplyDetailsFetchFinished {
+    ReplyQuoteOriginalLoaded {
         event_id: String,
+        attempt: u32,
+        outcome: super::reply_quote_hydration::OriginalLookupOutcome,
+    },
+    ReplyQuoteRetryDue {
+        event_id: String,
+        attempt: u32,
     },
     RequestRoomKey {
         request_id: Option<RequestId>,
@@ -909,7 +915,8 @@ pub(super) struct TimelineActor {
     /// In-flight URL preview fetch workers keyed by event_id.
     pub(super) link_preview_fetches: HashMap<String, executor::JoinHandle<()>>,
     /// In-flight reply detail fetch workers keyed by the reply event_id.
-    pub(super) reply_detail_fetches: HashMap<String, executor::JoinHandle<()>>,
+    /// Reply quote hydration lookups and retry wakes, keyed by original event id.
+    pub(super) reply_quote_tasks: HashMap<String, executor::JoinHandle<()>>,
     /// Manager-owned bounded hydration state shared by replacement Room
     /// actors. This is not a `Timeline` and cannot paginate.
     pub(super) thread_root_projection_service: Arc<Mutex<ThreadRootProjectionService>>,
@@ -935,7 +942,7 @@ pub(super) struct TimelineActor {
     pub(super) terminal_ingress: TimelineSendTerminalIngress,
     /// Reply event IDs already handed to the SDK for replied-to details during
     /// this actor lifetime. This avoids retry loops on every viewport tick.
-    pub(super) reply_detail_fetch_attempted_event_ids: HashSet<String>,
+    pub(super) reply_quote_hydration: super::reply_quote_hydration::ReplyQuoteHydration,
     pub(super) pagination_task: Option<ActivePaginationTask>,
     pub(super) cache_reset_refill_pending: bool,
     pub(super) next_pagination_serial: u64,
@@ -1015,7 +1022,7 @@ impl Drop for TimelineActor {
         for task in self.link_preview_fetches.values() {
             task.abort();
         }
-        for task in self.reply_detail_fetches.values() {
+        for task in self.reply_quote_tasks.values() {
             task.abort();
         }
         for task in self.media_download_tasks.values() {
@@ -1136,11 +1143,12 @@ impl TimelineActor {
             .expect("send completion coordinator lock must not be poisoned")
             .settled_transaction_ids(self.key.room_id());
         self.pending_send_projections = projections;
-        let pending_items = self
+        let mut pending_items = self
             .pending_send_projections
             .iter()
             .map(|projection| projection.item.clone())
-            .collect();
+            .collect::<Vec<_>>();
+        self.overlay_reply_quotes_on_pending(&mut pending_items);
         let mut suppressed = self
             .pending_send_projections
             .iter()
@@ -1864,7 +1872,7 @@ impl TimelineActor {
             ignored_user_ids,
             link_preview_policy,
             link_preview_fetches: HashMap::new(),
-            reply_detail_fetches: HashMap::new(),
+            reply_quote_tasks: HashMap::new(),
             thread_root_projection_service,
             thread_summary_projection: thread_summary_projection.clone(),
             thread_summary_projection_rx,
@@ -1879,7 +1887,7 @@ impl TimelineActor {
             missing_committed_response_retry: None,
             manager_tx,
             terminal_ingress,
-            reply_detail_fetch_attempted_event_ids: HashSet::new(),
+            reply_quote_hydration: Default::default(),
             pagination_task: None,
             cache_reset_refill_pending: false,
             next_pagination_serial: 0,
@@ -1952,6 +1960,7 @@ impl TimelineActor {
         if matches!(self.key.kind, TimelineKind::Room { .. }) {
             self.maybe_hydrate_missing_thread_roots(None).await;
         }
+        self.maybe_hydrate_reply_quotes();
         if matches!(self.key.kind, TimelineKind::Thread { .. }) {
             let initial_items = self.navigation_items.clone();
             let _ = self
@@ -2344,7 +2353,7 @@ impl TimelineActor {
                         })
                         .await;
                 }
-                self.maybe_fetch_visible_reply_details();
+                self.maybe_hydrate_reply_quotes();
                 self.emit_navigation_if_changed();
                 let viewport_range = self.viewport_item_range();
                 let decision = self.gap_repair.evaluate_viewport_wake(
@@ -2445,8 +2454,15 @@ impl TimelineActor {
             } => {
                 self.handle_load_message_source(request_id, event_id).await;
             }
-            TimelineActorMessage::ReplyDetailsFetchFinished { event_id } => {
-                self.reply_detail_fetches.remove(&event_id);
+            TimelineActorMessage::ReplyQuoteOriginalLoaded {
+                event_id,
+                attempt,
+                outcome,
+            } => {
+                self.handle_reply_quote_original_loaded(event_id, attempt, outcome);
+            }
+            TimelineActorMessage::ReplyQuoteRetryDue { event_id, attempt } => {
+                self.handle_reply_quote_retry_due(event_id, attempt);
             }
             TimelineActorMessage::RequestRoomKey {
                 request_id,
