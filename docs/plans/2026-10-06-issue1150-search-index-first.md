@@ -57,6 +57,9 @@ folding, filename-field attribution, false-positive rejection).
 3. **M4** warm set on the existing encrypted navigation persistence bringing the
    SDK display window up before timeline construction, with a startup-latency
    RED gate (see the implementation pointers in Remaining).
+> Superseded: M4 was later removed from this PR (see "M4 removed" below). The
+> two entries that follow record what was attempted, not a shipped capability.
+
 4. **M4 warm set.** Landed: `NavigationState` now persists a bounded, deduplicated
    most-recent-first list of opened search results (identifiers only) via
    `AppAction::SearchResultOpened`, and the account actor loads each target's

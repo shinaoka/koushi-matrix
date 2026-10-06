@@ -195,6 +195,7 @@ pub(crate) fn handle_search_index_rebuild_requested(state: &mut AppState) -> Vec
         return Vec::new();
     }
 
+    state.search_request_connection_id = None;
     state.search = SearchState::Closed;
     state.search_crawler.rooms = state
         .rooms
