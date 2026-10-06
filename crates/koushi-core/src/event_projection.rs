@@ -51,11 +51,18 @@ pub(crate) fn project_timeline_item_display_labels(item: &mut TimelineItem, stat
     // must never assign `is_hidden` from only one reason: that dropped the
     // deliberate content suppression of bodyless technical state events and
     // resurrected them as blank rows.
-    item.is_hidden = crate::timeline::timeline_item_is_hidden(
-        item,
-        state.settings.values.display.hide_redacted,
-        koushi_state::is_ignored_user(&state.profile, item.sender.as_deref()),
-    );
+    // #1141: like the actor-side `apply_timeline_item_visibility`, the policy
+    // applies to SDK event rows only. A synthetic display row (a withheld or
+    // pending thread-root slot carrying the reply chip) is bodyless by
+    // construction, and a local echo is not yet an SDK event; both keep the
+    // visibility their projection assigned.
+    if matches!(item.id, TimelineItemId::Event { .. }) {
+        item.is_hidden = crate::timeline::timeline_item_is_hidden(
+            item,
+            state.settings.values.display.hide_redacted,
+            koushi_state::is_ignored_user(&state.profile, item.sender.as_deref()),
+        );
+    }
     if let Some(reply_quote) = item.reply_quote.as_mut() {
         reply_quote.sender_label = timeline_sender_label(
             reply_quote.sender.as_deref(),

@@ -2838,6 +2838,10 @@ sanitizes it before exposing it through `TimelineItem.formatted`.
   stored preference, not a request for the renderer to recompute visibility.
   The same policy sizes the bounded display projection, so a row that renders
   nothing never consumes a displayed-row slot.
+  The policy applies to SDK event rows only. Synthetic display rows, such as
+  the not-visible or pending thread-root slot that carries a reply chip, are
+  not content and are never content-suppressed, neither by the actor nor by
+  the consumer export (#1141).
 - The React timeline renderer is a presentation adapter over this DTO. It may
   map sanitized tags into React nodes, attach copy-code controls using the
   Rust-provided code-block body, and highlight search terms over rendered text.
