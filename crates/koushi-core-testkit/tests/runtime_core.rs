@@ -67,7 +67,7 @@ async fn frontend_neutral_consumer_converges_and_shuts_down_without_tauri() {
 
 #[tokio::test]
 async fn mismatched_request_id_fails_locally_without_publishing() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let intruder = runtime.attach();
     let mut observer = runtime.attach();
 
@@ -90,7 +90,7 @@ async fn mismatched_request_id_fails_locally_without_publishing() {
 
 #[tokio::test]
 async fn result_events_correlate_in_submission_order() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut connection = runtime.attach();
 
     let first = connection.next_request_id();
@@ -120,7 +120,7 @@ async fn result_events_correlate_in_submission_order() {
 
 #[tokio::test]
 async fn reducer_actions_coalesce_into_one_contiguous_delta_without_full_snapshot_events() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut connection = runtime.attach();
 
     runtime
@@ -161,7 +161,7 @@ async fn reducer_actions_coalesce_into_one_contiguous_delta_without_full_snapsho
 
 #[tokio::test]
 async fn snapshot_only_refresh_wakes_watch_without_advancing_generation_or_emitting_delta() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut connection = runtime.attach();
     runtime
         .inject_actions(support::restore_ready_actions())
@@ -228,7 +228,7 @@ async fn snapshot_only_refresh_wakes_watch_without_advancing_generation_or_emitt
 
 #[tokio::test]
 async fn slow_consumer_observes_lag_and_recovers_via_snapshot() {
-    let runtime = CoreRuntime::start_with_event_capacity(4);
+    let (runtime, _stores) = CoreRuntime::start_isolated_with_event_capacity(4);
     let pump = runtime.attach();
     let mut slow = runtime.attach();
 

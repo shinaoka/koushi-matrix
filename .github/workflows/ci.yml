@@ -120,10 +120,12 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - run: npm ci
-      # Chromium only: the config drives one headless Chromium against the
-      # Vite-served harness page and never launches a Tauri window.
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+      # The config drives headless Chromium against the Vite-served harness
+      # page and never launches a Tauri window. A short allow-list of
+      # engine-native specs also runs in headless WebKit (#1145), the macOS
+      # and Linux WebView engine family.
+      - name: Install Playwright Chromium and WebKit
+        run: npx playwright install --with-deps chromium webkit
       # The repository treats browser-headless DOM proof as a primary gate for
       # GUI work, but nothing enforced it until now: a stale IPC-argument
       # assertion sat red on main from #319 until #323 found it by hand.
@@ -203,9 +205,11 @@ jobs:
         run: node scripts/check-sdk-submodule.mjs
       - name: Release version checker tests
         run: node --test scripts/desktop-release-version.test.mjs
-      # Every PR, not only a release PR: a stale Cargo.lock version is rewritten
-      # by the next `cargo` command on any branch, so the release bump would
-      # otherwise land in an unrelated PR (observed after v0.11.1).
+      # Every PR, not only a release PR: a stale Cargo.lock or npm lockfile
+      # version is rewritten by the next `cargo` / `npm install` on any branch,
+      # so the release bump would otherwise land in an unrelated PR (observed
+      # after v0.11.1, #1137). The guard also fails on any tracked
+      # version-bearing desktop file that it does not list.
       - name: Release version and lockfile sync guard
         run: node scripts/desktop-release-version.mjs
       - name: Diagnostic test isolation checker tests
@@ -284,6 +288,10 @@ jobs:
       # dependency metadata from the check above.
       - name: Clippy the macOS Tauri crate
         run: cargo clippy --profile ci -p koushi-desktop --all-targets --locked -- -D warnings
+      # #1147: run the native ImageIO HEIC decoder for real. Linux CI only
+      # type-checks this macOS-only adapter.
+      - name: macOS ImageIO decoder tests
+        run: cargo test --profile ci -p koushi-desktop --test image_io_decoder --locked -- --nocapture
 
   core-invites:
     # Prove invitation projection through the sole Simplified Sliding Sync

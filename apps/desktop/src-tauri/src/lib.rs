@@ -5,6 +5,8 @@ mod commands;
 mod core_event_forwarder;
 mod desktop_menu;
 mod dto;
+#[cfg(target_os = "macos")]
+pub mod image_io_decoder;
 pub mod keyring_backend;
 mod media_save;
 mod oidc_browser;
@@ -679,11 +681,25 @@ fn start_account_runtime_manager_for_tauri(data_dir: PathBuf) -> Arc<AccountRunt
     };
     let native_artifact_factory: Arc<dyn Fn() -> Arc<dyn NativeArtifactPort> + Send + Sync> =
         Arc::new(|| Arc::new(NativeArtifactRegistry::new()));
-    Arc::new(AccountRuntimeManager::new(
+    Arc::new(AccountRuntimeManager::new_with_native_image_decoder(
         store,
         SettingsStore::new(data_dir),
         native_artifact_factory,
+        native_image_decoder(),
     ))
+}
+
+/// HEIC/HEIF photos decode through ImageIO on macOS (#1147); other platforms
+/// keep Core's pure decoder.
+fn native_image_decoder() -> Option<Arc<dyn koushi_core::NativeStillImageDecoder>> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(Arc::new(image_io_decoder::ImageIoStillImageDecoder))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
 }
 
 fn observed_native_window_focus(event: &tauri::WindowEvent) -> Option<bool> {

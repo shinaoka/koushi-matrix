@@ -512,7 +512,10 @@ async fn selected_connection_waits_for_restore_before_caching_initial_runtime() 
     > = std::sync::Arc::new(|| std::sync::Arc::new(koushi_core::NativeArtifactRegistry::new()));
     let runtime = std::sync::Arc::new(
         koushi_core::account_runtime_manager::AccountRuntimeManager::new(
-            koushi_core::store::StoreActor::new(data_dir.path()),
+            koushi_core::store::StoreActor::with_backend(
+                koushi_core::store::TestCredentialStoreBackend::in_memory(),
+                data_dir.path(),
+            ),
             koushi_core::settings::SettingsStore::new(data_dir.path()),
             native_artifact_factory,
         ),
@@ -556,7 +559,10 @@ async fn account_ipc_connection_stays_bound_when_selected_tab_changes() {
     > = std::sync::Arc::new(|| std::sync::Arc::new(koushi_core::NativeArtifactRegistry::new()));
     let runtime = std::sync::Arc::new(
         koushi_core::account_runtime_manager::AccountRuntimeManager::new(
-            koushi_core::store::StoreActor::new(data_dir.path()),
+            koushi_core::store::StoreActor::with_backend(
+                koushi_core::store::TestCredentialStoreBackend::in_memory(),
+                data_dir.path(),
+            ),
             koushi_core::settings::SettingsStore::new(data_dir.path()),
             native_artifact_factory,
         ),
@@ -723,7 +729,10 @@ async fn application_shutdown_releases_cached_account_connections() {
     > = std::sync::Arc::new(|| std::sync::Arc::new(koushi_core::NativeArtifactRegistry::new()));
     let runtime = std::sync::Arc::new(
         koushi_core::account_runtime_manager::AccountRuntimeManager::new(
-            koushi_core::store::StoreActor::new(data_dir.path()),
+            koushi_core::store::StoreActor::with_backend(
+                koushi_core::store::TestCredentialStoreBackend::in_memory(),
+                data_dir.path(),
+            ),
             koushi_core::settings::SettingsStore::new(data_dir.path()),
             native_artifact_factory,
         ),

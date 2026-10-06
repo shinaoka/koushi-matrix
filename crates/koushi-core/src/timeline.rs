@@ -51,6 +51,7 @@ mod actor;
 pub(crate) mod composer;
 mod diagnostics;
 mod display_projection;
+mod focused_build;
 mod gap_repair;
 pub(crate) mod html_sanitize;
 mod item_projection;

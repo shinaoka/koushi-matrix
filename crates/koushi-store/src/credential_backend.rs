@@ -14,8 +14,9 @@ use koushi_state::LocalEncryptionHealth;
 use crate::CREDENTIAL_STORE_SERVICE_NAME;
 
 /// Env var for QA/debug file-based credential store override.
-/// Only honored in debug/test/test-hooks builds; production release builds ignore it.
-#[cfg(any(debug_assertions, test, feature = "test-hooks"))]
+/// Only honored in debug/test-hooks builds outside unit tests; production
+/// release builds ignore it.
+#[cfg(all(any(debug_assertions, feature = "test-hooks"), not(test)))]
 const ENV_FILE_CREDENTIAL_STORE_DIR: &str = "KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR";
 
 /// Credential store backend. Production = either OS keychain (injected from
@@ -31,12 +32,19 @@ pub enum CredentialStoreBackend {
 
 impl CredentialStoreBackend {
     pub fn resolve() -> Self {
-        #[cfg(any(debug_assertions, test, feature = "test-hooks"))]
+        // Unit tests never follow the variable from the developer's shell;
+        // QA binaries (debug or `test-hooks`, never `cfg(test)`) still do.
+        #[cfg(all(any(debug_assertions, feature = "test-hooks"), not(test)))]
         if let Ok(dir) = std::env::var(ENV_FILE_CREDENTIAL_STORE_DIR) {
             let dir = PathBuf::from(dir);
             record_file_credential_store_active();
             return Self::FileDir(FileCredentialStore::new(dir));
         }
+        Self::in_memory()
+    }
+
+    /// A keyring-free store with no environment override.
+    pub fn in_memory() -> Self {
         Self::InMemory(CredentialStore::with_backend(
             CREDENTIAL_STORE_SERVICE_NAME,
             koushi_key::InMemoryCredentialBackend::default(),
@@ -47,12 +55,20 @@ impl CredentialStoreBackend {
         data_dir: PathBuf,
         os_backend: Arc<dyn koushi_key::CredentialBackend>,
     ) -> Self {
-        #[cfg(any(debug_assertions, test, feature = "test-hooks"))]
+        #[cfg(all(any(debug_assertions, feature = "test-hooks"), not(test)))]
         if let Ok(dir) = std::env::var(ENV_FILE_CREDENTIAL_STORE_DIR) {
             let dir = PathBuf::from(dir);
             record_file_credential_store_active();
             return Self::FileDir(FileCredentialStore::new(dir));
         }
+        Self::os_keychain(data_dir, os_backend)
+    }
+
+    /// The injected OS backend with no environment override.
+    pub fn os_keychain(
+        data_dir: PathBuf,
+        os_backend: Arc<dyn koushi_key::CredentialBackend>,
+    ) -> Self {
         Self::OsKeychain(OsCredentialStore::with_backend(data_dir, os_backend))
     }
 

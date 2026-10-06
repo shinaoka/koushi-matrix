@@ -241,7 +241,8 @@ async fn incoming_verification_mailbox_send_is_stop_aware_when_full() {
     tokio::task::yield_now().await;
 
     stop_tx.send(()).expect("request observer stop");
-    let delivered = executor::timeout(Duration::from_millis(20), blocked_send)
+    // Liveness bound: without the stop, the full-mailbox send never returns.
+    let delivered = executor::timeout(Duration::from_secs(60), blocked_send)
         .await
         .expect("a stop request must interrupt the full-mailbox send")
         .expect("send task");
@@ -282,7 +283,8 @@ async fn incoming_verification_observer_join_has_a_bounded_abort_fallback() {
         Duration::from_millis(1),
     ));
 
-    let result = executor::timeout(Duration::from_millis(20), &mut stop).await;
+    // Liveness bound: without the abort, the nonresponsive child never ends.
+    let result = executor::timeout(Duration::from_secs(60), &mut stop).await;
     if result.is_err() {
         stop.abort();
         child_abort.abort();
@@ -296,9 +298,7 @@ async fn incoming_verification_observer_join_has_a_bounded_abort_fallback() {
 #[tokio::test]
 async fn actor_sas_settlement_emits_exactly_one_terminal_and_clears_runtime() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
-    let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
     let cred_dir = tempdir().expect("credential tempdir");
     let data_dir = tempdir().expect("data tempdir");
     let store = StoreActor::with_backend(
@@ -380,8 +380,7 @@ async fn actor_sas_settlement_emits_exactly_one_terminal_and_clears_runtime() {
             "stale terminal duplicated flow {flow_id}"
         );
     }
-    let settled_flow_ids = koushi_diagnostics::test_support::detail_snapshot().records
-        [diagnostic_start..]
+    let settled_flow_ids = koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
         .iter()
         .filter(|record| {
             record.event.source == "core.sas_verification" && record.event.stage == "settled"
@@ -618,9 +617,7 @@ fn sas_cancel_diagnostic_contains_only_closed_private_safe_fields() {
 #[tokio::test]
 async fn own_user_sas_start_helper_traces_started_pending_and_failed_results() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
-    let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
 
     assert_eq!(
         run_own_user_sas_start(211, "request_ready", async {
@@ -648,8 +645,8 @@ async fn own_user_sas_start_helper_traces_started_pending_and_failed_results() {
         .is_err()
     );
 
-    let records = koushi_diagnostics::test_support::detail_snapshot().records;
-    let events = records[diagnostic_start..]
+    let records = koushi_diagnostics::test_support::detail_records_since(diagnostic_start);
+    let events = records
         .iter()
         .filter(|record| record.event.source == "core.sas_verification")
         .map(|record| koushi_diagnostics::format_event(&record.event))

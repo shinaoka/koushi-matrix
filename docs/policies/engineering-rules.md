@@ -580,6 +580,12 @@ Details and mirrors: [i18n](../architecture/i18n.md).
   `tests/<feature>.rs` file instead. Current crate integration tests, including
   `crates/koushi-core/tests/`, are the placement example; existing monolithic
   files may be split opportunistically when they are touched for a new feature.
+- **Tests never touch the real profile.** Runtime tests start through
+  `CoreRuntime::start_isolated` (or `restart_isolated` for persistence), which
+  owns temporary data and file-credential directories; there is no
+  constructor that defaults to the user data directory. Under `test-hooks`,
+  test/QA store constructors panic on the real Koushi profile, and unit tests
+  ignore `KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR`.
 - **Test fixtures and fakes belong near their consumer.** A fake used by a
   single feature's tests lives in that feature's test module. Shared fakes live
   in `src/test_support.rs` or `tests/support/` and must be append-friendly.

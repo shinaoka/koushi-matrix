@@ -354,6 +354,11 @@ pub(crate) enum AccountMessage {
     InspectSessionCheckTimer {
         response: oneshot::Sender<Option<u64>>,
     },
+    /// Whether a trust-recheck demand has joined the in-flight inspection.
+    #[cfg(test)]
+    InspectTrustRecheckJoined {
+        response: oneshot::Sender<bool>,
+    },
     CurrentSessionStatusRefreshFinished {
         request_id: u64,
         generation: u64,
@@ -1954,6 +1959,10 @@ impl AccountActor {
                 AccountMessage::InspectSessionCheckTimer { response } => {
                     let _ =
                         response.send(self.session_check.timer.as_ref().map(|(token, _)| *token));
+                }
+                #[cfg(test)]
+                AccountMessage::InspectTrustRecheckJoined { response } => {
+                    let _ = response.send(self.session_check.trust_joined_inspection);
                 }
                 #[cfg(test)]
                 AccountMessage::ConfigureSessionCheckClock { base_epoch_ms } => {

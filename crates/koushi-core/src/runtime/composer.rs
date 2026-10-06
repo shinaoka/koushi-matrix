@@ -275,8 +275,12 @@ impl AppActor {
                     "load_failed",
                 ));
                 #[cfg(any(test, feature = "test-hooks"))]
-                self.composer_draft_store_actor
-                    .notify_composer_draft_load_completed_for_testing();
+                {
+                    self.composer_draft_store_actor
+                        .notify_composer_draft_load_failed_for_testing();
+                    self.composer_draft_store_actor
+                        .notify_composer_draft_load_completed_for_testing();
+                }
                 return;
             }
         };

@@ -302,6 +302,50 @@ impl AppActor {
         }
     }
 
+    /// #1146: the event navigation that owns a failed focused subscription,
+    /// matched by exact target and pending generation/request.
+    pub(super) fn focused_subscription_failure_owner(
+        &self,
+        room_id: &str,
+        event_id: &str,
+    ) -> Option<(RequestId, u64)> {
+        let focused = self.pending_focused_navigation.as_ref()?;
+        let generation = focused.generation?.0;
+        if focused.room_id != room_id || focused.event_id != event_id {
+            return None;
+        }
+        self.pending_event_navigation
+            .as_ref()
+            .filter(|pending| {
+                pending.generation == generation
+                    && pending.request_id == focused.projection_request_id
+            })
+            .map(|pending| (pending.request_id, generation))
+    }
+
+    /// #1146: a bounded focused-build failure or timeout settles the owning
+    /// navigation now instead of leaving it pending until the deadline.
+    pub(super) async fn settle_focused_subscription_failure(
+        &mut self,
+        request_id: RequestId,
+        generation: u64,
+    ) {
+        record(
+            DiagnosticEvent::new(
+                DiagnosticLevel::Debug,
+                "core.event_navigation",
+                "focused_subscription_failed",
+            )
+            .field(DiagnosticField::count("generation", generation)),
+        );
+        self.settle_event_navigation_failure(
+            request_id,
+            generation,
+            koushi_state::EventNavigationFailureKind::Timeline,
+        )
+        .await;
+    }
+
     pub(super) async fn cancel_event_navigation_owner(&mut self) {
         let pending = self.pending_event_navigation.take();
         stop_event_navigation_task(&mut self.event_navigation_task).await;

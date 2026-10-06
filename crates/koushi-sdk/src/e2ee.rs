@@ -2961,9 +2961,7 @@ mod current_device_trust_recheck_tests {
     #[tokio::test]
     async fn recheck_current_device_trust_queries_own_identity() {
         let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
-        let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-            .records
-            .len();
+        let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
         let info = SessionInfo {
@@ -2994,7 +2992,7 @@ mod current_device_trust_recheck_tests {
 
         assert_eq!(trust, CurrentDeviceTrustState::Unverified);
         assert!(
-            koushi_diagnostics::test_support::detail_snapshot().records[diagnostic_start..]
+            koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
                 .iter()
                 .any(|record| {
                     koushi_diagnostics::format_event(&record.event)
@@ -4139,19 +4137,15 @@ mod room_key_receive_diagnostics_tests {
         // synthesized aggregate counter records) so parallel tests cannot
         // perturb the count.
         let _diagnostic_lock = koushi_diagnostics::test_support::lock();
-        let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-            .records
-            .len();
+        let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
         let counters = DiagnosticCounterContext::new();
         for kind in cases {
             record_room_key_receive_diagnostic(&counters, RoomKeyReceiveDiagnostic { kind });
         }
 
-        let snapshot = koushi_diagnostics::test_support::detail_snapshot();
-        let receive_records: Vec<_> = snapshot
-            .records
+        let records = koushi_diagnostics::test_support::detail_records_since(diagnostic_start);
+        let receive_records: Vec<_> = records
             .iter()
-            .skip(diagnostic_start)
             .filter(|record| record.event.source == "core.room_key_receive")
             .collect();
         assert_eq!(receive_records.len(), cases.len());
@@ -4229,7 +4223,7 @@ mod room_key_member_reload_diagnostics_tests {
         let _guard = test_support::lock();
         let counters = DiagnosticCounterContext::new();
         koushi_diagnostics::reset_rotation_ledger();
-        let diagnostic_start = test_support::detail_snapshot().records.len();
+        let diagnostic_start = test_support::detail_cursor();
 
         record_room_key_member_reload_diagnostic(
             &counters,
@@ -4260,8 +4254,7 @@ mod room_key_member_reload_diagnostics_tests {
             },
         );
 
-        let snapshot = test_support::detail_snapshot();
-        let records: Vec<_> = snapshot.records.iter().skip(diagnostic_start).collect();
+        let records = test_support::detail_records_since(diagnostic_start);
         let reload = records
             .iter()
             .find(|record| record.event.source == "core.room_member_reload")
@@ -4272,7 +4265,7 @@ mod room_key_member_reload_diagnostics_tests {
             .iter()
             .find(|record| record.event.source == "core.room_key_rotation")
             .expect("rotation diagnostic");
-        for record in [*reload, rotation] {
+        for record in [reload, rotation] {
             assert!(record.event.fields.iter().any(|field| {
                 field.key == "room_alias"
                     && field.value
@@ -4437,9 +4430,7 @@ mod current_device_trust_recheck_classifier_tests {
     #[tokio::test]
     async fn unknown_token_keys_query_is_authentication() {
         let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
-        let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-            .records
-            .len();
+        let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
         let server = MatrixMockServer::new().await;
         let session = session(&server).await;
         let _guard = server
@@ -4453,7 +4444,7 @@ mod current_device_trust_recheck_classifier_tests {
             Err(CurrentDeviceTrustRecheckError::Authentication)
         );
         assert!(
-            koushi_diagnostics::test_support::detail_snapshot().records[diagnostic_start..]
+            koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
                 .iter()
                 .any(|record| {
                     record.event.source == "sdk.current_device_trust_recheck"
@@ -4487,9 +4478,7 @@ mod current_device_trust_recheck_classifier_tests {
     #[tokio::test]
     async fn server_keys_query_failure_is_server() {
         let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
-        let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-            .records
-            .len();
+        let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
         let server = MatrixMockServer::new().await;
         let session = session(&server).await;
         let _guard = server
@@ -4506,7 +4495,7 @@ mod current_device_trust_recheck_classifier_tests {
             Err(CurrentDeviceTrustRecheckError::Server)
         );
         assert!(
-            koushi_diagnostics::test_support::detail_snapshot().records[diagnostic_start..]
+            koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
                 .iter()
                 .any(|record| {
                     record.event.source == "sdk.current_device_trust_recheck"

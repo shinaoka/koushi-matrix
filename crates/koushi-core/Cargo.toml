@@ -31,12 +31,15 @@ url = "2"
 vodozemac = { git = "https://github.com/matrix-org/vodozemac/", rev = "cfc4eee", features = ["insecure-pk-encryption", "experimental-session-config"] }
 # Confined to executor.rs and channel plumbing per Platform Portability rule 2.
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+# Test/QA-only: locates the real desktop profile so test stores can refuse it.
+dirs = { version = "6", optional = true }
 
 [features]
 # Exposes narrow runtime hooks for koushi-qa and integration tests.
-test-hooks = ["koushi-sdk/test-hooks", "koushi-store/test-hooks"]
+test-hooks = ["koushi-sdk/test-hooks", "koushi-store/test-hooks", "dep:dirs"]
 
 [dev-dependencies]
+dirs = "6"
 koushi-sdk = { path = "../koushi-sdk", features = ["test-hooks"] }
 koushi-store = { path = "../koushi-store", features = ["test-hooks"] }
 # Decodable PNG fixtures for upload-output preparation tests. Already a

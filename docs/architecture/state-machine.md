@@ -2056,6 +2056,18 @@ stateDiagram-v2
   `EnterAnchoredTimeline` only for the matching request/key/actor/timeline
   generation and target-presence result. WebView application and DOM paint are
   not part of this transition. These paths do not open the right panel.
+- TimelineManager never awaits the SDK `TimelineFocus::Event` build inline
+  (#1146). The build is manager-owned preparation fenced by its actor
+  generation; the manager keeps polling commands, navigation demand, and other
+  completions meanwhile. A repeated subscribe for the same key adopts the
+  newest request id; unsubscribe, demand retirement (supersession, Home, room
+  change, navigation deadline), shutdown, and the 10 s build timeout release
+  the lease and activation, and a late completion can never install an actor.
+  The SDK future is detached, not aborted: the SDK registers event-focused
+  cache state before its `/context` load and never unregisters it, so an
+  aborted build would fail every later build of that target. A focused-build
+  failure or timeout settles the owning event navigation as `Failed`
+  immediately instead of at the AppActor deadline.
 - `EnsureSubscribed` may reproject actor-owned InitialItems after transport loss,
   but the internal focused-projection commit is independently reliable. There is
   no sleep, fixed retry count, visibility heuristic, renderer acknowledgement,
@@ -2862,6 +2874,10 @@ sanitizes it before exposing it through `TimelineItem.formatted`.
   stored preference, not a request for the renderer to recompute visibility.
   The same policy sizes the bounded display projection, so a row that renders
   nothing never consumes a displayed-row slot.
+  The policy applies to SDK event rows only. Synthetic display rows, such as
+  the not-visible or pending thread-root slot that carries a reply chip, are
+  not content and are never content-suppressed, neither by the actor nor by
+  the consumer export (#1141).
 - The React timeline renderer is a presentation adapter over this DTO. It may
   map sanitized tags into React nodes, attach copy-code controls using the
   Rust-provided code-block body, and highlight search terms over rendered text.

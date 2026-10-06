@@ -450,7 +450,7 @@ async fn wait_for_navigation(
             && event_key == *key
             && predicate(&snapshot)
         {
-            return Ok(snapshot);
+            return Ok(*snapshot);
         }
     }
 }

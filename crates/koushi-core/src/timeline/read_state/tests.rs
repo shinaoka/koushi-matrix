@@ -2717,6 +2717,68 @@ async fn production_receipt_diff_delivery_uses_global_cache_when_local_lookup_mi
     );
 }
 
+/// Correlation sentinels: the production `local_lookup` record carries the
+/// window total (scoped) or the event's reader count (compact) as
+/// `receipt_count`. Keep both unique among the crate's tests so no other
+/// test's lookup record can match them.
+const SCOPED_WINDOW_TOTAL: u64 = 1_537;
+const COMPACT_READER_COUNT: u64 = 1_500;
+
+/// `key` from this test's own `local_lookup` record, matched on the sentinel
+/// within the same record. Other tests' timeline actors emit the same source
+/// without the diagnostics lock, so the first record of that source after a
+/// position is not necessarily ours.
+fn local_lookup_field(
+    record: &koushi_diagnostics::DiagnosticRecord,
+    receipt_count: u64,
+    key: &str,
+) -> Option<u64> {
+    let count = |wanted: &str| {
+        record
+            .event
+            .fields
+            .iter()
+            .find_map(|field| match field.value {
+                DiagnosticValue::Count(count) if field.key == wanted => Some(count),
+                _ => None,
+            })
+    };
+    (record.event.source == "core.read_receipt_profile"
+        && record.event.stage == "local_lookup"
+        && count("receipt_count") == Some(receipt_count))
+    .then(|| count(key))
+    .flatten()
+}
+
+/// A `local_lookup` record from another test's timeline actor. Those actors
+/// emit without the diagnostics lock, so one can land inside any
+/// `skip(before)` window (CI run 37455064515).
+fn record_concurrent_local_lookup_decoy() {
+    koushi_diagnostics::record(
+        koushi_diagnostics::DiagnosticEvent::new(
+            koushi_diagnostics::DiagnosticLevel::Debug,
+            "core.read_receipt_profile",
+            "local_lookup",
+        )
+        .field(koushi_diagnostics::DiagnosticField::token(
+            "lookup_outcome",
+            "miss",
+        ))
+        .field(koushi_diagnostics::DiagnosticField::count(
+            "receipt_count",
+            1,
+        ))
+        .field(koushi_diagnostics::DiagnosticField::count(
+            "requested_user_count",
+            1,
+        ))
+        .field(koushi_diagnostics::DiagnosticField::count(
+            "observed_profile_count",
+            0,
+        )),
+    );
+}
+
 #[tokio::test]
 async fn scoped_receipt_window_prepares_only_its_selected_profiles() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
@@ -2735,7 +2797,7 @@ async fn scoped_receipt_window_prepares_only_its_selected_profiles() {
         },
     );
     let mut window = crate::timeline::RawReceiptWindow {
-        total_count: 1500,
+        total_count: SCOPED_WINDOW_TOTAL,
         start: 0,
         profiles: Vec::new(),
         owner: None,
@@ -2750,9 +2812,8 @@ async fn scoped_receipt_window_prepares_only_its_selected_profiles() {
             })
             .collect(),
     };
-    let before = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let before = koushi_diagnostics::test_support::detail_cursor();
+    record_concurrent_local_lookup_decoy();
     let (mut reply, _receiver) = tokio::sync::oneshot::channel();
     assert!(
         crate::timeline::item_projection::prepare_receipt_window_profiles(
@@ -2763,7 +2824,7 @@ async fn scoped_receipt_window_prepares_only_its_selected_profiles() {
         )
         .await
     );
-    assert_eq!(window.total_count, 1500);
+    assert_eq!(window.total_count, SCOPED_WINDOW_TOTAL);
     assert_eq!(window.receipts.len(), 3);
     let mut profiles = koushi_state::ProfileState::default();
     profiles
@@ -2774,21 +2835,14 @@ async fn scoped_receipt_window_prepares_only_its_selected_profiles() {
         window.receipts[0].display_name.as_deref(),
         Some("Current alias")
     );
-    assert_eq!(window.total_count, 1500);
-    let snapshot = koushi_diagnostics::test_support::detail_snapshot();
-    let requested = snapshot
-        .records
+    assert_eq!(window.total_count, SCOPED_WINDOW_TOTAL);
+    let requested = koushi_diagnostics::test_support::detail_records_since(before)
         .iter()
-        .skip(before)
-        .filter(|record| record.event.source == "core.read_receipt_profile")
-        .flat_map(|record| &record.event.fields)
-        .find_map(|field| match field.value {
-            DiagnosticValue::Count(count) if field.key == "requested_user_count" => Some(count),
-            _ => None,
-        })
+        .find_map(|record| local_lookup_field(record, SCOPED_WINDOW_TOTAL, "requested_user_count"))
         .expect("production profile lookup count");
     assert_eq!(requested, 3);
-    let before_cancel = snapshot.records.len();
+    let before_cancel = koushi_diagnostics::test_support::detail_cursor();
+    record_concurrent_local_lookup_decoy();
     let (mut cancelled, receiver) = tokio::sync::oneshot::channel();
     drop(receiver);
     assert!(
@@ -2800,13 +2854,12 @@ async fn scoped_receipt_window_prepares_only_its_selected_profiles() {
         )
         .await
     );
-    let after = koushi_diagnostics::test_support::detail_snapshot();
     assert!(
-        !after
-            .records
+        !koushi_diagnostics::test_support::detail_records_since(before_cancel)
             .iter()
-            .skip(before_cancel)
-            .any(|record| record.event.source == "core.read_receipt_profile")
+            .any(
+                |record| local_lookup_field(record, SCOPED_WINDOW_TOTAL, "receipt_count").is_some()
+            )
     );
 }
 
@@ -2834,7 +2887,7 @@ async fn compact_receipt_profile_lookup_is_bounded_for_1500_readers() {
     let event_id = "$receipt-scale:example.test";
     let receipts = vec![LiveEventReceipts {
         event_id: event_id.to_owned(),
-        receipts: (0..1500)
+        receipts: (0..COMPACT_READER_COUNT)
             .map(|index| LiveReadReceipt {
                 user_id: format!("@reader-{index}:example.test"),
                 display_name: None,
@@ -2848,9 +2901,8 @@ async fn compact_receipt_profile_lookup_is_bounded_for_1500_readers() {
     let generations = Arc::new(TimelineActorGenerationGate::default());
     let actor_generation = generations.activate_after_quiescence(&key).await.generation;
     let (action_tx, mut action_rx) = mpsc::channel(1);
-    let records_before = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let records_before = koushi_diagnostics::test_support::detail_cursor();
+    record_concurrent_local_lookup_decoy();
     assert!(
         emit_live_receipt_observation_actions(
             &session,
@@ -2872,20 +2924,12 @@ async fn compact_receipt_profile_lookup_is_bounded_for_1500_readers() {
     }
     assert_eq!(
         state.live_signals.rooms[room_id.as_str()].receipts_by_event[event_id].total_count,
-        1500
+        COMPACT_READER_COUNT
     );
 
-    let snapshot = koushi_diagnostics::test_support::detail_snapshot();
-    let requested = snapshot
-        .records
+    let requested = koushi_diagnostics::test_support::detail_records_since(records_before)
         .iter()
-        .skip(records_before)
-        .filter(|record| record.event.source == "core.read_receipt_profile")
-        .flat_map(|record| &record.event.fields)
-        .find_map(|field| match field.value {
-            DiagnosticValue::Count(count) if field.key == "requested_user_count" => Some(count),
-            _ => None,
-        })
+        .find_map(|record| local_lookup_field(record, COMPACT_READER_COUNT, "requested_user_count"))
         .expect("production profile-lookup count");
     // No full-reader surface is open: five or more readers show three plus a count.
     assert!(
@@ -2930,9 +2974,7 @@ async fn production_receipt_diff_delivery_sends_receipts_when_local_lookup_fails
     let generations = Arc::new(TimelineActorGenerationGate::default());
     let actor_generation = generations.activate_after_quiescence(&key).await.generation;
     let (action_tx, mut action_rx) = mpsc::channel(1);
-    let records_before = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let records_before = koushi_diagnostics::test_support::detail_cursor();
     assert!(
         emit_live_receipt_observation_actions(
             session.as_ref(),
@@ -2951,10 +2993,8 @@ async fn production_receipt_diff_delivery_sends_receipts_when_local_lookup_fails
         [AppAction::LiveRoomReceiptSummariesUpdated { .. }]
     ));
     assert!(
-        koushi_diagnostics::test_support::detail_snapshot()
-            .records
+        koushi_diagnostics::test_support::detail_records_since(records_before)
             .iter()
-            .skip(records_before)
             .any(|record| {
                 record.event.source == "core.read_receipt_profile"
                     && record.event.stage == "local_lookup"

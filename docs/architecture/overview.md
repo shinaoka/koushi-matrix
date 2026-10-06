@@ -432,8 +432,8 @@ rewriting the runtime.
    adapters.** OS credential store (`keyring`), filesystem paths, SQLite
    store config, media-save filesystem operations, history export folders,
    and process/OS APIs appear only behind traits with platform backends
-   (today: OS keychain + SQLite, the native media-save port, and the native
-   `HistoryExportFilesystem`; browser later: WebCrypto-derived keys +
+   (today: OS keychain + SQLite, the native media-save port, the native
+   `HistoryExportFilesystem`, and the optional `NativeStillImageDecoder`; browser later: WebCrypto-derived keys +
    IndexedDB). `koushi-store` may implement native credential/encrypted-file
    mechanics behind those ports, but `StoreActor` is the only actor allowed
    platform-conditional policy and remains the account/path/key/migration
@@ -757,6 +757,25 @@ plaintext thumbnail directories remain cleanup-only. After Rust resolves scoped
 visibility observations into avatar resources, `AccountActor` owns single-flight deduplication, bounded
 concurrency, two network attempts, terminal Ready/Failed caching and session-
 generation teardown; React owns no retry classifier or attempt counter.
+
+**Native still-image decoding (#1147).** HEIF/HEIC sources are recognized from
+content, never from the declared MIME or extension. An adapter may inject a
+`NativeStillImageDecoder` into the runtime (`AccountRuntimeManager::new_with_native_image_decoder`);
+the desktop adapter injects an ImageIO/Core Graphics decoder on macOS only.
+When one is injected, Core uses it for the initial HEIF preparation and every
+lazily selected Resize/Format output, on the same preparation worker and under
+the same revalidation fences. It returns owned SDR sRGB straight-alpha RGBA8
+pixels with orientation applied, or a typed `Unsupported`, `Unavailable`,
+`Malformed`, or `TooLarge` category; it never returns native handles, and it
+checks `koushi_media::DecodeLimits` before allocating pixels. A failed native
+decode becomes the existing Failed/original-file fallback and is not retried
+with the pure decoder. Without an injected decoder (Windows, Linux) the pure
+`heif-oxide` path, including its HDR and gain-map rejection, is unchanged. The
+unscaled Original+Keep output stays the exact source bytes either way. The
+macOS decoder resolves the macOS 14 SDR decode request at run time and reports
+`Unsupported` for gain-map or PQ/HLG sources on macOS 12 and 13, where that
+request does not exist. Diagnostics record the fixed backend, detected type,
+outcome category, and elapsed time only.
 
 **Prepared-upload retention invariant.** `MediaPreparationService` owns staged
 upload source bytes for the lifetime of the corresponding composer item.
@@ -1564,7 +1583,15 @@ fails on real accounts:
   `ACTOR_MESSAGE_QUEUE_CAPACITY`
 - AppActor action-projection inbox (actors project `Vec<AppAction>` here at high
   volume during sync): `ACTION_QUEUE_CAPACITY`
-- discrete core events per consumer: `EVENT_QUEUE_CAPACITY`
+- discrete core events per consumer: `EVENT_QUEUE_CAPACITY`, whose per-account
+  ring allocation (capacity, rounded up to a power of two, times the slot size
+  plus a documented per-slot overhead) is held under
+  `EVENT_QUEUE_SLOT_BUDGET_BYTES` by a compile-time assertion. Large event
+  payloads stay boxed out of the inline `CoreEvent` representation so one slot
+  never inherits a whole `StateDelta` (#1150, 1-5 MiB/account slot budget for
+  event buffering). Retained heap payloads beyond those slots are NOT yet
+  byte-budgeted; a lagging consumer can still hold boxed payloads, and bounding
+  them is an open follow-up on #1150.
 - timeline diff batches per subscribed timeline: 128
 - search index mutation queue: 512
 

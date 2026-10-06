@@ -442,9 +442,7 @@ async fn recovery_submission_pauses_and_failure_resumes_the_single_provisional_o
 #[tokio::test]
 async fn recovery_trust_settlement_timeout_returns_to_recovery_failure() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
-    let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
     let (handle, mut action_rx) = login_gated_actor().await;
     let flow_id = 80;
     let request_id = incoming_verification_request_id(flow_id);
@@ -493,7 +491,7 @@ async fn recovery_trust_settlement_timeout_returns_to_recovery_failure() {
         "recovery trust timeout must not promote the session or leave normal runtime running"
     );
     assert!(
-        koushi_diagnostics::test_support::detail_snapshot().records[diagnostic_start..]
+        koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
             .iter()
             .any(|record| {
                 record.event.source == "core.recovery_verification"

@@ -128,7 +128,7 @@ qa-bin`; plain `cargo test` does not compile that binary.
 | `cache_restore` | deep-history anchor restored from cache within a bounded number of backward-paginate cycles while the network is blocked | — |
 | `read_state_convergence` | local viewed boundary advances while receipt/read-marker writes are held or failed, then converges through the bounded Rust dispatcher | `read_state_convergence=ok` |
 | `hidden_state_acl` | one ordinary message followed by 125 real `m.room.server_acl` updates (#1110/#1117): every update stays a hidden item, a re-subscription replay of the Core-held timeline (more raw items than the 120-row live-edge capacity) still contains the message, and viewing only the message converges to a server-confirmed read boundary and a zero unread count; requires `--core`, separate from `all` | `hidden_state_acl=ok` |
-| `thread_late_joiner` | in a `joined`-history room, a member who joins after the thread root was sent sees a permanent not-visible root row (`NotFound`/`Forbidden`, never a retryable failure) and can still open the thread and read the reply sent after they joined | `thread_late_joiner_root_not_visible=ok`, `thread_late_joiner_thread_panel=ok`, `thread_late_joiner=ok` |
+| `thread_late_joiner` | in a `joined`-history room, a member who joins after the thread root was sent sees a permanent not-visible root row (`NotFound`/`Forbidden`, never a retryable failure, exported with `is_hidden == false` so its reply chip stays reachable, #1141) and can still open the thread and read the reply sent after they joined | `thread_late_joiner_root_not_visible=ok`, `thread_late_joiner_thread_panel=ok`, `thread_late_joiner=ok` |
 
 Key-backup scope: `joined_room_restore=ok` is the #30 MVP proof token for
 recovery-secret import plus currently joined-room key hydration. It is not proof
@@ -278,6 +278,14 @@ spreads FILES across workers, and the recorded flakes were all traced to those
 workers contending for the single shared Vite harness server. Do not raise the
 worker count to speed up a run: the whole suite finishes in about three minutes
 serialized, and the parallel-contention flakes come straight back.
+
+Specs run in headless Chromium. A spec whose defect is engine-native (search
+field decorations, form-control chrome) also runs in headless WebKit, the
+engine family of macOS WKWebView and Linux WebKitGTK, by adding it to the
+`webkit` project's `testMatch` in `playwright.config.ts`. Prove such a defect
+by behavior or pixels (for example, clicking the native control's hit target),
+not by DOM button counts. Install both engines once with
+`npm --prefix apps/desktop exec -- playwright install chromium webkit`.
 
 The full-app harness (`apps/desktop/src/test/appHarnessMain.tsx`) must import
 `../styles.css`, matching production `main.tsx`. Otherwise visibility/layout

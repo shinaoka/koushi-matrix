@@ -185,7 +185,7 @@ async fn actual_linux_platform_adapter_is_explicitly_unsupported() {
 
 #[tokio::test]
 async fn command_helper_crosses_core_runtime_and_settles_the_matching_dispatch() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut observer = runtime.attach();
     seed_ready(&runtime, &mut observer).await;
     let seed_request = observer.next_request_id();
@@ -260,7 +260,7 @@ async fn command_helper_crosses_core_runtime_and_settles_the_matching_dispatch()
 
 #[tokio::test]
 async fn concurrent_command_helpers_admit_only_one_native_backend_call() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut seeder = runtime.attach();
     seed_ready(&runtime, &mut seeder).await;
     let request_id = seeder.next_request_id();

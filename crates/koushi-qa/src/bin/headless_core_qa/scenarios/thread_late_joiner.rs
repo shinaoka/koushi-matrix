@@ -171,7 +171,7 @@ async fn run_thread_late_joiner_flow(
     let initial =
         subscribe_timeline_for_qa(conn_b, &room_key_b, "thread late joiner subscribe B room")
             .await?;
-    let root_kind = wait_for_terminal_root_row(
+    let (root_kind, root_hidden) = wait_for_terminal_root_row(
         conn_b,
         &room_key_b,
         &initial,
@@ -188,6 +188,14 @@ async fn run_thread_late_joiner_flow(
                 "thread_late_joiner failed: root row for a pre-join root was {other:?}, expected a not-visible failure"
             ));
         }
+    }
+    // #1141: the not-visible row is the only entry point to the replies B may
+    // read, so the exported row must not be content-suppressed.
+    if root_hidden {
+        return Err(
+            "thread_late_joiner failed: the not-visible root row was exported with is_hidden=true"
+                .to_owned(),
+        );
     }
     println!("thread_late_joiner_root_not_visible=ok");
 
@@ -306,14 +314,15 @@ async fn send_thread_reply(
 }
 
 /// Observes the Room display row whose content is the thread root until it
-/// leaves the pending state, and returns its terminal display kind.
+/// leaves the pending state, and returns its terminal display kind and the
+/// exported `is_hidden` of that row.
 async fn wait_for_terminal_root_row(
     conn: &mut CoreConnection,
     key: &TimelineKey,
     initial: &[TimelineItem],
     root_event_id: &str,
     activity_event_id: &str,
-) -> Result<TimelineDisplayKind, String> {
+) -> Result<(TimelineDisplayKind, bool), String> {
     let terminal_kind = |item: &TimelineItem| {
         let metadata = item.display_metadata.as_ref()?;
         (metadata.content_event_id.as_deref() == Some(root_event_id)
@@ -321,7 +330,7 @@ async fn wait_for_terminal_root_row(
                 metadata.kind,
                 TimelineDisplayKind::Event | TimelineDisplayKind::ThreadRootPending
             ))
-        .then_some(metadata.kind)
+        .then_some((metadata.kind, item.is_hidden))
     };
     if let Some(kind) = initial.iter().find_map(terminal_kind) {
         return Ok(kind);
