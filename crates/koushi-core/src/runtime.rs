@@ -4731,6 +4731,24 @@ impl AppActor {
                     }
                     self.persist_room_preferences(&preferences).await;
                 }
+                AppEffect::PublishSearchResults {
+                    request_id: effect_request_id,
+                    results,
+                } => {
+                    // The state admitted these results against the accepted query
+                    // and the account's current content policy, so this is the
+                    // authoritative publication point.
+                    if let Some(active) = self.active_search_request
+                        && active.sequence == effect_request_id
+                    {
+                        self.emit(CoreEvent::Search(
+                            koushi_protocol::event::SearchEvent::Results {
+                                request_id: active,
+                                results: crate::search::compact_search_results(&results),
+                            },
+                        ));
+                    }
+                }
                 AppEffect::EmitUiEvent(ui_event) => {
                     self.handle_ui_event_effect(&ui_event).await;
                 }
@@ -5053,6 +5071,7 @@ impl AppActor {
                 | AppEffect::SendText { .. }
                 | AppEffect::OpenThreadTimeline { .. }
                 | AppEffect::SearchMessages { .. }
+                | AppEffect::PublishSearchResults { .. }
                 | AppEffect::SearchAttachments { .. }
                 | AppEffect::SubscribeThreadsList { .. }
                 | AppEffect::SubscribeThreadsListScoped { .. }

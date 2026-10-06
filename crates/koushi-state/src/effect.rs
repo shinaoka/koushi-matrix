@@ -134,6 +134,15 @@ pub enum AppEffect {
         scope: SearchScope,
         room_filter: SearchRoomFilter,
     },
+    /// Publish an admitted result set to the event stream.
+    ///
+    /// The state is the only place that knows whether a result matches the
+    /// accepted query and the account's current content policy, so the search
+    /// actor asks for publication here instead of publishing on its own.
+    PublishSearchResults {
+        request_id: u64,
+        results: Vec<crate::state::SearchResult>,
+    },
     SearchAttachments {
         request_id: u64,
         scope: AttachmentScope,

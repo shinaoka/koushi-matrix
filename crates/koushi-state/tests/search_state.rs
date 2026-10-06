@@ -677,12 +677,18 @@ fn matching_search_result_updates_results() {
     );
     assert_eq!(
         effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::SearchChanged),
+            AppEffect::PublishSearchResults {
+                request_id: 9,
+                results: vec![result("$event")],
+            },
+        ]
     );
 }
 
 #[test]
-fn matching_search_result_can_refresh_existing_results_for_sdk_supplement() {
+fn a_settled_search_result_is_not_replaced_by_a_later_one() {
     let mut state = ready_state();
     reduce(
         &mut state,
@@ -702,6 +708,8 @@ fn matching_search_result_can_refresh_existing_results_for_sdk_supplement() {
         },
     );
 
+    // Search is index-first: a query settles once, so a second result for the
+    // same request is ignored rather than replacing what the user sees.
     let effects = reduce(
         &mut state,
         AppAction::SearchSucceeded {
@@ -718,13 +726,10 @@ fn matching_search_result_can_refresh_existing_results_for_sdk_supplement() {
             request_id: 9,
             query: "GPT".to_owned(),
             scope: scope(),
-            results: vec![result("$sdk"), result("$local")],
+            results: vec![result("$local")],
         }
     );
-    assert_eq!(
-        effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
-    );
+    assert!(effects.is_empty());
 }
 
 #[test]

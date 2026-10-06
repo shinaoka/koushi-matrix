@@ -961,12 +961,9 @@ impl SearchActor {
 
         let query = query.trim();
         if query.trim().is_empty() {
+            // The state admits and publishes the empty result set.
             self.emit_search_succeeded(request_id, query, &scope, Vec::new())
                 .await;
-            self.emit(CoreEvent::Search(SearchEvent::Results {
-                request_id,
-                results: Vec::new(),
-            }));
             return;
         }
 
@@ -988,10 +985,6 @@ impl SearchActor {
         if matches!(&room_filter, SearchRoomFilter::OnlyRooms(room_ids) if room_ids.is_empty()) {
             self.emit_search_succeeded(request_id, query, &scope, Vec::new())
                 .await;
-            self.emit(CoreEvent::Search(SearchEvent::Results {
-                request_id,
-                results: Vec::new(),
-            }));
             return;
         }
 
@@ -1095,7 +1088,10 @@ impl SearchActor {
             &projected_results,
             result.sdk_total_ms,
         );
-        let compact_results = compact_search_results(&projected_results);
+
+        // The state publishes an admitted result set (it is the only owner of
+        // the account's content policy and of the accepted query identity), so
+        // the actor only asks for it here.
         self.emit_search_succeeded(
             result.request_id,
             &result.query,
@@ -1103,10 +1099,6 @@ impl SearchActor {
             projected_results,
         )
         .await;
-        self.emit(CoreEvent::Search(SearchEvent::Results {
-            request_id: result.request_id,
-            results: compact_results,
-        }));
     }
 
     async fn handle_attachments(
@@ -1133,6 +1125,7 @@ impl SearchActor {
         }));
     }
 
+    /// Ask the state to admit a result set and publish it.
     async fn emit_search_succeeded(
         &self,
         request_id: RequestId,
@@ -1850,7 +1843,9 @@ async fn abort_and_await_task<T>(task: executor::JoinHandle<T>) {
     let _ = task.await;
 }
 
-fn compact_search_results(results: &[koushi_state::SearchResult]) -> Vec<SearchResultItem> {
+pub(crate) fn compact_search_results(
+    results: &[koushi_state::SearchResult],
+) -> Vec<SearchResultItem> {
     results
         .iter()
         .map(|result| SearchResultItem {

@@ -93,17 +93,14 @@ pub(crate) fn handle_search_succeeded(
         return Vec::new();
     }
 
+    // Only an in-flight query may settle. Search is index-first and a query
+    // emits exactly one result, so a later result for a request that already
+    // settled is ignored rather than replacing the answer the user saw.
     let (current_request_id, current_query, current_scope) = match &state.search {
         SearchState::Searching {
             request_id,
             query,
             scope,
-        }
-        | SearchState::Results {
-            request_id,
-            query,
-            scope,
-            ..
         } => (*request_id, query.clone(), scope.clone()),
         _ => return Vec::new(),
     };
@@ -120,9 +117,15 @@ pub(crate) fn handle_search_succeeded(
         request_id,
         query: current_query,
         scope: current_scope,
-        results,
+        results: results.clone(),
     };
-    vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
+    vec![
+        AppEffect::EmitUiEvent(UiEvent::SearchChanged),
+        AppEffect::PublishSearchResults {
+            request_id,
+            results,
+        },
+    ]
 }
 
 pub(crate) fn handle_search_failed(
