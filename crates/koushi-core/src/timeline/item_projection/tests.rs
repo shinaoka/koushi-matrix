@@ -1512,21 +1512,24 @@ mod reported_search_edits {
     }
 
     #[test]
-    fn a_changed_reported_edit_retires_the_previous_one() {
+    fn only_a_backward_report_retires_the_previous_edit() {
         let mut reported = HashMap::new();
 
-        // The first report retires nothing, and an unchanged report retires
-        // nothing either (a re-projection of the same state).
-        assert!(reported_search_edit_retirements(&mut reported, "$e", Some("$a")).is_empty());
-        assert!(reported_search_edit_retirements(&mut reported, "$e", Some("$a")).is_empty());
+        assert!(
+            reported_search_edit_retirements(&mut reported, "$e", Some("$a"), 1_000).is_empty()
+        );
+        assert!(
+            reported_search_edit_retirements(&mut reported, "$e", Some("$b"), 2_000).is_empty()
+        );
+        assert!(
+            reported_search_edit_retirements(&mut reported, "$e", Some("$b"), 2_000).is_empty()
+        );
 
-        // A promoted older surviving edit retires the one that was showing.
-        let messages = reported_search_edit_retirements(&mut reported, "$e", Some("$b"));
-        assert_eq!(retired(&messages), Some("$a"));
-
-        // The message becoming unedited retires the last reported edit once.
-        let messages = reported_search_edit_retirements(&mut reported, "$e", None);
+        let messages = reported_search_edit_retirements(&mut reported, "$e", Some("$a"), 1_000);
         assert_eq!(retired(&messages), Some("$b"));
-        assert!(reported_search_edit_retirements(&mut reported, "$e", None).is_empty());
+
+        let messages = reported_search_edit_retirements(&mut reported, "$e", None, 0);
+        assert_eq!(retired(&messages), Some("$a"));
+        assert!(reported_search_edit_retirements(&mut reported, "$e", None, 0).is_empty());
     }
 }

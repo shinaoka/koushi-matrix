@@ -314,6 +314,28 @@ durable navigation write it scheduled, and the tests that covered them. The
 plan's startup-latency gate is therefore not required; M4 is deferred to a
 follow-up that must first show a benefit on the path it claims to speed up.
 
+### Fix round 8/9 (producer retirement)
+
+Round 8 showed the observation-sequence attempt could not separate a stale
+re-projection from a rollback; it was reverted and replaced by a producer-side
+retirement (round 9 refined it after the first version retired every superseded
+edit):
+
+- the timeline projection remembers the edit it last reported per message that
+  can produce a Files row, and emits `Redact { event_id }` for it only when the
+  report moves back (an older surviving edit is promoted) or disappears (the
+  message is unedited). Normal advancement to a newer edit keeps the previous one,
+  because the SDK can promote it again;
+- the store retires that edit (deletes the metadata it produced, records the
+  tombstone), so the promoted edit passes the ordinary guards and a replay of the
+  removed edit is refused.
+
+Remaining round-9 items (IMPORTANT, not blocking): the bookkeeping is per actor,
+so a replacement, focused, or thread projection that first observes a promoted
+older edit retires nothing; retiring an edit that is no longer applied records
+no tombstone (the message would need to carry the target); and the bookkeeping
+is not pruned on a reset or a removed item.
+
 Also raised: migrate commitments already written without an acknowledgement, make the "rebuild
 search database" action actually rebuild the persistent index (the user help promises it), cover
 attachment edit rollback and mixed producers, measure pending-edit residency in the memory probe,

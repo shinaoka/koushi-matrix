@@ -1044,7 +1044,16 @@ impl TimelineActor {
             return Vec::new();
         }
 
-        let retirements = self.reported_search_edit_retirements(&event_id, edit.0.as_deref());
+        // Only a message that can produce a Files row needs its edit reported;
+        // tracking every edited text message would grow with history the store
+        // otherwise never keeps.
+        let tracks_edits = attachment.is_some() || attachment_filename.is_some();
+        let retirements = self.reported_search_edit_retirements(
+            &event_id,
+            edit.0.as_deref(),
+            edit.1.unwrap_or(timestamp_ms),
+            tracks_edits,
+        );
 
         if let (Some(edit_event_id), edit_timestamp_ms) = edit {
             // Edited message: Upsert original with new canonical body, AND
@@ -1106,7 +1115,12 @@ impl TimelineActor {
         &self,
         event_id: &str,
         reported: Option<&str>,
+        reported_timestamp_ms: u64,
+        tracks_edits: bool,
     ) -> Vec<SearchIndexMessage> {
+        if !tracks_edits {
+            return Vec::new();
+        }
         reported_search_edit_retirements(
             &mut self
                 .reported_search_edits
@@ -1114,6 +1128,7 @@ impl TimelineActor {
                 .expect("reported search edits lock is never poisoned"),
             event_id,
             reported,
+            reported_timestamp_ms,
         )
     }
 
@@ -4395,21 +4410,41 @@ mod tests;
 #[cfg(test)]
 mod content_policy_tests;
 
-/// Record the edit id a projection reports for one message and return the
-/// retirement for the edit it used to report.
+/// Record the edit a projection reports for one message and return the
+/// retirement for the edit that is no longer part of the message.
+///
+/// A newer edit supersedes the previous one but keeps it: the SDK can promote it
+/// again if the newer one is redacted, and the document store must be able to
+/// apply it then. Only a report that moves *back* (an older edit, or no edit at
+/// all) means the previous edit is gone, so only that retires it.
 fn reported_search_edit_retirements(
-    reported_edits: &mut HashMap<String, String>,
+    reported_edits: &mut HashMap<String, (String, u64)>,
     event_id: &str,
     reported: Option<&str>,
+    reported_timestamp_ms: u64,
 ) -> Vec<SearchIndexMessage> {
-    let previous = match reported {
-        Some(reported) => reported_edits.insert(event_id.to_owned(), reported.to_owned()),
-        None => reported_edits.remove(event_id),
-    };
-    match previous {
-        Some(previous) if Some(previous.as_str()) != reported => {
-            vec![SearchIndexMessage::Redact { event_id: previous }]
+    let previous = reported_edits.get(event_id).cloned();
+    match reported {
+        Some(reported) => {
+            reported_edits.insert(
+                event_id.to_owned(),
+                (reported.to_owned(), reported_timestamp_ms),
+            );
         }
-        _ => Vec::new(),
+        None => {
+            reported_edits.remove(event_id);
+        }
     }
+
+    let Some((previous_edit, previous_timestamp_ms)) = previous else {
+        return Vec::new();
+    };
+    let unchanged = matches!(reported, Some(reported) if reported == previous_edit);
+    let moved_back = reported.is_some() && reported_timestamp_ms < previous_timestamp_ms;
+    if unchanged || (reported.is_some() && !moved_back) {
+        return Vec::new();
+    }
+    vec![SearchIndexMessage::Redact {
+        event_id: previous_edit,
+    }]
 }

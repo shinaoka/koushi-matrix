@@ -391,31 +391,35 @@ fn an_older_canonical_upsert_cannot_undo_a_newer_applied_edit() {
 }
 
 #[test]
-fn a_producer_retirement_lets_the_promoted_edit_apply_and_refuses_a_replay() {
+fn a_producer_retirement_lets_a_promoted_edit_apply_and_refuses_a_replay() {
     let mut store = SearchDocumentStore::default();
     store.upsert_message(
         make_attachment_event("!r:test", "$e1", "original.pdf"),
         false,
         None,
     );
-    store.upsert_edit(make_edit_at("$e1", "$a", 3_000, "a.pdf"), false);
+    // Normal advancement: A then a newer B. A stays valid (the SDK can promote
+    // it again), so the producer retires nothing here.
+    store.upsert_edit(make_edit_at("$e1", "$a", 1_000, "a.pdf"), false);
+    store.upsert_edit(make_edit_at("$e1", "$b", 3_000, "b.pdf"), false);
+    assert_eq!(first_filename(&store).as_deref(), Some("b.pdf"));
+
+    // B is removed and the SDK promotes the older surviving edit A: the producer
+    // retires B, then sends the promoted content as one guarded pair. A's own
+    // edit time is older, and it must still apply -- and a later replay of the
+    // removed B must not resurrect it.
+    store.redact("$b");
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "a.pdf"),
+        true,
+        Some(SearchEditKey::new("$a", 1_000)),
+    );
+    store.upsert_edit(make_edit_at("$e1", "$a", 1_000, "a.pdf"), true);
     assert_eq!(first_filename(&store).as_deref(), Some("a.pdf"));
 
-    // The timeline no longer shows edit A (redacted) and promotes the older
-    // surviving edit B: it retires A, then sends the promoted content as one
-    // guarded pair. B's own edit time is older, and it must still apply.
-    store.redact("$a");
-    store.upsert_message(
-        make_attachment_event("!r:test", "$e1", "b.pdf"),
-        true,
-        Some(SearchEditKey::new("$b", 1_000)),
-    );
-    store.upsert_edit(make_edit_at("$e1", "$b", 1_000, "b.pdf"), true);
-    assert_eq!(first_filename(&store).as_deref(), Some("b.pdf"));
-
-    // A later replay of the redacted edit cannot resurrect it.
-    store.upsert_edit(make_edit_at("$e1", "$a", 3_000, "a.pdf"), false);
-    assert_eq!(first_filename(&store).as_deref(), Some("b.pdf"));
+    // A later replay of the removed edit cannot resurrect it.
+    store.upsert_edit(make_edit_at("$e1", "$b", 3_000, "b.pdf"), false);
+    assert_eq!(first_filename(&store).as_deref(), Some("a.pdf"));
 }
 
 #[test]

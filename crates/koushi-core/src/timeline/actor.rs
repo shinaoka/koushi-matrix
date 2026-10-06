@@ -904,7 +904,7 @@ pub(super) struct TimelineActor {
     /// by timestamps alone, so a projection that stops showing an edit retires it
     /// explicitly. Bounded by the messages this actor has projected that are
     /// currently edited; an entry is dropped when the edit disappears.
-    pub(super) reported_search_edits: Arc<Mutex<HashMap<String, String>>>,
+    pub(super) reported_search_edits: Arc<Mutex<HashMap<String, (String, u64)>>>,
     /// Rust-owned pane-level thread attention read-state tracker. Only thread
     /// timelines update it, and React reads its projection through
     /// `AppState.thread_attention`.
