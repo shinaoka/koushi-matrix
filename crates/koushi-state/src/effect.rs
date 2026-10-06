@@ -133,6 +133,11 @@ pub enum AppEffect {
         query: String,
         scope: SearchScope,
         room_filter: SearchRoomFilter,
+        /// The account's content policy at submission.
+        ///
+        /// The search actor verifies candidates with it, so a query can never
+        /// verify with a policy older than the state that accepted the query.
+        content_policy: crate::state::SearchCrawlerSettings,
     },
     /// Publish an admitted result set to the event stream.
     ///

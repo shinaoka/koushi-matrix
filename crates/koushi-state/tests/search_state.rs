@@ -169,6 +169,7 @@ fn submitting_search_emits_search_effect() {
                 query: "アンケート".to_owned(),
                 scope: scope(),
                 room_filter: SearchRoomFilter::AllRooms,
+                content_policy: koushi_state::SearchCrawlerSettings::default(),
             },
             AppEffect::EmitUiEvent(UiEvent::SearchChanged),
         ]
@@ -255,6 +256,7 @@ fn submitting_short_cjk_search_uses_cjk_threshold_without_sdk_effect() {
                 query: "通院".to_owned(),
                 scope: scope(),
                 room_filter: SearchRoomFilter::AllRooms,
+                content_policy: koushi_state::SearchCrawlerSettings::default(),
             },
             AppEffect::EmitUiEvent(UiEvent::SearchChanged),
         ]
@@ -295,6 +297,7 @@ fn submitting_scoped_search_carries_rust_resolved_room_filter() {
                     "space-child".to_owned(),
                     "dm-child".to_owned(),
                 ]),
+                content_policy: koushi_state::SearchCrawlerSettings::default(),
             },
             AppEffect::EmitUiEvent(UiEvent::SearchChanged),
         ]
@@ -321,6 +324,7 @@ fn submitting_scoped_search_carries_rust_resolved_room_filter() {
                     room_id: "dm-child".to_owned(),
                 },
                 room_filter: SearchRoomFilter::OnlyRooms(vec!["dm-child".to_owned()]),
+                content_policy: koushi_state::SearchCrawlerSettings::default(),
             },
             AppEffect::EmitUiEvent(UiEvent::SearchChanged),
         ]
@@ -642,6 +646,33 @@ fn same_sequence_search_failure_for_different_scope_is_ignored() {
         }
     );
     assert_eq!(effects, Vec::<AppEffect>::new());
+}
+
+#[test]
+fn a_submitted_query_carries_the_account_content_policy() {
+    let mut state = ready_state();
+    state.settings.values.search_crawler.include_filenames = false;
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SearchSubmitted {
+            request_id: 9,
+            query: "アンケート".to_owned(),
+            scope: scope(),
+        },
+    );
+
+    // The actor verifies with the policy the state accepted the query under, so
+    // it does not depend on a crawler notification that can be delivered late.
+    let policy = effects
+        .iter()
+        .find_map(|effect| match effect {
+            AppEffect::SearchMessages { content_policy, .. } => Some(content_policy.clone()),
+            _ => None,
+        })
+        .expect("a submitted query is dispatched");
+    assert!(!policy.include_filenames);
+    assert!(policy.include_media_captions);
 }
 
 #[test]

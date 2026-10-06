@@ -302,6 +302,41 @@ impl AccountActor {
         }
     }
 
+    /// Route a search query together with the account's content policy.
+    pub(super) async fn route_search_query(
+        &self,
+        command: SearchCommand,
+        content_policy: koushi_state::SearchCrawlerSettings,
+    ) {
+        let query_context = match &command {
+            SearchCommand::Query {
+                request_id,
+                query,
+                scope,
+                ..
+            } => Some((*request_id, query.clone(), scope.clone())),
+            _ => None,
+        };
+        match &self.search_actor {
+            Some(handle) => {
+                if !handle
+                    .send_query_command(command, Some(content_policy))
+                    .await
+                    && let Some((request_id, query, scope)) = query_context.as_ref()
+                {
+                    self.emit_search_failed(*request_id, query, scope, SEARCH_UNAVAILABLE_MESSAGE)
+                        .await;
+                }
+            }
+            None => {
+                if let Some((request_id, query, scope)) = query_context.as_ref() {
+                    self.emit_search_failed(*request_id, query, scope, SEARCH_UNAVAILABLE_MESSAGE)
+                        .await;
+                }
+            }
+        }
+    }
+
     /// Route a SearchCommand to the SearchActor. Emit SessionRequired if no
     /// search actor is active.
     pub(super) async fn route_search_command(&self, command: SearchCommand) {

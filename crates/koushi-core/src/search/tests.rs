@@ -1256,6 +1256,7 @@ fn contiguous_pending_queries_coalesce_to_latest_without_crossing_non_query_mess
             query: format!("q{sequence}"),
             scope: SearchScope::AllRooms,
             room_filter: SearchRoomFilter::AllRooms,
+            content_policy: None,
             enqueued_at: Instant::now(),
         }
     }

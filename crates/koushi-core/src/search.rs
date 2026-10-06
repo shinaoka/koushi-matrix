@@ -288,6 +288,10 @@ pub(crate) enum SearchActorMessage {
         query: String,
         scope: SearchScope,
         room_filter: SearchRoomFilter,
+        /// The account's content policy at submission. Adopting it here keeps
+        /// verification on the same policy the state accepted the query under,
+        /// even when the crawler notification that also carries it is deferred.
+        content_policy: Option<SearchCrawlerSettings>,
         enqueued_at: Instant,
     },
     /// A `SearchCommand::Attachments` from the command boundary.
@@ -443,6 +447,16 @@ pub struct SearchActorHandle {
 
 impl SearchActorHandle {
     pub async fn send_command(&self, command: SearchCommand) -> bool {
+        self.send_query_command(command, None).await
+    }
+
+    /// Send a command, carrying the account's content policy when the caller has
+    /// the authoritative one.
+    pub async fn send_query_command(
+        &self,
+        command: SearchCommand,
+        content_policy: Option<SearchCrawlerSettings>,
+    ) -> bool {
         let msg = match command {
             SearchCommand::Query {
                 request_id,
@@ -454,6 +468,7 @@ impl SearchActorHandle {
                 query,
                 scope,
                 room_filter,
+                content_policy,
                 enqueued_at: Instant::now(),
             },
             SearchCommand::Attachments {
@@ -844,6 +859,7 @@ impl SearchActor {
                 query,
                 scope,
                 room_filter,
+                content_policy,
                 enqueued_at,
             } => {
                 self.drain_available_actor_messages();
@@ -853,6 +869,7 @@ impl SearchActor {
                         query,
                         scope,
                         room_filter,
+                        content_policy,
                         enqueued_at,
                     },
                     &mut self.deferred_messages,
@@ -862,6 +879,7 @@ impl SearchActor {
                     query,
                     scope,
                     room_filter,
+                    content_policy,
                     enqueued_at,
                 } = latest_query
                 {
@@ -883,8 +901,15 @@ impl SearchActor {
                                 )),
                         );
                     }
-                    self.handle_query(request_id, &query, scope, room_filter, enqueued_at)
-                        .await;
+                    self.handle_query(
+                        request_id,
+                        &query,
+                        scope,
+                        room_filter,
+                        content_policy,
+                        enqueued_at,
+                    )
+                    .await;
                 }
                 true
             }
@@ -945,8 +970,14 @@ impl SearchActor {
         query: &str,
         scope: SearchScope,
         room_filter: SearchRoomFilter,
+        content_policy: Option<SearchCrawlerSettings>,
         enqueued_at: Instant,
     ) {
+        // The submission's policy is authoritative for this query, so adopt it
+        // before capturing the generation the result will be checked against.
+        if let Some(settings) = content_policy {
+            self.set_crawler_settings(settings);
+        }
         self.active_query_generation = self.active_query_generation.wrapping_add(1);
         let generation = self.active_query_generation;
         if let Some(task) = self.active_sdk_search.take() {

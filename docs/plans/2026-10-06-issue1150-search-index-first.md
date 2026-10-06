@@ -226,15 +226,12 @@ round-3 additions. Fixed in `559cb72e` and `b34b8f7a`:
   query's single settlement (a later result no longer replaces the answer);
 - the retired local-first supplement wording is gone from the canon.
 
-Still open from round 4: the *verification* policy of a brand-new query is still
-derived from crawler notifications, so a query dispatched right after a policy
-change can verify under the previous policy until the notification arrives. Its
-result is now published only if the state admits it, and the state closes the
-search view on a policy change, so the exposure needs the user's window between
-the change and the notification to be short. The fix is to carry the account's
-content policy with the query: `AppEffect::SearchMessages` gains the policy, the
-AppActor forwards it in an internal account message, and `SearchActorMessage::Query`
-adopts it before capturing the generation.
+Round-4 item closed in the same round: a submitted query now carries the
+account's content policy (`AppEffect::SearchMessages { content_policy }` ->
+`AccountMessage::SearchQuery` -> `SearchActorMessage::Query`), and the actor
+adopts it before capturing the generation its result is checked against. Query
+verification therefore uses the same policy the state accepted the query under,
+whether or not the crawler notification has been delivered yet.
 
 Also raised: migrate commitments already written without an acknowledgement, make the "rebuild
 search database" action actually rebuild the persistent index (the user help promises it), cover

@@ -4547,6 +4547,7 @@ impl AppActor {
                     query,
                     scope,
                     room_filter,
+                    content_policy,
                 } => {
                     if effect_request_id != request_id.sequence {
                         continue;
@@ -4556,14 +4557,15 @@ impl AppActor {
                     self.active_search_request = Some(request_id);
                     let _ = self
                         .account_actor
-                        .send(crate::account::AccountMessage::SearchCommand(
-                            SearchCommand::Query {
+                        .send(crate::account::AccountMessage::SearchQuery {
+                            command: SearchCommand::Query {
                                 request_id,
                                 query,
                                 scope: map_state_search_scope_to_core(scope),
                                 room_filter,
                             },
-                        ))
+                            content_policy,
+                        })
                         .await;
                 }
                 AppEffect::SearchAttachments {

@@ -66,6 +66,7 @@ pub(crate) fn handle_search_submitted(
     }
 
     let room_filter = search_room_filter(state, &scope);
+    let content_policy = state.settings.values.search_crawler.clone();
     state.search = SearchState::Searching {
         request_id,
         query: query.clone(),
@@ -77,6 +78,7 @@ pub(crate) fn handle_search_submitted(
             query,
             scope,
             room_filter,
+            content_policy,
         },
         AppEffect::EmitUiEvent(UiEvent::SearchChanged),
     ]
