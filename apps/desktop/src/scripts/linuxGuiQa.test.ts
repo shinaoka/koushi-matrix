@@ -633,6 +633,31 @@ describe("desktop release scripts", () => {
     );
   });
 
+  test("linux GUI secure-backup steps follow the on-screen reveal without reading the key", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa/scenarios/settings-security.mjs", import.meta.url),
+      "utf8"
+    );
+    const registry = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa/registry.mjs", import.meta.url),
+      "utf8"
+    );
+
+    // #1049: the login's gate reveal creates the backup; Settings must report
+    // it enabled, and a passphrase change reveals a new key on screen.
+    expect(source).not.toContain('"Recovery key destination"');
+    expect(source).not.toContain("secure-backup-recovery.txt");
+    expect(source).not.toContain('"Set up secure backup"');
+    expect(source).toContain('"Change secure backup passphrase"');
+    expect(source).toContain('"I saved the recovery key"');
+    expect(source).toContain("gui_secure_backup_setup=ok");
+    expect(source).toContain("gui_secure_backup_passphrase_change=ok");
+    expect(source).not.toContain("recovery-key-value");
+    expect(source).not.toContain("console.log(session.bootstrapPassphrase");
+    expect(registry).toContain('guiScenario === "local-secure-backup"');
+    expect(registry).toContain("runLocalSecureBackupScenario()");
+  });
+
   test("headless local QA routes SDK and Core output through the validated artifact boundary", () => {
     const source = readFileSync(
       new URL("../../../../scripts/desktop-headless-local-qa.mjs", import.meta.url),

@@ -514,6 +514,8 @@ async function completeNewIdentityBootstrapIfOffered(session, deadline, bootstra
   try {
     const bootstrapPassphrase = randomBytes(32).toString("base64url");
     await setTextInputValueByLabel(browser, bootstrapPassphrase, labels.passphrase);
+    // Kept in memory only, for the Settings passphrase-change step.
+    session.bootstrapPassphrase = bootstrapPassphrase;
     await clickVisibleButtonByTextPrefix(
       browser,
       labels.submit,

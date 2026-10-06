@@ -393,7 +393,8 @@ stateDiagram-v2
 - The new-identity bootstrap (#1049) needs no file destination.
   `StartSessionBootstrap { passphrase }` bootstraps cross-signing, sets the
   persisted recovery-key delivery-pending marker, and creates the Secure
-  Backup. `BootstrapRecoveryKeyReady { flow_id }` enters the coarse
+  Backup; if creation fails no key was revealed, so the marker is cleared
+  (best effort). `BootstrapRecoveryKeyReady { flow_id }` enters the coarse
   `AwaitingBootstrapConfirmation { flow_id }` and puts the key only in the
   #927 reveal slot `SecureBackupSetupState::RecoveryKeyReady { request_id:
   flow_id }`; the session state never carries it. Copy and the optional
