@@ -85,10 +85,13 @@ const SEARCH_CANDIDATE_PAGE: usize = 50;
 const SEARCH_CANDIDATE_SCAN_BUDGET: usize = 500;
 /// Upper bound on the persisted events one room's Files rebuild projects.
 ///
-/// The SDK store read is a whole-room query, so this bounds the projection work
-/// and the rows it produces; a room whose local history is deeper than this keeps
-/// the rest until its timeline is paged. Newest events win.
-const ATTACHMENT_REFRESH_MAX_EVENTS: usize = 10_000;
+/// The store is read in pages, so this bounds both the pages and the rows a
+/// single query spends; a room whose local history is deeper than this keeps the
+/// rest until its timeline is paged. Newest events win.
+const ATTACHMENT_REBUILD_MAX_EVENTS: usize = 10_000;
+/// Events requested per store read, so the event-cache store lock is released
+/// between pages instead of being held across a whole room.
+const ATTACHMENT_REBUILD_PAGE_EVENTS: usize = 500;
 /// Search index mutation queue capacity (canon, overview.md: 512).
 pub const SEARCH_INDEX_MUTATION_QUEUE: usize = 512;
 const SEARCH_ACTOR_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_secs(1);
@@ -669,10 +672,6 @@ pub(crate) struct SearchActor {
     crawl_delay_elapsed: bool,
     /// One-shot startup-delay timer; its completion is awaited in `run`.
     crawl_delay_timer: Option<executor::JoinHandle<()>>,
-    /// Rooms whose Files rows were already rebuilt from the persisted event
-    /// cache this session, so the Files view does not re-read the store on every
-    /// query.
-    refreshed_attachment_rooms: HashSet<String>,
     /// Bumped whenever the account's content policy changes.
     ///
     /// A query verifies candidates with the policy captured when it started, so
@@ -764,7 +763,6 @@ impl SearchActor {
             crawl_settings_generation: 0,
             crawl_delay_elapsed: false,
             crawl_delay_timer: None,
-            refreshed_attachment_rooms: HashSet::new(),
             content_policy_generation: 0,
             crawler_settings: restricted_crawler_settings(),
         };
@@ -1176,14 +1174,17 @@ impl SearchActor {
         });
     }
 
-    /// Rebuild attachment rows for a scope's rooms from the persisted event
-    /// cache, once per room per session.
+    /// Rebuild the queried scope's attachment rows from the persisted event
+    /// cache.
     ///
     /// A room whose history crawl was already committed is not crawled again
-    /// after a restart (#1150 M3), so its Files rows would otherwise stay empty
-    /// until the user opens the room. The Files view is what needs them, so it
-    /// pays for the reconstruction; only the local encrypted store is read, and
-    /// nothing else is retained beyond the attachment metadata the rows hold.
+    /// after a restart (#1150 M3), so the Files view is what keeps its rows
+    /// current: every query rebuilds the rows of the rooms it asks about from
+    /// the local encrypted store, which is the same source the crawler reads and
+    /// is current for edits and redactions the timeline never reported. A room's
+    /// rows are replaced, not merged, so a row the current cache no longer
+    /// produces cannot survive. Only the local store is read (no network), one
+    /// bounded page at a time, and the store lock is released between pages.
     async fn refresh_attachment_rows(&mut self, scope: &AttachmentScope) {
         let room_ids = match scope {
             AttachmentScope::Account => self
@@ -1198,30 +1199,44 @@ impl SearchActor {
         };
 
         for room_id in room_ids {
-            if self.refreshed_attachment_rooms.contains(&room_id) {
-                continue;
-            }
-            let Ok(mut events) = koushi_sdk::persisted_room_events(&self.session, &room_id).await
+            self.rebuild_attachment_rows(&room_id).await;
+        }
+    }
+
+    /// Replace one room's attachment rows from its persisted events.
+    ///
+    /// A failed read leaves the room's rows alone; the next Files query reads
+    /// again.
+    async fn rebuild_attachment_rows(&mut self, room_id: &str) {
+        let mut cursor = None;
+        let mut remaining = ATTACHMENT_REBUILD_MAX_EVENTS;
+        let mut pages = Vec::new();
+        loop {
+            let Ok(page) = koushi_sdk::persisted_room_event_page(
+                &self.session,
+                room_id,
+                cursor.clone(),
+                ATTACHMENT_REBUILD_PAGE_EVENTS,
+            )
+            .await
             else {
-                // A failed read must not mark the room done for the session.
-                continue;
+                return;
             };
-            // The store read is a whole-room query; keep the newest events so
-            // the work this actor turn spends stays bounded.
-            events.sort_by_key(|event| {
-                std::cmp::Reverse(
-                    event
-                        .timestamp()
-                        .map(|timestamp| u64::from(timestamp.get())),
-                )
-            });
-            events.truncate(ATTACHMENT_REFRESH_MAX_EVENTS);
-            for message in
-                attachment_messages_from_events(&room_id, &events, &self.crawler_settings)
+            remaining = remaining.saturating_sub(page.events.len());
+            let next = page.next;
+            pages.push(page.events);
+            match next {
+                Some(next) if remaining > 0 => cursor = Some(next),
+                _ => break,
+            }
+        }
+
+        self.document_store.forget_room(room_id);
+        for events in pages {
+            for message in attachment_messages_from_events(room_id, &events, &self.crawler_settings)
             {
                 self.apply_index_message(message);
             }
-            self.refreshed_attachment_rooms.insert(room_id);
         }
     }
 
@@ -1301,12 +1316,6 @@ impl SearchActor {
                 edited_room_id.map(|room_id| (room_id, edited_event_id))
             }
             SearchIndexMessage::Redact { event_id } => {
-                // A redacted edit drops the attachment metadata it produced, so
-                // the room's Files rows must be rebuilt from the store again
-                // rather than served from a once-per-session snapshot.
-                if let Some(room_id) = self.document_store.room_id_of(&event_id) {
-                    self.refreshed_attachment_rooms.remove(room_id);
-                }
                 self.document_store.redact(&event_id);
                 None
             }
@@ -1787,7 +1796,6 @@ impl SearchActor {
         // Attachment rows were built under the old content policy, and the
         // Files view must rebuild them under the new one.
         self.document_store.clear();
-        self.refreshed_attachment_rooms.clear();
         // The durable record must be cleared with the in-memory set, or a
         // restart would re-seed these rooms as committed and skip exactly the
         // re-crawl this invalidation exists to force. The record also carries the
@@ -1801,9 +1809,6 @@ impl SearchActor {
 
     async fn rebuild_search_index(&mut self) {
         self.document_store.clear();
-        // The rows are gone, so a refresh marker must not suppress rebuilding
-        // them from the persisted store again.
-        self.refreshed_attachment_rooms.clear();
         self.crawl_settings_generation = self.crawl_settings_generation.wrapping_add(1);
         self.invalidate_history_crawler_cache().await;
     }

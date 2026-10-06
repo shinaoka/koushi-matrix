@@ -503,20 +503,37 @@ pub async fn index_room_events_now(
         .map_err(|error| matrix_search_error_from_index(&error))
 }
 
-/// Read a room's persisted events from the local encrypted event cache.
+/// Opaque cursor into a room's persisted event chunks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixPersistedEventCursor(matrix_sdk::linked_chunk::ChunkIdentifier);
+
+/// One bounded page of a room's persisted events, newest chunk first.
+pub struct MatrixPersistedEventPage {
+    pub events: Vec<matrix_sdk::deserialized_responses::TimelineEvent>,
+    /// Pass to the next call. `None` when the store holds no older chunk.
+    pub next: Option<MatrixPersistedEventCursor>,
+}
+
+/// Read one bounded page of a room's persisted events from the local encrypted
+/// event cache, newest chunk first.
 ///
-/// Unlike `RoomEventCache::events` this is not limited to the linked chunks the
-/// cache currently holds in memory: it reads what is on disk, with no network
-/// access. Callers use it to rebuild derived metadata (attachment rows) for a
-/// room whose history crawl was already committed and is therefore not crawled
-/// again.
-pub async fn persisted_room_events(
+/// Unlike `RoomEventCache::events` this is not limited to the chunks the cache
+/// currently holds in memory: it reads what is on disk, with no network access.
+/// It reads chunk by chunk so the store lock is held only while one page is
+/// loaded, and a caller that needs a whole room pages until `next` is `None` or
+/// its own budget is spent. Chunks are returned whole, so `max_events` is an
+/// approximate bound.
+pub async fn persisted_room_event_page(
     session: &MatrixClientSession,
     room_id: &str,
-) -> Result<Vec<matrix_sdk::deserialized_responses::TimelineEvent>, MatrixSearchError> {
+    cursor: Option<MatrixPersistedEventCursor>,
+    max_events: usize,
+) -> Result<MatrixPersistedEventPage, MatrixSearchError> {
+    use matrix_sdk::linked_chunk::{ChunkContent, LinkedChunkId, RawChunk};
     use matrix_sdk_base::event_cache::store::EventCacheStoreLockState;
 
     let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| MatrixSearchError::Query)?;
+    let linked_chunk_id = LinkedChunkId::Room(&room_id);
     let state = session
         .client()
         .event_cache_store()
@@ -530,10 +547,43 @@ pub async fn persisted_room_events(
         EventCacheStoreLockState::Clean(guard) | EventCacheStoreLockState::Dirty(guard) => guard,
     };
 
-    guard
-        .get_room_events(&room_id, None, None)
-        .await
-        .map_err(|_| MatrixSearchError::Internal)
+    let mut current = match cursor {
+        Some(MatrixPersistedEventCursor(identifier)) => guard
+            .load_previous_chunk(linked_chunk_id, identifier)
+            .await
+            .map_err(|_| MatrixSearchError::Internal)?,
+        None => {
+            guard
+                .load_last_chunk(linked_chunk_id)
+                .await
+                .map_err(|_| MatrixSearchError::Internal)?
+                .0
+        }
+    };
+
+    let mut events = Vec::new();
+    let mut next = None;
+    while let Some(chunk) = current.take() {
+        let RawChunk {
+            content,
+            identifier,
+            ..
+        } = chunk;
+        if let ChunkContent::Items(chunk_events) = content {
+            events.extend(chunk_events);
+        }
+        if events.len() >= max_events {
+            // Stop at a chunk boundary so the cursor resumes exactly here.
+            next = Some(MatrixPersistedEventCursor(identifier));
+            break;
+        }
+        current = guard
+            .load_previous_chunk(linked_chunk_id, identifier)
+            .await
+            .map_err(|_| MatrixSearchError::Internal)?;
+    }
+
+    Ok(MatrixPersistedEventPage { events, next })
 }
 
 /// Whether `replacement` is a valid visible edit of `original`.

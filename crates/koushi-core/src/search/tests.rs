@@ -355,12 +355,39 @@ async fn files_rows_are_rebuilt_from_the_persisted_event_cache() {
     };
     let session = MatrixClientSession::from_client_for_testing(client.clone(), session_info);
 
-    // The room's crawl is already committed, so this store read is the only
-    // source of its Files rows after a restart.
-    let events = koushi_sdk::persisted_room_events(&session, room_id.as_str())
-        .await
-        .expect("the persisted event cache should be readable");
+    // The room's crawl is already committed, so this paged store read is the
+    // only source of its Files rows after a restart.
+    let mut events = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = koushi_sdk::persisted_room_event_page(&session, room_id.as_str(), cursor, 500)
+            .await
+            .expect("the persisted event cache should be readable");
+        events.extend(page.events);
+        match page.next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
     assert_eq!(events.len(), 2, "both synced events are persisted");
+    assert!(
+        events.iter().any(|event| event
+            .event_id()
+            .is_some_and(|id| id.as_str() == "$with-attachment")),
+        "the paged read returns the room's events"
+    );
+
+    // A page budget stops at a chunk boundary and hands out a cursor, so a
+    // caller never holds the store lock for a whole room.
+    let first = koushi_sdk::persisted_room_event_page(&session, room_id.as_str(), None, 1)
+        .await
+        .expect("bounded page");
+    assert_eq!(first.events.len(), 2, "one chunk is returned whole");
+    let next = first.next.expect("a bounded page hands out a cursor");
+    let last = koushi_sdk::persisted_room_event_page(&session, room_id.as_str(), Some(next), 1)
+        .await
+        .expect("continuation page");
+    assert!(last.events.is_empty() && last.next.is_none());
 
     let messages = attachment_messages_from_events(
         room_id.as_str(),
@@ -549,6 +576,57 @@ fn timeline_event_from_json(
     matrix_sdk::deserialized_responses::TimelineEvent::from_plaintext(
         matrix_sdk::ruma::serde::Raw::from_json_string(json.to_string()).expect("raw event"),
     )
+}
+
+#[test]
+fn forgetting_a_room_replaces_its_rows_on_rebuild() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(
+        make_attachment_event("!a:test", "$e1", "original.pdf"),
+        true,
+        None,
+    );
+    store.upsert_message(
+        make_attachment_event("!b:test", "$e2", "other.pdf"),
+        true,
+        None,
+    );
+    store.upsert_edit(make_edit_at("$e1", "$edit1", 2_000, "renamed.pdf"), true);
+    let room_filename = |store: &SearchDocumentStore, room_id: &str| {
+        attachment_rows(store)
+            .into_iter()
+            .find(|row| row.room_id == room_id)
+            .map(|row| row.filename)
+    };
+    assert_eq!(
+        room_filename(&store, "!a:test").as_deref(),
+        Some("renamed.pdf")
+    );
+
+    // The Files rebuild replaces the queried room's rows from the current cache.
+    store.forget_room("!a:test");
+    assert_eq!(
+        attachment_rows(&store).len(),
+        1,
+        "only the other room remains"
+    );
+    assert_eq!(room_filename(&store, "!a:test"), None);
+    assert_eq!(
+        room_filename(&store, "!b:test").as_deref(),
+        Some("other.pdf")
+    );
+
+    // What the cache still produces (the original, the rename having been
+    // redacted) is what the rebuilt row shows.
+    store.upsert_message(
+        make_attachment_event("!a:test", "$e1", "original.pdf"),
+        false,
+        None,
+    );
+    assert_eq!(
+        room_filename(&store, "!a:test").as_deref(),
+        Some("original.pdf")
+    );
 }
 
 // Helper constructors

@@ -275,6 +275,27 @@ impl SearchDocumentStore {
         true
     }
 
+    /// Drop every row of one room.
+    ///
+    /// The Files view rebuilds a queried room's rows from the current persisted
+    /// cache, so rows the rebuild does not reproduce (a redacted edit, a removed
+    /// event) must not survive it. A later timeline or crawl message adds the
+    /// room back.
+    pub fn forget_room(&mut self, room_id: &str) {
+        let event_ids: Vec<String> = self
+            .documents
+            .iter()
+            .filter(|(_, event)| event.room_id == room_id)
+            .map(|(event_id, _)| event_id.clone())
+            .collect();
+        for event_id in event_ids {
+            self.documents.remove(&event_id);
+            self.applied_edits.remove(&event_id);
+            self.retired_edits.remove(&event_id);
+            self.pending_edits.remove(&event_id);
+        }
+    }
+
     /// Remove a message, or retire a redacted edit.
     ///
     /// A redacted edit is no longer visible, so a row that holds it stops
