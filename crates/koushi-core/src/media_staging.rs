@@ -277,12 +277,14 @@ impl MediaStagingService {
 
         let preparation_target = target.clone();
         let prepared_inputs = items;
+        let native_image_decoder = self.preparation.native_image_decoder();
         #[cfg(any(test, feature = "test-hooks"))]
         let preparation_service = self.clone();
         let prepared = executor::spawn_blocking(move || {
             #[cfg(any(test, feature = "test-hooks"))]
             preparation_service.pause_preparation_for_testing();
-            let mut registry = MediaPreparationRegistry::default();
+            let mut registry =
+                MediaPreparationRegistry::with_native_image_decoder(native_image_decoder);
             let items = registry.prepare_items(&preparation_target, prepared_inputs, policy);
             (registry, items)
         })
@@ -392,12 +394,18 @@ impl MediaStagingService {
                 .source_input(&target, &staged_id)
                 .ok_or(MediaStagingError::PreparedBytesUnavailable)?
         };
+        let native_image_decoder = self.preparation.native_image_decoder();
         #[cfg(any(test, feature = "test-hooks"))]
         let preparation_service = self.clone();
         let encoded = executor::spawn_blocking(move || {
             #[cfg(any(test, feature = "test-hooks"))]
             preparation_service.pause_preparation_for_testing();
-            MediaPreparationRegistry::encode_output(&source, selection, policy)
+            MediaPreparationRegistry::encode_output(
+                &source,
+                selection,
+                policy,
+                native_image_decoder.as_deref(),
+            )
         })
         .await
         .map_err(|_| MediaStagingError::PreparationTask)?
@@ -457,12 +465,14 @@ impl MediaStagingService {
                 .ok_or(MediaStagingError::PreparedBytesUnavailable)?
         };
         let retry_target = target.clone();
+        let native_image_decoder = self.preparation.native_image_decoder();
         #[cfg(any(test, feature = "test-hooks"))]
         let preparation_service = self.clone();
         let (prepared_registry, replacement) = executor::spawn_blocking(move || {
             #[cfg(any(test, feature = "test-hooks"))]
             preparation_service.pause_preparation_for_testing();
-            let mut registry = MediaPreparationRegistry::default();
+            let mut registry =
+                MediaPreparationRegistry::with_native_image_decoder(native_image_decoder);
             let replacement = registry
                 .prepare_items(&retry_target, vec![source], policy)
                 .into_iter()

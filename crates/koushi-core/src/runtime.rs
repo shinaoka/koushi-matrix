@@ -635,6 +635,38 @@ impl CoreRuntime {
         data_dir: PathBuf,
         credential_dir: PathBuf,
     ) -> Self {
+        Self::start_with_file_credentials_and_native_image_decoder(
+            event_capacity,
+            data_dir,
+            credential_dir,
+            None,
+        )
+    }
+
+    /// Isolated test runtime whose media preparation uses an injected
+    /// still-image decoder, as the desktop adapter does on macOS (#1147).
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn start_isolated_with_native_image_decoder(
+        event_capacity: usize,
+        native_image_decoder: Arc<dyn crate::NativeStillImageDecoder>,
+    ) -> (Self, IsolatedStores) {
+        let stores = IsolatedStores::new();
+        let runtime = Self::start_with_file_credentials_and_native_image_decoder(
+            event_capacity,
+            stores.data_dir().to_path_buf(),
+            stores.credential_dir().to_path_buf(),
+            Some(native_image_decoder),
+        );
+        (runtime, stores)
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn start_with_file_credentials_and_native_image_decoder(
+        event_capacity: usize,
+        data_dir: PathBuf,
+        credential_dir: PathBuf,
+        native_image_decoder: Option<Arc<dyn crate::NativeStillImageDecoder>>,
+    ) -> Self {
         let account_store_actor = StoreActor::with_backend(
             koushi_store::CredentialStoreBackend::FileDir(koushi_store::FileCredentialStore::new(
                 credential_dir.clone(),
@@ -647,12 +679,15 @@ impl CoreRuntime {
             )),
             data_dir.clone(),
         );
-        Self::start_inner(
+        let settings_store = SettingsStore::new(&data_dir);
+        Self::start_inner_with_settings_store(
             event_capacity,
-            data_dir,
             account_store_actor,
             composer_draft_store_actor,
             Arc::new(crate::native_artifact::NativeArtifactRegistry::new()),
+            settings_store,
+            crate::account_work::AccountWorkScheduler::default(),
+            native_image_decoder,
         )
     }
 
@@ -664,6 +699,7 @@ impl CoreRuntime {
         settings_store: SettingsStore,
         native_artifacts: Arc<dyn NativeArtifactPort>,
         account_work: crate::account_work::AccountWorkScheduler,
+        native_image_decoder: Option<Arc<dyn crate::NativeStillImageDecoder>>,
     ) -> Self {
         Self::start_inner_with_settings_store(
             EVENT_QUEUE_CAPACITY,
@@ -672,6 +708,7 @@ impl CoreRuntime {
             native_artifacts,
             settings_store,
             account_work,
+            native_image_decoder,
         )
     }
 
@@ -690,6 +727,7 @@ impl CoreRuntime {
             native_artifacts,
             settings_store,
             crate::account_work::AccountWorkScheduler::default(),
+            None,
         )
     }
 
@@ -700,6 +738,7 @@ impl CoreRuntime {
         native_artifacts: Arc<dyn NativeArtifactPort>,
         settings_store: SettingsStore,
         account_work: crate::account_work::AccountWorkScheduler,
+        native_image_decoder: Option<Arc<dyn crate::NativeStillImageDecoder>>,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(COMMAND_INBOX_CAPACITY);
         // NOTE: action_tx is the high-volume action-projection inbox; it must be
@@ -822,8 +861,11 @@ impl CoreRuntime {
             drop(_view_lifetime);
             actor_completion_tx.send_replace(Some(result));
         });
-        let media_preparation =
-            Arc::new(crate::media_preparation::MediaPreparationService::default());
+        let media_preparation = Arc::new(
+            crate::media_preparation::MediaPreparationService::with_native_image_decoder(
+                native_image_decoder,
+            ),
+        );
         let media_staging = Arc::new(crate::media_staging::MediaStagingService::new(Arc::clone(
             &media_preparation,
         )));

@@ -590,3 +590,290 @@ async fn settings_change_fences_blocked_preparation() {
     barrier.release();
     assert!(matches!(task.await.unwrap(), Err(MediaStagingError::Stale)));
 }
+
+/// Fake platform still-image decoder (#1147). Its 40x30 output differs from
+/// the 64x64 fixture, so state proves which decoder produced the pixels.
+struct FakeStillImageDecoder {
+    fail: std::sync::atomic::AtomicBool,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl FakeStillImageDecoder {
+    fn new(fail: bool) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            fail: std::sync::atomic::AtomicBool::new(fail),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl koushi_core::NativeStillImageDecoder for FakeStillImageDecoder {
+    fn backend(&self) -> &'static str {
+        "fake"
+    }
+
+    fn decode(
+        &self,
+        _source: &[u8],
+        limits: koushi_core::native_image_decoder::DecodeLimits,
+    ) -> Result<
+        koushi_core::native_image_decoder::DecodedRgbaImage,
+        koushi_core::NativeImageDecodeError,
+    > {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(koushi_core::NativeImageDecodeError::Unsupported);
+        }
+        Ok(
+            koushi_core::native_image_decoder::DecodedRgbaImage::from_straight_rgba(
+                40,
+                30,
+                160,
+                vec![200; 40 * 30 * 4],
+                limits,
+            )?,
+        )
+    }
+}
+
+fn heic_item(id: &str, position: u64) -> StageUploadBytesInput {
+    StageUploadBytesInput {
+        staged_id: id.to_owned(),
+        position,
+        filename: "IMG_0001.HEIC".to_owned(),
+        // Browsers commonly report no MIME for HEIC; content detection decides.
+        mime_type: String::new(),
+        bytes: include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../koushi-media/tests/fixtures/heif/opaque.heic"
+        ))
+        .to_vec(),
+    }
+}
+
+async fn ready_runtime_with_decoder(
+    decoder: &std::sync::Arc<FakeStillImageDecoder>,
+) -> (CoreRuntime, koushi_core::CoreConnection, IsolatedStores) {
+    let (runtime, stores) = CoreRuntime::start_isolated_with_native_image_decoder(
+        64,
+        std::sync::Arc::clone(decoder) as std::sync::Arc<dyn koushi_core::NativeStillImageDecoder>,
+    );
+    let mut connection = runtime.attach();
+    let mut actions = support::restore_ready_actions();
+    actions.extend([
+        AppAction::RoomListUpdated {
+            spaces: Vec::new(),
+            rooms: vec![RoomSummary {
+                room_id: ROOM_ID.to_owned(),
+                ..support::room_summary(ROOM_ID)
+            }],
+        },
+        AppAction::SelectRoom {
+            room_id: ROOM_ID.to_owned(),
+        },
+    ]);
+    runtime.inject_actions(actions).await;
+    support::wait_for_state_event(&mut connection, |state| {
+        state.timeline.room_id.as_deref() == Some(ROOM_ID)
+    })
+    .await;
+    (runtime, connection, stores)
+}
+
+#[tokio::test]
+async fn injected_native_decoder_prepares_heic_and_lazy_selection() {
+    let decoder = FakeStillImageDecoder::new(false);
+    let (runtime, mut connection, _stores) = ready_runtime_with_decoder(&decoder).await;
+    runtime
+        .media_staging()
+        .stage_upload_bytes(&mut connection, target(), vec![heic_item("heic", 1)])
+        .await
+        .expect("HEIC staging should settle");
+    let staged = connection.snapshot().timeline.staged_uploads[0].clone();
+    assert_eq!(
+        staged.kind,
+        koushi_state::StagedUploadKind::Image {
+            width: Some(40),
+            height: Some(30)
+        }
+    );
+    assert_eq!(staged.mime_type, "image/jpeg");
+    assert!(matches!(
+        staged.preparation,
+        StagedUploadPreparation::Ready { .. }
+    ));
+    assert_eq!(decoder.calls(), 1);
+
+    runtime
+        .media_staging()
+        .select_staged_upload_output(
+            &mut connection,
+            target(),
+            "heic".to_owned(),
+            koushi_state::StagedUploadOutputSelection {
+                resize: StagedUploadResizeChoice::Half,
+                format: StagedUploadFormatChoice::Png,
+            },
+        )
+        .await
+        .expect("lazy HEIC output should settle");
+    let selected = connection.snapshot().timeline.staged_uploads[0].clone();
+    assert_eq!(selected.mime_type, "image/png");
+    let StagedUploadPreparation::Ready { variants, .. } = &selected.preparation else {
+        panic!("selection keeps the item ready");
+    };
+    let half_png = variants
+        .iter()
+        .find(|variant| variant.variant_id == "half-png")
+        .expect("lazily encoded output");
+    assert_eq!((half_png.width, half_png.height), (Some(20), Some(15)));
+    assert_eq!(
+        decoder.calls(),
+        2,
+        "lazy selection uses the injected decoder"
+    );
+}
+
+#[tokio::test]
+async fn injected_native_decoder_failure_falls_back_and_retry_uses_it_again() {
+    let decoder = FakeStillImageDecoder::new(true);
+    let (runtime, mut connection, _stores) = ready_runtime_with_decoder(&decoder).await;
+    runtime
+        .media_staging()
+        .stage_upload_bytes(&mut connection, target(), vec![heic_item("heic", 1)])
+        .await
+        .expect("failed preparation still settles");
+    let failed = connection.snapshot().timeline.staged_uploads[0].clone();
+    assert_eq!(failed.kind, koushi_state::StagedUploadKind::File);
+    assert_eq!(
+        failed.preparation,
+        StagedUploadPreparation::Failed {
+            failure_kind: koushi_state::MediaPreparationFailureKind::Unsupported,
+            can_use_original: true,
+        }
+    );
+
+    decoder
+        .fail
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    runtime
+        .media_staging()
+        .retry_staged_upload_preparation(&mut connection, target(), "heic".to_owned())
+        .await
+        .expect("retry should settle");
+    let retried = connection.snapshot().timeline.staged_uploads[0].clone();
+    assert!(matches!(
+        retried.kind,
+        koushi_state::StagedUploadKind::Image {
+            width: Some(40),
+            height: Some(30)
+        }
+    ));
+    assert_eq!(decoder.calls(), 2);
+}
+
+#[tokio::test]
+async fn blocked_native_decode_is_fenced_by_clear_and_selection_generation() {
+    let decoder = FakeStillImageDecoder::new(false);
+    let (runtime, mut connection, _stores) = ready_runtime_with_decoder(&decoder).await;
+    let mut barrier = runtime
+        .media_staging()
+        .install_preparation_barrier_for_testing();
+    let service = runtime.media_staging().clone();
+    let mut staging_connection = runtime.attach();
+    let task = tokio::spawn(async move {
+        service
+            .stage_upload_bytes(
+                &mut staging_connection,
+                target(),
+                vec![heic_item("cleared", 1)],
+            )
+            .await
+    });
+    barrier.wait_started().await;
+    runtime
+        .inject_actions(vec![AppAction::UploadStagingCleared { target: target() }])
+        .await;
+    support::wait_for_state_event(&mut connection, |state| {
+        state.timeline.staged_uploads.is_empty()
+    })
+    .await;
+    barrier.release();
+    assert!(matches!(task.await.unwrap(), Err(MediaStagingError::Stale)));
+    assert_eq!(
+        decoder.calls(),
+        1,
+        "the decode ran but its result was fenced"
+    );
+    let stats = runtime.media_preparation().stats().await;
+    assert_eq!(
+        (stats.source_count, stats.variant_count, stats.source_bytes),
+        (0, 0, 0)
+    );
+
+    runtime
+        .media_staging()
+        .stage_upload_bytes(&mut connection, target(), vec![heic_item("race", 2)])
+        .await
+        .expect("HEIC staging should settle");
+    let mut barrier = runtime
+        .media_staging()
+        .install_preparation_barrier_for_testing();
+    let service = runtime.media_staging().clone();
+    let mut select_connection = runtime.attach();
+    let first = tokio::spawn(async move {
+        service
+            .select_staged_upload_output(
+                &mut select_connection,
+                target(),
+                "race".to_owned(),
+                koushi_state::StagedUploadOutputSelection {
+                    resize: StagedUploadResizeChoice::Half,
+                    format: StagedUploadFormatChoice::Webp,
+                },
+            )
+            .await
+    });
+    barrier.wait_started().await;
+    let latest_selection = koushi_state::StagedUploadOutputSelection {
+        resize: StagedUploadResizeChoice::Quarter,
+        format: StagedUploadFormatChoice::Png,
+    };
+    runtime
+        .inject_actions(vec![AppAction::UploadStagingOutputSelected {
+            target: target(),
+            staged_id: "race".to_owned(),
+            selection: latest_selection,
+        }])
+        .await;
+    support::wait_for_state_event(&mut connection, |state| {
+        matches!(
+            state.timeline.staged_uploads[0].preparation,
+            StagedUploadPreparation::Ready {
+                pending: Some(selection),
+                ..
+            } if selection == latest_selection
+        )
+    })
+    .await;
+    barrier.release();
+    assert!(matches!(
+        first.await.unwrap(),
+        Err(MediaStagingError::Stale)
+    ));
+    let StagedUploadPreparation::Ready { variants, .. } =
+        &connection.snapshot().timeline.staged_uploads[0].preparation
+    else {
+        panic!("item stays ready");
+    };
+    assert!(
+        variants
+            .iter()
+            .all(|variant| variant.variant_id != "half-webp"),
+        "a fenced native decode must not publish its output"
+    );
+}
