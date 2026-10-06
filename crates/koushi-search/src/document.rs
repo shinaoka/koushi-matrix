@@ -90,6 +90,18 @@ impl SearchDocumentStore {
         self.pending_edits.values().map(Vec::len).sum()
     }
 
+    /// Bytes of message text this store currently retains.
+    ///
+    /// Search reads bodies from the encrypted event cache on demand, so this is
+    /// a memory probe for the #1150 budget evidence rather than a feature; it
+    /// stays zero however deep the indexed history grows.
+    pub fn resident_body_bytes(&self) -> usize {
+        self.documents
+            .values()
+            .map(|event| event.body.as_ref().map_or(0, |body| body.as_str().len()))
+            .sum()
+    }
+
     pub fn clear(&mut self) {
         self.documents.clear();
         self.pending_edits.clear();

@@ -91,6 +91,16 @@ The app already has the cache-only primitive: the SDK fork's
    reported separately), the real-homeserver QA lane, and the SDK PR merge
    decision (its red checks are fork-wide pre-existing failures).
 
+## Measured memory budget
+
+`crates/koushi-search/tests/search_memory.rs` is the #1150 memory probe:
+50,000 synthetic indexed messages carrying ~220-byte bodies leave
+`resident_body_bytes() == 0` and `document_count() == 0` (before this change the
+store retained one `SearchableEvent` per message, i.e. roughly 11 MB of bodies
+plus per-event map overhead), and 5,000 attachment messages retain 5,000 Files
+rows with `resident_body_bytes() == 0`. Index/disk residency and process RSS are
+reported by the QA lanes, not by this probe.
+
 ## Required evidence
 
 RED-then-GREEN for literal completeness (operators/fields inert, raw+normalized,
