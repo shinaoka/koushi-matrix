@@ -25,7 +25,7 @@ import {
   Smile,
   X
 } from "lucide-react";
-import { t } from "../i18n/messages";
+import { t, type MessageId } from "../i18n/messages";
 import type {
   ComposerDocument,
   ComposerSurface,
@@ -55,6 +55,7 @@ import {
   avatarInitial,
   defaultScheduleDateTimeValue,
   scheduledSendTimestampFromInput,
+  shiftScheduledSendValue,
   type MentionCandidate,
   type ComposerModeProp
 } from "../app/uiShared";
@@ -83,11 +84,18 @@ import {
   type DocumentSelection
 } from "../domain/composerDocument";
 
+export interface ComposerSendingAccount {
+  name: string;
+  userId: string;
+  colorClassName: string;
+}
+
 export const Composer = memo(function Composer({
   surface = "main",
   editorOnly = false,
   canEdit = true,
   composerMode,
+  sendingAccount = null,
   hasStagedUploads = false,
   stagedUploadsReady = false,
   isSending,
@@ -120,6 +128,7 @@ export const Composer = memo(function Composer({
   editorOnly?: boolean;
   canEdit?: boolean;
   composerMode: ComposerModeProp;
+  sendingAccount?: ComposerSendingAccount | null;
   hasStagedUploads?: boolean;
   stagedUploadsReady?: boolean;
   isSending: boolean;
@@ -413,11 +422,18 @@ export const Composer = memo(function Composer({
     if (!activeMention) {
       return;
     }
-    const displayLabel = peopleFacingLabel(candidate.label);
-    const target =
-      candidate.target.kind === "user"
-        ? { ...candidate.target, display_label: displayLabel }
-        : candidate.target;
+    // #1122: Rust renders an inline as `@` + its display label, so the label has
+    // to be the bare token. The room-notification candidate's own label already
+    // carries the `@` its autocomplete row shows (`@room`), while its target's
+    // label is the `room` half of the token.
+    const isRoomMention = candidate.target.kind === "roomMention";
+    const isUserTarget = candidate.target.kind === "user";
+    const displayLabel = isRoomMention
+      ? candidate.target.display_label
+      : peopleFacingLabel(candidate.label);
+    const target = isUserTarget
+      ? { ...candidate.target, display_label: displayLabel }
+      : candidate.target;
     const withMention = insertMention(
       localDocument,
       activeMention.start,
@@ -789,6 +805,14 @@ export const Composer = memo(function Composer({
     </button>
   );
 
+  const sendingAccountLabel = sendingAccount
+    ? t("composer.sendingAs", {
+        account: sendingAccount.name === sendingAccount.userId
+          ? sendingAccount.userId
+          : `${sendingAccount.name} (${sendingAccount.userId})`
+      })
+    : undefined;
+
   return (
     <section
       ref={sectionRef}
@@ -867,6 +891,23 @@ export const Composer = memo(function Composer({
         >
           <Code2 size={ICON_SIZE.input} />
         </button>
+        {/* Multi-account only: the toolbar row names the sender by Matrix ID,
+            since display names alone do not tell accounts apart. */}
+        {!editorOnly && sendingAccount ? (
+          <span
+            className="composer-sending-as"
+            title={sendingAccountLabel}
+            aria-label={sendingAccountLabel}
+          >
+            <span
+              className={`composer-sending-as-dot ${sendingAccount.colorClassName}`}
+              aria-hidden="true"
+            />
+            <span className="composer-sending-as-id" aria-hidden="true">
+              {sendingAccount.userId}
+            </span>
+          </span>
+        ) : null}
         {/* #453: this is an on/off switch for `SettingsValues.composer.math_mode`,
             not an insert-markup action like the buttons beside it. It speaks the
             same switch vocabulary as the settings panels so the state is
@@ -950,6 +991,7 @@ export const Composer = memo(function Composer({
               onChange={(event) => setScheduleValue(event.currentTarget.value)}
             />
           </label>
+          <ScheduledSendTimeAdjustments value={scheduleValue} onChange={setScheduleValue} />
           <div className="scheduled-send-form-actions">
             <button className="dialog-button" type="button" onClick={() => setScheduleOpen(false)}>
               {t("action.cancel")}
@@ -967,6 +1009,37 @@ export const Composer = memo(function Composer({
     </section>
   );
 });
+
+/** Mouse-driven adjusted to a native `datetime-local` scheduled-send value (#1124). */
+export function ScheduledSendTimeAdjustments({
+  value,
+  onChange
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const adjustments: Array<{ id: MessageId; deltaMinutes: number }> = [
+    { id: "scheduled.timeEarlierHour", deltaMinutes: -60 },
+    { id: "scheduled.timeEarlierTenMinutes", deltaMinutes: -10 },
+    { id: "scheduled.timeLaterTenMinutes", deltaMinutes: 10 },
+    { id: "scheduled.timeLaterHour", deltaMinutes: 60 }
+  ];
+  return (
+    <div className="scheduled-send-adjustments">
+      {adjustments.map(({ id, deltaMinutes }) => (
+        <button
+          key={id}
+          className="dialog-button scheduled-send-adjustment"
+          type="button"
+          aria-label={t(id)}
+          onClick={() => onChange(shiftScheduledSendValue(value, deltaMinutes))}
+        >
+          {t(id)}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 type MentionSection = {
   key: "users" | "room";
@@ -1086,7 +1159,8 @@ const ThreadComposer = memo(function ThreadComposer({
   onScheduleSend,
   onSend,
   onSendStagedUploads,
-  onDiagnosticLogEntry
+  onDiagnosticLogEntry,
+  sendingAccount = null
 }: {
   canEdit: boolean;
   document: ComposerDocument;
@@ -1110,10 +1184,12 @@ const ThreadComposer = memo(function ThreadComposer({
   onSend: (document: ComposerDocument) => void | Promise<void>;
   onSendStagedUploads?: () => void;
   onDiagnosticLogEntry?: (entry: DiagnosticLogEntry) => void;
+  sendingAccount?: ComposerSendingAccount | null;
 }) {
   return (
     <Composer
       surface="thread"
+      sendingAccount={sendingAccount}
       canEdit={canEdit}
       composerMode={PLAIN_COMPOSER_MODE}
       hasStagedUploads={hasStagedUploads}

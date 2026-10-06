@@ -1,4 +1,4 @@
-use super::{CoreCommandEnvelope, CoreRuntime};
+use super::{CoreCommandEnvelope, CoreRuntime, NEXT_RUNTIME_CONNECTION_ID};
 use crate::command_policy::{CoreCommandPolicy, native_artifact_for_command};
 use crate::composer_draft_lifecycle::{
     ComposerDraftCommandPermit, ComposerDraftLeaseAdmission, ComposerDraftLeaseAdmissionFailure,
@@ -323,7 +323,7 @@ impl CoreRuntime {
         CoreConnection {
             view_scopes: self.view_scopes.clone(),
             connection_id: RuntimeConnectionId(
-                self.next_connection_id.fetch_add(1, Ordering::Relaxed),
+                NEXT_RUNTIME_CONNECTION_ID.fetch_add(1, Ordering::Relaxed),
             ),
             command_tx: self.command_tx.clone(),
             composer_draft_leases: Arc::clone(&self.composer_draft_leases),

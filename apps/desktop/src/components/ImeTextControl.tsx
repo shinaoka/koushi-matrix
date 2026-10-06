@@ -344,9 +344,22 @@ export const ImeInlineMentionEditor = forwardRef<
           ? documentSelectionFromDom(control)
           : null;
       if ((keyChanged || documentChanged) && !composingRef.current) {
-        renderEditorDocument(control, document);
-        renderedKeyRef.current = syncKey;
-        renderedDocumentRef.current = document;
+        const previous = renderedDocumentRef.current;
+        // #1132: an ordinary insert or delete changes one text inline, so patching
+        // that text node keeps the subtree, its layout and its nodes alive instead
+        // of rebuilding the editor on every keystroke. Anything else still rebuilds.
+        if (
+          !keyChanged &&
+          previous !== null &&
+          patchRenderedEditorDocument(control, previous, document)
+        ) {
+          renderedKeyRef.current = syncKey;
+          renderedDocumentRef.current = document;
+        } else {
+          renderEditorDocument(control, document);
+          renderedKeyRef.current = syncKey;
+          renderedDocumentRef.current = document;
+        }
       }
       const documentEnd = documentLength(document);
       const preservedSelection = selectionBeforeRender
@@ -646,30 +659,29 @@ function textPointOf(
   return { node: text, offset: side === "start" ? 0 : length };
 }
 
-function renderEditorDocument(control: HTMLDivElement, document: ComposerDocument) {
-  const nodes: Node[] = [];
+/** The exact child sequence `renderEditorDocument` emits for a document. */
+type EditorNodePlan =
+  | { kind: "anchor" }
+  | { kind: "text"; text: string }
+  | { kind: "mention"; index: number; label: string }
+  | { kind: "sentinel" };
+
+function editorNodePlan(document: ComposerDocument): EditorNodePlan[] {
+  const plan: EditorNodePlan[] = [];
   document.inlines.forEach((inline, index) => {
     // Issue #875: render a caret anchor wherever a mention has no text box beside
     // it — at the document edges and between two mentions — so the caret beside
     // the pill lands on real text outside its border box.
     if (inline.kind === "mention" && index === 0) {
-      nodes.push(caretAnchorNode(control));
+      plan.push({ kind: "anchor" });
     }
-    const span = control.ownerDocument.createElement("span");
-    if (inline.kind === "text") {
-      span.dataset.composerText = "";
-      span.textContent = inline.text;
-    } else {
-      span.className = "composer-inline-mention";
-      span.setAttribute("contenteditable", "false");
-      span.setAttribute("role", "link");
-      span.dataset.composerMention = String(index);
-      span.setAttribute("aria-label", t("composer.inlineMention", { label: inline.display_label }));
-      span.textContent = `@${inline.display_label}`;
-    }
-    nodes.push(span);
+    plan.push(
+      inline.kind === "text"
+        ? { kind: "text", text: inline.text }
+        : { kind: "mention", index, label: inline.display_label }
+    );
     if (inline.kind === "mention" && document.inlines[index + 1]?.kind !== "text") {
-      nodes.push(caretAnchorNode(control));
+      plan.push({ kind: "anchor" });
     }
   });
   // Issue #471: under `white-space: pre-wrap` a trailing newline as the last
@@ -677,10 +689,119 @@ function renderEditorDocument(control: HTMLDivElement, document: ComposerDocumen
   // grows nor paints the caret on the new line. Append a sentinel <br> that
   // the DOM readers ignore; it never counts toward document offsets.
   if (documentEndsWithNewline(document)) {
-    const sentinel = control.ownerDocument.createElement("br");
-    sentinel.dataset.composerSentinel = "";
-    nodes.push(sentinel);
+    plan.push({ kind: "sentinel" });
   }
+  return plan;
+}
+
+/**
+ * #1132: update the rendered subtree in place when the two documents have the same
+ * child plan and the live subtree is the canonical rendering of `previous`. Only
+ * text payloads may differ, so only text nodes are rewritten.
+ *
+ * Returns false — the caller rebuilds — for every other case: a different inline
+ * count or kind, a changed mention, a changed trailing-newline sentinel, or a
+ * subtree that is not the canonical shape (split text nodes, native edits left by
+ * composition or a non-cancelable spelling replacement).
+ */
+function patchRenderedEditorDocument(
+  control: HTMLDivElement,
+  previous: ComposerDocument,
+  next: ComposerDocument
+): boolean {
+  const planBefore = editorNodePlan(previous);
+  const planAfter = editorNodePlan(next);
+  if (planBefore.length !== planAfter.length) {
+    return false;
+  }
+  const children = Array.from(control.childNodes);
+  if (children.length !== planBefore.length) {
+    return false;
+  }
+  const patched: Array<{ span: HTMLElement; text: string }> = [];
+  for (const [index, expected] of planBefore.entries()) {
+    const node = children[index];
+    const target = planAfter[index];
+    if (!target || target.kind !== expected.kind) {
+      return false;
+    }
+    if (expected.kind === "anchor") {
+      if (!isCaretAnchor(node)) return false;
+      continue;
+    }
+    if (expected.kind === "sentinel") {
+      if (!isSentinelBr(node)) return false;
+      continue;
+    }
+    if (!(node instanceof HTMLElement) || node.tagName !== "SPAN") {
+      return false;
+    }
+    if (expected.kind === "text") {
+      if (!node.hasAttribute("data-composer-text") || target.kind !== "text") {
+        return false;
+      }
+      const textChild = node.firstChild;
+      const canonical =
+        (textChild === null && expected.text.length === 0) ||
+        (node.childNodes.length === 1 &&
+          textChild?.nodeType === Node.TEXT_NODE &&
+          textChild.textContent === expected.text);
+      if (!canonical) {
+        return false;
+      }
+      if (target.text !== expected.text) {
+        patched.push({ span: node, text: target.text });
+      }
+      continue;
+    }
+    if (
+      target.kind !== "mention" ||
+      node.dataset.composerMention !== String(expected.index) ||
+      node.textContent !== `@${expected.label}` ||
+      target.label !== expected.label
+    ) {
+      return false;
+    }
+  }
+  for (const { span, text } of patched) {
+    const textChild = span.firstChild;
+    if (textChild === null) {
+      span.appendChild(control.ownerDocument.createTextNode(text));
+    } else if (textChild.nodeType === Node.TEXT_NODE) {
+      textChild.textContent = text;
+    }
+  }
+  return true;
+}
+
+function renderEditorDocument(control: HTMLDivElement, document: ComposerDocument) {
+  const nodes: Node[] = editorNodePlan(document).map((descriptor) => {
+    switch (descriptor.kind) {
+      case "anchor":
+        return caretAnchorNode(control);
+      case "sentinel": {
+        const sentinel = control.ownerDocument.createElement("br");
+        sentinel.dataset.composerSentinel = "";
+        return sentinel;
+      }
+      case "text": {
+        const span = control.ownerDocument.createElement("span");
+        span.dataset.composerText = "";
+        span.textContent = descriptor.text;
+        return span;
+      }
+      case "mention": {
+        const span = control.ownerDocument.createElement("span");
+        span.className = "composer-inline-mention";
+        span.setAttribute("contenteditable", "false");
+        span.setAttribute("role", "link");
+        span.dataset.composerMention = String(descriptor.index);
+        span.setAttribute("aria-label", t("composer.inlineMention", { label: descriptor.label }));
+        span.textContent = `@${descriptor.label}`;
+        return span;
+      }
+    }
+  });
   control.replaceChildren(...nodes);
 }
 

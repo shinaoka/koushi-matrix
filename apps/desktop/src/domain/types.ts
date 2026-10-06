@@ -39,11 +39,38 @@ export interface CreateRoomParentSpace {
 }
 
 export interface DesktopSnapshot {
+  account_tab_id?: string;
   state_generation?: number;
   state: AppState;
   sidebar: SidebarModel;
   timeline: TimelineMessage[];
   thread: ThreadSnapshot | null;
+}
+
+export type AccountTabStatus =
+  | "addAccount"
+  | "restoring"
+  | "authenticating"
+  | "needsVerification"
+  | "ready"
+  | "signedOut"
+  | "loggingOut"
+  | "error";
+
+export interface AccountTabSummary {
+  id: string;
+  accountKey: string | null;
+  homeserver: string | null;
+  displayName: string | null;
+  avatarSourceRef: string | null;
+  status: AccountTabStatus;
+  unreadCount: number;
+}
+
+export interface AccountTabsSnapshot {
+  selectedTabId: string;
+  tabs: AccountTabSummary[];
+  badgeCount: number;
 }
 
 export interface SavedSessionInfo {
@@ -168,6 +195,7 @@ export interface SettingsValues {
 }
 
 export interface SettingsPatch {
+  scope?: "account" | "app";
   locale?: LocaleSettings;
   appearance?: AppearanceSettings;
   typography?: TypographySettings;
@@ -325,7 +353,7 @@ export interface UpdatesSettings {
 }
 
 export type DesktopUpdateState =
-  | { kind: "unsupported" }
+  | { kind: "unsupported"; reason: "build" | "package_managed" }
   | { kind: "idle" }
   | { kind: "up_to_date"; version: string }
   | { kind: "checking" }
@@ -1111,6 +1139,8 @@ export interface SpaceSummary {
   /** The join rule as last synced; null until a room-list update projects it (#935). */
   join_rule: RoomJoinRule | null;
   child_room_ids: string[];
+  /** The Space's own parent-side `m.space.child` rooms; add-existing eligibility uses this list, while `child_room_ids` is the display union (#1098). */
+  parent_side_child_room_ids: string[];
 }
 
 /**
@@ -1509,7 +1539,13 @@ export interface ReplyQuoteFormattedBody {
   code_blocks: ReplyQuoteCodeBlock[];
 }
 
-export type ReplyQuoteState = "ready" | "redacted" | "missing" | "unsupported";
+export type ReplyQuoteState =
+  | "loading"
+  | "ready"
+  | "redacted"
+  | "missing"
+  | "unsupported"
+  | "failed";
 
 export type OperationFailureKind =
   | "forbidden"
@@ -2765,6 +2801,21 @@ export interface SpaceRailItem {
   unread_count: number;
   highlight_count: number;
   is_active: boolean;
+  /**
+   * Joined, non-DM rooms this Space shows, which a Space leave may take with
+   * it. Rust projection; the `leave_space` command re-admits against it.
+   */
+  leave_candidates: SpaceLeaveCandidate[];
+}
+
+export interface SpaceLeaveCandidate {
+  room_id: string;
+  display_name: string;
+  /** Mirrors `RoomSummary.display_label_placeholder`; render via `roomListItemLabel`. */
+  display_name_placeholder?: RoomNamePlaceholder | null;
+  avatar: AvatarImage | null;
+  /** Another joined Space also shows this room. */
+  in_other_space: boolean;
 }
 
 export interface RoomListItem {

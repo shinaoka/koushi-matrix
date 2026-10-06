@@ -34,6 +34,7 @@ export const HEADLESS_LOCAL_QA_SCENARIO_TOKENS = Object.freeze({
     "thread_summary_convergence=ok"
   ]),
   read_state_convergence: Object.freeze(["read_state_convergence=ok"]),
+  hidden_state_acl: Object.freeze(["hidden_state_acl=ok"]),
   search_crawler_catchup: Object.freeze([
     "crawl_catchup_live=ok",
     "crawl_catchup_restart=ok",
@@ -41,7 +42,7 @@ export const HEADLESS_LOCAL_QA_SCENARIO_TOKENS = Object.freeze({
   ]),
   user_verification: Object.freeze([
     "user_verification_offered=ok",
-    "user_verification_request_waiting=ok",
+    "user_verification_request_sent=ok",
     "user_verification_accepted=ok",
     "user_verification_sas_match=ok",
     "user_verification_done=ok",

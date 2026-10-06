@@ -108,6 +108,7 @@ fn test_space(space_id: &str) -> crate::state::SpaceSummary {
         avatar: None,
         join_rule: None,
         child_room_ids: Vec::new(),
+        parent_side_child_room_ids: Vec::new(),
     }
 }
 

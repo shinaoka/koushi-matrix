@@ -115,6 +115,10 @@ fn parses_all_scenarios_from_env_value_including_directory() {
         QaScenario::ReadStateConvergence
     );
     assert_eq!(
+        QaScenario::from_env_value("hidden_state_acl").unwrap(),
+        QaScenario::HiddenStateAcl
+    );
+    assert_eq!(
         QaScenario::from_env_value("thread_late_joiner").unwrap(),
         QaScenario::ThreadLateJoiner
     );
@@ -154,6 +158,7 @@ fn redact_edit_convergence_is_registered_with_private_safe_final_token() {
             "timeline=ok",
             "timeline_nav=ok",
             "hide_redacted=ok",
+            "thread_reply_quote_lifecycle=ok",
             "thread_projection_lifecycle=stable",
             "thread_summary=ok",
             "thread_recv=ok",
@@ -185,6 +190,25 @@ fn read_state_convergence_is_registered_with_private_safe_final_token() {
     );
     let report = scenario_report("local", scenario);
     assert!(report.contains("read_state_convergence=ok"));
+    assert!(!report.contains('@'));
+    assert!(!report.contains('!'));
+    assert!(!report.contains('$'));
+}
+
+#[test]
+fn hidden_state_acl_is_registered_with_private_safe_final_token() {
+    let scenario = QaScenario::HiddenStateAcl;
+    assert_eq!(
+        stages_for_scenario(scenario),
+        [QaStage::Safety, QaStage::HiddenStateAcl]
+    );
+    assert_eq!(
+        final_tokens_for_scenario(scenario),
+        ["safety=ok", "hidden_state_acl=ok"]
+    );
+    assert!(!QaScenario::All.should_run_stage(QaStage::HiddenStateAcl));
+    let report = scenario_report("local", scenario);
+    assert!(report.contains("hidden_state_acl=ok"));
     assert!(!report.contains('@'));
     assert!(!report.contains('!'));
     assert!(!report.contains('$'));
@@ -265,6 +289,7 @@ fn supported_scenarios_are_allowed_by_preflight() {
         QaScenario::E2eeTrust,
         QaScenario::LinkPreview,
         QaScenario::ReadStateConvergence,
+        QaScenario::HiddenStateAcl,
     ] {
         scenario_preflight_error(scenario).unwrap();
     }
@@ -322,6 +347,7 @@ fn all_core_qa_scenarios_suppress_matrix_identifiers() {
         QaScenario::RestoreCleanup,
         QaScenario::LinkPreview,
         QaScenario::ReadStateConvergence,
+        QaScenario::HiddenStateAcl,
     ] {
         assert!(
             scenario.suppress_matrix_identifiers(),
@@ -500,6 +526,7 @@ fn implemented_final_tokens_include_thread() {
             "permission_guard=ok",
             "space_access=ok",
             "space_add_existing=ok",
+            "space_leave_children=ok",
             "timeline=ok",
             "timeline_nav=ok",
             "hide_redacted=ok",
@@ -516,6 +543,7 @@ fn implemented_final_tokens_include_thread() {
             "pin_event=ok",
             "pinned_state=ok",
             "unpin_event=ok",
+            "thread_reply_quote_lifecycle=ok",
             "thread_projection_lifecycle=stable",
             "thread_summary=ok",
             "thread_recv=ok",
@@ -791,6 +819,7 @@ fn final_tokens_follow_the_requested_scenario_including_composer() {
             "pin_event=ok",
             "pinned_state=ok",
             "unpin_event=ok",
+            "thread_reply_quote_lifecycle=ok",
             "thread_projection_lifecycle=stable",
             "thread_summary=ok",
             "thread_recv=ok",
@@ -896,6 +925,7 @@ fn implemented_final_tokens_include_safety() {
             "permission_guard=ok",
             "space_access=ok",
             "space_add_existing=ok",
+            "space_leave_children=ok",
             "timeline=ok",
             "timeline_nav=ok",
             "hide_redacted=ok",
@@ -912,6 +942,7 @@ fn implemented_final_tokens_include_safety() {
             "pin_event=ok",
             "pinned_state=ok",
             "unpin_event=ok",
+            "thread_reply_quote_lifecycle=ok",
             "thread_projection_lifecycle=stable",
             "thread_summary=ok",
             "thread_recv=ok",

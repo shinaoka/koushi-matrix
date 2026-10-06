@@ -162,6 +162,7 @@ impl CoreCommand {
                 | RoomCommand::StartDirectMessage { request_id, .. }
                 | RoomCommand::JoinRoom { request_id, .. }
                 | RoomCommand::LeaveRoom { request_id, .. }
+                | RoomCommand::LeaveSpace { request_id, .. }
                 | RoomCommand::ForgetRoom { request_id, .. }
                 | RoomCommand::SetTag { request_id, .. }
                 | RoomCommand::RemoveTag { request_id, .. }

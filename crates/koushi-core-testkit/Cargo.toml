@@ -11,6 +11,7 @@ path = "src/lib.rs"
 [dev-dependencies]
 koushi-core = { path = "../koushi-core", features = ["test-hooks"] }
 koushi-diagnostics = { path = "../koushi-diagnostics" }
+koushi-key = { path = "../koushi-key" }
 koushi-protocol = { path = "../koushi-protocol" }
 koushi-sdk = { path = "../koushi-sdk", features = ["test-hooks"] }
 koushi-state = { path = "../koushi-state" }

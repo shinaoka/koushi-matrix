@@ -22,6 +22,14 @@ pub struct SpaceSummary {
     #[serde(default)]
     pub join_rule: Option<super::room_management::RoomJoinRule>,
     pub child_room_ids: Vec<String>,
+    /// The Space's own parent-side `m.space.child` children: what other
+    /// clients list for this Space. `child_room_ids` is the display union of
+    /// this list with rooms that only claim the Space through `m.space.parent`
+    /// (the sidebar shows a child as soon as one side of the relationship has
+    /// synced); add-existing eligibility (#1007) must use this parent-side
+    /// list, so a parent-only room stays eligible.
+    #[serde(default)]
+    pub parent_side_child_room_ids: Vec<String>,
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]

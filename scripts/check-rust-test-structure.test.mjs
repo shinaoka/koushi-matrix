@@ -246,7 +246,10 @@ test("desktop shutdown guard rejects skipped acknowledgement and premature resta
   const source = fs.readFileSync(new URL("../apps/desktop/src-tauri/src/lib.rs", import.meta.url), "utf8");
   assert.deepEqual(checkDesktopNativeWindowLifecycleContract(source), []);
   for (const [before, after] of [
-    ["runtime.wait_for_shutdown()", "runtime.submit_only()"],
+    ["state.wait_for_startup_restore().await", "Ok(())"],
+    ["state.close_reader_subscriptions().await;", "state.runtime.shutdown_all_checked().await;"],
+    ["await_core_exit(CORE_EXIT_TIMEOUT,", "state.runtime.shutdown_all_checked().await;"],
+    ["restore_result.is_err() || shutdown_result.is_err()", "false"],
     ["updater.await;", "/* updater join removed */"],
     ["restart_after_shutdown.swap(true", "restart_after_shutdown.load(/* no intent */"],
     ["quit_stage.store(QuitStage::ForcedExit.repr()", "quit_stage.store(QuitStage::ShutdownComplete.repr()"],

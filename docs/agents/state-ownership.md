@@ -740,7 +740,9 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
 
 - `TimelineItem.reply_quote` is a Rust-owned projection. React renders the
   `ReplyQuoteState` and optional preview only; it must not look up reply bodies,
-  classify redactions, or patch quote state after a send.
+  classify redactions, retry lookups, or patch quote state after a send.
+  `Loading` and `Failed` are rendered as their catalog text, never as an
+  unknown sender or a missing original.
 - `TimelineItem.actions` is a Rust-owned action-affordance projection. React may
   render/copy only the DTO-provided body/permalink affordances; it must not build
   `matrix.to` permalinks, infer copy/forward/source eligibility from event ids,
@@ -1077,7 +1079,11 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   `send_prepared_uploads`; there is no direct renderer upload command. Each staged caption is a nullable
   `ComposerDocument`, edited through the staging dialog
   (`TimelinePaneState.staged_uploads[*].caption`), not inferred from the
-  ordinary Composer draft. At the media-send boundary Rust derives the
+  ordinary Composer draft. The staged-attachment send settles the composer draft
+  revision without consuming its content (#1130): it dispatches only the staged
+  items and their captions, so text typed before pasting an image survives the
+  send while the revision, tombstones and accepted-send navigation stay exactly
+  as a text send leaves them. At the media-send boundary Rust derives the
   `FormattedMessageDraft` from that document's plain body, formatted body, and
   mention intent. Rust exclusively owns staged items, caption DTOs, residency,
   and send content. The bounded main/thread `caption:*` mutation lanes own only
@@ -1085,10 +1091,13 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   keys include target/item identity and clear/send invalidates them so late
   results cannot restore removed items. Browser snapshots have no caption revision,
   so do not delete these lanes without a separately reviewed Rust editor revision.
-- Rust owns image upload compression end to end: authoritative
-  `SettingsValues.media.image_upload_compression` policy, source/candidate bytes,
-  executor-hosted pixel transforms, original-vs-selected variant metadata,
-  metadata-stripped assertion, and thumbnail-refresh assertion. Core builds the
+- Rust owns image upload compression end to end: the authoritative
+  `SettingsValues.media.image_upload_compression_policy` thresholds and quality,
+  the per-attachment resize/format choice made in the upload-staging dialog,
+  source/candidate bytes, executor-hosted pixel transforms, original-vs-selected
+  variant metadata, metadata-stripped assertion, and thumbnail-refresh
+  assertion. No stored compression mode remains: #305 retired it, so the dialog
+  always asks and starts from the untouched output. Core builds the
   final `UploadMediaRequest` from the selected prepared registry entry and uses
   the actual byte-vector length rather than renderer metadata. Tauri only
   serializes staging inputs, preview bytes, and settled snapshots.
@@ -1338,7 +1347,7 @@ normal QA-title mode and cannot change product title semantics.
   `snapshot.state.e2ee_trust` and dispatch typed API methods; do not add
   React-local pending/success/failure state for verification, cross-signing, key
   backup, or identity reset.
-- User Settings uses Rust-owned `current_session_status` as the canonical
+- Account Settings uses Rust-owned `current_session_status` as the canonical
   read-only summary of the active session's verification, owner cross-signing,
   own identity, and key-backup readiness. `e2ee_trust` remains the owner of
   trust operations, continuation state, and action availability. Its `devices`

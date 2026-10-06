@@ -380,6 +380,104 @@ pub(super) async fn wait_for_room_in_room_list(
     }
 }
 
+/// Whether an event is an explicit room-list publication. Only
+/// `RoomListUpdated` counts as a room-list reconciliation: a general state delta
+/// is not evidence that the room list reconciled anything.
+pub(super) fn is_room_list_publication(event: &CoreEvent) -> bool {
+    matches!(event, CoreEvent::Room(RoomEvent::RoomListUpdated))
+}
+
+/// Waits for one explicit room-list publication newer than the caller's
+/// baseline, then reports success. `observed_before` counts publications the
+/// caller already observed (for example while waiting for timeline items), so a
+/// wake that arrived earlier still counts and is never demanded twice.
+///
+/// On timeout the authoritative summary is read once more before failing; the
+/// failure carries only private-data-free booleans and counts.
+pub(super) async fn wait_for_room_list_publication_from_source<
+    S: QaSnapshotEventSource + ?Sized,
+>(
+    source: &mut S,
+    observed_before: u64,
+    summary_matches: impl Fn(&AppState) -> bool,
+    label: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    if observed_before > 0 {
+        return Ok(());
+    }
+    let deadline = QaEventDeadline::after(timeout);
+    let mut skipped = 0u64;
+    loop {
+        match deadline.recv(source).await {
+            Err(_) => {
+                let matches = summary_matches(&source.snapshot());
+                return Err(format!(
+                    "{label}: no room-list publication after the burst \
+                     (summary_matches={matches}, skipped={skipped})"
+                ));
+            }
+            Ok(Ok(event)) => {
+                if is_room_list_publication(&event) {
+                    return Ok(());
+                }
+            }
+            Ok(Err(lag)) => skipped += lag.skipped,
+        }
+    }
+}
+
+/// Drain events already queued on `source`, so a publication counted later
+/// cannot be one that was merely still queued.
+///
+/// One absolute deadline bounds the whole drain and `quiet_window` bounds a
+/// single receive. A receive error ends the drain: a closed stream reports an
+/// immediate error with nothing skipped, and a stream that skipped events cannot
+/// be drained reliably. A stream that never goes quiet fails with counts only in
+/// the diagnostic. This never waits for an effect; it consumes what is queued.
+pub(super) async fn drain_queued_events_from_source<S: QaEventSource + ?Sized>(
+    source: &mut S,
+    label: &str,
+    quiet_window: Duration,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = QaEventDeadline::after(timeout);
+    let mut drained = 0u64;
+    let mut skipped = 0u64;
+    loop {
+        // Check the deadline before receiving: `timeout` polls a ready future
+        // first, so a source that is always ready would otherwise keep draining
+        // past the deadline instead of failing.
+        let now = tokio::time::Instant::now();
+        if now >= deadline.instant {
+            return Err(format!(
+                "{label}: the reader never went quiet (drained={drained}, skipped={skipped})"
+            ));
+        }
+        let window = (deadline.instant - now).min(quiet_window);
+        match tokio::time::timeout(window, source.recv_event()).await {
+            // Quiet for the whole window: nothing is queued.
+            Err(_) if window == quiet_window => return Ok(()),
+            // The deadline clipped the window: the stream never went quiet.
+            Err(_) => {
+                return Err(format!(
+                    "{label}: the reader never went quiet (drained={drained}, skipped={skipped})"
+                ));
+            }
+            // A closed stream cannot be drained further.
+            Ok(Err(lag)) if lag.skipped == 0 => return Ok(()),
+            // A stream that skipped events cannot be drained reliably.
+            Ok(Err(lag)) => {
+                skipped += lag.skipped;
+                return Err(format!(
+                    "{label}: the reader lagged while draining (drained={drained}, skipped={skipped})"
+                ));
+            }
+            Ok(Ok(_event)) => drained += 1,
+        }
+    }
+}
+
 pub(super) async fn wait_for_encrypted_room_projection_for_qa(
     conn: &mut CoreConnection,
     expected_room_id: &str,
@@ -1134,7 +1232,8 @@ pub(super) async fn wait_for_operation_failed<S: QaEventSource + ?Sized>(
             }
             CoreEvent::Account(account_event) => {
                 let matches_request = match &account_event {
-                    AccountEvent::LoggedIn { request_id: id, .. }
+                    AccountEvent::LoginAdmitted { request_id: id, .. }
+                    | AccountEvent::LoggedIn { request_id: id, .. }
                     | AccountEvent::SessionRestored { request_id: id, .. }
                     | AccountEvent::SavedSessionsListed { request_id: id, .. }
                     | AccountEvent::RecoveryCompleted { request_id: id, .. }
@@ -1189,7 +1288,8 @@ pub(super) async fn wait_for_operation_failed_and_signed_out<S: QaSnapshotEventS
             }
             CoreEvent::Account(account_event) => {
                 let matches_request = match &account_event {
-                    AccountEvent::LoggedIn { request_id: id, .. }
+                    AccountEvent::LoginAdmitted { request_id: id, .. }
+                    | AccountEvent::LoggedIn { request_id: id, .. }
                     | AccountEvent::SessionRestored { request_id: id, .. }
                     | AccountEvent::SavedSessionsListed { request_id: id, .. }
                     | AccountEvent::RecoveryCompleted { request_id: id, .. }
@@ -2687,6 +2787,7 @@ pub(super) fn projection_timeline_item(event_id: &str, is_redacted: bool) -> Tim
         link_previews: None,
         link_ranges: Vec::new(),
         mentioned_user_ids: Vec::new(),
+        mentions_room: false,
         reactions: Vec::new(),
         can_react: false,
         is_redacted,

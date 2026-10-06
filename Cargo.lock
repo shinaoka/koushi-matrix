@@ -3371,6 +3371,7 @@ dependencies = [
  "image",
  "koushi-core",
  "koushi-diagnostics",
+ "koushi-key",
  "koushi-protocol",
  "koushi-sdk",
  "koushi-state",
@@ -3385,7 +3386,7 @@ dependencies = [
 
 [[package]]
 name = "koushi-desktop"
-version = "0.17.1"
+version = "0.19.0"
 dependencies = [
  "dirs",
  "gtk",
@@ -3396,6 +3397,7 @@ dependencies = [
  "koushi-key",
  "koushi-protocol",
  "koushi-state",
+ "mac-notification-sys",
  "notify-rust",
  "objc2",
  "objc2-app-kit",

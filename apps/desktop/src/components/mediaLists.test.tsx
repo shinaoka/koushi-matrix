@@ -88,7 +88,6 @@ describe("people-facing media list labels", () => {
       currentUserId: null,
       message,
       highlights: [],
-      onEditMessage: vi.fn(),
       onOpenThread: vi.fn(),
       onRedactMessage: vi.fn(),
       isIgnored: false

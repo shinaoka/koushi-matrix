@@ -79,6 +79,11 @@ fn mixed_state() -> AppState {
                 "!fav:example.invalid".to_owned(),
                 "!low-room:example.invalid".to_owned(),
             ],
+            parent_side_child_room_ids: vec![
+                "!plain:example.invalid".to_owned(),
+                "!fav:example.invalid".to_owned(),
+                "!low-room:example.invalid".to_owned(),
+            ],
         }],
         rooms: vec![
             room("!plain:example.invalid", "Plain", false, 5, 1),

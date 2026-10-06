@@ -165,6 +165,7 @@ pub(super) enum QaScenario {
     LinkPreview,
     CacheRestore,
     ReadStateConvergence,
+    HiddenStateAcl,
     ThreadLateJoiner,
 }
 
@@ -209,6 +210,7 @@ pub(super) enum QaStage {
     LinkPreview,
     CacheRestore,
     ReadStateConvergence,
+    HiddenStateAcl,
     ThreadLateJoiner,
 }
 
@@ -289,12 +291,13 @@ impl QaScenario {
             "link_preview" => Ok(Self::LinkPreview),
             "cache_restore" => Ok(Self::CacheRestore),
             "read_state_convergence" => Ok(Self::ReadStateConvergence),
+            "hidden_state_acl" => Ok(Self::HiddenStateAcl),
             "thread_late_joiner" => Ok(Self::ThreadLateJoiner),
             "avatar_demand" => Ok(Self::AvatarDemand),
             "account_notifications" => Ok(Self::AccountNotifications),
             "user_verification" => Ok(Self::UserVerification),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, e2ee_trust, e2ee_login_store, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, redact_edit_convergence, search_crawler, search_crawler_catchup, room_history_export, scheduled_send, restore_cleanup, link_preview, cache_restore, read_state_convergence, thread_late_joiner, avatar_demand, account_notifications, user_verification; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, e2ee_trust, e2ee_login_store, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, redact_edit_convergence, search_crawler, search_crawler_catchup, room_history_export, scheduled_send, restore_cleanup, link_preview, cache_restore, read_state_convergence, hidden_state_acl, thread_late_joiner, avatar_demand, account_notifications, user_verification; got {other}"
             )),
         }
     }
@@ -307,6 +310,7 @@ impl QaScenario {
                     | QaStage::TimelineStress
                     | QaStage::DeviceCleanup
                     | QaStage::ReadStateConvergence
+                    | QaStage::HiddenStateAcl
                     | QaStage::SearchCrawlerCatchup
                     | QaStage::ThreadLateJoiner
                     | QaStage::AvatarDemand
@@ -516,6 +520,7 @@ impl QaScenario {
             Self::ReadStateConvergence => {
                 matches!(stage, QaStage::Safety | QaStage::ReadStateConvergence)
             }
+            Self::HiddenStateAcl => matches!(stage, QaStage::Safety | QaStage::HiddenStateAcl),
             Self::ThreadLateJoiner => matches!(stage, QaStage::Safety | QaStage::ThreadLateJoiner),
             Self::SearchCrawlerCatchup => {
                 matches!(stage, QaStage::Safety | QaStage::SearchCrawlerCatchup)
@@ -606,7 +611,7 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         ],
         QaStage::UserVerification => &[
             "user_verification_offered=ok",
-            "user_verification_request_waiting=ok",
+            "user_verification_request_sent=ok",
             "user_verification_accepted=ok",
             "user_verification_sas_match=ok",
             "user_verification_done=ok",
@@ -629,6 +634,7 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "permission_guard=ok",
             "space_access=ok",
             "space_add_existing=ok",
+            "space_leave_children=ok",
         ],
         QaStage::RoomPeopleProjection => &[
             "room_people_joined_scope=ok",
@@ -686,6 +692,7 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "live_signals=ok",
         ],
         QaStage::Thread => &[
+            "thread_reply_quote_lifecycle=ok",
             "thread_projection_lifecycle=stable",
             "thread_summary=ok",
             "thread_recv=ok",
@@ -742,6 +749,7 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         ],
         QaStage::CacheRestore => &["cache_restore=ok"],
         QaStage::ReadStateConvergence => &["read_state_convergence=ok"],
+        QaStage::HiddenStateAcl => &["hidden_state_acl=ok"],
         QaStage::ThreadLateJoiner => &[
             "thread_late_joiner_root_not_visible=ok",
             "thread_late_joiner_thread_panel=ok",
@@ -789,6 +797,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "permission_guard=ok",
         "space_access=ok",
         "space_add_existing=ok",
+        "space_leave_children=ok",
         "timeline=ok",
         "timeline_nav=ok",
         "hide_redacted=ok",
@@ -805,6 +814,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "pin_event=ok",
         "pinned_state=ok",
         "unpin_event=ok",
+        "thread_reply_quote_lifecycle=ok",
         "thread_projection_lifecycle=stable",
         "thread_summary=ok",
         "thread_recv=ok",
@@ -1038,6 +1048,7 @@ pub(super) fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
         QaScenario::ReadStateConvergence => {
             vec![QaStage::Safety, QaStage::ReadStateConvergence]
         }
+        QaScenario::HiddenStateAcl => vec![QaStage::Safety, QaStage::HiddenStateAcl],
         QaScenario::ThreadLateJoiner => vec![QaStage::Safety, QaStage::ThreadLateJoiner],
         QaScenario::SearchCrawlerCatchup => vec![QaStage::Safety, QaStage::SearchCrawlerCatchup],
         QaScenario::All => vec![
@@ -1130,6 +1141,7 @@ pub(super) fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static st
         | QaScenario::GateNoProof
         | QaScenario::AvatarDemand
         | QaScenario::ReadStateConvergence
+        | QaScenario::HiddenStateAcl
         | QaScenario::SearchCrawlerCatchup
         | QaScenario::ThreadLateJoiner => stages_for_scenario(scenario)
             .into_iter()

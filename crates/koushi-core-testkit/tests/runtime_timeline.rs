@@ -314,6 +314,7 @@ async fn composer_revision_exhaustion_blocks_prepared_plain_reply_and_thread_acc
                 expected_account: draft_account(),
                 target,
                 submitted_revision: ComposerDraftRevision::MAX,
+                consumes_draft: true,
             }),
         )
         .await
@@ -789,6 +790,7 @@ async fn composer_draft_command_rejects_a_stale_account_owner() {
                 room_id: "!room:example.test".to_owned(),
             },
             submitted_revision: 10.into(),
+            consumes_draft: true,
         }),
     )
     .await
@@ -849,6 +851,7 @@ async fn composer_draft_command_rejects_a_stale_account_owner() {
                 root_event_id: "$root:example.test".to_owned(),
             },
             submitted_revision: 10.into(),
+            consumes_draft: true,
         }),
     )
     .await
@@ -1220,6 +1223,7 @@ async fn revision_commands_fail_while_composer_load_failed() {
                 room_id: fixture.room_id.to_owned(),
             },
             submitted_revision: 1.into(),
+            consumes_draft: true,
         }),
     )
     .await

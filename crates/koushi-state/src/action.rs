@@ -6,14 +6,15 @@ use crate::{
 };
 
 use crate::state::{
-    AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab,
-    AttachmentFilter, AttachmentResult, AttachmentScope, AttachmentSort, AuthFailureKind,
-    AvatarThumbnailState, BasicOperationRequest, CrossSigningStatus, CurrentDeviceTrustState,
-    CurrentSessionStatusDetails, CurrentSessionStatusFailureKind, DelegatedAuthLinks,
-    DeviceCleanupAuthMode, DeviceCleanupFailureKind, DeviceCleanupRemoteOutcome, DirectoryQuery,
-    DirectoryRoomPreview, DirectoryRoomSummary, E2eeRecoveryState, EventNavigationFailureKind,
-    EventNavigationSource, FilesViewScope, IdentityResetAuthType, InviteDestinationResult,
-    InviteScopeSelection, JapaneseCatalogProfile, LiveEventReceiptSummaryUpdate, LiveEventReceipts,
+    AccountManagementOperation, AccountSettingsValues, ActivityMarkReadTarget, ActivityRow,
+    ActivityStream, ActivityTab, AppSettingsValues, AttachmentFilter, AttachmentResult,
+    AttachmentScope, AttachmentSort, AuthFailureKind, AvatarThumbnailState, BasicOperationRequest,
+    CrossSigningStatus, CurrentDeviceTrustState, CurrentSessionStatusDetails,
+    CurrentSessionStatusFailureKind, DelegatedAuthLinks, DeviceCleanupAuthMode,
+    DeviceCleanupFailureKind, DeviceCleanupRemoteOutcome, DirectoryQuery, DirectoryRoomPreview,
+    DirectoryRoomSummary, E2eeRecoveryState, EventNavigationFailureKind, EventNavigationSource,
+    FilesViewScope, IdentityResetAuthType, InviteDestinationResult, InviteScopeSelection,
+    JapaneseCatalogProfile, LiveEventReceiptSummaryUpdate, LiveEventReceipts,
     LocalEncryptionHealth, LoginAttemptId, LoginFlow, MentionCandidate,
     MentionCandidatesCompleteness, MentionCandidatesFailureKind, MentionSurface,
     NativeAttentionDispatchId, NativeAttentionSoundOutcome, NativeAttentionState,
@@ -231,6 +232,12 @@ pub enum AppAction {
     },
     SettingsLoaded {
         values: SettingsValues,
+    },
+    AccountSettingsLoaded {
+        values: AccountSettingsValues,
+    },
+    AppSettingsSynchronized {
+        values: AppSettingsValues,
     },
     SettingsLoadFailed {
         message: String,
@@ -1408,6 +1415,8 @@ pub enum AppAction {
     ComposerDraftAccepted {
         target: crate::ComposerTarget,
         submitted_revision: ComposerDraftRevision,
+        /// #1130: see `AppCommand::AcceptComposerDraft`.
+        consumes_draft: bool,
     },
     ThreadReplyFinished {
         room_id: String,

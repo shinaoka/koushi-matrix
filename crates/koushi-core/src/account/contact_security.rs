@@ -12,7 +12,7 @@ use koushi_protocol::failure::CoreFailure;
 use koushi_protocol::ids::RequestId;
 use koushi_state::{
     AppAction, ContactSecurityFailureKind, ContactSecuritySummary, TrustOperationFailureKind,
-    VerificationFlowState, VerificationInitiator, VerificationTarget,
+    VerificationCancelReason, VerificationFlowState, VerificationInitiator, VerificationTarget,
 };
 use tokio::sync::oneshot;
 
@@ -39,6 +39,12 @@ impl std::fmt::Debug for ContactSecurityObservation {
     }
 }
 
+pub(super) struct PendingContactVerificationSend {
+    request_id: RequestId,
+    generation: u64,
+    task: crate::executor::JoinHandle<()>,
+}
+
 impl AccountActor {
     pub(super) async fn handle_contact_security(
         &mut self,
@@ -57,8 +63,8 @@ impl AccountActor {
     }
 
     /// **Verify user** (#1024). The runtime already projected
-    /// `VerificationRequestSent` (initiator `Us`); this sends the in-room
-    /// request and settles it as failed if it cannot be sent.
+    /// `VerificationRequestSent` (initiator `Us`); send and settle the request
+    /// off-actor so a homeserver wait cannot block account commands.
     async fn request_user_verification(&mut self, request_id: RequestId, user_id: String) {
         let target = VerificationTarget {
             user_id: user_id.clone(),
@@ -74,7 +80,47 @@ impl AccountActor {
             return;
         };
         self.cancel_verification_handles().await;
-        match koushi_sdk::request_user_verification(&session, &user_id).await {
+        self.contact_verification_send_generation =
+            self.contact_verification_send_generation.wrapping_add(1);
+        let generation = self.contact_verification_send_generation;
+        let tx = self.self_tx.clone();
+        let task = crate::executor::spawn(async move {
+            let result = koushi_sdk::request_user_verification(&session, &user_id).await;
+            let _ = tx
+                .send(AccountMessage::ContactUserVerificationRequestFinished {
+                    request_id,
+                    generation,
+                    target,
+                    result,
+                })
+                .await;
+        });
+        self.pending_contact_verification_send = Some(PendingContactVerificationSend {
+            request_id,
+            generation,
+            task,
+        });
+    }
+
+    pub(super) async fn handle_contact_user_verification_request_finished(
+        &mut self,
+        request_id: RequestId,
+        generation: u64,
+        target: VerificationTarget,
+        result: Result<koushi_sdk::MatrixVerificationRequestHandle, koushi_sdk::E2eeTrustError>,
+    ) {
+        if self.contact_verification_send_generation != generation
+            || !self
+                .pending_contact_verification_send
+                .as_ref()
+                .is_some_and(|pending| {
+                    pending.generation == generation && pending.request_id == request_id
+                })
+        {
+            return;
+        }
+        self.pending_contact_verification_send = None;
+        match result {
             Ok(handle) => {
                 self.verification_request = Some(PendingVerificationRequest {
                     request_id,
@@ -85,7 +131,7 @@ impl AccountActor {
                 self.observe_verification_request(request_id, target.clone(), handle.clone());
                 self.emit_verification_progress(VerificationFlowState::Requested {
                     request_id: request_id.sequence,
-                    target,
+                    target: target.clone(),
                     initiator: VerificationInitiator::Us,
                 });
                 self.project_verification_request_state(request_id, handle.state())
@@ -102,7 +148,43 @@ impl AccountActor {
         // Sending may have created the direct chat (also when it then
         // failed); re-read so the offer names it. A chat that becomes known
         // only with the next sync arrives through the `m.direct` observer.
-        self.refresh_open_contact_security(&user_id).await;
+        self.refresh_open_contact_security(&target.user_id).await;
+    }
+
+    pub(super) async fn cancel_contact_verification_send(
+        &mut self,
+        flow_id: u64,
+        reason: VerificationCancelReason,
+    ) -> bool {
+        if reason != VerificationCancelReason::User
+            || self
+                .pending_contact_verification_send
+                .as_ref()
+                .is_none_or(|pending| pending.request_id.sequence != flow_id)
+        {
+            return false;
+        }
+        self.contact_verification_send_generation =
+            self.contact_verification_send_generation.wrapping_add(1);
+        if let Some(pending) = self.pending_contact_verification_send.take() {
+            pending.task.abort();
+            let _ = pending.task.await;
+        }
+        self.send_actions(vec![AppAction::VerificationCancelled {
+            request_id: flow_id,
+            reason,
+        }])
+        .await;
+        true
+    }
+
+    pub(super) async fn cancel_pending_contact_verification_send(&mut self) {
+        self.contact_verification_send_generation =
+            self.contact_verification_send_generation.wrapping_add(1);
+        if let Some(pending) = self.pending_contact_verification_send.take() {
+            pending.task.abort();
+            let _ = pending.task.await;
+        }
     }
 
     /// Re-read whichever contact is open, for changes outside the contact's
@@ -181,10 +263,38 @@ impl AccountActor {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
-        // Subscribe before the retrieval so a store change that lands while
-        // it is in flight is re-read afterwards rather than missed.
-        let changes = koushi_sdk::observe_contact_security_changes(&session).await;
-        match koushi_sdk::load_contact_security(&session, &user_id).await {
+        let generation = self.contact_security_generation;
+        let tx = self.self_tx.clone();
+        self.contact_security_load_task = Some(crate::executor::spawn(async move {
+            // Subscribe before retrieval so a concurrent store change is not
+            // missed. Network work stays outside the AccountActor loop.
+            let changes = koushi_sdk::observe_contact_security_changes(&session).await;
+            let result = koushi_sdk::load_contact_security(&session, &user_id).await;
+            let _ = tx
+                .send(AccountMessage::ContactSecurityLoadFinished {
+                    request_id,
+                    generation,
+                    user_id,
+                    result,
+                    changes,
+                })
+                .await;
+        }));
+    }
+
+    pub(super) async fn handle_contact_security_load_finished(
+        &mut self,
+        request_id: RequestId,
+        generation: u64,
+        user_id: String,
+        result: Result<ContactSecuritySummary, ContactSecurityFailureKind>,
+        changes: Result<koushi_sdk::ContactSecurityChanges, ContactSecurityFailureKind>,
+    ) {
+        if generation != self.contact_security_generation {
+            return;
+        }
+        self.contact_security_load_task = None;
+        match result {
             Ok(summary) => {
                 self.send_actions(vec![AppAction::ContactSecurityLoaded {
                     request_id: request_id.sequence,
@@ -193,7 +303,7 @@ impl AccountActor {
                 }])
                 .await;
                 if let Ok(changes) = changes {
-                    self.start_contact_security_observer(user_id, summary, changes);
+                    self.start_contact_security_observer(user_id, generation, summary, changes);
                 }
             }
             Err(failure_kind) => {
@@ -210,11 +320,10 @@ impl AccountActor {
     fn start_contact_security_observer(
         &mut self,
         user_id: String,
+        generation: u64,
         summary: ContactSecuritySummary,
         mut changes: koushi_sdk::ContactSecurityChanges,
     ) {
-        self.contact_security_generation = self.contact_security_generation.wrapping_add(1);
-        let generation = self.contact_security_generation;
         let (stop_tx, mut stop_rx) = oneshot::channel();
         let tx = self.self_tx.clone();
         let task = crate::executor::spawn(async move {
@@ -286,6 +395,10 @@ impl AccountActor {
 
     pub(super) async fn stop_contact_security_observer(&mut self) {
         self.contact_security_generation = self.contact_security_generation.wrapping_add(1);
+        if let Some(task) = self.contact_security_load_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
         if let Some(observation) = self.contact_security.take() {
             let ContactSecurityObservation { stop_tx, task, .. } = observation;
             let _ = stop_tx.send(());

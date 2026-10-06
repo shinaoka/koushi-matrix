@@ -82,6 +82,7 @@ pub(crate) struct ReceiptWindowOwner {
     gate: Arc<super::navigation::TimelineActorGenerationGate>,
     source: ReceiptSourceRef,
     generation: u64,
+    account_scope: String,
 }
 
 impl ReceiptWindowOwner {
@@ -128,6 +129,10 @@ impl RawReceiptWindow {
         self,
         locale: koushi_state::CatalogLocale,
     ) -> ResolvedReceiptWindow {
+        let account_scope = self
+            .owner
+            .as_ref()
+            .map_or_else(String::new, |owner| owner.account_scope.clone());
         let mut avatar_resources = Vec::new();
         ResolvedReceiptWindow {
             total_count: self.total_count,
@@ -143,19 +148,20 @@ impl RawReceiptWindow {
                     let avatar = receipt.avatar.map(|mut avatar| {
                         use crate::renderable_thumbnail::{
                             RenderableThumbnailKind, ThumbnailLeaseError,
-                            lease_renderable_thumbnail, renderable_thumbnail_cache_key,
+                            lease_renderable_thumbnail, renderable_thumbnail_cache_key_for_account,
                         };
                         use koushi_state::AvatarThumbnailState;
                         let lease = match &avatar.thumbnail {
                             AvatarThumbnailState::Ready { source_ref, .. } => {
                                 lease_renderable_thumbnail(source_ref)
                             }
-                            AvatarThumbnailState::NotRequested => {
-                                lease_renderable_thumbnail(&renderable_thumbnail_cache_key(
+                            AvatarThumbnailState::NotRequested => lease_renderable_thumbnail(
+                                &renderable_thumbnail_cache_key_for_account(
                                     RenderableThumbnailKind::Avatar,
+                                    &account_scope,
                                     &avatar.mxc_uri,
-                                ))
-                            }
+                                ),
+                            ),
                             _ => Err(ThumbnailLeaseError::Unavailable),
                         };
                         if matches!(avatar.thumbnail, AvatarThumbnailState::NotRequested)
@@ -198,11 +204,13 @@ impl RawReceiptWindow {
         gate: &Arc<super::navigation::TimelineActorGenerationGate>,
         source: &ReceiptSourceRef,
         generation: u64,
+        account_scope: &str,
     ) {
         self.owner = Some(ReceiptWindowOwner {
             gate: gate.clone(),
             source: source.clone(),
             generation,
+            account_scope: account_scope.to_owned(),
         });
     }
 
@@ -232,7 +240,7 @@ impl RawReceiptWindow {
             .activate_after_quiescence(&source.timeline.key)
             .await
             .generation;
-        self.bind_owner(&gate, source, generation);
+        self.bind_owner(&gate, source, generation, "");
         let epoch = Arc::new(std::sync::Mutex::new(ReceiptEpoch {
             valid: true,
             revision: Some(1),

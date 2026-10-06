@@ -646,6 +646,7 @@ impl AccountActor {
     }
 
     pub(super) async fn cancel_verification_handles(&mut self) {
+        self.cancel_pending_contact_verification_send().await;
         self.stop_sas_timeout().await;
         self.stop_verification_request_observer().await;
         self.stop_sas_verification_observer().await;
@@ -1098,6 +1099,9 @@ impl AccountActor {
                 kind: koushi_state::VerificationGateFailureKind::Cancelled,
             }])
             .await;
+            return;
+        }
+        if self.cancel_contact_verification_send(flow_id, reason).await {
             return;
         }
         if self.active_verification_target(flow_id).is_some() {

@@ -343,6 +343,7 @@ fn search_results_carry_rust_owned_space_context_label() {
             avatar: None,
             join_rule: None,
             child_room_ids: vec!["room-a".to_owned()],
+            parent_side_child_room_ids: vec!["room-a".to_owned()],
         },
         SpaceSummary {
             space_id: "space-active".to_owned(),
@@ -351,6 +352,7 @@ fn search_results_carry_rust_owned_space_context_label() {
             avatar: None,
             join_rule: None,
             child_room_ids: vec!["room-a".to_owned()],
+            parent_side_child_room_ids: vec!["room-a".to_owned()],
         },
     ];
     state.navigation.active_space_id = Some("space-active".to_owned());
@@ -407,6 +409,7 @@ fn dm_search_results_never_carry_a_space_context_label() {
             avatar: None,
             join_rule: None,
             child_room_ids: vec!["dm-child".to_owned()],
+            parent_side_child_room_ids: vec!["dm-child".to_owned()],
         },
         SpaceSummary {
             space_id: "space-active".to_owned(),
@@ -415,6 +418,7 @@ fn dm_search_results_never_carry_a_space_context_label() {
             avatar: None,
             join_rule: None,
             child_room_ids: vec!["dm-child".to_owned()],
+            parent_side_child_room_ids: vec!["dm-child".to_owned()],
         },
     ];
     state.navigation.active_space_id = Some("space-active".to_owned());

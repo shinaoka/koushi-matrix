@@ -347,6 +347,8 @@ export interface TimelineItem {
   link_ranges?: TimelineLinkRange[];
   /** User ids this message's `m.mentions` named (#874). Absent when none. */
   mentioned_user_ids?: string[];
+  /** The message's `m.mentions.room` flag (#1123). Absent when not set. */
+  mentions_room?: boolean;
   reactions: ReactionGroup[];
   can_react: boolean;
   is_redacted: boolean;
@@ -677,6 +679,7 @@ export interface SessionInfo {
 
 export type AccountEvent =
   | { OidcAuthorizationCreated: { request_id: RequestId } }
+  | { LoginAdmitted: { request_id: RequestId; account_key: string } }
   | { LoggedIn: { request_id: RequestId; account_key: string } }
   | { SessionRestored: { request_id: RequestId; account_key: string } }
   | { SavedSessionsListed: { request_id: RequestId; sessions: SessionInfo[] } }
@@ -800,7 +803,13 @@ export interface ReplyQuote {
   state: ReplyQuoteState;
 }
 
-export type ReplyQuoteState = "ready" | "redacted" | "missing" | "unsupported";
+export type ReplyQuoteState =
+  | "loading"
+  | "ready"
+  | "redacted"
+  | "missing"
+  | "unsupported"
+  | "failed";
 
 export interface DirectoryQuery {
   term: string | null;
@@ -1287,12 +1296,14 @@ export type StateUpdateEnvelope =
       protocol_version: 1;
       kind: "delta";
       generation: number;
+      account_tab_id?: string;
       changed: StateDeltaChangedSlices;
     }
   | {
       protocol_version: 1;
       kind: "snapshot";
       generation: number;
+      account_tab_id?: string;
       snapshot: DesktopSnapshot;
       reason: StateUpdateSnapshotReason;
     };
@@ -1395,6 +1406,7 @@ export type IntentOutcome =
 // ---------------------------------------------------------------------------
 
 export type CoreEventPayload =
+  (
   | { kind: "Account"; event: AccountEvent }
   | { kind: "Sync"; event: SyncEvent }
   | { kind: "Room"; event: RoomEvent }
@@ -1423,7 +1435,8 @@ export type CoreEventPayload =
       published_generation: number;
     }
   /** Emitted by the Tauri adapter when EventStreamLag is detected. */
-  | { kind: "ResyncMarker" };
+  | { kind: "ResyncMarker" }
+  ) & { account_tab_id?: string };
 
 /**
  * Issue #450: whether a CoreEvent reports a recognized-but-unavailable slash

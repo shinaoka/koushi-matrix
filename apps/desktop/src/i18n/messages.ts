@@ -11,6 +11,19 @@ export type MessageId =
   | "settings.categorySessions"
   | "settings.categoryPreferences"
   | "settings.categoryHelp"
+  | "settings.accountSettings"
+  | "settings.appSettings"
+  | "accountTabs.addAccount"
+  | "accountTabs.select"
+  | "accountTabs.restoring"
+  | "accountTabs.authenticating"
+  | "accountTabs.needsVerification"
+  | "accountTabs.ready"
+  | "accountTabs.signedOut"
+  | "accountTabs.loggingOut"
+  | "accountTabs.error"
+  | "accountTabs.removeFromList"
+  | "accountTabs.cancelAddAccount"
 
   | "action.add"
   | "action.back"
@@ -88,7 +101,6 @@ export type MessageId =
   | "auth.flowSso"
   | "auth.flowToken"
   | "auth.flowUnknown"
-  | "auth.loginFailureUsernameHint"
   | "auth.matrixAccount"
   | "auth.matrixDesktop"
   | "auth.noLoginMethods"
@@ -103,10 +115,18 @@ export type MessageId =
   | "auth.ssoInvalidAuthorizationUrl"
   | "auth.signIn"
   | "auth.supportedRecoveryMethods"
-  | "auth.username"
-  | "auth.usernameHelp"
   | "auth.usernameOrMatrixId"
-  | "auth.usernamePlaceholder"
+  | "auth.changeServer"
+  | "auth.continueWithMethod"
+  | "auth.loginFailureMatrixIdHint"
+  | "auth.matrixId"
+  | "auth.matrixIdHelp"
+  | "auth.matrixIdPlaceholder"
+  | "auth.orSignInWithPassword"
+  | "auth.passwordSignInUnavailable"
+  | "auth.server"
+  | "auth.ssoHelp"
+  | "auth.useServerFromMatrixId"
   | "composer.attachedFile"
   | "composer.attachmentFallback"
   | "composer.attachFile"
@@ -138,6 +158,7 @@ export type MessageId =
   | "composer.imageCompressionTitle"
   | "composer.placeholder"
   | "composer.replying"
+  | "composer.sendingAs"
   | "composer.slashCommandUnavailable"
   | "composer.removeAttachment"
   | "composer.cancelReply"
@@ -187,6 +208,17 @@ export type MessageId =
   | "room.leaveConfirmCopyDm"
   | "room.leaveConfirmAction"
   | "room.leaveConfirmActionDm"
+  | "space.leaveConfirmTitle"
+  | "space.leaveConfirmCopy"
+  | "space.leaveConfirmCopyNoRooms"
+  | "space.leaveRoomsChoice"
+  | "space.leaveSpaceOnly"
+  | "space.leaveAllRooms"
+  | "space.leaveSelectedRooms"
+  | "space.leaveRoomsList"
+  | "space.leaveRoomInOtherSpace"
+  | "space.leaveConfirmAction"
+  | "space.leaveConfirmActionWithRooms"
   | "context.openKeyboardSettings"
   | "context.openRoomInfo"
   | "context.openSpaceInfo"
@@ -661,7 +693,6 @@ export type MessageId =
   | "sessionStatus.connectionUnavailable"
   | "sessionStatus.copyDeviceId"
   | "sessionStatus.crossSigned"
-  | "sessionStatus.deviceId"
   | "sessionStatus.deviceName"
   | "sessionStatus.failed"
   | "sessionStatus.failureSdk"
@@ -671,26 +702,19 @@ export type MessageId =
   | "sessionStatus.failureAuthentication"
   | "sessionStatus.failureNetwork"
   | "sessionStatus.failureServer"
-  | "sessionStatus.homeserver"
   | "sessionStatus.identity"
   | "sessionStatus.identityMissing"
   | "sessionStatus.identityUnverified"
   | "sessionStatus.identityVerified"
   | "sessionStatus.keyBackup"
   | "sessionStatus.lastChecked"
-  | "sessionStatus.manageAccount"
   | "sessionStatus.notChecked"
   | "sessionStatus.notCrossSigned"
-  | "sessionStatus.open"
-  | "sessionStatus.openWithRuntimeWarning"
-  | "sessionStatus.openWithRuntimeWarnings"
   | "sessionStatus.ownerCrossSigning"
   | "sessionStatus.recheck"
   | "sessionStatus.retry"
   | "sessionStatus.runtimeAlertSecureBackup"
-  | "sessionStatus.runtimeWarningCount"
   | "sessionStatus.runtimeWarnings"
-  | "sessionStatus.runtimeWarningsCount"
   | "sessionStatus.sync"
   | "sessionStatus.syncError"
   | "sessionStatus.syncRunning"
@@ -700,7 +724,6 @@ export type MessageId =
   | "sessionStatus.unavailable"
   | "sessionStatus.unverified"
   | "sessionStatus.unknown"
-  | "sessionStatus.userId"
   | "sessionStatus.verification"
   | "sessionStatus.verified"
   | "settings.accounts"
@@ -745,6 +768,7 @@ export type MessageId =
   | "settings.updateIdle"
   | "settings.updateTitle"
   | "settings.updateUnsupported"
+  | "settings.updatePackageManaged"
   | "settings.updateCommandFailed"
   | "settings.updateCheck"
   | "settings.updateUpToDate"
@@ -942,6 +966,10 @@ export type MessageId =
   | "scheduled.sendLater"
   | "scheduled.serverDelayedEvents"
   | "scheduled.timeInput"
+  | "scheduled.timeEarlierHour"
+  | "scheduled.timeEarlierTenMinutes"
+  | "scheduled.timeLaterTenMinutes"
+  | "scheduled.timeLaterHour"
   | "scheduled.title"
   | "scheduled.unknownCapability"
   | "trust.acceptVerification"
@@ -1319,6 +1347,8 @@ export type MessageId =
   | "timeline.pinnedMessagesEmpty"
   | "timeline.pinnedEventUnableToDecrypt"
   | "timeline.pinnedEventUnavailable"
+  | "timeline.replyQuoteFailed"
+  | "timeline.replyQuoteLoading"
   | "timeline.replyQuoteMissing"
   | "timeline.replyQuoteUnavailable"
   | "timeline.replyQuoteUnknownSender"
@@ -1400,6 +1430,7 @@ export type MessageId =
   | "timeline.resendAll"
   | "timeline.cancelAll"
   | "timeline.downloadMedia"
+  | "timeline.downloadDefaultImageName"
   | "timeline.encryptedMedia"
   | "timeline.mediaUploadProgress"
   | "timeline.mediaDownloadPending"
@@ -1492,6 +1523,8 @@ export type MessageId =
   | "settings.searchHistoryResume"
   | "settings.searchHistoryRebuild"
   | "settings.searchHistoryRebuildConfirm"
+  | "settings.searchHistoryBudget"
+  | "settings.searchHistoryBudgetDescription"
   | "settings.searchHistorySpeed"
   | "settings.searchHistorySpeedStandard"
   | "settings.searchHistorySpeedFast"
@@ -1727,6 +1760,19 @@ const en: Catalog = {
   "settings.categorySessions": "Sessions",
   "settings.categoryPreferences": "Preferences",
   "settings.categoryHelp": "Help & About",
+  "settings.accountSettings": "Account Settings",
+  "settings.appSettings": "App Settings",
+  "accountTabs.addAccount": "Add account",
+  "accountTabs.select": "{account}: {status}",
+  "accountTabs.restoring": "Restoring",
+  "accountTabs.authenticating": "Signing in",
+  "accountTabs.needsVerification": "Needs verification",
+  "accountTabs.ready": "Ready",
+  "accountTabs.signedOut": "Sign in again",
+  "accountTabs.loggingOut": "Signing out",
+  "accountTabs.error": "Account error",
+  "accountTabs.removeFromList": "Remove {account} from list",
+  "accountTabs.cancelAddAccount": "Cancel adding account",
 
   "action.add": "Add",
   "action.back": "Back",
@@ -1807,8 +1853,6 @@ const en: Catalog = {
   "auth.flowSso": "Single sign-on",
   "auth.flowToken": "Token",
   "auth.flowUnknown": "Unknown method",
-  "auth.loginFailureUsernameHint":
-    "For @alice:matrix.org, enter alice here and keep matrix.org in Homeserver.",
   "auth.matrixAccount": "Matrix account",
   "auth.matrixDesktop": "Koushi",
   "auth.noLoginMethods": "No login methods",
@@ -1823,10 +1867,20 @@ const en: Catalog = {
   "auth.ssoInvalidAuthorizationUrl": "The single sign-on address is invalid",
   "auth.signIn": "Sign in",
   "auth.supportedRecoveryMethods": "Supported recovery methods",
-  "auth.username": "Username",
-  "auth.usernameHelp": "Enter only the localpart. Do not include @ or the server name.",
   "auth.usernameOrMatrixId": "Username or Matrix ID",
-  "auth.usernamePlaceholder": "alice",
+  "auth.changeServer": "Change server",
+  "auth.continueWithMethod": "Continue with {method}",
+  "auth.loginFailureMatrixIdHint":
+    "Check your Matrix ID, for example @alice:matrix.org, and your password.",
+  "auth.matrixId": "Matrix ID",
+  "auth.matrixIdHelp":
+    "Your server is found from your Matrix ID. A username alone signs in on the server shown below.",
+  "auth.matrixIdPlaceholder": "@alice:matrix.org",
+  "auth.orSignInWithPassword": "or sign in with a password",
+  "auth.passwordSignInUnavailable": "This server does not offer password sign-in.",
+  "auth.server": "Server",
+  "auth.ssoHelp": "Opens your browser to sign in on your server's page.",
+  "auth.useServerFromMatrixId": "Use the server from my Matrix ID",
   "composer.attachedFile": "Attached file",
   "composer.attachmentFallback": "Attachment",
   "composer.attachFile": "Attach file",
@@ -1858,6 +1912,7 @@ const en: Catalog = {
   "composer.imageCompressionTitle": "Compress image",
   "composer.placeholder": "Message {roomName}",
   "composer.replying": "Replying",
+  "composer.sendingAs": "Sending as {account}",
   "composer.slashCommandUnavailable": "This command is not available in this composer.",
   "composer.removeAttachment": "Remove attachment",
   "composer.cancelReply": "Cancel reply",
@@ -1898,7 +1953,7 @@ const en: Catalog = {
   "context.addToFavourites": "Add to Favourites",
   "context.addToLowPriority": "Move to Low priority",
   "context.ignoreUser": "Ignore",
-  "context.leaveSpace": "Leave Space",
+  "context.leaveSpace": "Leave Space…",
   "context.leaveRoom": "Leave room…",
   "context.leaveConversation": "Leave conversation…",
   "room.leaveConfirmTitle": "Leave {name}?",
@@ -1909,12 +1964,23 @@ const en: Catalog = {
     "This removes your conversation with {name} from your joined rooms. Messages already on the homeserver are not deleted. You may need a new invitation to return.",
   "room.leaveConfirmAction": "Leave room",
   "room.leaveConfirmActionDm": "Leave conversation",
+  "space.leaveConfirmTitle": "Leave {name}?",
+  "space.leaveConfirmCopy": "You can also leave rooms in this Space. Rooms you keep stay in your room list. Subspaces and rooms you have not joined are not affected.",
+  "space.leaveConfirmCopyNoRooms": "You have not joined any rooms in {name}. Leaving removes the Space from your Space list.",
+  "space.leaveRoomsChoice": "Rooms in this Space",
+  "space.leaveSpaceOnly": "Leave only the Space",
+  "space.leaveAllRooms": "Also leave all rooms ({count})",
+  "space.leaveSelectedRooms": "Choose rooms to leave",
+  "space.leaveRoomsList": "Rooms to leave",
+  "space.leaveRoomInOtherSpace": "Also in another Space",
+  "space.leaveConfirmAction": "Leave Space",
+  "space.leaveConfirmActionWithRooms": "Leave Space and rooms ({count})",
   "context.openKeyboardSettings": "Keyboard shortcuts",
   "context.openRoomInfo": "Room info",
   "context.openSpaceInfo": "Space info",
   "context.openThread": "Reply in thread",
   "context.openUserInfo": "User info",
-  "context.openUserSettings": "User settings",
+  "context.openUserSettings": "Account Settings",
   "context.redactMessage": "Redact",
   "context.removeFromFavourites": "Remove from Favourites",
   "context.removeFromLowPriority": "Remove from Low priority",
@@ -2123,7 +2189,7 @@ const en: Catalog = {
   "panel.search": "Search",
   "panel.spaceInfo": "Space info",
   "panel.thread": "Thread",
-  "panel.userSettings": "User settings",
+  "panel.userSettings": "Account Settings",
   "panel.people": "People",
   "panel.profile": "Profile",
   "people.membership": "Membership",
@@ -2177,12 +2243,12 @@ const en: Catalog = {
   "people.security.verifyUser": "Verify user",
   "people.security.verifyAgain": "Verify again",
   "people.security.verifyConfirmTitle": "Verify this person",
-  "people.security.verifyChatExistingEncrypted": "Koushi sends the verification request in your encrypted direct chat with this person. If they have left that chat, Koushi invites them back to it.",
-  "people.security.verifyChatExistingUnencrypted": "Koushi sends the verification request in your existing direct chat with this person. If they have left that chat, Koushi invites them back to it. That chat is not encrypted; the emoji comparison does not depend on it.",
-  "people.security.verifyChatNew": "You don't have a direct chat with this person yet. Koushi creates a new encrypted direct chat with them and sends the request there. If they don't see the request, try again after they have joined the chat.",
+  "people.security.verifyChatExistingEncrypted": "Koushi sends the verification request in your encrypted direct chat with this person. If they have left that chat, Koushi invites them back and waits up to a minute for them to rejoin before sending the request.",
+  "people.security.verifyChatExistingUnencrypted": "Koushi sends the verification request in your existing direct chat with this person. If they have left that chat, Koushi invites them back and waits up to a minute for them to rejoin before sending the request. That chat is not encrypted; the emoji comparison does not depend on it.",
+  "people.security.verifyChatNew": "You don't have a direct chat with this person yet. Koushi creates a new encrypted direct chat with them and waits up to a minute for them to join before sending the request.",
   "people.security.verifyHow": "They accept the request in their app. Then you both compare emoji, in person or over another trusted channel. Verifying them doesn't confirm devices they haven't confirmed themselves.",
   "people.security.verifySend": "Send request",
-  "people.security.verifyRequiresCrossSigning": "To verify other people, this session needs your own cross-signing keys. Verify this session or set up cross-signing in User settings → Encryption first.",
+  "people.security.verifyRequiresCrossSigning": "To verify other people, this session needs your own cross-signing keys. Verify this session or set up cross-signing in Account Settings → Encryption first.",
   "people.security.verifyBusy": "Another verification is in progress. You can verify this person after it finishes.",
   "people.security.verifyWaiting": "Waiting for them to accept the request in their app…",
   "people.security.verifyIncoming": "This person asked to verify you.",
@@ -2390,7 +2456,6 @@ const en: Catalog = {
   "sessionStatus.connectionUnavailable": "Connection unavailable",
   "sessionStatus.copyDeviceId": "Copy Device ID",
   "sessionStatus.crossSigned": "Cross-signed",
-  "sessionStatus.deviceId": "Device ID",
   "sessionStatus.deviceName": "Device name",
   "sessionStatus.failed": "Check failed",
   "sessionStatus.failureSdk": "Session check failed",
@@ -2400,26 +2465,19 @@ const en: Catalog = {
   "sessionStatus.failureAuthentication": "Sign-in is required to check this session",
   "sessionStatus.failureNetwork": "Could not check this session because of a network problem",
   "sessionStatus.failureServer": "The server could not complete the session check",
-  "sessionStatus.homeserver": "Homeserver",
   "sessionStatus.identity": "Own identity",
   "sessionStatus.identityMissing": "Identity missing",
   "sessionStatus.identityUnverified": "Identity unverified",
   "sessionStatus.identityVerified": "Identity verified",
   "sessionStatus.keyBackup": "Key backup",
   "sessionStatus.lastChecked": "Last checked",
-  "sessionStatus.manageAccount": "Manage account and devices",
   "sessionStatus.notChecked": "Not checked",
   "sessionStatus.notCrossSigned": "Not cross-signed",
-  "sessionStatus.open": "Open session status",
-  "sessionStatus.openWithRuntimeWarning": "Open session status, {count} runtime warning",
-  "sessionStatus.openWithRuntimeWarnings": "Open session status, {count} runtime warnings",
   "sessionStatus.ownerCrossSigning": "Owner cross-signing",
   "sessionStatus.recheck": "Recheck",
   "sessionStatus.retry": "Retry",
   "sessionStatus.runtimeAlertSecureBackup": "Secure Backup unavailable",
-  "sessionStatus.runtimeWarningCount": "{count} runtime warning",
   "sessionStatus.runtimeWarnings": "Runtime warnings",
-  "sessionStatus.runtimeWarningsCount": "{count} runtime warnings",
   "sessionStatus.sync": "Sync",
   "sessionStatus.syncError": "Error",
   "sessionStatus.syncRunning": "Running",
@@ -2429,7 +2487,6 @@ const en: Catalog = {
   "sessionStatus.unavailable": "Unavailable",
   "sessionStatus.unverified": "Unverified",
   "sessionStatus.unknown": "Unknown",
-  "sessionStatus.userId": "User ID",
   "sessionStatus.verification": "Verification",
   "sessionStatus.verified": "Verified",
   "settings.accounts": "Accounts",
@@ -2477,6 +2534,7 @@ const en: Catalog = {
   "settings.updateIdle": "Check for a new version of Koushi.",
   "settings.updateTitle": "Software update",
   "settings.updateUnsupported": "In-app updates are unavailable in this build.",
+  "settings.updatePackageManaged": "Updates for this installation are provided by your package manager.",
   "settings.updateCommandFailed": "The update action could not be completed. Please try again.",
   "settings.updateCheck": "Check for updates",
   "settings.updateUpToDate": "Koushi is up to date (v{version}).",
@@ -2687,6 +2745,11 @@ const en: Catalog = {
   "scheduled.sendLater": "Send later",
   "scheduled.serverDelayedEvents": "Server scheduled",
   "scheduled.timeInput": "Scheduled send time",
+  // #1124: mouse-driven adjustments for the native scheduled-send time field.
+  "scheduled.timeEarlierHour": "1 hour earlier",
+  "scheduled.timeEarlierTenMinutes": "10 minutes earlier",
+  "scheduled.timeLaterTenMinutes": "10 minutes later",
+  "scheduled.timeLaterHour": "1 hour later",
   "scheduled.title": "Scheduled messages",
   "scheduled.unknownCapability": "Checking support",
   "trust.acceptVerification": "Accept",
@@ -2957,7 +3020,7 @@ const en: Catalog = {
   "shortcut.noteCallsDeferred": "Calls are out of scope for this milestone.",
   "shortcut.noteGoHomeAdapted": "macOS uses Ctrl+Shift+H in some Matrix clients; this prototype keeps one cross-platform row.",
   "shortcut.noteUploadUiDeferred": "Upload UI is not implemented yet.",
-  "shortcut.openUserSettings": "User settings",
+  "shortcut.openUserSettings": "Account Settings",
   "shortcut.parityAdapted": "adapted",
   "shortcut.parityDeferred": "deferred",
   "shortcut.parityNotApplicable": "not applicable",
@@ -3068,6 +3131,8 @@ const en: Catalog = {
   "timeline.pinnedMessagesEmpty": "No pinned messages",
   "timeline.pinnedEventUnableToDecrypt": "Unable to decrypt this message",
   "timeline.pinnedEventUnavailable": "Pinned message unavailable",
+  "timeline.replyQuoteFailed": "Couldn't load the original message",
+  "timeline.replyQuoteLoading": "Loading original message…",
   "timeline.replyQuoteMissing": "Original message unavailable",
   "timeline.replyQuoteUnavailable": "Original message unavailable",
   "timeline.replyQuoteUnknownSender": "Unknown sender",
@@ -3149,6 +3214,10 @@ const en: Catalog = {
   "timeline.resendAll": "Resend all",
   "timeline.cancelAll": "Cancel all",
   "timeline.downloadMedia": "Download {filename}",
+  // #1135: prefix of a generated save name for an image whose own name is a
+  // generic upload default. Deliberately identical in every locale: it is part
+  // of a locale-independent filename, not prose.
+  "timeline.downloadDefaultImageName": "Koushi_Image",
   "timeline.encryptedMedia": "Encrypted",
   "timeline.mediaUploadProgress": "{percent}%",
   "timeline.mediaDownloadPending": "Downloading…",
@@ -3196,7 +3265,7 @@ const en: Catalog = {
   "workspace.searchScope": "Search scope",
   "workspace.spaceInfoSettings": "Space info and settings",
   "workspace.threads": "Threads",
-  "workspace.userSettings": "User settings",
+  "workspace.userSettings": "Account Settings",
   "workspace.workspaces": "Workspaces",
   "spaceMembers.title": "Space members",
   "spaceMembers.search": "Search space members",
@@ -3237,11 +3306,13 @@ const en: Catalog = {
   "threads.title": "Threads",
   "settings.searchHistory": "Search history",
   "settings.searchHistoryCrawler": "Crawler",
-  "settings.searchHistoryPause": "Pause crawler",
-  "settings.searchHistoryResume": "Resume crawler",
+  "settings.searchHistoryPause": "Pause background work",
+  "settings.searchHistoryResume": "Resume background work",
   "settings.searchHistoryRebuild": "Rebuild search database",
   "settings.searchHistoryRebuildConfirm": "Rebuild the search database? This clears the local search index and re-crawls room history.",
-  "settings.searchHistorySpeed": "Crawl speed",
+  "settings.searchHistoryBudget": "Background work",
+  "settings.searchHistoryBudgetDescription": "Search crawling and media prefetch share this budget across all accounts; Off pauses both.",
+  "settings.searchHistorySpeed": "Background work speed",
   "settings.searchHistorySpeedStandard": "Standard",
   "settings.searchHistorySpeedFast": "Fast",
   "settings.searchHistorySpeedSlow": "Slow",
@@ -3371,6 +3442,19 @@ const ja: Catalog = {
   "settings.categorySessions": "セッション",
   "settings.categoryPreferences": "環境設定",
   "settings.categoryHelp": "ヘルプと情報",
+  "settings.accountSettings": "アカウント設定",
+  "settings.appSettings": "アプリ設定",
+  "accountTabs.addAccount": "アカウントを追加",
+  "accountTabs.select": "{account}：{status}",
+  "accountTabs.restoring": "復元中",
+  "accountTabs.authenticating": "サインイン中",
+  "accountTabs.needsVerification": "本人確認が必要",
+  "accountTabs.ready": "利用可能",
+  "accountTabs.signedOut": "再サインイン",
+  "accountTabs.loggingOut": "サインアウト中",
+  "accountTabs.error": "アカウントエラー",
+  "accountTabs.removeFromList": "{account}を一覧から削除",
+  "accountTabs.cancelAddAccount": "アカウントの追加をキャンセル",
 
   "action.add": "追加",
   "action.back": "戻る",
@@ -3461,13 +3545,20 @@ const ja: Catalog = {
   "auth.ssoInvalidAuthorizationUrl": "シングルサインオンのアドレスが無効です",
   "auth.signIn": "サインイン",
   "auth.supportedRecoveryMethods": "対応している復旧方法",
-  "auth.loginFailureUsernameHint":
-    "例: @alice:matrix.org の場合は alice だけを入力し、matrix.org はホームサーバー欄に入れます。",
-  "auth.username": "ユーザー名",
-  "auth.usernameHelp":
-    "ローカル部だけを入力します。先頭の @ とサーバー名は入れません。",
   "auth.usernameOrMatrixId": "ユーザー名またはMatrix ID",
-  "auth.usernamePlaceholder": "例: alice",
+  "auth.changeServer": "サーバーを変更",
+  "auth.continueWithMethod": "{method}で続行",
+  "auth.loginFailureMatrixIdHint":
+    "Matrix ID（例: @alice:matrix.org）とパスワードを確認してください。",
+  "auth.matrixId": "Matrix ID",
+  "auth.matrixIdHelp":
+    "Matrix IDからサーバーを自動で見つけます。ユーザー名だけの場合は下に表示されたサーバーでサインインします。",
+  "auth.matrixIdPlaceholder": "例: @alice:matrix.org",
+  "auth.orSignInWithPassword": "またはパスワードでサインイン",
+  "auth.passwordSignInUnavailable": "このサーバーはパスワードでのサインインに対応していません。",
+  "auth.server": "サーバー",
+  "auth.ssoHelp": "ブラウザーが開き、サーバーのページでサインインします。",
+  "auth.useServerFromMatrixId": "Matrix IDのサーバーを使う",
   "composer.attachedFile": "添付ファイル",
   "composer.attachmentFallback": "添付",
   "composer.attachFile": "ファイルを添付",
@@ -3494,6 +3585,7 @@ const ja: Catalog = {
   "composer.messageComposer": "メッセージ入力欄",
   "composer.placeholder": "{roomName}にメッセージ",
   "composer.replying": "返信中",
+  "composer.sendingAs": "{account}として送信",
   "composer.slashCommandUnavailable": "このコマンドはこの入力欄では実行できません。",
   "composer.removeAttachment": "添付を削除",
   "composer.cancelReply": "返信をキャンセル",
@@ -3539,7 +3631,7 @@ const ja: Catalog = {
   "context.addToFavourites": "お気に入りに追加",
   "context.addToLowPriority": "低優先度に移動",
   "context.ignoreUser": "無視",
-  "context.leaveSpace": "スペースから退出",
+  "context.leaveSpace": "スペースから退出…",
   "context.leaveRoom": "ルームから退出…",
   "context.leaveConversation": "会話から退出…",
   "room.leaveConfirmTitle": "{name} から退出しますか？",
@@ -3550,12 +3642,23 @@ const ja: Catalog = {
     "{name} との会話が参加中のルーム一覧から削除されます。ホームサーバー上のメッセージは削除されません。再開には新しい招待が必要になることがあります。",
   "room.leaveConfirmAction": "ルームから退出",
   "room.leaveConfirmActionDm": "会話から退出",
+  "space.leaveConfirmTitle": "{name} から退出しますか？",
+  "space.leaveConfirmCopy": "このスペースのルームからも一緒に退出できます。残したルームは参加中のルーム一覧に残ります。サブスペースや未参加のルームは対象外です。",
+  "space.leaveConfirmCopyNoRooms": "{name} で参加中のルームはありません。退出するとスペース一覧から削除されます。",
+  "space.leaveRoomsChoice": "このスペースのルーム",
+  "space.leaveSpaceOnly": "スペースのみ退出",
+  "space.leaveAllRooms": "ルーム {count} 件すべてからも退出",
+  "space.leaveSelectedRooms": "退出するルームを選ぶ",
+  "space.leaveRoomsList": "退出するルーム",
+  "space.leaveRoomInOtherSpace": "他のスペースにも含まれています",
+  "space.leaveConfirmAction": "スペースから退出",
+  "space.leaveConfirmActionWithRooms": "スペースとルーム {count} 件から退出",
   "context.openKeyboardSettings": "キーボードショートカット",
   "context.openRoomInfo": "ルーム情報",
   "context.openSpaceInfo": "スペース情報",
   "context.openThread": "スレッドで返信",
   "context.openUserInfo": "ユーザー情報",
-  "context.openUserSettings": "ユーザー設定",
+  "context.openUserSettings": "アカウント設定",
   "context.redactMessage": "削除",
   "context.removeFromFavourites": "お気に入りから削除",
   "context.removeFromLowPriority": "低優先度から削除",
@@ -3764,7 +3867,7 @@ const ja: Catalog = {
   "panel.search": "検索",
   "panel.spaceInfo": "スペース情報",
   "panel.thread": "スレッド",
-  "panel.userSettings": "ユーザー設定",
+  "panel.userSettings": "アカウント設定",
   "panel.people": "メンバー",
   "panel.profile": "プロフィール",
   "people.membership": "参加状態",
@@ -3818,12 +3921,12 @@ const ja: Catalog = {
   "people.security.verifyUser": "ユーザーを検証",
   "people.security.verifyAgain": "もう一度検証",
   "people.security.verifyConfirmTitle": "この人を検証",
-  "people.security.verifyChatExistingEncrypted": "Koushiは、この人との暗号化されたダイレクトチャットで検証リクエストを送信します。相手がそのチャットから退出している場合は、もう一度招待します。",
-  "people.security.verifyChatExistingUnencrypted": "Koushiは、この人との既存のダイレクトチャットで検証リクエストを送信します。相手がそのチャットから退出している場合は、もう一度招待します。このチャットは暗号化されていませんが、絵文字の比較はチャットの暗号化に依存しません。",
-  "people.security.verifyChatNew": "この人とのダイレクトチャットはまだありません。Koushiが新しい暗号化ダイレクトチャットを作成し、そこでリクエストを送信します。相手にリクエストが表示されない場合は、相手がチャットに参加した後にもう一度お試しください。",
+  "people.security.verifyChatExistingEncrypted": "Koushiは、この人との暗号化されたダイレクトチャットで検証リクエストを送信します。相手がそのチャットから退出している場合は、再招待し、再参加するまで最大1分待ってからリクエストを送信します。",
+  "people.security.verifyChatExistingUnencrypted": "Koushiは、この人との既存のダイレクトチャットで検証リクエストを送信します。相手がそのチャットから退出している場合は、再招待し、再参加するまで最大1分待ってからリクエストを送信します。このチャットは暗号化されていませんが、絵文字の比較はチャットの暗号化に依存しません。",
+  "people.security.verifyChatNew": "この人とのダイレクトチャットはまだありません。Koushiが新しい暗号化ダイレクトチャットを作成し、相手の参加を最大1分待ってからリクエストを送信します。",
   "people.security.verifyHow": "相手が自分のアプリでリクエストを承認した後、対面または別の信頼できる経路で、お互いに絵文字を比較します。検証しても、相手が確認していないデバイスが確認されるわけではありません。",
   "people.security.verifySend": "リクエストを送信",
-  "people.security.verifyRequiresCrossSigning": "他の人を検証するには、このセッションにあなた自身のクロス署名鍵が必要です。先にこのセッションを検証するか、ユーザー設定 → 暗号化でクロス署名を設定してください。",
+  "people.security.verifyRequiresCrossSigning": "他の人を検証するには、このセッションにあなた自身のクロス署名鍵が必要です。先にこのセッションを検証するか、アカウント設定 → 暗号化でクロス署名を設定してください。",
   "people.security.verifyBusy": "別の検証が進行中です。完了した後にこの人を検証できます。",
   "people.security.verifyWaiting": "相手が自分のアプリでリクエストを承認するのを待っています…",
   "people.security.verifyIncoming": "この人があなたの検証を求めています。",
@@ -4031,7 +4134,6 @@ const ja: Catalog = {
   "sessionStatus.connectionUnavailable": "接続を利用できません",
   "sessionStatus.copyDeviceId": "デバイス ID をコピー",
   "sessionStatus.crossSigned": "クロス署名済み",
-  "sessionStatus.deviceId": "デバイス ID",
   "sessionStatus.deviceName": "デバイス名",
   "sessionStatus.failed": "確認失敗",
   "sessionStatus.failureSdk": "セッションの確認に失敗しました",
@@ -4041,26 +4143,19 @@ const ja: Catalog = {
   "sessionStatus.failureAuthentication": "このセッションを確認するにはサインインが必要です",
   "sessionStatus.failureNetwork": "ネットワークの問題によりこのセッションを確認できませんでした",
   "sessionStatus.failureServer": "サーバーがセッションの確認を完了できませんでした",
-  "sessionStatus.homeserver": "ホームサーバー",
   "sessionStatus.identity": "自分の ID",
   "sessionStatus.identityMissing": "ID がありません",
   "sessionStatus.identityUnverified": "ID は未検証です",
   "sessionStatus.identityVerified": "ID を検証済み",
   "sessionStatus.keyBackup": "鍵バックアップ",
   "sessionStatus.lastChecked": "最終確認",
-  "sessionStatus.manageAccount": "アカウントとデバイスを管理",
   "sessionStatus.notChecked": "未確認",
   "sessionStatus.notCrossSigned": "クロス署名なし",
-  "sessionStatus.open": "セッション状態を開く",
-  "sessionStatus.openWithRuntimeWarning": "セッション状態を開く（実行時の警告 {count} 件）",
-  "sessionStatus.openWithRuntimeWarnings": "セッション状態を開く（実行時の警告 {count} 件）",
   "sessionStatus.ownerCrossSigning": "所有者のクロス署名",
   "sessionStatus.recheck": "再確認",
   "sessionStatus.retry": "再試行",
   "sessionStatus.runtimeAlertSecureBackup": "安全なバックアップを利用できません",
-  "sessionStatus.runtimeWarningCount": "実行時の警告 {count} 件",
   "sessionStatus.runtimeWarnings": "実行時の警告",
-  "sessionStatus.runtimeWarningsCount": "実行時の警告 {count} 件",
   "sessionStatus.sync": "同期",
   "sessionStatus.syncError": "エラー",
   "sessionStatus.syncRunning": "実行中",
@@ -4070,7 +4165,6 @@ const ja: Catalog = {
   "sessionStatus.unavailable": "利用不可",
   "sessionStatus.unverified": "未検証",
   "sessionStatus.unknown": "不明",
-  "sessionStatus.userId": "ユーザー ID",
   "sessionStatus.verification": "検証",
   "sessionStatus.verified": "検証済み",
   "settings.accounts": "アカウント",
@@ -4117,6 +4211,7 @@ const ja: Catalog = {
   "settings.updateIdle": "Koushiの新しいバージョンを確認できます。",
   "settings.updateTitle": "ソフトウェアアップデート",
   "settings.updateUnsupported": "このビルドではアプリ内アップデートを利用できません。",
+  "settings.updatePackageManaged": "このインストールのアップデートはパッケージマネージャーから提供されます。",
   "settings.updateCommandFailed": "アップデートの操作を完了できませんでした。もう一度お試しください。",
   "settings.updateCheck": "アップデートを確認",
   "settings.updateUpToDate": "Koushiは最新です（v{version}）。",
@@ -4330,6 +4425,10 @@ const ja: Catalog = {
   "scheduled.sendLater": "あとで送信",
   "scheduled.serverDelayedEvents": "サーバー予約",
   "scheduled.timeInput": "予約送信日時",
+  "scheduled.timeEarlierHour": "1 時間前",
+  "scheduled.timeEarlierTenMinutes": "10 分前",
+  "scheduled.timeLaterTenMinutes": "10 分後",
+  "scheduled.timeLaterHour": "1 時間後",
   "scheduled.title": "予約メッセージ",
   "scheduled.unknownCapability": "対応状況を確認中",
   "trust.acceptVerification": "承認",
@@ -4598,7 +4697,7 @@ const ja: Catalog = {
   "shortcut.noteCallsDeferred": "通話はこのマイルストーンの範囲外です。",
   "shortcut.noteGoHomeAdapted": "一部のMatrixクライアントのmacOS版ではCtrl+Shift+Hですが、この試作ではクロスプラットフォームの1行に統一しています。",
   "shortcut.noteUploadUiDeferred": "アップロードUIはまだ実装されていません。",
-  "shortcut.openUserSettings": "ユーザー設定",
+  "shortcut.openUserSettings": "アカウント設定",
   "shortcut.parityAdapted": "調整済み",
   "shortcut.parityDeferred": "延期",
   "shortcut.parityNotApplicable": "対象外",
@@ -4709,6 +4808,8 @@ const ja: Catalog = {
   "timeline.pinnedMessagesEmpty": "ピン留めメッセージはありません",
   "timeline.pinnedEventUnableToDecrypt": "このメッセージを復号できません",
   "timeline.pinnedEventUnavailable": "ピン留めメッセージを利用できません",
+  "timeline.replyQuoteFailed": "元のメッセージを読み込めませんでした",
+  "timeline.replyQuoteLoading": "元のメッセージを読み込み中…",
   "timeline.replyQuoteMissing": "元のメッセージを利用できません",
   "timeline.replyQuoteUnavailable": "元のメッセージを利用できません",
   "timeline.replyQuoteUnknownSender": "不明な送信者",
@@ -4790,6 +4891,7 @@ const ja: Catalog = {
   "timeline.resendAll": "すべて再送信",
   "timeline.cancelAll": "すべてキャンセル",
   "timeline.downloadMedia": "{filename}をダウンロード",
+  "timeline.downloadDefaultImageName": "Koushi_Image",
   "timeline.encryptedMedia": "暗号化済み",
   "timeline.mediaDownloadPending": "ダウンロード中…",
   "timeline.mediaDownloadFailed": "ダウンロードに失敗しました",
@@ -4836,7 +4938,7 @@ const ja: Catalog = {
   "workspace.searchScope": "検索範囲",
   "workspace.spaceInfoSettings": "スペース情報と設定",
   "workspace.threads": "スレッド",
-  "workspace.userSettings": "ユーザー設定",
+  "workspace.userSettings": "アカウント設定",
   "workspace.workspaces": "ワークスペース",
   "spaceMembers.title": "スペースのメンバー",
   "spaceMembers.search": "スペースのメンバーを検索",
@@ -4877,11 +4979,13 @@ const ja: Catalog = {
   "threads.title": "スレッド",
   "settings.searchHistory": "検索履歴",
   "settings.searchHistoryCrawler": "クローラー",
-  "settings.searchHistoryPause": "クローラーを一時停止",
-  "settings.searchHistoryResume": "クローラーを再開",
+  "settings.searchHistoryPause": "バックグラウンド処理を一時停止",
+  "settings.searchHistoryResume": "バックグラウンド処理を再開",
   "settings.searchHistoryRebuild": "検索データベースを再構築",
   "settings.searchHistoryRebuildConfirm": "検索データベースを再構築しますか？ローカル検索インデックスを消去し、ルーム履歴を再クロールします。",
-  "settings.searchHistorySpeed": "クロール速度",
+  "settings.searchHistoryBudget": "バックグラウンド処理",
+  "settings.searchHistoryBudgetDescription": "検索クロールとメディアの先読みは全アカウントでこの予算を共有します。オフにすると両方を一時停止します。",
+  "settings.searchHistorySpeed": "バックグラウンド処理の速度",
   "settings.searchHistorySpeedStandard": "標準",
   "settings.searchHistorySpeedFast": "高速",
   "settings.searchHistorySpeedSlow": "低速",
@@ -5004,6 +5108,15 @@ const pseudo: Catalog = Object.fromEntries(
 ) as Catalog;
 
 export const catalogs: Record<Locale, Catalog> = { en, ja, pseudo };
+
+/**
+ * Resolve a catalog-owned string that becomes part of a generated artifact and
+ * must not be translated or pseudo-localized (#1135). The id stays in the
+ * catalog so product text keeps one owner.
+ */
+export function tInvariant(id: MessageId): string {
+  return en[id];
+}
 
 export function t(
   id: MessageId,

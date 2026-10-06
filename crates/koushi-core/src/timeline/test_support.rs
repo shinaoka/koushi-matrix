@@ -82,6 +82,7 @@ pub(super) fn timeline_item(
         link_previews: None,
         link_ranges: Vec::new(),
         mentioned_user_ids: Vec::new(),
+        mentions_room: false,
         reactions: Vec::new(),
         can_react: false,
         is_redacted: false,
@@ -195,6 +196,7 @@ pub(super) fn live_tail_test_manager(
         composer_formatting_options: ComposerFormattingOptions::default(),
         account_work: AccountWorkScheduler::default(),
         thread_root_order: koushi_state::TimelineThreadRootOrder::LatestReply,
+        hide_redacted: false,
         thread_root_projection_service: Arc::new(
             Mutex::new(ThreadRootProjectionService::default()),
         ),

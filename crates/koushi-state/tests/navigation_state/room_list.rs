@@ -393,6 +393,93 @@ fn local_alias_update_refreshes_open_dm_room_labels_and_notification_candidate()
 }
 
 #[test]
+fn local_alias_update_keeps_candidate_on_eligible_room_when_muted_room_ties() {
+    let mut state = ready_state();
+    let mut muted_room = rooms().remove(1);
+    muted_room.room_id = "dm-muted".to_owned();
+    muted_room.display_name = "Aaron Upstream".to_owned();
+    muted_room.display_label = "Aaron Upstream".to_owned();
+    muted_room.original_display_label = "Aaron Upstream".to_owned();
+    muted_room.dm_user_ids = vec!["@aaron:example.invalid".to_owned()];
+    let mut eligible_room = muted_room.clone();
+    eligible_room.room_id = "dm-eligible".to_owned();
+    eligible_room.display_name = "Bob Upstream".to_owned();
+    eligible_room.display_label = "Bob Upstream".to_owned();
+    eligible_room.original_display_label = "Bob Upstream".to_owned();
+    eligible_room.dm_user_ids = vec!["@bob:example.invalid".to_owned()];
+    state.rooms = vec![muted_room.clone(), eligible_room];
+    state.room_notification_settings.insert(
+        muted_room.room_id,
+        koushi_state::RoomNotificationSettings {
+            mode: koushi_state::RoomNotificationMode::Mute,
+            ..Default::default()
+        },
+    );
+    let room_notification_modes = std::collections::HashMap::from([(
+        "dm-muted".to_owned(),
+        koushi_state::RoomNotificationMode::Mute,
+    )]);
+    state.native_attention = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+        rooms: &state.rooms,
+        active_room_id: None,
+        muted_room_ids: &[],
+        room_notification_modes: &room_notification_modes,
+        ignored_user_ids: &std::collections::BTreeSet::new(),
+        window_focused: false,
+        observation: NativeAttentionObservationKind::Live,
+        previous_candidate: None,
+        message_previews: false,
+        capabilities: Default::default(),
+    });
+    assert_eq!(
+        state
+            .native_attention
+            .summary
+            .candidate
+            .as_ref()
+            .map(|candidate| candidate.room_display_name.as_str()),
+        Some("Bob Upstream")
+    );
+    assert_eq!(
+        state
+            .native_attention
+            .notification
+            .as_ref()
+            .map(|notification| notification.target.room_id.as_str()),
+        Some("dm-eligible")
+    );
+
+    reduce(
+        &mut state,
+        AppAction::LocalUserAliasUpdateRequested {
+            request_id: 65,
+            user_id: "@bob:example.invalid".to_owned(),
+            alias: Some("Zelda".to_owned()),
+        },
+    );
+
+    assert_eq!(state.rooms[0].display_label, "Aaron Upstream");
+    assert_eq!(state.rooms[1].display_label, "Zelda");
+    assert_eq!(
+        state
+            .native_attention
+            .summary
+            .candidate
+            .as_ref()
+            .map(|candidate| candidate.room_display_name.as_str()),
+        Some("Zelda")
+    );
+    assert_eq!(
+        state
+            .native_attention
+            .notification
+            .as_ref()
+            .map(|notification| notification.title.as_str()),
+        Some("Direct message in Zelda")
+    );
+}
+
+#[test]
 fn room_list_update_replaces_state_and_emits_room_list_event() {
     let mut state = ready_state();
 
@@ -689,6 +776,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
             avatar: None,
             join_rule: None,
             child_room_ids: vec!["room-a".to_owned()],
+            parent_side_child_room_ids: vec!["room-a".to_owned()],
         }],
         rooms: vec![
             RoomSummary {
@@ -777,6 +865,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 avatar: None,
                 join_rule: None,
                 child_room_ids: vec!["room-b".to_owned()],
+                parent_side_child_room_ids: vec!["room-b".to_owned()],
             }],
             rooms: vec![
                 RoomSummary {
@@ -867,6 +956,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
             avatar: None,
             join_rule: None,
             child_room_ids: vec!["room-a".to_owned()],
+            parent_side_child_room_ids: vec!["room-a".to_owned()],
         }],
         rooms: vec![RoomSummary {
             display_name_placeholder: None,
@@ -922,6 +1012,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
                 avatar: None,
                 join_rule: None,
                 child_room_ids: vec!["room-b".to_owned()],
+                parent_side_child_room_ids: vec!["room-b".to_owned()],
             }],
             rooms: vec![RoomSummary {
                 display_name_placeholder: None,
@@ -1014,6 +1105,7 @@ fn room_list_update_keeps_active_dm_global_with_selected_space() {
                 avatar: None,
                 join_rule: None,
                 child_room_ids: vec!["room-a".to_owned()],
+                parent_side_child_room_ids: vec!["room-a".to_owned()],
             }],
             rooms: rooms(),
         },

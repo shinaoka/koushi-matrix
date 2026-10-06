@@ -1,8 +1,8 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 
 use koushi_state::{
     ComposerDocument, ComposerInline, LiveEventReceipts, LiveReadReceipt, MentionIntent,
-    MentionTarget, ReplyQuote, ReplyQuoteState,
+    MentionTarget, ReplyQuoteState,
 };
 
 use matrix_sdk::room::edit::EditedContent;
@@ -42,9 +42,9 @@ fn live_receipt_summary_compacts_large_reader_input_with_exact_total() {
     assert_eq!(summaries[0].total_count, 1_500);
 }
 use koushi_protocol::event::{
-    LinkPreview, LinkPreviewState, TimelineBottomArrival, TimelineFormattedBody, TimelineItemId,
-    TimelineMessageKind, TimelineNoticeI18n, TimelineNoticeI18nKey, TimelineSendFailureReason,
-    TimelineSendState, TimelineSpoilerSpan, TimelineViewportObservation,
+    LinkPreview, LinkPreviewState, TimelineFormattedBody, TimelineItemId, TimelineMessageKind,
+    TimelineNoticeI18n, TimelineNoticeI18nKey, TimelineSendFailureReason, TimelineSendState,
+    TimelineSpoilerSpan,
 };
 
 use koushi_protocol::failure::TimelineFailureKind;
@@ -59,18 +59,18 @@ use matrix_sdk_ui::timeline::ReactionInfo;
 
 use super::super::diagnostics::timeline_item_diagnostic_event;
 use super::{
-    apply_ignored_sender_suppression, composer_document_from_event_json,
+    apply_timeline_item_visibility, composer_document_from_event_json,
     edited_content_for_edit_target, edited_document_content_for_edit_target,
     has_user_visible_content, link_ranges_for_message_projection,
     megolm_message_index_from_original_json, membership_change_projection,
-    mentioned_user_ids_from_event_json, message_edit_target_token, message_projection_from_msgtype,
-    msgtype_carries_editable_caption, project_local_megolm_rotation_reason,
-    reaction_groups_from_sdk, reply_quote_from_message_projection,
-    reset_loading_link_previews_to_pending, room_name_notice_projection, state_event_notice_body,
-    state_event_notice_projection, timeline_item_can_edit, timeline_item_can_react,
-    timeline_item_can_redact, timeline_item_should_be_hidden, validate_cancel_send,
-    validate_redact_reaction, validate_retry_send, validate_send_reaction,
-    visible_missing_reply_detail_event_ids,
+    mentioned_user_ids_from_event_json, mentions_room_from_event_json, message_edit_target_token,
+    message_projection_from_msgtype, msgtype_carries_editable_caption,
+    project_local_megolm_rotation_reason, reaction_groups_from_sdk,
+    reply_quote_from_message_projection, reset_loading_link_previews_to_pending,
+    room_name_notice_projection, state_event_notice_body, state_event_notice_projection,
+    timeline_item_can_edit, timeline_item_can_react, timeline_item_can_redact,
+    timeline_item_should_be_hidden, validate_cancel_send, validate_redact_reaction,
+    validate_retry_send, validate_send_reaction,
 };
 
 use super::super::test_support::{fake_rid, room_key, timeline_item};
@@ -120,16 +120,16 @@ fn ignored_sender_suppression_preserves_divider_and_restores_event() {
     let mut event = timeline_item("$ignored:test", Some("body"), "@ignored:test", false);
     let ignored = BTreeSet::from(["@ignored:test".to_owned()]);
 
-    apply_ignored_sender_suppression(&mut divider, &ignored);
-    apply_ignored_sender_suppression(&mut event, &ignored);
+    apply_timeline_item_visibility(&mut divider, false, &ignored);
+    apply_timeline_item_visibility(&mut event, false, &ignored);
     assert!(
         !divider.is_hidden,
         "ignoring a sender must not hide a date divider"
     );
     assert!(event.is_hidden);
 
-    apply_ignored_sender_suppression(&mut divider, &BTreeSet::new());
-    apply_ignored_sender_suppression(&mut event, &BTreeSet::new());
+    apply_timeline_item_visibility(&mut divider, false, &BTreeSet::new());
+    apply_timeline_item_visibility(&mut event, false, &BTreeSet::new());
     assert!(
         !divider.is_hidden,
         "unignore must leave the date divider visible"
@@ -188,85 +188,6 @@ fn local_megolm_reason_is_exact_and_missing_evidence_is_unavailable() {
             Some(expected)
         );
     }
-}
-
-#[test]
-fn visible_missing_reply_detail_event_ids_only_returns_visible_unrequested_missing_replies() {
-    let mut before = timeline_item("$before:test", Some("before"), "@alice:test", false);
-    before.reply_quote = Some(ReplyQuote {
-        event_id: "$root-before:test".to_owned(),
-        sender: None,
-        sender_label: None,
-        body_preview: None,
-        formatted: None,
-        state: ReplyQuoteState::Missing,
-    });
-    let first_visible = timeline_item("$first-visible:test", Some("first"), "@alice:test", false);
-    let mut missing = timeline_item("$missing:test", Some("missing"), "@alice:test", false);
-    missing.reply_quote = Some(ReplyQuote {
-        event_id: "$root-missing:test".to_owned(),
-        sender: None,
-        sender_label: None,
-        body_preview: None,
-        formatted: None,
-        state: ReplyQuoteState::Missing,
-    });
-    let mut ready = timeline_item("$ready:test", Some("ready"), "@alice:test", false);
-    ready.reply_quote = Some(ReplyQuote {
-        event_id: "$root-ready:test".to_owned(),
-        sender: Some("@bob:test".to_owned()),
-        sender_label: None,
-        body_preview: Some("loaded".to_owned()),
-        formatted: None,
-        state: ReplyQuoteState::Ready,
-    });
-    let mut already_requested = timeline_item(
-        "$already-requested:test",
-        Some("already"),
-        "@alice:test",
-        false,
-    );
-    already_requested.reply_quote = Some(ReplyQuote {
-        event_id: "$root-already:test".to_owned(),
-        sender: None,
-        sender_label: None,
-        body_preview: None,
-        formatted: None,
-        state: ReplyQuoteState::Missing,
-    });
-    let mut after = timeline_item("$after:test", Some("after"), "@alice:test", false);
-    after.reply_quote = Some(ReplyQuote {
-        event_id: "$root-after:test".to_owned(),
-        sender: None,
-        sender_label: None,
-        body_preview: None,
-        formatted: None,
-        state: ReplyQuoteState::Missing,
-    });
-
-    let items = vec![
-        before,
-        first_visible,
-        missing,
-        ready,
-        already_requested,
-        after,
-    ];
-    let requested = HashSet::from(["$already-requested:test".to_owned()]);
-
-    let event_ids = visible_missing_reply_detail_event_ids(
-        &items,
-        &TimelineViewportObservation {
-            first_visible_event_id: Some("$first-visible:test".to_owned()),
-            last_visible_event_id: Some("$already-requested:test".to_owned()),
-            visible_gap_ids: Vec::new(),
-            bottom_arrival: TimelineBottomArrival::User,
-            at_bottom: false,
-        },
-        &requested,
-    );
-
-    assert_eq!(event_ids, vec!["$missing:test".to_owned()]);
 }
 
 fn reaction_groups_fixture() -> ReactionsByKeyBySender {
@@ -365,6 +286,46 @@ fn mentioned_user_ids_ignore_room_mentions() {
         }))
         .is_empty()
     );
+}
+
+/// #1123: the spec-standard Element room mention carries only the plain body
+/// and the flag, so the flag itself has to drive the pill.
+#[test]
+fn room_mentions_come_from_the_event_mentions_metadata() {
+    assert!(mentions_room_from_event_json(&serde_json::json!({
+        "content": { "body": "@room ", "m.mentions": { "room": true }, "msgtype": "m.text" }
+    })));
+    // A text that only looks like one, and a flag that is false or missing,
+    // never become a room mention.
+    assert!(!mentions_room_from_event_json(&serde_json::json!({
+        "content": { "body": "@room" }
+    })));
+    assert!(!mentions_room_from_event_json(&serde_json::json!({
+        "content": { "body": "@room", "m.mentions": { "room": false } }
+    })));
+    assert!(!mentions_room_from_event_json(&serde_json::json!({
+        "content": { "body": "@Alice", "m.mentions": { "user_ids": ["@alice:example.test"] } }
+    })));
+}
+
+#[test]
+fn room_mentions_follow_the_edit_replacement() {
+    assert!(mentions_room_from_event_json(&serde_json::json!({
+        "content": {
+            "body": "* plain",
+            "m.relates_to": { "rel_type": "m.replace", "event_id": "$original:example.test" },
+            "m.new_content": { "body": "@room", "m.mentions": { "room": true } }
+        }
+    })));
+    // The edited-away room mention no longer applies.
+    assert!(!mentions_room_from_event_json(&serde_json::json!({
+        "content": {
+            "body": "* @room",
+            "m.mentions": { "room": true },
+            "m.relates_to": { "rel_type": "m.replace", "event_id": "$original:example.test" },
+            "m.new_content": { "body": "plain", "m.mentions": {} }
+        }
+    })));
 }
 
 #[test]

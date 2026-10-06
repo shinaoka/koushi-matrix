@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_sdk::MatrixClientSession;
-use koushi_state::{AppAction, ComposerDocument, ComposerFormattingOptions, MediaTransferProgress};
+use koushi_state::{
+    AppAction, ComposerDocument, ComposerFormattingOptions, MediaTransferProgress, ReplyQuoteState,
+};
 
 use crate::send_diagnostics::{SendFailureDiagnostic, classify_send_failure};
 use matrix_sdk::attachment::AttachmentConfig;
@@ -48,7 +50,7 @@ use super::composer::{
 use super::diagnostics::trace_timeline_items;
 use super::display_projection::{DisplayProjectionContext, DisplayProjectionState};
 use super::item_projection::{
-    apply_ignored_sender_suppression, apply_link_previews_to_item, attachment_info_for_upload,
+    apply_link_previews_to_item, apply_timeline_item_visibility, attachment_info_for_upload,
     attachment_reply_for_key, is_attention_eligible_event, remember_local_echo,
     sdk_item_to_timeline_item_with_send_states, send_failure_reason, thumbnail_for_upload,
     timeline_media_source_from_sdk, timeline_room_id, validate_cancel_send, validate_retry_send,
@@ -432,15 +434,20 @@ pub(super) fn pending_send_item(
                 .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
                 .unwrap_or_default(),
         ),
+        // The owning actor resolves this from its known originals before the
+        // pending send is displayed (#1120).
+        reply_quote: in_reply_to_event_id.as_deref().map(|event_id| {
+            super::reply_quote_hydration::placeholder_quote(event_id, ReplyQuoteState::Loading)
+        }),
         in_reply_to_event_id,
         formatted: None,
-        reply_quote: None,
         thread_root,
         thread_summary: None,
         media: None,
         link_previews: None,
         link_ranges: Vec::new(),
         mentioned_user_ids: Vec::new(),
+        mentions_room: false,
         reactions: Vec::new(),
         can_react: false,
         is_redacted: false,
@@ -2074,7 +2081,11 @@ impl TimelineActor {
                 )
             })
             .map(|mut item| {
-                apply_ignored_sender_suppression(&mut item, &self.ignored_user_ids);
+                apply_timeline_item_visibility(
+                    &mut item,
+                    self.hide_redacted,
+                    &self.ignored_user_ids,
+                );
                 item
             })
             .collect();

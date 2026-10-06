@@ -33,6 +33,7 @@ import type {
   ViewDelivery
 } from "../domain/coreEvents";
 import { roomTimelineKey } from "../domain/coreEvents";
+import type { DesktopNotificationActivation } from "../domain/desktopNotification";
 import { applyDeltaToState, useAppStore } from "../domain/appStore";
 import {
   SNAPSHOT_SCHEMA_VERSION,
@@ -47,6 +48,7 @@ import {
   type DesktopSnapshot,
   type DesktopUpdateState,
   type E2eeTrustState,
+  type AccountTabsSnapshot,
   type LocaleDisplayProfile,
   type LocaleSettings,
   type NavigationPreferenceUpdate,
@@ -101,7 +103,9 @@ function roleOptionsForHarnessResponse(powerLevel: number) {
 // exactly one entry module, so a local interface + a single assignment cast is
 // sufficient and keeps the two harnesses independent.
 interface AppHarnessControl {
+  /** Raw Tauri calls, including transport metadata such as accountTabId. */
   invocations(): readonly IpcInvocation[];
+  /** Command arguments without transport metadata, for behavior assertions. */
   invocationsOf(command: string): IpcInvocation[];
   clearInvocations(): void;
   invoke(command: string, args?: Record<string, unknown>): Promise<unknown>;
@@ -114,6 +118,8 @@ interface AppHarnessControl {
   setSnapshot(snapshot: DesktopSnapshot): void;
   pushCoreEvent(event: CoreEventPayload): Promise<void>;
   pushDesktopMenu(action: string): Promise<void>;
+  pushNotificationActivation(activation: DesktopNotificationActivation): Promise<void>;
+  pushAccountTabs(snapshot: AccountTabsSnapshot): Promise<void>;
   pushDesktopUpdate(state: DesktopUpdateState): Promise<void>;
   pushStateUpdate(envelope?: StateUpdateEnvelope): void;
   currentSnapshot(): DesktopSnapshot;
@@ -159,7 +165,8 @@ function readySnapshot(
       display_name: SPACE_NAME,
       avatar: null,
       join_rule: null,
-      child_room_ids: [ROOM_ID]
+      child_room_ids: [ROOM_ID],
+      parent_side_child_room_ids: [ROOM_ID]
     },
     ...(overrides.extraSpaces ?? [])
   ];
@@ -170,7 +177,13 @@ function readySnapshot(
       avatar: null,
       unread_count: 0,
       highlight_count: 0,
-      is_active: false
+      is_active: false,
+      leave_candidates: [{
+        room_id: ROOM_ID,
+        display_name: ROOM_NAME,
+        avatar: null,
+        in_other_space: false
+      }]
     },
     ...(overrides.extraRailItems ?? [])
   ];
@@ -738,7 +751,8 @@ function afterCreateSpaceSnapshot(): DesktopSnapshot {
     display_name: "Created Space",
     avatar: null,
     join_rule: null,
-    child_room_ids: []
+    child_room_ids: [],
+    parent_side_child_room_ids: []
   });
   snapshot.state.ui.navigation.active_space_id = newSpaceId;
   snapshot.sidebar.active_space_id = newSpaceId;
@@ -748,7 +762,8 @@ function afterCreateSpaceSnapshot(): DesktopSnapshot {
     avatar: null,
     unread_count: 0,
     highlight_count: 0,
-    is_active: true
+    is_active: true,
+    leave_candidates: []
   });
   return snapshot;
 }
@@ -758,6 +773,22 @@ function afterCreateSpaceSnapshot(): DesktopSnapshot {
 // ---------------------------------------------------------------------------
 
 const mock = new TauriIpcMock();
+const HARNESS_ACCOUNT_TAB_ID = "harness-account-tab";
+function harnessAccountTabsSnapshot() {
+  return {
+    selectedTabId: HARNESS_ACCOUNT_TAB_ID,
+    tabs: [{
+      id: HARNESS_ACCOUNT_TAB_ID,
+      accountKey: "harness-account",
+      homeserver: HOMESERVER,
+      displayName: USER_ID,
+      avatarSourceRef: null,
+      status: "ready" as const,
+      unreadCount: 0
+    }],
+    badgeCount: 0
+  };
+}
 // Native confirmation dialogs are accepted by default in the unattended app
 // harness. Individual dialog behavior belongs in focused unit tests; existing
 // end-to-end flows should continue past an explicit destructive confirmation.
@@ -1262,6 +1293,8 @@ function rejectDeferredCommand(command: string, index: number): void {
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
 // any unanticipated snapshot read still renders the shell.
 mock.setCommandResponse("get_snapshot", () => currentSnapshot);
+mock.setCommandResponse("list_account_tabs", harnessAccountTabsSnapshot);
+mock.setCommandResponse("select_account_tab", harnessAccountTabsSnapshot);
 // Explicit adapter projections: tests publish later states rather than emulate the updater.
 mock.setCommandResponse("get_desktop_update_state", () => ({ kind: "idle" }));
 mock.setCommandResponse("check_for_desktop_update", () => null);
@@ -1851,7 +1884,7 @@ mock.setCommandResponse(
 );
 mock.setCommandResponse("mark_room_as_read", () => currentSnapshot);
 mock.setCommandResponse("mark_room_as_unread", () => currentSnapshot);
-mock.setCommandResponse("leave_room", ({ roomId }: { roomId: string }) => {
+function applyHarnessLeave(roomId: string): DesktopSnapshot {
   const removedSpace = currentSnapshot.state.domain.spaces.find((space) => space.space_id === roomId);
   const nextSpaces = currentSnapshot.state.domain.spaces.filter((space) => space.space_id !== roomId);
   const nextRooms = removedSpace
@@ -1917,7 +1950,17 @@ mock.setCommandResponse("leave_room", ({ roomId }: { roomId: string }) => {
           }
     }
   });
-});
+}
+mock.setCommandResponse("leave_room", ({ roomId }: { roomId: string }) => applyHarnessLeave(roomId));
+mock.setCommandResponse(
+  "leave_space",
+  ({ spaceId, childRoomIds }: { spaceId: string; childRoomIds: string[] }) => {
+    for (const roomId of childRoomIds) {
+      applyHarnessLeave(roomId);
+    }
+    return applyHarnessLeave(spaceId);
+  }
+);
 mock.setCommandResponse(
   "set_room_notification_mode",
   ({ roomId, mode }: { roomId: string; mode: RoomNotificationMode }) => {
@@ -3550,13 +3593,16 @@ mock.setCommandResponse("send_prepared_uploads", ({
     accountUserId,
     accountDeviceId
   })) {
-    return { acceptedRevision: null, snapshot: currentSnapshot };
+    return currentSnapshot;
   }
   for (const key of preparedUploadBytes.keys()) {
     if (key.startsWith(`${composerTargetKey(target)}:`)) preparedUploadBytes.delete(key);
   }
+  // #1130: the staged-attachment send settles the composer draft revision
+  // without consuming its text, so it removes the sent items and leaves the
+  // typed draft in the composer.
   const withoutUploads = replaceStagedUploadsForTarget(currentSnapshot, target, []);
-  const next =
+  const settled =
     target.kind === "main"
       ? {
           ...withoutUploads,
@@ -3568,80 +3614,17 @@ mock.setCommandResponse("send_prepared_uploads", ({
                 ...withoutUploads.state.ui.timeline,
                 composer: {
                   ...withoutUploads.state.ui.timeline.composer,
-                  draft:
-                    compareComposerDraftRevisions(
-                      withoutUploads.state.ui.timeline.composer.draft_revision,
-                      draftRevision
-                    ) > 0
-                      ? withoutUploads.state.ui.timeline.composer.draft
-                      : "",
                   draft_revision: nextComposerDraftRevision(
                     withoutUploads.state.ui.timeline.composer.draft_revision,
                     draftRevision
-                  ),
-                  last_accepted_clear_revision:
-                    compareComposerDraftRevisions(
-                      withoutUploads.state.ui.timeline.composer.draft_revision,
-                      draftRevision
-                    ) <= 0
-                      ? nextComposerDraftRevision(
-                          withoutUploads.state.ui.timeline.composer.draft_revision,
-                          draftRevision
-                        )
-                      : withoutUploads.state.ui.timeline.composer.last_accepted_clear_revision
+                  )
                 }
               }
             }
           }
         }
-      : withoutUploads.state.ui.thread.kind === "open" &&
-          withoutUploads.state.ui.thread.composer
-        ? {
-            ...withoutUploads,
-            state: {
-              ...withoutUploads.state,
-              ui: {
-                ...withoutUploads.state.ui,
-                thread: {
-                  ...withoutUploads.state.ui.thread,
-                  composer: {
-                    ...withoutUploads.state.ui.thread.composer,
-                    draft:
-                      compareComposerDraftRevisions(
-                        withoutUploads.state.ui.thread.composer.draft_revision,
-                        draftRevision
-                      ) > 0
-                        ? withoutUploads.state.ui.thread.composer.draft
-                        : "",
-                    draft_revision: nextComposerDraftRevision(
-                      withoutUploads.state.ui.thread.composer.draft_revision,
-                      draftRevision
-                    ),
-                    last_accepted_clear_revision:
-                      compareComposerDraftRevisions(
-                        withoutUploads.state.ui.thread.composer.draft_revision,
-                        draftRevision
-                      ) <= 0
-                        ? nextComposerDraftRevision(
-                            withoutUploads.state.ui.thread.composer.draft_revision,
-                            draftRevision
-                          )
-                        : withoutUploads.state.ui.thread.composer
-                            .last_accepted_clear_revision
-                  }
-                }
-              }
-            }
-          }
-        : withoutUploads;
-  const snapshot = setCurrentSnapshot(next);
-  const acceptedRevision =
-    target.kind === "main"
-      ? snapshot.state.ui.timeline.composer.draft_revision
-      : snapshot.state.ui.thread.kind === "open" && snapshot.state.ui.thread.composer
-        ? snapshot.state.ui.thread.composer.draft_revision
-        : null;
-  return { acceptedRevision, snapshot };
+      : withoutUploads;
+  return setCurrentSnapshot(settled);
 });
 mock.setCommandResponse("update_staged_upload_caption", ({ target, stagedId, document }: {
   target: ComposerTarget;
@@ -3899,7 +3882,13 @@ const bootSettlement = new Promise<void>((resolve) => {
 
 const harnessControl: AppHarnessControl = {
   invocations: () => mock.recordedInvocations(),
-  invocationsOf: (command) => mock.invocationsOf(command),
+  invocationsOf: (command) =>
+    mock.invocationsOf(command).map((invocation) => ({
+      ...invocation,
+      args: Object.fromEntries(
+        Object.entries(invocation.args).filter(([key]) => key !== "accountTabId")
+      )
+    })),
   clearInvocations: () => mock.clearInvocations(),
   invoke: async (command, args = {}) => {
     await bootSettlement;
@@ -3921,6 +3910,9 @@ const harnessControl: AppHarnessControl = {
     mock.setCommandResponse("get_snapshot", () => currentSnapshot);
   },
   pushDesktopMenu: (action) => emit("koushi-desktop://menu", action),
+  pushNotificationActivation: (activation) =>
+    emit("koushi-desktop://notification-activated", activation),
+  pushAccountTabs: (snapshot) => emit("koushi-desktop://account-tabs-update", snapshot),
   pushDesktopUpdate: (state) => emit("koushi-desktop://update", state),
   pushCoreEvent: (event) => {
     // Records that a test now owns the CoreEvent stream so the boot seed

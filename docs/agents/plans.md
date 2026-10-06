@@ -69,6 +69,7 @@ only because older issues link to them; they do not govern current work.
 | Area | Plans |
 | --- | --- |
 | Media / file timeline | [Phase A](../superpowers/plans/2026-06-15-media-phase-a.md) |
+| Right-panel/composer containment (#1119, #1121 Phase B) | [Phase B](../superpowers/plans/2026-10-05-issue1119-panel-containment.md) |
 | History export archive: room and Space folders with HTML, attachments, resume | [Phase A](../superpowers/plans/2026-09-25-history-export-archive.md), [spec](../superpowers/specs/2026-09-25-history-export-archive-design.md) |
 | Room-history export, Element-compatible JSON (#59) | [Phase A](../superpowers/plans/2026-09-23-issue59-room-history-export-phase-a.md), [Phase B](../superpowers/plans/2026-09-23-issue59-room-history-export-phase-b.md) |
 | Media preparation/cache retention (#547) | [plan](../superpowers/plans/2026-08-18-issue547-memory-bounds.md) |
@@ -84,6 +85,7 @@ only because older issues link to them; they do not govern current work.
 | Room-list session-fence acceptance (#659) | [Phase A](../superpowers/plans/2026-08-24-issue659-room-list-session-fence-acceptance.md) |
 | Authentication invalidation diagnostics and UI (#608) | [Phase A](../superpowers/plans/2026-08-24-issue608-authentication-invalidation-diagnostics.md) |
 | Rust-owned live thread-summary authority (#678) | [plan](../superpowers/plans/2026-08-25-issue678-rust-thread-summary-authority.md) |
+| Thread reply quote hydration and panel containment (#1121, #1120, #1119) | [plan](../superpowers/plans/2026-10-05-issue1121-thread-reply-quote-and-panel.md) |
 | Historical sender-profile hydration (#688) | [Phase A](../superpowers/plans/2026-08-25-issue688-historical-sender-profiles.md) |
 | Secure Backup startup convergence | [plan](../superpowers/plans/2026-08-25-secure-backup-startup-convergence.md) |
 | User Settings session/account convergence | [plan](../superpowers/plans/2026-08-25-user-settings-session-convergence.md) |

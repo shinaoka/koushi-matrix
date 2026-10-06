@@ -199,6 +199,9 @@ pub(crate) enum AccountMessage {
     },
     DisplayPolicyChanged {
         thread_root_order: koushi_state::TimelineThreadRootOrder,
+        /// #1110: applied inside Rust so the renderer never recomputes
+        /// visibility from a display preference.
+        hide_redacted: bool,
     },
     TimelineCommandWithComposerFormatting {
         command: TimelineCommand,
@@ -560,6 +563,21 @@ pub(crate) enum AccountMessage {
     ContactSecurityStoreChanged {
         generation: u64,
     },
+    ContactSecurityLoadFinished {
+        request_id: RequestId,
+        generation: u64,
+        user_id: String,
+        result:
+            Result<koushi_state::ContactSecuritySummary, koushi_state::ContactSecurityFailureKind>,
+        changes:
+            Result<koushi_sdk::ContactSecurityChanges, koushi_state::ContactSecurityFailureKind>,
+    },
+    ContactUserVerificationRequestFinished {
+        request_id: RequestId,
+        generation: u64,
+        target: VerificationTarget,
+        result: Result<koushi_sdk::MatrixVerificationRequestHandle, koushi_sdk::E2eeTrustError>,
+    },
     VerificationRequestObserverEnded {
         flow_id: u64,
     },
@@ -639,9 +657,14 @@ pub struct AccountActorHandle {
     #[cfg(any(test, feature = "test-hooks"))]
     residency_room_operation_reached_count: Arc<AtomicUsize>,
     native_artifacts: Arc<dyn NativeArtifactPort>,
+    account_work: crate::account_work::AccountWorkScheduler,
 }
 
 impl AccountActorHandle {
+    pub(crate) fn set_search_crawler_speed(&self, speed: koushi_state::SearchCrawlerSpeed) {
+        self.account_work.set_search_crawler_speed(speed);
+    }
+
     pub(crate) fn avatar_demand_context(
         &self,
         account_id: String,
@@ -938,6 +961,7 @@ impl AccountActorHandle {
             avatar_session_generation: Arc::new(AtomicU64::new(0)),
             focused_projection_rx: Arc::new(Mutex::new(None)),
             native_artifacts: Arc::new(crate::native_artifact::RejectingNativeArtifactPort),
+            account_work: crate::account_work::AccountWorkScheduler::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             residency_room_tx: {
                 let (room_tx, _room_rx) = mpsc::channel(1);
@@ -1147,6 +1171,10 @@ pub struct AccountActor {
     /// Open contact's security-details observer (#1024).
     pub(super) contact_security: Option<super::contact_security::ContactSecurityObservation>,
     pub(super) contact_security_generation: u64,
+    pub(super) contact_security_load_task: Option<crate::executor::JoinHandle<()>>,
+    pub(super) pending_contact_verification_send:
+        Option<super::contact_security::PendingContactVerificationSend>,
+    pub(super) contact_verification_send_generation: u64,
     /// Epoch attached to incoming verification messages from the active SDK client.
     pub(super) incoming_verification_session_generation: u64,
     /// SDK session-change observer for auth invalidation / soft logout.
@@ -1238,6 +1266,7 @@ impl AccountActor {
             initial_send_read_receipts,
             sliding_sync_diagnostics,
             Arc::new(crate::native_artifact::RejectingNativeArtifactPort),
+            crate::account_work::AccountWorkScheduler::default(),
         )
     }
 
@@ -1254,6 +1283,7 @@ impl AccountActor {
         initial_send_read_receipts: bool,
         sliding_sync_diagnostics: crate::SlidingSyncDiagnostics,
         native_artifacts: Arc<dyn NativeArtifactPort>,
+        account_work: crate::account_work::AccountWorkScheduler,
     ) -> AccountActorHandle {
         // AppActor forwards every Room/Timeline/Sync command here via send().await;
         // sized so heavy sync does not block the AppActor's forwarding.
@@ -1263,7 +1293,6 @@ impl AccountActor {
         let data_dir = store_actor.data_dir().to_path_buf();
         // Spawn RoomActor once at AccountActor creation. It starts with no
         // session and waits for RoomMessage::SyncStarted.
-        let account_work = crate::account_work::AccountWorkScheduler::default();
         let room_actor = crate::room::RoomActorHandle::spawn_with_account_work(
             action_tx.clone(),
             event_tx.clone(),
@@ -1288,6 +1317,7 @@ impl AccountActor {
         let residency_room_tx = room_actor.sender();
         #[cfg(any(test, feature = "test-hooks"))]
         let residency_room_operation_reached_count = room_actor.operation_test_reached_count();
+        let handle_account_work = account_work.clone();
         let actor = AccountActor {
             session: None,
             session_key_id: None,
@@ -1411,6 +1441,9 @@ impl AccountActor {
             incoming_verification_observer: None,
             contact_security: None,
             contact_security_generation: 0,
+            contact_security_load_task: None,
+            pending_contact_verification_send: None,
+            contact_verification_send_generation: 0,
             incoming_verification_session_generation: 0,
             session_change_observer: None,
             account_hydration_task: None,
@@ -1445,6 +1478,7 @@ impl AccountActor {
             #[cfg(any(test, feature = "test-hooks"))]
             residency_room_operation_reached_count,
             native_artifacts,
+            account_work: handle_account_work,
         }
     }
 
@@ -1655,10 +1689,13 @@ impl AccountActor {
                         )
                         .await;
                 }
-                AccountMessage::DisplayPolicyChanged { thread_root_order } => {
+                AccountMessage::DisplayPolicyChanged {
+                    thread_root_order,
+                    hide_redacted,
+                } => {
                     let _ = self
                         .timeline_manager
-                        .set_display_policy(thread_root_order)
+                        .set_display_policy(thread_root_order, hide_redacted)
                         .await;
                 }
                 AccountMessage::TimelineCommandWithComposerFormatting {
@@ -2582,6 +2619,29 @@ impl AccountActor {
                 AccountMessage::ContactSecurityStoreChanged { generation } => {
                     self.handle_contact_security_store_changed(generation).await;
                 }
+                AccountMessage::ContactSecurityLoadFinished {
+                    request_id,
+                    generation,
+                    user_id,
+                    result,
+                    changes,
+                } => {
+                    self.handle_contact_security_load_finished(
+                        request_id, generation, user_id, result, changes,
+                    )
+                    .await;
+                }
+                AccountMessage::ContactUserVerificationRequestFinished {
+                    request_id,
+                    generation,
+                    target,
+                    result,
+                } => {
+                    self.handle_contact_user_verification_request_finished(
+                        request_id, generation, target, result,
+                    )
+                    .await;
+                }
                 AccountMessage::VerificationRequestObserverEnded { flow_id } => {
                     if self.active_verification_target(flow_id).is_some() {
                         record_sas_verification_event(
@@ -3055,6 +3115,25 @@ impl AccountActor {
 
     pub(super) fn emit(&self, event: CoreEvent) {
         let _ = self.event_tx.send(event);
+    }
+
+    /// Announces admission for each held `LoggedIn`; the held event itself
+    /// still waits for trust promotion.
+    pub(super) fn emit_login_admitted(&self, ready_events: &[CoreEvent]) {
+        for event in ready_events {
+            if let CoreEvent::Account(koushi_protocol::event::AccountEvent::LoggedIn {
+                request_id,
+                account_key,
+            }) = event
+            {
+                self.emit(CoreEvent::Account(
+                    koushi_protocol::event::AccountEvent::LoginAdmitted {
+                        request_id: *request_id,
+                        account_key: account_key.clone(),
+                    },
+                ));
+            }
+        }
     }
 
     pub(super) fn emit_failure(&self, request_id: RequestId, failure: CoreFailure) {

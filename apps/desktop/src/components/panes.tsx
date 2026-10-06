@@ -67,7 +67,7 @@ import {
   PinnedMessagesEntry,
   SearchResults
 } from "./mediaLists";
-import { Composer } from "./composer";
+import { Composer, type ComposerSendingAccount } from "./composer";
 import { UploadStagingDialog, uploadStagingItemsAreSendable } from "./dialogs";
 import { ImeSafeForm, ImeTextField } from "./ImeTextControl";
 import { useStableEvent } from "./useStableEvent";
@@ -709,6 +709,7 @@ export function SummaryTile({ label, value }: { label: string; value: string }) 
 
 export function TimelinePane({
   activeRoomName,
+  sendingAccount = null,
   canEdit = true,
   composerDocument,
   composerNotice = null,
@@ -720,6 +721,7 @@ export function TimelinePane({
   showSearchResults,
   snapshot,
   timelineTransport,
+  accountTabId,
   onCancelReply,
   onCancelScheduledSend,
   onAttachFiles,
@@ -734,7 +736,6 @@ export function TimelinePane({
   onComposerMathModeChange,
   onRecentEmojisChange = () => undefined,
   onMentionQueryChange,
-  onEditMessage,
   onOpenContextMenu,
   onOpenThread,
   onRedactMessage,
@@ -758,6 +759,7 @@ export function TimelinePane({
   onTimelineDiagnosticLogEntry
 }: {
   activeRoomName: string;
+  sendingAccount?: ComposerSendingAccount | null;
   canEdit?: boolean;
   composerDocument: ComposerDocument;
   composerDraftKey?: string;
@@ -768,6 +770,7 @@ export function TimelinePane({
   showSearchResults: boolean;
   snapshot: DesktopSnapshot;
   timelineTransport: TimelineTransport | null;
+  accountTabId?: string;
   onCancelReply: () => void;
   onCancelScheduledSend: (scheduledId: string) => void;
   onAttachFiles: (files: File[]) => void | Promise<void>;
@@ -789,7 +792,6 @@ export function TimelinePane({
     surface: MentionSurface,
     query: string | null
   ) => void;
-  onEditMessage: (message: { body: string | null; room_id: string; event_id: string }) => void;
   onOpenContextMenu: OpenContextMenu;
   onOpenThread: TimelineRowActionHandlers["onOpenThread"];
   onRedactMessage: (roomId: string, eventId: string) => void;
@@ -934,7 +936,6 @@ export function TimelinePane({
       onMentionQueryChangeStable(timelineRoomId, "main", query);
     }
   });
-  const onEditMessageStable = useStableEvent(onEditMessage);
   const onOpenContextMenuStable = useStableEvent(onOpenContextMenu);
   const onOpenThreadStable = useStableEvent(onOpenThread);
   const onRedactMessageStable = useStableEvent(onRedactMessage);
@@ -1075,6 +1076,7 @@ export function TimelinePane({
               }
               roomId={timelineRoomId}
               timelineKey={timelineKey!}
+              accountTabId={accountTabId}
               isAnchored={Boolean(mainTimelineAnchorEventId)}
               onReturnToLive={onReturnToLive}
               liveLatestEventId={liveLatestEventId}
@@ -1134,7 +1136,6 @@ export function TimelinePane({
                   }
                   currentUserId={currentUserId}
                   onOpenContextMenu={onOpenContextMenuStable}
-                  onEditMessage={onEditMessageStable}
                   onOpenThread={onOpenThreadStable}
                   onRedactMessage={onRedactMessageStable}
                   profileUsers={snapshot.state.domain.profile.users}
@@ -1174,6 +1175,7 @@ export function TimelinePane({
         />
       ) : null}
       <Composer
+        sendingAccount={sendingAccount}
         canEdit={canEdit}
         composerMode={composerModeForComposer}
         preferSendOnForwardTab

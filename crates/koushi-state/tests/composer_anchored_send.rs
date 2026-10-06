@@ -274,6 +274,8 @@ fn accepted_attachments(room_id: &str, state: &AppState) -> AppAction {
             room_id: room_id.to_owned(),
         },
         submitted_revision: state.composer_drafts.room_revision(room_id),
+        // #1130: a staged-attachment send settles the draft it never dispatched.
+        consumes_draft: false,
     }
 }
 
@@ -299,6 +301,73 @@ fn accepted_attachment_send_returns_anchored_main_pane_to_live() {
     assert_returned_to_live(&state);
 }
 
+/// #1130: the staged-attachment send dispatches only the staged items, so
+/// accepting it must settle the draft revision without deleting the text the
+/// user still has to send. The #1037 return-to-live behaviour is unchanged.
+#[test]
+fn accepted_attachment_send_settles_the_draft_without_clearing_it() {
+    let mut state = selected_room_state();
+    anchor_main_pane(&mut state);
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChanged {
+            room_id: ROOM.to_owned(),
+            document: koushi_state::ComposerDocument::from_plain_text("Here is the error:"),
+        },
+    );
+    let revision_before = state.composer_drafts.room_revision(ROOM);
+    assert_eq!(state.timeline.composer.draft, "Here is the error:");
+
+    let action = accepted_attachments(ROOM, &state);
+    let effects = reduce(&mut state, action);
+
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: ROOM.to_owned(),
+            }),
+            cancel_pending_navigation_effect(),
+        ]
+    );
+    assert_returned_to_live(&state);
+    assert_eq!(state.timeline.composer.draft, "Here is the error:");
+    assert_eq!(state.timeline.composer.document.inlines.len(), 1);
+    assert!(
+        state.composer_drafts.room_revision(ROOM) > revision_before,
+        "the settled revision still advances"
+    );
+}
+
+/// The text-consuming path keeps clearing: a plain or reply send really did
+/// dispatch the draft.
+#[test]
+fn accepted_text_send_still_clears_the_draft() {
+    let mut state = selected_room_state();
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChanged {
+            room_id: ROOM.to_owned(),
+            document: koushi_state::ComposerDocument::from_plain_text("sent body"),
+        },
+    );
+
+    let submitted_revision = state.composer_drafts.room_revision(ROOM);
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftAccepted {
+            target: koushi_state::ComposerTarget::Main {
+                room_id: ROOM.to_owned(),
+            },
+            submitted_revision,
+            consumes_draft: true,
+        },
+    );
+
+    assert_eq!(state.timeline.composer.draft, "");
+    assert!(state.timeline.composer.document.inlines.is_empty());
+}
+
 #[test]
 fn rejected_or_other_target_attachment_acceptance_keeps_navigation() {
     let mut state = selected_room_state();
@@ -312,6 +381,7 @@ fn rejected_or_other_target_attachment_acceptance_keeps_navigation() {
                 room_id: ROOM.to_owned(),
             },
             submitted_revision: koushi_state::ComposerDraftRevision::MAX,
+            consumes_draft: false,
         },
     );
     assert!(stale.is_empty());
@@ -332,6 +402,7 @@ fn rejected_or_other_target_attachment_acceptance_keeps_navigation() {
                 root_event_id: "$root:example.test".to_owned(),
             },
             submitted_revision: 0.into(),
+            consumes_draft: false,
         },
     );
     assert!(

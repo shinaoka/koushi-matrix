@@ -1,4 +1,8 @@
 use super::*;
+use koushi_core::{
+    NativeArtifactPort, NativeArtifactRegistry, account_runtime_manager::AccountRuntimeManager,
+    settings::SettingsStore, store::StoreActor,
+};
 use std::future::{Future, poll_fn};
 use std::task::Poll;
 use tokio::sync::oneshot;
@@ -62,7 +66,14 @@ async fn restart_is_not_requested_until_updater_and_core_have_settled() {
 #[tokio::test]
 async fn core_exit_waits_for_actor_completion_not_just_command_submission() {
     let directory = tempfile::tempdir().unwrap();
-    let runtime = CoreRuntime::start_with_data_dir(directory.path().to_owned());
+    let native_artifact_factory: std::sync::Arc<
+        dyn Fn() -> std::sync::Arc<dyn NativeArtifactPort> + Send + Sync,
+    > = std::sync::Arc::new(|| std::sync::Arc::new(NativeArtifactRegistry::new()));
+    let runtime = AccountRuntimeManager::new(
+        StoreActor::new(directory.path()),
+        SettingsStore::new(directory.path()),
+        native_artifact_factory,
+    );
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         stop_core_for_exit(&runtime),
@@ -70,10 +81,7 @@ async fn core_exit_waits_for_actor_completion_not_just_command_submission() {
     .await
     .unwrap();
     assert_eq!(outcome, CoreExitOutcome::Completed);
-    // The acknowledged cleanup barrier is the contract, not the scheduler's
-    // moment of marking the enclosing JoinHandle finished.
-    assert!(runtime.wait_for_shutdown().await.is_ok());
-    runtime.shutdown().await;
+    assert!(runtime.tab_descriptors().is_empty());
 }
 
 #[tokio::test]

@@ -379,6 +379,7 @@ describe("i18n message catalog", () => {
       ...contextMenuItems({
         kind: "message",
         canManage: true,
+        canEdit: true,
         canReply: true,
         hasThread: true,
         senderUserId: "@a:example.invalid",
@@ -416,10 +417,14 @@ const japaneseIdenticalMessageAllowlist = new Set<MessageId>([
   "upload.resizeEighth",
   "upload.previewActualSize",
   "upload.formatWebp",
+  // #1135: part of a generated, locale-independent filename rather than prose.
+  "timeline.downloadDefaultImageName",
   "upload.formatJpeg",
   "upload.formatPng",
   "auth.flowOidc",
   "auth.flowToken",
+  // "Matrix ID" is the protocol's product term in both locales (Element X ja).
+  "auth.matrixId",
   "roomList.filterPeople",
   "space.directMessages",
   "settings.fontInter",

@@ -99,6 +99,7 @@ moderation=ok
 permission_guard=ok
 space_access=ok
 space_add_existing=ok
+space_leave_children=ok
 timeline=ok
 hide_redacted=ok
 activity_recent=ok
@@ -166,7 +167,9 @@ existing room version 12 room that only claims the Space as its parent through
 Core `SetSpaceChild`, then reads the Space's `m.space.child` from the
 homeserver with a disposable auditor device of the same user and requires
 nonempty routing; a room created inside the Space must be linked the same way
-(#1007). The core lane creates a disposable management room,
+(#1007). `space_leave_children=ok` leaves a disposable Space together with two
+of its three joined rooms through Core `LeaveSpace`; the unselected child and a
+room outside the Space named in the command must stay joined. The core lane creates a disposable management room,
 loads Rust-owned settings/permission facts, updates a setting through
 `RoomCommand`, rejects an unauthorized moderation command before SDK mutation,
 and performs an authorized moderation action. The lane must not print room IDs,
@@ -524,7 +527,7 @@ Focused E2EE key-management GUI proof:
 cd apps/desktop && npx playwright test e2e/security-e2ee.spec.ts -g "security settings drive Rust-owned room-key transfer"
 ```
 
-This browser-headless proof drives the real User settings key-management forms
+This browser-headless proof drives the real Account Settings key-management forms
 over mocked Tauri IPC. It asserts typed `export_room_keys`, `import_room_keys`,
 `bootstrap_secure_backup`, and `change_secure_backup_passphrase` dispatch,
 Rust-shaped key-management snapshot updates, and recorded IPC redaction for
@@ -553,7 +556,7 @@ cd apps/desktop && npx playwright test e2e/composer-send-queue-upload.spec.ts -g
 ```
 
 This lane mounts the full React app over mocked Tauri IPC. For E2EE trust Phase
-B, it seeds a Rust-shaped `e2ee_trust` snapshot, drives User Settings controls,
+B, it seeds a Rust-shaped `e2ee_trust` snapshot, drives Account Settings controls,
 and asserts that the UI invokes the typed Tauri commands (`accept_verification`,
 `enable_key_backup`, `bootstrap_cross_signing`, `reset_identity`,
 `submit_identity_reset_password`) with Rust-owned flow ids. The test then checks
@@ -565,8 +568,9 @@ For media/file Phase B, the harness uses a plain hidden `<input type="file">`
 and Playwright `setInputFiles()`; do not open a native file dialog in headless
 tests. The GUI proof asserts file selection invokes `stage_upload_bytes`, caption
 edits go through the Rust-owned Upload attachments staging dialog, and one Send
-invokes `send_prepared_uploads` with the staged caption and composer admission
-tokens. There is no direct renderer upload command and no separate `send_text`
+invokes `send_prepared_uploads` with the staged caption and the renderer
+admission tokens, leaving the typed composer draft in place (#1130). There is no
+direct renderer upload command and no separate `send_text`
 dispatch; `download_media` keeps its typed command shape. It also covers
 paste/drop staging and the Rust-owned room
 media gallery/viewer projection. It then injects Rust-shaped `TimelineEvent` payloads to
@@ -789,9 +793,9 @@ errors.
 message action menu in the Linux Tauri WebView, clicks View source, waits for
 the Rust-owned `MessageSourceLoaded` DTO to render the Message source dialog,
 then forwards the event to the Rust-snapshot destination room. It also redacts a
-separate synthetic message, toggles the User settings `Hide deleted messages`
-switch, and waits for the Rust-owned hidden projection to remove the redacted
-timeline row from the WebView. The lane prints only
+separate synthetic message, opens **App Settings → Preferences**, toggles the
+`Hide deleted messages` switch, and waits for the Rust-owned hidden projection to
+remove the redacted timeline row from the WebView. The lane prints only
 `gui_local_message_source=ok`, `gui_local_message_forward=ok`, and
 `gui_local_hide_redacted=ok`; it must not monkeypatch Tauri IPC, generate Matrix
 permalinks in React, copy message bodies through React for forwarding, derive

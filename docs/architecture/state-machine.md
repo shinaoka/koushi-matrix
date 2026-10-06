@@ -61,7 +61,10 @@ submission correlations against the authoritative versioned snapshot. It uses
 one absolute deadline and one final snapshot check after timeout, disconnect,
 or lag; expectation-specific lag policy distinguishes recoverable lag from
 terminal `Lagged`. `select_room_and_wait` delegates to this service without
-changing its behavior. No `AppState`, `AppAction`, reducer transition, or
+changing its behavior. The `Authenticated` expectation settles on the
+non-held `LoginAdmitted` event (or held `LoggedIn` / `SessionRestored`) once
+the snapshot is a login-transport terminal session; admission, not promotion,
+completes sign-in. No `AppState`, `AppAction`, reducer transition, or
 Tauri waiter migration is part of Phase A; later issue #755 phases consume the
 service from adapters.
 
@@ -137,12 +140,16 @@ stateDiagram-v2
 Every reset to `SignedOut` that rebuilds `AppState` (`LogoutFinished`,
 `ProvisionalSessionDiscarded`, and the local-reset `DeviceCleanupCompleted`) keeps the
 process-local account epoch, the retired session-status schedule, and the
-app-level `AppState.settings` (#1057). Settings come from the app-level
-`settings/settings.json`, are loaded once at runtime start, and are persisted
-as a whole struct, so the signed-out screen keeps the saved locale and the next
-settings save cannot overwrite saved preferences with defaults. Account-scoped
-state, including room link-preview overrides and room notification settings,
-still resets.
+app-owned fields of `AppState.settings` (#1057, #119). App preferences come
+from `settings/settings.json`, load once at runtime start, and merge only
+app-owned patch fields, so signed-out screens retain the saved locale.
+Account preferences load from the owning account's encrypted settings file;
+a successful load applies its values once, while a failed load applies
+privacy-safe values without marking the read successful or persisting defaults.
+Account-affecting updates require a successful load for that exact session and
+are rejected before mutating settings otherwise. Explicit app-only updates
+remain available when account settings are unreadable. Account-scoped state,
+including room link-preview overrides and room notification settings, resets.
 
 `session_lock_reason` is an optional, separate Rust-owned authentication-lock
 projection. Current-device trust loss never enters `Locked`: authoritative
@@ -227,8 +234,16 @@ stateDiagram-v2
     Abandoning --> Abandoning: invalid or ambiguous root / fail closed for explicit local reset
 ```
 
-At most one resumable allocation exists per normalized homeserver/auth method
-and eight total. There is no TTL. Immediate non-journal cleanup requires closed
+At most one unbound `PreAuth` allocation exists per normalized homeserver/auth
+method, and eight allocations total. A fresh attempt resumes that unbound
+allocation, or a `BoundTokenless` allocation only when its bound user matches
+the requested user (full Matrix ID, or localpart on the same homeserver); OIDC,
+whose user is unknown before authorization, resumes only `PreAuth`. Another
+identity's bound allocation is never resumed, reset, or rebound, so a second
+account on the same homeserver allocates its own store while the first awaits
+verification. A fresh device whose crypto DB exists but holds no Olm account is
+authenticated as a fresh identity, so a retry after a rejected attempt reaches
+the server. There is no TTL. Immediate non-journal cleanup requires closed
 `NoRequestSent` or `ServerRejectedBeforeSession` evidence; transport failure,
 timeout, browser cancellation, callback loss, and token-exchange ambiguity stay
 resumable. `Abandoning` is persisted before root deletion and resumes after process
@@ -719,10 +734,86 @@ store-backed account restore.
 
 Password login and OIDC/MAS callback completion both enter `Authenticating`
 through Rust-owned account commands and settle through the same
-`LoginSucceeded` / `LoginFailed` reducer actions. OIDC authorization URLs and
+`LoginSucceeded` / `LoginFailed` reducer actions. Settlement is correlated by
+`attempt_id` alone. `Authenticating.homeserver` is the user's requested input
+(a bare server name, an MXID domain, or a URL) and Core may resolve it through
+`.well-known` delegation or URL normalization before contacting the server, so
+the SDK-reported `SessionInfo.homeserver` of a same-attempt success is
+authoritative and is never compared with the requested text. Stale, cancelled,
+or superseded attempts are fenced by their attempt id. OIDC authorization URLs and
 CSRF state are command/event artifacts only: they may be returned to the WebView
 so it can open the provider and correlate the callback, but they never enter
 `AppState`, normal `Debug`, QA title tokens, or persisted settings.
+
+## Account Tabs And Concurrent Sessions
+
+The outer Rust-owned account-tab machine is independent from each account's
+existing session/verification machine above. Each signed-in account owns one
+independent `CoreRuntime`; its state, actor work, drafts, navigation, search,
+and commands remain account-scoped. Selecting a tab changes only the selected
+runtime. It does not stop, restore, or mark a background account's room read.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Shell
+    Shell --> AddAccountSelected: first launch / no saved account
+    Shell --> RestoringTabs: startup / saved account tabs
+    RestoringTabs --> Shell: each restore settles / persisted selection unchanged
+    Shell --> SelectedTab: SelectAccountTab(account key)
+    SelectedTab --> SelectedTab: selected account runtime update
+    Shell --> AddAccountSelected: AddAccountTab / no unfinished add
+    AddAccountSelected --> AddAccountSelected: AddAccountTab / focus existing unfinished add
+    AddAccountSelected --> AccountTab: authenticated identity / same tab becomes account tab
+    AddAccountSelected --> Shell: cancel / preserve existing account tabs
+    AccountTab --> SignedOutTab: LogoutAccount / selected account only
+    SignedOutTab --> Shell: RemoveAccountTab
+    SelectedTab --> SelectedTab: another account runtime update / selection unchanged
+    Shell --> ShuttingDown: ShutdownAll / serialize after lifecycle operations
+    ShuttingDown --> Closed: child cleanup joins / retain outcome
+    Closed --> Closed: add/restore rejected / repeated shutdown returns retained outcome
+```
+
+- Manager shutdown holds the same lifecycle barrier as restore/add/remove,
+  including an extracted child whose removal is still joining cleanup. It marks
+  the manager terminal before draining children; future add/restore cannot
+  recreate runtimes, and repeated shutdown retains an incomplete-cleanup result.
+- Cancel and signed-out removal extract the child runtime under the lifecycle
+  gate, update selection, and hand the child to a manager-owned retiring set
+  whose cleanup join runs in a task the manager retains. The gate is never held
+  across that join: a child joins only after every adapter connection to it is
+  dropped, so waiting there would let a retained connection block selection,
+  add, and later removals. Adapters drop their cached connection to the tab
+  before asking Core to cancel or remove it; Core never depends on that order
+  for liveness. Manager shutdown joins every retiring child as well as the
+  remaining tabs, and a retiring child's cleanup failure becomes the retained
+  incomplete-cleanup result. Only signed-out children retire this way, so a
+  retiring child never owns a live Matrix client.
+- The account-tab list, persisted order, and last-selected key have one outer
+  manager owner. Startup chooses that key before restoring sessions; restore
+  completion order never selects an account.
+- There is at most one unfinished add-account context. It becomes an account
+  tab in place once the Matrix identity is known. If that MXID already has a
+  tab, the new context is rejected and the existing tab is selected; an existing
+  account session is never logged out by cancellation or duplicate-login cleanup.
+- Cancelling the unfinished add-account context is allowed only while it is
+  unbound and signed out and another tab exists. It removes that tab, retires
+  its temporary runtime as above, and selects the tab that was selected when the
+  add flow started (falling back to a neighbour). An in-flight password or OIDC
+  login cannot be cancelled this way.
+- Selecting an account binds commands and their completions to that account's
+  runtime. A result from an earlier selected tab cannot mutate another tab's
+  state. Async forms, secrets, dialogs, and local drafts are reset when their
+  owning account changes.
+- Ready, verification, restore, and failure states are per tab. A verification
+  gate or restore failure in one account does not block another ready account.
+  Logout removes only that account's local session data and leaves a signed-out
+  tab for reauthentication; removing the tab is a separate signed-out-only
+  action.
+- With concurrent sync, only the selected account is the actively viewed room.
+  Background accounts may sync and notify, but are never auto-marked read. One
+  outer owner aggregates native delivery and badges. Search crawling and media
+  prefetch share one app-wide single-flight budget, with selected-account work
+  preferred.
 
 ## Room List Filter
 
@@ -1167,8 +1258,9 @@ stateDiagram-v2
   It replaces the whole invite snapshot and emits `RoomListChanged`; duplicate
   or stale SDK deliveries must be folded into the next Rust-owned snapshot.
 - `InvitePreview` carries room id for command correlation plus display name,
-  optional topic, optional inviter display name, and `is_dm`. GUI code must
-  treat those fields as render data, not as a local membership state machine.
+  `display_name_placeholder`, optional topic, optional inviter display name,
+  and `is_dm`. GUI code must treat those fields as render data, not as a local
+  membership state machine.
 - `AcceptInvite` joins the invited room/space and emits
   `RoomEvent::InviteAccepted`; `DeclineInvite` leaves/forgets the invite and
   emits `RoomEvent::InviteDeclined`; `StartDirectMessage` creates a direct room
@@ -1296,6 +1388,16 @@ stateDiagram-v2
   `LeavePendingObservation`, removes the room from the desired SDK set, and
   blocks both restored and visible evidence from re-adding it. A failed
   operation leaves `Resident` unchanged.
+- `RoomCommand::LeaveSpace { space_id, child_room_ids }` leaves a Space
+  together with a chosen subset of its joined child rooms. The candidates are
+  the Rust projection `SpaceRailItem.leave_candidates` (joined, non-DM rooms in
+  `SpaceSummary::child_room_ids`, with `in_other_space` when another joined
+  Space also shows the room); AppActor re-admits `child_room_ids` against the
+  same projection, dropping anything else. RoomActor leaves each admitted child
+  as a direct leave in order and stops at the first failure with
+  `OperationFailed`, keeping the Space joined so a retry offers only the rooms
+  still joined. After every child succeeds it leaves the Space and emits the
+  ordinary `RoomLeft` for the Space. Subspaces are never left recursively.
 - External membership transitions preserve SDK receipt order. Only `left`
   followed later by `joined|invited` clears leave state; `joined` before `left`,
   duplicate updates, delayed projections, and stale core generations cannot.
@@ -1503,9 +1605,12 @@ stateDiagram-v2
   boundary; JavaScript numeric conversion, wrapping, and saturation are
   forbidden. A draft
   write with a revision at or below the target's stored revision is stale and
-  is ignored. Accepted plain/reply sends, scheduled sends, and prepared-upload
-  sends advance the target to `max(stored, submitted) + 1`, clear content, and
-  retain that revision as an encrypted tombstone. A captured draft write may
+  is ignored. Accepted plain/reply sends and scheduled sends advance the target
+  to `max(stored, submitted) + 1`, clear content, and retain that revision as an
+  encrypted tombstone. A prepared-upload (staged attachment) send settles the
+  draft the same way — same revision successor, same accepted-send navigation —
+  but keeps the content, because its payload is built from the staged items and
+  their own captions and never dispatched the typed text (#1130). A captured draft write may
   still persist after its room/thread is no longer visible, but it never
   mutates another active composer. Each write and draft-accepting operation also
   captures its complete account owner (homeserver, user, and device);
@@ -2216,6 +2321,68 @@ and destination identifiers only; it must not copy the body, inspect raw event
 JSON, or synthesize forward content. Media-only forwarding remains disabled
 until a separate Rust-owned media-forward contract exists.
 
+### Reply quote hydration
+
+Each `TimelineActor` owns the lifecycle of the originals its reply quotes
+point at (#1120). SDK `InReplyToDetails` are an input, not the authority:
+`Ready` details project `Ready`/`Redacted`/`Unsupported`, while `Unavailable`,
+`Pending`, and `Error` all project `Loading` until the actor's own lookup
+settles.
+
+- **Known originals.** Before an item is committed or a pending send is
+  projected, an unresolved quote (`Loading`/`Failed`) is resolved from the
+  original when that original is in the actor's canonical items or in the same
+  batch, otherwise from the actor's hydration ledger. An original the ledger
+  already tracks is re-learned from each batch, and an original that a pending
+  send resolves from canonical items is learned at that point, so an edit or
+  redaction that reaches this actor's timeline replaces the stored content and
+  refreshes the dependents. A pending send
+  that replies to an event starts as `Loading` and receives the same overlay,
+  so a reply to a known original is `Ready` from its first projection through
+  its remote echo. A Thread actor seeds the ledger with its root at start, and
+  that root is never evicted.
+- **Hydration ledger.** The ledger is keyed by original event id and holds at
+  most 256 entries; settled entries are evicted oldest first and new lookups
+  are skipped while the ledger is full of unsettled entries. Eligible originals
+  are the targets of `Loading` quotes among the actor's display items (the
+  bounded display window plus pending sends), independent of viewport
+  observation. At most 4 lookups are in flight. Each attempt loads the exact
+  event cache-first through `executor::spawn` with a 30 s `executor::timeout`.
+  Not-found and forbidden results settle as `Missing`; an event that cannot be
+  projected settles as `Unsupported`. Network and timeout results retry after
+  about 2 s and then 10 s and settle as `Failed` on the third transient
+  failure. An undecryptable result has its own budget, because room keys often
+  arrive late: it retries after about 15 s, 60 s, 180 s, then 300 s, and
+  settles as `Failed` only after the eighth undecryptable attempt (an
+  `executor::sleep` task posts every retry to the actor mailbox).
+- **Fencing.** Ledger tokens are unique for the actor's lifetime. Each lookup
+  and retry wake carries its token and is ignored unless it still matches the
+  entry's live token, so a result from an evicted or superseded entry can never
+  settle a later entry for the same original; the actor tracks each lookup and
+  retry task by original with that token and removes it only on a token match.
+  Learning an observation that supersedes an in-flight lookup aborts its task.
+  All lookup and retry tasks are owned by the actor and aborted when it is
+  dropped; a new actor generation starts with an empty ledger, which is the
+  only way an exhausted (`Failed`) entry is retried.
+- **Changed originals.** Learning an edit or redaction replaces the settled
+  entry and records that original as changed, and every dependent quote whose
+  target is that original is re-derived, whether it had already resolved or
+  not, in both the batch overlay and the republish. An original outside this
+  actor's timeline updates the ledger only when it appears in the actor's
+  batch or canonical items, or when the actor is replaced; the rejoinder's
+  quote cannot be kept current from a source the actor never observes.
+- **Publication.** When a ledger entry settles, or a batch commits or changes
+  an original that quotes already point at, the actor republishes the dependent
+  canonical items as non-SDK `Set` diffs and reprojects pending sends. A
+  resolved quote never regresses to `Loading` while the same actor keeps the
+  settled entry. While an anchor restore is buffering its coalesced
+  `restore_emit_buffer`, the republish is deferred and runs once at the end of
+  the actor loop after that buffer has flushed, so a republished `Set` diff can
+  never overtake the restore's single settled update. A deferred republish also
+  retains the changed-original refresh set until it runs, so that set can hold
+  one entry per changed original for the duration of a restore; the ledger's
+  256-entry cap does not bound it.
+
 `AppState.room_interactions[room_id]` carries the room's pinned-event
 projection plus the current pin/unpin operation state:
 
@@ -2239,10 +2406,14 @@ stateDiagram-v2
     FailedUnpin --> [*]: LogoutRequested/LogoutFinished/SessionCleared
 ```
 
-- `ReplyQuoteState` is one of `Ready`, `Redacted`, `Missing`, or
-  `Unsupported`. `Ready` may include a sender and body preview; redacted,
-  missing, and unsupported quotes never require React to inspect Matrix event
-  content.
+- `ReplyQuoteState` is one of `Loading`, `Ready`, `Redacted`, `Missing`,
+  `Unsupported`, or `Failed`. `Ready` may include a sender and body preview;
+  the other states never require React to inspect Matrix event content.
+  `Missing` is terminal and means the homeserver reported the original as not
+  found or forbidden; it is never used for an original that has not been
+  loaded yet. `Loading` means the original is unresolved and Rust still owns a
+  bounded lookup for it. `Failed` means that lookup exhausted its retries.
+  See [Reply quote hydration](#reply-quote-hydration).
 - `TimelineItem.actions` is populated only for event-backed timeline items.
   Synthetic and transaction-backed items receive all-false affordances. Redacted
   event items keep event-scoped affordances such as permalink/source visibility
@@ -2654,6 +2825,19 @@ sanitizes it before exposing it through `TimelineItem.formatted`.
   the preference is enabled. React omits rows only from that DTO flag and must
   not filter redacted events from a local preference. `DisplayPolicyUpdated`
   reprojects already-loaded rows without removing non-redacted items.
+- Exactly one Rust policy decides whether a timeline row is visible (#1110).
+  It combines three reasons: deliberate content suppression (a bodyless
+  technical, moderation, or unsupported state event), the ignored-sender
+  reason, and the `hide_redacted` preference. Every reason is derived from
+  current content and viewer state, never from a previously projected
+  `is_hidden`, so redaction toggles and ignore/unignore stay reversible and no
+  reason is lost while another is recomputed. The timeline actor owns the
+  decision: when the ignored set or the redaction preference changes it
+  recomputes the canonical rows and publishes the changed ones as ordinary
+  `ItemsUpdated` diffs. `DisplayPolicyUpdated` is an acknowledgement of the
+  stored preference, not a request for the renderer to recompute visibility.
+  The same policy sizes the bounded display projection, so a row that renders
+  nothing never consumes a displayed-row slot.
 - The React timeline renderer is a presentation adapter over this DTO. It may
   map sanitized tags into React nodes, attach copy-code controls using the
   Rust-provided code-block body, and highlight search terms over rendered text.
@@ -3489,7 +3673,8 @@ stateDiagram-v2
   default idle state and drop selected-room settings.
 - Headless core QA covers this with the `room_management` scenario and
   private-data-free tokens `room_settings=ok`, `permission_guard=ok`,
-  `moderation=ok`, `space_access=ok`, and `space_add_existing=ok`. The lane uses a disposable management
+  `moderation=ok`, `space_access=ok`, `space_add_existing=ok`, and
+  `space_leave_children=ok`. The lane uses a disposable management
   room so timeline and room/space stages are not disrupted. `space_access=ok`
   proves a disposable Space's join rule switches invite ↔ public for its
   creator, reaches a second member's open settings through sync, is refused for
@@ -3498,6 +3683,9 @@ stateDiagram-v2
   child-side `m.space.parent` is offered, added through `SetSpaceChild`, and
   projected as added, and that the homeserver then holds a routed
   `m.space.child` for it and for a room created inside the Space (#1007).
+  `space_leave_children=ok` proves `LeaveSpace` leaves only the admitted
+  children of a disposable Space (a room outside the Space named in the
+  command stays joined), then the Space, while an unselected child stays joined.
 
 ## Space Members
 
@@ -3695,6 +3883,15 @@ stateDiagram-v2
 - Discovery completion actions are accepted only while the reducer is still
   `Discovering` the same homeserver. Late completions from older discovery
   requests are ignored.
+- The sign-in target is a server name or homeserver URL, mirroring the SDK's
+  `ServerNameOrHomeserverUrl`. A bare server name (no URL path) is resolved
+  through `/.well-known/matrix/client` and falls back to the input when the
+  document is missing or invalid; a URL with a path is used as-is. Discovery,
+  password login, and OIDC start all resolve the same way in `koushi-sdk`, so
+  `@alice:example.org` signs in on the delegated homeserver (#1101). The
+  renderer derives that target from the Matrix ID's server name unless the user
+  explicitly chooses a server, and only offers single sign-on from a discovery
+  result for its current target.
 
 Active-session account management:
 
@@ -3715,7 +3912,7 @@ stateDiagram-v2
   `org.matrix.msc2965.authentication`. Only HTTP(S) account URLs are admitted.
 - Missing, malformed, unsafe, or unreachable metadata leaves the capability
   unavailable and never fails login, restore, verification, or normal runtime.
-- User Settings renders **Manage account & devices** only while available.
+- Account Settings renders **Manage account & devices** only while available.
   Koushi has no remote-device inventory, rename, or sign-out state machine; the
   server destination owns those operations. Current-device diagnostics/name
   repair and explicit rejected-provisional-device cleanup remain local.
@@ -5310,12 +5507,10 @@ stateDiagram-v2
   progress instead of offering Verify user. A `RequestVerification` the
   reducer refuses for that reason fails with `VerificationInProgress`, not
   `SessionRequired`.
-- A recipient on Simplified Sliding Sync who joins a brand-new DM after the
-  request was sent receives the request only if their server delivers that
-  event through sync (Tuwunel does); Synapse returns it through gap repair,
-  which the SDK does not feed to its verification machine. The confirmation
-  step therefore says only that the request is sent in that chat and to try
-  again once the contact has joined if they do not see it.
+- For room-based user verification, the SDK waits up to 60 seconds for the
+  contact's joined membership before sending the request. This avoids relying
+  on delivery of a pre-join event through backfill; if no join is observed
+  before the deadline, the request fails with a timeout and is not sent.
 
 ## Desktop Application Updates
 
@@ -5326,8 +5521,9 @@ preferences.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Unsupported: platform is not enabled
-    [*] --> Idle: platform is enabled
+    [*] --> Unsupported: packager marker present (reason=package_managed)
+    [*] --> Unsupported: no install backend or updater trust material (reason=build)
+    [*] --> Idle: platform enabled with an install backend
     Idle --> Checking: startup/24h/setting enabled/manual check
     Checking --> UpToDate: check has no newer release
     Checking --> Idle: update channel changes
@@ -5375,6 +5571,16 @@ stateDiagram-v2
   stage/kind and is recoverable; it never blocks startup or login.
 - Installation and relaunch require explicit user intent. macOS is the only
   enabled platform in this phase; Windows and Linux remain `unsupported`.
+- `unsupported` carries a `reason`. `reason: build` means this target has no
+  install backend or this build has no updater trust material; `reason:
+  package_managed` means a distribution package that owns the installed files
+  installed the empty marker `/usr/share/koushi-desktop/package-managed`. The
+  marker is probed once at startup, only on Linux, and its contents are
+  ignored: presence alone forces `unsupported{reason: package_managed}` before
+  any backend selection. The marker wins over an otherwise capable build, and
+  `unsupported` never transitions to `idle`, `checking`, or any other state at
+  runtime: no trigger in it claims work, emits a feed request, or constructs an
+  installer process (`pkexec`, `sudo`, `dpkg`, `rpm`).
 - A successful installation records relaunch intent and enters the ordinary
   graceful-shutdown barrier. The updater owner must finish and Core shutdown
   must settle before the final native restart request. A native restart event

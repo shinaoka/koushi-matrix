@@ -38,6 +38,12 @@ fn fixture(active: Option<&str>) -> AppState {
                 .filter(|room| !room.is_dm)
                 .map(|room| room.room_id.clone())
                 .collect(),
+            parent_side_child_room_ids: state
+                .rooms
+                .iter()
+                .filter(|room| !room.is_dm)
+                .map(|room| room.room_id.clone())
+                .collect(),
         })
         .collect();
     state

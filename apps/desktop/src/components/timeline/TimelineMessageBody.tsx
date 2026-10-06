@@ -10,16 +10,23 @@ import type { TimelineItem, TimelineLinkRange } from "../../domain/coreEvents";
 import type { TextRange, UserProfile } from "../../domain/types";
 import type { TimelineRowActionHandlers } from "./TimelineItemRow";
 
-type TimelineMentionToken = {
-  token: string;
-  userId: string;
-};
+type TimelineMentionToken =
+  | { token: string; userId: string }
+  | { token: string; room: true };
 
 /**
- * Issue #874: a mention pill is a property of the message, not of the viewer's
- * loaded profiles. Only ids the event's `m.mentions` named are pill candidates.
+ * Issue #874/#1123: a mention pill is a property of the message, not of the
+ * viewer's loaded profiles. Only ids the event's `m.mentions` named, and the
+ * room-wide flag it set, are pill candidates.
  */
 const NO_MENTIONED_USER_IDS: ReadonlySet<string> = new Set<string>();
+
+export type TimelineMentionFacts = {
+  userIds: ReadonlySet<string>;
+  room: boolean;
+};
+
+const NO_MENTIONS: TimelineMentionFacts = { userIds: NO_MENTIONED_USER_IDS, room: false };
 
 /** Opens a Matrix entity a rendered message links to. */
 export type OpenMatrixTargetHandler = (target: MatrixPermalinkTarget) => void;
@@ -50,9 +57,9 @@ export function renderTimelineMessageText(
   highlightRanges: TextRange[] = [],
   profileUsers: Record<string, UserProfile> = {},
   baseOffset = 0,
-  mentionedUserIds: ReadonlySet<string> = NO_MENTIONED_USER_IDS
+  mentions: TimelineMentionFacts = NO_MENTIONS
 ) {
-  const mentionTokens = timelineMentionTokens(profileUsers, mentionedUserIds);
+  const mentionTokens = timelineMentionTokens(profileUsers, mentions);
   let offset = baseOffset;
   return text.split("\n").map((line, index) => {
     const lineOffset = offset;
@@ -72,11 +79,11 @@ function renderTimelineMessageTextWithSpoilers(
   highlightRanges: TextRange[],
   profileUsers: Record<string, UserProfile>,
   spoilerState: SpoilerRevealState,
-  mentionedUserIds: ReadonlySet<string>
+  mentions: TimelineMentionFacts
 ): ReactNode {
   const spans = normalizeSpoilerSpans(spoilerSpans, text.length);
   if (spans.length === 0) {
-    return renderTimelineMessageText(text, highlightRanges, profileUsers, 0, mentionedUserIds);
+    return renderTimelineMessageText(text, highlightRanges, profileUsers, 0, mentions);
   }
 
   const nodes: ReactNode[] = [];
@@ -91,7 +98,7 @@ function renderTimelineMessageTextWithSpoilers(
             highlightRanges,
             profileUsers,
             cursor,
-            mentionedUserIds
+            mentions
           )}
         </Fragment>
       );
@@ -106,7 +113,7 @@ function renderTimelineMessageTextWithSpoilers(
           highlightRanges,
           profileUsers,
           span.start_utf16,
-          mentionedUserIds
+          mentions
         ),
         span.reason,
         spoilerState
@@ -123,7 +130,7 @@ function renderTimelineMessageTextWithSpoilers(
           highlightRanges,
           profileUsers,
           cursor,
-          mentionedUserIds
+          mentions
         )}
       </Fragment>
     );
@@ -139,7 +146,7 @@ export function renderPlainTextBody(
   profileUsers: Record<string, UserProfile>,
   spoilerState: SpoilerRevealState,
   onOpenMatrixTarget: OpenMatrixTargetHandler | undefined,
-  mentionedUserIds: ReadonlySet<string> = NO_MENTIONED_USER_IDS
+  mentions: TimelineMentionFacts = NO_MENTIONS
 ): ReactNode {
   if (linkRanges.length === 0) {
     return renderTimelineMessageTextWithSpoilers(
@@ -148,7 +155,7 @@ export function renderPlainTextBody(
       highlightRanges,
       profileUsers,
       spoilerState,
-      mentionedUserIds
+      mentions
     );
   }
   const spans = normalizeSpoilerSpans(spoilerSpans, text.length);
@@ -170,7 +177,7 @@ export function renderPlainTextBody(
             highlightRanges,
             profileUsers,
             onOpenMatrixTarget,
-            mentionedUserIds
+            mentions
           )}
         </Fragment>
       );
@@ -184,7 +191,7 @@ export function renderPlainTextBody(
       highlightRanges,
       profileUsers,
       onOpenMatrixTarget,
-      mentionedUserIds
+      mentions
     );
     nodes.push(
       renderSpoiler(
@@ -208,7 +215,7 @@ export function renderPlainTextBody(
           highlightRanges,
           profileUsers,
           onOpenMatrixTarget,
-          mentionedUserIds
+          mentions
         )}
       </Fragment>
     );
@@ -224,7 +231,7 @@ function renderPlainTextSegment(
   highlightRanges: TextRange[],
   profileUsers: Record<string, UserProfile>,
   onOpenMatrixTarget: OpenMatrixTargetHandler | undefined,
-  mentionedUserIds: ReadonlySet<string>
+  mentions: TimelineMentionFacts
 ): ReactNode {
   const nodes: ReactNode[] = [];
   let cursor = segStart;
@@ -241,7 +248,7 @@ function renderPlainTextSegment(
             highlightRanges,
             profileUsers,
             cursor,
-            mentionedUserIds
+            mentions
           )}
         </Fragment>
       );
@@ -253,7 +260,7 @@ function renderPlainTextSegment(
       highlightRanges,
       profileUsers,
       linkStart,
-      mentionedUserIds
+      mentions
     );
     nodes.push(
       href ? (
@@ -284,7 +291,7 @@ function renderPlainTextSegment(
           highlightRanges,
           profileUsers,
           cursor,
-          mentionedUserIds
+          mentions
         )}
       </Fragment>
     );
@@ -342,14 +349,11 @@ function renderTimelineMessageLine(
     }
     const token = line.slice(next.start, next.end);
     nodes.push(
-      <span
-        className="message-mention-pill"
-        data-mention-user-id={next.userId}
-        dir="auto"
-        key={`${next.userId}:${next.start}`}
-      >
-        {renderRustHighlights(token, highlightRanges, baseOffset + next.start)}
-      </span>
+      mentionPill(
+        next.token,
+        renderRustHighlights(token, highlightRanges, baseOffset + next.start),
+        `${next.token.token}:${next.start}`
+      )
     );
     cursor = next.end;
   }
@@ -357,6 +361,27 @@ function renderTimelineMessageLine(
   return nodes.length > 0
     ? nodes
     : renderRustHighlights(line, highlightRanges, baseOffset);
+}
+
+/**
+ * The mention pill shared by the plain and formatted renderers. A user mention
+ * carries the id the event named (#874); a room mention carries the room-wide
+ * flag instead (#1123), so the two are distinguishable in the DOM.
+ */
+function mentionPill(
+  token: TimelineMentionToken,
+  content: ReactNode,
+  key: string
+): ReactNode {
+  const attrs =
+    "room" in token
+      ? { "data-mention-room": "true" }
+      : { "data-mention-user-id": token.userId };
+  return (
+    <span className="message-mention-pill" {...attrs} dir="auto" key={key}>
+      {content}
+    </span>
+  );
 }
 
 function renderRustHighlights(
@@ -425,6 +450,14 @@ const FORMATTED_TAGS = new Set([
 
 const VOID_FORMATTED_TAGS = new Set(["br"]);
 
+/**
+ * #1123: only the plain-text renderer draws the room pill. Mention markup inside
+ * a formatted body is recognized exactly as it was before this change — user
+ * mentions through their `matrix.to` anchors and nothing else — so a room token
+ * in a text node is not pilled there. Pilling text nodes would also have to
+ * resolve boundaries across sibling elements (`x<strong>@room</strong>y`) and
+ * would otherwise pill `@room` inside inline code and link labels.
+ */
 export function renderFormattedBody(
   formatted: NonNullable<TimelineItem["formatted"]>,
   linkRanges: TimelineLinkRange[],
@@ -433,13 +466,13 @@ export function renderFormattedBody(
   highlightRanges: TextRange[],
   spoilerState: SpoilerRevealState,
   onOpenMatrixTarget: OpenMatrixTargetHandler | undefined,
-  mentionedUserIds: ReadonlySet<string> = NO_MENTIONED_USER_IDS
+  mentions: TimelineMentionFacts = NO_MENTIONS
 ): ReactNode {
   const parsed =
     linkRanges.length > 0 && !formatted.html.includes("<a")
       ? linkifyFormattedNodes(parseFormattedHtml(formatted.html), linkRanges)
       : parseFormattedHtml(formatted.html);
-  const nodes = markMentionAnchors(parsed, mentionedUserIds);
+  const nodes = markMentionAnchors(parsed, mentions);
   const codeBlockIndexRef = { current: 0 };
   const textOffsetRef = { current: 0 };
   const projectedHighlightRanges = formattedTextOffsetsProject(nodes, formatted.plain_text)
@@ -486,9 +519,9 @@ function formattedTextOffsetsProject(nodes: FormattedNode[], plainText: string):
  */
 function markMentionAnchors(
   nodes: FormattedNode[],
-  mentionedUserIds: ReadonlySet<string>
+  mentions: TimelineMentionFacts
 ): FormattedNode[] {
-  if (mentionedUserIds.size === 0) {
+  if (mentions.userIds.size === 0) {
     return nodes;
   }
   const visit = (candidates: FormattedNode[]): FormattedNode[] =>
@@ -498,7 +531,7 @@ function markMentionAnchors(
       }
       const children = visit(node.children);
       const target = node.tagName === "a" ? matrixPermalinkUser(node.attrs.href ?? "") : null;
-      if (!target || !mentionedUserIds.has(target)) {
+      if (!target || !mentions.userIds.has(target)) {
         return children === node.children ? node : { ...node, children };
       }
       return {
@@ -1208,7 +1241,7 @@ function findNextMentionToken(
   line: string,
   start: number,
   mentionTokens: TimelineMentionToken[]
-): { start: number; end: number; userId: string } | null {
+): { start: number; end: number; token: TimelineMentionToken } | null {
   for (let index = start; index < line.length; index += 1) {
     for (const mention of mentionTokens) {
       const end = index + mention.token.length;
@@ -1216,7 +1249,7 @@ function findNextMentionToken(
         line.startsWith(mention.token, index) &&
         hasMentionTokenBoundary(line, index, end)
       ) {
-        return { start: index, end, userId: mention.userId };
+        return { start: index, end, token: mention };
       }
     }
   }
@@ -1225,14 +1258,11 @@ function findNextMentionToken(
 
 function timelineMentionTokens(
   profileUsers: Record<string, UserProfile>,
-  mentionedUserIds: ReadonlySet<string>
+  mentions: TimelineMentionFacts
 ): TimelineMentionToken[] {
-  if (mentionedUserIds.size === 0) {
-    return [];
-  }
   const tokens = new Map<string, string>();
   for (const profile of Object.values(profileUsers)) {
-    if (!mentionedUserIds.has(profile.user_id)) {
+    if (!mentions.userIds.has(profile.user_id)) {
       continue;
     }
     const terms = profile.mention_search_terms.length
@@ -1245,9 +1275,16 @@ function timelineMentionTokens(
       }
     }
   }
-  return Array.from(tokens, ([token, userId]) => ({ token, userId }))
-    .filter((mention) => mention.token.length > 1)
-    .sort((a, b) => b.token.length - a.token.length || a.token.localeCompare(b.token));
+  const userTokens: TimelineMentionToken[] = Array.from(
+    tokens,
+    ([token, userId]) => ({ token, userId })
+  ).filter((mention) => mention.token.length > 1);
+  const roomTokens: TimelineMentionToken[] = mentions.room
+    ? [{ token: "@room", room: true }]
+    : [];
+  return [...userTokens, ...roomTokens].sort(
+    (a, b) => b.token.length - a.token.length || a.token.localeCompare(b.token)
+  );
 }
 
 function hasMentionTokenBoundary(line: string, start: number, end: number): boolean {

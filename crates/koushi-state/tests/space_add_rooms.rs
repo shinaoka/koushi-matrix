@@ -50,7 +50,12 @@ fn state() -> AppState {
             display_name: "Synthetic Workspace".to_owned(),
             avatar: None,
             join_rule: None,
-            child_room_ids: vec!["!linked:example.invalid".to_owned()],
+            // The display union already lists the parent-only room, as
+            // `normalize_spaces` does once the room's `m.space.parent` is
+            // projected; eligibility must ignore that and use the Space's own
+            // `m.space.child` list.
+            child_room_ids: vec!["!linked:example.invalid".to_owned(), DOMAINLESS.to_owned()],
+            parent_side_child_room_ids: vec!["!linked:example.invalid".to_owned()],
         }],
         rooms: vec![
             room("!linked:example.invalid", "Linked", false, &[SPACE]),
@@ -164,9 +169,15 @@ fn a_linked_settlement_marks_the_room_added_before_the_next_sync() {
             .child_room_ids
             .contains(&DOMAINLESS.to_owned())
     );
+    assert!(
+        state.spaces[0]
+            .parent_side_child_room_ids
+            .contains(&DOMAINLESS.to_owned())
+    );
 
     // A room-list refresh from a lagging SDK cache must not make it addable.
     state.spaces[0].child_room_ids = vec!["!linked:example.invalid".to_owned()];
+    state.spaces[0].parent_side_child_room_ids = vec!["!linked:example.invalid".to_owned()];
     assert_eq!(
         status_of(&state, DOMAINLESS),
         Some(SpaceAddRoomStatus::Added)
@@ -196,7 +207,7 @@ fn a_failed_settlement_is_retryable_and_a_retry_replaces_it() {
     );
     assert!(
         !state.spaces[0]
-            .child_room_ids
+            .parent_side_child_room_ids
             .contains(&DOMAINLESS.to_owned())
     );
 
@@ -263,6 +274,7 @@ fn switching_spaces_scopes_status_to_the_selected_space() {
         avatar: None,
         join_rule: None,
         child_room_ids: Vec::new(),
+        parent_side_child_room_ids: Vec::new(),
     });
     state.navigation.active_space_id = Some("!second:example.invalid".to_owned());
     let model = space_add_rooms_for_state(&state).expect("second Space");

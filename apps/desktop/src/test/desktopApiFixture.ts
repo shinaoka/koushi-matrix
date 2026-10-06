@@ -75,7 +75,8 @@ export function readyDesktopSnapshotFixture(): DesktopSnapshot {
     display_name: "Synthetic Workspace",
     avatar: null,
     join_rule: null,
-    child_room_ids: ["!room-alpha:example.invalid"]
+    child_room_ids: ["!room-alpha:example.invalid"],
+    parent_side_child_room_ids: ["!room-alpha:example.invalid"]
   }];
   snapshot.state.domain.rooms = [
     {
@@ -158,7 +159,8 @@ export function readyDesktopSnapshotFixture(): DesktopSnapshot {
       avatar: null,
       unread_count: 0,
       highlight_count: 0,
-      is_active: true
+      is_active: true,
+      leave_candidates: []
     }],
     space_rooms: [roomItem],
     global_dms: [dmItem],

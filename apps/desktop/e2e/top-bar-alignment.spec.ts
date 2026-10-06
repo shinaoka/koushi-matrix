@@ -17,10 +17,11 @@ import { t } from "../src/i18n/messages";
 
 /** Every interactive control in the top bar, in visual order. */
 const TOP_BAR_CONTROLS = [
+  ".account-tab-strip .account-tab-add",
   ".top-search input",
   ".scope-select",
-  ".top-actions .sync-status",
-  ".top-actions .icon-button"
+  ".top-actions .app-settings-button",
+  ".top-actions .icon-button:not(.app-settings-button)"
 ] as const;
 
 async function gotoReadyShell(page: Page): Promise<void> {
@@ -71,6 +72,39 @@ test("every top-bar control shares one vertical center line", async ({ page }) =
   // traffic lights are positioned against. Half a pixel is not perceptible,
   // but a larger drift would mean the two coordinate systems have diverged.
   expect(Math.abs(values[0]! - barCenter)).toBeLessThanOrEqual(0.5);
+});
+
+test("account status and Diagnostics stay reachable at the minimum width", async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 800 });
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          locale_profile: { ...snapshot.state.domain.locale_profile, platform: "macos" }
+        }
+      }
+    });
+    window.__harness.pushStateUpdate();
+  });
+
+  await expect(page.locator('.account-tab[data-status="ready"] .account-tab-ready-dot')).toBeVisible();
+  await expect(page.getByRole("button", { name: t("diagnostics.open") })).toBeVisible();
+
+  const layout = await page.evaluate(() => {
+    const titlebar = document.querySelector<HTMLElement>(".titlebar")!;
+    const actions = document.querySelector<HTMLElement>(".top-actions")!;
+    return {
+      overflow: titlebar.scrollWidth - titlebar.clientWidth,
+      actionsWithinTitlebar: actions.getBoundingClientRect().right <= titlebar.getBoundingClientRect().right
+    };
+  });
+  expect(layout.overflow).toBeLessThanOrEqual(1);
+  expect(layout.actionsWithinTitlebar).toBe(true);
 });
 
 test("search scope selector fits Room/DM in English and Japanese", async ({ page }) => {

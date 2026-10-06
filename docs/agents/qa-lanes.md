@@ -95,7 +95,7 @@ qa-bin`; plain `cargo test` does not compile that binary.
 | `session_status` | session state projection | — |
 | `credential_health` | credential-store health probe under the debug/test file credential-store guard; must refuse to touch the OS keychain | — |
 | `account_notifications` | #981 shared push-rule categories and email pusher guards: a second session for the same account customises rules (mixed group rules, custom DM sound, `@room` disabled); two Core loads leave the server ruleset unchanged; a group toggle writes only group rules and re-reads OFF/ON; an unencrypted mention still notifies with group OFF (encrypted-room behaviour is covered by `koushi-sdk` unit tests); the email flow reports an unsupported server and never creates a pusher for an unverified address; requires `--core`, separate from `all`. The local homeservers do not send email, so address verification and digest delivery are not covered | `account_notifications_load=ok`, `account_notifications_no_write_on_open=ok`, `account_notifications_category_write=ok`, `account_notifications_overlap=ok`, `account_notifications_category_restore=ok`, `account_notifications_email_unsupported=ok`, `account_notifications_email_requires_verified=ok`, `account_notifications=ok` |
-| `user_verification` | #1024 Verify user between two freshly bootstrapped users: A's User info for B offers verification in the direct chat it will use (Tuwunel: a new encrypted DM that B joins after the request; Synapse: an existing DM, because Synapse returns events sent before a Sliding Sync join through gap repair, which the SDK does not feed to verification); A's request waits for B (initiator us, no Accept); B accepts the in-room request; both Cores show the same seven SAS emoji and confirm; A's refreshed contact security reports B verified by A, no longer offered, and B's device confirmation unchanged; requires `--core`, separate from `all` | `user_verification_offered=ok`, `user_verification_request_waiting=ok`, `user_verification_accepted=ok`, `user_verification_sas_match=ok`, `user_verification_done=ok`, `user_verification_identity_verified=ok`, `user_verification=ok` |
+| `user_verification` | #1024 Verify user between two freshly bootstrapped users: both Tuwunel and Synapse use a new encrypted DM; QA waits for A's post-send verification-progress event before B joins, then requires B to receive and accept the in-room request; both Cores show the same seven SAS emoji and confirm; A's refreshed contact security reports B verified by A, no longer offered, and B's device confirmation unchanged; requires `--core`, separate from `all` | `user_verification_offered=ok`, `user_verification_request_sent=ok`, `user_verification_accepted=ok`, `user_verification_sas_match=ok`, `user_verification_done=ok`, `user_verification_identity_verified=ok`, `user_verification=ok` |
 | `native_attention` | notification/badge projection | `notification_candidate=ok`, `badge_state=ok`, `suppress_focus=ok`, `clear_badge=ok` |
 | `e2ee_trust` | cross-signing bootstrap, key-backup upload, wrong-secret restore failure, passphrase restore on a second device, SAS verification, identity reset | token-only |
 | `e2ee_login_store` | persistent-store-first fresh/saved/restore/restart/reauth identity continuity; stock forced rotation plus offline and online index-0 delivery in DM and three-user encrypted room | `e2ee_login_store_forced_rotation_index0=ok`, `e2ee_login_store_fresh_offline_index0=ok`, `e2ee_login_store_restore_offline_index0=ok`, `e2ee_login_store_restart_offline_index0=ok`, `e2ee_login_store_reauth_offline_index0=ok`, `e2ee_login_store_online_index0=ok`, `e2ee_login_store_group_index0=ok`, `e2ee_login_store_identity_stable=ok`, `e2ee_login_store=ok` |
@@ -104,7 +104,7 @@ qa-bin`; plain `cargo test` does not compile that binary.
 | `invites_dm` | invite receipt/accept/decline and DM start | `invite_recv=ok`, `invite_accept=ok`, `invite_decline=ok`, `dm_start=ok` |
 | `room_space` | room and space classification | — |
 | `directory` | public directory query, alias join, Rust address preview/create/share-link join and collision, the advisory availability check, the Space-prefixed default address (#1006), and public-Space rooms (#1023): the public default, an unnamed public room without an address (calculated name, Space link), an entered address naming an unnamed room, its conflict, renaming later, and the explicit private choice | `directory_query=ok`, `directory_join=ok`, `room_address_preview_create_share=ok`, `room_address_collision=ok`, `room_address_availability=ok`, `room_address_space_prefix=ok`, `room_public_space_default=ok`, `room_unnamed_public_space=ok`, `room_unnamed_alias_name=ok`, `room_unnamed_alias_conflict=ok`, `room_unnamed_rename=ok`, `room_public_space_private_choice=ok` |
-| `room_management` | settings edit, permission guard, moderation, a Space's join-rule change (#935), and adding an existing (room version 12) room to a Space (#1007), using a disposable management room and Space so they cannot disturb other stages | `room_settings=ok`, `permission_guard=ok`, `moderation=ok`, `space_access=ok`, `space_add_existing=ok`, plus cleanup tokens |
+| `room_management` | settings edit, permission guard, moderation, a Space's join-rule change (#935), adding an existing (room version 12) room to a Space (#1007), and leaving a Space with a chosen subset of its rooms, using a disposable management room and Space so they cannot disturb other stages | `room_settings=ok`, `permission_guard=ok`, `moderation=ok`, `space_access=ok`, `space_add_existing=ok`, `space_leave_children=ok`, plus cleanup tokens |
 | `room_people_projection` | member projection | — |
 | `timeline` | timeline projection and navigation | `timeline_nav=ok` |
 | `timeline_reconnect` | unsubscribes, sends 21 offline events past the room-subscription limit, reopens the room | `live_catchup_checkpoint=ok`, `live_catchup_gap_repaired=ok` |
@@ -115,7 +115,7 @@ qa-bin`; plain `cargo test` does not compile that binary.
 | `media` | upload staging, captions, compression, receive, gallery | `upload_staging=ok`, `media_gallery=ok`, `send_media=ok`, `media_caption=ok`, `image_compress=ok`, `recv_media=ok`, `media_caption_edit=ok` |
 | `avatar_demand` | dedicated 1,500-reader source, eight visible plus eight prefetch images, scoped PNGs, disjoint window move/return, cache reopen, shared in-flight cancellation and logout retirement with a retained scope; requires `--core`, separate from `all` | `avatar_window_requests=ok` |
 | `live_signals` | receipts, live reader source/ACK/download/scoped bytes/cache reopen/close, read markers, typing, presence, ignore/unignore history recovery | `read_receipt=ok`, `fully_read=ok`, `typing=ok`, `presence=ok`, `ignored_user_history_recovery=ok`, `live_signals=ok` |
-| `thread` | Rust-owned thread-root projection lifecycle, Room display block, and Thread panel relation | `thread_projection_lifecycle=stable`, `thread_summary=ok`, `thread_recv=ok` |
+| `thread` | Rust-owned thread reply quote lifecycle, thread-root projection lifecycle, Room display block, and Thread panel relation | `thread_reply_quote_lifecycle=ok`, `thread_projection_lifecycle=stable`, `thread_summary=ok`, `thread_recv=ok` |
 | `edit_redact_search` | edit, redact, search | — |
 | `redact_edit_convergence` | redaction/edit room-latest and Activity convergence plus live Rust-projected Room/thread-panel summary advance, edit, redaction rollback, and real-runtime restore parity | `redact_edit_convergence=ok`, `thread_summary_convergence=ok` |
 | `search_crawler` | crawler-fed search index | — |
@@ -127,6 +127,7 @@ qa-bin`; plain `cargo test` does not compile that binary.
 | `link_preview` | link preview projection | — |
 | `cache_restore` | deep-history anchor restored from cache within a bounded number of backward-paginate cycles while the network is blocked | — |
 | `read_state_convergence` | local viewed boundary advances while receipt/read-marker writes are held or failed, then converges through the bounded Rust dispatcher | `read_state_convergence=ok` |
+| `hidden_state_acl` | one ordinary message followed by 125 real `m.room.server_acl` updates (#1110/#1117): every update stays a hidden item, a re-subscription replay of the Core-held timeline (more raw items than the 120-row live-edge capacity) still contains the message, and viewing only the message converges to a server-confirmed read boundary and a zero unread count; requires `--core`, separate from `all` | `hidden_state_acl=ok` |
 | `thread_late_joiner` | in a `joined`-history room, a member who joins after the thread root was sent sees a permanent not-visible root row (`NotFound`/`Forbidden`, never a retryable failure) and can still open the thread and read the reply sent after they joined | `thread_late_joiner_root_not_visible=ok`, `thread_late_joiner_thread_panel=ok`, `thread_late_joiner=ok` |
 
 Key-backup scope: `joined_room_restore=ok` is the #30 MVP proof token for
@@ -206,7 +207,7 @@ scenario run. See [environment.md](environment.md#reusing-a-debug-build) for the
 | `local-invites-dm` | accepts a real invite through the Invites pane and starts a DM through the New DM dialog; waits for `data-room-kind="dm"` in the real room list | — |
 | `local-reply` | reply to a message row | — |
 | `local-media` | staged attachment, caption, download, gallery, viewer | `gui_local_media_stage=ok`, `gui_local_media=ok`, `gui_local_media_caption=ok`, `gui_local_media_viewer=ok` |
-| `local-image-compression` | sets Compress images to Always, attaches a synthetic wide PNG, waits for the compressed `.jpg` filename, `image/jpeg`, and selected dimensions | `gui_local_image_compress=ok` |
+| `local-image-compression` | attaches a synthetic wide PNG, then selects `1/2` and `JPEG` in the upload-staging dialog's Resize and Format controls, and waits for the compressed `.jpg` filename, `image/jpeg`, and selected dimensions | `gui_local_image_compress=ok` |
 | `local-room-tags` | real room row context menu, waits for the row to move between Rooms and Favourites | `gui_local_room_tag_set=ok`, `gui_local_room_tag_removed=ok` |
 | `local-room-management` | topic edit (waits for `AppState.room_management.settings.topic`), role change through the Rust-owned power-level command, kick, waiting for the room-scoped `settings.members` snapshot to remove the row | `gui_local_room_topic=ok`, `gui_local_room_role=ok`, `gui_local_room_kick=ok` |
 | `local-room-history-export` | Room info → Download history: all available history, a past period, and today's period in the displayed time zone; reads each export folder's room `messages.json` for Element's top-level keys, the seeded messages, and the dialog's per-room count | `gui_local_history_export_all=ok`, `gui_local_history_export_period=ok`, `gui_local_room_history_export=ok` |
@@ -217,7 +218,7 @@ scenario run. See [environment.md](environment.md#reusing-a-debug-build) for the
 | `local-pins` | pin affordances | — |
 | `local-message-types` | injects `m.emote`, `m.notice`, and formatted spoiler events; checks `data-message-kind`, collapsed spoiler, reveal | — |
 | `local-composer` | mention autocomplete from `AppState.mention_candidates`, Bold toolbar, slash input, then Rust-owned `send=sent` plus composer clear | `gui_local_mention=ok`, `gui_local_markdown=ok`, `gui_local_slash=ok` |
-| `local-scheduled-send` | `Send later`, `datetime-local` via the shared setter, create/edit/cancel | `gui_local_scheduled_create=ok`, `gui_local_scheduled_reschedule=ok`, `gui_local_scheduled_cancel=ok` |
+| `local-scheduled-send` | `Send later`, `datetime-local` via the shared setter, create/edit/cancel, a mouse-driven time adjustment, then a short-fuse schedule that must actually fire | `gui_local_scheduled_create=ok`, `gui_local_scheduled_reschedule=ok`, `gui_local_scheduled_cancel=ok`, `gui_local_scheduled_adjust=ok`, `gui_local_scheduled_fire=ok` |
 | `local-timeline-navigation` | first-unread pill, bottom pill, jump-to-date focused context | `gui_local_timeline_unread_jump=ok`, `gui_local_timeline_bottom_jump=ok`, `gui_local_timeline_date_jump=ok` |
 | `local-rich-formatting` | sanitized Matrix HTML rendering (`strong`, blockquote, list, link, code block, copy control), then toggles `display.code_block_wrap` and waits for the code block CSS to switch from `pre-wrap` to `pre` | — |
 | `local-alias` | sets a local alias through `set_local_user_alias`, waits for Rust-projected timeline/member labels, clears it, waits for both surfaces to revert | `gui_local_alias_set=ok`, `gui_local_alias_clear=ok` |
@@ -247,8 +248,8 @@ Lane scope notes:
   do not provide a reliable app-world command recorder. The lane uses synthetic
   filenames and content only.
 - `local-image-compression` uses a binary-safe `DataTransfer` fallback for the
-  synthetic PNG. User Settings can unmount the timeline surface in the real
-  WebView, so the lane must reselect the QA Seed Room before attaching media.
+  synthetic PNG. Settings can unmount the timeline surface in the real WebView,
+  so the lane must reselect the QA Seed Room before attaching media.
 - `local-room-tags` must wait until the row is observed in the expected section.
   Do not mutate React state, monkeypatch Tauri IPC, or treat menu click
   completion as evidence.
@@ -326,8 +327,9 @@ slots on a real homeserver.
 - `npm --prefix apps/desktop run qa:mac-gui` — macOS GUI smoke driven through
   `System Events`.
 
-The macOS smoke opens User Settings, selects Display, and activates the
-semantic `Compact`, `Default`, and `Comfortable` buttons. It then resizes
+The macOS smoke opens Account Settings with **Cmd+,**, switches to App
+Settings, selects Appearance, and activates the semantic `Compact`, `Default`,
+and `Comfortable` buttons. It then resizes
 `window 1` through System Events' native `set size` command and restores the
 original size best-effort. After each transition it polls the private-data-free
 Rust receipt title token:
@@ -347,9 +349,8 @@ Safety rules:
   `KOUSHI_SKIP_SAVED_SESSIONS=1` only prevents saved-session reads; a successful
   login can still prompt macOS Keychain during session persistence or encrypted
   SDK store key creation.
-- First-run GUI smoke sets `KOUSHI_SKIP_SAVED_SESSIONS=1`, or opening User
-  Settings can read the macOS Keychain and show a confirmation prompt that
-  blocks unattended automation. Real-login smoke additionally sets
+- First-run GUI smoke sets `KOUSHI_SKIP_SAVED_SESSIONS=1` to avoid Keychain
+  reads while restoring saved sessions. Real-login smoke additionally sets
   `KOUSHI_SKIP_KEYCHAIN_PERSISTENCE=1` and `KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR`.
 - Filter the child environment before spawning `npm run tauri dev`
   ([engineering rules](../policies/engineering-rules.md#secrets-and-private-data) Secrets 4), and attempt logout cleanup after any
@@ -382,6 +383,31 @@ Prompt order differs between the two entry points:
   device name, then an optional recovery code. Send all five newline-terminated
   lines; leave the fifth empty to accept `needsRecovery` as a post-login sync QA
   state, and provide it only when verifying recovery completion to `ready`.
+
+## macOS notification activation smoke
+
+Opt-in, attended checks for the banner click path (#1128). Both show a real
+banner, so run them on a macOS session and dismiss what they show; they are
+`#[ignore]`d so the ordinary test run never fires a banner.
+
+```bash
+cargo test -p koushi-desktop --lib -- --ignored macos_click_waiter_does_not_settle_without_interaction
+```
+
+This is the headless oracle: a banner with a click waiter must **not** settle by
+itself. The pinned fire-and-forget path returned after `mac-notification-sys`'s
+~2 s delivery confirmation, so it fails (with `Ok(None)`) whenever the click wait
+is dropped again.
+
+The dismissal half of the same path — a dismissed banner settles the waiter with
+a non-activating response, so a dismissal never navigates and the bounded waiter
+pool cannot leak — needs the application's main run loop: the pinned backend
+schedules its dismissal poll on `NSRunLoop mainRunLoop`, which no `cargo test`
+harness runs. Cover it in the packaged-build check instead.
+
+A dev/test binary has no bundle identifier, so the banner is attributed to the
+development terminal identity; the packaged-build click behavior (window raise,
+room/event navigation, highlight) remains an attended check on a packaged app.
 
 ## Credential-health tiers
 

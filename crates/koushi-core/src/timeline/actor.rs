@@ -57,7 +57,7 @@ use super::gap_repair::{
     room_checkpoint_advances_global_fence, should_record_gap_repair_evaluation,
 };
 use super::item_projection::{
-    ReceiptObservationTarget, apply_ignored_sender_suppression, apply_link_previews_to_item,
+    ReceiptObservationTarget, apply_link_previews_to_item, apply_timeline_item_visibility,
     cache_sdk_item_media_source, emit_receipt_observation_actions,
     live_event_receipts_from_sdk_items, remember_local_echo, sdk_item_to_timeline_item,
     thread_auto_requestable_event_id, timeline_room_id, withheld_update_should_publish,
@@ -68,10 +68,10 @@ use super::media::{
     media_gallery_updated_action,
 };
 use super::navigation::{
-    ActivePaginationTask, INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT, InitialItemsRequestIdentity,
-    PaginationCompletion, RestoreTimelineAnchorState, TimelineActorGenerationGate,
-    activity_rows_from_timeline_items, emit_initial_items_for_generation,
-    emit_timeline_events_for_generation, send_generation_fenced,
+    ActivePaginationTask, INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT,
+    INITIAL_EMPTY_ROOM_HYDRATION_MAX_ROUNDS, InitialItemsRequestIdentity, PaginationCompletion,
+    RestoreTimelineAnchorState, TimelineActorGenerationGate, activity_rows_from_timeline_items,
+    emit_initial_items_for_generation, emit_timeline_events_for_generation, send_generation_fenced,
     should_hydrate_empty_initial_room_timeline,
 };
 use super::outbound_send::{
@@ -295,8 +295,21 @@ pub(super) enum TimelineActorMessage {
         request_id: RequestId,
         event_id: String,
     },
-    ReplyDetailsFetchFinished {
+    ReplyQuoteOriginalLoaded {
         event_id: String,
+        token: super::reply_quote_hydration::HydrationToken,
+        outcome: super::reply_quote_hydration::OriginalLookupOutcome,
+    },
+    ReplyQuoteRetryDue {
+        event_id: String,
+        token: super::reply_quote_hydration::HydrationToken,
+    },
+    /// Test-only: settle a ledger entry from an authoritative observation, as
+    /// a completed batch or an edit would, without an SDK lookup.
+    #[cfg(test)]
+    TestSettleReplyQuoteOriginal {
+        quote: koushi_state::ReplyQuote,
+        acknowledged: tokio::sync::oneshot::Sender<()>,
     },
     RequestRoomKey {
         request_id: Option<RequestId>,
@@ -379,6 +392,9 @@ pub(super) enum TimelineActorMessage {
     },
     DisplayPolicyChanged {
         thread_root_order: TimelineThreadRootOrder,
+        /// #1110: the redaction display preference, applied by Rust so the
+        /// renderer never owns a second visibility policy.
+        hide_redacted: bool,
     },
     RefreshPendingSendProjection {
         actor_generation: u64,
@@ -480,6 +496,7 @@ pub(super) enum TimelineActorControl {
     },
     DisplayPolicyChanged {
         thread_root_order: TimelineThreadRootOrder,
+        hide_redacted: bool,
     },
     BeginGapRepairDemand,
     EndGapRepairDemand,
@@ -577,13 +594,40 @@ impl From<TimelineActorControl> for TimelineActorMessage {
             TimelineActorControl::ReadStatePolicyChanged { send_read_receipts } => {
                 Self::ReadStatePolicyChanged { send_read_receipts }
             }
-            TimelineActorControl::DisplayPolicyChanged { thread_root_order } => {
-                Self::DisplayPolicyChanged { thread_root_order }
-            }
+            TimelineActorControl::DisplayPolicyChanged {
+                thread_root_order,
+                hide_redacted,
+            } => Self::DisplayPolicyChanged {
+                thread_root_order,
+                hide_redacted,
+            },
             TimelineActorControl::BeginGapRepairDemand => Self::BeginGapRepairDemand,
             TimelineActorControl::EndGapRepairDemand => Self::EndGapRepairDemand,
         }
     }
+}
+
+/// #1110: project a raw SDK item window into canonical items with the one
+/// authoritative visibility policy already applied.
+///
+/// The initial-hydration decision and the actor's first item list must agree on
+/// which rows a reader can actually see, so both use this projection instead of
+/// counting raw SDK items.
+fn project_initial_items<'a>(
+    key: &TimelineKey,
+    sdk_items: impl IntoIterator<Item = &'a Arc<matrix_sdk_ui::timeline::TimelineItem>>,
+    own_user_id: Option<&matrix_sdk::ruma::UserId>,
+    hide_redacted: bool,
+    ignored_user_ids: &std::collections::BTreeSet<String>,
+) -> Vec<TimelineItem> {
+    sdk_items
+        .into_iter()
+        .map(|item| sdk_item_to_timeline_item(key, item, own_user_id))
+        .map(|mut item| {
+            apply_timeline_item_visibility(&mut item, hide_redacted, ignored_user_ids);
+            item
+        })
+        .collect()
 }
 
 pub(super) fn canonical_activity_window_action(
@@ -877,14 +921,26 @@ pub(super) struct TimelineActor {
     pub(super) link_preview_policy: LinkPreviewContext,
     /// In-flight URL preview fetch workers keyed by event_id.
     pub(super) link_preview_fetches: HashMap<String, executor::JoinHandle<()>>,
-    /// In-flight reply detail fetch workers keyed by the reply event_id.
-    pub(super) reply_detail_fetches: HashMap<String, executor::JoinHandle<()>>,
+    /// In-flight reply quote hydration lookups and retry wakes, keyed by the
+    /// original event id and fenced by their ledger token. A result whose token
+    /// no longer matches is ignored, so an evicted or superseded lookup can
+    /// never settle a later entry for the same original.
+    pub(super) reply_quote_tasks: HashMap<
+        String,
+        (
+            super::reply_quote_hydration::HydrationToken,
+            executor::JoinHandle<()>,
+        ),
+    >,
     /// Manager-owned bounded hydration state shared by replacement Room
     /// actors. This is not a `Timeline` and cannot paginate.
     pub(super) thread_root_projection_service: Arc<Mutex<ThreadRootProjectionService>>,
     pub(super) thread_summary_projection: ThreadSummaryProjectionIngress,
     thread_summary_projection_rx: watch::Receiver<BTreeMap<String, ThreadSummaryProjectionWake>>,
     pub(super) thread_root_order: TimelineThreadRootOrder,
+    /// #1110: the redaction display preference. It participates in the one
+    /// authoritative row-visibility policy, so a change re-emits item diffs.
+    pub(super) hide_redacted: bool,
     /// Manager-owned serial fence for display events and their actor generation.
     pub(super) timeline_actor_generations: Arc<TimelineActorGenerationGate>,
     pub(super) actor_generation: u64,
@@ -901,7 +957,15 @@ pub(super) struct TimelineActor {
     pub(super) terminal_ingress: TimelineSendTerminalIngress,
     /// Reply event IDs already handed to the SDK for replied-to details during
     /// this actor lifetime. This avoids retry loops on every viewport tick.
-    pub(super) reply_detail_fetch_attempted_event_ids: HashSet<String>,
+    pub(super) reply_quote_hydration: super::reply_quote_hydration::ReplyQuoteHydration,
+    /// Originals whose settled quote changed (an edit or redaction): every
+    /// dependent quote must be re-derived, resolved or not, until the next
+    /// republish consumes the set.
+    pub(super) reply_quote_refresh: HashSet<String>,
+    /// A republish was requested while an anchor restore was buffering its
+    /// coalesced emission; it runs at the end of the loop once the restore has
+    /// flushed.
+    pub(super) reply_quote_republish_pending: bool,
     pub(super) pagination_task: Option<ActivePaginationTask>,
     pub(super) cache_reset_refill_pending: bool,
     pub(super) next_pagination_serial: u64,
@@ -981,7 +1045,7 @@ impl Drop for TimelineActor {
         for task in self.link_preview_fetches.values() {
             task.abort();
         }
-        for task in self.reply_detail_fetches.values() {
+        for (_token, task) in self.reply_quote_tasks.values() {
             task.abort();
         }
         for task in self.media_download_tasks.values() {
@@ -1102,11 +1166,13 @@ impl TimelineActor {
             .expect("send completion coordinator lock must not be poisoned")
             .settled_transaction_ids(self.key.room_id());
         self.pending_send_projections = projections;
-        let pending_items = self
+        let mut pending_items = self
             .pending_send_projections
             .iter()
             .map(|projection| projection.item.clone())
-            .collect();
+            .collect::<Vec<_>>();
+        // No batch is being committed here: the canonical items are current.
+        self.overlay_reply_quotes_on_pending(&mut pending_items, &HashMap::new());
         let mut suppressed = self
             .pending_send_projections
             .iter()
@@ -1125,6 +1191,9 @@ impl TimelineActor {
             suppressed,
             &self.display_projection_context(),
         );
+        // Manager-owned pending sends can carry quotes whose originals are not
+        // in the canonical batch; start their lookups here too.
+        self.maybe_hydrate_reply_quotes();
         if !diffs.is_empty() {
             let batch_id = self.next_batch_id;
             if super::navigation::emit_items_updated_for_generation(
@@ -1303,6 +1372,7 @@ impl TimelineActor {
         account_work: AccountWorkScheduler,
         thread_root_projection_service: Arc<Mutex<ThreadRootProjectionService>>,
         thread_root_order: TimelineThreadRootOrder,
+        hide_redacted: bool,
         timeline_actor_generations: Arc<TimelineActorGenerationGate>,
         actor_generation: u64,
         subscription_generation: Option<u64>,
@@ -1361,51 +1431,76 @@ impl TimelineActor {
             subscribe_started,
             initial_sdk_items.len(),
         );
-        if should_hydrate_empty_initial_room_timeline(&key.kind, initial_sdk_items.len()) {
-            let gate_started = Some(std::time::Instant::now());
-            let hydrate_result = {
-                let _permit = account_work
-                    .acquire(AccountWorkKind::ExplicitPagination)
-                    .await;
-                let gate_wait = gate_started.map(|started| started.elapsed());
-                trace_timeline_paginate(
-                    "initial_hydrate_gate_acquired",
-                    subscribe_request_id,
-                    &key,
-                    PaginationDirection::Backward,
-                    INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT,
-                    None,
-                    gate_wait.map(|duration| duration.as_millis()),
-                    None,
-                );
-                let paginate_started = Some(startup_trace::now());
-                let trace_started = Some(std::time::Instant::now());
-                let outcome = timeline
-                    .paginate_backwards(INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT)
-                    .await;
-                let outcome_token = match &outcome {
-                    Ok(true) => "end_reached",
-                    Ok(false) => "idle",
-                    Err(_) => "failed",
+        let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
+        // #1110: decide the initial-hydration need from the *projected* rows. A
+        // snapshot whose items are all suppressed technical state events is
+        // empty for the reader even though the SDK item count is not.
+        let mut projected_initial_items = project_initial_items(
+            &key,
+            &initial_sdk_items,
+            own_user_id.as_deref(),
+            hide_redacted,
+            &ignored_user_ids,
+        );
+        if should_hydrate_empty_initial_room_timeline(&key.kind, &projected_initial_items) {
+            // #1125: the window can be entirely hidden technical state events, so
+            // one guarded pass does not always reach a displayed row. Keep taking
+            // passes while the projection is still empty; the round cap is the
+            // bound, because a page can also reach the timeline after its
+            // pagination call returns, so a "the edges did not move" check could
+            // stop one pass too early.
+            let mut hydrate_rounds = 0_u8;
+            while should_hydrate_empty_initial_room_timeline(&key.kind, &projected_initial_items)
+                && hydrate_rounds < INITIAL_EMPTY_ROOM_HYDRATION_MAX_ROUNDS
+            {
+                hydrate_rounds += 1;
+                let gate_started = Some(std::time::Instant::now());
+                let hydrate_result = {
+                    let _permit = account_work
+                        .acquire(AccountWorkKind::ExplicitPagination)
+                        .await;
+                    let gate_wait = gate_started.map(|started| started.elapsed());
+                    trace_timeline_paginate(
+                        "initial_hydrate_gate_acquired",
+                        subscribe_request_id,
+                        &key,
+                        PaginationDirection::Backward,
+                        INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT,
+                        None,
+                        gate_wait.map(|duration| duration.as_millis()),
+                        None,
+                    );
+                    let paginate_started = Some(startup_trace::now());
+                    let trace_started = Some(std::time::Instant::now());
+                    let outcome = timeline
+                        .paginate_backwards(INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT)
+                        .await;
+                    let outcome_token = match &outcome {
+                        Ok(true) => "end_reached",
+                        Ok(false) => "idle",
+                        Err(_) => "failed",
+                    };
+                    trace_timeline_paginate(
+                        "initial_hydrate_sdk_finish",
+                        subscribe_request_id,
+                        &key,
+                        PaginationDirection::Backward,
+                        INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT,
+                        trace_started.map(|started| started.elapsed().as_millis()),
+                        gate_wait.map(|duration| duration.as_millis()),
+                        Some(outcome_token),
+                    );
+                    startup_trace::trace_paginate(
+                        paginate_started,
+                        gate_wait,
+                        matches!(outcome, Ok(true)),
+                    );
+                    outcome
                 };
-                trace_timeline_paginate(
-                    "initial_hydrate_sdk_finish",
-                    subscribe_request_id,
-                    &key,
-                    PaginationDirection::Backward,
-                    INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT,
-                    trace_started.map(|started| started.elapsed().as_millis()),
-                    gate_wait.map(|duration| duration.as_millis()),
-                    Some(outcome_token),
-                );
-                startup_trace::trace_paginate(
-                    paginate_started,
-                    gate_wait,
-                    matches!(outcome, Ok(true)),
-                );
-                outcome
-            };
-            if hydrate_result.is_ok() {
+                let reached_start = matches!(&hydrate_result, Ok(true));
+                if hydrate_result.is_err() {
+                    break;
+                }
                 let resubscribe_started = Some(startup_trace::now());
                 let (hydrated_items, hydrated_stream) = timeline.subscribe().await;
                 startup_trace::trace_phase_items(
@@ -1415,9 +1510,18 @@ impl TimelineActor {
                 );
                 initial_sdk_items = hydrated_items;
                 diff_stream = hydrated_stream;
+                projected_initial_items = project_initial_items(
+                    &key,
+                    &initial_sdk_items,
+                    own_user_id.as_deref(),
+                    hide_redacted,
+                    &ignored_user_ids,
+                );
+                if reached_start {
+                    break;
+                }
             }
         }
-        let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
         let mut initial_read_receipt_changes = if own_user_id.is_some() {
             Some(timeline.subscribe_own_user_read_receipts_changed().await)
         } else {
@@ -1437,15 +1541,7 @@ impl TimelineActor {
             cache_sdk_item_media_source(&mut media_sources, item);
         }
 
-        let initial_items: Vec<TimelineItem> = initial_sdk_items
-            .iter()
-            .map(|item| sdk_item_to_timeline_item(&key, item, own_user_id.as_deref()))
-            .map(|mut item| {
-                apply_ignored_sender_suppression(&mut item, &ignored_user_ids);
-                item
-            })
-            .collect();
-        let mut initial_items = initial_items;
+        let mut initial_items = projected_initial_items;
         for item in &mut initial_items {
             apply_link_previews_to_item(&mut *item, &room_id, &link_preview_policy, &session).await;
         }
@@ -1767,6 +1863,13 @@ impl TimelineActor {
         let (position_tx, position_rx) = watch::channel(Arc::new(
             TimelinePositionIndex::from_items(actor_generation, generation, &navigation_items),
         ));
+        let mut reply_quote_hydration =
+            super::reply_quote_hydration::ReplyQuoteHydration::default();
+        if let TimelineKind::Thread { root_event_id, .. } = &key.kind {
+            // A Thread actor's root is never evicted: replies to it must always
+            // resolve even after the ledger fills up.
+            reply_quote_hydration.retain(root_event_id);
+        }
         let mut actor = TimelineActor {
             key: key.clone(),
             timeline,
@@ -1820,11 +1923,12 @@ impl TimelineActor {
             ignored_user_ids,
             link_preview_policy,
             link_preview_fetches: HashMap::new(),
-            reply_detail_fetches: HashMap::new(),
+            reply_quote_tasks: HashMap::new(),
             thread_root_projection_service,
             thread_summary_projection: thread_summary_projection.clone(),
             thread_summary_projection_rx,
             thread_root_order,
+            hide_redacted,
             timeline_actor_generations,
             actor_generation,
             subscription_generation,
@@ -1834,7 +1938,9 @@ impl TimelineActor {
             missing_committed_response_retry: None,
             manager_tx,
             terminal_ingress,
-            reply_detail_fetch_attempted_event_ids: HashSet::new(),
+            reply_quote_hydration,
+            reply_quote_refresh: HashSet::new(),
+            reply_quote_republish_pending: false,
             pagination_task: None,
             cache_reset_refill_pending: false,
             next_pagination_serial: 0,
@@ -1907,6 +2013,7 @@ impl TimelineActor {
         if matches!(self.key.kind, TimelineKind::Room { .. }) {
             self.maybe_hydrate_missing_thread_roots(None).await;
         }
+        self.maybe_hydrate_reply_quotes();
         if matches!(self.key.kind, TimelineKind::Thread { .. }) {
             let initial_items = self.navigation_items.clone();
             let _ = self
@@ -1979,6 +2086,16 @@ impl TimelineActor {
             }
             self.finish_ready_causal_projection_handoffs().await;
             self.maybe_refill_reset_room_cache().await;
+            self.flush_deferred_reply_quote_republish();
+        }
+    }
+    /// Run a republish that was requested while an anchor restore was buffering
+    /// its coalesced emission, once that restore has flushed. This runs at the
+    /// loop tail so a relay batch that flushes the restore in the same turn
+    /// cannot leave the republish pending indefinitely.
+    fn flush_deferred_reply_quote_republish(&mut self) {
+        if self.reply_quote_republish_pending && self.restore_anchor.is_none() {
+            self.republish_reply_quote_dependents();
         }
     }
     async fn finish_ready_causal_projection_handoffs(&mut self) {
@@ -2246,6 +2363,7 @@ impl TimelineActor {
                         &self.timeline_actor_generations,
                         &source,
                         self.actor_generation,
+                        self.session.info.user_id.as_str(),
                     );
                     if !super::item_projection::prepare_receipt_window_profiles(
                         &self.session,
@@ -2298,7 +2416,7 @@ impl TimelineActor {
                         })
                         .await;
                 }
-                self.maybe_fetch_visible_reply_details();
+                self.maybe_hydrate_reply_quotes();
                 self.emit_navigation_if_changed();
                 let viewport_range = self.viewport_item_range();
                 let decision = self.gap_repair.evaluate_viewport_wake(
@@ -2399,8 +2517,31 @@ impl TimelineActor {
             } => {
                 self.handle_load_message_source(request_id, event_id).await;
             }
-            TimelineActorMessage::ReplyDetailsFetchFinished { event_id } => {
-                self.reply_detail_fetches.remove(&event_id);
+            TimelineActorMessage::ReplyQuoteOriginalLoaded {
+                event_id,
+                token,
+                outcome,
+            } => {
+                self.handle_reply_quote_original_loaded(event_id, token, outcome);
+            }
+            TimelineActorMessage::ReplyQuoteRetryDue { event_id, token } => {
+                self.handle_reply_quote_retry_due(event_id, token);
+            }
+            #[cfg(test)]
+            TimelineActorMessage::TestSettleReplyQuoteOriginal {
+                quote,
+                acknowledged,
+            } => {
+                let mut refreshes = super::reply_quote_hydration::ReplyQuoteRefreshes::default();
+                let outcome = self.reply_quote_hydration.learn(quote.clone());
+                super::reply_quote_hydration::record_learn(
+                    &mut refreshes,
+                    quote.event_id.clone(),
+                    outcome,
+                );
+                self.apply_reply_quote_refreshes(refreshes);
+                self.republish_reply_quote_dependents();
+                let _ = acknowledged.send(());
             }
             TimelineActorMessage::RequestRoomKey {
                 request_id,
@@ -2589,7 +2730,19 @@ impl TimelineActor {
                     .await;
                 let _ = acknowledged.send(accepted);
             }
-            TimelineActorMessage::DisplayPolicyChanged { thread_root_order } => {
+            TimelineActorMessage::DisplayPolicyChanged {
+                thread_root_order,
+                hide_redacted,
+            } => {
+                // #1110: the redaction preference belongs to the one
+                // authoritative visibility policy, so changing it re-emits the
+                // affected rows instead of leaving the renderer to recompute
+                // `is_hidden` from the setting on its own.
+                if self.hide_redacted != hide_redacted {
+                    self.hide_redacted = hide_redacted;
+                    let ignored_user_ids = self.ignored_user_ids.clone();
+                    self.reapply_item_visibility(ignored_user_ids).await;
+                }
                 if self.thread_root_order != thread_root_order {
                     self.thread_root_order = thread_root_order;
                     let diffs = self.reproject_display_items();
@@ -2818,5 +2971,8 @@ impl TimelineActor {
     }
 }
 
+#[cfg(test)]
+#[path = "actor/fresh_room_hydration_tests.rs"]
+mod fresh_room_hydration_tests;
 #[cfg(test)]
 mod tests;

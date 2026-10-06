@@ -7,6 +7,7 @@ describe("context menu registry", () => {
     const ownerItems = contextMenuItems({
       kind: "message",
       canManage: true,
+      canEdit: true,
       canReply: true,
       hasThread: true,
       senderUserId: "@owner:example.invalid",
@@ -18,6 +19,7 @@ describe("context menu registry", () => {
     const guestItems = contextMenuItems({
       kind: "message",
       canManage: false,
+      canEdit: false,
       canReply: true,
       hasThread: true,
       senderUserId: "@other:example.invalid",
@@ -45,9 +47,46 @@ describe("context menu registry", () => {
     ]);
   });
 
+  test("Edit follows Rust-owned can_edit, not message ownership (#1100)", () => {
+    // The row's own action button is gated on `TimelineItem.can_edit`. A menu
+    // that used "I sent it" instead offered Edit on messages the hover bar
+    // refused to edit.
+    const ownButNotEditable = contextMenuItems({
+      kind: "message",
+      canManage: true,
+      canEdit: false,
+      canReply: true,
+      hasThread: false,
+      senderUserId: "@owner:example.invalid",
+      currentUserId: "@owner:example.invalid",
+      roomId: "!room:example.invalid",
+      eventId: "$event:example.invalid",
+      isIgnored: false
+    }).map((item) => item.id);
+
+    expect(ownButNotEditable).not.toContain("editMessage");
+    expect(ownButNotEditable).toContain("redactMessage");
+
+    const editable = contextMenuItems({
+      kind: "message",
+      canManage: false,
+      canEdit: true,
+      canReply: true,
+      hasThread: false,
+      senderUserId: "@owner:example.invalid",
+      currentUserId: "@owner:example.invalid",
+      roomId: "!room:example.invalid",
+      eventId: "$event:example.invalid",
+      isIgnored: false
+    }).map((item) => item.id);
+
+    expect(editable).toContain("editMessage");
+  });
+
   test("message menu exposes normal reply only when the row can be replied to", () => {
     const replyableItems = contextMenuItems({
       kind: "message",
+      canEdit: false,
       canManage: false,
       canReply: true,
       hasThread: true,
@@ -59,6 +98,7 @@ describe("context menu registry", () => {
     }).map((item) => item.id);
     const nonReplyableItems = contextMenuItems({
       kind: "message",
+      canEdit: false,
       canManage: false,
       canReply: false,
       hasThread: true,
@@ -77,6 +117,7 @@ describe("context menu registry", () => {
   test("message menu shows unignore when sender is already ignored", () => {
     const items = contextMenuItems({
       kind: "message",
+      canEdit: false,
       canManage: false,
       canReply: true,
       hasThread: false,
@@ -115,8 +156,7 @@ describe("context menu registry", () => {
       "leaveSpace"
     ]);
     expect(contextMenuItems({ kind: "account" }).map((item) => item.id)).toEqual([
-      "openUserSettings",
-      "switchAccount"
+      "openUserSettings"
     ]);
   });
 

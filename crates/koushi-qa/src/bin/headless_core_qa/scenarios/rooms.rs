@@ -4,6 +4,8 @@ mod address;
 mod space_access;
 #[path = "rooms/space_add_existing.rs"]
 mod space_add_existing;
+#[path = "rooms/space_leave_children.rs"]
+mod space_leave_children;
 #[path = "rooms/unnamed_public.rs"]
 mod unnamed_public;
 
@@ -922,6 +924,7 @@ pub(super) async fn run_room_management_stage(
 
     space_access::verify(config, conn_a, conn_b).await?;
     space_add_existing::verify(config, conn_a).await?;
+    space_leave_children::verify(conn_a).await?;
 
     Ok(())
 }

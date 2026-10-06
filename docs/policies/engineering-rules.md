@@ -405,7 +405,10 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    section order, counts, unread badges, and mention dots from Rust-shaped
    `SidebarModel` fields. The formatted-message renderer keeps direct list
    element children as `li`. `SettingsValues.display.hide_redacted` defaults to
-   `true` and `SettingsValues.media.image_upload_compression` defaults to `ask`.
+   `true`. `SettingsValues.media` holds only
+   `image_upload_compression_policy`: #305 retired the automatic-compression
+   preference, and resize/format is chosen per attachment in the upload-staging
+   dialog.
 4. Operational GUI-smoke safety (FIFO credential entry, `Cmd+Q`, AppleScript
    process names, Keychain-suppressing environment, `--allow-empty-timeline`)
    is in [QA lanes](../agents/qa-lanes.md#real-account-lanes) and
@@ -704,6 +707,35 @@ To reduce conflicts on these files:
   transitions. Verify computed placement and scrolling with headless tests;
   confirm native-button clearance separately on macOS. Do not impose the
   macOS inset on Windows or Linux.
+
+### Right Panel And Composer Containment
+
+- Every right-panel mode (thread, search, focused context, room info, people,
+  profile, Space info and members, files, pinned, threads list, recovery)
+  renders inside the one shared panel shell. A mode must not introduce its own
+  outer container, width, or positioning.
+- Layout tracks inside the shell and the composer shrink to the allocated
+  inline size: grid columns are explicit `minmax(0, 1fr)` tracks (never an
+  implicit `auto` column) and grid or flex children that may hold long text set
+  `min-inline-size: 0`. A descendant's intrinsic width (a long Matrix ID, an
+  unbroken URL, expanded localized text) must never widen the panel's or the
+  composer's content past its own edge.
+- The panel header with its close action, and the composer toolbar and footer
+  with the send action, stay inside the panel at every supported width,
+  density, and locale. When a toolbar row cannot fit its fixed controls, it
+  wraps; it does not overflow or hide controls.
+- A long account identity truncates with an ellipsis in place; the full value
+  stays available through `title` and the accessible name.
+- Fix containment at the shared shell and composer primitives. Do not hide
+  overflow globally (on the shell, the app grid, or `body`) to mask an
+  escaping child, and do not tune media-query breakpoints to dodge a width
+  that overflows.
+- Rust/Tauri keeps ownership of native window geometry (minimum window size,
+  zoom, display scale); CSS containment must hold for any viewport the native
+  layer allows.
+- Headless regressions measure the panel and descendant rectangles, hit-test
+  the close and send actions with `elementFromPoint`, and click them; a
+  `toBeVisible()` check or a screenshot alone is not containment evidence.
 
 ## Search Index And Room-Key Export
 

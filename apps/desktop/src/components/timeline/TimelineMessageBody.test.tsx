@@ -3,7 +3,17 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import katex from "katex";
 
 import type { TimelineFormattedBody } from "../../domain/coreEvents";
-import { renderFormattedBody } from "./TimelineMessageBody";
+import { renderFormattedBody, renderPlainTextBody } from "./TimelineMessageBody";
+
+const NO_SPOILERS = { revealed: new Set<string>(), reveal: () => undefined };
+
+const renderPlain = (text: string, room: boolean) =>
+  renderToStaticMarkup(
+    renderPlainTextBody(text, [], undefined, [], {}, NO_SPOILERS, undefined, {
+      userIds: new Set<string>(),
+      room
+    })
+  );
 
 const GIANT_RULE_SOURCE = String.raw`\rule{1000em}{1000em}`;
 const UNCLAMPED_GIANT_RULE_MARKUP = katex.renderToString(GIANT_RULE_SOURCE, {
@@ -37,6 +47,27 @@ const renderMath = (
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("renderPlainTextBody room mention pills (#1123)", () => {
+  test("draws the pill for the spec-standard Element room mention", () => {
+    const markup = renderPlain("@room heads up", true);
+
+    expect(markup).toContain('class="message-mention-pill"');
+    expect(markup).toContain('data-mention-room="true"');
+  });
+
+  test("leaves plain @room text alone without the event flag", () => {
+    const markup = renderPlain("@room heads up", false);
+
+    expect(markup).not.toContain("message-mention-pill");
+  });
+
+  test("pills only a whole room token, not a suffix of another word", () => {
+    const markup = renderPlain("see me@room.example and @room", true);
+
+    expect(markup.match(/message-mention-pill/g)).toHaveLength(1);
+  });
 });
 
 describe("renderFormattedBody math bounds", () => {
@@ -186,11 +217,11 @@ describe("renderFormattedBody math bounds", () => {
   });
 });
 
-describe("renderFormattedBody mention pills (#874)", () => {
+describe("renderFormattedBody mention pills (#874, #1123)", () => {
   const mentionHtml =
     '<a href="https://matrix.to/#/%40alice%3Aexample.test">@Alice</a> and <a href="https://matrix.to/#/%40bob%3Aexample.test">@Bob</a>';
 
-  const render = (mentionedUserIds: ReadonlySet<string>) =>
+  const render = (userIds: ReadonlySet<string>, room = false) =>
     renderToStaticMarkup(
       renderFormattedBody(
         {
@@ -204,7 +235,7 @@ describe("renderFormattedBody mention pills (#874)", () => {
         [],
         { revealed: new Set<string>(), reveal: () => undefined },
         undefined,
-        mentionedUserIds
+        { userIds, room }
       )
     );
 
@@ -224,5 +255,33 @@ describe("renderFormattedBody mention pills (#874)", () => {
     expect(markup).not.toContain("message-mention-pill");
     // Both anchors remain clickable links.
     expect(markup.match(/<a /g)).toHaveLength(2);
+  });
+
+  // #1123 boundary: the formatted renderer recognizes mentions exactly as it did
+  // before this change — user mentions through their matrix.to anchors and
+  // nothing else — so a bare room token in a formatted body is not pilled, with
+  // or without the flag. Pilling text nodes here would also have to resolve
+  // boundaries across sibling elements and would pill inside inline code.
+  const renderRoomMention = (html: string, plainText: string, room: boolean) =>
+    renderToStaticMarkup(
+      renderFormattedBody(
+        { html, plain_text: plainText, code_blocks: [] } satisfies TimelineFormattedBody,
+        [],
+        false,
+        () => undefined,
+        [],
+        { revealed: new Set<string>(), reveal: () => undefined },
+        undefined,
+        { userIds: new Set<string>(), room }
+      )
+    );
+
+  test("leaves a bare room token in a formatted body alone", () => {
+    expect(renderRoomMention("@room heads up", "@room heads up", true)).not.toContain(
+      "message-mention-pill"
+    );
+    expect(renderRoomMention("@room heads up", "@room heads up", false)).not.toContain(
+      "message-mention-pill"
+    );
   });
 });

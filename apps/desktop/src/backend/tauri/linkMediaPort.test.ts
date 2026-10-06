@@ -5,6 +5,7 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { setRendererSelectedAccountTabId } from "../client";
 import { tauriLinkMediaPort } from "./linkMediaPort";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -21,6 +22,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 }));
 
 afterEach(() => {
+  setRendererSelectedAccountTabId(null);
   vi.clearAllMocks();
 });
 
@@ -94,10 +96,16 @@ describe("Tauri link/media port", () => {
   });
 
   it("preserves the default-path, dialog and save command contract", async () => {
-    await tauriLinkMediaPort.saveMediaFile("asset://media", ' report:*?.png ');
+    await tauriLinkMediaPort.saveMediaFile("asset://media", ' report:*?.png ', null);
 
+    // #1135: Core owns the naming policy, so it receives the attachment's own
+    // filename and the facts the renderer resolved.
     expect(invoke).toHaveBeenCalledWith("default_media_save_path", {
-      filename: "report_.png"
+      filename: " report:*?.png ",
+      mediaKind: "file",
+      timestampMs: null,
+      utcOffsetMinutes: 0,
+      localNamePrefix: "Koushi_Image"
     });
     expect(saveDialog).toHaveBeenCalledWith({
       title: "Download report_.png",
@@ -109,9 +117,78 @@ describe("Tauri link/media port", () => {
     });
   });
 
+  it("passes the generic-image facts a timestamped name needs (#1135)", async () => {
+    // 2026-10-05T09:19:00Z; the offset the platform resolves for that instant is
+    // forwarded as minutes ahead of UTC, which is what Core's policy expects.
+    const timestampMs = 1_791_191_940_000;
+    await tauriLinkMediaPort.saveMediaFile("asset://media", "image.png", {
+      kind: "image",
+      timestampMs
+    });
+
+    expect(invoke).toHaveBeenCalledWith("default_media_save_path", {
+      filename: "image.png",
+      mediaKind: "image",
+      timestampMs,
+      utcOffsetMinutes: -new Date(timestampMs).getTimezoneOffset(),
+      localNamePrefix: "Koushi_Image"
+    });
+  });
+
+  it("forwards an empty filename to the naming policy instead of renaming it first", async () => {
+    await tauriLinkMediaPort.saveMediaFile("asset://media", "   ", {
+      kind: "image",
+      timestampMs: null
+    });
+
+    expect(invoke).toHaveBeenCalledWith("default_media_save_path", {
+      filename: "   ",
+      mediaKind: "image",
+      timestampMs: null,
+      utcOffsetMinutes: 0,
+      localNamePrefix: "Koushi_Image"
+    });
+  });
+
+  it("binds account media saves to the selected tab", async () => {
+    const accountTabId = "account:alice";
+    setRendererSelectedAccountTabId(accountTabId);
+    await tauriLinkMediaPort.saveMediaFile(
+      "/accounts/alice/media-downloads/item.bin",
+      "media.png",
+      null,
+      accountTabId
+    );
+
+    expect(invoke).toHaveBeenCalledWith("save_downloaded_media", {
+      sourceUrl: "/accounts/alice/media-downloads/item.bin",
+      destinationPath: "/downloads/chosen.png",
+      accountTabId
+    });
+  });
+
+  it("rejects an account media save if its tab changes while the dialog is open", async () => {
+    const accountTabId = "account:alice";
+    setRendererSelectedAccountTabId(accountTabId);
+    vi.mocked(saveDialog).mockImplementationOnce(async () => {
+      setRendererSelectedAccountTabId("account:bob");
+      return "/downloads/chosen.png";
+    });
+
+    await expect(
+      tauriLinkMediaPort.saveMediaFile(
+        "/accounts/alice/media-downloads/item.bin",
+        "media.png",
+        null,
+        accountTabId
+      )
+    ).rejects.toThrow("account tab is no longer selected");
+    expect(invoke).not.toHaveBeenCalledWith("save_downloaded_media", expect.anything());
+  });
+
   it("does not save when the dialog is cancelled", async () => {
     vi.mocked(saveDialog).mockResolvedValueOnce(null);
-    await tauriLinkMediaPort.saveMediaFile("asset://media", "media.png");
+    await tauriLinkMediaPort.saveMediaFile("asset://media", "media.png", null);
 
     expect(invoke).not.toHaveBeenCalledWith("save_downloaded_media", expect.anything());
   });

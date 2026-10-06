@@ -828,6 +828,11 @@ export async function requestQaLogout(path) {
 
 
 export async function submitLoginForm(browser, credentials, timeout) {
+  // The sign-in form derives the server from the Matrix ID; a disposable local
+  // homeserver URL goes through the explicit "Change server" path (#1101).
+  const changeServer = await browser.$("button.auth-change-server");
+  await changeServer.waitForDisplayed({ timeout });
+  await changeServer.click();
   const homeserverInput = await browser.$('input[name="homeserver"]');
   await homeserverInput.waitForDisplayed({ timeout });
   await homeserverInput.setValue(credentials.homeserver);

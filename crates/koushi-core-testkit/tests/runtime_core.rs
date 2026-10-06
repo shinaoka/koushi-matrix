@@ -188,10 +188,27 @@ async fn snapshot_only_refresh_wakes_watch_without_advancing_generation_or_emitt
     runtime
         .inject_actions(vec![AppAction::ComposerDraftsLoaded { drafts }])
         .await;
-    let after = connection
-        .next_versioned_snapshot()
-        .await
-        .expect("snapshot-only refresh should wake the watch");
+    // The watch may still have an unacknowledged hydration refresh. Wait for
+    // this target's revision, while checking every observed generation.
+    let after = executor::timeout(Duration::from_secs(1), async {
+        loop {
+            let snapshot = connection
+                .next_versioned_snapshot()
+                .await
+                .expect("snapshot-only refresh should wake the watch");
+            assert_eq!(snapshot.generation, before.generation);
+            if snapshot
+                .state
+                .composer_drafts
+                .room_revision("!snapshot-only:example.invalid")
+                == koushi_state::ComposerDraftRevision::from_u64(1)
+            {
+                break snapshot;
+            }
+        }
+    })
+    .await
+    .expect("snapshot-only draft refresh should arrive");
 
     assert_eq!(after.generation, before.generation);
     assert_eq!(

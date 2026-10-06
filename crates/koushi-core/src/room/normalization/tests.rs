@@ -198,7 +198,106 @@ fn normalize_spaces_with_child_rooms() {
     let spaces = normalize_spaces(&snapshot);
     assert_eq!(spaces.len(), 1);
     assert_eq!(spaces[0].space_id, "!space1:example.test");
+    // The room only claims the Space through `m.space.parent`: it belongs to the
+    // display union but not to the Space's own parent-side child list (#1098).
     assert_eq!(spaces[0].child_room_ids, vec!["!room1:example.test"]);
+    assert_eq!(spaces[0].parent_side_child_room_ids, Vec::<String>::new());
+}
+
+/// #1098: the display union lists a parent-only room under the Space, so
+/// add-existing eligibility must come from the Space's own `m.space.child`
+/// list (#1007); otherwise the room is reported as already added and can never
+/// be linked on the parent side.
+#[test]
+fn parent_only_rooms_stay_addable_while_the_display_union_lists_them() {
+    let space_id = "!space1:example.test";
+    let parent_only = "!room1:example.test";
+    let parent_side_child = "!room2:example.test";
+    let snapshot = MatrixRoomListSnapshot {
+        spaces: vec![MatrixRoomListSpace {
+            space_id: space_id.to_owned(),
+            raw_name: None,
+            display_name: "My Space".to_owned(),
+            avatar_mxc_uri: None,
+            join_rule: koushi_sdk::MatrixRoomJoinRule::Invite,
+            child_room_ids: vec![parent_side_child.to_owned()],
+            member_user_ids: Vec::new(),
+        }],
+        rooms: vec![
+            MatrixRoomListRoom {
+                display_name_placeholder: None,
+                room_id: parent_only.to_owned(),
+                display_name: "Parent only".to_owned(),
+                avatar_mxc_uri: None,
+                is_dm: false,
+                dm_user_ids: Vec::new(),
+                tags: MatrixRoomTags::default(),
+                unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
+                marked_unread: false,
+                recency_stamp: None,
+                conversation_activity: None,
+                latest_event: None,
+                parent_space_ids: vec![space_id.to_owned()],
+                is_encrypted: false,
+                joined_members: 0,
+            },
+            MatrixRoomListRoom {
+                display_name_placeholder: None,
+                room_id: parent_side_child.to_owned(),
+                display_name: "Listed".to_owned(),
+                avatar_mxc_uri: None,
+                is_dm: false,
+                dm_user_ids: Vec::new(),
+                tags: MatrixRoomTags::default(),
+                unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
+                marked_unread: false,
+                recency_stamp: None,
+                conversation_activity: None,
+                latest_event: None,
+                parent_space_ids: Vec::new(),
+                is_encrypted: false,
+                joined_members: 0,
+            },
+        ],
+        ..MatrixRoomListSnapshot::default()
+    };
+
+    let spaces = normalize_spaces(&snapshot);
+    assert_eq!(
+        spaces[0].child_room_ids,
+        vec![parent_only.to_owned(), parent_side_child.to_owned()]
+    );
+    assert_eq!(
+        spaces[0].parent_side_child_room_ids,
+        vec![parent_side_child.to_owned()]
+    );
+
+    let mut state = koushi_state::AppState {
+        spaces,
+        rooms: normalize_rooms(&snapshot),
+        ..koushi_state::AppState::default()
+    };
+    state.navigation.active_space_id = Some(space_id.to_owned());
+    let model = koushi_state::space_add_rooms_for_state(&state).expect("active Space");
+    let status = |room_id: &str| {
+        model
+            .candidates
+            .iter()
+            .find(|candidate| candidate.room_id == room_id)
+            .map(|candidate| candidate.status)
+    };
+    assert_eq!(
+        status(parent_only),
+        Some(koushi_state::SpaceAddRoomStatus::Available)
+    );
+    assert_eq!(
+        status(parent_side_child),
+        Some(koushi_state::SpaceAddRoomStatus::Added)
+    );
 }
 
 #[test]
@@ -239,6 +338,10 @@ fn normalize_spaces_uses_direct_space_child_state() {
 
     assert_eq!(spaces.len(), 1);
     assert_eq!(spaces[0].child_room_ids, vec!["!room1:example.test"]);
+    assert_eq!(
+        spaces[0].parent_side_child_room_ids,
+        vec!["!room1:example.test"]
+    );
 }
 
 #[test]

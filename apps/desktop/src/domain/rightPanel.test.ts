@@ -26,16 +26,13 @@ describe("right panel context menu routing", () => {
     ).toEqual({ mode: "spaceInfo", selectSpaceId: "!space-a:example.invalid" });
   });
 
-  test("routes account menu actions to user and keyboard settings panels", () => {
+  test("routes account menu actions to account settings panels", () => {
     expect(
       rightPanelIntentForContextMenuAction({ kind: "account" }, "openUserSettings")
     ).toEqual({ mode: "userSettings" });
     expect(
       rightPanelIntentForContextMenuAction({ kind: "account" }, "openKeyboardSettings")
     ).toEqual({ mode: "keyboardSettings" });
-    expect(
-      rightPanelIntentForContextMenuAction({ kind: "account" }, "switchAccount")
-    ).toEqual({ mode: "userSettings" });
   });
 
   test("does not invent panel switches for open and search-only actions", () => {
@@ -147,7 +144,8 @@ function spaceSummary(spaceId: string, label: string): SpaceSummary {
     display_name: label,
     avatar: null,
     join_rule: null,
-    child_room_ids: []
+    child_room_ids: [],
+    parent_side_child_room_ids: []
   };
 }
 

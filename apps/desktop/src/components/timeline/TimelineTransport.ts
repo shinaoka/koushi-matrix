@@ -4,6 +4,7 @@ import type {
   TimelineGapId,
   TimelineKey
 } from "../../domain/coreEvents";
+import type { MediaSaveNameFacts } from "../../backend/linkMediaPort";
 import type { ComposerDocument, TimelineScrollAnchor } from "../../domain/types";
 
 // ---------------------------------------------------------------------------
@@ -52,7 +53,11 @@ export interface TimelineTransport {
   /** Download an event-backed media attachment. */
   downloadMedia(roomId: string, eventId: string): Promise<void>;
   /** Save an already downloaded media file through the host desktop shell. */
-  saveMediaFile?(sourceUrl: string, filename: string): Promise<void>;
+  saveMediaFile?(
+    sourceUrl: string,
+    filename: string,
+    saveName?: MediaSaveNameFacts | null
+  ): Promise<void>;
   /** Download a Matrix avatar thumbnail and return its cancelable request sequence. */
   downloadAvatarThumbnail?(mxcUri: string): Promise<string | void>;
   /** Cancel a renderer-owned avatar thumbnail demand. */

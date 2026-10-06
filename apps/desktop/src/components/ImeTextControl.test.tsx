@@ -256,6 +256,181 @@ describe("mention caret anchors (#875)", () => {
   });
 });
 
+describe("in-place text patching (#1132)", () => {
+  it("keeps the rendered text node for an ordinary insert", () => {
+    const onChange = vi.fn();
+    render(
+      <ControlledMentionEditor
+        initial={{ version: 2, inlines: [{ kind: "text", text: "hello" }] }}
+        onChange={onChange}
+      />
+    );
+    const control = screen.getByRole("textbox", { name: EDITOR_LABEL }) as HTMLDivElement;
+    const span = control.firstChild as HTMLElement;
+    const textNode = span.firstChild as Text;
+    const replaceChildren = vi.spyOn(control, "replaceChildren");
+    setInlineMentionEditorSelection(control, 5);
+
+    beforeInput(control, "insertText", "!");
+
+    expect(onChange.mock.lastCall?.[0]).toEqual({
+      version: 2,
+      inlines: [{ kind: "text", text: "hello!" }]
+    });
+    expect(replaceChildren).not.toHaveBeenCalled();
+    expect(control.firstChild).toBe(span);
+    expect(span.firstChild).toBe(textNode);
+    expect(textNode.textContent).toBe("hello!");
+    expect(inlineMentionEditorSelection(control)).toEqual({ start: 6, end: 6 });
+  });
+
+  it("patches the text beside a mention without rebuilding either node", () => {
+    const onChange = vi.fn();
+    render(<ControlledMentionEditor initial={mentionDocument} onChange={onChange} />);
+    const control = screen.getByRole("textbox", { name: EDITOR_LABEL }) as HTMLDivElement;
+    const mentionSpan = control.querySelector('[data-composer-mention="1"]');
+    const trailingSpan = Array.from(control.querySelectorAll("span")).at(-1) as HTMLElement;
+    const trailingText = trailingSpan.firstChild as Text;
+
+    setInlineMentionEditorSelection(control, 2);
+    beforeInput(control, "insertText", "x");
+
+    expect(onChange.mock.lastCall?.[0]).toEqual({
+      version: 2,
+      inlines: [
+        { kind: "text", text: "A" },
+        mentionDocument.inlines[1],
+        { kind: "text", text: "xB" }
+      ]
+    });
+    expect(control.querySelector('[data-composer-mention="1"]')).toBe(mentionSpan);
+    expect(trailingSpan.firstChild).toBe(trailingText);
+    expect(control.textContent).toBe("A@AlicexB");
+  });
+
+  it("still rebuilds when the document shape changes", () => {
+    const onChange = vi.fn();
+    render(<ControlledMentionEditor initial={mentionDocument} onChange={onChange} />);
+    const control = screen.getByRole("textbox", { name: EDITOR_LABEL }) as HTMLDivElement;
+    const mentionSpan = control.querySelector('[data-composer-mention="1"]');
+
+    // Deleting the whole mention removes an inline, which is not a text patch.
+    setInlineMentionEditorSelection(control, 2);
+    beforeInput(control, "deleteContentBackward", null);
+
+    expect(control.querySelector('[data-composer-mention="1"]')).not.toBe(mentionSpan);
+    expect(onChange.mock.lastCall?.[0]).toEqual({
+      version: 2,
+      inlines: [{ kind: "text", text: "AB" }]
+    });
+  });
+
+  it("rebuilds when a mention keeps its index but changes its label", () => {
+    let pushDocument: (next: ComposerDocument) => void = () => undefined;
+    function Harness() {
+      const [document, setDocument] = useState(mentionDocument);
+      pushDocument = setDocument;
+      return (
+        <ImeInlineMentionEditor
+          aria-label={EDITOR_LABEL}
+          document={document}
+          syncKey="message-a"
+          onDocumentChange={() => undefined}
+        />
+      );
+    }
+    const renamed: ComposerDocument = {
+      version: 2,
+      inlines: [
+        { kind: "text", text: "A" },
+        {
+          kind: "mention",
+          target: { kind: "user", user_id: "@bob:example.invalid", display_label: "Bob" },
+          display_label: "Bob"
+        },
+        { kind: "text", text: "B" }
+      ]
+    };
+    render(<Harness />);
+    const control = screen.getByRole("textbox", { name: EDITOR_LABEL }) as HTMLDivElement;
+    expect(control.querySelector('[data-composer-mention="1"]')?.textContent).toBe("@Alice");
+
+    // Same inline shape, different mention: the visible pill and its accessible
+    // name have to change with it.
+    act(() => pushDocument(renamed));
+
+    expect(control.querySelector('[data-composer-mention="1"]')?.textContent).toBe("@Bob");
+    expect(
+      control.querySelector('[data-composer-mention="1"]')?.getAttribute("aria-label")
+    ).toBe("Mention: Bob");
+  });
+
+  it("rebuilds when the live subtree is not the canonical shape", () => {
+    const onChange = vi.fn();
+    render(
+      <ControlledMentionEditor
+        initial={{ version: 2, inlines: [{ kind: "text", text: "ab" }] }}
+        onChange={onChange}
+      />
+    );
+    const control = screen.getByRole("textbox", { name: EDITOR_LABEL }) as HTMLDivElement;
+    const span = control.firstChild as HTMLElement;
+    const textNode = span.firstChild as Text;
+    // A native edit can leave a split text node; patching must decline.
+    span.insertBefore(document.createTextNode("b"), textNode);
+    textNode.textContent = "a";
+
+    setInlineMentionEditorSelection(control, 2);
+    beforeInput(control, "insertText", "c");
+
+    // The subtree was rebuilt (a fresh span), which is what this case needs; the
+    // split node also changes which offset the caret maps to, so only the insert
+    // is asserted.
+    expect(control.firstChild).not.toBe(span);
+    expect(control.textContent).toContain("c");
+  });
+
+  it("restores a missing trailing sentinel instead of patching over it", () => {
+    const onChange = vi.fn();
+    render(
+      <ControlledMentionEditor
+        initial={{ version: 2, inlines: [{ kind: "text", text: "line\n" }] }}
+        onChange={onChange}
+      />
+    );
+    const control = screen.getByRole("textbox", { name: EDITOR_LABEL }) as HTMLDivElement;
+    expect(control.lastChild?.nodeName).toBe("BR");
+    control.lastChild?.remove();
+
+    setInlineMentionEditorSelection(control, 4);
+    beforeInput(control, "insertText", "s");
+
+    expect(control.lastChild?.nodeName).toBe("BR");
+    expect(control.textContent).toBe("lines\n");
+  });
+
+  it("rebuilds rather than patching a trailing newline change", () => {
+    const onChange = vi.fn();
+    render(
+      <ControlledMentionEditor
+        initial={{ version: 2, inlines: [{ kind: "text", text: "line" }] }}
+        onChange={onChange}
+      />
+    );
+    const control = screen.getByRole("textbox", { name: EDITOR_LABEL }) as HTMLDivElement;
+
+    setInlineMentionEditorSelection(control, 4);
+    beforeInput(control, "insertParagraph", null);
+
+    expect(onChange.mock.lastCall?.[0]).toEqual({
+      version: 2,
+      inlines: [{ kind: "text", text: "line\n" }]
+    });
+    expect(control.lastChild?.nodeName).toBe("BR");
+    expect((control.lastChild as HTMLElement).getAttribute("data-composer-sentinel")).toBe("");
+  });
+});
+
 describe("trailing newline rendering (#471)", () => {
   it("renders a trailing <br> sentinel when the document ends with a newline", () => {
     render(

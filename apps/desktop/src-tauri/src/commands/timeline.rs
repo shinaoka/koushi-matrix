@@ -680,9 +680,10 @@ pub struct ComposerDraftLeaseResponse {
 
 #[tauri::command]
 pub async fn begin_composer_draft_renderer_generation(
+    account_tab_id: Option<String>,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<String, String> {
-    let connection = state.connection.lock().await;
+    let connection = account_connection(state.inner(), account_tab_id.as_deref()).await?;
     connection
         .begin_composer_draft_renderer_generation()
         .map(|generation| generation.to_wire_string())
@@ -691,6 +692,7 @@ pub async fn begin_composer_draft_renderer_generation(
 
 #[tauri::command]
 pub async fn acquire_composer_draft_lease(
+    account_tab_id: Option<String>,
     account_homeserver: String,
     account_user_id: String,
     account_device_id: String,
@@ -710,7 +712,7 @@ pub async fn acquire_composer_draft_lease(
         &renderer_generation,
     )
     .map_err(|_| "composer renderer generation is invalid".to_owned())?;
-    let connection = state.connection.lock().await;
+    let connection = account_connection(state.inner(), account_tab_id.as_deref()).await?;
     let admission = connection
         .acquire_composer_draft_lease_for_active_target(expected_account, generation, target)
         .map_err(|_| "composer draft lease unavailable".to_owned())?;
@@ -725,15 +727,14 @@ pub async fn acquire_composer_draft_lease(
 
 #[tauri::command]
 pub async fn release_composer_draft_lease(
+    account_tab_id: Option<String>,
     lease_id: String,
     renderer_generation: String,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<(), String> {
     let (generation, lease) = parse_composer_wire_tokens(&renderer_generation, &lease_id)?;
-    state
-        .connection
-        .lock()
-        .await
+    account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
         .release_composer_draft_lease(generation, lease)
         .map_err(|_| "composer draft lease mismatch".to_owned())
 }
@@ -843,13 +844,16 @@ fn submission_failure_from_outcome_error(error: RequestOutcomeError) -> Submissi
 
 #[tauri::command]
 pub async fn resolve_composer_key_action(
+    account_tab_id: Option<String>,
     surface: ComposerSurface,
     key_event: ComposerKeyEvent,
     autocomplete_open: bool,
     send_enabled: bool,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<ComposerResolvedAction, String> {
-    let snapshot = state.connection.lock().await.snapshot();
+    let snapshot = account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
+        .snapshot();
     Ok(koushi_state::resolve_composer_key_action(
         key_event,
         ComposerResolverContext {
@@ -863,12 +867,13 @@ pub async fn resolve_composer_key_action(
 
 #[tauri::command]
 pub async fn paginate_timeline_backwards(
+    account_tab_id: Option<String>,
     room_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     trace_tauri_timeline_command("submit", "paginate_backwards", request_id);
     let admission = submit_core_command_with_admission(
         state.inner(),
@@ -881,6 +886,7 @@ pub async fn paginate_timeline_backwards(
 
 #[tauri::command]
 pub async fn restore_timeline_anchor(
+    account_tab_id: Option<String>,
     timeline_key: TimelineKey,
     event_id: String,
     max_batches: u16,
@@ -888,8 +894,8 @@ pub async fn restore_timeline_anchor(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_restore_timeline_anchor_command(
@@ -908,12 +914,13 @@ pub async fn restore_timeline_anchor(
 
 #[tauri::command]
 pub async fn ensure_timeline_subscribed(
+    account_tab_id: Option<String>,
     timeline_key: TimelineKey,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     trace_tauri_timeline_command("submit", "ensure_subscribed", request_id);
     let admission = submit_core_command_with_admission(
         state.inner(),
@@ -933,13 +940,14 @@ pub async fn ensure_timeline_subscribed(
 
 #[tauri::command]
 pub async fn paginate_thread_timeline_backwards(
+    account_tab_id: Option<String>,
     room_id: String,
     root_event_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_paginate_thread_timeline_backwards_command(
@@ -960,6 +968,7 @@ pub async fn paginate_thread_timeline_backwards(
     reason = "Tauri command: each parameter is a named IPC argument of the renderer contract"
 )]
 pub async fn send_text(
+    account_tab_id: Option<String>,
     account_homeserver: String,
     account_user_id: String,
     account_device_id: String,
@@ -984,7 +993,9 @@ pub async fn send_text(
     };
     let (generation, lease) = parse_composer_wire_tokens(&renderer_generation, &lease_id)
         .map_err(|_| SubmissionFailure::SubmitFailed)?;
-    let mut event_conn = state.runtime.attach();
+    let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref())
+        .await
+        .map_err(|_| SubmissionFailure::SubmitFailed)?;
     let target = koushi_state::ComposerTarget::Main {
         room_id: room_id.clone(),
     };
@@ -1034,6 +1045,7 @@ pub async fn send_text(
     reason = "Tauri command: each parameter is a named IPC argument of the renderer contract"
 )]
 pub async fn schedule_send(
+    account_tab_id: Option<String>,
     account_homeserver: String,
     account_user_id: String,
     account_device_id: String,
@@ -1047,7 +1059,7 @@ pub async fn schedule_send(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<ComposerDraftAcceptanceResponse, String> {
     let (generation, lease) = parse_composer_wire_tokens(&renderer_generation, &lease_id)?;
-    let mut event_conn = state.runtime.attach();
+    let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
     let expected_account = koushi_protocol::SessionKeyId {
         homeserver: account_homeserver,
         user_id: account_user_id,
@@ -1097,6 +1109,7 @@ pub async fn schedule_send(
 
 #[tauri::command]
 pub async fn stage_upload_bytes(
+    account_tab_id: Option<String>,
     target: koushi_state::ComposerTarget,
     items: Vec<StageUploadBytesInputItem>,
     app: AppHandle,
@@ -1114,9 +1127,8 @@ pub async fn stage_upload_bytes(
             },
         )
         .collect();
-    let settled = state
-        .runtime
-        .attach()
+    let settled = account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
         .stage_upload_bytes(target, items)
         .await
         .map_err(|error| error.to_string())?;
@@ -1126,14 +1138,14 @@ pub async fn stage_upload_bytes(
 
 #[tauri::command]
 pub async fn select_staged_upload_output(
+    account_tab_id: Option<String>,
     target: koushi_state::ComposerTarget,
     staged_id: String,
     selection: koushi_state::StagedUploadOutputSelection,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let settled = state
-        .runtime
-        .attach()
+    let settled = account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
         .select_staged_upload_output(target, staged_id, selection)
         .await
         .map_err(|error| error.to_string())?;
@@ -1142,14 +1154,14 @@ pub async fn select_staged_upload_output(
 
 #[tauri::command]
 pub async fn retry_staged_upload_preparation(
+    account_tab_id: Option<String>,
     target: koushi_state::ComposerTarget,
     staged_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let settled = state
-        .runtime
-        .attach()
+    let settled = account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
         .retry_staged_upload_preparation(target, staged_id)
         .await
         .map_err(|error| error.to_string())?;
@@ -1159,14 +1171,14 @@ pub async fn retry_staged_upload_preparation(
 
 #[tauri::command]
 pub async fn use_original_staged_upload(
+    account_tab_id: Option<String>,
     target: koushi_state::ComposerTarget,
     staged_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let settled = state
-        .runtime
-        .attach()
+    let settled = account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
         .use_original_staged_upload(target, staged_id)
         .await
         .map_err(|error| error.to_string())?;
@@ -1176,14 +1188,14 @@ pub async fn use_original_staged_upload(
 
 #[tauri::command]
 pub async fn prepared_upload_preview(
+    account_tab_id: Option<String>,
     target: koushi_state::ComposerTarget,
     staged_id: String,
     variant_id: String,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<Vec<u8>, String> {
-    state
-        .runtime
-        .attach()
+    account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
         .prepared_upload_preview(target, staged_id, variant_id)
         .await
         .map_err(|error| error.to_string())
@@ -1195,6 +1207,7 @@ pub async fn prepared_upload_preview(
     reason = "Tauri command: each parameter is a named IPC argument of the renderer contract"
 )]
 pub async fn send_prepared_uploads(
+    account_tab_id: Option<String>,
     account_homeserver: String,
     account_user_id: String,
     account_device_id: String,
@@ -1204,37 +1217,36 @@ pub async fn send_prepared_uploads(
     draft_revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<ComposerDraftAcceptanceResponse, String> {
+) -> Result<FrontendCommandSettlement, String> {
     let expected_account = koushi_protocol::SessionKeyId {
         homeserver: account_homeserver,
         user_id: account_user_id,
         device_id: account_device_id,
     };
     let (generation, lease) = parse_composer_wire_tokens(&renderer_generation, &lease_id)?;
-    let settled = state
-        .runtime
-        .attach()
+    let settled = account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
         .send_prepared_uploads(expected_account, generation, lease, target, draft_revision)
         .await
         .map_err(|error| error.to_string())?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(ComposerDraftAcceptanceResponse {
-        accepted_revision: settled.accepted_revision,
-        settlement: command_settlement(settled.generation),
-    })
+    // #1130: the send settles the composer draft without consuming it, so the
+    // renderer only needs the plain command settlement: it must not clear the
+    // draft text it still has to send.
+    Ok(command_settlement(settled.generation))
 }
 
 #[tauri::command]
 pub async fn update_staged_upload_caption(
+    account_tab_id: Option<String>,
     target: koushi_state::ComposerTarget,
     staged_id: String,
     document: Option<ComposerDocument>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let settled = state
-        .runtime
-        .attach()
+    let settled = account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
         .update_staged_upload_caption(target, staged_id, document)
         .await
         .map_err(|error| error.to_string())?;
@@ -1244,15 +1256,15 @@ pub async fn update_staged_upload_caption(
 
 #[tauri::command]
 pub async fn update_staged_upload_compression(
+    account_tab_id: Option<String>,
     target: koushi_state::ComposerTarget,
     staged_id: String,
     compression_choice: StagedUploadCompressionChoice,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let settled = state
-        .runtime
-        .attach()
+    let settled = account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
         .update_staged_upload_compression(target, staged_id, compression_choice)
         .await
         .map_err(|error| error.to_string())?;
@@ -1262,13 +1274,13 @@ pub async fn update_staged_upload_compression(
 
 #[tauri::command]
 pub async fn clear_upload_staging(
+    account_tab_id: Option<String>,
     target: koushi_state::ComposerTarget,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let settled = state
-        .runtime
-        .attach()
+    let settled = account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
         .clear_upload_staging(target)
         .await
         .map_err(|error| error.to_string())?;
@@ -1278,11 +1290,12 @@ pub async fn clear_upload_staging(
 
 #[tauri::command]
 pub async fn cancel_scheduled_send(
+    account_tab_id: Option<String>,
     scheduled_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let Some(command) = build_cancel_scheduled_send_command(request_id, scheduled_id) else {
         return Err("scheduled send id must not be blank".to_owned());
     };
@@ -1293,13 +1306,14 @@ pub async fn cancel_scheduled_send(
 
 #[tauri::command]
 pub async fn reschedule_scheduled_send(
+    account_tab_id: Option<String>,
     scheduled_id: String,
     body: String,
     send_at_ms: u64,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let Some(command) =
         build_reschedule_scheduled_send_command(request_id, scheduled_id, body, send_at_ms)
     else {
@@ -1312,13 +1326,14 @@ pub async fn reschedule_scheduled_send(
 
 #[tauri::command]
 pub async fn retry_send(
+    account_tab_id: Option<String>,
     room_id: String,
     transaction_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let Some(command) = build_retry_send_command(request_id, account_key, room_id, transaction_id)
     else {
         return Err("send transaction id must not be blank".to_owned());
@@ -1330,13 +1345,14 @@ pub async fn retry_send(
 
 #[tauri::command]
 pub async fn cancel_send(
+    account_tab_id: Option<String>,
     room_id: String,
     transaction_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let Some(command) = build_cancel_send_command(request_id, account_key, room_id, transaction_id)
     else {
         return Err("send transaction id must not be blank".to_owned());
@@ -1348,6 +1364,7 @@ pub async fn cancel_send(
 
 #[tauri::command]
 pub async fn download_media(
+    account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
     app: AppHandle,
@@ -1357,8 +1374,8 @@ pub async fn download_media(
         return Err("media event id must not be blank".to_owned());
     }
 
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let Some(command) = build_download_media_command(request_id, account_key, room_id, event_id)
     else {
         return Err("media event id must not be blank".to_owned());
@@ -1370,12 +1387,18 @@ pub async fn download_media(
 
 #[tauri::command]
 pub async fn save_downloaded_media(
+    account_tab_id: Option<String>,
     source_url: String,
     destination_path: String,
+    state: State<'_, CoreRuntimeState>,
 ) -> Result<(), String> {
-    let cache_root = crate::app_data_dir()
-        .map_err(|_| "media cache is unavailable".to_owned())?
-        .join("media_downloads");
+    let tab_id = account_tab_id
+        .map(koushi_core::account_runtime_manager::AccountTabId::from_string)
+        .unwrap_or_else(|| state.runtime.selected_tab_id());
+    let cache_root = state
+        .runtime
+        .media_cache_dir_for_tab(&tab_id)
+        .ok_or_else(|| "media cache is unavailable".to_owned())?;
     let filesystem = crate::media_save::NativeMediaSaveFilesystem;
     koushi_core::save_downloaded_media(
         &filesystem,
@@ -1387,8 +1410,28 @@ pub async fn save_downloaded_media(
 }
 
 #[tauri::command]
-pub async fn default_media_save_path(filename: String, app: AppHandle) -> Result<String, String> {
+pub async fn default_media_save_path(
+    filename: String,
+    media_kind: String,
+    timestamp_ms: Option<i64>,
+    utc_offset_minutes: i32,
+    local_name_prefix: String,
+    app: AppHandle,
+) -> Result<String, String> {
     let downloads_dir = app.path().download_dir().ok();
+    // #1135: the renderer resolves the catalog-owned prefix and the event's local
+    // offset; the naming decision itself stays in Core.
+    let facts = koushi_core::MediaSaveNameFacts {
+        local_name_prefix: &local_name_prefix,
+        kind: if media_kind == "image" {
+            koushi_core::MediaSaveKind::Image
+        } else {
+            koushi_core::MediaSaveKind::File
+        },
+        timestamp_ms: timestamp_ms.and_then(|value| u64::try_from(value).ok()),
+        utc_offset_minutes,
+    };
+    let filename = koushi_core::default_media_save_filename(&filename, facts);
     Ok(
         koushi_core::default_media_save_path(&filename, downloads_dir.as_deref())
             .to_string_lossy()
@@ -1398,13 +1441,14 @@ pub async fn default_media_save_path(filename: String, app: AppHandle) -> Result
 
 #[tauri::command]
 pub async fn load_message_source(
+    account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_required_admission(
         state.inner(),
         build_load_message_source_command(request_id, account_key, room_id, event_id),
@@ -1417,6 +1461,7 @@ pub async fn load_message_source(
 
 #[tauri::command]
 pub async fn request_room_key(
+    account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
     origin: Option<koushi_protocol::KeyRequestOrigin>,
@@ -1424,8 +1469,8 @@ pub async fn request_room_key(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     // Only absent origin defaults to User; unknown wire values are rejected by
     // the typed deserializer instead of being silently coerced.
     let origin = origin.unwrap_or(koushi_protocol::KeyRequestOrigin::User);
@@ -1451,13 +1496,14 @@ pub async fn request_room_key(
 /// nothing.
 #[tauri::command]
 pub async fn request_late_decryption(
+    account_tab_id: Option<String>,
     room_id: String,
     timeline_key: Option<TimelineKey>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_required_admission(
         state.inner(),
         build_request_late_decryption_command(request_id, account_key, room_id, timeline_key),
@@ -1470,13 +1516,14 @@ pub async fn request_late_decryption(
 
 #[tauri::command]
 pub async fn load_link_previews(
+    account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     trace_tauri_timeline_command("submit", "load_link_previews", request_id);
     let admission = submit_required_admission(
         state.inner(),
@@ -1490,13 +1537,14 @@ pub async fn load_link_previews(
 
 #[tauri::command]
 pub async fn hide_link_preview(
+    account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_required_admission(
         state.inner(),
         build_hide_link_preview_command(request_id, account_key, room_id, event_id),
@@ -1509,6 +1557,7 @@ pub async fn hide_link_preview(
 
 #[tauri::command]
 pub async fn forward_message(
+    account_tab_id: Option<String>,
     room_id: String,
     source_event_id: String,
     destination_room_id: String,
@@ -1516,8 +1565,8 @@ pub async fn forward_message(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     let transaction_id = super::next_transaction_id("desktop-forward");
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_required_admission(
         state.inner(),
         build_forward_message_command(
@@ -1537,6 +1586,7 @@ pub async fn forward_message(
 
 #[tauri::command]
 pub async fn edit_message(
+    account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
     document: koushi_state::ComposerDocument,
@@ -1546,8 +1596,8 @@ pub async fn edit_message(
     if document.plain_body().trim().is_empty() {
         return Err("message body must not be blank".to_owned());
     }
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_required_admission(
         state.inner(),
         build_edit_message_command(request_id, account_key, room_id, event_id, document),
@@ -1560,13 +1610,14 @@ pub async fn edit_message(
 
 #[tauri::command]
 pub async fn redact_message(
+    account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_core_command_with_admission(
         state.inner(),
         build_redact_message_command(request_id, account_key, room_id, event_id),
@@ -1578,6 +1629,7 @@ pub async fn redact_message(
 
 #[tauri::command]
 pub async fn toggle_reaction(
+    account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
     reaction_key: String,
@@ -1588,8 +1640,8 @@ pub async fn toggle_reaction(
         return Err("reaction key must not be blank".to_owned());
     }
 
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_required_admission(
         state.inner(),
         build_toggle_reaction_command(request_id, account_key, room_id, event_id, reaction_key),
@@ -1602,6 +1654,7 @@ pub async fn toggle_reaction(
 
 #[tauri::command]
 pub async fn send_reaction(
+    account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
     reaction_key: String,
@@ -1612,8 +1665,8 @@ pub async fn send_reaction(
         return Err("reaction key and event id must not be blank".to_owned());
     }
 
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let trace_started = std::time::Instant::now();
     trace_tauri_timeline_command("submit", "send_reaction", request_id);
     let admission = submit_required_admission(
@@ -1634,6 +1687,7 @@ pub async fn send_reaction(
 
 #[tauri::command]
 pub async fn redact_reaction(
+    account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
     reaction_key: String,
@@ -1648,8 +1702,8 @@ pub async fn redact_reaction(
         return Err("reaction target must not be blank".to_owned());
     }
 
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let trace_started = std::time::Instant::now();
     trace_tauri_timeline_command("submit", "redact_reaction", request_id);
     let admission = submit_required_admission(
@@ -1677,12 +1731,13 @@ pub async fn redact_reaction(
 
 #[tauri::command]
 pub async fn set_composer_reply_target(
+    account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_core_command_with_admission(
         state.inner(),
         CoreCommand::App(AppCommand::SetComposerReplyTarget {
@@ -1698,10 +1753,11 @@ pub async fn set_composer_reply_target(
 
 #[tauri::command]
 pub async fn cancel_composer_reply(
+    account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     let admission = submit_core_command_with_admission(
         state.inner(),
         CoreCommand::App(AppCommand::CancelComposerReply { request_id }),
@@ -1717,6 +1773,7 @@ pub async fn cancel_composer_reply(
     reason = "Tauri command: each parameter is a named IPC argument of the renderer contract"
 )]
 pub async fn set_composer_draft(
+    account_tab_id: Option<String>,
     account_homeserver: String,
     account_user_id: String,
     account_device_id: String,
@@ -1729,7 +1786,7 @@ pub async fn set_composer_draft(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     let (generation, lease) = parse_composer_wire_tokens(&renderer_generation, &lease_id)?;
-    let event_conn = state.runtime.attach();
+    let event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
     let expected_account = koushi_protocol::SessionKeyId {
         homeserver: account_homeserver,
         user_id: account_user_id,
@@ -1770,6 +1827,7 @@ pub async fn set_composer_draft(
     reason = "Tauri command: each parameter is a named IPC argument of the renderer contract"
 )]
 pub async fn set_thread_composer_draft(
+    account_tab_id: Option<String>,
     account_homeserver: String,
     account_user_id: String,
     account_device_id: String,
@@ -1783,7 +1841,7 @@ pub async fn set_thread_composer_draft(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     let (generation, lease) = parse_composer_wire_tokens(&renderer_generation, &lease_id)?;
-    let event_conn = state.runtime.attach();
+    let event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
     let expected_account = koushi_protocol::SessionKeyId {
         homeserver: account_homeserver,
         user_id: account_user_id,
@@ -1826,6 +1884,7 @@ pub async fn set_thread_composer_draft(
     reason = "Tauri command: each parameter is a named IPC argument of the renderer contract"
 )]
 pub async fn send_reply(
+    account_tab_id: Option<String>,
     account_homeserver: String,
     account_user_id: String,
     account_device_id: String,
@@ -1851,7 +1910,9 @@ pub async fn send_reply(
     };
     let (generation, lease) = parse_composer_wire_tokens(&renderer_generation, &lease_id)
         .map_err(|_| SubmissionFailure::SubmitFailed)?;
-    let mut event_conn = state.runtime.attach();
+    let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref())
+        .await
+        .map_err(|_| SubmissionFailure::SubmitFailed)?;
     let target = koushi_state::ComposerTarget::Main {
         room_id: room_id.clone(),
     };
@@ -1902,6 +1963,7 @@ pub async fn send_reply(
     reason = "Tauri command: each parameter is a named IPC argument of the renderer contract"
 )]
 pub async fn send_thread_reply(
+    account_tab_id: Option<String>,
     account_homeserver: String,
     account_user_id: String,
     account_device_id: String,
@@ -1927,7 +1989,9 @@ pub async fn send_thread_reply(
     };
     let (generation, lease) = parse_composer_wire_tokens(&renderer_generation, &lease_id)
         .map_err(|_| SubmissionFailure::SubmitFailed)?;
-    let mut event_conn = state.runtime.attach();
+    let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref())
+        .await
+        .map_err(|_| SubmissionFailure::SubmitFailed)?;
     let target = koushi_state::ComposerTarget::Thread {
         room_id: room_id.clone(),
         root_event_id: root_event_id.clone(),

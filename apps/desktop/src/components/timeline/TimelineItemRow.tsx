@@ -27,12 +27,11 @@ import {
   avatarInitial,
   ignoreComposerKeyAction,
   peopleFacingLabel,
-  type MentionCandidate
+  type MentionCandidate,
+  type OpenContextMenu
 } from "../../app/uiShared";
-import {
-  contextMenuItems,
-  type ContextMenuItem
-} from "../../domain/contextMenus";
+import type { MediaSaveNameFacts } from "../../backend/linkMediaPort";
+import { contextMenuItems } from "../../domain/contextMenus";
 import { getActiveLocale, t } from "../../i18n/messages";
 import { onMenuKeyDown } from "../ContextMenuSurface";
 import { LazyEmojiPicker } from "../LazyEmojiPicker";
@@ -220,6 +219,7 @@ export function ThreadRootStatusPlaceholder({
 
 export function TimelineItemRow({
   item,
+  accountTabId,
   rowId,
   contentEventId,
   activityEventId,
@@ -284,6 +284,7 @@ export function TimelineItemRow({
   keyRequestPending = false
 }: {
   item: TimelineItem;
+  accountTabId?: string;
   /** Stable presentation identity used by DOM/virtualization rows. */
   rowId?: string;
   /** Root/content identity for every message action. */
@@ -353,20 +354,9 @@ export function TimelineItemRow({
   receiptOverflowCount?: number;
   currentUserId?: string;
   ignoredUserIds?: string[];
-  onOpenContextMenu?: (
-    event: MouseEvent<HTMLElement>,
-    target: {
-      kind: "message";
-      message: {
-        sender: string;
-        room_id: string;
-        event_id: string;
-        body: string;
-        reply_count: number;
-      };
-    },
-    items: ContextMenuItem[]
-  ) => void;
+  /** Shared shell contract (#1100): a message target may carry the requesting
+   * row's own inline-edit action. */
+  onOpenContextMenu?: OpenContextMenu;
   threadAttention?: TimelineThreadAttention | null;
   mediaDownload?: TimelineMediaDownloadState;
 }) {
@@ -388,6 +378,14 @@ export function TimelineItemRow({
   const itemEventId = "Event" in item.id ? item.id.Event.event_id : null;
   const eventId = contentEventId ?? itemEventId;
   const activityId = activityEventId ?? eventId;
+  // #1135: the save-name policy distinguishes images from other attachments, and
+  // timestamps a generic image name from the event's own time.
+  const mediaSaveName: MediaSaveNameFacts | null = item.media
+    ? {
+        kind: item.media.kind === "Image" ? "image" : "file",
+        timestampMs: item.timestamp_ms
+      }
+    : null;
   const isRedacted = item.is_redacted;
   // Render only cards with content; pending requests still load through the effect below.
   const visibleLinkPreviews = item.link_previews?.filter((preview) =>
@@ -726,8 +724,12 @@ export function TimelineItemRow({
   ]
     .filter(Boolean)
     .join(" ");
-  // #874: the message's own `m.mentions` decides which text may render as a pill.
-  const mentionedUserIds = new Set(item.mentioned_user_ids ?? []);
+  // #874/#1123: the message's own `m.mentions` decides which text may render as
+  // a pill: the user ids it named, and whether it flagged the whole room.
+  const mentions = {
+    userIds: new Set(item.mentioned_user_ids ?? []),
+    room: item.mentions_room === true
+  };
   const messageBodyContent = item.formatted
     ? renderFormattedBody(
         item.formatted,
@@ -737,7 +739,7 @@ export function TimelineItemRow({
         searchHighlights,
         spoilerState,
         onOpenMatrixTarget,
-        mentionedUserIds
+        mentions
       )
     : renderPlainTextBody(
         displayBody,
@@ -747,7 +749,7 @@ export function TimelineItemRow({
         mentionProfileUsers,
         spoilerState,
         onOpenMatrixTarget,
-        mentionedUserIds
+        mentions
       );
   const emotePrefix =
     messageKind === "emote" ? (
@@ -758,9 +760,11 @@ export function TimelineItemRow({
   const replyQuoteContent =
     !isRedacted && item.reply_quote ? (
       <div className="reply-quote" data-reply-state={item.reply_quote.state}>
-        <div className="reply-quote-sender" dir="auto">
-          {peopleFacingLabel(item.reply_quote.sender_label)}
-        </div>
+        {replyQuoteShowsSender(item.reply_quote) ? (
+          <div className="reply-quote-sender" dir="auto">
+            {peopleFacingLabel(item.reply_quote.sender_label)}
+          </div>
+        ) : null}
         <div className="reply-quote-body" dir="auto">
           {item.reply_quote.formatted
             ? renderFormattedBody(
@@ -855,6 +859,7 @@ export function TimelineItemRow({
         onDownload={submitDownloadMedia}
         onOpenMediaViewer={onOpenMediaViewer}
         onSaveMediaFile={onSaveMediaFile}
+        saveName={mediaSaveName}
         viewerActions={{
           canForward,
           forwardDestinations,
@@ -873,6 +878,7 @@ export function TimelineItemRow({
     const items = contextMenuItems({
       kind: "message",
       canManage: currentUserId === item.sender,
+      canEdit: item.can_edit,
       canReply: canShowReply,
       hasThread: item.thread_summary != null && canComposeReply,
       senderUserId: item.sender,
@@ -894,7 +900,8 @@ export function TimelineItemRow({
         event_id: eventId,
         body: item.body ?? "",
         reply_count: item.thread_summary?.reply_count ?? 0
-      }
+      },
+      onOpenEdit: openEditForm
     }, items);
   }
 
@@ -1179,6 +1186,7 @@ export function TimelineItemRow({
             ) : null}
             {receiptTotalCount > 0 ? (
               <ReceiptReaders
+                accountTabId={accountTabId}
                 overflowCount={receiptOverflowCount}
                 receipts={receipts}
                 source={receiptSource}
@@ -1487,9 +1495,20 @@ function thumbnailSourceUrl(thumbnail: AvatarThumbnailState | null | undefined):
     : null;
 }
 
+// An unresolved original has no sender yet; avoid presenting it as an unknown user.
+function replyQuoteShowsSender(quote: NonNullable<TimelineItem["reply_quote"]>): boolean {
+  return Boolean(quote.sender_label) || (quote.state !== "loading" && quote.state !== "failed");
+}
+
 function replyQuoteBody(quote: NonNullable<TimelineItem["reply_quote"]>): string {
   if (quote.body_preview) {
     return quote.body_preview;
+  }
+  if (quote.state === "loading") {
+    return t("timeline.replyQuoteLoading");
+  }
+  if (quote.state === "failed") {
+    return t("timeline.replyQuoteFailed");
   }
   if (quote.state === "redacted") {
     return t("timeline.redactedMessage");

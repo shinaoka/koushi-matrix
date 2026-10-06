@@ -1141,6 +1141,56 @@ impl ComposerDraftStore {
         Ok(revision)
     }
 
+    /// #1130: settle a room's composer draft revision without clearing its
+    /// content. A staged-attachment send settles the draft it never consumed, so
+    /// text the user still has to send stays available while the revision,
+    /// tombstones and LRU accounting stay exactly as an accepted send leaves
+    /// them.
+    pub fn settle_room_revision(
+        &mut self,
+        room_id: &str,
+        submitted_revision: ComposerDraftRevision,
+    ) -> Result<ComposerDraftRevision, ComposerDraftRevisionError> {
+        let revision = ComposerDraftRevision::checked_successor(
+            self.room_revision(room_id),
+            submitted_revision,
+        )?;
+        self.room_revisions.insert(room_id.to_owned(), revision);
+        if self.rooms.contains_key(room_id) {
+            self.remove_room_from_lru(room_id);
+        } else {
+            self.touch_quiescent_room(room_id);
+        }
+        Ok(revision)
+    }
+
+    /// #1130: thread-target counterpart of [`Self::settle_room_revision`].
+    pub fn settle_thread_revision(
+        &mut self,
+        room_id: &str,
+        root_event_id: &str,
+        submitted_revision: ComposerDraftRevision,
+    ) -> Result<ComposerDraftRevision, ComposerDraftRevisionError> {
+        let revision = ComposerDraftRevision::checked_successor(
+            self.thread_revision(room_id, root_event_id),
+            submitted_revision,
+        )?;
+        self.thread_revisions
+            .entry(room_id.to_owned())
+            .or_default()
+            .insert(root_event_id.to_owned(), revision);
+        if self
+            .threads
+            .get(room_id)
+            .is_some_and(|threads| threads.contains_key(root_event_id))
+        {
+            self.remove_thread_from_lru(room_id, root_event_id);
+        } else {
+            self.touch_quiescent_thread(room_id, root_event_id);
+        }
+        Ok(revision)
+    }
+
     pub fn clear_room_draft(&mut self, room_id: &str) {
         self.rooms.remove(room_id);
         self.room_revisions.remove(room_id);

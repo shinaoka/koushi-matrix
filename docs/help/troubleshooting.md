@@ -4,9 +4,12 @@
 
 ## Cannot sign in
 
-Check **Homeserver** and run **Check login methods** again. For password login,
-use the username's local part, not the full Matrix ID. For browser sign-in,
-complete the provider's flow and return to Koushi. See the full
+Check that **Matrix ID** holds your full Matrix ID, for example
+`@alice:example.org`, and that the server named below it is your account's
+server. To sign in with only a local username, select **Change server** and enter
+the server address in **Homeserver** first. For browser sign-in, complete the
+provider's flow and return to Koushi. **Check login methods** appears when the
+automatic check fails; select it to retry. See the full
 [sign-in steps](getting-started.md#sign-in).
 
 If the server cannot be reached, check your connection and server address.
@@ -50,8 +53,10 @@ room.
 ## Search returns no results
 
 Check **All / Space / Room/DM**, try a longer or more distinctive term, and
-inspect **User settings → Search history** for paused or incomplete indexing.
-See [Search](search.md). Rebuilding the index does not recover missing keys.
+inspect **Account Settings → Search history** for that account's indexing
+status, and **App Settings → Search history** for the shared background-work
+speed or pause control. See [Search](search.md). Rebuilding the index does not
+recover missing keys.
 
 ## Message will not send
 
@@ -73,8 +78,9 @@ unexpected.
 
 ## Notifications are missing
 
-Check **Room info** for **Mute** or **Mentions only**, then check global
-notification settings in **User settings → Notifications** and the operating system's
+Check **Room info** for **Mute** or **Mentions only**, then check **Account
+Settings → Notifications** for desktop notifications and **App Settings →
+Notifications** for sounds and badges. Also check the operating system's
 notification permission for Koushi. An unread badge and a desktop notification
 are different signals.
 

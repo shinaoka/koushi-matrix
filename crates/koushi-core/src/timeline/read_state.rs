@@ -2245,4 +2245,6 @@ pub(super) async fn run_typing_notifications(
 }
 
 #[cfg(test)]
+mod issue_1110_tests;
+#[cfg(test)]
 mod tests;

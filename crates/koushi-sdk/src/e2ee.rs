@@ -76,7 +76,9 @@ fn classify_current_device_trust_recheck_error(
 ) -> CurrentDeviceTrustRecheckError {
     match error {
         matrix_sdk::Error::AuthenticationRequired => CurrentDeviceTrustRecheckError::Authentication,
-        matrix_sdk::Error::Timeout => CurrentDeviceTrustRecheckError::Network,
+        matrix_sdk::Error::Timeout | matrix_sdk::Error::UserKeyQueryFailure => {
+            CurrentDeviceTrustRecheckError::Network
+        }
         matrix_sdk::Error::Http(http_error) => {
             classify_current_device_trust_recheck_http_error(http_error)
         }
@@ -1358,7 +1360,8 @@ fn e2ee_trust_failure_kind(error: &matrix_sdk::Error) -> E2eeTrustFailureKind {
         }
         matrix_sdk::Error::Http(_)
         | matrix_sdk::Error::Io(_)
-        | matrix_sdk::Error::ConcurrentRequestFailed => E2eeTrustFailureKind::Network,
+        | matrix_sdk::Error::ConcurrentRequestFailed
+        | matrix_sdk::Error::UserKeyQueryFailure => E2eeTrustFailureKind::Network,
         matrix_sdk::Error::Timeout => E2eeTrustFailureKind::Timeout,
         matrix_sdk::Error::BackupNotEnabled | matrix_sdk::Error::SecureBackupRequired => {
             E2eeTrustFailureKind::InvalidBackup
@@ -2253,15 +2256,13 @@ pub async fn request_own_user_sas_verification(
                 "verification identity unavailable".to_owned(),
             ));
         }
-        Err(_) => {
+        Err(error) => {
             record_sas_delivery_event(
                 sas_delivery_event("request_send_finished", flow_id)
                     .field(DiagnosticField::token("outcome", "failed"))
                     .field(DiagnosticField::token("failure_stage", "identity_query")),
             );
-            return Err(E2eeTrustError::Sdk(
-                "verification identity unavailable".to_owned(),
-            ));
+            return Err(E2eeTrustError::Classified(e2ee_trust_failure_kind(&error)));
         }
     };
     record_sas_delivery_event(sas_delivery_waiting_event(flow_id, "recipient_devices"));
@@ -4349,8 +4350,8 @@ mod tests {
 #[cfg(test)]
 mod current_device_trust_recheck_classifier_tests {
     use super::{
-        CurrentDeviceTrustRecheckError, MatrixClientSession,
-        classify_current_device_trust_recheck_error,
+        CurrentDeviceTrustRecheckError, E2eeTrustError, E2eeTrustFailureKind, MatrixClientSession,
+        classify_current_device_trust_recheck_error, request_own_user_sas_verification,
     };
     use koushi_state::{SessionAuthenticationMethod, SessionInfo};
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
@@ -4377,8 +4378,47 @@ mod current_device_trust_recheck_classifier_tests {
             CurrentDeviceTrustRecheckError::Network
         );
         assert_eq!(
+            classify_current_device_trust_recheck_error(&matrix_sdk::Error::UserKeyQueryFailure),
+            CurrentDeviceTrustRecheckError::Network
+        );
+        assert_eq!(
             classify_current_device_trust_recheck_error(&matrix_sdk::Error::NoOlmMachine),
             CurrentDeviceTrustRecheckError::Sdk
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_keys_query_failure_is_network_for_own_user_sas() {
+        let server = MatrixMockServer::new().await;
+        let session = session(&server).await;
+        let server_name = session
+            .client()
+            .user_id()
+            .expect("mock user id")
+            .server_name()
+            .as_str()
+            .to_owned();
+        let mut failures = serde_json::Map::new();
+        failures.insert(
+            server_name,
+            json!({
+                "errcode": "M_UNAVAILABLE",
+                "error": "synthetic federation failure"
+            }),
+        );
+        let _guard = server
+            .mock_query_keys()
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "device_keys": {},
+                "failures": failures,
+            })))
+            .expect(1)
+            .mount_as_scoped()
+            .await;
+
+        assert_eq!(
+            request_own_user_sas_verification(&session, 17).await.err(),
+            Some(E2eeTrustError::Classified(E2eeTrustFailureKind::Network))
         );
     }
 

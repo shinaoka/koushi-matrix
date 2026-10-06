@@ -7,6 +7,7 @@ import { cancelAll, removeAllActive } from "@tauri-apps/plugin-notification";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { DesktopNotificationActivation } from "../../domain/desktopNotification";
+import { setRendererSelectedAccountTabId } from "../client";
 import { createTauriDesktopAttentionPort } from "./desktopAttentionPort";
 
 const currentWindow = vi.hoisted(() => ({
@@ -48,6 +49,27 @@ describe("Tauri desktop attention port", () => {
     expect(invoke).toHaveBeenNthCalledWith(2, "play_native_attention_sound");
   });
 
+  test("binds notification and sound commands to their account tab", async () => {
+    setRendererSelectedAccountTabId("account:alice");
+    const port = createTauriDesktopAttentionPort("account:alice");
+
+    await port.notifications.show();
+    await port.sound.playAttentionSound?.();
+    expect(invoke).toHaveBeenNthCalledWith(1, "show_native_attention_notification", {
+      accountTabId: "account:alice"
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "play_native_attention_sound", {
+      accountTabId: "account:alice"
+    });
+
+    setRendererSelectedAccountTabId("account:bob");
+    await expect(port.notifications.show()).rejects.toThrow("account tab is no longer selected");
+    await expect(port.sound.playAttentionSound?.()).rejects.toThrow(
+      "account tab is no longer selected"
+    );
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
   // Rust composes the banner, so the webview command carries no payload at all.
   test("asks Rust to show the notification it owns", async () => {
     const port = createTauriDesktopAttentionPort();
@@ -67,6 +89,7 @@ describe("Tauri desktop attention port", () => {
     const [eventName, listener] = vi.mocked(listen).mock.calls[0];
     expect(eventName).toBe("koushi-desktop://notification-activated");
     const activation: DesktopNotificationActivation = {
+      account_tab_id: "account:@alice:example.invalid",
       room_id: "!room:example.invalid",
       event_id: "$event:example.invalid",
       thread_root_event_id: null

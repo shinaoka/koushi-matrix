@@ -28,6 +28,7 @@ import type {
   HistoryExportRangeInput,
   HistoryExportScopeInput,
   HistoryExportStart,
+  AccountTabsSnapshot,
   DesktopSnapshot,
   DesktopUpdateState,
   DirectoryQuery,
@@ -117,13 +118,19 @@ export interface ReceiptReaderResourceContent {
 }
 
 export interface DesktopApi {
-  getSnapshot(): Promise<DesktopSnapshot>;
+  forAccountTab?(tabId: string): DesktopApi;
+  getSnapshot(accountTabId?: string): Promise<DesktopSnapshot>;
+  listAccountTabs(): Promise<AccountTabsSnapshot>;
+  selectAccountTab(tabId: string): Promise<AccountTabsSnapshot>;
+  addAccountTab(): Promise<AccountTabsSnapshot>;
+  removeSignedOutAccountTab(tabId: string): Promise<AccountTabsSnapshot>;
+  cancelAddAccountTab(tabId: string): Promise<AccountTabsSnapshot>;
   getDesktopUpdateState(): Promise<DesktopUpdateState>;
   checkForDesktopUpdate(): Promise<void>;
   downloadDesktopUpdate(expectedGeneration: number): Promise<void>;
   restartToInstallDesktopUpdate(): Promise<void>;
-  settlementSnapshot(): Promise<DesktopSnapshot>;
-  resyncSnapshot(): Promise<DesktopSnapshot>;
+  settlementSnapshot(accountTabId?: string): Promise<DesktopSnapshot>;
+  resyncSnapshot(accountTabId?: string): Promise<DesktopSnapshot>;
   getDiagnosticSnapshot(): Promise<DiagnosticLogSnapshot>;
   observeViewportSync(observation: ViewportSyncObservation): Promise<ViewportSyncReceipt>;
   discoverLoginMethods(homeserver: string): Promise<CommandSettlement>;
@@ -286,7 +293,7 @@ export interface DesktopApi {
     rendererGeneration: string,
     target: ComposerTarget,
     draftRevision: ComposerDraftRevision
-  ): Promise<ComposerDraftAcceptanceResponse>;
+  ): Promise<CommandSettlement>;
   updateStagedUploadCaption(
     target: ComposerTarget,
     stagedId: string,
@@ -350,6 +357,7 @@ export interface DesktopApi {
   loadLinkPreviews(roomId: string, eventId: string): Promise<CommandAdmission>;
   hideLinkPreview(roomId: string, eventId: string): Promise<CommandAdmission>;
   leaveRoom(roomId: string): Promise<CommandAdmission>;
+  leaveSpace(spaceId: string, childRoomIds: string[]): Promise<CommandAdmission>;
   forgetRoom(roomId: string): Promise<CommandAdmission>;
   setRoomTag(roomId: string, tag: RoomTagKind, order?: number | null): Promise<CommandSettlement>;
   removeRoomTag(roomId: string, tag: RoomTagKind): Promise<CommandSettlement>;

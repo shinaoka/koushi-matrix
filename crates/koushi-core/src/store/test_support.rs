@@ -21,6 +21,7 @@ pub(super) fn file_store_actor(
             cred_dir.path(),
         )),
         data_dir: data_dir.path().to_path_buf(),
+        exclusive_store_root: false,
         composer_draft_io_probe: Arc::new(Mutex::new(None)),
         composer_draft_replace_fault: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     }

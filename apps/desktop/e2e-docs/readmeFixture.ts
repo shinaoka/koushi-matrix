@@ -1,4 +1,5 @@
 import { roomTimelineKey, type CoreEventPayload, type TimelineItem } from "../src/domain/coreEvents";
+import type { AccountTabsSnapshot } from "../src/backend/desktopApi";
 import type { DesktopSnapshot, RoomListItem, RoomSummary } from "../src/domain/types";
 import type { StateUpdateEnvelope } from "../src/domain/coreEvents";
 
@@ -14,6 +15,7 @@ const AKI_USER_ID = "@aki:example.invalid";
 const DATE_START = Date.UTC(2026, 2, 10, 9, 0);
 
 export interface ReadmeFixture {
+  accountTabs: AccountTabsSnapshot;
   snapshot: DesktopSnapshot;
   stateUpdate: StateUpdateEnvelope;
   initialItems: CoreEventPayload;
@@ -327,5 +329,38 @@ export function createReadmeFixture(source: DesktopSnapshot): ReadmeFixture {
       }
     }
   };
-  return { snapshot, stateUpdate, initialItems: initialItemsEvent };
+  const accountTabs: AccountTabsSnapshot = {
+    selectedTabId: "harness-account-tab",
+    tabs: [
+      {
+        id: "harness-account-tab",
+        accountKey: "@koushi:work.local",
+        homeserver: "work.local",
+        displayName: "Work",
+        avatarSourceRef: null,
+        status: "ready",
+        unreadCount: 0
+      },
+      {
+        id: "readme-personal-tab",
+        accountKey: "@koushi:home.local",
+        homeserver: "home.local",
+        displayName: "Home",
+        avatarSourceRef: null,
+        status: "ready",
+        unreadCount: 4
+      },
+      {
+        id: "readme-community-tab",
+        accountKey: "@koushi:club.local",
+        homeserver: "club.local",
+        displayName: "Club",
+        avatarSourceRef: null,
+        status: "ready",
+        unreadCount: 12
+      }
+    ],
+    badgeCount: 16
+  };
+  return { accountTabs, snapshot, stateUpdate, initialItems: initialItemsEvent };
 }

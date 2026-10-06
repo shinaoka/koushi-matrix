@@ -299,6 +299,7 @@ pub(super) enum TimelineManagerControl {
     },
     DisplayPolicyChanged {
         thread_root_order: TimelineThreadRootOrder,
+        hide_redacted: bool,
         acknowledged: oneshot::Sender<()>,
     },
     Shutdown {
@@ -415,12 +416,14 @@ impl TimelineManagerHandle {
     pub(crate) async fn set_display_policy(
         &self,
         thread_root_order: TimelineThreadRootOrder,
+        hide_redacted: bool,
     ) -> bool {
         let (acknowledged, acknowledgement) = oneshot::channel();
         if self
             .control_tx
             .send(TimelineManagerControl::DisplayPolicyChanged {
                 thread_root_order,
+                hide_redacted,
                 acknowledged,
             })
             .await
@@ -511,6 +514,9 @@ pub struct TimelineManagerActor {
     pub(super) link_preview_policy: LinkPreviewContext,
     pub(super) composer_formatting_options: ComposerFormattingOptions,
     pub(super) thread_root_order: TimelineThreadRootOrder,
+    /// #1110: the redaction display preference, part of the row-visibility
+    /// policy the TimelineActors own.
+    pub(super) hide_redacted: bool,
     pub(super) account_work: AccountWorkScheduler,
     /// Room-root hydration is shared across replacement actors so SyncStarted
     /// cannot restart a failed/pending bounded lookup.
@@ -572,6 +578,7 @@ impl TimelineManagerActor {
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             read_workers: ReadWorkerSupervisor::unavailable(),
             thread_root_order: TimelineThreadRootOrder::LatestReply,
+            hide_redacted: false,
             action_tx,
             event_tx,
             msg_tx: tx.clone(),
@@ -672,6 +679,7 @@ impl TimelineManagerActor {
                 send_read_receipts,
             ),
             thread_root_order: TimelineThreadRootOrder::LatestReply,
+            hide_redacted: false,
             action_tx,
             event_tx,
             msg_tx: tx.clone(),
@@ -739,13 +747,16 @@ impl TimelineManagerActor {
                         }
                         Some(TimelineManagerControl::DisplayPolicyChanged {
                             thread_root_order,
+                            hide_redacted,
                             acknowledged,
                         }) => {
                             self.thread_root_order = thread_root_order;
+                            self.hide_redacted = hide_redacted;
                             for actor in self.timelines.values() {
                                 let _ = actor
                                     .send_control(TimelineActorControl::DisplayPolicyChanged {
                                         thread_root_order,
+                                        hide_redacted,
                                     })
                                     .await;
                             }
@@ -2024,6 +2035,7 @@ impl TimelineManagerActor {
             self.account_work.clone(),
             Arc::clone(&self.thread_root_projection_service),
             self.thread_root_order,
+            self.hide_redacted,
             Arc::clone(&self.timeline_actor_generations),
             actor_generation,
             subscription_generation,

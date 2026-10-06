@@ -212,6 +212,8 @@ function desktopUpdateStatusText(state: DesktopUpdateState): string {
         ? t("settings.updateInstallFailed")
         : t("settings.updateCheckFailed");
     case "unsupported":
-      return t("settings.updateUnsupported");
+      return state.reason === "package_managed"
+        ? t("settings.updatePackageManaged")
+        : t("settings.updateUnsupported");
   }
 }

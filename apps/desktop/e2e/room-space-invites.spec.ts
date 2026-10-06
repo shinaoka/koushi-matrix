@@ -317,14 +317,24 @@ test("space rail separates system buttons, reorders Spaces, and leaves a Space h
   await rail.getByRole("button", { name: "Second Harness Space", exact: true }).click({
     button: "right"
   });
-  await page.getByRole("menuitem", { name: "Leave Space", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Leave Space…", exact: true }).click();
+  const leaveDialog = page.getByRole("dialog", { name: "Leave Second Harness Space?" });
+  await expect(leaveDialog).toBeVisible();
+  // No joined rooms in this Space: only the Space itself is offered.
+  await expect(leaveDialog.getByRole("radiogroup")).toHaveCount(0);
+  await leaveDialog.getByRole("button", { name: "Leave Space", exact: true }).click();
   await expect
     .poll(() =>
-      page.evaluate(
-        () => window.__harness.invocationsOf("leave_room").at(-1)?.args.roomId ?? null
-      )
+      page.evaluate(() => {
+        const args = window.__harness.invocationsOf("leave_space").at(-1)?.args;
+        return args ? { spaceId: args.spaceId, childRoomIds: args.childRoomIds } : null;
+      })
     )
-    .toBe("!second-harness-space:example.invalid");
+    .toEqual({
+      spaceId: "!second-harness-space:example.invalid",
+      childRoomIds: []
+    });
+  await expect(leaveDialog).toHaveCount(0);
   await expect(
     rail.getByRole("button", { name: "Second Harness Space", exact: true })
   ).toHaveCount(0);
@@ -2930,6 +2940,7 @@ test("timeline sender profile navigation uses stable user ids and latest-wins se
   expect(await firstSender.evaluate((element) => element.matches(":focus-visible"))).toBe(true);
   expect(await firstSender.evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe("none");
   await firstSender.press("Enter");
+  await expect.poll(() => invocationCount(page, "load_room_settings")).toBe(1);
   await expect(page.getByRole("heading", { name: t("panel.profile") })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: t("panel.people") })).toHaveCount(0);
   await secondRow.getByRole("button", { name: "Open profile for Duplicate Name" }).click();
@@ -3165,6 +3176,7 @@ test("People reopens immediately and a late settings load cannot override Thread
   await peopleButton.click();
   await expect(page.getByRole("heading", { name: t("panel.people") })).toBeVisible();
   await actions.getByRole("button", { name: "Threads" }).click();
+  await expect.poll(() => invocationCount(page, "open_threads_list")).toBe(1);
   const threadsTitle = page
     .locator('aside[aria-label="Context panel"]')
     .getByText(t("threads.title"), { exact: true });

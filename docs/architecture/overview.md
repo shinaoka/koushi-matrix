@@ -243,6 +243,16 @@ Crate responsibilities:
   `StoreActor` remains in Core as the sole policy/lifecycle owner: it selects
   account paths, obtains and derives secrets, owns migrations and generation
   fences, maps coarse failures, and supplies SDK store/search configuration.
+  Store roots are owned exclusively only where that is guaranteed (#1134): the
+  packaged app's runtime paths call `StoreActor::with_exclusive_store_root()`,
+  because the shell refuses a second instance for its identifier and each account
+  has its own store directory. That declaration makes the SDK's store locks
+  no-ops (`CrossProcessLockConfig::SingleProcess`) instead of paying their 50 ms
+  cross-process lease heartbeat, which otherwise wrote to the crypto, state,
+  event-cache and media stores for the whole life of an idle session. Every other
+  entry point — QA, smoke, tests, `KOUSHI_QA_DATA_DIR` reuse — keeps the SDK's
+  cross-process coordination, because those can be pointed at a store root another
+  process already owns.
 - `koushi-key` — platform-neutral credential-store port, key derivation (HKDF
   from the local unlock secret), and zeroizing secret wrappers. The OS keyring
   backend lives in Tauri.
@@ -301,6 +311,14 @@ Submission correlations require both the originating request and
 expectation variant, and `Lagged`, `Disconnected`, `TimedOut`, operation
 failure, and typed no-op outcomes remain distinct. `select_room_and_wait` is a
 convenience wrapper over this service.
+
+Authentication settles when the authenticated session is admitted, not when it
+becomes Ready. Admission of a new password, OIDC, or reauth login installs the
+provisional session and immediately emits the non-held `LoginAdmitted` event
+for that request; the held `LoggedIn` still waits for trust promotion. The
+`Authenticated` expectation accepts either event and settles once the snapshot
+reaches a login-transport terminal session, so sign-in IPC returns while the
+account waits for verification instead of timing out behind the gate.
 
 Settlement outcomes return the committed published generation and their existing
 matched request/result identities, not an embedded AppState. Core convenience
@@ -447,15 +465,41 @@ rewriting the runtime.
 
 ## Runtime Model
 
-An in-process actor system in `koushi-core`:
+`AccountRuntimeManager` is the one desktop runtime entry point in `koushi-core`.
+It owns account-tab order and selection, the single unfinished add-account
+context, shared `StoreActor` and app-settings handles, app-wide settings,
+cross-account background-work budget, and aggregate notification/badge policy. Each known
+signed-in account has an independent existing single-account `CoreRuntime` and
+reducer/actor tree; all remain alive and sync concurrently. Selecting a tab
+changes the account-bound command/event/snapshot view, not any account runtime
+lifetime. The manager restores saved accounts in parallel without changing the
+persisted selection when a restore finishes, and it joins every child runtime
+before acknowledging shutdown. Shutdown shares the tab-lifecycle serialization
+barrier, including children temporarily owned by removal or restoration. Once
+shutdown starts the manager is terminal: add/restore requests cannot create new
+children, and repeated shutdown calls retain any incomplete-cleanup result.
+One temporary runtime handles the add-account flow until its identity is known; a duplicate MXID is rejected and focuses the
+existing tab. The shared credential backend serializes saved-index
+read-modify-write transactions from concurrent account actors; manager tab
+lifecycle operations are serialized separately. App settings have one owner and
+are propagated to each child; account settings load and persist only inside
+their owning account's encrypted store. Account-settings reads apply only the
+final loaded values (or privacy-safe defaults on failure), never a transient
+fallback followed by a successful load. A failed read remains retryable and
+cannot authorize an account-settings write. Read-receipt, display, and
+link-preview policy updates retain at most three latest-value messages per
+session and retry on mailbox capacity; they never block AppActor navigation.
 
-- `AppActor` — command entry point, routing, active account, ordered event
+Each account remains an in-process actor system in `koushi-core`:
+
+- `AppActor` — per-account command entry point, routing, ordered event
   broadcast and snapshots. It also owns the account-wide Activity projection
   cache: room timeline actors may report message rows, but Recent/Unread
   ordering, unread membership, low-priority exclusion, and mark-read clearing
   are materialized into `AppState.activity` by Rust before React sees them.
 - `AccountActor` (per account/device) — SDK session ownership,
-  login/restore/recovery/logout, account switch, child shutdown.
+  login/restore/recovery/logout, child shutdown. The outer manager selects among
+  independent account runtimes; account selection never performs restore-on-switch.
 - `SyncActor` — continuous sync lifecycle
   (starting/running/reconnecting/failed/stopped).
 - `RoomActor` — room list normalization
@@ -588,7 +632,10 @@ An in-process actor system in `koushi-core`:
   renders the grouped DTO and dispatches typed reaction commands only, while
   Rust guards current state before delegating to the SDK toggle helper.
   Reply quote previews are projected into `TimelineItem.reply_quote`; React
-  renders the quote state and does not resolve Matrix reply bodies. Pinned
+  renders the quote state and does not resolve Matrix reply bodies. Each
+  `TimelineActor` owns a bounded hydration ledger for quoted originals
+  (`Loading` until settled, then `Ready`/`Redacted`/`Missing`/`Unsupported`/
+  `Failed`); see the state machine's reply quote hydration contract. Pinned
   events live in `AppState.room_interactions`, and pin/unpin commands route
   through `RoomActor` before the Rust snapshot/event stream updates the GUI.
   Fully-read markers and typing notifications remain room-scoped Rust state in
@@ -656,7 +703,10 @@ An in-process actor system in `koushi-core`:
   `SearchActor` crawler pages share one gate per account, and user-visible
   timeline pagination has priority over background crawler work.
 - `StoreActor` — credential store access, store/search keys, per-account
-  paths, cleanup, debug/test secret injection policy.
+  paths, cleanup, debug/test secret injection policy. All account runtimes use
+  the manager's shared credential-store handle. The credential backend
+  serializes saved-index mutations; per-account stores and encrypted settings
+  remain isolated.
 
 **Account store bootstrap invariant.** Authentication never runs on a memory-
 store client. Before password, OAuth, SSO, restore, or soft-logout reauth can
@@ -665,7 +715,12 @@ an opaque random local store ID and builds the authentication client with it.
 Fresh authentication journals that store, its unlock secret, and a generated
 Matrix device ID before network authorization; `PreAuth` and bound-tokenless
 journal states remain resumable until verified promotion atomically persists
-tokens. The exact authenticated client is promoted directly through capability
+tokens. A journal allocation is owned by its identity once bound: a
+fresh attempt resumes only an unbound `PreAuth` allocation, or a
+`BoundTokenless` allocation whose bound user matches the requested user, so a
+second account never resumes or rebinds another account's store. A fresh
+device's crypto DB that exists but holds no Olm account (a failed earlier
+attempt created it) is still a fresh identity, not a saved-device resume. The exact authenticated client is promoted directly through capability
 and verification admission—Koushi never authenticates a disposable client or
 transplants its session into another client.
 
@@ -1223,6 +1278,18 @@ targets compile against an uninhabited placeholder, so they report
 the same trait and enables that cfg. It reuses the engine unchanged and must
 first settle which distribution formats it owns.
 
+`unsupported` carries a reason: `build` (no install backend or no updater trust
+material in this build) or `package_managed`. The packager opt-out (#1063) is a
+runtime capability check because a repackaged binary is byte-identical to the
+upstream package: on Linux, when the marker file
+`/usr/share/koushi-desktop/package-managed` exists (contents ignored), the
+initial state is `unsupported` with reason `package_managed` regardless of any
+backend, the adapter never constructs a backend or starts the update owner, and
+it therefore makes no feed request and spawns no installer or privilege
+escalation (`pkexec`, `sudo`, `dpkg`, `rpm`). The marker is read once when the
+update adapter is created. React renders the reason through the message catalog;
+other targets do not probe a marker.
+
 The update adapter owns one serialized lifecycle and one cancellable worker.
 Generation-fenced completions and candidate-specific download approval prevent
 overlapping triggers or channel changes from substituting an unapproved release.
@@ -1297,13 +1364,27 @@ and `NativeAttentionSummary` stays free of message bodies and identifiers.
 
 The desktop notification adapter is the only owner of the platform banner. It
 honors `SettingsValues.notifications.desktop_notifications` (app notifications
-OFF raises no banner) and uses `notify-rust` directly because
-`tauri-plugin-notification` has no desktop activation path: on macOS, Linux,
-and Windows it shows a banner but never reports
-a click. The adapter keeps a bounded pool of click waiters, so a burst of banners
-cannot grow threads without bound; a banner beyond the bound is still shown but
-its click cannot navigate. A completed click restores the main window, re-checks
-the account fence captured when the banner was shown, and publishes the target.
+OFF raises no banner) and uses `notify-rust` directly on Linux and Windows
+because `tauri-plugin-notification` has no desktop activation path: it shows a
+banner but never reports a click. The activation-capable macOS path
+does not use `notify-rust`'s macOS backend: that backend never attaches a click
+waiter to a banner with no action button, so its banner is fire-and-forget and a
+click can never reach Koushi (#1128). That path sends through
+`mac-notification-sys` with `wait_for_click(true)` — the same backend
+`notify-rust` uses underneath — and activates only on a direct click, never on a
+dismissal, a close button, an action button, or a text reply. When the bounded
+waiter budget is exhausted the banner is still shown through `notify-rust`
+without a waiter, as it is on Linux and Windows. The adapter keeps a bounded pool of click
+waiters, so a burst of banners cannot grow threads without bound; a banner
+beyond the bound is still shown but its click cannot navigate. `delivered`
+means the banner was handed to the platform with a click wait configured: it is
+dispatch acceptance, not proof that the platform displayed the banner or armed
+a click, and the diagnostic log records `click_waiter=configured|unattached`
+accordingly. An explicit backend send error is reported by `show_failed`; a
+banner the platform silently drops or never confirms is reported by neither
+`show_failed` nor `activation_settled`. A completed click
+restores the main window, re-checks the
+account fence captured when the banner was shown, and publishes the target.
 A click that arrives after logout, an account switch, or a session change is
 dropped instead of navigating into the wrong session.
 
@@ -2094,19 +2175,19 @@ and keeps the same QA hierarchy.
   implementation and GUI, performance/soak, distribution hardening,
   platform credential-store evidence, signing/notarization, and release.
 
-## User Settings And Help Presentation
+## Account And App Settings Presentation
 
 All of these surfaces follow the
 [macOS native window controls and overlay layout contract](../../REPOSITORY_RULES.md#macos-native-window-controls-and-overlay-layout).
 The shared presentation primitives own safe-area placement, including nested
 dialogs and pre-sign-in surfaces.
 
-User settings open as a modal in the browser top layer, above the three-pane
-workspace. They do not occupy or resize the contextual right pane. The dialog
-has a left category list and a separately scrolling selected page on the right;
-both fit within the viewport. Category selection and modal visibility are
-transient presentation state; all setting values and update results remain
-Rust-owned. Keyboard reference and send-key preferences belong to the Keyboard
-category. Help offers the public repository URL, a copy action, and a short
-instruction to ask an AI assistant. It must be usable before sign-in and must
-not collect or copy account details or messages.
+Account Settings and App Settings open as a modal in the browser top layer,
+above the three-pane workspace. They do not occupy or resize the contextual
+right pane. The dialog has a left category list and a separately scrolling
+selected page on the right; both fit within the viewport. Category selection
+and modal visibility are transient presentation state; all setting values and
+update results remain Rust-owned. Keyboard reference and send-key preferences
+belong to App Settings. Help offers the public repository URL, a copy action,
+and a short instruction to ask an AI assistant. It must be usable before
+sign-in and must not collect or copy account details or messages.

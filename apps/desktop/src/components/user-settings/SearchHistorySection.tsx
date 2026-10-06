@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { useNowMs } from "../../app/useNowMs";
+import { ResetLocalDataConfirmationDialog } from "../dialogs";
 import { t } from "../../i18n/messages";
 import { roomDisplayLabel } from "../../domain/roomDisplayLabel";
 import type {
@@ -18,6 +20,7 @@ import type {
 export function SearchHistorySection({
   crawlerSettings,
   crawlerState,
+  settingsScope = "account",
   rooms,
   isSaving,
   onUpdateSettings,
@@ -27,6 +30,7 @@ export function SearchHistorySection({
 }: {
   crawlerSettings: SearchCrawlerSettings;
   crawlerState: SearchCrawlerState;
+  settingsScope?: "account" | "app";
   rooms?: RoomSummary[];
   isSaving: boolean;
   onUpdateSettings: (patch: SettingsPatch) => void;
@@ -36,6 +40,10 @@ export function SearchHistorySection({
 }) {
   // Minute granularity: half a minute keeps "N minutes ago" within one step.
   const nowMs = useNowMs(30_000);
+  // #1100: the rebuild guard is an in-app confirmation. `window.confirm` never
+  // renders in the Tauri macOS webview, so the destructive action would look
+  // like a dead button.
+  const [rebuildConfirmOpen, setRebuildConfirmOpen] = useState(false);
   const roomEntries = crawlerRoomEntries(crawlerState.rooms, rooms);
   const crawlerSummary = summarizeCrawlerRooms(roomEntries);
   const crawlerPaused = crawlerSettings.speed === "paused";
@@ -64,43 +72,49 @@ export function SearchHistorySection({
   }
 
   function confirmRebuildSearchIndex() {
-    if (window.confirm(t("settings.searchHistoryRebuildConfirm"))) {
-      onRebuildSearchIndex?.();
-    }
+    setRebuildConfirmOpen(true);
   }
 
   return (
     <>
-      <div className="settings-control-stack">
-        <div className="settings-control-row crawler-speed-row">
-          <span>{t("settings.searchHistorySpeed")}</span>
-          <div className="segmented-control crawler-speed-control" role="group" aria-label={t("settings.searchHistorySpeed")}>
-            {(["standard", "fast", "slow"] as const).map((speed) => (
-              <CrawlerSpeedButton
-                key={speed}
-                value={speed}
-                selected={crawlerSettings.speed === speed}
-                disabled={isSaving}
-                onSelect={onUpdateSettings}
-                currentSettings={crawlerSettings}
-              />
-            ))}
+      {settingsScope !== "account" ? (
+        <div className="settings-control-stack">
+          <div className="settings-control-row crawler-speed-row">
+            <span>{t("settings.searchHistorySpeed")}</span>
+            <div className="segmented-control crawler-speed-control" role="group" aria-label={t("settings.searchHistorySpeed")}>
+              {(["standard", "fast", "slow"] as const).map((speed) => (
+                <CrawlerSpeedButton
+                  key={speed}
+                  value={speed}
+                  selected={crawlerSettings.speed === speed}
+                  disabled={isSaving}
+                  onSelect={onUpdateSettings}
+                  currentSettings={crawlerSettings}
+                />
+              ))}
+            </div>
           </div>
+          <div className="settings-control-row">
+            <span>{t("settings.searchHistoryBudget")}</span>
+            <button
+              className={`dialog-button secondary crawler-pause-button ${crawlerPaused ? "is-active" : ""}`}
+              type="button"
+              disabled={isSaving}
+              aria-pressed={crawlerPaused}
+              data-active={crawlerPaused ? "true" : "false"}
+              onClick={toggleCrawlerPaused}
+            >
+              {crawlerPaused ? t("settings.searchHistoryResume") : t("settings.searchHistoryPause")}
+            </button>
+          </div>
+          <p className="settings-notice">{t("settings.searchHistoryBudgetDescription")}</p>
         </div>
-        <div className="settings-control-row">
-          <span>{t("settings.searchHistoryCrawler")}</span>
-          <div className="crawler-action-row">
-            <div className="settings-inline-actions">
-              <button
-                className={`dialog-button secondary crawler-pause-button ${crawlerPaused ? "is-active" : ""}`}
-                type="button"
-                disabled={isSaving}
-                aria-pressed={crawlerPaused}
-                data-active={crawlerPaused ? "true" : "false"}
-                onClick={toggleCrawlerPaused}
-              >
-                {crawlerPaused ? t("settings.searchHistoryResume") : t("settings.searchHistoryPause")}
-              </button>
+      ) : null}
+      {settingsScope !== "app" ? (
+        <div className="settings-control-stack">
+          <div className="settings-control-row">
+            <span>{t("settings.searchHistoryCrawler")}</span>
+            <div className="crawler-action-row">
               <button
                 className="dialog-button danger"
                 type="button"
@@ -109,11 +123,12 @@ export function SearchHistorySection({
               >
                 {t("settings.searchHistoryRebuild")}
               </button>
+              {isSaving ? <span className="settings-save-state crawler-control-status">{t("settings.saving")}</span> : null}
             </div>
-            {isSaving ? <span className="settings-save-state crawler-control-status">{t("settings.saving")}</span> : null}
           </div>
         </div>
-      </div>
+      ) : null}
+      {settingsScope !== "app" ? <>
       <section
         className="settings-section crawler-activity-section"
       aria-label={t("settings.searchHistoryActivity")}
@@ -186,6 +201,20 @@ export function SearchHistorySection({
             })}
           </div>
         </section>
+      ) : null}
+      </> : null}
+      {rebuildConfirmOpen ? (
+        <ResetLocalDataConfirmationDialog
+          isBusy={false}
+          title={t("settings.searchHistoryRebuild")}
+          copy={t("settings.searchHistoryRebuildConfirm")}
+          confirmLabel={t("settings.searchHistoryRebuild")}
+          onCancel={() => setRebuildConfirmOpen(false)}
+          onConfirm={() => {
+            setRebuildConfirmOpen(false);
+            onRebuildSearchIndex?.();
+          }}
+        />
       ) : null}
     </>
   );

@@ -19,17 +19,16 @@ import {
   MessageSquare,
   MoreHorizontal,
   Plus,
-  RefreshCw,
   Search,
   Settings,
   Users,
   X
 } from "lucide-react";
 import { t } from "../i18n/messages";
-import { FloatingLayer, floatingPlacementStyle, useFloatingPlacement } from "./floatingLayer";
 import type {
   AccountHomeItem,
-  CurrentSessionStatusState,
+  AccountTabSummary,
+  AccountTabsSnapshot,
   DesktopSnapshot,
   DisplayPlatform,
   RoomListItem,
@@ -37,19 +36,15 @@ import type {
   RoomSummary,
   SearchScopeKind,
   SettingsPatch,
-  SidebarSectionKind,
-  SessionStatusRefreshCommandTrigger
+  SidebarSectionKind
 } from "../domain/types";
 import { contextMenuItems } from "../domain/contextMenus";
-import { currentSessionStatusDetails } from "../domain/currentSessionStatus";
-import { toExternalHttpUrl } from "../domain/externalLinks";
 import { renderableThumbnailSourceUrl } from "../backend/linkMediaRuntime";
 import { Tooltip } from "./Tooltip";
 import { ImeTextField } from "./ImeTextControl";
 import { useRecoverableImageSource } from "./avatarImage";
 import {
   ICON_SIZE,
-  syncStatePresentation,
   type OpenContextMenu,
   type PrimaryView,
   avatarInitial,
@@ -127,130 +122,216 @@ function searchScopePlaceholder(
   }
 }
 
+function accountTabLabel(tab: AccountTabSummary): string {
+  return (
+    tab.displayName?.trim() ||
+    tab.accountKey?.replace(/^@/, "").split(":", 1)[0] ||
+    t("accountTabs.addAccount")
+  );
+}
+
+function shortHomeserverName(homeserver: string | null): string {
+  if (!homeserver) return "";
+  try {
+    return new URL(homeserver.includes("://") ? homeserver : `https://${homeserver}`).hostname;
+  } catch {
+    return homeserver;
+  }
+}
+
+export function AccountTabStrip({
+  tabs,
+  selectedTabId,
+  onSelect,
+  onAdd,
+  onRemove
+}: {
+  tabs: AccountTabSummary[];
+  selectedTabId: string | null;
+  onSelect: (id: string) => void;
+  onAdd: () => void;
+  onRemove: (id: string) => void;
+}) {
+  function statusLabel(status: AccountTabSummary["status"]): string {
+    switch (status) {
+      case "addAccount": return t("accountTabs.addAccount");
+      case "restoring": return t("accountTabs.restoring");
+      case "authenticating": return t("accountTabs.authenticating");
+      case "needsVerification": return t("accountTabs.needsVerification");
+      case "ready": return t("accountTabs.ready");
+      case "signedOut": return t("accountTabs.signedOut");
+      case "loggingOut": return t("accountTabs.loggingOut");
+      case "error": return t("accountTabs.error");
+    }
+  }
+
+  // An unfinished add-account tab closes back to the previous account (#1101);
+  // only a signed-out account is removed from the list.
+  function removeLabel(tab: AccountTabSummary, label: string): string {
+    return tab.status === "addAccount"
+      ? t("accountTabs.cancelAddAccount")
+      : t("accountTabs.removeFromList", { account: label });
+  }
+
+  return (
+    <nav className="account-tab-strip" aria-label={t("settings.accountSettings")}>
+      {tabs.map((tab) => {
+        const label = accountTabLabel(tab);
+        const status = statusLabel(tab.status);
+        const selected = tab.id === selectedTabId;
+        const avatarSource = tab.avatarSourceRef
+          ? renderableThumbnailSourceUrl(tab.avatarSourceRef)
+          : null;
+        return (
+          <div className="account-tab-host" key={tab.id}>
+            <button
+              className="account-tab"
+              type="button"
+              data-selected={selected}
+              data-status={tab.status}
+              aria-current={selected ? "page" : undefined}
+              aria-label={t("accountTabs.select", { account: label, status })}
+              title={`${label}${tab.homeserver ? ` · ${shortHomeserverName(tab.homeserver)}` : ""}`}
+              onClick={() => onSelect(tab.id)}
+            >
+              <span className={`account-tab-avatar ${avatarColorClass(tab.accountKey ?? tab.id)}`}>
+                {avatarSource ? (
+                  <img src={avatarSource} alt="" />
+                ) : (
+                  avatarInitial(label)
+                )}
+              </span>
+              <span className="account-tab-label">{label}</span>
+              <span className="account-tab-server">{shortHomeserverName(tab.homeserver)}</span>
+              {tab.status === "ready" ? (
+                tab.unreadCount > 0 ? (
+                  <span className="account-tab-unread">{tab.unreadCount > 99 ? "99+" : tab.unreadCount}</span>
+                ) : (
+                  <span className="account-tab-ready-dot" role="img" aria-label={status} />
+                )
+              ) : tab.status === "needsVerification" ? (
+                <AlertTriangle size={ICON_SIZE.small} aria-label={status} />
+              ) : tab.status === "restoring" || tab.status === "authenticating" || tab.status === "loggingOut" ? (
+                <span className="account-tab-spinner" role="status" aria-label={status} />
+              ) : tab.status === "error" ? (
+                <span className="account-tab-error-dot" role="img" aria-label={status} />
+              ) : tab.status === "signedOut" ? (
+                <span className="account-tab-signed-out-dot" role="img" aria-label={status} />
+              ) : null}
+            </button>
+            {tab.status === "signedOut" || (tab.status === "addAccount" && tabs.length > 1) ? (
+              <button
+                className="account-tab-remove"
+                type="button"
+                aria-label={removeLabel(tab, label)}
+                title={removeLabel(tab, label)}
+                onClick={() => onRemove(tab.id)}
+              >
+                <X size={ICON_SIZE.micro} aria-hidden="true" />
+              </button>
+            ) : null}
+          </div>
+        );
+      })}
+      <button
+        className="account-tab-add"
+        type="button"
+        aria-label={t("accountTabs.addAccount")}
+        title={t("accountTabs.addAccount")}
+        onClick={onAdd}
+      >
+        <Plus size={ICON_SIZE.control} aria-hidden="true" />
+      </button>
+    </nav>
+  );
+}
+
+export function PersistentAccountShell({
+  accountTabs,
+  selectedAccountTabId,
+  accountScopedContentReady = false,
+  platform = "linux",
+  onSelectAccountTab,
+  onAddAccountTab,
+  onRemoveSignedOutAccountTab,
+  onOpenAppSettings,
+  onOpenDiagnostics,
+  children
+}: {
+  accountTabs: AccountTabsSnapshot | null;
+  selectedAccountTabId: string | null;
+  accountScopedContentReady?: boolean;
+  platform?: DisplayPlatform;
+  onSelectAccountTab: (id: string) => void;
+  onAddAccountTab: () => void;
+  onRemoveSignedOutAccountTab: (id: string) => void;
+  onOpenAppSettings: () => void;
+  onOpenDiagnostics: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className="account-tab-shell"
+      data-account-content-ready={accountScopedContentReady ? "true" : "false"}
+    >
+      {!accountScopedContentReady ? <TopBar
+        accountTabs={accountTabs}
+        selectedAccountTabId={selectedAccountTabId}
+        accountScopedContentReady={false}
+        platform={platform}
+        onSelectAccountTab={onSelectAccountTab}
+        onAddAccountTab={onAddAccountTab}
+        onRemoveSignedOutAccountTab={onRemoveSignedOutAccountTab}
+        onOpenAppSettings={onOpenAppSettings}
+        onOpenDiagnostics={onOpenDiagnostics}
+      /> : null}
+      <div className="account-tab-shell-content">{children}</div>
+    </div>
+  );
+}
+
 export function TopBar({
-  accountManagementUrl,
   activeRoomName = null,
-  activeSpaceName,
-  currentSessionStatus = { status: "idle" },
-  deviceId = null,
-  homeserver,
-  isBusy,
+  activeSpaceName = "",
   platform = "linux",
   searchInputRef,
-  searchQuery,
-  searchScope,
-  sync,
-  userId = null,
-  onManageAccount = () => undefined,
-  onCopyDiagnostics = async () => undefined,
+  searchQuery = "",
+  searchScope = "currentRoom",
   onOpenDiagnostics = () => undefined,
-  onRefreshCurrentSessionStatus = () => undefined,
-  onRetryRuntimeAlert = () => undefined,
-  onRestartSync,
-  onSearchQueryChange,
-  onSearchScopeChange,
+  onSearchQueryChange = () => undefined,
+  onSearchScopeChange = () => undefined,
   onStartWindowDrag = () => undefined,
-  runtimeAlertRetrying = false,
-  runtimeAlerts = []
+  onOpenAppSettings = () => undefined,
+  onSelectAccountTab = () => undefined,
+  onAddAccountTab = () => undefined,
+  onRemoveSignedOutAccountTab = () => undefined,
+  accountTabs = null,
+  selectedAccountTabId = null,
+  accountScopedContentReady = true
 }: {
-  accountManagementUrl?: string | null;
   activeRoomName?: string | null;
-  activeSpaceName: string;
-  currentSessionStatus?: CurrentSessionStatusState;
-  deviceId?: string | null;
-  homeserver?: string | null;
-  isBusy: boolean;
+  activeSpaceName?: string;
   platform?: DisplayPlatform;
-  searchInputRef: RefObject<HTMLInputElement | null>;
-  searchQuery: string;
-  searchScope: SearchScopeKind;
-  sync: DesktopSnapshot["state"]["domain"]["sync"];
-  userId?: string | null;
-  onManageAccount?: (safeExternalUrl: string) => void;
-  onCopyDiagnostics?: () => Promise<void>;
+  searchInputRef?: RefObject<HTMLInputElement | null>;
+  searchQuery?: string;
+  searchScope?: SearchScopeKind;
   onOpenDiagnostics?: () => void;
-  onRefreshCurrentSessionStatus?: (trigger: SessionStatusRefreshCommandTrigger) => void;
-  onRetryRuntimeAlert?: (kind: RuntimeAlertKind) => void;
-  onRestartSync: () => void;
-  onSearchQueryChange: (value: string) => void;
-  onSearchScopeChange: (value: SearchScopeKind) => void;
+  onSearchQueryChange?: (value: string) => void;
+  onSearchScopeChange?: (value: SearchScopeKind) => void;
   onStartWindowDrag?: () => void;
-  runtimeAlertRetrying?: boolean;
-  runtimeAlerts?: RuntimeAlert[];
+  onOpenAppSettings?: () => void;
+  onSelectAccountTab?: (id: string) => void;
+  onAddAccountTab?: () => void;
+  onRemoveSignedOutAccountTab?: (id: string) => void;
+  accountTabs?: AccountTabsSnapshot | null;
+  selectedAccountTabId?: string | null;
+  accountScopedContentReady?: boolean;
 }) {
-  const [sessionStatusOpen, setSessionStatusOpen] = useState(false);
-  const sessionStatusHostRef = useRef<HTMLDivElement>(null);
-  const sessionStatusTriggerRef = useRef<HTMLButtonElement>(null);
-  const syncStatus = syncStatePresentation(sync);
-  const serverLabel = matrixServerLabel(homeserver);
-  const safeAccountManagementUrl = toExternalHttpUrl(accountManagementUrl);
-  const syncAriaLabel = serverLabel
-    ? `${serverLabel} · ${syncStatus.ariaLabel}`
-    : syncStatus.ariaLabel;
-  const runtimeAlertSeverity = runtimeAlerts.some((alert) => alert.severity === "error")
-    ? "error"
-    : "warning";
-  const runtimeAlertsLabel = t(
-    runtimeAlerts.length === 1
-      ? "sessionStatus.runtimeWarningCount"
-      : "sessionStatus.runtimeWarningsCount",
-    {
-      count: String(runtimeAlerts.length)
-    }
-  );
-  const sessionStatusLabel = runtimeAlerts.length
-    ? t(
-        runtimeAlerts.length === 1
-          ? "sessionStatus.openWithRuntimeWarning"
-          : "sessionStatus.openWithRuntimeWarnings",
-        {
-          count: String(runtimeAlerts.length)
-        }
-      )
-    : t("sessionStatus.open");
-
-  function closeSessionStatus() {
-    setSessionStatusOpen(false);
-    sessionStatusTriggerRef.current?.focus();
-  }
-
-  const sessionStatusPopupRef = useRef<HTMLElement>(null);
-  function openSessionStatus() {
-    setSessionStatusOpen(true);
-    onRefreshCurrentSessionStatus("open");
-  }
-
-  useEffect(() => {
-    if (!sessionStatusOpen) {
-      return undefined;
-    }
-    function onKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.key === "Escape" && !event.defaultPrevented && !event.isComposing && event.keyCode !== 229) {
-        event.preventDefault();
-        closeSessionStatus();
-      }
-    }
-    function onPointerDown(event: PointerEvent) {
-      if (
-        event.target instanceof Node &&
-        !sessionStatusHostRef.current?.contains(event.target) &&
-        !sessionStatusPopupRef.current?.contains(event.target)
-      ) {
-        closeSessionStatus();
-      }
-    }
-    document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("pointerdown", onPointerDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("pointerdown", onPointerDown);
-    };
-  }, [sessionStatusOpen]);
-
   return (
     <header
       className="titlebar"
       data-platform={platform}
+      data-account-content-ready={accountScopedContentReady}
       data-tauri-drag-region=""
       onMouseDown={(event) => {
         if (!shouldStartTitlebarDrag(event)) {
@@ -260,7 +341,14 @@ export function TopBar({
         onStartWindowDrag();
       }}
     >
-      <label className="top-search">
+      <AccountTabStrip
+        tabs={accountTabs?.tabs ?? []}
+        selectedTabId={selectedAccountTabId ?? accountTabs?.selectedTabId ?? null}
+        onSelect={onSelectAccountTab}
+        onAdd={onAddAccountTab}
+        onRemove={onRemoveSignedOutAccountTab}
+      />
+      {accountScopedContentReady ? <label className="top-search">
         <Search size={ICON_SIZE.input} />
         <ImeTextField
           ref={searchInputRef}
@@ -271,8 +359,8 @@ export function TopBar({
           placeholder={searchScopePlaceholder(searchScope, activeSpaceName, activeRoomName)}
           onChange={(event) => onSearchQueryChange(event.target.value)}
         />
-      </label>
-      <select
+      </label> : null}
+      {accountScopedContentReady ? <select
         className="scope-select"
         aria-label={t("workspace.searchScope")}
         value={searchScope}
@@ -281,82 +369,17 @@ export function TopBar({
         <option value="allRooms">{t("search.scopeAll")}</option>
         <option value="currentSpace">{t("search.scopeSpace")}</option>
         <option value="currentRoom">{t("search.scopeRoom")}</option>
-      </select>
+      </select> : null}
       <div className="top-actions">
-        <div className="session-status-host" ref={sessionStatusHostRef}>
-          <button
-            ref={sessionStatusTriggerRef}
-            className="sync-status"
-            data-sync-state={syncStatus.state}
-            type="button"
-            aria-label={sessionStatusLabel}
-            aria-expanded={sessionStatusOpen}
-            aria-haspopup="dialog"
-            onClick={() => {
-              if (sessionStatusOpen) {
-                closeSessionStatus();
-              } else {
-                openSessionStatus();
-              }
-            }}
-          >
-            <span
-              className="sync-status-content"
-              data-sync-state={syncStatus.state}
-              role="status"
-              aria-live="polite"
-              aria-label={syncAriaLabel}
-            >
-              <span className={`sync-dot ${isBusy ? "busy" : ""}`} aria-hidden="true" />
-              {serverLabel ? <span className="sync-status-server">{serverLabel}</span> : null}
-              <span className="sync-status-label">{syncStatus.label}</span>
-              {syncStatus.detail ? (
-                <span className="sync-status-detail">{syncStatus.detail}</span>
-              ) : null}
-            </span>
-            {runtimeAlerts.length ? (
-              <span
-                className="runtime-alert-indicator"
-                data-runtime-alert-severity={runtimeAlertSeverity}
-                role="img"
-                aria-label={runtimeAlertsLabel}
-              >
-                <AlertTriangle size={ICON_SIZE.micro} aria-hidden="true" />
-              </span>
-            ) : null}
-            <ChevronDown size={ICON_SIZE.micro} aria-hidden="true" />
-          </button>
-          {sessionStatusOpen ? (
-            <SessionStatusPopover
-              anchorRef={sessionStatusTriggerRef}
-              dialogRef={sessionStatusPopupRef}
-              onClose={closeSessionStatus}
-              accountManagementUrl={safeAccountManagementUrl}
-              currentSessionStatus={currentSessionStatus}
-              deviceId={deviceId}
-              homeserver={serverLabel ?? homeserver ?? null}
-              userId={userId}
-              onManageAccount={onManageAccount}
-              onCopyDiagnostics={onCopyDiagnostics}
-              onOpenDiagnostics={onOpenDiagnostics}
-              onRefresh={onRefreshCurrentSessionStatus}
-              runtimeAlertRetrying={runtimeAlertRetrying}
-              onRetryRuntimeAlert={onRetryRuntimeAlert}
-              runtimeAlerts={runtimeAlerts}
-            />
-          ) : null}
-        </div>
-        {syncStatus.restartable ? (
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={t("action.restartSync")}
-            disabled={isBusy}
-            onClick={onRestartSync}
-          >
-            <RefreshCw size={ICON_SIZE.control} />
-          </button>
-        ) : null}
+        <button
+          className="icon-button app-settings-button"
+          type="button"
+          aria-label={t("settings.appSettings")}
+          title={t("settings.appSettings")}
+          onClick={onOpenAppSettings}
+        >
+          <Settings size={ICON_SIZE.small} aria-hidden="true" />
+        </button>
         <button
           className="icon-button"
           type="button"
@@ -368,323 +391,6 @@ export function TopBar({
       </div>
     </header>
   );
-}
-
-function SessionStatusPopover({
-  anchorRef,
-  dialogRef,
-  onClose,
-  accountManagementUrl,
-  currentSessionStatus,
-  deviceId,
-  homeserver,
-  userId,
-  onManageAccount,
-  onCopyDiagnostics,
-  onOpenDiagnostics,
-  onRefresh,
-  runtimeAlertRetrying,
-  onRetryRuntimeAlert,
-  runtimeAlerts
-}: {
-  anchorRef: RefObject<HTMLButtonElement | null>;
-  dialogRef: RefObject<HTMLElement | null>;
-  onClose: () => void;
-  accountManagementUrl: string | null;
-  currentSessionStatus: CurrentSessionStatusState;
-  deviceId: string | null;
-  homeserver: string | null;
-  userId: string | null;
-  onManageAccount: (safeExternalUrl: string) => void;
-  onCopyDiagnostics: () => Promise<void>;
-  onOpenDiagnostics: () => void;
-  onRefresh: (trigger: SessionStatusRefreshCommandTrigger) => void;
-  runtimeAlertRetrying: boolean;
-  onRetryRuntimeAlert: (kind: RuntimeAlertKind) => void;
-  runtimeAlerts: RuntimeAlert[];
-}) {
-  const placement = useFloatingPlacement({ anchorRef, placement: "below", align: "end", inlineSize: 380, blockSize: 620 });
-  const positioned = placement !== null;
-  const [copyState, setCopyState] = useState<"idle" | "copying" | "copied" | "failed">("idle");
-  const details = currentSessionStatusDetails(currentSessionStatus);
-  const displayedDeviceId = details?.device_id ?? deviceId;
-  const checking = currentSessionStatus.status === "checking";
-  const retryLabel =
-    currentSessionStatus.status === "failed"
-      ? t("sessionStatus.retry")
-      : t("sessionStatus.recheck");
-
-  useEffect(() => {
-    if (positioned) dialogRef.current?.focus();
-  }, [positioned, dialogRef]);
-
-  async function copyDiagnostics() {
-    setCopyState("copying");
-    try {
-      await onCopyDiagnostics();
-      setCopyState("copied");
-    } catch {
-      setCopyState("failed");
-    }
-  }
-
-  return (
-    <FloatingLayer><section
-      ref={dialogRef}
-      className="session-status-popover"
-      style={floatingPlacementStyle(placement)}
-      role="dialog"
-      aria-label={t("sessionStatus.title")}
-      tabIndex={-1}
-      onMouseDown={event => event.stopPropagation()}
-      onKeyDown={event => {
-        if (event.key === "Escape" && !event.nativeEvent.isComposing && event.keyCode !== 229) {
-          event.preventDefault(); event.stopPropagation(); onClose();
-        }
-      }}
-    >
-      <div className="session-status-heading">
-        <strong>{t("sessionStatus.title")}</strong>
-        <span data-session-status={currentSessionStatus.status}>
-          {sessionStatusVerdict(currentSessionStatus)}
-        </span>
-      </div>
-      {currentSessionStatus.status === "failed" ? (
-        <p className="session-status-failure">
-          {sessionStatusFailureLabel(currentSessionStatus.kind)}
-        </p>
-      ) : null}
-      <dl className="session-status-facts">
-        <SessionStatusFact label={t("sessionStatus.homeserver")} value={homeserver} />
-        <SessionStatusFact label={t("sessionStatus.userId")} value={userId} />
-        <SessionStatusFact
-          label={t("sessionStatus.deviceName")}
-          value={details?.device_display_name}
-        />
-        <SessionStatusFact label={t("sessionStatus.deviceId")} value={displayedDeviceId} />
-        <SessionStatusFact
-          label={t("sessionStatus.authentication")}
-          value={details ? authenticationMethodLabel(details.authentication_method) : null}
-        />
-        <SessionStatusFact
-          label={t("sessionStatus.sync")}
-          value={details ? sessionSyncLabel(details.sync_state) : null}
-        />
-        <SessionStatusFact
-          label={t("sessionStatus.verification")}
-          value={details ? verificationLabel(details.verification) : null}
-        />
-        <SessionStatusFact
-          label={t("sessionStatus.ownerCrossSigning")}
-          value={
-            details
-              ? details.is_cross_signed_by_owner
-                ? t("sessionStatus.crossSigned")
-                : t("sessionStatus.notCrossSigned")
-              : null
-          }
-        />
-        <SessionStatusFact
-          label={t("sessionStatus.identity")}
-          value={details ? identityVerificationLabel(details.own_identity_verification) : null}
-        />
-        <SessionStatusFact
-          label={t("sessionStatus.keyBackup")}
-          value={details ? keyBackupLabel(details.key_backup) : null}
-        />
-        <SessionStatusFact
-          label={t("sessionStatus.lastChecked")}
-          value={
-            details
-              ? new Intl.DateTimeFormat(undefined, {
-                  dateStyle: "medium",
-                  timeStyle: "short"
-                }).format(details.checked_at_ms)
-              : null
-          }
-        />
-      </dl>
-      {runtimeAlerts.length ? (
-        <section className="runtime-alerts" aria-labelledby="runtime-warnings-title">
-          <h2 id="runtime-warnings-title">{t("sessionStatus.runtimeWarnings")}</h2>
-          <ul>
-            {runtimeAlerts.map((alert) => (
-              <li key={alert.kind} data-runtime-alert-severity={alert.severity}>
-                <strong>{alert.title}</strong>
-                <p>{alert.detail}</p>
-                {alert.retryable ? (
-                  <button
-                    type="button"
-                    disabled={runtimeAlertRetrying}
-                    onClick={() => onRetryRuntimeAlert(alert.kind)}
-                  >
-                    {alert.kind === "secureBackup"
-                      ? t("gate.secureBackupRetry")
-                      : t("sessionStatus.retry")}
-                  </button>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-      <div className="session-status-actions">
-        <button
-          type="button"
-          disabled={checking}
-          onClick={() => onRefresh("manual")}
-        >
-          {checking ? t("sessionStatus.checking") : retryLabel}
-        </button>
-        <button
-          type="button"
-          disabled={!displayedDeviceId}
-          onClick={() => {
-            if (displayedDeviceId) {
-              void navigator.clipboard?.writeText(displayedDeviceId);
-            }
-          }}
-        >
-          {t("sessionStatus.copyDeviceId")}
-        </button>
-        {accountManagementUrl ? (
-          <button type="button" onClick={() => onManageAccount(accountManagementUrl)}>
-            {t("sessionStatus.manageAccount")}
-          </button>
-        ) : null}
-        <button type="button" onClick={onOpenDiagnostics}>
-          {t("diagnostics.open")}
-        </button>
-        <button type="button" disabled={copyState === "copying"} onClick={() => void copyDiagnostics()}>
-          {copyState === "copying" ? t("diagnostics.copying") : t("diagnostics.copy")}
-        </button>
-      </div>
-      {copyState !== "idle" && copyState !== "copying" ? (
-        <p className="session-status-copy-feedback" aria-live="polite">
-          {copyState === "copied" ? t("diagnostics.copied") : t("diagnostics.copyFailed")}
-        </p>
-      ) : null}
-    </section></FloatingLayer>
-  );
-}
-
-function SessionStatusFact({ label, value }: { label: string; value: string | null | undefined }) {
-  return (
-    <div>
-      <dt>{label}</dt>
-      <dd dir="auto">{value ?? t("sessionStatus.unavailable")}</dd>
-    </div>
-  );
-}
-
-function sessionStatusVerdict(status: CurrentSessionStatusState): string {
-  switch (status.status) {
-    case "idle":
-      return t("sessionStatus.notChecked");
-    case "checking":
-      return t("sessionStatus.checking");
-    case "ready":
-      return verificationLabel(status.details.verification);
-    case "failed":
-      return t("sessionStatus.failed");
-  }
-}
-
-function sessionStatusFailureLabel(
-  kind:
-    | "sdk"
-    | "timed_out"
-    | "unavailable"
-    | "connectivity_unavailable"
-    | "authentication"
-    | "network"
-    | "server"
-): string {
-  switch (kind) {
-    case "sdk":
-      return t("sessionStatus.failureSdk");
-    case "timed_out":
-      return t("sessionStatus.failureTimedOut");
-    case "unavailable":
-      return t("sessionStatus.failureUnavailable");
-    case "connectivity_unavailable":
-      return t("sessionStatus.failureConnectivityUnavailable");
-    case "authentication":
-      return t("sessionStatus.failureAuthentication");
-    case "network":
-      return t("sessionStatus.failureNetwork");
-    case "server":
-      return t("sessionStatus.failureServer");
-  }
-}
-
-function authenticationMethodLabel(method: string): string {
-  switch (method) {
-    case "password":
-      return t("sessionStatus.authPassword");
-    case "sso":
-      return t("sessionStatus.authSso");
-    case "oauth":
-      return t("sessionStatus.authOauth");
-    case "token":
-      return t("sessionStatus.authToken");
-    default:
-      return t("sessionStatus.unknown");
-  }
-}
-
-function sessionSyncLabel(state: string): string {
-  switch (state) {
-    case "running":
-      return t("sessionStatus.syncRunning");
-    case "starting":
-      return t("sessionStatus.syncStarting");
-    case "error":
-      return t("sessionStatus.syncError");
-    default:
-      return t("sessionStatus.syncStopped");
-  }
-}
-
-function verificationLabel(state: "verified" | "unverified" | "unknown"): string {
-  if (state === "unknown") return t("trust.statusUnknown");
-  return state === "verified"
-    ? t("sessionStatus.verified")
-    : t("sessionStatus.unverified");
-}
-
-function identityVerificationLabel(state: "missing" | "unverified" | "verified"): string {
-  switch (state) {
-    case "verified":
-      return t("sessionStatus.identityVerified");
-    case "unverified":
-      return t("sessionStatus.identityUnverified");
-    case "missing":
-      return t("sessionStatus.identityMissing");
-  }
-}
-
-function keyBackupLabel(state: "ready" | "disabled" | "unknown"): string {
-  switch (state) {
-    case "ready":
-      return t("sessionStatus.backupReady");
-    case "disabled":
-      return t("sessionStatus.backupDisabled");
-    case "unknown":
-      return t("sessionStatus.unknown");
-  }
-}
-
-function matrixServerLabel(homeserver: string | null | undefined): string | null {
-  const trimmed = homeserver?.trim();
-  if (!trimmed) {
-    return null;
-  }
-  try {
-    return new URL(trimmed).host || trimmed;
-  } catch {
-    return trimmed.replace(/^https?:\/\//i, "").replace(/\/.*$/, "") || trimmed;
-  }
 }
 
 export function WorkspaceRail({
@@ -1723,4 +1429,26 @@ export function avatarColorClass(seed: string): string {
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
   return `avatar-c${(hash % 8) + 1}`;
+}
+
+/**
+ * The composer names its sender only when more than one account is signed in;
+ * a single account needs no disambiguation. The Matrix ID is always included
+ * because display names alone do not distinguish accounts.
+ */
+export function composerSendingAccount(
+  tabs: readonly AccountTabSummary[] | undefined,
+  selectedTabId: string | null
+): { name: string; userId: string; colorClassName: string } | null {
+  if (!tabs) return null;
+  const signedInCount = tabs.filter(
+    (tab) => tab.accountKey !== null && tab.status !== "signedOut"
+  ).length;
+  const selected = tabs.find((tab) => tab.id === selectedTabId);
+  if (signedInCount <= 1 || !selected?.accountKey) return null;
+  return {
+    name: selected.displayName?.trim() || selected.accountKey,
+    userId: selected.accountKey,
+    colorClassName: avatarColorClass(selected.accountKey)
+  };
 }

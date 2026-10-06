@@ -43,6 +43,13 @@ use super::thread_projection::{ThreadAttentionObservation, ThreadAttentionTracke
 
 pub(super) const INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT: u16 = 100;
 
+/// #1125: upper bound on the guarded backward passes a fresh subscription takes
+/// while its projected window still holds no displayed row. One pass is not
+/// always enough, because the window can be entirely hidden technical state
+/// events; the round budget keeps a hidden-event burst from paginating without
+/// end.
+pub(super) const INITIAL_EMPTY_ROOM_HYDRATION_MAX_ROUNDS: u8 = 8;
+
 pub(super) const ROOM_REPLAY_INITIAL_ITEMS_MAX: usize = 120;
 
 /// Backstop tick count for the anchor-relay wait. After the SDK signals
@@ -1925,11 +1932,20 @@ fn replay_initial_items_window_range(
     start..items.len()
 }
 
+/// #1110: a room timeline with no *displayed* row needs the ordinary guarded
+/// backfill, not only a literally empty one.
+///
+/// A snapshot can be nonempty while every item is a suppressed technical state
+/// event, so counting raw items left the reader with an empty conversation and
+/// no path to the displayable history behind it.
 pub(super) fn should_hydrate_empty_initial_room_timeline(
     kind: &TimelineKind,
-    item_count: usize,
+    items: &[TimelineItem],
 ) -> bool {
-    matches!(kind, TimelineKind::Room { .. }) && item_count == 0
+    matches!(kind, TimelineKind::Room { .. })
+        && !items
+            .iter()
+            .any(super::display_projection::item_occupies_display_row)
 }
 
 pub(super) fn activity_rows_from_timeline_items(

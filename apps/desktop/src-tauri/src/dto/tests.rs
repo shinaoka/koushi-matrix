@@ -763,6 +763,7 @@ fn frontend_snapshot_serializes_profile_and_summary_avatars() {
         avatar: Some(room_avatar.clone()),
         join_rule: None,
         child_room_ids: vec![],
+        parent_side_child_room_ids: vec![],
     });
     state.rooms.push(RoomSummary {
         display_name_placeholder: None,
@@ -1331,6 +1332,11 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
         avatar: None,
         join_rule: Some(RoomJoinRule::KnockRestricted),
         child_room_ids: vec![
+            "!room:example.invalid".to_owned(),
+            "!low-priority-room:example.invalid".to_owned(),
+            "!not-joined-room:example.invalid".to_owned(),
+        ],
+        parent_side_child_room_ids: vec![
             "!room:example.invalid".to_owned(),
             "!low-priority-room:example.invalid".to_owned(),
             "!not-joined-room:example.invalid".to_owned(),
@@ -2121,6 +2127,7 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
         "the golden must exercise a populated Space add-rooms projection"
     );
     let value = serde_json::to_value(FrontendDesktopSnapshot {
+        account_tab_id: None,
         state_generation: None,
         state: super::frontend_app_state_for_platform(state, koushi_state::DisplayPlatform::Linux),
         sidebar,

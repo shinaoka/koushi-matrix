@@ -322,7 +322,7 @@ describe("Verify user", () => {
     fireEvent.click(verify);
     expect(
       screen.getByText(
-        "You don't have a direct chat with this person yet. Koushi creates a new encrypted direct chat with them and sends the request there. If they don't see the request, try again after they have joined the chat."
+        "You don't have a direct chat with this person yet. Koushi creates a new encrypted direct chat with them and waits up to a minute for them to join before sending the request."
       )
     ).toBeTruthy();
     expect(actions.requestVerification).not.toHaveBeenCalled();
@@ -341,7 +341,7 @@ describe("Verify user", () => {
     fireEvent.click(screen.getByRole("button", { name: "Verify user" }));
     expect(
       screen.getByText(
-        "Koushi sends the verification request in your encrypted direct chat with this person. If they have left that chat, Koushi invites them back to it."
+        "Koushi sends the verification request in your encrypted direct chat with this person. If they have left that chat, Koushi invites them back and waits up to a minute for them to rejoin before sending the request."
       )
     ).toBeTruthy();
   });

@@ -30,8 +30,8 @@ use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, SendHandle};
 use matrix_sdk_ui::timeline::{
     AnyOtherStateEventContentChange, EmbeddedEvent, EncryptedMessage,
     EventSendState as SdkEventSendState, EventTimelineItem, InReplyToDetails, MembershipChange,
-    Profile, ReactionStatus, ReactionsByKeyBySender, Timeline, TimelineDetails,
-    TimelineEventItemId, TimelineItem as SdkTimelineItem, TimelineItemContent, TimelineItemKind,
+    Profile, ReactionStatus, ReactionsByKeyBySender, TimelineDetails, TimelineEventItemId,
+    TimelineItem as SdkTimelineItem, TimelineItemContent, TimelineItemKind,
 };
 use tokio::sync::mpsc;
 
@@ -50,7 +50,7 @@ use koushi_protocol::event::{
     TimelineMediaSource, TimelineMediaThumbnail, TimelineMegolmSessionReason,
     TimelineMessageActions, TimelineMessageKind, TimelineMessageSource, TimelineNoticeI18n,
     TimelineNoticeI18nKey, TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
-    TimelineUnableToDecrypt, TimelineUnableToDecryptReason, TimelineViewportObservation,
+    TimelineUnableToDecrypt, TimelineUnableToDecryptReason,
 };
 use koushi_protocol::failure::{CoreFailure, TimelineFailureKind};
 use koushi_protocol::ids::{RequestId, TimelineKey, TimelineKind};
@@ -130,21 +130,6 @@ fn spawn_link_preview_fetch(
                 failed_count,
                 elapsed_ms: started.elapsed().as_millis(),
             })
-            .await;
-    })
-}
-
-fn spawn_reply_detail_fetch(
-    timeline: Arc<Timeline>,
-    msg_tx: mpsc::Sender<TimelineActorMessage>,
-    event_id: String,
-) -> executor::JoinHandle<()> {
-    executor::spawn(async move {
-        if let Ok(parsed_event_id) = matrix_sdk::ruma::EventId::parse(event_id.as_str()) {
-            let _ = timeline.fetch_details_for_event(&parsed_event_id).await;
-        }
-        let _ = msg_tx
-            .send(TimelineActorMessage::ReplyDetailsFetchFinished { event_id })
             .await;
     })
 }
@@ -594,6 +579,21 @@ impl TimelineActor {
         if self.ignored_user_ids == user_ids {
             return;
         }
+        self.reapply_item_visibility(user_ids).await;
+    }
+
+    /// #1110: recompute the one authoritative row-visibility policy over the
+    /// canonical window and publish the rows whose visibility changed.
+    ///
+    /// Ignore/unignore and the redaction display preference share this path, so
+    /// neither reason can be lost while the other is recomputed, and both stay
+    /// reversible. The supplied ignored set is committed only once the canonical
+    /// activity lane has admitted the recomputation, so a refused admission can
+    /// still be retried by the next delivery.
+    pub(super) async fn reapply_item_visibility(
+        &mut self,
+        ignored_user_ids: std::collections::BTreeSet<String>,
+    ) {
         let activity_permit = reserve_canonical_activity_action(&self.action_tx, &self.key).await;
         let activity_commit_lease = if activity_permit.is_some() {
             self.timeline_actor_generations
@@ -606,12 +606,13 @@ impl TimelineActor {
         {
             return;
         }
-        self.ignored_user_ids = user_ids;
-
+        self.ignored_user_ids = ignored_user_ids;
+        let hide_redacted = self.hide_redacted;
+        let ignored_user_ids = self.ignored_user_ids.clone();
         let mut core_diffs = Vec::new();
         for (index, item) in self.navigation_items.iter_mut().enumerate() {
             let was_hidden = item.is_hidden;
-            apply_ignored_sender_suppression(item, &self.ignored_user_ids);
+            apply_timeline_item_visibility(item, hide_redacted, &ignored_user_ids);
             if item.is_hidden != was_hidden {
                 core_diffs.push(TimelineDiff::Set {
                     index,
@@ -631,7 +632,7 @@ impl TimelineActor {
             if let Some(activity_permit) = activity_permit {
                 activity_permit.send(vec![
                     canonical_activity_window_action(&self.key, &self.navigation_items)
-                        .expect("room ignored-user Activity action"),
+                        .expect("room visibility-change Activity action"),
                 ]);
             }
             self.emit_navigation_if_changed();
@@ -921,29 +922,6 @@ impl TimelineActor {
         }
 
         let _ = self.emit_non_sdk_item_sets(core_diffs);
-    }
-    pub(super) fn maybe_fetch_visible_reply_details(&mut self) {
-        let event_ids = visible_missing_reply_detail_event_ids(
-            &self.navigation_items,
-            &self.viewport_observation,
-            &self.reply_detail_fetch_attempted_event_ids,
-        );
-        for event_id in event_ids {
-            if !self
-                .reply_detail_fetch_attempted_event_ids
-                .insert(event_id.clone())
-            {
-                continue;
-            }
-            let task = spawn_reply_detail_fetch(
-                self.timeline.clone(),
-                self.msg_tx.clone(),
-                event_id.clone(),
-            );
-            if let Some(previous) = self.reply_detail_fetches.insert(event_id, task) {
-                previous.abort();
-            }
-        }
     }
     /// Forward SDK diff mutations to the search index channel reliably.
     /// Redactions are privacy-sensitive removals and must not be silently
@@ -1343,8 +1321,27 @@ pub(super) fn timeline_room_id(key: &TimelineKey) -> Option<String> {
     }
 }
 
-pub(super) fn apply_ignored_sender_suppression(
+/// The single authoritative timeline-row visibility policy (#1110).
+///
+/// Every reason is derived from the current content and viewer state, never
+/// from a previously projected `is_hidden`. That keeps redaction toggles and
+/// ignore/unignore reversible, and it keeps deliberate content suppression from
+/// being lost when another reason is recomputed.
+pub(crate) fn timeline_item_is_hidden(
+    item: &TimelineItem,
+    hide_redacted: bool,
+    sender_ignored: bool,
+) -> bool {
+    // A redacted message keeps its redaction placeholder, so `hide_redacted`
+    // alone decides it; any other event with no renderable content is
+    // suppressed by the content policy itself.
+    let content_suppressed = !item.is_redacted && !has_user_visible_content(item);
+    content_suppressed || (hide_redacted && item.is_redacted) || sender_ignored
+}
+
+pub(super) fn apply_timeline_item_visibility(
     item: &mut TimelineItem,
+    hide_redacted: bool,
     ignored_user_ids: &std::collections::BTreeSet<String>,
 ) {
     if !matches!(&item.id, TimelineItemId::Event { .. }) {
@@ -1354,14 +1351,12 @@ pub(super) fn apply_ignored_sender_suppression(
         .sender
         .as_deref()
         .is_some_and(|sender| ignored_user_ids.contains(sender));
-    // Recompute from projected content, not the previous ignored result. This
-    // keeps ignore→unignore reversible while retaining the normal bodyless
-    // suppression baseline.
-    item.is_hidden = (!has_user_visible_content(item) && !item.is_redacted) || sender_ignored;
+    item.is_hidden = timeline_item_is_hidden(item, hide_redacted, sender_ignored);
 }
 
-pub(super) fn apply_ignored_sender_suppression_to_diff(
+pub(super) fn apply_timeline_item_visibility_to_diff(
     diff: &mut TimelineDiff,
+    hide_redacted: bool,
     ignored_user_ids: &std::collections::BTreeSet<String>,
 ) {
     match diff {
@@ -1369,11 +1364,11 @@ pub(super) fn apply_ignored_sender_suppression_to_diff(
         | TimelineDiff::PushBack { item }
         | TimelineDiff::Insert { item, .. }
         | TimelineDiff::Set { item, .. } => {
-            apply_ignored_sender_suppression(item, ignored_user_ids);
+            apply_timeline_item_visibility(item, hide_redacted, ignored_user_ids);
         }
         TimelineDiff::Reset { items } => {
             for item in items {
-                apply_ignored_sender_suppression(item, ignored_user_ids);
+                apply_timeline_item_visibility(item, hide_redacted, ignored_user_ids);
             }
         }
         TimelineDiff::Remove { .. } | TimelineDiff::Truncate { .. } | TimelineDiff::Clear => {}
@@ -1585,6 +1580,18 @@ pub(super) fn mentioned_user_ids_from_event_json(raw: &serde_json::Value) -> Vec
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// #1123: whether the effective content asked for a room-wide notification.
+/// Shares `mention_intent_from_event_json` with the user-id reader, so the
+/// room mention follows the same `m.mentions` and edit-effective-content rules.
+pub(super) fn mentions_room_from_event_json(raw: &serde_json::Value) -> bool {
+    mention_intent_from_event_json(raw).is_some_and(|intent| {
+        intent
+            .targets
+            .iter()
+            .any(|target| matches!(target, MentionTarget::RoomMention { .. }))
+    })
 }
 
 fn mention_intent_from_event_json(raw: &serde_json::Value) -> Option<MentionIntent> {
@@ -1813,39 +1820,6 @@ pub(super) fn item_index_for_event_id(items: &[TimelineItem], event_id: &str) ->
     items
         .iter()
         .position(|item| timeline_item_event_id(item) == Some(event_id))
-}
-
-fn visible_missing_reply_detail_event_ids(
-    items: &[TimelineItem],
-    observation: &TimelineViewportObservation,
-    already_requested_event_ids: &HashSet<String>,
-) -> Vec<String> {
-    let Some(first_visible_event_id) = observation.first_visible_event_id.as_deref() else {
-        return Vec::new();
-    };
-    let Some(last_visible_event_id) = observation.last_visible_event_id.as_deref() else {
-        return Vec::new();
-    };
-    let Some(first_visible_index) = item_index_for_event_id(items, first_visible_event_id) else {
-        return Vec::new();
-    };
-    let Some(last_visible_index) = item_index_for_event_id(items, last_visible_event_id) else {
-        return Vec::new();
-    };
-
-    let start = first_visible_index.min(last_visible_index);
-    let end = first_visible_index.max(last_visible_index);
-    items[start..=end]
-        .iter()
-        .filter_map(|item| {
-            let event_id = timeline_item_event_id(item)?;
-            if already_requested_event_ids.contains(event_id) {
-                return None;
-            }
-            let quote = item.reply_quote.as_ref()?;
-            (quote.state == ReplyQuoteState::Missing).then(|| event_id.to_owned())
-        })
-        .collect()
 }
 
 pub(super) fn timeline_item_event_id(item: &TimelineItem) -> Option<&str> {
@@ -2461,6 +2435,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 is_redacted,
             );
             let mut mentioned_user_ids = Vec::new();
+            let mut mentions_room = false;
             // Editing uses the effective revision; source/crypto projections
             // deliberately continue to use original_json_for_event_item.
             if let Some(raw) = event_item
@@ -2469,6 +2444,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
             {
                 actions.editable_document = composer_document_from_event_json(&raw);
                 mentioned_user_ids = mentioned_user_ids_from_event_json(&raw);
+                mentions_room = mentions_room_from_event_json(&raw);
             }
             let is_hidden = timeline_item_should_be_hidden_for_key(
                 key,
@@ -2504,6 +2480,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 link_previews: None,
                 link_ranges,
                 mentioned_user_ids,
+                mentions_room,
                 reactions,
                 can_react,
                 is_redacted,
@@ -2545,6 +2522,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 link_previews: None,
                 link_ranges: Vec::new(),
                 mentioned_user_ids: Vec::new(),
+                mentions_room: false,
                 reactions: Vec::new(),
                 can_react: false,
                 is_redacted: false,
@@ -2675,17 +2653,65 @@ pub(super) fn link_ranges_for_message_projection(
 fn reply_quote_from_details(details: &InReplyToDetails) -> ReplyQuote {
     match &details.event {
         TimelineDetails::Ready(event) => reply_quote_from_embedded_event(details, event),
+        // SDK details are an input, not the authority: the owning actor's
+        // reply quote hydration settles unresolved originals (#1120).
         TimelineDetails::Unavailable | TimelineDetails::Pending | TimelineDetails::Error(_) => {
-            ReplyQuote {
-                event_id: details.event_id.to_string(),
-                sender: None,
-                sender_label: None,
-                body_preview: None,
-                formatted: None,
-                state: ReplyQuoteState::Missing,
-            }
+            super::reply_quote_hydration::placeholder_quote(
+                details.event_id.as_str(),
+                ReplyQuoteState::Loading,
+            )
         }
     }
+}
+
+/// Project a reply quote from an original this actor already holds as a
+/// `TimelineItem`. Returns `None` while the original cannot be rendered yet
+/// (undecryptable), so the caller keeps the quote unresolved.
+pub(super) fn reply_quote_from_timeline_item(
+    event_id: &str,
+    item: &TimelineItem,
+) -> Option<ReplyQuote> {
+    let sender = item.sender.clone();
+    if item.is_redacted {
+        return Some(ReplyQuote {
+            event_id: event_id.to_owned(),
+            sender,
+            sender_label: item.sender_label.clone(),
+            body_preview: None,
+            formatted: None,
+            state: ReplyQuoteState::Redacted,
+        });
+    }
+    if item.unable_to_decrypt.is_some() {
+        return None;
+    }
+    let (body_preview, formatted) = if item.notice_i18n.is_some() {
+        (None, None)
+    } else {
+        let source = item
+            .body
+            .as_deref()
+            .or_else(|| item.media.as_ref().map(|media| media.filename.as_str()));
+        (
+            source.and_then(|source| collapsed_preview(source, REPLY_QUOTE_PREVIEW_MAX_CHARS)),
+            item.formatted
+                .as_ref()
+                .map(reply_quote_formatted_body_from_timeline),
+        )
+    };
+    let state = if body_preview.is_some() || formatted.is_some() {
+        ReplyQuoteState::Ready
+    } else {
+        ReplyQuoteState::Unsupported
+    };
+    Some(ReplyQuote {
+        event_id: event_id.to_owned(),
+        sender,
+        sender_label: item.sender_label.clone(),
+        body_preview,
+        formatted,
+        state,
+    })
 }
 
 fn reply_quote_from_embedded_event(

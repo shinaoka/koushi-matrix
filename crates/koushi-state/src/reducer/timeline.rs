@@ -631,6 +631,7 @@ pub(crate) fn handle_composer_draft_accepted(
     state: &mut AppState,
     target: crate::ComposerTarget,
     submitted_revision: ComposerDraftRevision,
+    consumes_draft: bool,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
@@ -640,11 +641,18 @@ pub(crate) fn handle_composer_draft_accepted(
             if !room_exists(state, &room_id) {
                 return Vec::new();
             }
-            if state
-                .composer_drafts
-                .advance_room_revision(&room_id, submitted_revision)
-                .is_err()
-            {
+            // #1130: a staged-attachment send settles the draft it never
+            // dispatched, so it advances the revision without clearing the text.
+            let settled = if consumes_draft {
+                state
+                    .composer_drafts
+                    .advance_room_revision(&room_id, submitted_revision)
+            } else {
+                state
+                    .composer_drafts
+                    .settle_room_revision(&room_id, submitted_revision)
+            };
+            if settled.is_err() {
                 return Vec::new();
             }
             if state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
@@ -666,11 +674,20 @@ pub(crate) fn handle_composer_draft_accepted(
             if !room_exists(state, &room_id) {
                 return Vec::new();
             }
-            if state
-                .composer_drafts
-                .advance_thread_revision(&room_id, &root_event_id, submitted_revision)
-                .is_err()
-            {
+            let settled = if consumes_draft {
+                state.composer_drafts.advance_thread_revision(
+                    &room_id,
+                    &root_event_id,
+                    submitted_revision,
+                )
+            } else {
+                state.composer_drafts.settle_thread_revision(
+                    &room_id,
+                    &root_event_id,
+                    submitted_revision,
+                )
+            };
+            if settled.is_err() {
                 return Vec::new();
             }
             if let crate::state::ThreadPaneState::Open {

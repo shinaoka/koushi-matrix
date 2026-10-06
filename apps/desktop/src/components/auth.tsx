@@ -13,6 +13,7 @@ import type {
 } from "../domain/types";
 import { ICON_SIZE } from "../app/uiShared";
 import { ImeSafeForm, ImeTextField, SecureImeTextField } from "./ImeTextControl";
+import { loginServerDisplayName } from "../app/loginServer";
 
 export function RecoveryPanel({
   isBusy,
@@ -140,49 +141,60 @@ function slidingSyncCapabilityFailureLabel(
 
 export function AuthScreen({
   deviceName,
-  homeserver,
+  effectiveServer,
   isBusy,
+  matrixId,
   passwordFilled,
   passwordInputRef,
+  serverOverride,
   snapshot,
   transportError,
-  username,
+  onCancel,
   onDeviceNameChange,
   onDiscoverLoginMethods,
-  onHomeserverChange,
+  onMatrixIdChange,
   onPasswordPresenceChange,
+  onServerOverrideChange,
   onStartOidcLogin,
-  onSubmit,
-  onUsernameChange
+  onSubmit
 }: {
   deviceName: string;
-  homeserver: string;
+  effectiveServer: string;
   isBusy: boolean;
+  matrixId: string;
   passwordFilled: boolean;
   passwordInputRef: RefObject<HTMLInputElement | null>;
+  serverOverride: string | null;
   snapshot: DesktopSnapshot;
   transportError?: string | null;
-  username: string;
+  onCancel?: () => void;
   onDeviceNameChange: (value: string) => void;
   onDiscoverLoginMethods: () => void;
-  onHomeserverChange: (value: string) => void;
+  onMatrixIdChange: (value: string) => void;
   onPasswordPresenceChange: (value: boolean) => void;
+  onServerOverrideChange: (value: string | null) => void;
   onStartOidcLogin: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
-  onUsernameChange: (value: string) => void;
 }) {
   const primaryError = latestAuthError(snapshot.state.ui.errors);
   const session = snapshot.state.domain.session;
   const isLockedSession = session.kind === "locked";
   const auth = snapshot.state.domain.auth;
+  // A locked session re-authenticates against its own homeserver; a new
+  // sign-in only trusts discovery results for the server it currently targets,
+  // so a stale result never offers single sign-on for a different server.
+  const currentAuth =
+    isLockedSession || (auth.kind !== "unknown" && auth.homeserver === effectiveServer)
+      ? auth
+      : null;
   const oidcFlow =
-    auth.kind === "ready"
-      ? auth.flows.find((flow) => flow.kind === "oidc" || flow.kind === "sso")
+    currentAuth?.kind === "ready"
+      ? currentAuth.flows.find((flow) => flow.kind === "oidc" || flow.kind === "sso")
       : undefined;
   const registrationUrl =
-    auth.kind === "ready" ? auth.delegated.registration_url : null;
+    currentAuth?.kind === "ready" ? currentAuth.delegated.registration_url : null;
   const passwordLoginAvailable =
-    auth.kind !== "ready" || auth.flows.some((flow) => flow.kind === "password");
+    currentAuth?.kind !== "ready" || currentAuth.flows.some((flow) => flow.kind === "password");
 
   return (
     <main className="auth-screen" data-testid="auth-screen">
@@ -244,37 +256,81 @@ export function AuthScreen({
         ) : (
           <>
             <label className="auth-field">
-              <span>{t("settings.homeserver")}</span>
+              <span>{t("auth.matrixId")}</span>
               <ImeTextField
-                autoComplete="url"
-                name="homeserver"
+                aria-label={t("auth.matrixId")}
+                autoComplete="username"
+                name="username"
+                placeholder={t("auth.matrixIdPlaceholder")}
                 spellCheck={false}
-                value={homeserver}
-                syncKey="login-homeserver"
-                onChange={(event) => onHomeserverChange(event.target.value)}
+                value={matrixId}
+                syncKey="login-username"
+                onChange={(event) => onMatrixIdChange(event.target.value)}
               />
             </label>
-            <div className="auth-discovery">
-              <button
-                className="auth-secondary"
-                disabled={isBusy || !homeserver.trim()}
-                type="button"
-                onClick={onDiscoverLoginMethods}
-              >
-                {t("auth.checkLoginMethods")}
-              </button>
-              <div className="auth-flows">{authDiscoveryLabel(auth)}</div>
+            <p className="auth-field-help">{t("auth.matrixIdHelp")}</p>
+            {serverOverride === null ? (
+              <div className="auth-server-summary" data-testid="auth-server-summary">
+                <div className="auth-server-summary-text">
+                  <span>{t("auth.server")}</span>
+                  <strong dir="auto">{loginServerDisplayName(effectiveServer)}</strong>
+                </div>
+                <button
+                  className="auth-link-button auth-change-server"
+                  type="button"
+                  onClick={() => onServerOverrideChange(effectiveServer)}
+                >
+                  {t("auth.changeServer")}
+                </button>
+              </div>
+            ) : (
+              <div className="auth-server-override">
+                <label className="auth-field">
+                  <span>{t("settings.homeserver")}</span>
+                  <ImeTextField
+                    autoComplete="url"
+                    name="homeserver"
+                    spellCheck={false}
+                    value={serverOverride}
+                    syncKey="login-homeserver"
+                    onChange={(event) => onServerOverrideChange(event.target.value)}
+                  />
+                </label>
+                <button
+                  className="auth-link-button"
+                  type="button"
+                  onClick={() => onServerOverrideChange(null)}
+                >
+                  {t("auth.useServerFromMatrixId")}
+                </button>
+              </div>
+            )}
+            <div className="auth-discovery" aria-live="polite">
+              <div className="auth-flows">{authDiscoveryLabel(currentAuth ?? { kind: "unknown" })}</div>
+              {currentAuth?.kind === "failed" ? (
+                <button
+                  className="auth-link-button"
+                  disabled={isBusy || !effectiveServer}
+                  type="button"
+                  onClick={onDiscoverLoginMethods}
+                >
+                  {t("auth.checkLoginMethods")}
+                </button>
+              ) : null}
             </div>
             {oidcFlow ? (
-              <div className="auth-oidc-actions">
+              <div className="auth-sso">
                 <button
-                  className="auth-secondary"
+                  className="auth-sso-button"
                   disabled={isBusy}
                   type="button"
                   onClick={onStartOidcLogin}
                 >
-                  {isBusy ? t("auth.connecting") : authFlowLabel(oidcFlow)}
+                  {isBusy
+                    ? t("auth.connecting")
+                    : t("auth.continueWithMethod", { method: authFlowLabel(oidcFlow) })}
                 </button>
+                <p className="auth-field-help">{t("auth.ssoHelp")}</p>
                 {registrationUrl ? (
                   <a className="auth-create-account" href={registrationUrl}>
                     {t("auth.createAccount")}
@@ -282,62 +338,64 @@ export function AuthScreen({
                 ) : null}
               </div>
             ) : null}
-            <label className="auth-field">
-              <span>{t("auth.username")}</span>
-              <ImeTextField
-                aria-label={t("auth.username")}
-                autoComplete="username"
-                name="username"
-                placeholder={t("auth.usernamePlaceholder")}
-                spellCheck={false}
-                value={username}
-                syncKey="login-username"
-                onChange={(event) => onUsernameChange(event.target.value)}
-              />
-            </label>
-            <p className="auth-field-help">{t("auth.usernameHelp")}</p>
-            <label className="auth-field">
-              <span>{t("auth.password")}</span>
-              <SecureImeTextField
-                autoComplete="current-password"
-                name="password"
-                ref={passwordInputRef}
-                disabled={!passwordLoginAvailable}
-                onInput={(event) => onPasswordPresenceChange(event.currentTarget.value.length > 0)}
-              />
-            </label>
-            <label className="auth-field">
-              <span>{t("auth.deviceName")}</span>
-              <ImeTextField
-                autoComplete="off"
-                name="deviceName"
-                spellCheck={false}
-                value={deviceName}
-                syncKey="login-device-name"
-                onChange={(event) => onDeviceNameChange(event.target.value)}
-              />
-            </label>
+            {oidcFlow && passwordLoginAvailable ? (
+              <div className="auth-divider" role="separator">
+                <span>{t("auth.orSignInWithPassword")}</span>
+              </div>
+            ) : null}
+            {passwordLoginAvailable ? (
+              <>
+                <label className="auth-field">
+                  <span>{t("auth.password")}</span>
+                  <SecureImeTextField
+                    autoComplete="current-password"
+                    name="password"
+                    ref={passwordInputRef}
+                    onInput={(event) => onPasswordPresenceChange(event.currentTarget.value.length > 0)}
+                  />
+                </label>
+                <label className="auth-field">
+                  <span>{t("auth.deviceName")}</span>
+                  <ImeTextField
+                    autoComplete="off"
+                    name="deviceName"
+                    spellCheck={false}
+                    value={deviceName}
+                    syncKey="login-device-name"
+                    onChange={(event) => onDeviceNameChange(event.target.value)}
+                  />
+                </label>
+              </>
+            ) : (
+              <p className="auth-field-help">{t("auth.passwordSignInUnavailable")}</p>
+            )}
             {primaryError ? (
               <div className="auth-error" role="alert">
                 {primaryError.message}
                 {primaryError.code === "login_failed" ? (
-                  <p className="auth-error-help">{t("auth.loginFailureUsernameHint")}</p>
+                  <p className="auth-error-help">{t("auth.loginFailureMatrixIdHint")}</p>
                 ) : null}
               </div>
             ) : null}
-            <button
-              className="auth-submit"
-              disabled={
-                isBusy ||
-                !homeserver.trim() ||
-                !username.trim() ||
-                !passwordFilled ||
-                !passwordLoginAvailable
-              }
-              type="submit"
-            >
-              {isBusy ? t("auth.connecting") : t("auth.continue")}
-            </button>
+            {passwordLoginAvailable ? (
+              <button
+                className={oidcFlow ? "auth-submit auth-submit-secondary" : "auth-submit"}
+                disabled={isBusy || !effectiveServer || !matrixId.trim() || !passwordFilled}
+                type="submit"
+              >
+                {isBusy ? t("auth.connecting") : t("auth.continue")}
+              </button>
+            ) : null}
+            {onCancel ? (
+              <button
+                className="auth-secondary auth-cancel"
+                disabled={isBusy}
+                type="button"
+                onClick={onCancel}
+              >
+                {t("action.cancel")}
+              </button>
+            ) : null}
           </>
         )}
       </ImeSafeForm>

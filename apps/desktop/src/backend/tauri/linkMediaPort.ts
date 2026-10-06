@@ -2,8 +2,9 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
-import { t } from "../../i18n/messages";
+import { t, tInvariant } from "../../i18n/messages";
 import type { LinkMediaPort } from "../linkMediaPort";
+import { isRendererSelectedAccountTabId } from "../client";
 
 function safeDownloadFilename(filename: string): string {
   const trimmed = filename.trim();
@@ -57,10 +58,22 @@ export const tauriLinkMediaPort: LinkMediaPort = {
     }
     return `${renderableThumbnailProtocolBase()}${sourceRef}`;
   },
-  async saveMediaFile(sourceUrl, filename) {
+  async saveMediaFile(sourceUrl, filename, saveName, accountTabId) {
+    if (accountTabId !== undefined && !isRendererSelectedAccountTabId(accountTabId)) {
+      throw new Error("account tab is no longer selected");
+    }
     const safeFilename = safeDownloadFilename(filename);
+    // #1135: Core owns the naming policy, including the generic-upload allowlist,
+    // so it receives the attachment's own filename. The catalog owns the generated
+    // prefix, so the renderer resolves it here.
+    const timestampMs = saveName?.timestampMs ?? null;
     const defaultPath = await invoke<string>("default_media_save_path", {
-      filename: safeFilename
+      filename,
+      mediaKind: saveName?.kind ?? "file",
+      timestampMs,
+      utcOffsetMinutes:
+        timestampMs === null ? 0 : -new Date(timestampMs).getTimezoneOffset(),
+      localNamePrefix: tInvariant("timeline.downloadDefaultImageName")
     }).catch(() => safeFilename);
     const selected = await saveDialog({
       title: t("timeline.downloadMedia", { filename: safeFilename }),
@@ -69,9 +82,13 @@ export const tauriLinkMediaPort: LinkMediaPort = {
     if (!selected) {
       return;
     }
+    if (accountTabId !== undefined && !isRendererSelectedAccountTabId(accountTabId)) {
+      throw new Error("account tab is no longer selected");
+    }
     await invoke("save_downloaded_media", {
       sourceUrl,
-      destinationPath: selected
+      destinationPath: selected,
+      ...(accountTabId === undefined ? {} : { accountTabId })
     });
   }
 };

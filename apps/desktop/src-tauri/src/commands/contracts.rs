@@ -1222,6 +1222,24 @@ fn tauri_command_routes_build_expected_core_commands() {
         other => panic!("unexpected command: {other:?}"),
     }
 
+    let child_room_ids = vec!["!child:example.invalid".to_owned()];
+    match build_leave_space_command(
+        fake_request_id(13),
+        "!space:example.invalid".to_owned(),
+        child_room_ids.clone(),
+    ) {
+        CoreCommand::Room(RoomCommand::LeaveSpace {
+            request_id,
+            space_id,
+            child_room_ids: route_child_room_ids,
+        }) => {
+            assert_eq!(request_id, fake_request_id(13));
+            assert_eq!(space_id, "!space:example.invalid");
+            assert_eq!(route_child_room_ids, child_room_ids);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
     match build_forget_room_command(fake_request_id(14), room_id.clone()) {
         CoreCommand::Room(RoomCommand::ForgetRoom {
             request_id,

@@ -15,7 +15,7 @@ mod window_state;
 
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
@@ -39,19 +39,20 @@ use crate::window_state::{
     window_event_should_persist,
 };
 
-// koushi-core: the production runtime host. All session, credential,
-// and Matrix operations go through CoreCommand/CoreEvent — the adapter never
-// touches the credential store or the SDK directly.
+// koushi-core owns each account runtime. All session, credential, and Matrix
+// operations go through CoreCommand/CoreEvent; the adapter never touches the
+// credential store or SDK directly.
+use koushi_core::account_runtime_manager::{AccountRuntimeManager, AccountTabId};
 use koushi_core::renderable_thumbnail::{
-    cleanup_legacy_plaintext_thumbnail_dirs, lookup_renderable_thumbnail,
+    cleanup_legacy_media_downloads, cleanup_legacy_plaintext_thumbnail_dirs,
+    lookup_renderable_thumbnail,
 };
 use koushi_core::{
-    CoreConnection, CoreRuntime, NativeArtifactRegistry, ReaderSubscription,
-    ReaderSubscriptionCloser,
+    CoreConnection, NativeArtifactPort, NativeArtifactRegistry, ReaderSubscription,
+    ReaderSubscriptionCloser, settings::SettingsStore, store::StoreActor,
 };
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
-use koushi_protocol::view::ViewScopeId;
-use koushi_protocol::{AccountCommand, AppCommand, CoreCommand};
+use koushi_protocol::{CoreCommand, command::AccountCommand, view::ViewScopeId};
 
 // Must stay in sync with `OIDC_REDIRECT_URI` in koushi-core. The scheme is
 // reverse-DNS per RFC 8252 §7.1 because MAS deployments reject bare schemes.
@@ -66,17 +67,13 @@ const SKIP_KEYCHAIN_PERSISTENCE_ENV: &str = "KOUSHI_SKIP_KEYCHAIN_PERSISTENCE";
 
 /// Transport-adapter state.
 ///
-/// Holds the `CoreRuntime` (the only production runtime owner) plus one
-/// `CoreConnection` for command dispatch and snapshot reads.
-///
-/// The event-forwarding task owns a SECOND connection (obtained by calling
-/// `runtime.attach()` in `run()`) so it can loop on `recv_event` without
-/// blocking command dispatch.
+/// Holds the account runtime manager plus selected per-tab connections for
+/// command dispatch and snapshot reads. Each account-tab watcher and the
+/// selected event forwarder owns a separate connection so event reads do not
+/// block command dispatch.
 ///
 /// Startup restore and saved-session listing go through the canon command
-/// boundary (`AccountCommand::RestoreLastSession` /
-/// `AccountCommand::QuerySavedSessions`, resolved 2026-06-13); the adapter
-/// never reads the credential store.
+/// boundary; the adapter never reads the credential store.
 ///
 /// Remaining design note:
 /// `timeline_items_count`: `AppState` snapshots never embed timeline lists
@@ -89,39 +86,461 @@ pub(crate) struct ReaderSubscriptionEntry {
     pub(crate) control: koushi_core::ReaderSubscriptionControl,
 }
 
-pub struct CoreRuntimeState {
-    pub(crate) runtime: CoreRuntime,
-    /// Command-dispatch connection. Uses `tokio::sync::Mutex` so the guard can
-    /// be held across `.await` points in async Tauri command handlers.
-    pub(crate) connection: TokioMutex<CoreConnection>,
-    /// Window-lifecycle connection, used only for synchronous latest-wins
-    /// snapshot reads. `WindowEvent::CloseRequested` must decide whether to
-    /// hide before it returns, because `api.prevent_close()` cannot be deferred
-    /// across an await, so the close-to-hide gate cannot go through the
-    /// `tokio::sync::Mutex`-guarded command connection.
-    ///
-    /// This connection is never polled for events, and that is safe: the event
-    /// side of a `CoreConnection` is a `tokio::sync::broadcast::Receiver`
-    /// (`crates/koushi-core/src/runtime/connection.rs`), whose ring is
-    /// pre-allocated at `EVENT_QUEUE_CAPACITY` when the runtime is built and
-    /// overwritten oldest-first by every send. A receiver that never drains is
-    /// therefore lossy, not buffering: it retains no memory beyond the shared
-    /// ring that already exists for the drained connections, and it never
-    /// applies backpressure to senders. The snapshot side is a `watch`
-    /// receiver, which is latest-wins by construction.
-    /// Read only by the non-macOS close-to-tray gate; macOS hides on close.
+type AccountConnections = Arc<TokioMutex<HashMap<AccountTabId, Arc<TokioMutex<CoreConnection>>>>>;
+
+#[derive(Clone)]
+pub(crate) struct SelectedCoreConnection {
+    runtime: Arc<AccountRuntimeManager>,
+    connections: AccountConnections,
+    restore_ready: tokio::sync::watch::Receiver<bool>,
+}
+
+impl SelectedCoreConnection {
+    pub(crate) async fn lock(&self) -> tokio::sync::OwnedMutexGuard<CoreConnection> {
+        self.lock_with_tab_id().await.1
+    }
+
+    pub(crate) async fn lock_with_tab_id(
+        &self,
+    ) -> (String, tokio::sync::OwnedMutexGuard<CoreConnection>) {
+        loop {
+            let id = self.runtime.selected_tab_id();
+            if let Ok(binding) = self.lock_for_tab_id(&id).await
+                && self.runtime.selected_tab_id() == id
+            {
+                return binding;
+            }
+        }
+    }
+
+    pub(crate) async fn lock_for_tab_id(
+        &self,
+        id: &AccountTabId,
+    ) -> Result<(String, tokio::sync::OwnedMutexGuard<CoreConnection>), String> {
+        let mut restore_ready = self.restore_ready.clone();
+        loop {
+            if *restore_ready.borrow_and_update() {
+                break;
+            }
+            if restore_ready.changed().await.is_err() {
+                break;
+            }
+        }
+        let connection = {
+            let mut connections = self.connections.lock().await;
+            if let Some(connection) = connections.get(id) {
+                Arc::clone(connection)
+            } else {
+                let connection = self
+                    .runtime
+                    .tab_connection(id)
+                    .ok_or_else(|| "account tab does not exist".to_owned())?;
+                let connection = Arc::new(TokioMutex::new(connection));
+                connections.insert(id.clone(), Arc::clone(&connection));
+                connection
+            }
+        };
+        Ok((id.as_str().to_owned(), connection.lock_owned().await))
+    }
+
+    pub(crate) async fn command_handle_for_request(
+        &self,
+        request_id: koushi_protocol::RequestId,
+    ) -> Option<koushi_core::CoreCommandHandle> {
+        let connections: Vec<_> = self.connections.lock().await.values().cloned().collect();
+        for connection in connections {
+            let connection = connection.lock().await;
+            if connection.connection_id() == request_id.connection_id {
+                return Some(connection.command_handle());
+            }
+        }
+        None
+    }
+
+    pub(crate) async fn clear_cached_connections(&self) {
+        self.connections.lock().await.clear();
+    }
+
+    pub(crate) async fn remove_cached_connection(&self, id: &AccountTabId) {
+        self.connections.lock().await.remove(id);
+    }
+
     #[cfg(not(target_os = "macos"))]
-    pub(crate) window_lifecycle_connection: CoreConnection,
+    fn window_settings(&self) -> koushi_state::WindowSettings {
+        self.runtime
+            .subscribe_app_settings_updates()
+            .borrow()
+            .window
+    }
+}
+
+pub const ACCOUNT_TABS_EVENT_NAME: &str = "koushi-desktop://account-tabs-update";
+const ACCOUNT_TAB_IDENTITY_MISMATCH_EVENT: &str = "koushi-desktop://account-identity-mismatch";
+
+async fn retire_rejected_login(connection: &mut CoreConnection) -> bool {
+    let request_id = connection.next_request_id();
+    if connection
+        .command(CoreCommand::Account(AccountCommand::ChangeHomeserver {
+            request_id,
+        }))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if matches!(
+                connection.snapshot().session,
+                koushi_state::SessionState::SignedOut
+            ) {
+                return true;
+            }
+            if connection.next_versioned_snapshot().await.is_none() {
+                return false;
+            }
+        }
+    })
+    .await
+    .unwrap_or(false)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum AccountTabStatus {
+    AddAccount,
+    Restoring,
+    Authenticating,
+    NeedsVerification,
+    Ready,
+    SignedOut,
+    LoggingOut,
+    Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccountTabSummary {
+    pub id: String,
+    pub account_key: Option<String>,
+    pub homeserver: Option<String>,
+    pub display_name: Option<String>,
+    pub avatar_source_ref: Option<String>,
+    pub status: AccountTabStatus,
+    pub unread_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccountTabsSnapshot {
+    pub selected_tab_id: String,
+    pub tabs: Vec<AccountTabSummary>,
+    pub badge_count: u64,
+}
+
+pub struct CoreRuntimeState {
+    pub(crate) runtime: Arc<AccountRuntimeManager>,
+    /// Resolves to the selected account's independent CoreConnection at each
+    /// command boundary.
+    pub(crate) connection: SelectedCoreConnection,
+    /// Synchronous latest-wins access to Rust-owned app window settings.
+    /// `CloseRequested` cannot await command locks, and a retiring/closed
+    /// manager may have no selected child. Read the shared settings owner,
+    /// independent of the account actor trees. macOS hides on close.
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) window_lifecycle_connection: SelectedCoreConnection,
     /// Tauri-side timeline item count (updated by event loop; QA title only).
     pub(crate) timeline_items_count: Arc<AtomicUsize>,
-    _forwarder_task: Option<CoreEventForwarderTask>,
+    _forwarder_task: Mutex<Option<CoreEventForwarderTask>>,
+    startup_restore_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    account_tab_watchers: TokioMutex<Vec<tauri::async_runtime::JoinHandle<()>>>,
+    pub(crate) native_window_focused: AtomicBool,
     pub(crate) native_window_focus_generation: AtomicU64,
     pub(crate) viewport_sync_generation: viewport_sync::ViewportSyncGeneration,
     /// Graceful-quit barrier; see [`quit_request_action`].
     pub(crate) quit_stage: AtomicU8,
     /// Written by the updater before it leaves the owner joined by shutdown.
     restart_after_shutdown: AtomicBool,
-    pub(crate) reader_subscriptions: TokioMutex<HashMap<ViewScopeId, ReaderSubscriptionEntry>>,
+    pub(crate) reader_subscriptions:
+        TokioMutex<HashMap<(Option<AccountTabId>, ViewScopeId), ReaderSubscriptionEntry>>,
+}
+
+impl CoreRuntimeState {
+    pub(crate) fn restart_selected_forwarder(&self, app: tauri::AppHandle) {
+        let (tab_id, connection) = self.runtime.selected_binding();
+        let task = spawn_core_event_forwarder(
+            app,
+            tab_id,
+            connection,
+            Arc::clone(&self.timeline_items_count),
+        );
+        *self
+            ._forwarder_task
+            .lock()
+            .expect("core event forwarder mutex") = Some(task);
+    }
+
+    pub(crate) async fn stop_selected_forwarder(&self) {
+        let task = self
+            ._forwarder_task
+            .lock()
+            .expect("core event forwarder mutex")
+            .take();
+        if let Some(task) = task {
+            task.stop().await;
+        }
+    }
+
+    async fn wait_for_startup_restore(&self) -> Result<(), ()> {
+        let task = self
+            .startup_restore_task
+            .lock()
+            .expect("startup restore task mutex")
+            .take();
+        if let Some(task) = task {
+            task.await.map_err(|_| ())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn stop_account_tab_watchers(&self) {
+        let watchers = {
+            let mut watchers = self.account_tab_watchers.lock().await;
+            std::mem::take(&mut *watchers)
+        };
+        for watcher in watchers {
+            watcher.abort();
+            let _ = watcher.await;
+        }
+    }
+
+    pub(crate) async fn close_reader_subscriptions(&self) {
+        let mut subscriptions = self.reader_subscriptions.lock().await;
+        for entry in subscriptions.values() {
+            entry.close.close();
+        }
+        subscriptions.clear();
+    }
+
+    pub(crate) async fn restart_account_tab_watchers(&self, app: tauri::AppHandle) {
+        self.stop_account_tab_watchers().await;
+        let tabs = self.runtime.tab_connections();
+        let mut watchers = self.account_tab_watchers.lock().await;
+        for (tab, mut connection) in tabs {
+            let tab_id = tab.id.clone();
+            let runtime = Arc::clone(&self.runtime);
+            let app = app.clone();
+            watchers.push(tauri::async_runtime::spawn(async move {
+                let mut previous_attention = connection.snapshot().native_attention;
+                while let Some(snapshot) = connection.next_versioned_snapshot().await {
+                    if let Some(info) = session_info_for_account(&snapshot.state.session)
+                        && !runtime.is_session_binding_current(&tab_id, &info)
+                    {
+                            match runtime.bind_authenticated_session(&tab_id, &info).await {
+                                Ok(
+                                    koushi_core::account_runtime_manager::BindAccountOutcome::Bound(
+                                        _,
+                                    ),
+                                ) => {}
+                                Ok(
+                                    koushi_core::account_runtime_manager::BindAccountOutcome::Duplicate(
+                                        existing,
+                                    ),
+                                ) => {
+                                    // This provisional login may have reused the existing
+                                    // account's stored device; retire it without revoking or
+                                    // deleting shared account persistence.
+                                    if retire_rejected_login(&mut connection).await {
+                                        let previous_tab = runtime.selected_tab_id();
+                                        if runtime.select_tab(&existing).await.unwrap_or(false) {
+                                            let state = app.state::<CoreRuntimeState>();
+                                            state.close_reader_subscriptions().await;
+                                            commands::native_attention::transfer_native_window_focus(
+                                                &state.runtime,
+                                                &state.native_window_focus_generation,
+                                                &previous_tab,
+                                                &existing,
+                                                state.native_window_focused.load(Ordering::Relaxed),
+                                            )
+                                            .await;
+                                            state.stop_selected_forwarder().await;
+                                            state.restart_selected_forwarder(app.clone());
+                                            emit_account_tabs_changed(&app, &runtime);
+                                        }
+                                    }
+                                }
+                                Ok(
+                                    koushi_core::account_runtime_manager::BindAccountOutcome::IdentityMismatch {
+                                        ..
+                                    },
+                                ) => {
+                                    if retire_rejected_login(&mut connection).await {
+                                        let _ = app.emit(
+                                            ACCOUNT_TAB_IDENTITY_MISMATCH_EVENT,
+                                            tab_id.as_str(),
+                                        );
+                                    }
+                                }
+                                Err(_) => {}
+                            }
+                    }
+                    let descriptor = runtime
+                        .tab_descriptors()
+                        .into_iter()
+                        .find(|tab| tab.id == tab_id);
+                    let attention = &snapshot.state.native_attention;
+                    let background = runtime.selected_tab_id() != tab_id;
+                    if background
+                        && descriptor
+                            .as_ref()
+                            .is_some_and(|tab| tab.account_key.is_some())
+                    {
+                        if attention.notification != previous_attention.notification {
+                            commands::native_attention::notification::dispatch_notification_for_tab(
+                                &app,
+                                &tab_id,
+                                &snapshot.state,
+                            );
+                        }
+                        if attention.summary.candidate != previous_attention.summary.candidate
+                            && snapshot.state.settings.values.notifications.sound
+                            && cfg!(any(target_os = "macos", target_os = "windows"))
+                            && matches!(snapshot.state.session, koushi_state::SessionState::Ready(_))
+                            && let Some(sound_connection) = runtime.tab_connection(&tab_id)
+                        {
+                            let _ = commands::native_attention::dispatch_native_attention_sound_for_connection(
+                                app.clone(),
+                                sound_connection,
+                            )
+                            .await;
+                        }
+                    }
+                    previous_attention = attention.clone();
+                    emit_account_tabs_changed(&app, &runtime);
+                    allow_account_media_cache_dirs(&app, &runtime);
+                }
+            }));
+        }
+        emit_account_tabs_changed(&app, &self.runtime);
+        allow_account_media_cache_dirs(&app, &self.runtime);
+    }
+}
+
+fn session_info_for_account(
+    session: &koushi_state::SessionState,
+) -> Option<koushi_state::SessionInfo> {
+    match session {
+        koushi_state::SessionState::Ready(info)
+        | koushi_state::SessionState::Provisional { info, .. }
+        | koushi_state::SessionState::AwaitingVerification { info, .. }
+        | koushi_state::SessionState::Verifying { info, .. }
+        | koushi_state::SessionState::AwaitingBootstrapConfirmation { info, .. }
+        | koushi_state::SessionState::Rejecting { info, .. }
+        | koushi_state::SessionState::Locked(info)
+        | koushi_state::SessionState::CapabilityBlocked { info, .. }
+        | koushi_state::SessionState::SwitchingAccount { info } => Some(info.clone()),
+        _ => None,
+    }
+}
+
+pub(crate) fn account_tabs_snapshot(runtime: &AccountRuntimeManager) -> AccountTabsSnapshot {
+    let selected_tab_id = runtime.selected_tab_id().as_str().to_owned();
+    let tab_states = runtime
+        .tab_connections()
+        .into_iter()
+        .map(|(tab, connection)| (tab, connection.snapshot()))
+        .collect::<Vec<_>>();
+    account_tabs_snapshot_from_states(selected_tab_id, tab_states)
+}
+
+fn account_tabs_snapshot_from_states(
+    selected_tab_id: String,
+    tab_states: impl IntoIterator<
+        Item = (
+            koushi_core::account_runtime_manager::AccountTabDescriptor,
+            koushi_state::AppState,
+        ),
+    >,
+) -> AccountTabsSnapshot {
+    let tab_states = tab_states.into_iter().collect::<Vec<_>>();
+    let badge_count = aggregate_account_badge_count(
+        tab_states
+            .iter()
+            .map(|(_, state)| state.native_attention.summary.badge_count),
+    );
+    let tabs = tab_states
+        .into_iter()
+        .map(|(tab, state)| {
+            let status = match &state.session {
+                koushi_state::SessionState::SignedOut => {
+                    if tab.account_key.is_none() {
+                        AccountTabStatus::AddAccount
+                    } else {
+                        AccountTabStatus::SignedOut
+                    }
+                }
+                koushi_state::SessionState::Restoring
+                | koushi_state::SessionState::SwitchingAccount { .. } => {
+                    AccountTabStatus::Restoring
+                }
+                koushi_state::SessionState::Authenticating { .. }
+                | koushi_state::SessionState::Provisional { .. } => {
+                    AccountTabStatus::Authenticating
+                }
+                koushi_state::SessionState::AwaitingVerification { .. }
+                | koushi_state::SessionState::Verifying { .. }
+                | koushi_state::SessionState::AwaitingBootstrapConfirmation { .. } => {
+                    AccountTabStatus::NeedsVerification
+                }
+                koushi_state::SessionState::Ready(_) => AccountTabStatus::Ready,
+                koushi_state::SessionState::LoggingOut => AccountTabStatus::LoggingOut,
+                koushi_state::SessionState::Rejecting { .. }
+                | koushi_state::SessionState::Locked(_)
+                | koushi_state::SessionState::CapabilityBlocked { .. } => AccountTabStatus::Error,
+            };
+            let avatar_source_ref =
+                state
+                    .profile
+                    .own
+                    .avatar
+                    .as_ref()
+                    .and_then(|avatar| match &avatar.thumbnail {
+                        koushi_state::AvatarThumbnailState::Ready { source_ref, .. } => {
+                            Some(source_ref.clone())
+                        }
+                        _ => None,
+                    });
+            AccountTabSummary {
+                id: tab.id.as_str().to_owned(),
+                account_key: tab.account_key.map(|key| key.0),
+                homeserver: tab.homeserver,
+                display_name: state.profile.own.display_name,
+                avatar_source_ref,
+                status,
+                unread_count: state.native_attention.summary.unread_count,
+            }
+        })
+        .collect();
+    AccountTabsSnapshot {
+        selected_tab_id,
+        tabs,
+        badge_count,
+    }
+}
+
+fn aggregate_account_badge_count(counts: impl IntoIterator<Item = u64>) -> u64 {
+    counts.into_iter().fold(0, u64::saturating_add)
+}
+
+fn emit_account_tabs_changed(app: &tauri::AppHandle, runtime: &AccountRuntimeManager) {
+    let _ = app.emit(ACCOUNT_TABS_EVENT_NAME, account_tabs_snapshot(runtime));
+}
+
+fn allow_account_media_cache_dirs(app: &tauri::AppHandle, runtime: &AccountRuntimeManager) {
+    let asset_scope = app.asset_protocol_scope();
+    for cache_dir in runtime.media_cache_dirs() {
+        let _ = asset_scope.allow_directory(cache_dir, true);
+    }
 }
 
 fn restore_session_enabled_from_env_value(value: Option<&str>) -> bool {
@@ -211,17 +630,6 @@ pub(crate) fn app_data_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "local application data directory is unavailable".to_owned())
 }
 
-fn renderable_asset_cache_dirs(data_dir: &Path) -> [PathBuf; 1] {
-    [data_dir.join("media_downloads")]
-}
-
-fn allow_runtime_asset_cache_dirs(app: &tauri::App, data_dir: &Path) {
-    let asset_scope = app.asset_protocol_scope();
-    for cache_dir in renderable_asset_cache_dirs(data_dir) {
-        let _ = asset_scope.allow_directory(cache_dir, true);
-    }
-}
-
 fn renderable_thumbnail_protocol_response(
     request: tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Vec<u8>> {
@@ -250,23 +658,32 @@ fn renderable_thumbnail_protocol_response(
         .expect("thumbnail response")
 }
 
-fn start_core_runtime_for_tauri(data_dir: PathBuf) -> CoreRuntime {
-    let native_artifacts = Arc::new(NativeArtifactRegistry::new());
-    #[cfg(any(debug_assertions, test))]
-    {
+fn start_account_runtime_manager_for_tauri(data_dir: PathBuf) -> Arc<AccountRuntimeManager> {
+    let store = {
+        #[cfg(any(debug_assertions, test))]
         if keychain_persistence_disabled_from_env() {
-            return CoreRuntime::start_with_data_dir_and_native_artifact_port(
-                data_dir,
-                native_artifacts,
-            );
+            StoreActor::new(data_dir.clone())
+        } else {
+            StoreActor::with_os_backend(
+                data_dir.clone(),
+                Arc::new(crate::keyring_backend::KeyringCredentialBackend),
+            )
         }
-    }
-
-    CoreRuntime::start_with_data_dir_and_os_backend_and_native_artifact_port(
-        data_dir,
-        std::sync::Arc::new(crate::keyring_backend::KeyringCredentialBackend),
-        native_artifacts,
-    )
+        #[cfg(not(any(debug_assertions, test)))]
+        {
+            StoreActor::with_os_backend(
+                data_dir.clone(),
+                Arc::new(crate::keyring_backend::KeyringCredentialBackend),
+            )
+        }
+    };
+    let native_artifact_factory: Arc<dyn Fn() -> Arc<dyn NativeArtifactPort> + Send + Sync> =
+        Arc::new(|| Arc::new(NativeArtifactRegistry::new()));
+    Arc::new(AccountRuntimeManager::new(
+        store,
+        SettingsStore::new(data_dir),
+        native_artifact_factory,
+    ))
 }
 
 fn observed_native_window_focus(event: &tauri::WindowEvent) -> Option<bool> {
@@ -459,7 +876,7 @@ impl CloseRequestedAction {
 
 /// Graceful-quit barrier stage.
 ///
-/// Process exit triggers `AppCommand::Shutdown` exactly once, no matter which
+/// Process exit shuts down the account runtimes exactly once, no matter which
 /// path started it — explicit Quit (app-menu or tray), or a real window close
 /// that destroys the product window — and even though the exit request is
 /// re-delivered after shutdown completes.
@@ -577,22 +994,35 @@ enum CoreExitOutcome {
 
 const CORE_EXIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-async fn stop_core_for_exit(runtime: &CoreRuntime) -> CoreExitOutcome {
+#[cfg(test)]
+async fn stop_core_for_exit(runtime: &AccountRuntimeManager) -> CoreExitOutcome {
     stop_core_for_exit_with_timeout(runtime, CORE_EXIT_TIMEOUT).await
 }
 
+async fn stop_core_state_for_exit(state: &CoreRuntimeState) -> CoreExitOutcome {
+    await_core_exit(CORE_EXIT_TIMEOUT, async {
+        let restore_result = state.wait_for_startup_restore().await;
+        state.close_reader_subscriptions().await;
+        state.stop_account_tab_watchers().await;
+        state.stop_selected_forwarder().await;
+        state.connection.clear_cached_connections().await;
+        let shutdown_result = state.runtime.shutdown_all_checked().await;
+        if restore_result.is_err() || shutdown_result.is_err() {
+            Err(())
+        } else {
+            Ok(())
+        }
+    })
+    .await
+}
+
+#[cfg(test)]
 async fn stop_core_for_exit_with_timeout(
-    runtime: &CoreRuntime,
+    runtime: &AccountRuntimeManager,
     timeout: std::time::Duration,
 ) -> CoreExitOutcome {
-    let connection = runtime.attach();
-    let request_id = connection.next_request_id();
     await_core_exit(timeout, async {
-        connection
-            .command(CoreCommand::App(AppCommand::Shutdown { request_id }))
-            .await
-            .map_err(|_| ())?;
-        runtime.wait_for_shutdown().await.map_err(|_| ())
+        runtime.shutdown_all_checked().await.map_err(|_| ())
     })
     .await
 }
@@ -675,7 +1105,7 @@ fn begin_graceful_shutdown(app: tauri::AppHandle) {
             &core_state.quit_stage,
             &core_state.restart_after_shutdown,
             app_updates::shutdown(&app),
-            stop_core_for_exit(&core_state.runtime),
+            stop_core_state_for_exit(&core_state),
             &app,
         )
         .await;
@@ -754,16 +1184,37 @@ fn repair_linux_deep_link_desktop_entry(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+pub(crate) fn oidc_callback_state(callback_url: &str) -> Option<String> {
+    let url = url::Url::parse(callback_url).ok()?;
+    let states: Vec<_> = url
+        .query_pairs()
+        .filter(|(key, _)| key == "state")
+        .map(|(_, value)| value.into_owned())
+        .collect();
+    match states.as_slice() {
+        [state] if !state.is_empty() => Some(state.clone()),
+        _ => None,
+    }
+}
+
 fn submit_oidc_callback_url(app: tauri::AppHandle, callback_url: String) {
     if !is_oidc_callback_url(&callback_url) {
         return;
     }
 
+    let Some(oidc_state) = oidc_callback_state(&callback_url) else {
+        return;
+    };
     tauri::async_runtime::spawn(async move {
         let core_state = app.state::<CoreRuntimeState>();
-        let event_conn = core_state.runtime.attach();
-        let request_id = event_conn.next_request_id();
-        let _ = event_conn
+        let Some(tab_id) = core_state.runtime.take_oidc_attempt(&oidc_state) else {
+            return;
+        };
+        let Ok((_, connection)) = core_state.connection.lock_for_tab_id(&tab_id).await else {
+            return;
+        };
+        let request_id = connection.next_request_id();
+        let _ = connection
             .command(commands::session::build_complete_oidc_login_command(
                 request_id,
                 callback_url,
@@ -862,35 +1313,34 @@ pub fn run() {
             // handle so `tokio::task::spawn` can find it from the main thread.
             let data_dir = app_data_dir().unwrap_or_else(|_| PathBuf::from("koushi-desktop-data"));
             let _ = cleanup_legacy_plaintext_thumbnail_dirs(&data_dir);
-            allow_runtime_asset_cache_dirs(app, &data_dir);
+            let _ = cleanup_legacy_media_downloads(&data_dir);
             // Enter Tauri's tokio runtime so `executor::spawn` (tokio::task::spawn)
             // can find a runtime handle from this non-tokio-worker thread.
             let async_handle = tauri::async_runtime::handle();
             let _guard = async_handle.inner().enter();
-            let runtime = start_core_runtime_for_tauri(data_dir);
-
-            // command-dispatch connection (held in state)
-            let command_conn = runtime.attach();
-            // event-forwarding connection (owned by the spawned task below)
-            let event_conn = runtime.attach();
-
+            let runtime = start_account_runtime_manager_for_tauri(data_dir);
+            let account_connections = Arc::new(TokioMutex::new(HashMap::new()));
+            let update_settings = runtime.subscribe_app_settings_updates();
             let timeline_items_count = Arc::new(AtomicUsize::new(0));
-            let forwarder_task = spawn_core_event_forwarder(
-                app.handle().clone(),
-                event_conn,
-                Arc::clone(&timeline_items_count),
-            );
-            // synchronous snapshot connection for the window-close gate
-            #[cfg(not(target_os = "macos"))]
-            let window_lifecycle_connection = runtime.attach();
-            let update_settings_connection = runtime.attach();
+            let (restore_ready_sender, restore_ready) = tokio::sync::watch::channel(false);
             let core_state = CoreRuntimeState {
-                runtime,
-                connection: TokioMutex::new(command_conn),
+                runtime: Arc::clone(&runtime),
+                connection: SelectedCoreConnection {
+                    runtime: Arc::clone(&runtime),
+                    connections: Arc::clone(&account_connections),
+                    restore_ready: restore_ready.clone(),
+                },
                 #[cfg(not(target_os = "macos"))]
-                window_lifecycle_connection,
+                window_lifecycle_connection: SelectedCoreConnection {
+                    runtime: Arc::clone(&runtime),
+                    connections: account_connections,
+                    restore_ready,
+                },
                 timeline_items_count,
-                _forwarder_task: Some(forwarder_task),
+                _forwarder_task: Mutex::new(None),
+                startup_restore_task: Mutex::new(None),
+                account_tab_watchers: TokioMutex::new(Vec::new()),
+                native_window_focused: AtomicBool::new(false),
                 native_window_focus_generation: AtomicU64::new(0),
                 viewport_sync_generation: viewport_sync::ViewportSyncGeneration::default(),
                 quit_stage: AtomicU8::new(QuitStage::Idle.repr()),
@@ -900,8 +1350,28 @@ pub fn run() {
             app.manage(core_state);
             app.manage(app_updates::DesktopUpdateManager::new());
             app.manage(commands::dropped_files::DroppedFileLedger::default());
-            app_updates::spawn_auto_update_loop(app.handle().clone(), update_settings_connection);
+            app_updates::spawn_auto_update_loop(app.handle().clone(), update_settings);
             install_oidc_deep_link_handler(app)?;
+
+            let app_handle = app.handle().clone();
+            let restore_task = tauri::async_runtime::spawn(async move {
+                let state = app_handle.state::<CoreRuntimeState>();
+                // No event receiver may retain a connection while restore replaces the
+                // manager's initial add-tab runtime; always restart forwarding afterward.
+                state.stop_selected_forwarder().await;
+                if restore_session {
+                    let _ = state.runtime.restore_saved_accounts().await;
+                    state.connection.clear_cached_connections().await;
+                }
+                state.restart_selected_forwarder(app_handle.clone());
+                state.restart_account_tab_watchers(app_handle.clone()).await;
+                emit_account_tabs_changed(&app_handle, &state.runtime);
+                let _ = restore_ready_sender.send(true);
+            });
+            *app.state::<CoreRuntimeState>()
+                .startup_restore_task
+                .lock()
+                .expect("startup restore task mutex") = Some(restore_task);
 
             // Built before the webview resolves the catalog locale; the
             // localized labels arrive through set_native_menu_labels.
@@ -937,26 +1407,6 @@ pub fn run() {
                 );
             }
 
-            if restore_session {
-                // Startup restore goes through the canon command boundary:
-                // `AccountCommand::RestoreLastSession` resolves the
-                // last-session pointer inside StoreActor/AccountActor. A
-                // missing pointer is a NORMAL outcome
-                // (`CoreFailure::SessionNotFound`) — AppState stays SignedOut
-                // and the login screen shows. The adapter never reads the
-                // credential store.
-                let app_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let core_state = app_handle.state::<CoreRuntimeState>();
-                    let request_id = core_state.connection.lock().await.next_request_id();
-                    let _ = commands::submit_core_command(
-                        &core_state,
-                        CoreCommand::Account(AccountCommand::RestoreLastSession { request_id }),
-                    )
-                    .await;
-                });
-            }
-
             Ok(())
         })
         .on_page_load(|webview, _payload| {
@@ -981,22 +1431,26 @@ pub fn run() {
                 }
                 if let Some(focused) = observed_native_window_focus(event)
                     && let Some(core_state) = window.try_state::<CoreRuntimeState>()
-                    && let Some(observation_generation) = next_native_window_focus_generation(
-                        &core_state.native_window_focus_generation,
-                    )
                 {
-                    let app_handle = window.app_handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        let core_state = app_handle.state::<CoreRuntimeState>();
-                        let request_id = core_state.connection.lock().await.next_request_id();
-                        let command =
-                            commands::native_attention::build_observe_native_window_focus_command(
-                                request_id,
-                                focused,
-                                observation_generation,
-                            );
-                        let _ = commands::submit_core_command(&core_state, command).await;
-                    });
+                    core_state
+                        .native_window_focused
+                        .store(focused, Ordering::Relaxed);
+                    if let Some(observation_generation) = next_native_window_focus_generation(
+                        &core_state.native_window_focus_generation,
+                    ) {
+                        let app_handle = window.app_handle().clone();
+                        tauri::async_runtime::spawn(async move {
+                            let core_state = app_handle.state::<CoreRuntimeState>();
+                            let request_id = core_state.connection.lock().await.next_request_id();
+                            let command =
+                                commands::native_attention::build_observe_native_window_focus_command(
+                                    request_id,
+                                    focused,
+                                    observation_generation,
+                                );
+                            let _ = commands::submit_core_command(&core_state, command).await;
+                        });
+                    }
                 }
                 let viewport_trigger = match event {
                     tauri::WindowEvent::Resized(_) => {
@@ -1045,10 +1499,7 @@ pub fn run() {
                         .map(|core_state| {
                             core_state
                                 .window_lifecycle_connection
-                                .snapshot()
-                                .settings
-                                .values
-                                .window
+                                .window_settings()
                                 .close_to_tray
                         })
                         .unwrap_or(false);
@@ -1097,8 +1548,8 @@ pub fn run() {
                 if window_event_should_stop_background_tasks(event) {
                     // The product window was really destroyed, so the process
                     // is going away. Enter the same barrier the Quit paths use
-                    // instead of submitting a second `AppCommand::Shutdown`
-                    // ahead of the `ExitRequested` that follows.
+                    // instead of shutting runtimes down ahead of the following
+                    // `ExitRequested`.
                     let app = window.app_handle().clone();
                     let claimed = app
                         .try_state::<CoreRuntimeState>()
@@ -1116,6 +1567,11 @@ pub fn run() {
             commands::app_updates::restart_to_install_desktop_update,
             commands::diagnostics::get_diagnostic_snapshot,
             commands::diagnostics::observe_viewport_sync,
+            commands::account_tabs::list_account_tabs,
+            commands::account_tabs::select_account_tab,
+            commands::account_tabs::add_account_tab,
+            commands::account_tabs::remove_signed_out_account_tab,
+            commands::account_tabs::cancel_add_account_tab,
             commands::session::get_snapshot,
             commands::session::settlement_snapshot,
             commands::session::resync_snapshot,
@@ -1259,6 +1715,7 @@ pub fn run() {
             commands::profile::download_avatar_thumbnail,
             commands::profile::cancel_avatar_thumbnail,
             commands::room::leave_room,
+            commands::room::leave_space,
             commands::room::forget_room,
             commands::room::set_room_tag,
             commands::room::remove_room_tag,
@@ -1337,8 +1794,8 @@ pub fn run() {
         .run(|app, event| {
             // Hold the exit until core shutdown has completed; the re-delivered
             // request after completion proceeds. The barrier is shared with the
-            // window-destroy path, so `AppCommand::Shutdown` is submitted
-            // exactly once whether the product window was hidden or destroyed,
+            // window-destroy path, so Core is shut down exactly once whether
+            // the product window was hidden or destroyed,
             // and `ExitRequested` is treated the same for any exit code.
             if let tauri::RunEvent::ExitRequested { api, .. } = &event
                 && let Some(core_state) = app.try_state::<CoreRuntimeState>()

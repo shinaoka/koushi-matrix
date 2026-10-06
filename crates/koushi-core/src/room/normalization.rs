@@ -26,6 +26,10 @@ pub(super) fn normalize_spaces(snapshot: &koushi_sdk::MatrixRoomListSnapshot) ->
                 avatar: avatar_from_mxc_uri(space.avatar_mxc_uri.as_deref()),
                 join_rule: Some(super::management::room_join_rule_from_sdk(space.join_rule)),
                 child_room_ids,
+                // The Space's own `m.space.child` list, kept separate from the
+                // display union so add-existing eligibility stays parent-side
+                // (#1007); it is a subset of `child_room_ids`.
+                parent_side_child_room_ids: space.child_room_ids.clone(),
             }
         })
         .collect()

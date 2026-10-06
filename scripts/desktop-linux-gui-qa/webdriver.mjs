@@ -1551,7 +1551,7 @@ export async function waitForLatestEventMessageRow(browser, timeout, description
 }
 
 
-async function waitForLatestEventMessageRowByText(browser, bodyText, timeout, description) {
+export async function waitForLatestEventMessageRowByText(browser, bodyText, timeout, description) {
   const startedAt = Date.now();
   let lastDiagnostics = null;
   while (Date.now() - startedAt < timeout) {

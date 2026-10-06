@@ -47,8 +47,15 @@ pub(crate) fn project_timeline_event_display_labels(event: &mut TimelineEvent, s
 pub(crate) fn project_timeline_item_display_labels(item: &mut TimelineItem, state: &AppState) {
     item.sender_label =
         timeline_sender_label(item.sender.as_deref(), item.sender_label.as_deref(), state);
-    item.is_hidden = (state.settings.values.display.hide_redacted && item.is_redacted)
-        || koushi_state::is_ignored_user(&state.profile, item.sender.as_deref());
+    // #1110: the consumer export re-derives the full authoritative policy. It
+    // must never assign `is_hidden` from only one reason: that dropped the
+    // deliberate content suppression of bodyless technical state events and
+    // resurrected them as blank rows.
+    item.is_hidden = crate::timeline::timeline_item_is_hidden(
+        item,
+        state.settings.values.display.hide_redacted,
+        koushi_state::is_ignored_user(&state.profile, item.sender.as_deref()),
+    );
     if let Some(reply_quote) = item.reply_quote.as_mut() {
         reply_quote.sender_label = timeline_sender_label(
             reply_quote.sender.as_deref(),
@@ -204,5 +211,7 @@ pub(crate) fn message_source_for_timeline_item(
     })
 }
 
+#[cfg(test)]
+mod issue_1110_tests;
 #[cfg(test)]
 mod tests;

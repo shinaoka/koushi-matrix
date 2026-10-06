@@ -136,4 +136,17 @@ export default tseslint.config(
       ],
     },
   },
+
+  // Rule 3 (all renderer source): no WebView-native dialogs (#1100).
+  //
+  // wry's WKWebView backend implements no JavaScript dialog handlers, so
+  // `window.prompt` returns null at once and `window.confirm` / `window.alert`
+  // never appear on macOS. A menu item or destructive guard that depends on
+  // one is a silent no-op; use an in-app modal instead.
+  {
+    files: ["src/**/*.ts", "src/**/*.tsx"],
+    rules: {
+      "no-alert": "error",
+    },
+  },
 );

@@ -103,7 +103,6 @@ describe("TimelinePane render isolation", () => {
         onSendStagedAttachments: noop,
         onLoadStagedUploadPreview: async () => [],
         onComposerDocumentChange: noop,
-        onEditMessage: noop,
         onOpenContextMenu: noop,
         onOpenThread: noop,
         onRedactMessage: noop,
@@ -200,7 +199,6 @@ describe("TimelinePane render isolation", () => {
         onSendStagedAttachments: noop,
         onLoadStagedUploadPreview: async () => [],
         onComposerDocumentChange: noop,
-        onEditMessage: noop,
         onOpenContextMenu: noop,
         onOpenThread: noop,
         onRedactMessage: noop,
@@ -280,7 +278,6 @@ describe("TimelinePane render isolation", () => {
         onSendStagedAttachments: noop,
         onLoadStagedUploadPreview: async () => [],
         onComposerDocumentChange: noop,
-        onEditMessage: noop,
         onOpenContextMenu: noop,
         onOpenThread: noop,
         onRedactMessage: noop,
@@ -427,7 +424,6 @@ describe("TimelinePane render isolation", () => {
         onSendStagedAttachments: noop,
         onLoadStagedUploadPreview: async () => [],
         onComposerDocumentChange: noop,
-        onEditMessage: noop,
         onOpenContextMenu: noop,
         onOpenThread: noop,
         onRedactMessage: noop,
@@ -575,7 +571,8 @@ function makeSnapshot(): DesktopSnapshot {
             display_name: "Alpha Space",
             avatar: null,
             join_rule: null,
-            child_room_ids: ["!room-alpha:example.invalid"]
+            child_room_ids: ["!room-alpha:example.invalid"],
+            parent_side_child_room_ids: ["!room-alpha:example.invalid"]
           }
         ],
         rooms: [
@@ -747,7 +744,8 @@ function makeSnapshot(): DesktopSnapshot {
           avatar: null,
           unread_count: 0,
           highlight_count: 0,
-          is_active: true
+          is_active: true,
+          leave_candidates: []
         }
       ],
       space_rooms: [

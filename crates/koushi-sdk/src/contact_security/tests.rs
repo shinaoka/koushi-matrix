@@ -278,7 +278,7 @@ async fn keys_query_failure_for_the_contact_server_is_not_a_fresh_retrieval() {
         .bootstrap_cross_signing(None)
         .await
         .expect("bob identity reset");
-    // Answers the SDK's query and the freshness check of two retrievals.
+    // Answers the SDK's single query for each retrieval.
     // (Not a scoped mock: wiremock 0.6 deactivates scoped mocks by an index
     // that its priority sort has reordered.)
     Mock::given(method("POST"))
@@ -293,8 +293,8 @@ async fn keys_query_failure_for_the_contact_server_is_not_a_fresh_retrieval() {
             },
         })))
         .with_priority(1)
-        .up_to_n_times(4)
-        .expect(4)
+        .up_to_n_times(2)
+        .expect(2)
         .mount(server.server())
         .await;
     assert_eq!(
@@ -469,8 +469,8 @@ async fn serve_keys_query(server: &MatrixMockServer, body: Value) {
     Mock::given(method("POST"))
         .and(path_regex(r"^/_matrix/client/.*/keys/query"))
         .respond_with(ResponseTemplate::new(200).set_body_json(body))
-        // One retrieval issues the SDK's query and the freshness check.
-        .up_to_n_times(2)
+        // One retrieval issues a single SDK query.
+        .up_to_n_times(1)
         .mount(server.server())
         .await;
 }

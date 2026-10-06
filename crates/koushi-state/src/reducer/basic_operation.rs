@@ -90,12 +90,17 @@ pub(crate) fn handle_space_child_link_settled(
             .spaces
             .iter_mut()
             .find(|space| space.space_id == space_id)
-        && !space.child_room_ids.contains(&child_room_id)
     {
         // Project the homeserver-accepted parent-side child now; the SDK room
-        // cache can lag the state event until the next sync replaces the list.
-        space.child_room_ids.push(child_room_id.clone());
-        space.child_room_ids.sort();
+        // cache can lag the state event until the next sync replaces the lists.
+        if !space.parent_side_child_room_ids.contains(&child_room_id) {
+            space.parent_side_child_room_ids.push(child_room_id.clone());
+            space.parent_side_child_room_ids.sort();
+        }
+        if !space.child_room_ids.contains(&child_room_id) {
+            space.child_room_ids.push(child_room_id.clone());
+            space.child_room_ids.sort();
+        }
     }
     state.space_child_links.record(SpaceChildLinkResult {
         request_id,

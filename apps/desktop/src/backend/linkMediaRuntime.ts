@@ -1,6 +1,6 @@
 import { toExternalHttpUrl } from "../domain/externalLinks";
 import { browserLinkMediaPort } from "./browser/linkMediaPort";
-import type { LinkMediaPort } from "./linkMediaPort";
+import type { LinkMediaPort, MediaSaveNameFacts } from "./linkMediaPort";
 import { isTauriRuntime } from "./runtimeEnvironment";
 import { tauriLinkMediaPort } from "./tauri/linkMediaPort";
 
@@ -26,7 +26,10 @@ export function renderableThumbnailSourceUrl(sourceRef: string): string | null {
 
 export async function saveReadyMediaFile(
   sourceUrl: string,
-  filename: string
+  filename: string,
+  accountTabId?: string,
+  saveName: MediaSaveNameFacts | null = null
 ): Promise<void> {
-  await activePort().saveMediaFile(sourceUrl, filename);
+  const port = activePort();
+  await port.saveMediaFile(sourceUrl, filename, saveName, accountTabId);
 }

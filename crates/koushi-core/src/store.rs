@@ -12,6 +12,7 @@
 //! capabilities live here behind a port. StoreActor is the only actor allowed
 //! platform-conditional code.
 
+mod account_settings;
 pub(crate) mod composer_drafts;
 mod navigation;
 mod read_state;
@@ -146,6 +147,8 @@ pub struct AccountSearchIndexConfig {
 pub struct StoreActor {
     pub(crate) credential_store: CredentialStoreBackend,
     data_dir: PathBuf,
+    /// #1134: whether this process is the only owner of the SDK store root.
+    exclusive_store_root: bool,
     #[cfg(any(test, feature = "test-hooks"))]
     composer_draft_io_probe: Arc<Mutex<Option<ComposerDraftIoProbe>>>,
     #[cfg(test)]
@@ -155,6 +158,18 @@ pub struct StoreActor {
 #[derive(Clone)]
 pub(crate) struct PendingLoginJournalOwner<'a> {
     store: &'a StoreActor,
+}
+
+/// A full Matrix ID must match exactly; a bare localpart matches the bound
+/// user's localpart (the homeserver already matched).
+fn requested_user_matches(bound_user_id: &str, requested: &str) -> bool {
+    if requested.starts_with('@') {
+        return bound_user_id == requested;
+    }
+    bound_user_id
+        .strip_prefix('@')
+        .and_then(|user| user.split(':').next())
+        .is_some_and(|localpart| localpart == requested)
 }
 
 impl<'a> PendingLoginJournalOwner<'a> {
@@ -171,13 +186,12 @@ impl<'a> PendingLoginJournalOwner<'a> {
         let mut records = self.load()?;
         let normalized_homeserver = normalized_homeserver.into();
         let auth_method = auth_method.into();
+        // Bound allocations belong to their identity; only an unbound one is
+        // unique per homeserver/auth method.
         if records.iter().any(|record| {
             record.normalized_homeserver == normalized_homeserver
                 && record.auth_method == auth_method
-                && matches!(
-                    record.state,
-                    PendingLoginState::PreAuth | PendingLoginState::BoundTokenless
-                )
+                && record.state == PendingLoginState::PreAuth
         }) {
             return Err(CoreFailure::StoreUnavailable);
         }
@@ -218,10 +232,13 @@ impl<'a> PendingLoginJournalOwner<'a> {
 
     /// Resume one interrupted authorization on its original store/device. A
     /// new generation makes callbacks from the retired authorization inert.
+    /// A bound allocation resumes only for its own identity; `requested_user`
+    /// is `None` when the user is unknown before authorization (OIDC).
     pub(crate) fn resume_or_create(
         &self,
         normalized_homeserver: impl Into<String>,
         auth_method: impl Into<String>,
+        requested_user: Option<&str>,
         device_id: impl Into<String>,
     ) -> Result<PendingLoginRecord, CoreFailure> {
         self.reconcile()?;
@@ -231,10 +248,17 @@ impl<'a> PendingLoginJournalOwner<'a> {
         if let Some(index) = records.iter().position(|record| {
             record.normalized_homeserver == normalized_homeserver
                 && record.auth_method == auth_method
-                && matches!(
-                    record.state,
-                    PendingLoginState::PreAuth | PendingLoginState::BoundTokenless
-                )
+                && match record.state {
+                    PendingLoginState::PreAuth => true,
+                    PendingLoginState::BoundTokenless => record
+                        .final_session_key_id
+                        .as_ref()
+                        .zip(requested_user)
+                        .is_some_and(|(bound, requested)| {
+                            requested_user_matches(&bound.user_id, requested)
+                        }),
+                    _ => false,
+                }
         }) {
             records[index].attempt_generation = records[index]
                 .attempt_generation
@@ -657,6 +681,7 @@ impl StoreActor {
         Self {
             credential_store: CredentialStoreBackend::resolve(),
             data_dir: data_dir.into(),
+            exclusive_store_root: false,
             #[cfg(any(test, feature = "test-hooks"))]
             composer_draft_io_probe: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -677,6 +702,7 @@ impl StoreActor {
                 os_backend,
             ),
             data_dir,
+            exclusive_store_root: false,
             #[cfg(any(test, feature = "test-hooks"))]
             composer_draft_io_probe: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -685,6 +711,18 @@ impl StoreActor {
     }
 
     /// Access the credential store backend (for session persistence in AccountActor).
+    /// Declare that this process is the only owner of every store root this actor
+    /// derives (#1134).
+    ///
+    /// Only the packaged desktop app may: the shell refuses a second instance for
+    /// its identifier and each account has its own store directory. Entry points
+    /// that accept a reusable data directory (QA, smoke, tests) leave this off and
+    /// keep the SDK's cross-process store coordination.
+    pub fn with_exclusive_store_root(mut self) -> Self {
+        self.exclusive_store_root = true;
+        self
+    }
+
     pub fn credential_backend(&self) -> &CredentialStoreBackend {
         &self.credential_store
     }
@@ -708,6 +746,8 @@ impl StoreActor {
         Self {
             credential_store,
             data_dir: data_dir.into(),
+            // Test/QA fixtures may be pointed at a reusable data directory.
+            exclusive_store_root: false,
             #[cfg(any(test, feature = "test-hooks"))]
             composer_draft_io_probe: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -785,12 +825,16 @@ impl StoreActor {
             .join("accounts")
             .join("v2")
             .join(store_id.as_str());
-        MatrixClientStoreConfig::new(root.join("store"), store_key)
+        let mut store_config = MatrixClientStoreConfig::new(root.join("store"), store_key)
             .with_cache_path(root.join("cache"))
             .with_search_index_store(MatrixSearchIndexStoreConfig::new(
                 root.join("search-index"),
                 MatrixSearchIndexKey::new(search_key.as_str()),
-            ))
+            ));
+        if self.exclusive_store_root {
+            store_config = store_config.with_exclusive_store_root();
+        }
+        store_config
     }
 
     /// Derive the encrypted ngram search index configuration for the given
@@ -864,6 +908,54 @@ impl StoreActor {
     /// created.
     pub fn data_dir(&self) -> &std::path::Path {
         &self.data_dir
+    }
+
+    pub fn account_local_data_dir(&self, key_id: &SessionKeyId) -> PathBuf {
+        self.account_root_dir(key_id)
+    }
+
+    pub fn load_saved_session_index(&self) -> Result<koushi_key::SavedSessionIndex, CoreFailure> {
+        self.credential_store
+            .load_saved_sessions()
+            .map_err(|_| CoreFailure::StoreUnavailable)
+    }
+
+    pub fn save_saved_session_index(
+        &self,
+        index: &koushi_key::SavedSessionIndex,
+    ) -> Result<(), CoreFailure> {
+        self.credential_store
+            .save_saved_sessions(index)
+            .map_err(|_| CoreFailure::StoreUnavailable)
+    }
+
+    pub fn select_saved_account(
+        &self,
+        account_key: &koushi_protocol::AccountKey,
+    ) -> Result<bool, CoreFailure> {
+        self.credential_store
+            .select_saved_account(account_key)
+            .map_err(|_| CoreFailure::StoreUnavailable)
+    }
+
+    pub fn ensure_saved_account_tab(
+        &self,
+        account_key: &koushi_protocol::AccountKey,
+        homeserver: &str,
+        select: bool,
+    ) -> Result<(), CoreFailure> {
+        self.credential_store
+            .ensure_saved_account_tab(account_key, homeserver, select)
+            .map_err(|_| CoreFailure::StoreUnavailable)
+    }
+
+    pub fn remove_saved_account_tab(
+        &self,
+        account_key: &koushi_protocol::AccountKey,
+    ) -> Result<bool, CoreFailure> {
+        self.credential_store
+            .remove_saved_account_tab(account_key)
+            .map_err(|_| CoreFailure::StoreUnavailable)
     }
 
     // --- private helpers ---
