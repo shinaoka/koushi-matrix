@@ -1497,3 +1497,36 @@ fn malformed_encryption_is_not_a_success_notice() {
     assert_ne!(projection.body.as_deref(), Some("enabled room encryption"));
     assert!(projection.notice_i18n.is_some());
 }
+
+#[cfg(test)]
+mod reported_search_edits {
+    use super::super::reported_search_edit_retirements;
+    use crate::search::SearchIndexMessage;
+    use std::collections::HashMap;
+
+    fn retired(messages: &[SearchIndexMessage]) -> Option<&str> {
+        messages.iter().find_map(|message| match message {
+            SearchIndexMessage::Redact { event_id } => Some(event_id.as_str()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_changed_reported_edit_retires_the_previous_one() {
+        let mut reported = HashMap::new();
+
+        // The first report retires nothing, and an unchanged report retires
+        // nothing either (a re-projection of the same state).
+        assert!(reported_search_edit_retirements(&mut reported, "$e", Some("$a")).is_empty());
+        assert!(reported_search_edit_retirements(&mut reported, "$e", Some("$a")).is_empty());
+
+        // A promoted older surviving edit retires the one that was showing.
+        let messages = reported_search_edit_retirements(&mut reported, "$e", Some("$b"));
+        assert_eq!(retired(&messages), Some("$a"));
+
+        // The message becoming unedited retires the last reported edit once.
+        let messages = reported_search_edit_retirements(&mut reported, "$e", None);
+        assert_eq!(retired(&messages), Some("$b"));
+        assert!(reported_search_edit_retirements(&mut reported, "$e", None).is_empty());
+    }
+}

@@ -391,6 +391,34 @@ fn an_older_canonical_upsert_cannot_undo_a_newer_applied_edit() {
 }
 
 #[test]
+fn a_producer_retirement_lets_the_promoted_edit_apply_and_refuses_a_replay() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        false,
+        None,
+    );
+    store.upsert_edit(make_edit_at("$e1", "$a", 3_000, "a.pdf"), false);
+    assert_eq!(first_filename(&store).as_deref(), Some("a.pdf"));
+
+    // The timeline no longer shows edit A (redacted) and promotes the older
+    // surviving edit B: it retires A, then sends the promoted content as one
+    // guarded pair. B's own edit time is older, and it must still apply.
+    store.redact("$a");
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "b.pdf"),
+        true,
+        Some(SearchEditKey::new("$b", 1_000)),
+    );
+    store.upsert_edit(make_edit_at("$e1", "$b", 1_000, "b.pdf"), true);
+    assert_eq!(first_filename(&store).as_deref(), Some("b.pdf"));
+
+    // A later replay of the redacted edit cannot resurrect it.
+    store.upsert_edit(make_edit_at("$e1", "$a", 3_000, "a.pdf"), false);
+    assert_eq!(first_filename(&store).as_deref(), Some("b.pdf"));
+}
+
+#[test]
 fn a_redacted_edit_cannot_come_back_through_the_content_half_of_its_pair() {
     let mut store = SearchDocumentStore::default();
     store.upsert_message(
