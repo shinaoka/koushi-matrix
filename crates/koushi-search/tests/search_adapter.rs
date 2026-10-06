@@ -63,7 +63,7 @@ fn attachment_message(event_id: &str, filename: &str) -> SearchableEvent {
 #[test]
 fn messages_without_attachments_are_not_retained() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(message("$plain", "history stays out of RAM"), true, None);
+    store.upsert_message(message("$plain", "history stays out of RAM"), true, None, 0);
 
     assert_eq!(store.document_count(), 0);
 }
@@ -74,7 +74,7 @@ fn attachment_metadata_is_retained_without_the_message_body() {
     let mut event = attachment_message("$file", "agenda.pdf");
     event.body = Some(SensitiveString::new("caption text"));
 
-    store.upsert_message(event, true, None);
+    store.upsert_message(event, true, None, 0);
 
     let rows = store.attachments(
         &AttachmentScope::Account,
@@ -94,7 +94,7 @@ fn attachment_metadata_is_retained_without_the_message_body() {
 #[test]
 fn filename_edit_updates_the_files_row_name() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(attachment_message("$file", "draft.pdf"), true, None);
+    store.upsert_message(attachment_message("$file", "draft.pdf"), true, None, 0);
     store.upsert_edit(
         SearchEdit {
             edit_event_id: "$edit".into(),
@@ -106,6 +106,7 @@ fn filename_edit_updates_the_files_row_name() {
             attachment: None,
         },
         true,
+        0,
     );
 
     let rows = store.attachments(
@@ -137,11 +138,12 @@ fn rename_before_the_attachment_arrives_is_applied_when_it_does() {
             attachment: None,
         },
         true,
+        0,
     );
 
     assert_eq!(store.pending_edit_count(), 1);
 
-    store.upsert_message(attachment_message("$file", "draft.pdf"), true, None);
+    store.upsert_message(attachment_message("$file", "draft.pdf"), true, None, 0);
 
     assert_eq!(store.pending_edit_count(), 0);
     let rows = store.attachments(
@@ -158,7 +160,7 @@ fn rename_before_the_attachment_arrives_is_applied_when_it_does() {
 #[test]
 fn redacted_attachment_is_not_listed() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(attachment_message("$file", "agenda.pdf"), true, None);
+    store.upsert_message(attachment_message("$file", "agenda.pdf"), true, None, 0);
 
     store.redact("$file");
 

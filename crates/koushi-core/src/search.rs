@@ -192,6 +192,13 @@ pub enum SearchIndexMessage {
         /// The edit that produced this content, when the message is edited, so
         /// the content and the edit that follows are one guarded update.
         edit: Option<SearchEditKey>,
+        /// Monotonic observation stamped by the timeline projection.
+        ///
+        /// It orders two canonical observations of the same message without
+        /// relying on edit timestamps, so a stale observation cannot undo a
+        /// newer edit and a rollback can still apply. `0` means "no observation
+        /// ordering" (a history crawl).
+        observation: u64,
     },
     /// A message was edited. Update the document store.
     Edit {
@@ -205,6 +212,8 @@ pub enum SearchIndexMessage {
         /// See [`SearchIndexMessage::Upsert::canonical`]. A canonical edit also
         /// outranks a history edit, so an edit rollback applies.
         canonical: bool,
+        /// See [`SearchIndexMessage::Upsert::observation`].
+        observation: u64,
     },
     /// A message was redacted. Remove it from the document store.
     Redact { event_id: String },
@@ -1172,6 +1181,7 @@ impl SearchActor {
                 attachment,
                 canonical,
                 edit,
+                observation,
             } => {
                 if self.attachment_policy_excludes(&attachment, attachment_filename.as_deref()) {
                     return None;
@@ -1190,7 +1200,8 @@ impl SearchActor {
                     attachment_filename: attachment_filename.map(SensitiveString::new),
                     attachment,
                 };
-                self.document_store.upsert_message(event, canonical, edit);
+                self.document_store
+                    .upsert_message(event, canonical, edit, observation);
                 Some((indexed_room_id, indexed_event_id))
             }
             SearchIndexMessage::Edit {
@@ -1202,6 +1213,7 @@ impl SearchActor {
                 attachment_filename,
                 attachment,
                 canonical,
+                observation,
             } => {
                 if self.attachment_policy_excludes(&attachment, attachment_filename.as_deref()) {
                     return None;
@@ -1224,7 +1236,8 @@ impl SearchActor {
                     attachment_filename: attachment_filename.map(SensitiveString::new),
                     attachment,
                 };
-                self.document_store.upsert_edit(edit, canonical);
+                self.document_store
+                    .upsert_edit(edit, canonical, observation);
                 edited_room_id.map(|room_id| (room_id, edited_event_id))
             }
             SearchIndexMessage::Redact { event_id } => {

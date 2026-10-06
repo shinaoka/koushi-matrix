@@ -428,6 +428,7 @@ pub(crate) fn event_json_to_index_message(
                     // A crawl reports what history showed, not the current
                     // visible content.
                     canonical: false,
+                    observation: 0,
                 });
             }
             let msgtype = content.get("msgtype")?.as_str()?;
@@ -447,6 +448,7 @@ pub(crate) fn event_json_to_index_message(
                 attachment,
                 canonical: false,
                 edit: None,
+                observation: 0,
             })
         }
         "m.sticker" => {
@@ -471,6 +473,7 @@ pub(crate) fn event_json_to_index_message(
                 attachment,
                 canonical: false,
                 edit: None,
+                observation: 0,
             })
         }
         _ => None,

@@ -60,6 +60,7 @@ fn room_scope_filters_attachments_to_single_room() {
         ),
         true,
         None,
+        0,
     );
     store.upsert_message(
         event(
@@ -71,6 +72,7 @@ fn room_scope_filters_attachments_to_single_room() {
         ),
         true,
         None,
+        0,
     );
 
     let results = store.attachments(
@@ -99,6 +101,7 @@ fn space_scope_includes_only_child_room_attachments() {
         ),
         true,
         None,
+        0,
     );
     store.upsert_message(
         event(
@@ -110,6 +113,7 @@ fn space_scope_includes_only_child_room_attachments() {
         ),
         true,
         None,
+        0,
     );
     store.upsert_message(
         event(
@@ -121,6 +125,7 @@ fn space_scope_includes_only_child_room_attachments() {
         ),
         true,
         None,
+        0,
     );
 
     let results = store.attachments(
@@ -155,6 +160,7 @@ fn account_scope_returns_all_attachments() {
         ),
         true,
         None,
+        0,
     );
     store.upsert_message(
         event(
@@ -166,6 +172,7 @@ fn account_scope_returns_all_attachments() {
         ),
         true,
         None,
+        0,
     );
 
     let results = store.attachments(
@@ -190,6 +197,7 @@ fn kind_filter_selects_requested_attachment_kinds() {
         ),
         true,
         None,
+        0,
     );
     store.upsert_message(
         event(
@@ -201,6 +209,7 @@ fn kind_filter_selects_requested_attachment_kinds() {
         ),
         true,
         None,
+        0,
     );
     store.upsert_message(
         event(
@@ -212,6 +221,7 @@ fn kind_filter_selects_requested_attachment_kinds() {
         ),
         true,
         None,
+        0,
     );
     store.upsert_message(
         event(
@@ -223,6 +233,7 @@ fn kind_filter_selects_requested_attachment_kinds() {
         ),
         true,
         None,
+        0,
     );
     store.upsert_message(
         event(
@@ -234,6 +245,7 @@ fn kind_filter_selects_requested_attachment_kinds() {
         ),
         true,
         None,
+        0,
     );
 
     let results = store.attachments(
@@ -264,6 +276,7 @@ fn filename_query_matches_substring_case_insensitively() {
         ),
         true,
         None,
+        0,
     );
     store.upsert_message(
         event(
@@ -275,6 +288,7 @@ fn filename_query_matches_substring_case_insensitively() {
         ),
         true,
         None,
+        0,
     );
 
     let results = store.attachments(
@@ -303,6 +317,7 @@ fn filename_query_matches_cjk_filename() {
         ),
         true,
         None,
+        0,
     );
 
     let results = store.attachments(
@@ -331,6 +346,7 @@ fn sort_by_timestamp_orders_results() {
         ),
         true,
         None,
+        0,
     );
     store.upsert_message(
         event(
@@ -342,6 +358,7 @@ fn sort_by_timestamp_orders_results() {
         ),
         true,
         None,
+        0,
     );
     store.upsert_message(
         event(
@@ -353,6 +370,7 @@ fn sort_by_timestamp_orders_results() {
         ),
         true,
         None,
+        0,
     );
 
     let results = store.attachments(
@@ -397,6 +415,7 @@ fn sort_by_filename_orders_results_alphabetically() {
         ),
         true,
         None,
+        0,
     );
     store.upsert_message(
         event(
@@ -408,6 +427,7 @@ fn sort_by_filename_orders_results_alphabetically() {
         ),
         true,
         None,
+        0,
     );
     store.upsert_message(
         event(
@@ -419,6 +439,7 @@ fn sort_by_filename_orders_results_alphabetically() {
         ),
         true,
         None,
+        0,
     );
 
     let results = store.attachments(
@@ -449,6 +470,7 @@ fn edit_updates_attachment_for_query() {
         ),
         true,
         None,
+        0,
     );
 
     store.upsert_edit(
@@ -462,6 +484,7 @@ fn edit_updates_attachment_for_query() {
             attachment: Some(attachment(AttachmentKind::File, "final_report.pdf")),
         },
         true,
+        0,
     );
 
     let results = store.attachments(
@@ -492,6 +515,7 @@ fn redacted_attachment_is_excluded_from_results() {
         ),
         true,
         None,
+        0,
     );
 
     store.redact("$redacted");
