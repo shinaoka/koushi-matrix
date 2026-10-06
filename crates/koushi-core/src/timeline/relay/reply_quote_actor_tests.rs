@@ -8,7 +8,7 @@ use std::{sync::Arc, time::Duration};
 
 use koushi_protocol::{
     event::{CoreEvent, TimelineEvent, TimelineItem, TimelineItemId},
-    ids::{AccountKey, TimelineKey},
+    ids::{AccountKey, TimelineBatchId, TimelineKey},
 };
 use koushi_sdk::MatrixClientSession;
 use koushi_state::{ReplyQuoteState, SessionInfo};
@@ -34,6 +34,9 @@ use crate::{executor, link_preview::LinkPreviewContext};
 const ROOT: &str = "$root:example.invalid";
 const REPLY: &str = "$reply:example.invalid";
 const PENDING_TXN: &str = "pending-reply";
+/// Liveness bound for waits that must succeed: a regression hangs until it,
+/// while scheduler load alone must never reach it.
+const EVENT_LIVENESS: Duration = Duration::from_secs(60);
 
 /// A spawned room actor plus the event stream and the display items the test
 /// has observed so far.
@@ -151,7 +154,7 @@ async fn wait_for(
     items: &mut Vec<TimelineItem>,
     mut predicate: impl FnMut(&CoreEvent, &[TimelineItem]) -> bool,
 ) -> Result<(), tokio::time::error::Elapsed> {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(EVENT_LIVENESS, async {
         loop {
             let event = events.recv().await.expect("live actor event stream");
             match &event {
@@ -171,20 +174,34 @@ async fn wait_for(
     .await
 }
 
-async fn expect_no_items_updated(events: &mut broadcast::Receiver<CoreEvent>, window: Duration) {
-    let deadline = tokio::time::Instant::now() + window;
+/// Drain every event the actor has already published once a barrier proves
+/// its earlier turns finished. Batches whose ids precede `fence` were decided
+/// before the restore began and only reach the receiver late; any batch at or
+/// after the fence was published while the restore was buffering.
+async fn expect_no_items_updated_since(fixture: &mut RoomActor, fence: TimelineBatchId) {
+    let (barrier_tx, barrier_rx) = oneshot::channel();
+    assert!(
+        fixture
+            .actor
+            .send(TimelineActorMessage::Barrier(barrier_tx))
+            .await
+    );
+    barrier_rx.await.expect("actor barrier acknowledged");
     loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return;
-        }
-        match tokio::time::timeout(remaining, events.recv()).await {
-            Err(_) => return,
-            Ok(Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated { .. }))) => {
-                panic!("no item batch may overtake a buffered anchor restore")
+        match fixture.events.try_recv() {
+            Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                batch_id, diffs, ..
+            })) => {
+                assert!(
+                    batch_id < fence,
+                    "no item batch may overtake a buffered anchor restore: \
+                     batch {batch_id:?} at or after restore fence {fence:?}: {diffs:?}"
+                );
+                apply_timeline_diffs_to_items(&mut fixture.items, &diffs);
             }
-            Ok(Ok(_)) => {}
-            Ok(Err(_)) => return,
+            Ok(_) => {}
+            Err(broadcast::error::TryRecvError::Empty) => return,
+            Err(error) => panic!("live actor event stream: {error:?}"),
         }
     }
 }
@@ -283,7 +300,9 @@ async fn reply_quote_republish_is_deferred_until_the_restore_flush() {
             })
             .await
     );
-    restore_rx.await.expect("restore fixture acknowledged");
+    // Batches queued before this fence may still be in the receiver; only a
+    // batch decided after the restore began can overtake it.
+    let fence = restore_rx.await.expect("restore fixture acknowledged");
 
     // A live batch that arrives during the restore must be buffered, not
     // emitted: this is what the deferred republish must not overtake.
@@ -299,7 +318,7 @@ async fn reply_quote_republish_is_deferred_until_the_restore_flush() {
             ),
         )
         .await;
-    let buffered = tokio::time::timeout(Duration::from_secs(5), async {
+    let buffered = tokio::time::timeout(EVENT_LIVENESS, async {
         loop {
             let (state_tx, state_rx) = oneshot::channel();
             assert!(
@@ -326,7 +345,7 @@ async fn reply_quote_republish_is_deferred_until_the_restore_flush() {
     quote.body_preview = Some("Synthetic edited original".to_owned());
     fixture.settle_original(quote).await;
 
-    expect_no_items_updated(&mut fixture.events, Duration::from_millis(300)).await;
+    expect_no_items_updated_since(&mut fixture, fence).await;
 
     // Ending the restore on an in-window anchor clears the anchor and publishes
     // the settlement (buffered items first, then the terminal); the deferred

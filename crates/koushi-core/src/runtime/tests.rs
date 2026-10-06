@@ -10,7 +10,7 @@ use koushi_state::{
 
 #[tokio::test]
 async fn space_invite_explicit_id_search_settles_after_publishing_candidate() {
-    let runtime = CoreRuntime::start_with_event_capacity(64);
+    let (runtime, _stores) = CoreRuntime::start_isolated_with_event_capacity(64);
     let mut connection = runtime.attach();
     let space_id = "!invite-space:example.invalid";
     runtime
@@ -244,12 +244,16 @@ fn closed_forward_space_member_fixture(
     ]
 }
 
+/// Deadlock watchdog for waits that must succeed: scheduler load alone must
+/// never reach it.
+const RUNTIME_LIVENESS: Duration = Duration::from_secs(60);
+
 async fn wait_for_runtime_snapshot(
     connection: &mut CoreConnection,
     predicate: impl Fn(&AppState) -> bool,
 ) -> AppState {
     // Content/events are the causal barrier; this timeout is only a deadlock watchdog.
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(RUNTIME_LIVENESS, async {
         loop {
             let snapshot = connection.snapshot();
             if predicate(&snapshot) {
@@ -324,7 +328,10 @@ async fn run_closed_space_member_forwarding_case(
     command: impl FnOnce(RequestId) -> koushi_protocol::command::RoomCommand,
 ) -> (AppState, CoreFailure, u64) {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
-    let runtime = CoreRuntime::start_with_event_capacity(64);
+    // The post-commit navigation load reads this session's persisted view; a
+    // data dir shared with concurrent test processes can replace the fixture
+    // Space selection and clear its member projection.
+    let (runtime, _stores) = CoreRuntime::start_isolated_with_event_capacity(64);
     let mut connection = runtime.attach();
     let space_id = "!closed-forward-space:example.invalid";
     let user_id = "@closed-forward-user:example.invalid";
@@ -376,7 +383,7 @@ async fn run_closed_space_member_forwarding_case(
         .await
         .expect("closed-channel command should enter AppActor");
 
-    let failure = tokio::time::timeout(Duration::from_secs(1), async {
+    let failure = tokio::time::timeout(RUNTIME_LIVENESS, async {
         loop {
             match connection
                 .recv_event()
@@ -598,52 +605,37 @@ pub(super) fn unread_diagnostic_room(room_id: &str) -> RoomSummary {
 #[test]
 fn app_loop_trace_ignores_subthreshold_iterations() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
-    let before = koushi_diagnostics::snapshot();
+    let before = koushi_diagnostics::test_support::detail_cursor();
     app_loop_trace("test_boundary", 1, 2, Duration::from_millis(99));
-    let after = koushi_diagnostics::snapshot();
-    assert_eq!(
-        after
-            .records
+    assert!(
+        !koushi_diagnostics::test_support::detail_records_since(before)
             .iter()
-            .filter(
-                |record| record.event.source == "core.runtime" && record.event.stage == "app_loop"
-            )
-            .count(),
-        before
-            .records
-            .iter()
-            .filter(
-                |record| record.event.source == "core.runtime" && record.event.stage == "app_loop"
-            )
-            .count()
+            .any(is_test_boundary_app_loop_record)
     );
+}
+
+/// This test's own `app_loop` record: real AppActors in concurrent tests emit
+/// `core.runtime/app_loop` too, but never with the `test_boundary` arm.
+fn is_test_boundary_app_loop_record(record: &koushi_diagnostics::DiagnosticRecord) -> bool {
+    record.event.source == "core.runtime"
+        && record.event.stage == "app_loop"
+        && record.event.fields.iter().any(|field| {
+            field.key == "arm"
+                && field.value == koushi_diagnostics::DiagnosticValue::Token("test_boundary")
+        })
 }
 
 #[test]
 fn app_loop_trace_records_at_threshold_without_environment_switch() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
-    let before = koushi_diagnostics::snapshot();
+    let before = koushi_diagnostics::test_support::detail_cursor();
     app_loop_trace("test_boundary", 3, 4, Duration::from_millis(100));
-    let after = koushi_diagnostics::snapshot();
-    assert!(after.records.len() > before.records.len());
-    let record = after
-        .records
+    let records = koushi_diagnostics::test_support::detail_records_since(before);
+    let record = records
         .iter()
-        .rev()
-        .find(|record| record.event.source == "core.runtime" && record.event.stage == "app_loop")
+        .find(|record| is_test_boundary_app_loop_record(record))
         .expect("threshold iteration should be collected");
     assert!(record.event.fields.iter().any(|field| field.key == "count"));
-}
-
-#[test]
-fn default_data_dir_requires_home() {
-    assert!(default_data_dir_from_home(None).is_err());
-}
-
-#[test]
-fn default_data_dir_uses_xdg_like_user_data_path() {
-    let dir = default_data_dir_from_home(Some("/tmp/synthetic-home".into())).unwrap();
-    assert!(dir.ends_with(".local/share/koushi-desktop"));
 }
 
 #[test]
@@ -668,7 +660,7 @@ fn search_scope_round_trips_non_all_scope_kinds() {
 
 #[tokio::test]
 async fn versioned_snapshot_generation_matches_state_delta_generation() {
-    let runtime = CoreRuntime::start_with_event_capacity(8);
+    let (runtime, _stores) = CoreRuntime::start_isolated_with_event_capacity(8);
     let mut connection = runtime.attach();
 
     runtime
@@ -850,7 +842,7 @@ async fn rejected_space_invites_are_fenced_before_room_actor_route() {
 
 #[tokio::test]
 async fn projection_rejected_restore_emits_one_correlated_failure_without_routing() {
-    let runtime = CoreRuntime::start_with_event_capacity(16);
+    let (runtime, _stores) = CoreRuntime::start_isolated_with_event_capacity(16);
     let mut connection = runtime.attach();
     runtime
         .inject_actions(vec![AppAction::LogoutRequested])
@@ -929,7 +921,7 @@ async fn projection_rejected_restore_emits_one_correlated_failure_without_routin
 
 #[tokio::test]
 async fn actor_profile_changes_emit_timeline_display_label_updates() {
-    let runtime = CoreRuntime::start_with_event_capacity(8);
+    let (runtime, _stores) = CoreRuntime::start_isolated_with_event_capacity(8);
     let mut connection = runtime.attach();
 
     runtime
@@ -987,7 +979,7 @@ async fn actor_profile_changes_emit_timeline_display_label_updates() {
 
 #[tokio::test]
 async fn settings_update_emits_timeline_display_policy_update() {
-    let runtime = CoreRuntime::start_with_event_capacity(16);
+    let (runtime, _stores) = CoreRuntime::start_isolated_with_event_capacity(16);
     let mut connection = runtime.attach();
 
     let request_id = connection.next_request_id();
@@ -1032,7 +1024,7 @@ async fn settings_update_emits_timeline_display_policy_update() {
 
 #[tokio::test]
 async fn local_alias_clear_command_emits_target_display_label_update() {
-    let runtime = CoreRuntime::start_with_event_capacity(16);
+    let (runtime, _stores) = CoreRuntime::start_isolated_with_event_capacity(16);
     let mut connection = runtime.attach();
     let user_id = "@unknown:example.invalid";
 

@@ -55,8 +55,17 @@ mac-notification-sys = "0.6.15"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSWindow", "NSSound", "NSView"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSUserDefaults"] }
+# HEIC/HEIF still decoding for media preparation (#1147): ImageIO source and
+# primary-image thumbnail, rendered into an sRGB Core Graphics bitmap.
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFBase", "CFCGTypes", "CFData", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage"] }
+objc2-image-io = { version = "0.3", default-features = false, features = ["std", "CGImageProperties", "CGImageSource", "objc2-core-graphics"] }
 tauri-plugin-updater = "2.11.0"
 
 [dev-dependencies]
 koushi-core = { path = "../../../crates/koushi-core", features = ["test-hooks"] }
 tempfile = "3"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# Encodes genuine Apple HEIC fixtures at test time for the ImageIO decoder tests.
+objc2-image-io = { version = "0.3", default-features = false, features = ["std", "CGImageDestination", "CGImageProperties", "CGImageSource", "objc2-core-graphics"] }

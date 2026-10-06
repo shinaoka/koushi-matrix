@@ -124,7 +124,7 @@ where
 /// runtime/reducer and the Matrix SDK is exonerated.
 #[tokio::test]
 async fn select_room_deep_in_large_account_lands_on_clicked_room() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
 
     runtime
@@ -178,7 +178,7 @@ async fn select_room_deep_in_large_account_lands_on_clicked_room() {
 /// non-satisfaction is the asserted outcome.
 #[tokio::test]
 async fn select_room_missing_from_state_rooms_is_a_silent_noop_today() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
 
     // Snapshot N: full list including the room the user will click.
@@ -234,7 +234,7 @@ async fn select_room_missing_from_state_rooms_is_a_silent_noop_today() {
 /// expected, so `wait_for_state` is called directly (panic = reproduction).
 #[tokio::test]
 async fn select_room_survives_background_room_list_storm() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
 
     runtime

@@ -39,7 +39,7 @@ fn notification_room_summary(room_id: &str, unread_count: u64) -> RoomSummary {
 
 #[tokio::test]
 async fn known_unread_event_is_event_backed() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![
@@ -85,7 +85,7 @@ async fn known_unread_event_is_event_backed() {
 
 #[tokio::test]
 async fn activity_open_reuses_last_selected_tab_after_close() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
@@ -171,7 +171,7 @@ async fn activity_open_reuses_last_selected_tab_after_close() {
 
 #[tokio::test]
 async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![
@@ -289,7 +289,7 @@ async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
 
 #[tokio::test]
 async fn activity_context_label_reflects_dm_or_space_room() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![
@@ -358,7 +358,7 @@ async fn activity_context_label_reflects_dm_or_space_room() {
 
 #[tokio::test]
 async fn activity_recent_preserves_observed_sender_avatar_without_profile_cache() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     let mut row = activity_row("!room:example.test", "$avatar:example.test", 10);
     row.sender_id = Some("@alice:example.test".to_owned());
@@ -406,7 +406,7 @@ async fn activity_recent_preserves_observed_sender_avatar_without_profile_cache(
 
 #[tokio::test]
 async fn activity_recent_includes_room_list_latest_event_for_unopened_read_dm() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     let mut dm = dm_room_summary("!dm:example.test", "@terasaki:example.test");
     dm.unread_count = 0;
@@ -475,7 +475,7 @@ async fn activity_recent_row_from_room_summary_fallback_carries_the_thread_root(
     // Activity rows from the room-summary fallback. Without a thread root the
     // frontend routes a thread reply to a focused main timeline instead of the
     // Thread panel.
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     let mut room = dm_room_summary("!threaded:example.test", "@terasaki:example.test");
     room.unread_count = 0;
@@ -533,7 +533,7 @@ async fn activity_recent_row_from_room_summary_fallback_carries_the_thread_root(
 
 #[tokio::test]
 async fn activity_room_mark_read_suppresses_unread_room_entry_only_for_cleared_room() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![
@@ -650,7 +650,7 @@ async fn activity_room_mark_read_suppresses_unread_room_entry_only_for_cleared_r
 
 #[tokio::test]
 async fn activity_unread_prefers_event_rows_and_keeps_unresolved_room_placeholders() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![
@@ -797,7 +797,7 @@ async fn activity_unread_prefers_event_rows_and_keeps_unresolved_room_placeholde
 
 #[tokio::test]
 async fn activity_unread_removes_rooms_when_notification_mode_is_mute() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![
@@ -886,7 +886,7 @@ async fn activity_unread_removes_rooms_when_notification_mode_is_mute() {
 
 #[tokio::test]
 async fn canonical_activity_window_replaces_omitted_event() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![
@@ -943,7 +943,7 @@ async fn canonical_activity_window_replaces_omitted_event() {
 
 #[tokio::test]
 async fn canonical_activity_empty_window_removes_stale_room_rows() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![

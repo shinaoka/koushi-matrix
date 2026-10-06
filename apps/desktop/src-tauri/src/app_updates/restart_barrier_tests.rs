@@ -70,7 +70,10 @@ async fn core_exit_waits_for_actor_completion_not_just_command_submission() {
         dyn Fn() -> std::sync::Arc<dyn NativeArtifactPort> + Send + Sync,
     > = std::sync::Arc::new(|| std::sync::Arc::new(NativeArtifactRegistry::new()));
     let runtime = AccountRuntimeManager::new(
-        StoreActor::new(directory.path()),
+        StoreActor::with_backend(
+            koushi_core::store::TestCredentialStoreBackend::in_memory(),
+            directory.path(),
+        ),
         SettingsStore::new(directory.path()),
         native_artifact_factory,
     );

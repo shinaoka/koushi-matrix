@@ -2,8 +2,9 @@ use std::io::Cursor;
 
 use image::{DynamicImage, GenericImageView, ImageFormat, Rgba, RgbaImage};
 use koushi_media::{
-    ImageOutputFormat, ImageOutputRequest, ImagePreparationError, ImagePreparationPolicy,
-    ImageResizeScale, PreparedImageFormat, prepare_image_output, prepare_image_variants,
+    DecodeLimits, DecodedRgbaImage, ImageOutputFormat, ImageOutputRequest, ImagePreparationError,
+    ImagePreparationPolicy, ImageResizeScale, PreparedImageFormat, prepare_decoded_image_output,
+    prepare_image_output, prepare_image_variants,
 };
 
 fn synthetic_png(width: u32, height: u32) -> Vec<u8> {
@@ -461,5 +462,98 @@ fn undecodable_sources_report_a_decode_failure() {
             &ImagePreparationPolicy::default(),
         ),
         Err(ImagePreparationError::Decode)
+    );
+}
+
+fn decoded_rgba(width: u32, height: u32, alpha: u8) -> DecodedRgbaImage {
+    let pixels = (0..width * height)
+        .flat_map(|index| [(index % 251) as u8, (index % 239) as u8, 127, alpha])
+        .collect();
+    DecodedRgbaImage::from_straight_rgba(
+        width,
+        height,
+        width as usize * 4,
+        pixels,
+        DecodeLimits::default(),
+    )
+    .expect("synthetic layout")
+}
+
+#[test]
+fn decoded_pixels_encode_every_concrete_format_and_scale() {
+    let policy = ImagePreparationPolicy::default();
+    for (resize, expected) in [
+        (ImageResizeScale::Original, (64, 40)),
+        (ImageResizeScale::Half, (32, 20)),
+        (ImageResizeScale::Quarter, (16, 10)),
+        (ImageResizeScale::Eighth, (8, 5)),
+    ] {
+        for (format, prepared, mime, extension) in [
+            (
+                ImageOutputFormat::Jpeg,
+                PreparedImageFormat::Jpeg,
+                "image/jpeg",
+                "jpg",
+            ),
+            (
+                ImageOutputFormat::Png,
+                PreparedImageFormat::Png,
+                "image/png",
+                "png",
+            ),
+            (
+                ImageOutputFormat::WebP,
+                PreparedImageFormat::WebP,
+                "image/webp",
+                "webp",
+            ),
+        ] {
+            let request = ImageOutputRequest { resize, format };
+            let variant = prepare_decoded_image_output(
+                decoded_rgba(64, 40, 255),
+                "IMG_0001.HEIC",
+                request,
+                &policy,
+            )
+            .expect("decoded pixels encode");
+            assert_eq!(variant.id, request.identity());
+            assert_eq!(variant.format, prepared);
+            assert_eq!(variant.mime_type, mime);
+            assert_eq!(variant.filename, format!("IMG_0001.{extension}"));
+            assert_eq!(variant.dimensions, expected);
+            assert!(variant.metadata_stripped && variant.thumbnail_refreshed);
+            let reread = image::load_from_memory(&variant.bytes).expect("real encoded bytes");
+            assert_eq!(reread.dimensions(), expected);
+        }
+    }
+}
+
+#[test]
+fn decoded_pixels_keep_straight_alpha_and_reject_keep() {
+    let policy = ImagePreparationPolicy::default();
+    let png = prepare_decoded_image_output(
+        decoded_rgba(4, 4, 128),
+        "alpha.heic",
+        ImageOutputRequest {
+            resize: ImageResizeScale::Original,
+            format: ImageOutputFormat::Png,
+        },
+        &policy,
+    )
+    .expect("png");
+    let reread = image::load_from_memory(&png.bytes).expect("png").to_rgba8();
+    assert_eq!(reread.get_pixel(1, 0).0, [1, 1, 127, 128]);
+
+    assert_eq!(
+        prepare_decoded_image_output(
+            decoded_rgba(4, 4, 255),
+            "keep.heic",
+            ImageOutputRequest {
+                resize: ImageResizeScale::Original,
+                format: ImageOutputFormat::Keep,
+            },
+            &policy,
+        ),
+        Err(ImagePreparationError::Encode)
     );
 }

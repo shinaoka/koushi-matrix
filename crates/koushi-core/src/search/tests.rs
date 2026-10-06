@@ -79,7 +79,8 @@ async fn search_actor_shutdown_waits_for_actor_task_settlement() {
         .shutdown_with_timeouts(Duration::from_millis(100), Duration::from_millis(10))
         .await;
 
-    let _ = executor::timeout(Duration::from_millis(100), settled_rx)
+    // Liveness bound: an actor task that is never settled stays pending.
+    let _ = executor::timeout(Duration::from_secs(60), settled_rx)
         .await
         .expect("shutdown must await actor task settlement");
 }

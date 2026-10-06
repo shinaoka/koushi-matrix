@@ -53,7 +53,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::future;
 use std::path::PathBuf;
 #[cfg(any(test, feature = "test-hooks"))]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, atomic::AtomicU64};
 #[cfg(test)]
 use std::time::Duration;
@@ -405,6 +405,39 @@ pub struct CoreRuntime {
     actor: AbortOnDrop<()>,
 }
 
+/// Temporary data and credential directories for one test runtime. Dropping
+/// it deletes both, so keep it alive for as long as the runtime runs.
+#[cfg(any(test, feature = "test-hooks"))]
+pub struct IsolatedStores {
+    data: tempfile::TempDir,
+    credentials: tempfile::TempDir,
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl IsolatedStores {
+    pub fn new() -> Self {
+        Self {
+            data: tempfile::tempdir().expect("isolated runtime data directory"),
+            credentials: tempfile::tempdir().expect("isolated runtime credential directory"),
+        }
+    }
+
+    pub fn data_dir(&self) -> &std::path::Path {
+        self.data.path()
+    }
+
+    pub fn credential_dir(&self) -> &std::path::Path {
+        self.credentials.path()
+    }
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl Default for IsolatedStores {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub struct ComposerDraftIoBarrierForTesting {
@@ -413,7 +446,7 @@ pub struct ComposerDraftIoBarrierForTesting {
     save_completed: oneshot::Receiver<()>,
     load_started: oneshot::Receiver<()>,
     load_completed: oneshot::Receiver<()>,
-    load_attempt_count: Arc<AtomicUsize>,
+    load_counts: crate::store::ComposerDraftLoadCounts,
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -425,7 +458,13 @@ impl ComposerDraftIoBarrierForTesting {
     }
 
     pub fn load_attempt_count(&self) -> usize {
-        self.load_attempt_count.load(Ordering::Acquire)
+        self.load_counts.attempts.load(Ordering::Acquire)
+    }
+
+    /// Failed loads of this runtime only (each also records one
+    /// `core.composer_draft/load_failed` diagnostic).
+    pub fn load_failure_count(&self) -> usize {
+        self.load_counts.failures.load(Ordering::Acquire)
     }
 
     pub fn load_started_before_release(&mut self) -> bool {
@@ -470,13 +509,12 @@ fn initial_send_read_receipts(state: &AppState) -> bool {
 }
 
 impl CoreRuntime {
-    /// Start the runtime. Must be called within an async runtime context.
-    pub fn start() -> Self {
-        Self::start_with_data_dir(default_data_dir())
-    }
-
     /// Start with a custom data directory (used by QA binaries and tests).
+    /// There is deliberately no constructor that defaults to the user's
+    /// profile: tests use [`Self::start_isolated`].
     pub fn start_with_data_dir(data_dir: PathBuf) -> Self {
+        #[cfg(any(test, feature = "test-hooks"))]
+        crate::test_isolation::assert_not_user_profile(&data_dir);
         let account_store_actor = StoreActor::new(data_dir.clone());
         let composer_draft_store_actor = StoreActor::new(data_dir.clone());
         #[cfg(any(test, feature = "test-hooks"))]
@@ -498,6 +536,8 @@ impl CoreRuntime {
         data_dir: PathBuf,
         native_artifacts: Arc<dyn NativeArtifactPort>,
     ) -> Self {
+        #[cfg(any(test, feature = "test-hooks"))]
+        crate::test_isolation::assert_not_user_profile(&data_dir);
         let account_store_actor = StoreActor::new(data_dir.clone());
         let composer_draft_store_actor = StoreActor::new(data_dir.clone());
         Self::start_inner(
@@ -548,17 +588,30 @@ impl CoreRuntime {
         )
     }
 
+    /// Start over fresh temporary data and credential directories. The
+    /// returned [`IsolatedStores`] owns them and must outlive the runtime.
     #[cfg(any(test, feature = "test-hooks"))]
-    pub fn start_with_event_capacity(event_capacity: usize) -> Self {
-        let data_dir = default_data_dir();
-        let account_store_actor = StoreActor::new(data_dir.clone());
-        let composer_draft_store_actor = StoreActor::new(data_dir.clone());
-        Self::start_inner(
+    pub fn start_isolated() -> (Self, IsolatedStores) {
+        Self::start_isolated_with_event_capacity(EVENT_QUEUE_CAPACITY)
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn start_isolated_with_event_capacity(event_capacity: usize) -> (Self, IsolatedStores) {
+        let stores = IsolatedStores::new();
+        let runtime = Self::start_with_event_capacity_and_file_credentials(
             event_capacity,
-            data_dir,
-            account_store_actor,
-            composer_draft_store_actor,
-            Arc::new(RejectingNativeArtifactPort),
+            stores.data_dir().to_path_buf(),
+            stores.credential_dir().to_path_buf(),
+        );
+        (runtime, stores)
+    }
+
+    /// Start again over the same isolated stores, for persistence tests.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn restart_isolated(stores: &IsolatedStores) -> Self {
+        Self::start_with_data_dir_and_file_credentials(
+            stores.data_dir().to_path_buf(),
+            stores.credential_dir().to_path_buf(),
         )
     }
 
@@ -566,6 +619,53 @@ impl CoreRuntime {
     pub fn start_with_data_dir_and_file_credentials(
         data_dir: PathBuf,
         credential_dir: PathBuf,
+    ) -> Self {
+        Self::start_with_event_capacity_and_file_credentials(
+            EVENT_QUEUE_CAPACITY,
+            data_dir,
+            credential_dir,
+        )
+    }
+
+    /// Start over test-owned data and credential directories, so concurrent
+    /// test processes never share persisted session views.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn start_with_event_capacity_and_file_credentials(
+        event_capacity: usize,
+        data_dir: PathBuf,
+        credential_dir: PathBuf,
+    ) -> Self {
+        Self::start_with_file_credentials_and_native_image_decoder(
+            event_capacity,
+            data_dir,
+            credential_dir,
+            None,
+        )
+    }
+
+    /// Isolated test runtime whose media preparation uses an injected
+    /// still-image decoder, as the desktop adapter does on macOS (#1147).
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn start_isolated_with_native_image_decoder(
+        event_capacity: usize,
+        native_image_decoder: Arc<dyn crate::NativeStillImageDecoder>,
+    ) -> (Self, IsolatedStores) {
+        let stores = IsolatedStores::new();
+        let runtime = Self::start_with_file_credentials_and_native_image_decoder(
+            event_capacity,
+            stores.data_dir().to_path_buf(),
+            stores.credential_dir().to_path_buf(),
+            Some(native_image_decoder),
+        );
+        (runtime, stores)
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn start_with_file_credentials_and_native_image_decoder(
+        event_capacity: usize,
+        data_dir: PathBuf,
+        credential_dir: PathBuf,
+        native_image_decoder: Option<Arc<dyn crate::NativeStillImageDecoder>>,
     ) -> Self {
         let account_store_actor = StoreActor::with_backend(
             koushi_store::CredentialStoreBackend::FileDir(koushi_store::FileCredentialStore::new(
@@ -579,12 +679,15 @@ impl CoreRuntime {
             )),
             data_dir.clone(),
         );
-        Self::start_inner(
-            EVENT_QUEUE_CAPACITY,
-            data_dir,
+        let settings_store = SettingsStore::new(&data_dir);
+        Self::start_inner_with_settings_store(
+            event_capacity,
             account_store_actor,
             composer_draft_store_actor,
             Arc::new(crate::native_artifact::NativeArtifactRegistry::new()),
+            settings_store,
+            crate::account_work::AccountWorkScheduler::default(),
+            native_image_decoder,
         )
     }
 
@@ -596,6 +699,7 @@ impl CoreRuntime {
         settings_store: SettingsStore,
         native_artifacts: Arc<dyn NativeArtifactPort>,
         account_work: crate::account_work::AccountWorkScheduler,
+        native_image_decoder: Option<Arc<dyn crate::NativeStillImageDecoder>>,
     ) -> Self {
         Self::start_inner_with_settings_store(
             EVENT_QUEUE_CAPACITY,
@@ -604,6 +708,7 @@ impl CoreRuntime {
             native_artifacts,
             settings_store,
             account_work,
+            native_image_decoder,
         )
     }
 
@@ -622,6 +727,7 @@ impl CoreRuntime {
             native_artifacts,
             settings_store,
             crate::account_work::AccountWorkScheduler::default(),
+            None,
         )
     }
 
@@ -632,6 +738,7 @@ impl CoreRuntime {
         native_artifacts: Arc<dyn NativeArtifactPort>,
         settings_store: SettingsStore,
         account_work: crate::account_work::AccountWorkScheduler,
+        native_image_decoder: Option<Arc<dyn crate::NativeStillImageDecoder>>,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(COMMAND_INBOX_CAPACITY);
         // NOTE: action_tx is the high-volume action-projection inbox; it must be
@@ -754,8 +861,11 @@ impl CoreRuntime {
             drop(_view_lifetime);
             actor_completion_tx.send_replace(Some(result));
         });
-        let media_preparation =
-            Arc::new(crate::media_preparation::MediaPreparationService::default());
+        let media_preparation = Arc::new(
+            crate::media_preparation::MediaPreparationService::with_native_image_decoder(
+                native_image_decoder,
+            ),
+        );
         let media_staging = Arc::new(crate::media_staging::MediaStagingService::new(Arc::clone(
             &media_preparation,
         )));
@@ -872,7 +982,7 @@ impl CoreRuntime {
         let (save_completed_tx, save_completed) = oneshot::channel();
         let (load_started_tx, load_started) = oneshot::channel();
         let (load_completed_tx, load_completed) = oneshot::channel();
-        let load_attempt_count = Arc::new(AtomicUsize::new(0));
+        let load_counts = crate::store::ComposerDraftLoadCounts::default();
         self.composer_draft_store_actor_for_testing
             .install_composer_draft_io_probe(
                 save_started_tx,
@@ -880,7 +990,7 @@ impl CoreRuntime {
                 save_completed_tx,
                 load_started_tx,
                 load_completed_tx,
-                Arc::clone(&load_attempt_count),
+                load_counts.clone(),
             );
         ComposerDraftIoBarrierForTesting {
             save_started,
@@ -888,7 +998,7 @@ impl CoreRuntime {
             save_completed,
             load_started,
             load_completed,
-            load_attempt_count,
+            load_counts,
         }
     }
 
@@ -5654,28 +5764,6 @@ fn map_state_search_scope_to_core(scope: AppSearchScope) -> SearchScope {
         AppSearchScope::CurrentSpace { space_id } => SearchScope::CurrentSpace { space_id },
         AppSearchScope::CurrentRoom { room_id } => SearchScope::CurrentRoom { room_id },
     }
-}
-
-/// Resolve the user data directory from a `HOME` value (pure; testable).
-///
-/// Fails closed: there is NO current-working-directory fallback. The encrypted
-/// SDK store, encrypted search index, and persisted session live under this
-/// path, so silently writing them into an arbitrary CWD when `HOME` is missing
-/// would be a privacy/security footgun (REPOSITORY_RULES Key Management:
-/// "Missing, corrupt, or inaccessible OS secrets MUST fail closed").
-fn default_data_dir_from_home(home: Option<std::ffi::OsString>) -> Result<PathBuf, String> {
-    let home =
-        home.ok_or_else(|| "HOME is required to resolve koushi-desktop data dir".to_owned())?;
-    Ok(PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("koushi-desktop"))
-}
-
-/// Default application data directory (`$HOME/.local/share/koushi-desktop`).
-fn default_data_dir() -> PathBuf {
-    default_data_dir_from_home(std::env::var_os("HOME"))
-        .expect("HOME is required to resolve koushi-desktop data dir")
 }
 
 #[cfg(test)]

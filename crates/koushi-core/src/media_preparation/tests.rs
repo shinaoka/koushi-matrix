@@ -124,6 +124,7 @@ fn heif_staging_defaults_to_jpeg_but_retains_exact_original_bytes() {
             format: StagedUploadFormatChoice::Keep,
         },
         ImageUploadCompressionPolicy::default(),
+        None,
     )
     .expect("resized HEIF Keep should use the compatible JPEG path");
     assert_eq!(resized_keep.variant_id, "half-keep");
@@ -180,6 +181,7 @@ fn selecting_a_lazily_encoded_output_keeps_prepared_upload_bytes_available() {
         &source,
         selection,
         ImageUploadCompressionPolicy::default(),
+        None,
     )
     .expect("the requested pair must encode");
     registry.insert_prepared_output(&target, "staged-1", descriptor.clone(), bytes);

@@ -347,7 +347,7 @@ fn blocked_outbox_io_does_not_block_invalidation_or_win_after_timeout() {
         })
     });
     entered_rx
-        .recv_timeout(std::time::Duration::from_secs(1))
+        .recv_timeout(std::time::Duration::from_secs(60))
         .expect("writer reaches simulated blocking IO");
 
     let invalidator = actor.clone();
@@ -357,8 +357,9 @@ fn blocked_outbox_io_does_not_block_invalidation_or_win_after_timeout() {
         invalidator.invalidate_read_state_outbox_saves(&invalidation_key, 2);
         invalidated_tx.send(()).expect("report invalidation");
     });
+    // Liveness bound: the simulated IO is only released after this wait.
     invalidated_rx
-        .recv_timeout(std::time::Duration::from_millis(100))
+        .recv_timeout(std::time::Duration::from_secs(60))
         .expect("invalidation must not wait for keychain or filesystem IO");
 
     release_tx.send(()).expect("release simulated IO");

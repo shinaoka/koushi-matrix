@@ -86,6 +86,21 @@ impl SearchDocumentStore {
         self.documents.len()
     }
 
+    /// Room id of an indexed document, if it is currently resident.
+    ///
+    /// The document map is the single owner of indexed-identifier state; callers
+    /// (`SearchActor`) must not keep a parallel event_id -> room_id map (#1150).
+    pub fn room_id_of(&self, event_id: &str) -> Option<&str> {
+        self.documents
+            .get(event_id)
+            .map(|event| event.room_id.as_str())
+    }
+
+    /// Whether an event id is currently resident in the store.
+    pub fn contains(&self, event_id: &str) -> bool {
+        self.documents.contains_key(event_id)
+    }
+
     pub fn pending_edit_count(&self) -> usize {
         self.pending_edits.values().map(Vec::len).sum()
     }

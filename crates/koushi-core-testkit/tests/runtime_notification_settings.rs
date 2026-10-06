@@ -17,7 +17,7 @@ use support::*;
 
 #[tokio::test]
 async fn set_room_notification_mode_for_known_room_projects_pending_then_completed() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
@@ -75,7 +75,7 @@ async fn set_room_notification_mode_for_known_room_projects_pending_then_complet
 
 #[tokio::test]
 async fn set_room_notification_mode_for_unknown_room_is_ignored_by_reducer() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
@@ -312,7 +312,7 @@ async fn account_notification_commands_project_and_settle_through_the_runtime() 
         AccountNotificationsOperation, AccountNotificationsOperationState, NotificationCategory,
     };
 
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     runtime.inject_actions(restore_ready_actions![]).await;
     wait_for_state(&mut conn, |state| {
