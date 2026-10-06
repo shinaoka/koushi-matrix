@@ -1,8 +1,12 @@
+mod decoded;
+#[cfg(test)]
+mod decoded_tests;
 mod image_kind;
 mod thumbnail;
 #[cfg(test)]
 mod thumbnail_tests;
 
+pub use decoded::{DecodeLimits, DecodedRgbaImage, DecodedRgbaImageError};
 pub use image_kind::{ImageKind, image_kind};
 pub use thumbnail::thumbnail_jpeg;
 
@@ -218,6 +222,45 @@ pub fn prepare_image_output(
     )?;
     variant.recommended = false;
     Ok(variant)
+}
+
+/// Encode exactly one requested output from pixels a platform decoder already
+/// produced.
+///
+/// `format` must be a concrete encoding: pixels carry no source encoding, so
+/// [`ImageOutputFormat::Keep`] is rejected and callers resolve it first. The
+/// returned variant strips all source metadata, exactly like
+/// [`prepare_image_output`] does for its decoded sources.
+pub fn prepare_decoded_image_output(
+    decoded: DecodedRgbaImage,
+    filename: &str,
+    request: ImageOutputRequest,
+    policy: &ImagePreparationPolicy,
+) -> Result<PreparedImageVariant, ImagePreparationError> {
+    let target_format = match request.format {
+        ImageOutputFormat::Keep => return Err(ImagePreparationError::Encode),
+        ImageOutputFormat::Png => PreparedImageFormat::Png,
+        ImageOutputFormat::Jpeg => PreparedImageFormat::Jpeg,
+        ImageOutputFormat::WebP => PreparedImageFormat::WebP,
+    };
+    let (width, height) = (decoded.width(), decoded.height());
+    let image = DynamicImage::ImageRgba8(
+        RgbaImage::from_raw(width, height, decoded.into_pixels())
+            .ok_or(ImagePreparationError::Decode)?,
+    );
+    // Avoid copying a full-resolution buffer for the unscaled output.
+    let scaled = if request.resize == ImageResizeScale::Original {
+        image
+    } else {
+        scale_linearly(&image, request.resize)
+    };
+    encoded_variant(
+        &request.identity(),
+        filename,
+        target_format,
+        &scaled,
+        policy.quality_percent,
+    )
 }
 
 /// Halve each dimension per scale step, never below one pixel.

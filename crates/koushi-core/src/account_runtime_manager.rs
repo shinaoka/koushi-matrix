@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    NativeArtifactPort,
+    NativeArtifactPort, NativeStillImageDecoder,
     account_work::AccountWorkScheduler,
     executor,
     runtime::{CoreConnection, CoreRuntime, CoreShutdownError},
@@ -79,6 +79,7 @@ pub struct AccountRuntimeManager {
     settings: SettingsStore,
     account_work: AccountWorkScheduler,
     native_artifact_factory: Arc<dyn Fn() -> Arc<dyn NativeArtifactPort> + Send + Sync>,
+    native_image_decoder: Option<Arc<dyn NativeStillImageDecoder>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -97,6 +98,17 @@ impl AccountRuntimeManager {
         settings: SettingsStore,
         native_artifact_factory: Arc<dyn Fn() -> Arc<dyn NativeArtifactPort> + Send + Sync>,
     ) -> Self {
+        Self::new_with_native_image_decoder(store, settings, native_artifact_factory, None)
+    }
+
+    /// Like [`Self::new`], with a platform still-image decoder shared by every
+    /// account runtime's media preparation.
+    pub fn new_with_native_image_decoder(
+        store: StoreActor,
+        settings: SettingsStore,
+        native_artifact_factory: Arc<dyn Fn() -> Arc<dyn NativeArtifactPort> + Send + Sync>,
+        native_image_decoder: Option<Arc<dyn NativeStillImageDecoder>>,
+    ) -> Self {
         let first_add = AccountTabId::add(1);
         let account_work = AccountWorkScheduler::default();
         account_work.set_selected_account(Some(first_add.as_str()));
@@ -104,6 +116,7 @@ impl AccountRuntimeManager {
             &store,
             &settings,
             &native_artifact_factory,
+            &native_image_decoder,
             &account_work,
             &first_add,
         );
@@ -130,6 +143,7 @@ impl AccountRuntimeManager {
             settings,
             account_work,
             native_artifact_factory,
+            native_image_decoder,
         }
     }
 
@@ -224,6 +238,7 @@ impl AccountRuntimeManager {
                 &self.store,
                 &self.settings,
                 &self.native_artifact_factory,
+                &self.native_image_decoder,
                 &self.account_work,
                 &descriptor.id,
             );
@@ -279,6 +294,7 @@ impl AccountRuntimeManager {
                     &self.store,
                     &self.settings,
                     &self.native_artifact_factory,
+                    &self.native_image_decoder,
                     &self.account_work,
                     &id,
                 );
@@ -532,6 +548,7 @@ impl AccountRuntimeManager {
             &self.store,
             &self.settings,
             &self.native_artifact_factory,
+            &self.native_image_decoder,
             &self.account_work,
             &id,
         );
@@ -795,6 +812,7 @@ fn start_runtime(
     store: &StoreActor,
     settings: &SettingsStore,
     native_artifact_factory: &Arc<dyn Fn() -> Arc<dyn NativeArtifactPort> + Send + Sync>,
+    native_image_decoder: &Option<Arc<dyn NativeStillImageDecoder>>,
     account_work: &AccountWorkScheduler,
     account_tab_id: &AccountTabId,
 ) -> CoreRuntime {
@@ -803,6 +821,7 @@ fn start_runtime(
         settings.clone(),
         native_artifact_factory(),
         account_work.for_account(account_tab_id.as_str()),
+        native_image_decoder.clone(),
     )
 }
 

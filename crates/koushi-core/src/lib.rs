@@ -34,6 +34,7 @@ pub mod media_save;
 pub mod media_staging;
 pub(crate) mod mention_candidates;
 pub mod native_artifact;
+pub mod native_image_decoder;
 pub(crate) mod read_state;
 pub mod renderable_thumbnail;
 mod report;
@@ -77,6 +78,7 @@ pub use media_save::{
 pub use native_artifact::{
     NativeArtifactError, NativeArtifactKind, NativeArtifactPort, NativeArtifactRegistry,
 };
+pub use native_image_decoder::{NativeImageDecodeError, NativeStillImageDecoder};
 pub use runtime::{
     COMMAND_INBOX_CAPACITY, CommandSubmitError, CoreCommandHandle, CoreConnection, CoreRuntime,
     CoreShutdownError, EVENT_QUEUE_CAPACITY, EventNavigationError, EventStreamLag,
