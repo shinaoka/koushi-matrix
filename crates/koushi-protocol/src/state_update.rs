@@ -42,7 +42,11 @@ pub struct RoomLiveSignalMetadata {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StateDelta {
     pub generation: u64,
-    pub changed: StateDeltaChangedSlices,
+    /// Boxed so the delta stays out of the inline `CoreEvent` representation.
+    /// `StateDeltaChangedSlices` is ~7 KiB; keeping it inline made every
+    /// `CoreEvent` that size and forced a ~110 MiB per-account event-queue slot
+    /// allocation (#1150). Serde and `Deref` access are unchanged.
+    pub changed: Box<StateDeltaChangedSlices>,
 }
 
 /// Room-local profile replacement delta: room id -> (user id -> replacement),

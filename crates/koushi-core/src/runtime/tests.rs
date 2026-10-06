@@ -5028,6 +5028,18 @@ async fn account_settings_load_failure_is_retryable_and_never_persists_defaults(
     assert!(!actor.state.settings.values.notifications.send_read_receipts);
 }
 
+/// #1150: the per-account event queue must not pre-allocate hundreds of MiB.
+#[test]
+fn event_queue_slots_stay_within_the_documented_budget() {
+    let slot_bytes = std::mem::size_of::<koushi_protocol::event::CoreEvent>();
+    let ring_bytes =
+        EVENT_QUEUE_CAPACITY.next_power_of_two() * (slot_bytes + EVENT_QUEUE_SLOT_OVERHEAD_BYTES);
+    assert!(
+        ring_bytes <= EVENT_QUEUE_SLOT_BUDGET_BYTES,
+        "event-queue ring {ring_bytes} B exceeds the {EVENT_QUEUE_SLOT_BUDGET_BYTES} B budget"
+    );
+}
+
 mod activity_renderer_states;
 mod anchored_send;
 mod navigation_network;

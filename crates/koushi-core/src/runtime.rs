@@ -115,7 +115,28 @@ pub const COMMAND_INBOX_CAPACITY: usize = 256;
 /// `InitialItems` (blank timeline) and `select_room`'s correlated event ("room
 /// selection did not complete"). Sized to absorb a full large-account burst;
 /// genuine lag still self-heals via `EventStreamLag` -> resync.
+///
+/// The ring pre-allocates one slot per capacity entry per account, so large
+/// payloads must stay boxed out of the inline `CoreEvent` representation; see
+/// `EVENT_QUEUE_SLOT_BUDGET_BYTES` below for the enforced bound (#1150).
 pub const EVENT_QUEUE_CAPACITY: usize = 16384;
+/// Byte budget for the per-account event-queue slots. `CoreEvent` must stay
+/// compact enough that the always-allocated ring fits here; see the compile-time
+/// assertion below. Retained heap payloads are NOT budgeted here: a lagging
+/// consumer can still retain boxed `StateDelta`/timeline payloads, and bounding
+/// those needs a separate admission policy (follow-up).
+pub const EVENT_QUEUE_SLOT_BUDGET_BYTES: usize = 5 * 1024 * 1024;
+/// Conservative per-slot overhead outside the event value. `tokio::broadcast`
+/// stores `Mutex<Slot<T>>` (a reader count and a position alongside the value),
+/// and rounds capacity up to a power of two, so `size_of::<T>()` alone
+/// understates the ring.
+const EVENT_QUEUE_SLOT_OVERHEAD_BYTES: usize = 32;
+const _: () = assert!(
+    EVENT_QUEUE_CAPACITY.next_power_of_two()
+        * (std::mem::size_of::<CoreEvent>() + EVENT_QUEUE_SLOT_OVERHEAD_BYTES)
+        <= EVENT_QUEUE_SLOT_BUDGET_BYTES,
+    "CoreEvent no longer fits the per-account event-queue slot budget; box the new payload (#1150)"
+);
 /// AppActor action-projection inbox. Actors project a high volume of
 /// `Vec<AppAction>` here during large-account (100+ room) sync. It MUST be large
 /// enough that bursts never overflow.
