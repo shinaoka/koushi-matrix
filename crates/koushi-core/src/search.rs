@@ -83,6 +83,12 @@ const SEARCH_CANDIDATE_PAGE: usize = 50;
 /// Upper bound on candidates examined for one query variant, so a query whose
 /// matches mostly fail verification still terminates with bounded work.
 const SEARCH_CANDIDATE_SCAN_BUDGET: usize = 500;
+/// Upper bound on the persisted events one room's Files rebuild projects.
+///
+/// The SDK store read is a whole-room query, so this bounds the projection work
+/// and the rows it produces; a room whose local history is deeper than this keeps
+/// the rest until its timeline is paged. Newest events win.
+const ATTACHMENT_REFRESH_MAX_EVENTS: usize = 10_000;
 /// Search index mutation queue capacity (canon, overview.md: 512).
 pub const SEARCH_INDEX_MUTATION_QUEUE: usize = 512;
 const SEARCH_ACTOR_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_secs(1);
@@ -332,6 +338,11 @@ struct SearchSdkQueryResult {
     request_id: RequestId,
     query: String,
     scope: SearchScope,
+    /// The filter the query was scoped with, so a re-verification under a new
+    /// content policy can resume the same query.
+    room_filter: SearchRoomFilter,
+    /// The account's content policy generation when this query started.
+    content_policy_generation: u64,
     projection: Result<SearchProjection, SearchFailureKind>,
     sdk_total_ms: u128,
 }
@@ -659,6 +670,12 @@ pub(crate) struct SearchActor {
     /// cache this session, so the Files view does not re-read the store on every
     /// query.
     refreshed_attachment_rooms: HashSet<String>,
+    /// Bumped whenever the account's content policy changes.
+    ///
+    /// A query verifies candidates with the policy captured when it started, so
+    /// its result is only publishable while this still matches: otherwise it
+    /// could surface a caption or filename the account has since opted out of.
+    content_policy_generation: u64,
     /// Content-indexing settings the verifier must apply.
     ///
     /// The crawler honours these when it indexes, but the persistent index also
@@ -745,6 +762,7 @@ impl SearchActor {
             crawl_delay_elapsed: false,
             crawl_delay_timer: None,
             refreshed_attachment_rooms: HashSet::new(),
+            content_policy_generation: 0,
             crawler_settings: restricted_crawler_settings(),
         };
 
@@ -980,6 +998,7 @@ impl SearchActor {
         let query = query.to_owned();
         let sdk_scope = matrix_sdk_search_scope(&scope, &room_filter);
         let settings = self.crawler_settings.clone();
+        let content_policy_generation = self.content_policy_generation;
         self.active_sdk_search = Some(executor::spawn(run_sdk_query(
             session,
             generation,
@@ -989,6 +1008,7 @@ impl SearchActor {
             room_filter,
             sdk_scope,
             settings,
+            content_policy_generation,
             variants,
         )));
     }
@@ -1001,6 +1021,54 @@ impl SearchActor {
                 self.active_query_generation,
                 "completed",
             );
+            return;
+        }
+
+        if result.content_policy_generation != self.content_policy_generation {
+            // The account's content policy changed while this query ran, so its
+            // verification used a policy that is no longer current: publishing it
+            // could show a caption or filename the account has opted out of.
+            // Verify the same query again under the current policy.
+            record(
+                DiagnosticEvent::new(DiagnosticLevel::Debug, "core.search", "policy_changed")
+                    .field(DiagnosticField::request_id(
+                        "request_id",
+                        result.request_id.connection_id.0,
+                        result.request_id.sequence,
+                    ))
+                    .field(DiagnosticField::count(
+                        "captured_generation",
+                        result.content_policy_generation,
+                    ))
+                    .field(DiagnosticField::count(
+                        "current_generation",
+                        self.content_policy_generation,
+                    )),
+            );
+            let SearchSdkQueryResult {
+                generation,
+                request_id,
+                query,
+                scope,
+                room_filter,
+                ..
+            } = result;
+            let variants = cjk_search_query_variants(&query);
+            let sdk_scope = matrix_sdk_search_scope(&scope, &room_filter);
+            let settings = self.crawler_settings.clone();
+            let content_policy_generation = self.content_policy_generation;
+            self.active_sdk_search = Some(executor::spawn(run_sdk_query(
+                self.session.clone(),
+                generation,
+                request_id,
+                query,
+                scope,
+                room_filter,
+                sdk_scope,
+                settings,
+                content_policy_generation,
+                variants,
+            )));
             return;
         }
 
@@ -1127,18 +1195,30 @@ impl SearchActor {
         };
 
         for room_id in room_ids {
-            if !self.refreshed_attachment_rooms.insert(room_id.clone()) {
+            if self.refreshed_attachment_rooms.contains(&room_id) {
                 continue;
             }
-            let Ok(events) = koushi_sdk::persisted_room_events(&self.session, &room_id).await
+            let Ok(mut events) = koushi_sdk::persisted_room_events(&self.session, &room_id).await
             else {
+                // A failed read must not mark the room done for the session.
                 continue;
             };
+            // The store read is a whole-room query; keep the newest events so
+            // the work this actor turn spends stays bounded.
+            events.sort_by_key(|event| {
+                std::cmp::Reverse(
+                    event
+                        .timestamp()
+                        .map(|timestamp| u64::from(timestamp.get())),
+                )
+            });
+            events.truncate(ATTACHMENT_REFRESH_MAX_EVENTS);
             for message in
                 attachment_messages_from_events(&room_id, &events, &self.crawler_settings)
             {
                 self.apply_index_message(message);
             }
+            self.refreshed_attachment_rooms.insert(room_id);
         }
     }
 
@@ -1229,7 +1309,7 @@ impl SearchActor {
         room_id: String,
         settings: SearchCrawlerSettings,
     ) {
-        self.crawler_settings = settings.clone();
+        self.set_crawler_settings(settings.clone());
         self.seed_committed_rooms();
         self.remove_history_crawl_room(&room_id).await;
         self.completed_rooms.remove(&room_id);
@@ -1273,7 +1353,7 @@ impl SearchActor {
         self.latest_event_ids = latest_event_ids;
         // The account's content policy applies to queries even while the
         // crawler is paused, so record it before the speed check.
-        self.crawler_settings = settings.clone();
+        self.set_crawler_settings(settings.clone());
         self.seed_committed_rooms();
 
         // Membership changes prune the crawl set (and its durable record) even
@@ -1531,6 +1611,17 @@ impl SearchActor {
         }
     }
 
+    /// Adopt the account's content-indexing settings.
+    ///
+    /// A content-policy change invalidates any query that is verifying under the
+    /// previous policy; a speed-only change does not.
+    fn set_crawler_settings(&mut self, settings: SearchCrawlerSettings) {
+        if content_policy_changed(&self.crawler_settings, &settings) {
+            self.content_policy_generation = self.content_policy_generation.wrapping_add(1);
+        }
+        self.crawler_settings = settings;
+    }
+
     /// Content policy the durable commitments are keyed by.
     fn crawl_content_policy(&self) -> CrawlContentPolicy {
         CrawlContentPolicy::new(
@@ -1683,6 +1774,10 @@ impl SearchActor {
 
     async fn invalidate_history_crawler_cache(&mut self) {
         self.completed_rooms.clear();
+        // Attachment rows were built under the old content policy, and the
+        // Files view must rebuild them under the new one.
+        self.document_store.clear();
+        self.refreshed_attachment_rooms.clear();
         // The durable record must be cleared with the in-memory set, or a
         // restart would re-seed these rooms as committed and skip exactly the
         // re-crawl this invalidation exists to force. The record also carries the
@@ -1696,6 +1791,9 @@ impl SearchActor {
 
     async fn rebuild_search_index(&mut self) {
         self.document_store.clear();
+        // The rows are gone, so a refresh marker must not suppress rebuilding
+        // them from the persisted store again.
+        self.refreshed_attachment_rooms.clear();
         self.crawl_settings_generation = self.crawl_settings_generation.wrapping_add(1);
         self.invalidate_history_crawler_cache().await;
     }
@@ -1841,6 +1939,7 @@ async fn run_sdk_query(
     room_filter: SearchRoomFilter,
     sdk_scope: koushi_sdk::MatrixSearchScope,
     settings: SearchCrawlerSettings,
+    content_policy_generation: u64,
     variants: Vec<String>,
 ) -> SearchSdkQueryResult {
     let sdk_started = Instant::now();
@@ -1865,6 +1964,8 @@ async fn run_sdk_query(
                     request_id,
                     query,
                     scope,
+                    room_filter,
+                    content_policy_generation,
                     projection: Err(kind),
                     sdk_total_ms: sdk_started.elapsed().as_millis(),
                 };
@@ -1921,6 +2022,8 @@ async fn run_sdk_query(
         request_id,
         query,
         scope,
+        room_filter,
+        content_policy_generation,
         projection: Ok(SearchProjection {
             results: select_newest(verified_by_identity.into_values().collect()),
             verification,
@@ -2069,20 +2172,58 @@ fn attachment_messages_from_events(
     events: &[matrix_sdk::deserialized_responses::TimelineEvent],
     settings: &SearchCrawlerSettings,
 ) -> Vec<SearchIndexMessage> {
+    // A replacement is only visible when it comes from the sender of the message
+    // it replaces. The event cache can hold one that does not, and applying it
+    // would attribute another sender's attachment metadata to this row. The SDK
+    // projection validates replacements too; this is the subset the crawler
+    // projection can check on its own.
+    let senders: HashMap<String, String> = events
+        .iter()
+        .filter_map(|event| {
+            let json: serde_json::Value =
+                serde_json::from_str(event.kind.raw().json().get()).ok()?;
+            Some((
+                json.get("event_id")?.as_str()?.to_owned(),
+                json.get("sender")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+
     let mut pending_redactions = HashSet::new();
     events
         .iter()
         .filter(|event| !event.kind.is_utd())
         .filter_map(|event| {
-            let raw = event.kind.raw();
+            let json = event.kind.raw().json();
+            let json = json.get();
+            let value: serde_json::Value = serde_json::from_str(json).ok()?;
+            let content = value.get("content")?;
+            if crate::search_crawler::is_edit_event(content) {
+                let sender = value.get("sender").and_then(|sender| sender.as_str())?;
+                let target = crate::search_crawler::edit_target_event_id(content)?;
+                if senders.get(&target).map(String::as_str) != Some(sender) {
+                    // Unknown target or a different sender: not a visible
+                    // replacement, so its metadata must not reach the row.
+                    return None;
+                }
+            }
             crate::search_crawler::event_json_to_index_message(
                 room_id,
-                raw.json().get(),
+                json,
                 settings,
                 &mut pending_redactions,
             )
         })
         .collect()
+}
+
+/// Whether a settings change alters what the verifier may match.
+///
+/// A crawler speed change is not a content-policy change and must not invalidate
+/// an in-flight query.
+fn content_policy_changed(previous: &SearchCrawlerSettings, next: &SearchCrawlerSettings) -> bool {
+    previous.include_media_captions != next.include_media_captions
+        || previous.include_filenames != next.include_filenames
 }
 
 /// Content settings that expose nothing until the account's own arrive.

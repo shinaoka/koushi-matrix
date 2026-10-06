@@ -1459,6 +1459,27 @@ async fn a_superseded_search_request_settles_as_a_benign_no_op() {
         "a superseded request settles exactly once"
     );
 
+    // A query that completed is no longer outstanding: its result settled the
+    // request, so a later transition must not report it as superseded.
+    actor.active_search_request = Some(latest);
+    actor
+        .reduce_app_action(AppAction::SearchSucceeded {
+            request_id: latest.sequence,
+            query: "second".to_owned(),
+            scope: koushi_state::SearchScope::AllRooms,
+            results: Vec::new(),
+        })
+        .await;
+    assert!(
+        event_rx.try_recv().is_err(),
+        "a completed query must not emit a supersession outcome"
+    );
+    actor.reduce_app_action(AppAction::SearchClosed).await;
+    assert!(
+        event_rx.try_recv().is_err(),
+        "closing search after a completed query settles nothing"
+    );
+
     // Closing search supersedes whatever is still in flight.
     actor.active_search_request = Some(latest);
     actor.reduce_app_action(AppAction::SearchClosed).await;

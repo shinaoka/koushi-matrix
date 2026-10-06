@@ -456,6 +456,91 @@ fn the_files_refresh_applies_the_content_policy() {
     );
 }
 
+#[test]
+fn only_a_content_policy_change_invalidates_an_in_flight_query() {
+    let base = SearchCrawlerSettings::default();
+    let slower = SearchCrawlerSettings {
+        speed: koushi_state::SearchCrawlerSpeed::Slow,
+        ..base.clone()
+    };
+    let captions_off = SearchCrawlerSettings {
+        include_media_captions: false,
+        ..base.clone()
+    };
+    let filenames_off = SearchCrawlerSettings {
+        include_filenames: false,
+        ..base.clone()
+    };
+
+    assert!(
+        !content_policy_changed(&base, &slower),
+        "a crawler speed change is not a content-policy change"
+    );
+    assert!(content_policy_changed(&base, &captions_off));
+    assert!(content_policy_changed(&base, &filenames_off));
+}
+
+#[test]
+fn the_files_refresh_ignores_a_replacement_from_another_sender() {
+    let settings = SearchCrawlerSettings::default();
+    let original = timeline_event_from_json(serde_json::json!({
+        "type": "m.room.message",
+        "event_id": "$photo:test",
+        "room_id": "!r:test",
+        "sender": "@alice:test",
+        "origin_server_ts": 1_000,
+        "content": {
+            "msgtype": "m.file",
+            "body": "original.pdf",
+            "url": "mxc://example.invalid/original",
+        },
+    }));
+    let replacement = |sender: &str| {
+        timeline_event_from_json(serde_json::json!({
+            "type": "m.room.message",
+            "event_id": "$edit:test",
+            "room_id": "!r:test",
+            "sender": sender,
+            "origin_server_ts": 2_000,
+            "content": {
+                "msgtype": "m.file",
+                "body": "attacker.pdf",
+                "url": "mxc://example.invalid/attacker",
+                "m.relates_to": {"rel_type": "m.replace", "event_id": "$photo:test"},
+                "m.new_content": {
+                    "msgtype": "m.file",
+                    "body": "attacker.pdf",
+                    "url": "mxc://example.invalid/attacker",
+                },
+            },
+        }))
+    };
+
+    let filenames = |sender: &str| {
+        attachment_messages_from_events(
+            "!r:test",
+            &[original.clone(), replacement(sender)],
+            &settings,
+        )
+        .into_iter()
+        .filter_map(|message| match message {
+            SearchIndexMessage::Edit {
+                attachment_filename,
+                ..
+            } => attachment_filename,
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        filenames("@mallory:test"),
+        Vec::<String>::new(),
+        "another sender's replacement must not reach the row"
+    );
+    assert_eq!(filenames("@alice:test"), vec!["attacker.pdf".to_owned()]);
+}
+
 fn timeline_event_from_json(
     json: serde_json::Value,
 ) -> matrix_sdk::deserialized_responses::TimelineEvent {
@@ -577,23 +662,68 @@ fn an_older_history_edit_cannot_outrank_a_newer_one() {
 }
 
 #[test]
-fn a_canonical_edit_revises_a_history_edit_even_when_it_is_older() {
+fn redacting_an_applied_edit_lets_the_current_content_set_the_row() {
     let mut store = SearchDocumentStore::default();
     store.upsert_message(
         make_attachment_event("!r:test", "$e1", "original.pdf"),
         false,
     );
-    // A history crawl saw a later edit that the canonical state no longer shows
-    // (for example its redaction moved the visible content back).
+    // A history crawl saw a later edit that the canonical state no longer shows.
     store.upsert_edit(make_edit_at("$e1", "$redacted", 5_000, "stale.pdf"), false);
 
+    // The redaction retires that edit, so the content the canonical projection
+    // still shows (an older edit) can set the row.
+    store.redact("$redacted");
     store.upsert_edit(make_edit_at("$e1", "$current", 1_000, "current.pdf"), true);
 
     assert_eq!(first_filename(&store).as_deref(), Some("current.pdf"));
+}
 
-    // ... and a later history replay still cannot undo it.
-    store.upsert_edit(make_edit_at("$e1", "$redacted", 6_000, "stale.pdf"), false);
-    assert_eq!(first_filename(&store).as_deref(), Some("current.pdf"));
+#[test]
+fn a_newer_history_edit_beats_an_older_canonical_one() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        true,
+    );
+    // The timeline was open and showed an earlier rename.
+    store.upsert_edit(make_edit_at("$e1", "$earlier", 2_000, "earlier.pdf"), true);
+
+    // A later catch-up crawl supplies a genuinely newer rename; a canonical
+    // observation must not pin the row against it.
+    store.upsert_edit(make_edit_at("$e1", "$later", 3_000, "later.pdf"), false);
+
+    assert_eq!(first_filename(&store).as_deref(), Some("later.pdf"));
+
+    // Replaying the older canonical edit changes nothing.
+    store.upsert_edit(make_edit_at("$e1", "$earlier", 2_000, "earlier.pdf"), true);
+    assert_eq!(first_filename(&store).as_deref(), Some("later.pdf"));
+}
+
+#[test]
+fn redacting_an_edit_retires_it_from_an_applied_row_and_from_pending_edits() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        false,
+    );
+    store.upsert_edit(make_edit_at("$e1", "$applied", 2_000, "renamed.pdf"), false);
+    store.upsert_edit(
+        make_edit_at("$missing", "$pending", 2_000, "pending.pdf"),
+        false,
+    );
+    assert_eq!(store.pending_edit_count(), 1);
+
+    store.redact("$applied");
+    store.redact("$pending");
+
+    assert_eq!(store.pending_edit_count(), 0);
+    // The redacted rename no longer pins the row: the original can come back.
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        false,
+    );
+    assert_eq!(first_filename(&store).as_deref(), Some("original.pdf"));
 }
 
 #[test]

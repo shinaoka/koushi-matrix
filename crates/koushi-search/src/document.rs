@@ -89,13 +89,16 @@ pub struct SearchDocumentStore {
 /// canonical timeline projection always carries the current visible state, while
 /// a history crawl can replay an older version of the same message.
 ///
-/// The derived `Ord` is the ordering: a canonical edit outranks every history
-/// edit, and history edits order by their own event time and id (the crawler
-/// pages newest first, so a later page can still carry an older edit).
+/// The derived `Ord` is the ordering: the edit's own event time and id decide
+/// (the crawler pages newest first, so a later page can still carry an older
+/// edit), and `canonical` only breaks a tie, where the timeline projection's
+/// current visible state wins. A later history edit therefore still beats an
+/// older canonical one; an edit rollback reaches a row by redacting the applied
+/// edit, not by sending an older timestamp.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct AppliedEdit {
-    canonical: bool,
     timestamp_ms: u64,
+    canonical: bool,
     edit_event_id: String,
 }
 
@@ -191,20 +194,14 @@ impl SearchDocumentStore {
         }
     }
 
-    /// Apply one edit unless the row already holds a newer one.
-    ///
-    /// A canonical edit always wins: it is the current visible state, so it may
-    /// revise a history edit and it also covers an edit rollback, where the
-    /// newest history edit was redacted and the canonical content moves back to
-    /// an older edit.
+    /// Apply one edit unless the row already holds the same or a newer one.
     fn apply_edit_if_newer(&mut self, edit: &SearchEdit, canonical: bool) -> bool {
         let incoming = AppliedEdit {
-            canonical,
             timestamp_ms: edit.timestamp_ms,
+            canonical,
             edit_event_id: edit.edit_event_id.clone(),
         };
         if let Some(applied) = self.applied_edits.get(&edit.target_event_id)
-            && !canonical
             && *applied >= incoming
         {
             return false;
@@ -217,7 +214,20 @@ impl SearchDocumentStore {
         true
     }
 
+    /// Remove a message, or retire a redacted edit.
+    ///
+    /// A redacted edit is no longer visible, so a row that holds it stops
+    /// holding it (keyed by the edit event id, not the target id): the next
+    /// message for that target -- a history replay of the original, or the
+    /// canonical projection's current content -- can then set the row. Without
+    /// this, an applied rename would pin the row against every later message.
     pub fn redact(&mut self, event_id: &str) {
+        self.applied_edits
+            .retain(|_, applied| applied.edit_event_id != event_id);
+        self.pending_edits.retain(|_, pending| {
+            pending.retain(|pending| pending.edit.edit_event_id != event_id);
+            !pending.is_empty()
+        });
         self.documents.remove(event_id);
         self.applied_edits.remove(event_id);
         self.pending_edits.remove(event_id);

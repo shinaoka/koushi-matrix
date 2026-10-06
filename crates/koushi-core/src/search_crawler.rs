@@ -475,7 +475,7 @@ pub(crate) fn event_json_to_index_message(
     }
 }
 
-fn is_edit_event(content: &Value) -> bool {
+pub(crate) fn is_edit_event(content: &Value) -> bool {
     content
         .get("m.relates_to")
         .or_else(|| content.get("relates_to"))
@@ -484,7 +484,7 @@ fn is_edit_event(content: &Value) -> bool {
         == Some("m.replace")
 }
 
-fn edit_target_event_id(content: &Value) -> Option<String> {
+pub(crate) fn edit_target_event_id(content: &Value) -> Option<String> {
     content
         .get("m.relates_to")
         .or_else(|| content.get("relates_to"))

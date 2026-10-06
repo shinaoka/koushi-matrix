@@ -24,7 +24,10 @@ const SEARCH_CRAWL_FILE_MAGIC: &[u8] = b"KOUSHI-SEARCH-CRAWL-V1\0";
 /// index directory, so a bump re-crawls and starts from an empty index in one
 /// step: a re-crawl alone cannot rewrite documents the index already holds.
 /// Progress recorded under another version is ignored and dropped on the next save.
-pub(crate) const SEARCH_CRAWL_BACKEND_VERSION: u32 = 1;
+///
+/// Version 2 renamed the search index directory and added the content policy to
+/// the record, so a version-1 record describes an index this build never opens.
+pub(crate) const SEARCH_CRAWL_BACKEND_VERSION: u32 = 2;
 
 /// Committed crawls for one account.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

@@ -73,17 +73,29 @@ fn live_room_profile_changes(
     Some((room_id.clone(), before))
 }
 
-/// Whether the search state still owns the request with this sequence id.
-///
-/// Mirrors what `runtime::request_outcome` requires of a settled search request:
-/// a state that no longer names it can never produce its terminal outcome.
-fn search_state_tracks_request(search: &SearchState, sequence: u64) -> bool {
+/// What the search state says about a dispatched request.
+enum SearchRequestStatus {
+    /// The request is the state's own and has not produced a result yet.
+    Awaiting,
+    /// The request produced the terminal result the state now holds.
+    Settled,
+    /// Another search state replaced the request.
+    Superseded,
+}
+
+fn search_request_status(search: &SearchState, sequence: u64) -> SearchRequestStatus {
     match search {
-        SearchState::TooShort { request_id, .. }
-        | SearchState::Searching { request_id, .. }
-        | SearchState::Results { request_id, .. }
-        | SearchState::Failed { request_id, .. } => *request_id == sequence,
-        SearchState::Closed | SearchState::Editing { .. } => false,
+        SearchState::TooShort { request_id, .. } | SearchState::Searching { request_id, .. }
+            if *request_id == sequence =>
+        {
+            SearchRequestStatus::Awaiting
+        }
+        SearchState::Results { request_id, .. } | SearchState::Failed { request_id, .. }
+            if *request_id == sequence =>
+        {
+            SearchRequestStatus::Settled
+        }
+        _ => SearchRequestStatus::Superseded,
     }
 }
 
@@ -335,11 +347,18 @@ impl super::AppActor {
         // without emitting one, and the reducer ignores a late action whose
         // request identity no longer matches. Settle it at the transition that
         // left it behind, so a caller awaiting the request stops waiting.
-        if let Some(request_id) = self.active_search_request
-            && !search_state_tracks_request(&self.state.search, request_id.sequence)
-        {
-            self.active_search_request = None;
-            deferred.superseded_search_request = Some(request_id);
+        if let Some(request_id) = self.active_search_request {
+            match search_request_status(&self.state.search, request_id.sequence) {
+                // Still in flight: this transition did not touch it.
+                SearchRequestStatus::Awaiting => {}
+                // The request produced its own result. Nothing to settle, and a
+                // later transition must not report it as superseded.
+                SearchRequestStatus::Settled => self.active_search_request = None,
+                SearchRequestStatus::Superseded => {
+                    self.active_search_request = None;
+                    deferred.superseded_search_request = Some(request_id);
+                }
+            }
         }
         let previous_persisted_navigation = previous_navigation.persistence_view();
         let current_persisted_navigation = self.state.navigation.persistence_view();
