@@ -468,6 +468,18 @@ impl AppActor {
             });
             return false;
         }
+        if source == EventNavigationSource::Search {
+            // Remember what the user opened so the next startup can warm it
+            // before timeline construction.
+            let effects = reduce(
+                &mut self.state,
+                AppAction::SearchResultOpened {
+                    room_id: room_id.clone(),
+                    event_id: event_id.clone(),
+                },
+            );
+            self.handle_ui_event_effects(&effects).await;
+        }
         if !matches!(self.state.session, SessionState::Ready(_)) {
             self.emit(CoreEvent::OperationFailed {
                 request_id,

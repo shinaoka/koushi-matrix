@@ -171,12 +171,12 @@ pub use room_interactions::{
 // ── Re-exports: navigation ──────────────────────────────────────────────────
 pub use navigation::{
     EventNavigationFailureKind, EventNavigationSource, EventNavigationState, FocusedContextState,
-    HomeSelection, MAX_SPACE_LOCAL_PRESENTATIONS, MainTimelineAnchor, MissingTargetPolicy,
-    NavigationPreferenceUpdate, NavigationState, RoomListEntryKind, RoomListFailureKind,
-    RoomListFilter, RoomListProjection, RoomListProjectionItem, RoomListReadiness, RoomListSort,
-    RoomListSource, SpaceConversationSurface, SpaceLocalPresentation, SpaceLocalPresentations,
-    SpaceNavigationSelection, TimelineScrollAnchor, TimelineScrollAnchorEdge,
-    compute_room_list_projection,
+    HomeSelection, MAX_SEARCH_WARM_TARGETS, MAX_SPACE_LOCAL_PRESENTATIONS, MainTimelineAnchor,
+    MissingTargetPolicy, NavigationPreferenceUpdate, NavigationState, RoomListEntryKind,
+    RoomListFailureKind, RoomListFilter, RoomListProjection, RoomListProjectionItem,
+    RoomListReadiness, RoomListSort, RoomListSource, SearchWarmTarget, SpaceConversationSurface,
+    SpaceLocalPresentation, SpaceLocalPresentations, SpaceNavigationSelection,
+    TimelineScrollAnchor, TimelineScrollAnchorEdge, compute_room_list_projection,
 };
 
 // ── Re-exports: activity ────────────────────────────────────────────────────

@@ -43,6 +43,7 @@ fn navigation_state_is_encrypted_and_rejects_corruption() {
             generation: 7,
             source: koushi_state::EventNavigationSource::Activity,
         },
+        search_warm_targets: Vec::new(),
     };
 
     actor
@@ -111,6 +112,7 @@ fn legacy_navigation_json_loads_and_next_save_migrates_to_encrypted_file() {
         room_scroll_anchors: std::collections::BTreeMap::new(),
         main_timeline_anchor: None,
         event_navigation: Default::default(),
+        search_warm_targets: Vec::new(),
     };
     let legacy_path = actor.account_navigation_legacy_file(&key_id);
     std::fs::create_dir_all(legacy_path.parent().expect("navigation parent"))
@@ -160,6 +162,7 @@ fn default_navigation_removes_encrypted_and_legacy_files() {
         room_scroll_anchors: std::collections::BTreeMap::new(),
         main_timeline_anchor: None,
         event_navigation: Default::default(),
+        search_warm_targets: Vec::new(),
     };
 
     actor
@@ -222,6 +225,7 @@ fn encrypted_navigation_state_preserves_room_scroll_anchor() {
         )]),
         main_timeline_anchor: None,
         event_navigation: Default::default(),
+        search_warm_targets: Vec::new(),
     };
 
     actor
