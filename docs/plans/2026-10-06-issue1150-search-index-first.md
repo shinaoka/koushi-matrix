@@ -35,8 +35,11 @@ folding, filename-field attribution, false-positive rejection).
 
 1. **Bounded filtered refill.** Core fetches one candidate page per query
    variant before verification, so a heavily filtered query can under-report
-   older matches. Page until enough results pass verification or the pager is
-   exhausted, with a bounded total candidate budget.
+   older matches. Until this lands, the branch also emits an empty first
+   `Results` (the local store scan it used to precede is gone), which the QA
+   absence check can mistake for a settled empty answer. Page until enough
+   results pass verification or the pager is exhausted, with a bounded total
+   candidate budget, and drop the now-vacuous first emission.
 3. **QA false-green.** The headless QA scenario accepts the first `Results`
    event, which can be Core's initial empty emission, so absence checks can pass
    vacuously. Require a settled generation before asserting absence.
