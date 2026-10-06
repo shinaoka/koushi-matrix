@@ -1698,6 +1698,11 @@ impl SearchActor {
     fn set_crawler_settings(&mut self, settings: SearchCrawlerSettings) {
         if content_policy_changed(&self.crawler_settings, &settings) {
             self.content_policy_generation = self.content_policy_generation.wrapping_add(1);
+            // Rows admitted under the previous policy are no longer admissible: a
+            // filename the account has just opted out of must not stay readable
+            // through the Files view until some later message happens to replace
+            // it. The next Files query rebuilds them under the new policy.
+            self.document_store.clear();
         }
         self.crawler_settings = settings;
     }
