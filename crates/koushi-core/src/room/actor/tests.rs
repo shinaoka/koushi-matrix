@@ -16,6 +16,10 @@ use std::sync::{Mutex, atomic::AtomicUsize};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
+/// Bound for waits that must succeed: a regression hangs until it, while
+/// scheduler load alone must never reach it.
+const LIVENESS: Duration = Duration::from_secs(60);
+
 #[tokio::test]
 async fn room_actor_shutdown_aborts_when_its_mailbox_cannot_accept_shutdown() {
     let (tx, _rx) = mpsc::channel(1);
@@ -192,7 +196,20 @@ async fn pinned_event_network_delay_does_not_block_later_room_work() {
     };
 
     let server = MatrixMockServer::new().await;
-    let client = server.client_builder().build().await;
+    // No client timeout: the delayed response keeps the pin fetch in flight for
+    // the whole test, on real time, so nothing but the actor's own scheduling
+    // decides whether later room work runs first.
+    let client = server
+        .client_builder()
+        .on_builder(|builder| {
+            builder.request_config(
+                matrix_sdk::config::RequestConfig::new()
+                    .disable_retry()
+                    .timeout(None::<Duration>),
+            )
+        })
+        .build()
+        .await;
     let room_id = matrix_sdk::ruma::room_id!("!pinned:example.test");
     server.sync_joined_room(&client, room_id).await;
     Mock::given(method("GET"))
@@ -202,7 +219,7 @@ async fn pinned_event_network_delay_does_not_block_later_room_work() {
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_json(serde_json::json!({ "pinned": [] }))
-                .set_delay(Duration::from_secs(60)),
+                .set_delay(Duration::from_secs(60 * 60)),
         )
         .expect(1)
         .mount(&server)
@@ -223,7 +240,6 @@ async fn pinned_event_network_delay_does_not_block_later_room_work() {
         event_tx,
         crate::SlidingSyncDiagnostics::default(),
     );
-    tokio::time::pause();
     assert!(
         handle
             .send(RoomMessage::SessionEstablished { session })
@@ -237,19 +253,17 @@ async fn pinned_event_network_delay_does_not_block_later_room_work() {
             }))
             .await
     );
-    let mut pin_request_started = false;
-    for _ in 0..256 {
-        pin_request_started = server.received_requests().await.is_some_and(|requests| {
+    tokio::time::timeout(LIVENESS, async {
+        while !server.received_requests().await.is_some_and(|requests| {
             requests
                 .iter()
                 .any(|request| request.url.path().contains("/state/m.room.pinned_events/"))
-        });
-        if pin_request_started {
-            break;
+        }) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        tokio::task::yield_now().await;
-    }
-    assert!(pin_request_started, "pinned event request should start");
+    })
+    .await
+    .expect("pinned event request should start");
     assert!(
         action_rx.try_recv().is_err(),
         "pinned event fetch should still be pending"
@@ -263,7 +277,7 @@ async fn pinned_event_network_delay_does_not_block_later_room_work() {
             }))
             .await
     );
-    let actions = tokio::time::timeout(Duration::from_secs(1), action_rx.recv())
+    let actions = tokio::time::timeout(LIVENESS, action_rx.recv())
         .await
         .expect("later room work must not wait for pin fetch")
         .expect("reorder action");
@@ -272,7 +286,7 @@ async fn pinned_event_network_delay_does_not_block_later_room_work() {
         [AppAction::ReorderSpaces { .. }]
     ));
     assert!(handle.send(RoomMessage::Shutdown).await);
-    tokio::time::timeout(Duration::from_secs(1), handle.join())
+    tokio::time::timeout(LIVENESS, handle.join())
         .await
         .expect("shutdown");
     server.verify_and_reset().await;
