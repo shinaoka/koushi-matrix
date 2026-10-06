@@ -176,6 +176,37 @@ arrives (finding: currentness), and the whole-store read holds the event-cache
 store lock for its duration (bounded per room, not per page). The M4 decision is
 still pending.
 
+### Fix round 3 (post-implementation review of round 2)
+
+Round 3 accepted the round-2 fixes and found three merge blockers plus four
+important defects. Fixed in `7db251eb`:
+
+- the canonical upsert now carries the identity of the edit that produced its
+  content, so the content and edit halves of one observation are a single guarded
+  update (an upsert without an edit means the row is not edited, i.e. a rollback);
+- redacting an edit retires it (per row) and drops the metadata it produced, a
+  replay of that edit is refused, and the room's Files rows are rebuilt from the
+  store again (the once-per-session marker is invalidated);
+- the Files rebuild validates a replacement with the SDK's own replacement rules
+  instead of a sender-only approximation;
+- a content-policy change closes the search view, so results verified under the
+  old policy can no longer be displayed.
+
+Still open from round 3 (both need a design round, not a patch):
+
+- the policy fence is only actor-local for the *transport* `SearchEvent::Results`:
+  a notification deferred behind a saturated mailbox can leave the actor on the
+  previous policy while the state has moved on. The UI is state-driven (the
+  desktop renders `searchResults` from the snapshot), and the state closes the
+  view, so no opted-out text reaches the UI; the residual exposure is a
+  harness-level event in that window.
+- the Files rebuild still reads a whole room's persisted events in one SDK store
+  call while holding the event-cache store lock, then sorts and truncates. The
+  bounded fix is paged chunk reads that release the guard between pages.
+- the Files rebuild is still once per session per room: a mutation that does not
+  change the room's latest event (an edit or redaction of a non-latest event) is
+  not picked up until a catch-up crawl or timeline message arrives.
+
 Also raised: migrate commitments already written without an acknowledgement, make the "rebuild
 search database" action actually rebuild the persistent index (the user help promises it), cover
 attachment edit rollback and mixed producers, measure pending-edit residency in the memory probe,
