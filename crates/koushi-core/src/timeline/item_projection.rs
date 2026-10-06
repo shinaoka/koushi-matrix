@@ -1020,11 +1020,9 @@ impl TimelineActor {
                             .flatten()
                     })
                     .map(|id| id.to_string());
-                let edit_timestamp_ms = latest_edit.as_ref().and_then(|raw| {
-                    raw.get_field::<u64>("origin_server_ts")
-                        .ok()
-                        .flatten()
-                });
+                let edit_timestamp_ms = latest_edit
+                    .as_ref()
+                    .and_then(|raw| raw.get_field::<u64>("origin_server_ts").ok().flatten());
 
                 (
                     projection.body,

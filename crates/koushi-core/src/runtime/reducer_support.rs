@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_protocol::event::{CoreEvent, IntentNoOpReason, IntentOutcome};
 use koushi_state::{
-    ActivityState, AppAction, AppEffect, AppState, ComposerDraftStore, NavigationState, SearchState,
-    reduce,
+    ActivityState, AppAction, AppEffect, AppState, ComposerDraftStore, NavigationState,
+    SearchState, reduce,
 };
 
 use super::composer::{
@@ -188,7 +188,8 @@ impl super::AppActor {
         let previous_navigation = self.state.navigation.clone();
         let previous_event_navigation = self.state.navigation.event_navigation;
         let previous_scheduled_session = scheduled_send_session_key(&self.state);
-        let previous_scheduled_sends = self.state.scheduled_sends.clone();        let internal_event_navigation_select = is_internal_event_navigation_select(
+        let previous_scheduled_sends = self.state.scheduled_sends.clone();
+        let internal_event_navigation_select = is_internal_event_navigation_select(
             self.pending_event_navigation.as_ref(),
             &self.pending_select,
             &action,

@@ -174,8 +174,8 @@ pub use search::{
     MatrixLiteralCandidate, MatrixLiteralSearchPager, MatrixResolvedMessage, MatrixSearchCandidate,
     MatrixSearchCursor, MatrixSearchError, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig,
     MatrixSearchScope, index_room_events_now, persisted_room_events, resolve_cached_message,
-    search_message_candidates,
-    search_message_candidates_blocking, search_message_candidates_scoped,
+    search_message_candidates, search_message_candidates_blocking,
+    search_message_candidates_scoped,
 };
 
 pub use sync::{

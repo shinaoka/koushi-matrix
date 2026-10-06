@@ -360,8 +360,11 @@ async fn files_rows_are_rebuilt_from_the_persisted_event_cache() {
         .expect("the persisted event cache should be readable");
     assert_eq!(events.len(), 2, "both synced events are persisted");
 
-    let messages =
-        attachment_messages_from_events(room_id.as_str(), &events, &SearchCrawlerSettings::default());
+    let messages = attachment_messages_from_events(
+        room_id.as_str(),
+        &events,
+        &SearchCrawlerSettings::default(),
+    );
     let attachments: Vec<_> = messages
         .iter()
         .filter_map(|message| match message {
@@ -370,7 +373,11 @@ async fn files_rows_are_rebuilt_from_the_persisted_event_cache() {
                 attachment: Some(attachment),
                 attachment_filename,
                 ..
-            } => Some((event_id.clone(), attachment.clone(), attachment_filename.clone())),
+            } => Some((
+                event_id.clone(),
+                attachment.clone(),
+                attachment_filename.clone(),
+            )),
             _ => None,
         })
         .collect();
@@ -392,14 +399,8 @@ async fn files_rows_are_rebuilt_from_the_persisted_event_cache() {
         "a message without an attachment projects without one and is not retained"
     );
     assert_eq!(attachments[0].0, "$with-attachment");
-    assert_eq!(
-        attachments[0].1.filename.as_str(),
-        "agenda.pdf"
-    );
-    assert_eq!(
-        attachments[0].2.as_deref(),
-        Some("agenda.pdf")
-    );
+    assert_eq!(attachments[0].1.filename.as_str(), "agenda.pdf");
+    assert_eq!(attachments[0].2.as_deref(), Some("agenda.pdf"));
 }
 
 #[test]
@@ -443,7 +444,11 @@ fn the_files_refresh_applies_the_content_policy() {
             .count()
     };
 
-    assert_eq!(rows(&with_filenames), 1, "a filename opt-in yields a Files row");
+    assert_eq!(
+        rows(&with_filenames),
+        1,
+        "a filename opt-in yields a Files row"
+    );
     assert_eq!(
         rows(&without_filenames),
         0,
@@ -515,7 +520,12 @@ fn make_attachment_edit(target: &str, filename: &str) -> SearchEdit {
 }
 
 /// An edit as a producer would report it: the edit event's own time and id.
-fn make_edit_at(target: &str, edit_event_id: &str, timestamp_ms: u64, filename: &str) -> SearchEdit {
+fn make_edit_at(
+    target: &str,
+    edit_event_id: &str,
+    timestamp_ms: u64,
+    filename: &str,
+) -> SearchEdit {
     SearchEdit {
         edit_event_id: edit_event_id.to_owned(),
         target_event_id: target.to_owned(),
@@ -528,7 +538,9 @@ fn make_edit_at(target: &str, edit_event_id: &str, timestamp_ms: u64, filename: 
 }
 
 fn first_filename(store: &SearchDocumentStore) -> Option<String> {
-    attachment_rows(store).first().map(|row| row.filename.clone())
+    attachment_rows(store)
+        .first()
+        .map(|row| row.filename.clone())
 }
 
 #[test]
@@ -661,11 +673,10 @@ fn edit_before_attachment_is_pending_until_it_arrives() {
     assert_eq!(store.document_count(), 0);
     assert_eq!(store.pending_edit_count(), 1);
 
-    store.upsert_message(make_attachment_event(
-        "!r:test",
-        "$original",
-        "original.pdf",
-    ), true);
+    store.upsert_message(
+        make_attachment_event("!r:test", "$original", "original.pdf"),
+        true,
+    );
 
     assert_eq!(store.pending_edit_count(), 0, "pending edit must resolve");
     let rows = attachment_rows(&store);
@@ -704,7 +715,10 @@ fn redaction_removes_the_attachment_row() {
 #[test]
 fn clear_removes_documents_and_pending_edits() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(make_attachment_event("!r:test", "$e1", "original.pdf"), true);
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        true,
+    );
     store.upsert_edit(make_attachment_edit("$e1", "edited.pdf"), true);
     store.upsert_edit(make_attachment_edit("$missing", "pending.pdf"), true);
 
