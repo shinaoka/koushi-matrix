@@ -6617,6 +6617,13 @@ function AccountContent({
           onSearchScopeChange={setSearchScope}
           onStartWindowDrag={startWindowDrag}
         />
+        {eventNavigation?.kind === "opening" ? (
+          // #1146: Rust publishes `opening` at click admission; show it until
+          // the bounded anchored/live-fallback/failed outcome replaces it.
+          <div className="navigation-pending" role="status">
+            <p className="navigation-pending-text">{t("navigation.opening")}</p>
+          </div>
+        ) : null}
         {eventNavigation?.kind === "failed" ? (
           <div className="navigation-failure" role="alert">
             <p className="navigation-failure-text">{t("navigation.failed")}</p>

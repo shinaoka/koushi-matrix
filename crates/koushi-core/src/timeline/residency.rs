@@ -380,6 +380,7 @@ impl TimelineManagerActor {
             thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
             timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
             live_tail_refreshes: LiveTailRefreshCoordinator::new(),
+            focused_builds: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             test_session_available: true,
         }

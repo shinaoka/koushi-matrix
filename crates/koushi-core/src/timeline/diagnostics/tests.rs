@@ -604,6 +604,7 @@ async fn subscribe_replay_path_records_subscribed_done_stage() {
         hide_redacted: false,
         timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
         live_tail_refreshes: LiveTailRefreshCoordinator::new(),
+        focused_builds: Default::default(),
         test_session_available: true,
     };
 
@@ -818,6 +819,7 @@ async fn diagnostics_producer_paths_run_without_trace_environment() {
         hide_redacted: false,
         timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
         live_tail_refreshes: LiveTailRefreshCoordinator::new(),
+        focused_builds: Default::default(),
         test_session_available: true,
     };
 
