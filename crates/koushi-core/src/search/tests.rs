@@ -801,6 +801,75 @@ fn an_older_canonical_upsert_cannot_undo_a_newer_applied_edit() {
 }
 
 #[test]
+fn a_redacted_edit_cannot_come_back_through_the_content_half_of_its_pair() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        false,
+        None,
+    );
+    store.upsert_edit(make_edit_at("$e1", "$applied", 2_000, "renamed.pdf"), false);
+    store.redact("$applied");
+    assert!(attachment_rows(&store).is_empty());
+
+    // A delayed canonical observation arrives as an upsert carrying the same
+    // edit identity; it must not recreate the row the redaction dropped.
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "renamed.pdf"),
+        true,
+        Some(SearchEditKey::new("$applied", 2_000)),
+    );
+    assert!(attachment_rows(&store).is_empty());
+    assert_eq!(store.pending_edit_count(), 0);
+}
+
+#[test]
+fn retirement_refuses_every_redacted_edit_of_a_row() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        false,
+        None,
+    );
+    store.upsert_edit(make_edit_at("$e1", "$older", 2_000, "older.pdf"), false);
+    store.redact("$older");
+    // The row comes back (a replay of the original), then a second edit is
+    // redacted too.
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        false,
+        None,
+    );
+    store.upsert_edit(make_edit_at("$e1", "$newer", 3_000, "newer.pdf"), false);
+    store.redact("$newer");
+
+    // Retiring the newer edit must not forget the older one.
+    store.upsert_edit(make_edit_at("$e1", "$older", 2_000, "older.pdf"), false);
+    assert_eq!(store.pending_edit_count(), 0);
+    assert!(attachment_rows(&store).is_empty());
+}
+
+#[test]
+fn a_keyless_canonical_upsert_does_not_erase_a_newer_edit() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        true,
+        None,
+    );
+    // A catch-up crawl applied a rename the timeline had not observed.
+    store.upsert_edit(make_edit_at("$e1", "$newer", 3_000, "newer.pdf"), false);
+
+    // A queued observation from before that edit must not replace the row.
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        true,
+        None,
+    );
+    assert_eq!(first_filename(&store).as_deref(), Some("newer.pdf"));
+}
+
+#[test]
 fn a_redacted_edit_cannot_be_replayed() {
     let mut store = SearchDocumentStore::default();
     store.upsert_message(

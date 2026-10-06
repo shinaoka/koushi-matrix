@@ -1210,7 +1210,8 @@ impl SearchActor {
     async fn rebuild_attachment_rows(&mut self, room_id: &str) {
         let mut cursor = None;
         let mut remaining = ATTACHMENT_REBUILD_MAX_EVENTS;
-        let mut pages = Vec::new();
+        let mut events = Vec::new();
+        let mut complete = true;
         loop {
             let Ok(page) = koushi_sdk::persisted_room_event_page(
                 &self.session,
@@ -1220,23 +1221,35 @@ impl SearchActor {
             )
             .await
             else {
+                // A failed page leaves the room's rows alone.
                 return;
             };
             remaining = remaining.saturating_sub(page.events.len());
-            let next = page.next;
-            pages.push(page.events);
-            match next {
+            events.extend(page.events);
+            match page.next {
                 Some(next) if remaining > 0 => cursor = Some(next),
-                _ => break,
+                // The budget ran out, so the read covers only the newest part.
+                Some(_) => {
+                    complete = false;
+                    break;
+                }
+                None => break,
             }
         }
 
-        self.document_store.forget_room(room_id);
-        for events in pages {
-            for message in attachment_messages_from_events(room_id, &events, &self.crawler_settings)
-            {
-                self.apply_index_message(message);
-            }
+        // A replacement is only visible against the message it replaces, and an
+        // edit and its original can sit in different pages, so the bounded
+        // collection is projected as one set.
+        let messages = attachment_messages_from_events(room_id, &events, &self.crawler_settings);
+        if complete {
+            // The read covered the room, so a row it does not reproduce no
+            // longer exists in the cache (a redacted edit, a removed event).
+            self.document_store.forget_room(room_id);
+        }
+        // A partial read must not drop the rows it did not cover, nor the richer
+        // metadata a timeline observation supplied for them.
+        for message in messages {
+            self.apply_index_message(message);
         }
     }
 

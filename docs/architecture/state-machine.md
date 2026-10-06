@@ -4908,11 +4908,14 @@ stateDiagram-v2
 - Responses whose `request_id`, `query`, or `scope` does not match the active
   searching/results state are ignored. This prevents results from a previous
   transient command connection from settling the current search if
-  connection-local sequence numbers collide, while allowing a matching SDK
-  supplement to replace the local-first result snapshot.
+  connection-local sequence numbers collide. A matching response replaces the
+  searching state exactly once; there is no local-first snapshot to supplement.
 - If the user edits the query while a search is in flight, the in-flight response
   is ignored because the state is no longer the matching `Searching`/`Results`
   state.
+- A change to the account's content-indexing policy closes the search view: the
+  results it showed were verified under the old policy, and an in-flight query
+  may still be verifying under it.
 - Submitting a valid search emits both the backend search request and
   `SearchChanged` so the UI can display the loading state immediately. The
   reducer resolves `SearchScope` into the authoritative room filter before the

@@ -79,9 +79,9 @@ pub struct SearchDocumentStore {
     documents: BTreeMap<String, SearchableEvent>,
     /// event_id -> the edit whose content the row currently holds.
     applied_edits: BTreeMap<String, AppliedEdit>,
-    /// event_id -> the newest redacted edit of that row, so a replay of a
-    /// redacted edit cannot come back.
-    retired_edits: BTreeMap<String, String>,
+    /// event_id -> the redacted edits of that row, so a replay of any of them
+    /// cannot come back. Bounded per row by [`RETIRED_EDITS_PER_ROW`].
+    retired_edits: BTreeMap<String, Vec<String>>,
     /// Edits that arrived before their target.
     pending_edits: BTreeMap<String, Vec<PendingEdit>>,
 }
@@ -130,6 +130,10 @@ impl AppliedEdit {
         }
     }
 }
+
+/// How many redacted edit ids one row remembers. A crawl replays a bounded
+/// number of versions, so the newest handful is enough to refuse a replay.
+const RETIRED_EDITS_PER_ROW: usize = 8;
 
 /// An edit waiting for its original message.
 struct PendingEdit {
@@ -183,8 +187,9 @@ impl SearchDocumentStore {
     /// Record a message's attachment metadata.
     ///
     /// `canonical` marks the timeline projection, which always carries the
-    /// message's current visible content; a history crawl reports what its
-    /// crawl saw, which may be an older version of the same message.
+    /// message's current visible content; a history crawl reports what its crawl
+    /// saw, which may be an older version of the same message. `edit` names the
+    /// edit that produced the content when the message is edited.
     pub fn upsert_message(
         &mut self,
         mut event: SearchableEvent,
@@ -198,35 +203,40 @@ impl SearchDocumentStore {
         }
         let applied = self.applied_edits.get(&event.event_id).cloned();
         match (&edit, &applied) {
-            // A replay of this message's original must not replace the
-            // attachment an edit already produced.
-            (None, Some(_)) if !canonical => return,
-            // The message's content and the edit it carries are one update, so
-            // an older observation of an edited message cannot undo a newer edit
-            // another producer applied. Without this, the content half of an
-            // upsert-plus-edit pair slips past the edit ordering.
+            // A keyless observation says nothing about the edit the row already
+            // holds: it can be a queued observation from before that edit existed,
+            // so it must not replace the attachment the edit produced. An edit
+            // rollback reaches the row as the redaction of the applied edit, which
+            // retires it.
+            (None, Some(_)) => return,
+            // The content half of an upsert-plus-edit pair is guarded exactly
+            // like the edit half, so an older observation of an edited message
+            // cannot undo a newer edit another producer applied.
             (Some(key), Some(applied)) if *applied >= AppliedEdit::from_key(key, canonical) => {
                 return;
             }
             _ => {}
+        }
+        // A redacted edit must not come back through the content half of its
+        // pair either: the redaction dropped the metadata it produced, and this
+        // content is that same metadata.
+        if let Some(key) = &edit
+            && self.is_retired_edit(&event.event_id, &key.edit_event_id)
+        {
+            return;
         }
         retain_attachment_metadata(&mut event);
 
         let event_id = event.event_id.clone();
         self.documents.insert(event_id.clone(), event);
 
-        match edit {
-            Some(key) => {
-                self.applied_edits
-                    .insert(event_id.clone(), AppliedEdit::from_key(&key, canonical));
-            }
-            // The canonical projection is not showing an edit, so the row is not
-            // edited any more (an edit rollback).
-            None if canonical => {
-                self.applied_edits.remove(&event_id);
-            }
-            None => {}
+        if let Some(key) = edit {
+            self.applied_edits
+                .insert(event_id.clone(), AppliedEdit::from_key(&key, canonical));
         }
+        // A keyless upsert says nothing about an edit the row already holds: it
+        // can be a queued observation from before that edit existed, so only a
+        // redaction (which retires the edit) clears the row's edit.
 
         if let Some(pending) = self.pending_edits.remove(&event_id) {
             for pending in pending {
@@ -238,7 +248,7 @@ impl SearchDocumentStore {
     pub fn upsert_edit(&mut self, mut edit: SearchEdit, canonical: bool) {
         // Edit text is never retained, here or while the edit is pending.
         edit.body = None;
-        if self.retired_edits.get(&edit.target_event_id) == Some(&edit.edit_event_id) {
+        if self.is_retired_edit(&edit.target_event_id, &edit.edit_event_id) {
             // The edit was redacted; it must not come back through a replay.
             return;
         }
@@ -296,6 +306,24 @@ impl SearchDocumentStore {
         }
     }
 
+    /// Whether this row already refused a replay of this redacted edit.
+    fn is_retired_edit(&self, target_event_id: &str, edit_event_id: &str) -> bool {
+        self.retired_edits
+            .get(target_event_id)
+            .is_some_and(|retired| retired.iter().any(|id| id == edit_event_id))
+    }
+
+    fn retire_edit(&mut self, target_event_id: &str, edit_event_id: &str) {
+        let retired = self
+            .retired_edits
+            .entry(target_event_id.to_owned())
+            .or_default();
+        retired.push(edit_event_id.to_owned());
+        if retired.len() > RETIRED_EDITS_PER_ROW {
+            retired.remove(0);
+        }
+    }
+
     /// Remove a message, or retire a redacted edit.
     ///
     /// A redacted edit is no longer visible, so a row that holds it stops
@@ -326,8 +354,7 @@ impl SearchDocumentStore {
                 .map(|(target, _)| target.clone()),
         );
         for target in affected {
-            self.retired_edits
-                .insert(target.clone(), event_id.to_owned());
+            self.retire_edit(&target, event_id);
             self.documents.remove(&target);
             self.applied_edits.remove(&target);
             self.pending_edits.remove(&target);
