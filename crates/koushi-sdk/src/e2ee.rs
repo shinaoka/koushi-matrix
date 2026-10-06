@@ -2901,13 +2901,19 @@ impl MatrixClientSession {
     /// (#1049) and returns its recovery key for on-screen reveal. As in setup,
     /// the persisted delivery-pending marker is set first and stays set until
     /// [`Self::confirm_recovery_key_delivered`], so an interrupted reveal
-    /// re-enters `RecoveryKeyDeliveryRequired` after restart.
+    /// re-enters `RecoveryKeyDeliveryRequired` after restart. If `enable()`
+    /// fails no key was revealed, so the marker is cleared (best effort) and
+    /// never forces a later reset.
     pub async fn bootstrap_identity_secure_backup(
         &self,
         passphrase: Option<&AuthSecret>,
     ) -> Result<SecureBackupSetupSummary, E2eeTrustError> {
         self.set_recovery_key_delivery_pending(true).await?;
-        bootstrap_secure_backup(self, passphrase).await
+        let result = bootstrap_secure_backup(self, passphrase).await;
+        if result.is_err() {
+            let _ = self.set_recovery_key_delivery_pending(false).await;
+        }
+        result
     }
     /// Clears the persisted delivery-pending marker after the user's explicit
     /// "I saved the recovery key" confirmation.
