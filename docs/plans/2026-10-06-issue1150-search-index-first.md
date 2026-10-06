@@ -233,6 +233,33 @@ adopts it before capturing the generation its result is checked against. Query
 verification therefore uses the same policy the state accepted the query under,
 whether or not the crawler notification has been delivered yet.
 
+### Fix round 5/6 and the remaining decision
+
+Round 5 found that round 4's publication move had broken search settlement, plus
+five further defects; round 6 confirmed those fixes and left three items:
+
+- full request correlation: search ownership and admission compare only the
+  connection-local request sequence, so two connections whose first sequences
+  collide can lose a terminal outcome and a queued result from one connection can
+  settle the other's query. Fixed by retiring the replaced owner at dispatch and
+  by carrying the connection id with the search actions (still to do);
+- rows admitted between an invalidation and the policy being adopted (fixed in
+  `f0bb5045`: the store is cleared when the policy actually changes);
+- a canonical rollback (an edit removed, leaving an unedited snapshot) reaches the
+  store as a keyless upsert, which the store refuses while an edit is applied, so
+  the original attachment is restored by the next complete Files rebuild rather
+  than by that snapshot; a truncated rebuild may never converge. The smallest
+  correct fix is for the producer to forward the removed edit's `Redact` id
+  explicitly, which needs the timeline projection to remember the edit id it last
+  reported for an item.
+
+Rounds 4-6 also concluded that the Files-rebuild work (which exists only because
+M3's durable crawl commitments skip the crawl after a restart) is the source of
+most of the remaining review findings, and that M4's warmer is unproven on the
+path it was meant to speed up. Both are scope decisions for the maintainer: drop
+M3 and M4 (the PR becomes M2: index-first search and bounded memory) or keep them
+and finish the two items above.
+
 Also raised: migrate commitments already written without an acknowledgement, make the "rebuild
 search database" action actually rebuild the persistent index (the user help promises it), cover
 attachment edit rollback and mixed producers, measure pending-edit residency in the memory probe,
