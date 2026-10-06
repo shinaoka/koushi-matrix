@@ -291,7 +291,7 @@ jobs:
       # #1147: run the native ImageIO HEIC decoder for real. Linux CI only
       # type-checks this macOS-only adapter.
       - name: macOS ImageIO decoder tests
-        run: cargo test --profile ci -p koushi-desktop --test image_io_decoder --locked
+        run: cargo test --profile ci -p koushi-desktop --test image_io_decoder --locked -- --nocapture
 
   core-invites:
     # Prove invitation projection through the sole Simplified Sliding Sync
