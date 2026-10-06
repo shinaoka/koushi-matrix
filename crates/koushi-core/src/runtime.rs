@@ -4314,6 +4314,7 @@ impl AppActor {
                         let effects = self
                             .reduce_app_action(AppAction::SearchSubmitted {
                                 request_id: request_id.sequence,
+                                connection_id: request_id.connection_id.0,
                                 query: query.clone(),
                                 scope: search_scope_to_state(&scope),
                             })
@@ -4582,9 +4583,23 @@ impl AppActor {
                     if effect_request_id != request_id.sequence {
                         continue;
                     }
-                    // The state now owns this query; the transition that
-                    // replaces it settles it as superseded.
-                    self.active_search_request = Some(ActiveSearchRequest::dispatched(request_id));
+                    // The state now owns this query. Replacing the owner retires
+                    // the previous request: the state no longer names it, so it
+                    // can never settle through the reducer, and its caller must
+                    // be told here. This also covers two connections whose
+                    // connection-local sequences collide.
+                    if let Some(previous) = self
+                        .active_search_request
+                        .replace(ActiveSearchRequest::dispatched(request_id))
+                        && previous.request_id != request_id
+                        && !previous.settled
+                    {
+                        self.emit(CoreEvent::IntentLifecycle {
+                            request_id: previous.request_id,
+                            outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                            published_generation: self.state_generation,
+                        });
+                    }
                     let _ = self
                         .account_actor
                         .send(crate::account::AccountMessage::SearchQuery {

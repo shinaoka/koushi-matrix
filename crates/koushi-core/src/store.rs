@@ -18,7 +18,6 @@ mod navigation;
 mod read_state;
 mod room_preferences;
 mod scheduled_sends;
-pub(crate) mod search_crawl;
 #[cfg(test)]
 mod test_support;
 
@@ -1080,6 +1079,14 @@ impl StoreActor {
     }
 }
 
+/// Version of the persistent search-index contract.
+///
+/// Bump when an index or extraction change means documents written by the old
+/// behavior must not be reused. The version names the account's index directory,
+/// so a bump opens a fresh index: `RoomIndex::add` skips an event that is already
+/// present, so re-crawling alone would never rewrite it.
+pub(crate) const SEARCH_INDEX_CONTRACT_VERSION: u32 = 2;
+
 /// Directory name of the per-account persistent ngram index.
 ///
 /// Carries the index contract version, so a version bump opens a fresh empty
@@ -1091,10 +1098,7 @@ impl StoreActor {
 /// deleted here (it goes away with the account store root on logout), because
 /// deleting files under a possibly still-open encrypted index is not safe.
 fn search_index_dir_name() -> String {
-    format!(
-        "search-index.v{}",
-        crate::store::search_crawl::SEARCH_CRAWL_BACKEND_VERSION
-    )
+    format!("search-index.v{SEARCH_INDEX_CONTRACT_VERSION}")
 }
 
 /// Convert a `SessionInfo` (from koushi-state) into a `SessionKeyId`

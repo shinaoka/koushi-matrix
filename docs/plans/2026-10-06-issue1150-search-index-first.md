@@ -253,6 +253,13 @@ five further defects; round 6 confirmed those fixes and left three items:
   explicitly, which needs the timeline projection to remember the edit id it last
   reported for an item.
 
+**Update: M3 was dropped from this PR** (`search_crawl.rs`, the durable record,
+its seeding/pruning and the per-query Files rebuild that existed only to
+compensate for the skipped crawl are removed; the crawler runs on every startup
+as before). #3/#4/#5/#6, the Files-rebuild findings and the rollback-convergence
+blocker go with it. The index-contract version stays as a directory tag so an
+extraction change still opens a fresh index.
+
 Rounds 4-6 also concluded that the Files-rebuild work (which exists only because
 M3's durable crawl commitments skip the crawl after a restart) is the source of
 most of the remaining review findings, and that M4's warmer is unproven on the

@@ -1435,6 +1435,7 @@ async fn a_superseded_search_request_settles_as_a_benign_no_op() {
     actor
         .reduce_app_action(AppAction::SearchSubmitted {
             request_id: latest.sequence,
+            connection_id: latest.connection_id.0,
             query: "second".to_owned(),
             scope: koushi_state::SearchScope::AllRooms,
         })
@@ -1465,6 +1466,7 @@ async fn a_superseded_search_request_settles_as_a_benign_no_op() {
     actor
         .reduce_app_action(AppAction::SearchSucceeded {
             request_id: latest.sequence,
+            connection_id: latest.connection_id.0,
             query: "second".to_owned(),
             scope: koushi_state::SearchScope::AllRooms,
             results: Vec::new(),
@@ -1500,6 +1502,75 @@ async fn a_superseded_search_request_settles_as_a_benign_no_op() {
 }
 
 #[tokio::test]
+async fn a_second_connection_with_the_same_sequence_settles_the_first_request() {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let session = SessionInfo {
+        homeserver: "https://example.invalid".to_owned(),
+        user_id: "@synthetic:example.invalid".to_owned(),
+        device_id: "SYNTHETIC".to_owned(),
+        authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+    };
+    let state = AppState {
+        session: SessionState::Ready(session),
+        ..AppState::default()
+    };
+    let (mut actor, _command_tx, _action_tx, _account_rx, mut event_rx, ..) =
+        app_actor_event_navigation_fixture(data_dir.path(), state);
+    let first = RequestId {
+        connection_id: RuntimeConnectionId(1),
+        sequence: 1,
+    };
+    let second = RequestId {
+        connection_id: RuntimeConnectionId(2),
+        sequence: 1,
+    };
+
+    // Both connections start at sequence one. Dispatching the second replaces
+    // the owner of the first, which can then never settle through the reducer.
+    actor.active_search_request = Some(ActiveSearchRequest::dispatched(first));
+    actor
+        .handle_app_effects(
+            first,
+            vec![AppEffect::SearchMessages {
+                request_id: first.sequence,
+                query: "needle".to_owned(),
+                scope: koushi_state::SearchScope::AllRooms,
+                room_filter: koushi_state::SearchRoomFilter::AllRooms,
+                content_policy: koushi_state::SearchCrawlerSettings::default(),
+            }],
+        )
+        .await;
+    actor
+        .handle_app_effects(
+            second,
+            vec![AppEffect::SearchMessages {
+                request_id: second.sequence,
+                query: "needle".to_owned(),
+                scope: koushi_state::SearchScope::AllRooms,
+                room_filter: koushi_state::SearchRoomFilter::AllRooms,
+                content_policy: koushi_state::SearchCrawlerSettings::default(),
+            }],
+        )
+        .await;
+
+    // The first connection's request must have been settled when it was replaced.
+    let settled = event_rx
+        .try_recv()
+        .expect("the replaced request must settle");
+    assert!(
+        matches!(
+            settled,
+            CoreEvent::IntentLifecycle {
+                request_id,
+                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                ..
+            } if request_id == first
+        ),
+        "unexpected settlement: {settled:?}"
+    );
+}
+
+#[tokio::test]
 async fn an_admitted_search_result_publishes_one_terminal_event() {
     let data_dir = tempfile::tempdir().expect("runtime data directory");
     let session = SessionInfo {
@@ -1521,6 +1592,7 @@ async fn an_admitted_search_result_publishes_one_terminal_event() {
     actor.active_search_request = Some(ActiveSearchRequest::dispatched(request));
     actor.reduce_app_action_state(AppAction::SearchSubmitted {
         request_id: request.sequence,
+        connection_id: request.connection_id.0,
         query: "needle".to_owned(),
         scope: koushi_state::SearchScope::AllRooms,
     });
@@ -1529,6 +1601,7 @@ async fn an_admitted_search_result_publishes_one_terminal_event() {
     // publication of that very result still needs the request identity.
     let (effects, _) = actor.reduce_app_action_state(AppAction::SearchSucceeded {
         request_id: request.sequence,
+        connection_id: request.connection_id.0,
         query: "needle".to_owned(),
         scope: koushi_state::SearchScope::AllRooms,
         results: Vec::new(),

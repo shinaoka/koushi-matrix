@@ -48,6 +48,7 @@ pub(crate) fn handle_search_edited(
 pub(crate) fn handle_search_submitted(
     state: &mut AppState,
     request_id: u64,
+    connection_id: u64,
     query: String,
     scope: SearchScope,
 ) -> Vec<AppEffect> {
@@ -72,6 +73,7 @@ pub(crate) fn handle_search_submitted(
 
     let room_filter = search_room_filter(state, &scope);
     let content_policy = state.settings.values.search_crawler.clone();
+    state.search_request_connection_id = Some(connection_id);
     state.search = SearchState::Searching {
         request_id,
         query: query.clone(),
@@ -92,6 +94,7 @@ pub(crate) fn handle_search_submitted(
 pub(crate) fn handle_search_succeeded(
     state: &mut AppState,
     request_id: u64,
+    connection_id: u64,
     response_query: String,
     response_scope: crate::state::SearchScope,
     results: Vec<crate::state::SearchResult>,
@@ -113,6 +116,7 @@ pub(crate) fn handle_search_succeeded(
     };
 
     if current_request_id != request_id
+        || state.search_request_connection_id != Some(connection_id)
         || response_query != current_query
         || response_scope != current_scope
     {
@@ -138,6 +142,7 @@ pub(crate) fn handle_search_succeeded(
 pub(crate) fn handle_search_failed(
     state: &mut AppState,
     request_id: u64,
+    connection_id: u64,
     response_query: String,
     response_scope: crate::state::SearchScope,
     message: String,
@@ -156,6 +161,7 @@ pub(crate) fn handle_search_failed(
     };
 
     if current_request_id != request_id
+        || state.search_request_connection_id != Some(connection_id)
         || response_query != current_query
         || response_scope != current_scope
     {
@@ -176,6 +182,7 @@ pub(crate) fn handle_search_closed(state: &mut AppState) -> Vec<AppEffect> {
         return Vec::new();
     }
 
+    state.search_request_connection_id = None;
     state.search = SearchState::Closed;
     vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
 }

@@ -83,19 +83,47 @@ enum SearchRequestStatus {
     Superseded,
 }
 
-fn search_request_status(search: &SearchState, sequence: u64) -> SearchRequestStatus {
+fn search_request_status(
+    search: &SearchState,
+    request_id: &koushi_protocol::ids::RequestId,
+    state_connection_id: Option<u64>,
+) -> SearchRequestStatus {
+    // A sequence is connection-local and every connection starts at one, so the
+    // connection that submitted the request is part of its identity.
+    let owns = |state_request_id: &u64| {
+        *state_request_id == request_id.sequence
+            && state_connection_id == Some(request_id.connection_id.0)
+    };
     match search {
-        SearchState::TooShort { request_id, .. } | SearchState::Searching { request_id, .. }
-            if *request_id == sequence =>
-        {
-            SearchRequestStatus::Awaiting
+        SearchState::TooShort {
+            request_id: state_request_id,
+            ..
         }
-        SearchState::Results { request_id, .. } | SearchState::Failed { request_id, .. }
-            if *request_id == sequence =>
-        {
-            SearchRequestStatus::Settled
+        | SearchState::Searching {
+            request_id: state_request_id,
+            ..
+        } => {
+            if owns(state_request_id) {
+                SearchRequestStatus::Awaiting
+            } else {
+                SearchRequestStatus::Superseded
+            }
         }
-        _ => SearchRequestStatus::Superseded,
+        SearchState::Results {
+            request_id: state_request_id,
+            ..
+        }
+        | SearchState::Failed {
+            request_id: state_request_id,
+            ..
+        } => {
+            if owns(state_request_id) {
+                SearchRequestStatus::Settled
+            } else {
+                SearchRequestStatus::Superseded
+            }
+        }
+        SearchState::Closed | SearchState::Editing { .. } => SearchRequestStatus::Superseded,
     }
 }
 
@@ -348,7 +376,11 @@ impl super::AppActor {
         // request identity no longer matches. Settle it at the transition that
         // left it behind, so a caller awaiting the request stops waiting.
         if let Some(active) = self.active_search_request {
-            match search_request_status(&self.state.search, active.request_id.sequence) {
+            match search_request_status(
+                &self.state.search,
+                &active.request_id,
+                self.state.search_request_connection_id,
+            ) {
                 // Still in flight: this transition did not touch it.
                 SearchRequestStatus::Awaiting => {}
                 // The request produced its own result. Nothing to settle, and a

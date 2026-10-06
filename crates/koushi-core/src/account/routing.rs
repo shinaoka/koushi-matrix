@@ -447,6 +447,7 @@ impl AccountActor {
             .action_tx
             .send(vec![AppAction::SearchFailed {
                 request_id: request_id.sequence,
+                connection_id: request_id.connection_id.0,
                 query: query.to_owned(),
                 scope: search_scope_to_state(scope),
                 message: message.to_owned(),

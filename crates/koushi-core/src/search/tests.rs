@@ -139,39 +139,6 @@ fn verified_candidate(
     }
 }
 
-#[test]
-fn committed_rooms_seed_the_completed_map_for_the_current_backend_version() {
-    let policy = crate::store::search_crawl::CrawlContentPolicy::new(false, false);
-    let mut progress = crate::store::search_crawl::SearchCrawlProgress::new();
-    progress.commit(
-        "!room-a:test".to_owned(),
-        crate::store::search_crawl::CommittedRoomCrawl {
-            latest_event_id: Some("$e9".to_owned()),
-            processed: 12,
-            indexed: 7,
-        },
-        policy,
-    );
-
-    let completed = completed_rooms_from_committed(&progress, policy);
-
-    assert_eq!(completed.len(), 1);
-    let crawl = completed.get("!room-a:test").expect("seeded room");
-    assert_eq!(crawl.latest_event_id.as_deref(), Some("$e9"));
-    assert_eq!(crawl.processed, 12);
-    assert_eq!(crawl.indexed, 7);
-
-    // A different content policy invalidates the same record.
-    assert!(
-        completed_rooms_from_committed(
-            &progress,
-            crate::store::search_crawl::CrawlContentPolicy::new(true, false)
-        )
-        .is_empty(),
-        "a commitment recorded under another content policy must not be trusted"
-    );
-}
-
 #[tokio::test]
 async fn search_actor_shutdown_waits_for_actor_task_settlement() {
     let (tx, mut rx) = mpsc::channel(1);
@@ -307,184 +274,6 @@ fn search_verify_event_preserves_private_data_free_scan_and_duration_fields() {
     );
 }
 
-#[tokio::test]
-async fn files_rows_are_rebuilt_from_the_persisted_event_cache() {
-    use matrix_sdk::ruma::{event_id, owned_mxc_uri, room_id, user_id};
-    use matrix_sdk_test::{JoinedRoomBuilder, event_factory::EventFactory};
-
-    let server = matrix_sdk::test_utils::mocks::MatrixMockServer::new().await;
-    let client = server.client_builder().build().await;
-    let room_id = room_id!("!files-refresh:example.invalid");
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
-    let factory = EventFactory::new()
-        .room(room_id)
-        .sender(user_id!("@alice:example.invalid"));
-    server
-        .mock_sync()
-        .ok_and_run(&client, |builder| {
-            builder.add_joined_room(
-                JoinedRoomBuilder::new(room_id)
-                    .add_timeline_event(
-                        factory
-                            .text_msg("no attachment here")
-                            .event_id(event_id!("$plain")),
-                    )
-                    .add_timeline_event(
-                        factory
-                            .image(
-                                "agenda.pdf".to_owned(),
-                                owned_mxc_uri!("mxc://example.invalid/agenda"),
-                            )
-                            .event_id(event_id!("$with-attachment")),
-                    ),
-            );
-        })
-        .await;
-
-    let session_info = koushi_state::SessionInfo {
-        homeserver: server.server().uri(),
-        user_id: client.user_id().expect("mock client user id").to_string(),
-        device_id: client
-            .device_id()
-            .expect("mock client device id")
-            .to_string(),
-        authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
-    };
-    let session = MatrixClientSession::from_client_for_testing(client.clone(), session_info);
-
-    // The room's crawl is already committed, so this paged store read is the
-    // only source of its Files rows after a restart.
-    let mut events = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = koushi_sdk::persisted_room_event_page(&session, room_id.as_str(), cursor, 500)
-            .await
-            .expect("the persisted event cache should be readable");
-        events.extend(page.events);
-        match page.next {
-            Some(next) => cursor = Some(next),
-            None => break,
-        }
-    }
-    assert_eq!(events.len(), 2, "both synced events are persisted");
-    assert!(
-        events.iter().any(|event| event
-            .event_id()
-            .is_some_and(|id| id.as_str() == "$with-attachment")),
-        "the paged read returns the room's events"
-    );
-
-    // A page budget stops at a chunk boundary and hands out a cursor, so a
-    // caller never holds the store lock for a whole room.
-    let first = koushi_sdk::persisted_room_event_page(&session, room_id.as_str(), None, 1)
-        .await
-        .expect("bounded page");
-    assert_eq!(first.events.len(), 2, "one chunk is returned whole");
-    let next = first.next.expect("a bounded page hands out a cursor");
-    let last = koushi_sdk::persisted_room_event_page(&session, room_id.as_str(), Some(next), 1)
-        .await
-        .expect("continuation page");
-    assert!(last.events.is_empty() && last.next.is_none());
-
-    let messages = attachment_messages_from_events(
-        room_id.as_str(),
-        &events,
-        &SearchCrawlerSettings::default(),
-    );
-    let attachments: Vec<_> = messages
-        .iter()
-        .filter_map(|message| match message {
-            SearchIndexMessage::Upsert {
-                event_id,
-                attachment: Some(attachment),
-                attachment_filename,
-                ..
-            } => Some((
-                event_id.clone(),
-                attachment.clone(),
-                attachment_filename.clone(),
-            )),
-            _ => None,
-        })
-        .collect();
-
-    assert_eq!(
-        attachments.len(),
-        1,
-        "only the media message carries attachment metadata"
-    );
-    assert!(
-        messages.iter().any(|message| matches!(
-            message,
-            SearchIndexMessage::Upsert {
-                event_id,
-                attachment: None,
-                ..
-            } if event_id == "$plain"
-        )),
-        "a message without an attachment projects without one and is not retained"
-    );
-    assert_eq!(attachments[0].0, "$with-attachment");
-    assert_eq!(attachments[0].1.filename.as_str(), "agenda.pdf");
-    assert_eq!(attachments[0].2.as_deref(), Some("agenda.pdf"));
-}
-
-#[test]
-fn the_files_refresh_applies_the_content_policy() {
-    let media = timeline_event_from_json(serde_json::json!({
-        "type": "m.room.message",
-        "event_id": "$image:test",
-        "room_id": "!r:test",
-        "sender": "@alice:test",
-        "origin_server_ts": 1_000,
-        "content": {
-            "msgtype": "m.image",
-            "body": "agenda.pdf",
-            "url": "mxc://example.invalid/agenda",
-        },
-    }));
-
-    let with_filenames = SearchCrawlerSettings {
-        include_media_captions: true,
-        include_filenames: true,
-        ..SearchCrawlerSettings::default()
-    };
-    let without_filenames = SearchCrawlerSettings {
-        include_media_captions: true,
-        include_filenames: false,
-        ..SearchCrawlerSettings::default()
-    };
-
-    let rows = |settings| {
-        attachment_messages_from_events("!r:test", std::slice::from_ref(&media), settings)
-            .into_iter()
-            .filter(|message| {
-                matches!(
-                    message,
-                    SearchIndexMessage::Upsert {
-                        attachment: Some(_),
-                        ..
-                    }
-                )
-            })
-            .count()
-    };
-
-    assert_eq!(
-        rows(&with_filenames),
-        1,
-        "a filename opt-in yields a Files row"
-    );
-    assert_eq!(
-        rows(&without_filenames),
-        0,
-        "an opted-out filename must not reach the Files view"
-    );
-}
-
 #[test]
 fn only_a_content_policy_change_invalidates_an_in_flight_query() {
     let base = SearchCrawlerSettings::default();
@@ -507,205 +296,6 @@ fn only_a_content_policy_change_invalidates_an_in_flight_query() {
     );
     assert!(content_policy_changed(&base, &captions_off));
     assert!(content_policy_changed(&base, &filenames_off));
-}
-
-#[test]
-fn the_files_refresh_ignores_a_replacement_from_another_sender() {
-    let settings = SearchCrawlerSettings::default();
-    let original = timeline_event_from_json(serde_json::json!({
-        "type": "m.room.message",
-        "event_id": "$photo:test",
-        "room_id": "!r:test",
-        "sender": "@alice:test",
-        "origin_server_ts": 1_000,
-        "content": {
-            "msgtype": "m.file",
-            "body": "original.pdf",
-            "url": "mxc://example.invalid/original",
-        },
-    }));
-    let replacement = |sender: &str| {
-        timeline_event_from_json(serde_json::json!({
-            "type": "m.room.message",
-            "event_id": "$edit:test",
-            "room_id": "!r:test",
-            "sender": sender,
-            "origin_server_ts": 2_000,
-            "content": {
-                "msgtype": "m.file",
-                "body": "attacker.pdf",
-                "url": "mxc://example.invalid/attacker",
-                "m.relates_to": {"rel_type": "m.replace", "event_id": "$photo:test"},
-                "m.new_content": {
-                    "msgtype": "m.file",
-                    "body": "attacker.pdf",
-                    "url": "mxc://example.invalid/attacker",
-                },
-            },
-        }))
-    };
-
-    let filenames = |sender: &str| {
-        attachment_messages_from_events(
-            "!r:test",
-            &[original.clone(), replacement(sender)],
-            &settings,
-        )
-        .into_iter()
-        .filter_map(|message| match message {
-            SearchIndexMessage::Edit {
-                attachment_filename,
-                ..
-            } => attachment_filename,
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-    };
-
-    assert_eq!(
-        filenames("@mallory:test"),
-        Vec::<String>::new(),
-        "another sender's replacement must not reach the row"
-    );
-    assert_eq!(filenames("@alice:test"), vec!["attacker.pdf".to_owned()]);
-}
-
-fn timeline_event_from_json(
-    json: serde_json::Value,
-) -> matrix_sdk::deserialized_responses::TimelineEvent {
-    matrix_sdk::deserialized_responses::TimelineEvent::from_plaintext(
-        matrix_sdk::ruma::serde::Raw::from_json_string(json.to_string()).expect("raw event"),
-    )
-}
-
-#[test]
-fn forgetting_a_room_replaces_its_rows_on_rebuild() {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_message(
-        make_attachment_event("!a:test", "$e1", "original.pdf"),
-        true,
-        None,
-    );
-    store.upsert_message(
-        make_attachment_event("!b:test", "$e2", "other.pdf"),
-        true,
-        None,
-    );
-    store.upsert_edit(make_edit_at("$e1", "$edit1", 2_000, "renamed.pdf"), true);
-    let room_filename = |store: &SearchDocumentStore, room_id: &str| {
-        attachment_rows(store)
-            .into_iter()
-            .find(|row| row.room_id == room_id)
-            .map(|row| row.filename)
-    };
-    assert_eq!(
-        room_filename(&store, "!a:test").as_deref(),
-        Some("renamed.pdf")
-    );
-
-    // The Files rebuild replaces the queried room's rows from the current cache.
-    store.forget_room("!a:test");
-    assert_eq!(
-        attachment_rows(&store).len(),
-        1,
-        "only the other room remains"
-    );
-    assert_eq!(room_filename(&store, "!a:test"), None);
-    assert_eq!(
-        room_filename(&store, "!b:test").as_deref(),
-        Some("other.pdf")
-    );
-
-    // What the cache still produces (the original, the rename having been
-    // redacted) is what the rebuilt row shows.
-    store.upsert_message(
-        make_attachment_event("!a:test", "$e1", "original.pdf"),
-        false,
-        None,
-    );
-    assert_eq!(
-        room_filename(&store, "!a:test").as_deref(),
-        Some("original.pdf")
-    );
-}
-
-// Helper constructors
-fn make_event(room_id: &str, event_id: &str, body: &str) -> SearchableEvent {
-    SearchableEvent {
-        room_id: room_id.to_owned(),
-        event_id: event_id.to_owned(),
-        sender: "@alice:test".to_owned(),
-        timestamp_ms: 1000,
-        body: Some(SensitiveString::new(body.to_owned())),
-        attachment_filename: None,
-        attachment: None,
-    }
-}
-
-fn make_attachment_event(room_id: &str, event_id: &str, filename: &str) -> SearchableEvent {
-    SearchableEvent {
-        room_id: room_id.to_owned(),
-        event_id: event_id.to_owned(),
-        sender: "@alice:test".to_owned(),
-        timestamp_ms: 1000,
-        body: None,
-        attachment_filename: Some(SensitiveString::new(filename.to_owned())),
-        attachment: Some(attachment_document(filename)),
-    }
-}
-
-fn attachment_document(filename: &str) -> koushi_search::AttachmentDocument {
-    koushi_search::AttachmentDocument {
-        kind: koushi_state::AttachmentKind::File,
-        msgtype: "m.file".to_owned(),
-        mimetype: Some("application/pdf".to_owned()),
-        size: Some(1024),
-        source_mxc: "mxc://example.invalid/source".to_owned(),
-        thumbnail_mxc: None,
-        filename: SensitiveString::new(filename.to_owned()),
-        thread_root: None,
-        encrypted: false,
-        encryption_version: None,
-        width: None,
-        height: None,
-        is_edited: false,
-    }
-}
-
-fn make_attachment_edit(target: &str, filename: &str) -> SearchEdit {
-    SearchEdit {
-        edit_event_id: format!("{target}_edit"),
-        target_event_id: target.to_owned(),
-        sender: "@alice:test".to_owned(),
-        timestamp_ms: 2000,
-        body: None,
-        attachment_filename: Some(SensitiveString::new(filename.to_owned())),
-        attachment: None,
-    }
-}
-
-/// An edit as a producer would report it: the edit event's own time and id.
-fn make_edit_at(
-    target: &str,
-    edit_event_id: &str,
-    timestamp_ms: u64,
-    filename: &str,
-) -> SearchEdit {
-    SearchEdit {
-        edit_event_id: edit_event_id.to_owned(),
-        target_event_id: target.to_owned(),
-        sender: "@alice:test".to_owned(),
-        timestamp_ms,
-        body: None,
-        attachment_filename: Some(SensitiveString::new(filename.to_owned())),
-        attachment: None,
-    }
-}
-
-fn first_filename(store: &SearchDocumentStore) -> Option<String> {
-    attachment_rows(store)
-        .first()
-        .map(|row| row.filename.clone())
 }
 
 #[test]
@@ -960,6 +550,85 @@ fn an_edit_before_its_message_keeps_the_newest_of_the_pending_edits() {
 
     assert_eq!(store.pending_edit_count(), 0);
     assert_eq!(first_filename(&store).as_deref(), Some("newer.pdf"));
+}
+
+// Helper constructors
+fn make_event(room_id: &str, event_id: &str, body: &str) -> SearchableEvent {
+    SearchableEvent {
+        room_id: room_id.to_owned(),
+        event_id: event_id.to_owned(),
+        sender: "@alice:test".to_owned(),
+        timestamp_ms: 1000,
+        body: Some(SensitiveString::new(body.to_owned())),
+        attachment_filename: None,
+        attachment: None,
+    }
+}
+
+fn make_attachment_event(room_id: &str, event_id: &str, filename: &str) -> SearchableEvent {
+    SearchableEvent {
+        room_id: room_id.to_owned(),
+        event_id: event_id.to_owned(),
+        sender: "@alice:test".to_owned(),
+        timestamp_ms: 1000,
+        body: None,
+        attachment_filename: Some(SensitiveString::new(filename.to_owned())),
+        attachment: Some(attachment_document(filename)),
+    }
+}
+
+fn attachment_document(filename: &str) -> koushi_search::AttachmentDocument {
+    koushi_search::AttachmentDocument {
+        kind: koushi_state::AttachmentKind::File,
+        msgtype: "m.file".to_owned(),
+        mimetype: Some("application/pdf".to_owned()),
+        size: Some(1024),
+        source_mxc: "mxc://example.invalid/source".to_owned(),
+        thumbnail_mxc: None,
+        filename: SensitiveString::new(filename.to_owned()),
+        thread_root: None,
+        encrypted: false,
+        encryption_version: None,
+        width: None,
+        height: None,
+        is_edited: false,
+    }
+}
+
+fn make_attachment_edit(target: &str, filename: &str) -> SearchEdit {
+    SearchEdit {
+        edit_event_id: format!("{target}_edit"),
+        target_event_id: target.to_owned(),
+        sender: "@alice:test".to_owned(),
+        timestamp_ms: 2000,
+        body: None,
+        attachment_filename: Some(SensitiveString::new(filename.to_owned())),
+        attachment: None,
+    }
+}
+
+/// An edit as a producer would report it: the edit event's own time and id.
+fn make_edit_at(
+    target: &str,
+    edit_event_id: &str,
+    timestamp_ms: u64,
+    filename: &str,
+) -> SearchEdit {
+    SearchEdit {
+        edit_event_id: edit_event_id.to_owned(),
+        target_event_id: target.to_owned(),
+        sender: "@alice:test".to_owned(),
+        timestamp_ms,
+        body: None,
+        attachment_filename: Some(SensitiveString::new(filename.to_owned())),
+        attachment: None,
+    }
+}
+
+fn first_filename(store: &SearchDocumentStore) -> Option<String> {
+    attachment_rows(store)
+        .first()
+        .map(|row| row.filename.clone())
 }
 
 fn attachment_rows(store: &SearchDocumentStore) -> Vec<koushi_state::AttachmentResult> {

@@ -387,40 +387,11 @@ impl AccountActor {
         // index (configured in restore_into_store / the client builder). The
         // search actor gets an mpsc::Sender<SearchIndexMessage> which will be
         // forwarded to the TimelineManagerActor below.
-        // Durable crawl commitments: a restart resumes instead of crawling the
-        // same history again. A read failure is reported and treated as "no
-        // commitments yet", because re-crawling is correct, only slower.
-        let crawl_durability = match self.session_key_id.clone() {
-            Some(key_id) => {
-                let store = self.store.clone();
-                let load_key_id = key_id.clone();
-                match executor::spawn_blocking(move || {
-                    store.load_search_crawl_progress(&load_key_id)
-                })
-                .await
-                {
-                    Ok(Ok(progress)) => crate::search::SearchCrawlDurability {
-                        progress,
-                        store: Some((self.store.clone(), key_id)),
-                    },
-                    // An unreadable record means "crawl again", but the account
-                    // must still be able to persist the fresh commitments it
-                    // earns in this session; disabling the store here would
-                    // forget them on every restart.
-                    Ok(Err(_)) | Err(_) => crate::search::SearchCrawlDurability {
-                        progress: crate::store::search_crawl::SearchCrawlProgress::new(),
-                        store: Some((self.store.clone(), key_id)),
-                    },
-                }
-            }
-            None => crate::search::SearchCrawlDurability::default(),
-        };
         let search_handle = crate::search::SearchActor::spawn(
             session.clone(),
             self.action_tx.clone(),
             self.event_tx.clone(),
             self.account_work.clone(),
-            crawl_durability,
         );
         let search_index_tx = search_handle.index_sender();
 

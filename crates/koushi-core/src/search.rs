@@ -64,12 +64,9 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::account_work::AccountWorkScheduler;
 use crate::command_policy::{SEARCH_UNAVAILABLE_MESSAGE, search_scope_to_state};
-use crate::store::StoreActor;
-use crate::store::search_crawl::{CommittedRoomCrawl, CrawlContentPolicy, SearchCrawlProgress};
 
 use crate::executor;
 use crate::search_crawler::{HistoryCrawlCheckpoint, HistoryCrawlPageResult};
-use koushi_protocol::SessionKeyId;
 use koushi_protocol::command::{SearchCommand, SearchScope};
 use koushi_protocol::event::{CoreEvent, SearchEvent, SearchResultItem};
 use koushi_protocol::failure::{CoreFailure, SearchFailureKind};
@@ -83,15 +80,6 @@ const SEARCH_CANDIDATE_PAGE: usize = 50;
 /// Upper bound on candidates examined for one query variant, so a query whose
 /// matches mostly fail verification still terminates with bounded work.
 const SEARCH_CANDIDATE_SCAN_BUDGET: usize = 500;
-/// Upper bound on the persisted events one room's Files rebuild projects.
-///
-/// The store is read in pages, so this bounds both the pages and the rows a
-/// single query spends; a room whose local history is deeper than this keeps the
-/// rest until its timeline is paged. Newest events win.
-const ATTACHMENT_REBUILD_MAX_EVENTS: usize = 10_000;
-/// Events requested per store read, so the event-cache store lock is released
-/// between pages instead of being held across a whole room.
-const ATTACHMENT_REBUILD_PAGE_EVENTS: usize = 500;
 /// Search index mutation queue capacity (canon, overview.md: 512).
 pub const SEARCH_INDEX_MUTATION_QUEUE: usize = 512;
 const SEARCH_ACTOR_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_secs(1);
@@ -594,48 +582,6 @@ impl Drop for SearchActorHandle {
 // Actor
 // ---------------------------------------------------------------------------
 
-/// Seed the in-session completed-room map from a durable crawl record.
-///
-/// Only commitments from the current backend version are adopted; anything else
-/// is re-crawled, which is what makes an index or extraction change a migration.
-fn completed_rooms_from_committed(
-    progress: &SearchCrawlProgress,
-    policy: CrawlContentPolicy,
-) -> HashMap<String, CompletedHistoryCrawl> {
-    progress
-        .committed_rooms(policy)
-        .into_iter()
-        .map(|(room_id, crawl)| {
-            (
-                room_id,
-                CompletedHistoryCrawl {
-                    latest_event_id: crawl.latest_event_id,
-                    processed: crawl.processed,
-                    indexed: crawl.indexed,
-                },
-            )
-        })
-        .collect()
-}
-
-/// Durable crawl-commit plumbing handed to the actor when it is spawned.
-///
-/// `store` is `None` when the account has no key id yet; the crawl then runs
-/// exactly as before but forgets its progress on a restart.
-pub(crate) struct SearchCrawlDurability {
-    pub progress: SearchCrawlProgress,
-    pub store: Option<(StoreActor, SessionKeyId)>,
-}
-
-impl Default for SearchCrawlDurability {
-    fn default() -> Self {
-        Self {
-            progress: SearchCrawlProgress::new(),
-            store: None,
-        }
-    }
-}
-
 pub(crate) struct SearchActor {
     session: Arc<MatrixClientSession>,
     document_store: SearchDocumentStore,
@@ -670,12 +616,6 @@ pub(crate) struct SearchActor {
     /// `handle_rooms_available` skips their auto-start unless their latest
     /// event changed since completion, which queues a catch-up (#996).
     completed_rooms: HashMap<String, CompletedHistoryCrawl>,
-    /// Durable record of the rooms whose crawl is committed to the index, so a
-    /// restart resumes instead of crawling the same history again.
-    crawl_progress: SearchCrawlProgress,
-    /// Where the durable record is written; `None` when no account key id is
-    /// available yet.
-    crawl_progress_store: Option<(StoreActor, SessionKeyId)>,
     /// Room id to latest event id from the newest `RoomsAvailable` snapshot.
     latest_event_ids: std::collections::BTreeMap<String, String>,
     /// Monotonically increasing generation counter. Incremented each time
@@ -745,17 +685,11 @@ impl SearchActor {
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
         account_work: AccountWorkScheduler,
-        durability: SearchCrawlDurability,
     ) -> SearchActorHandle {
         let (tx, msg_rx) = mpsc::channel(64);
         let (index_tx, index_rx) = mpsc::channel(SEARCH_INDEX_MUTATION_QUEUE);
 
-        // Rooms committed by an earlier run are already in the index, so they
-        // start completed and are only re-crawled for new events (#996). The
-        // record can only be judged once the account's content policy is known,
-        // so the set is seeded from the first settings-bearing notification.
-        let completed_rooms = HashMap::new();
-
+        let completed_rooms: HashMap<String, CompletedHistoryCrawl> = HashMap::new();
         let actor = SearchActor {
             session,
             document_store: SearchDocumentStore::default(),
@@ -772,8 +706,6 @@ impl SearchActor {
             active_crawl_page: None,
             active_crawl_checkpoint: None,
             completed_rooms,
-            crawl_progress: durability.progress,
-            crawl_progress_store: durability.store,
             latest_event_ids: std::collections::BTreeMap::new(),
             crawl_settings_generation: 0,
             crawl_delay_elapsed: false,
@@ -1133,13 +1065,12 @@ impl SearchActor {
     }
 
     async fn handle_attachments(
-        &mut self,
+        &self,
         request_id: RequestId,
         scope: AttachmentScope,
         filter: AttachmentFilter,
         sort: AttachmentSort,
     ) {
-        self.refresh_attachment_rows(&scope).await;
         let results = self.document_store.attachments(&scope, &filter, sort);
 
         let _ = self
@@ -1168,6 +1099,7 @@ impl SearchActor {
             .action_tx
             .send(vec![AppAction::SearchSucceeded {
                 request_id: request_id.sequence,
+                connection_id: request_id.connection_id.0,
                 query: query.to_owned(),
                 scope: search_scope_to_state(scope),
                 results,
@@ -1187,6 +1119,7 @@ impl SearchActor {
             .action_tx
             .send(vec![AppAction::SearchFailed {
                 request_id: request_id.sequence,
+                connection_id: request_id.connection_id.0,
                 query: query.to_owned(),
                 scope: search_scope_to_state(scope),
                 message: SEARCH_UNAVAILABLE_MESSAGE.to_owned(),
@@ -1196,85 +1129,6 @@ impl SearchActor {
             request_id,
             failure: CoreFailure::SearchFailed { kind },
         });
-    }
-
-    /// Rebuild the queried scope's attachment rows from the persisted event
-    /// cache.
-    ///
-    /// A room whose history crawl was already committed is not crawled again
-    /// after a restart (#1150 M3), so the Files view is what keeps its rows
-    /// current: every query rebuilds the rows of the rooms it asks about from
-    /// the local encrypted store, which is the same source the crawler reads and
-    /// is current for edits and redactions the timeline never reported. A room's
-    /// rows are replaced, not merged, so a row the current cache no longer
-    /// produces cannot survive. Only the local store is read (no network), one
-    /// bounded page at a time, and the store lock is released between pages.
-    async fn refresh_attachment_rows(&mut self, scope: &AttachmentScope) {
-        let room_ids = match scope {
-            AttachmentScope::Account => self
-                .session
-                .client()
-                .rooms()
-                .into_iter()
-                .map(|room| room.room_id().to_string())
-                .collect::<Vec<_>>(),
-            AttachmentScope::Room { room_id } => vec![room_id.clone()],
-            AttachmentScope::Space { child_room_ids, .. } => child_room_ids.clone(),
-        };
-
-        for room_id in room_ids {
-            self.rebuild_attachment_rows(&room_id).await;
-        }
-    }
-
-    /// Replace one room's attachment rows from its persisted events.
-    ///
-    /// A failed read leaves the room's rows alone; the next Files query reads
-    /// again.
-    async fn rebuild_attachment_rows(&mut self, room_id: &str) {
-        let mut cursor = None;
-        let mut remaining = ATTACHMENT_REBUILD_MAX_EVENTS;
-        let mut events = Vec::new();
-        let mut complete = true;
-        loop {
-            let Ok(page) = koushi_sdk::persisted_room_event_page(
-                &self.session,
-                room_id,
-                cursor.clone(),
-                ATTACHMENT_REBUILD_PAGE_EVENTS,
-            )
-            .await
-            else {
-                // A failed page leaves the room's rows alone.
-                return;
-            };
-            remaining = remaining.saturating_sub(page.events.len());
-            events.extend(page.events);
-            match page.next {
-                Some(next) if remaining > 0 => cursor = Some(next),
-                // The budget ran out, so the read covers only the newest part.
-                Some(_) => {
-                    complete = false;
-                    break;
-                }
-                None => break,
-            }
-        }
-
-        // A replacement is only visible against the message it replaces, and an
-        // edit and its original can sit in different pages, so the bounded
-        // collection is projected as one set.
-        let messages = attachment_messages_from_events(room_id, &events, &self.crawler_settings);
-        if complete {
-            // The read covered the room, so a row it does not reproduce no
-            // longer exists in the cache (a redacted edit, a removed event).
-            self.document_store.forget_room(room_id);
-        }
-        // A partial read must not drop the rows it did not cover, nor the richer
-        // metadata a timeline observation supplied for them.
-        for message in messages {
-            self.apply_index_message(message);
-        }
     }
 
     /// Whether the account's content policy excludes this attachment metadata.
@@ -1390,7 +1244,6 @@ impl SearchActor {
         // Files projection follow the account's policy, which arrives with a
         // query and with the room-list notification, so a caller-supplied crawl
         // policy cannot widen what a search may match.
-        self.seed_committed_rooms();
         self.remove_history_crawl_room(&room_id).await;
         self.completed_rooms.remove(&room_id);
         if settings.speed == SearchCrawlerSpeed::Paused {
@@ -1434,7 +1287,6 @@ impl SearchActor {
         // The account's content policy applies to queries even while the
         // crawler is paused, so record it before the speed check.
         self.set_crawler_settings(settings.clone());
-        self.seed_committed_rooms();
 
         // Membership changes prune the crawl set (and its durable record) even
         // while the crawler is paused; otherwise a departed room stays
@@ -1629,9 +1481,7 @@ impl SearchActor {
                         indexed: checkpoint.indexed,
                     };
                     self.completed_rooms
-                        .insert(checkpoint.room_id.clone(), crawl.clone());
-                    self.commit_crawl_progress(checkpoint.room_id.clone(), crawl)
-                        .await;
+                        .insert(checkpoint.room_id.clone(), crawl);
                     let _ = self
                         .action_tx
                         .send(vec![AppAction::HistoryCrawlCompleted {
@@ -1707,62 +1557,6 @@ impl SearchActor {
         self.crawler_settings = settings;
     }
 
-    /// Content policy the durable commitments are keyed by.
-    fn crawl_content_policy(&self) -> CrawlContentPolicy {
-        CrawlContentPolicy::new(
-            self.crawler_settings.include_media_captions,
-            self.crawler_settings.include_filenames,
-        )
-    }
-
-    /// Adopt durable crawl commitments once the account's content policy is known.
-    ///
-    /// Seeding when the actor starts would use the restrictive placeholder
-    /// policy and reject every commitment, so this waits for the first
-    /// notification (or manual crawl) that carries the account's own settings.
-    /// A completion recorded in this session wins over the durable one.
-    fn seed_committed_rooms(&mut self) {
-        let policy = self.crawl_content_policy();
-        for (room_id, crawl) in completed_rooms_from_committed(&self.crawl_progress, policy) {
-            self.completed_rooms.entry(room_id).or_insert(crawl);
-        }
-    }
-
-    /// Record a finished room in the durable crawl record.
-    async fn commit_crawl_progress(&mut self, room_id: String, crawl: CompletedHistoryCrawl) {
-        let policy = self.crawl_content_policy();
-        self.crawl_progress.commit(
-            room_id,
-            CommittedRoomCrawl {
-                latest_event_id: crawl.latest_event_id,
-                processed: crawl.processed,
-                indexed: crawl.indexed,
-            },
-            policy,
-        );
-        self.save_crawl_progress().await;
-    }
-
-    /// Persist the durable crawl record.
-    ///
-    /// The file holds identifiers and counters only, and a failed write is
-    /// reported without stopping the crawl: crawling again is the fallback.
-    async fn save_crawl_progress(&mut self) {
-        let Some((store, key_id)) = self.crawl_progress_store.clone() else {
-            return;
-        };
-        let progress = self.crawl_progress.clone();
-        let outcome =
-            executor::spawn_blocking(move || store.save_search_crawl_progress(&key_id, &progress))
-                .await;
-        if !matches!(outcome, Ok(Ok(()))) {
-            record(
-                DiagnosticEvent::new(DiagnosticLevel::Debug, "core.search", "crawl_progress")
-                    .field(DiagnosticField::token("outcome", "save_failed")),
-            );
-        }
-    }
-
     async fn retain_history_crawl_rooms(&mut self) -> Vec<String> {
         let mut stopped_room_ids = std::collections::BTreeSet::new();
         for room_id in self.completed_rooms.keys() {
@@ -1785,17 +1579,6 @@ impl SearchActor {
             .iter()
             .map(|checkpoint| checkpoint.room_id.clone())
             .collect();
-
-        // Keep the durable record in step with the in-memory set: a room that is
-        // no longer available must not stay committed, or the restart after it
-        // is rejoined would skip the crawl it needs.
-        let mut forgot_any = false;
-        for room_id in &stopped_room_ids {
-            forgot_any |= self.crawl_progress.forget(room_id);
-        }
-        if forgot_any {
-            self.save_crawl_progress().await;
-        }
 
         stopped_room_ids.into_iter().collect()
     }
@@ -1821,10 +1604,7 @@ impl SearchActor {
         self.crawl_queue
             .retain(|checkpoint| checkpoint.room_id != room_id);
         self.queued_crawl_rooms.remove(room_id);
-        if self.completed_rooms.remove(room_id).is_some() {
-            self.crawl_progress.forget(room_id);
-            self.save_crawl_progress().await;
-        }
+        self.completed_rooms.remove(room_id);
         let active_matches = self
             .active_crawl_checkpoint
             .as_ref()
@@ -1867,9 +1647,6 @@ impl SearchActor {
         // re-crawl this invalidation exists to force. The record also carries the
         // content policy it was produced under, so a settings change that could
         // not be saved is still detected on the next start.
-        if self.crawl_progress.clear() {
-            self.save_crawl_progress().await;
-        }
         self.stop_all_history_crawls().await;
     }
 
@@ -2243,55 +2020,6 @@ async fn verify_literal_candidates(
     }
 
     Ok(verification)
-}
-
-/// Project persisted events into the document store's attachment messages.
-///
-/// The Files-view refresh rebuilds rows for a room the crawler no longer walks,
-/// so it goes through the crawler's own projection: the same message types, the
-/// same attachment metadata, and the same content policy.
-fn attachment_messages_from_events(
-    room_id: &str,
-    events: &[matrix_sdk::deserialized_responses::TimelineEvent],
-    settings: &SearchCrawlerSettings,
-) -> Vec<SearchIndexMessage> {
-    // A replacement is only visible content when the SDK's validity rules accept
-    // it: the event cache can hold one that is not (another sender, another event
-    // type, an edit of an edit), and replaying it would attribute that metadata
-    // to this row. An unknown target cannot be validated, so it is refused too.
-    let by_id: HashMap<String, &matrix_sdk::deserialized_responses::TimelineEvent> = events
-        .iter()
-        .filter_map(|event| {
-            let json: serde_json::Value =
-                serde_json::from_str(event.kind.raw().json().get()).ok()?;
-            Some((json.get("event_id")?.as_str()?.to_owned(), event))
-        })
-        .collect();
-
-    let mut pending_redactions = HashSet::new();
-    events
-        .iter()
-        .filter(|event| !event.kind.is_utd())
-        .filter_map(|event| {
-            let json = event.kind.raw().json();
-            let json = json.get();
-            let value: serde_json::Value = serde_json::from_str(json).ok()?;
-            let content = value.get("content")?;
-            if crate::search_crawler::is_edit_event(content) {
-                let target = crate::search_crawler::edit_target_event_id(content)?;
-                let original = by_id.get(&target)?;
-                if !koushi_sdk::replacement_is_valid(original, event) {
-                    return None;
-                }
-            }
-            crate::search_crawler::event_json_to_index_message(
-                room_id,
-                json,
-                settings,
-                &mut pending_redactions,
-            )
-        })
-        .collect()
 }
 
 /// Whether a settings change alters what the verifier may match.

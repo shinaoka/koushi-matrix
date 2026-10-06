@@ -1743,21 +1743,26 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         }
         AppAction::SearchSubmitted {
             request_id,
+            connection_id,
             query,
             scope,
-        } => search::handle_search_submitted(state, request_id, query, scope),
+        } => search::handle_search_submitted(state, request_id, connection_id, query, scope),
         AppAction::SearchSucceeded {
             request_id,
+            connection_id,
             query,
             scope,
             results,
-        } => search::handle_search_succeeded(state, request_id, query, scope, results),
+        } => {
+            search::handle_search_succeeded(state, request_id, connection_id, query, scope, results)
+        }
         AppAction::SearchFailed {
             request_id,
+            connection_id,
             query,
             scope,
             message,
-        } => search::handle_search_failed(state, request_id, query, scope, message),
+        } => search::handle_search_failed(state, request_id, connection_id, query, scope, message),
         AppAction::SearchResultOpened { room_id, event_id } => {
             navigation::handle_search_result_opened(state, room_id, event_id)
         }
