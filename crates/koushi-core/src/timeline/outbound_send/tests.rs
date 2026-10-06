@@ -1542,7 +1542,7 @@ fn submission_admission_tombstones_are_bounded_and_active_is_retained() {
 
 #[tokio::test]
 async fn send_without_authoritative_account_session_fails_closed() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
 
     runtime

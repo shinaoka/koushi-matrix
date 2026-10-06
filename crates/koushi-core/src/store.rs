@@ -48,6 +48,9 @@ use composer_drafts::{
     decode_payload_json as decode_composer_draft_payload_json,
     encode_payload_json as encode_composer_draft_payload_json,
 };
+/// Test/QA callers pass an explicit backend to [`StoreActor::with_backend`].
+#[cfg(any(test, feature = "test-hooks"))]
+pub use koushi_store::CredentialStoreBackend as TestCredentialStoreBackend;
 use koushi_store::{local_secret_error_health, record_local_unlock_secret};
 
 /// Service name used for OS keyring entries. This is user-visible in macOS
@@ -686,9 +689,19 @@ impl StoreActor {
     /// Uses the **in-memory** credential store by default (keyring-free).
     /// Production builds must use `with_os_backend` to inject the OS adapter.
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
+        let data_dir = data_dir.into();
+        // Unit tests never follow `KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR` from
+        // the developer's shell; QA binaries (never `cfg(test)`) still do.
+        #[cfg(test)]
+        let credential_store = {
+            crate::test_isolation::assert_not_user_profile(&data_dir);
+            CredentialStoreBackend::in_memory()
+        };
+        #[cfg(not(test))]
+        let credential_store = CredentialStoreBackend::resolve();
         Self {
-            credential_store: CredentialStoreBackend::resolve(),
-            data_dir: data_dir.into(),
+            credential_store,
+            data_dir,
             exclusive_store_root: false,
             #[cfg(any(test, feature = "test-hooks"))]
             composer_draft_io_probe: Arc::new(Mutex::new(None)),
@@ -704,11 +717,16 @@ impl StoreActor {
         os_backend: Arc<dyn koushi_key::CredentialBackend>,
     ) -> Self {
         let data_dir = data_dir.into();
+        #[cfg(test)]
+        let credential_store = {
+            crate::test_isolation::assert_not_user_profile(&data_dir);
+            CredentialStoreBackend::os_keychain(data_dir.clone(), os_backend)
+        };
+        #[cfg(not(test))]
+        let credential_store =
+            CredentialStoreBackend::resolve_with_os_backend(data_dir.clone(), os_backend);
         Self {
-            credential_store: CredentialStoreBackend::resolve_with_os_backend(
-                data_dir.clone(),
-                os_backend,
-            ),
+            credential_store,
             data_dir,
             exclusive_store_root: false,
             #[cfg(any(test, feature = "test-hooks"))]
@@ -747,13 +765,15 @@ impl StoreActor {
     /// env-global `KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR` race between unit tests
     /// and lets the headless QA binary isolate same-user device fixtures.
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn with_backend(
+    pub fn with_backend(
         credential_store: CredentialStoreBackend,
         data_dir: impl Into<PathBuf>,
     ) -> Self {
+        let data_dir = data_dir.into();
+        crate::test_isolation::assert_not_user_profile(&data_dir);
         Self {
             credential_store,
-            data_dir: data_dir.into(),
+            data_dir,
             // Test/QA fixtures may be pointed at a reusable data directory.
             exclusive_store_root: false,
             #[cfg(any(test, feature = "test-hooks"))]

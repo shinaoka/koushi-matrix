@@ -7,7 +7,7 @@ use support::restore_ready_actions;
 
 #[tokio::test]
 async fn search_query_projects_search_state_before_routing() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut connection = runtime.attach();
 
     runtime.inject_actions(restore_ready_actions()).await;
