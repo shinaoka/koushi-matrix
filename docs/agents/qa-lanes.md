@@ -279,6 +279,14 @@ workers contending for the single shared Vite harness server. Do not raise the
 worker count to speed up a run: the whole suite finishes in about three minutes
 serialized, and the parallel-contention flakes come straight back.
 
+Specs run in headless Chromium. A spec whose defect is engine-native (search
+field decorations, form-control chrome) also runs in headless WebKit, the
+engine family of macOS WKWebView and Linux WebKitGTK, by adding it to the
+`webkit` project's `testMatch` in `playwright.config.ts`. Prove such a defect
+by behavior or pixels (for example, clicking the native control's hit target),
+not by DOM button counts. Install both engines once with
+`npm --prefix apps/desktop exec -- playwright install chromium webkit`.
+
 The full-app harness (`apps/desktop/src/test/appHarnessMain.tsx`) must import
 `../styles.css`, matching production `main.tsx`. Otherwise visibility/layout
 assertions can pass against unstyled DOM and miss real production CSS issues.
