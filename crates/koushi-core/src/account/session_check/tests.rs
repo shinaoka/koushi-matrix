@@ -21,6 +21,9 @@ use crate::account::test_support::{
 use crate::executor;
 
 const HOUR: Duration = Duration::from_secs(60 * 60);
+/// Bound for real-time waits that must succeed: a regression hangs until it,
+/// while scheduler load alone must never reach it.
+const LIVENESS: Duration = Duration::from_secs(60);
 
 fn virtual_clock(base_epoch_ms: u64) -> SessionCheckClock {
     SessionCheckClock::Virtual {
@@ -153,13 +156,25 @@ async fn settled_query_count(control: &KeyQueryControl) -> usize {
 }
 
 async fn wait_for_query_count(control: &KeyQueryControl, expected: usize) {
-    executor::timeout(Duration::from_secs(5), async {
+    executor::timeout(LIVENESS, async {
         while control.count.load(Ordering::SeqCst) < expected {
             executor::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
     .expect("own-identity query count");
+}
+
+/// Ask the actor, behind every earlier message, whether the trust demand
+/// joined the in-flight inspection.
+async fn trust_demand_joined(handle: &AccountActorHandle) -> bool {
+    let (response, joined) = tokio::sync::oneshot::channel();
+    assert!(
+        handle
+            .send(AccountMessage::InspectTrustRecheckJoined { response })
+            .await
+    );
+    joined.await.expect("trust join probe")
 }
 
 fn drain(action_rx: &mut mpsc::Receiver<Vec<AppAction>>) {
@@ -184,7 +199,7 @@ async fn trust_recheck_during_an_inspection_joins_its_own_identity_query() {
     wait_for_query_count(&control, baseline + 1).await;
 
     handle.send(AccountMessage::CheckCurrentDeviceTrust).await;
-    executor::sleep(Duration::from_millis(150)).await;
+    assert!(trust_demand_joined(&handle).await, "joined");
     control.hold.store(false, Ordering::SeqCst);
     executor::sleep(Duration::from_millis(500)).await;
 
@@ -226,7 +241,7 @@ async fn inspection_during_a_trust_recheck_reuses_the_fetched_identity() {
     );
     control.hold.store(false, Ordering::SeqCst);
 
-    executor::timeout(Duration::from_secs(5), async {
+    executor::timeout(LIVENESS, async {
         while control.devices_count.load(Ordering::SeqCst) == devices_baseline {
             executor::sleep(Duration::from_millis(5)).await;
         }
@@ -344,7 +359,7 @@ async fn a_joined_demand_runs_standalone_when_the_inspection_fails() {
         .await;
     wait_for_query_count(&control, baseline + 1).await;
     handle.send(AccountMessage::CheckCurrentDeviceTrust).await;
-    executor::sleep(Duration::from_millis(150)).await;
+    assert!(trust_demand_joined(&handle).await, "joined");
     assert_eq!(control.count.load(Ordering::SeqCst), baseline + 1, "joined");
 
     // The inspection's own-identity query fails; the joined demand must not be
@@ -461,7 +476,7 @@ async fn a_demand_after_the_inspection_identity_query_returned_runs_its_own_rech
             sync_state: koushi_state::CurrentSessionSyncState::Running,
         })
         .await;
-    executor::timeout(Duration::from_secs(5), async {
+    executor::timeout(LIVENESS, async {
         while control.backup_probe_count.load(Ordering::SeqCst) == probes_baseline {
             executor::sleep(Duration::from_millis(5)).await;
         }

@@ -13,9 +13,7 @@ use std::{
 #[test]
 fn encryption_sync_lifecycle_diagnostic_is_closed_and_private() {
     let _guard = koushi_diagnostics::test_support::lock();
-    let start = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let start = koushi_diagnostics::test_support::detail_cursor();
     super::record_encryption_sync_lifecycle(
         super::EncryptionSyncLifecycleOwner::Steady,
         matrix_sdk::encryption::EncryptionSyncReadinessSnapshot {
@@ -25,8 +23,8 @@ fn encryption_sync_lifecycle_diagnostic_is_closed_and_private() {
         super::EncryptionSyncLifecycleStage::FirstResponse,
         Duration::from_millis(123),
     );
-    let snapshot = koushi_diagnostics::test_support::detail_snapshot();
-    let record = snapshot.records[start..]
+    let records = koushi_diagnostics::test_support::detail_records_since(start);
+    let record = records
         .iter()
         .find(|record| record.event.source == "core.encryption_sync_lifecycle")
         .expect("lifecycle diagnostic");

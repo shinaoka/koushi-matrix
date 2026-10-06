@@ -184,14 +184,10 @@ fn space_members_projection_load_path_emits_non_empty_child_profile_observations
 #[test]
 fn failed_space_member_diagnostics_do_not_fabricate_member_counts() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
-    let before = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let before = koushi_diagnostics::test_support::detail_cursor();
     record_core_space_members_load_failure("sync_refresh", 7);
-    let record = koushi_diagnostics::test_support::detail_snapshot()
-        .records
+    let record = koushi_diagnostics::test_support::detail_records_since(before)
         .into_iter()
-        .skip(before)
         .find(|record| {
             record.event.source == "core.space_members_projection"
                 && record.event.fields.iter().any(|field| {

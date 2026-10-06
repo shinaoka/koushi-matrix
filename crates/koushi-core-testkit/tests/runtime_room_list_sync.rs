@@ -382,7 +382,7 @@ async fn normal_runtime_waits_for_full_all_rooms_reconciliation_and_reuses_one_s
 
 #[tokio::test]
 async fn select_room_list_filter_command_updates_projection_through_runtime() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
@@ -426,7 +426,7 @@ async fn select_room_list_filter_command_updates_projection_through_runtime() {
 
 #[tokio::test]
 async fn mark_as_read_and_unread_success_actions_update_room_list_projection() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {

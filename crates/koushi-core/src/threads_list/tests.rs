@@ -49,7 +49,8 @@ fn pending_subscription() -> (ActiveSubscription, [oneshot::Receiver<()>; 3]) {
 
 async fn assert_tasks_settled(tasks: [oneshot::Receiver<()>; 3]) {
     for settled in tasks {
-        let _ = crate::executor::timeout(Duration::from_millis(100), settled)
+        // Liveness bound: an owned task that is never settled stays pending.
+        let _ = crate::executor::timeout(Duration::from_secs(60), settled)
             .await
             .expect("every owned subscription task must settle");
     }

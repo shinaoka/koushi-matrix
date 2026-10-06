@@ -63,6 +63,8 @@ pub struct SettingsStore {
 
 impl SettingsStore {
     pub fn new(data_dir: impl AsRef<Path>) -> Self {
+        #[cfg(test)]
+        crate::test_isolation::assert_not_user_profile(data_dir.as_ref());
         let (updates, _) = watch::channel(AppSettingsValues::default());
         Self {
             path: data_dir.as_ref().join("settings").join("settings.json"),

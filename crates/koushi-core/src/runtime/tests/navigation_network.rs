@@ -1,9 +1,11 @@
 //! #1060: selecting a known DM, room, or Space is purely local navigation.
 //! AppActor must admit, reduce, publish, and settle it without a round trip
 //! through the AccountActor/RoomActor network-operation mailboxes. Every test
-//! holds the AccountActor mailbox full for its whole duration; the 250 ms
-//! deadline is a regression budget, not an end-to-end latency claim. All
-//! identifiers are synthetic.
+//! holds the AccountActor mailbox full for its whole duration, and nothing
+//! drains it until the test chooses to, so a regression that awaits the
+//! mailbox never progresses at all. `LIVENESS_DEADLINE` therefore only has
+//! to separate "blocked forever" from "slow scheduler"; it is not a latency
+//! budget. All identifiers are synthetic.
 
 use super::*;
 use koushi_protocol::command::RoomCommand;
@@ -17,7 +19,11 @@ const SPACE: &str = "!navigation-network-space:example.invalid";
 const SPACE_ROOM: &str = "!navigation-network-space-room:example.invalid";
 const EMPTY_SPACE: &str = "!navigation-network-empty-space:example.invalid";
 const EVENT: &str = "$navigation-network-event:example.invalid";
-const DEADLINE: Duration = Duration::from_millis(250);
+/// Liveness bound for every positive wait in this file. A blocked AppActor
+/// hangs indefinitely on the held mailbox, so a generous bound loses no
+/// detection power, while the former 250 ms budget failed on loaded 2-core CI
+/// runners whenever the scheduler starved the test runtime.
+const LIVENESS_DEADLINE: Duration = Duration::from_secs(10);
 
 fn request(sequence: u64) -> RequestId {
     RequestId {
@@ -154,7 +160,7 @@ impl BlockedMailbox {
     async fn submit(&self, command: CoreCommand) -> oneshot::Receiver<CoreCommandAdmission> {
         let (admission, admitted) = oneshot::channel();
         executor::timeout(
-            DEADLINE,
+            LIVENESS_DEADLINE,
             self.command_tx.send(CoreCommandEnvelope::Public {
                 command,
                 composer_permit: None,
@@ -184,7 +190,7 @@ impl BlockedMailbox {
         let mut received = self.initial.clone();
         let mut received_generation = 0;
         let mut outcomes: HashMap<RequestId, (IntentOutcome, AppState)> = HashMap::new();
-        executor::timeout(DEADLINE, async {
+        executor::timeout(LIVENESS_DEADLINE, async {
             while outcomes.len() < requests.len() {
                 match self
                     .event_rx
@@ -231,7 +237,7 @@ impl BlockedMailbox {
     }
 
     async fn wait_for_snapshot(&mut self, predicate: impl Fn(&AppState) -> bool) -> AppState {
-        executor::timeout(DEADLINE, async {
+        executor::timeout(LIVENESS_DEADLINE, async {
             loop {
                 let state = self.snapshot_rx.borrow_and_update().state.clone();
                 if predicate(&state) {
@@ -277,7 +283,7 @@ impl BlockedMailbox {
     /// loop has taken the first, which follows the complete earlier batch.
     async fn drain_action_batches(&self) {
         for _ in 0..2 {
-            executor::timeout(DEADLINE, self.action_tx.send(Vec::new()))
+            executor::timeout(LIVENESS_DEADLINE, self.action_tx.send(Vec::new()))
                 .await
                 .expect("action ingress must not wait for the AccountActor")
                 .expect("action ingress remains open");
@@ -357,7 +363,7 @@ async fn navigation_network_space_selection_commits_while_account_mailbox_is_ful
         })
         .await;
     assert_eq!(state.timeline.room_id.as_deref(), Some(SPACE_ROOM));
-    let admission = executor::timeout(DEADLINE, admitted)
+    let admission = executor::timeout(LIVENESS_DEADLINE, admitted)
         .await
         .expect("Space selection admission must not wait for the AccountActor")
         .expect("admission sender retained");
@@ -417,7 +423,7 @@ async fn navigation_network_rapid_selection_leaves_last_room_authoritative() {
     // A late actor projection of an earlier selection has no request owner
     // left and must not restore the older room.
     executor::timeout(
-        DEADLINE,
+        LIVENESS_DEADLINE,
         harness.action_tx.send(vec![AppAction::SelectRoom {
             room_id: ROOM_B.to_owned(),
         }]),
@@ -760,7 +766,7 @@ impl BlockedMailbox {
                 .map(|(index, room_id)| live_unresolved_activity_room(room_id, 200 + index as u64)),
         );
         executor::timeout(
-            DEADLINE,
+            LIVENESS_DEADLINE,
             self.action_tx.send(vec![AppAction::RoomListUpdated {
                 spaces: self.initial.spaces.clone(),
                 rooms,
@@ -836,7 +842,7 @@ async fn navigation_network_deferred_activity_resolution_is_delivered_once_capac
         Some(AccountMessage::CancelActivityResolution)
     ));
     let (delivered_generation, rooms) =
-        next_activity_resolution_request(&mut harness.account_rx, DEADLINE)
+        next_activity_resolution_request(&mut harness.account_rx, LIVENESS_DEADLINE)
             .await
             .expect("the deferred resolution is delivered once the mailbox has capacity");
     assert_eq!(delivered_generation, generation);
@@ -973,7 +979,7 @@ async fn navigation_network_deferred_crawler_notification_delivers_only_the_late
         harness.account_rx.recv().await,
         Some(AccountMessage::CancelActivityResolution)
     ));
-    let rooms = next_crawler_rooms(&mut harness.account_rx, DEADLINE)
+    let rooms = next_crawler_rooms(&mut harness.account_rx, LIVENESS_DEADLINE)
         .await
         .expect("the deferred crawler notification is delivered once capacity frees");
     assert!(rooms.iter().any(|room_id| room_id == UNRESOLVED_DM_2));
@@ -991,7 +997,7 @@ async fn navigation_network_deferred_crawler_notification_is_dropped_after_the_s
     let mut harness = BlockedMailbox::start(navigation_state()).await;
     harness.live_unresolved_dms(&[UNRESOLVED_DM]).await;
     executor::timeout(
-        DEADLINE,
+        LIVENESS_DEADLINE,
         harness.action_tx.send(vec![AppAction::LogoutFinished]),
     )
     .await
@@ -1034,7 +1040,7 @@ async fn navigation_network_selection_commits_after_a_live_leave_reloads_space_c
     );
     let mut harness = BlockedMailbox::start(state).await;
     executor::timeout(
-        DEADLINE,
+        LIVENESS_DEADLINE,
         harness.action_tx.send(vec![AppAction::RoomLeftLocally {
             room_id: SPACE_ROOM.to_owned(),
         }]),
@@ -1063,7 +1069,7 @@ async fn navigation_network_selection_commits_after_a_live_leave_reloads_space_c
         harness.account_rx.recv().await,
         Some(AccountMessage::CancelActivityResolution)
     ));
-    let reload = executor::timeout(DEADLINE, async {
+    let reload = executor::timeout(LIVENESS_DEADLINE, async {
         loop {
             if let Some(AccountMessage::RoomCommand(RoomCommand::LoadSpaceChildren {
                 space_id,
@@ -1100,7 +1106,7 @@ async fn observation(
     observations: &mut mpsc::UnboundedReceiver<Observation>,
     predicate: impl Fn(&Observation) -> bool,
 ) -> Observation {
-    executor::timeout(DEADLINE, async {
+    executor::timeout(LIVENESS_DEADLINE, async {
         loop {
             let observed = observations.recv().await.expect("observer remains open");
             if predicate(&observed) {
@@ -1170,7 +1176,7 @@ async fn drain_crawler_lane(
     account_rx: &mut mpsc::Receiver<AccountMessage>,
     expected_last: &str,
 ) -> Vec<String> {
-    executor::timeout(DEADLINE, async {
+    executor::timeout(LIVENESS_DEADLINE, async {
         let mut delivered = Vec::new();
         loop {
             match account_rx.recv().await.expect("mailbox remains open") {
@@ -1226,7 +1232,7 @@ async fn navigation_network_selection_commits_after_a_live_batch_closes_activity
     // its resolution; that cancel must not hold the AppActor loop either.
     let mut harness = BlockedMailbox::start(activity_open_state()).await;
     executor::timeout(
-        DEADLINE,
+        LIVENESS_DEADLINE,
         harness.action_tx.send(vec![AppAction::ActivityClosed]),
     )
     .await
@@ -1242,7 +1248,7 @@ async fn navigation_network_selection_commits_after_a_live_batch_closes_activity
         harness.account_rx.recv().await,
         Some(AccountMessage::CancelActivityResolution)
     ));
-    let cancel = executor::timeout(DEADLINE, async {
+    let cancel = executor::timeout(LIVENESS_DEADLINE, async {
         loop {
             if let Some(AccountMessage::CancelActivityResolution) = harness.account_rx.recv().await
             {
@@ -1270,7 +1276,7 @@ async fn navigation_network_user_reload_replaces_a_held_live_leave_reload() {
     );
     let (mut harness, mut observations) = start_observed(state).await;
     executor::timeout(
-        DEADLINE,
+        LIVENESS_DEADLINE,
         harness.action_tx.send(vec![AppAction::RoomLeftLocally {
             room_id: SPACE_ROOM.to_owned(),
         }]),
@@ -1309,7 +1315,7 @@ async fn navigation_network_user_reload_replaces_a_held_live_leave_reload() {
         harness.account_rx.recv().await,
         Some(AccountMessage::CancelActivityResolution)
     ));
-    let reload = executor::timeout(DEADLINE, async {
+    let reload = executor::timeout(LIVENESS_DEADLINE, async {
         loop {
             if let Some(AccountMessage::RoomCommand(RoomCommand::LoadSpaceChildren {
                 request_id,

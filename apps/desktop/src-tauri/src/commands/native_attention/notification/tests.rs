@@ -227,7 +227,10 @@ async fn notification_activation_selects_owning_account_tab() {
         dyn Fn() -> std::sync::Arc<dyn koushi_core::NativeArtifactPort> + Send + Sync,
     > = std::sync::Arc::new(|| std::sync::Arc::new(koushi_core::NativeArtifactRegistry::new()));
     let runtime = AccountRuntimeManager::new(
-        koushi_core::store::StoreActor::new(data_dir.path()),
+        koushi_core::store::StoreActor::with_backend(
+            koushi_core::store::TestCredentialStoreBackend::in_memory(),
+            data_dir.path(),
+        ),
         koushi_core::settings::SettingsStore::new(data_dir.path()),
         factory,
     );

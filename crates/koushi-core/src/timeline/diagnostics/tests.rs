@@ -361,9 +361,7 @@ fn event_cache_diff_batch_emits_one_count_only_summary() {
 fn timeline_items_record_batch_only_by_default() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
     let key = room_key();
-    let baseline = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let baseline = koushi_diagnostics::test_support::detail_cursor();
     trace_timeline_items(
         "replay_initial",
         &key,
@@ -373,8 +371,8 @@ fn timeline_items_record_batch_only_by_default() {
         ],
     );
 
-    let records = koushi_diagnostics::test_support::detail_snapshot().records;
-    let appended = records[baseline..]
+    let records = koushi_diagnostics::test_support::detail_records_since(baseline);
+    let appended = records
         .iter()
         .filter(|record| {
             record.event.source == "core.timeline_item" && record.event.stage == "replay_initial"
@@ -405,9 +403,7 @@ fn timeline_items_record_batch_only_by_default() {
 #[test]
 fn thread_projection_diagnostic_records_only_thread_batches() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
-    let baseline = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let baseline = koushi_diagnostics::test_support::detail_cursor();
     let thread_key = TimelineKey {
         account_key: AccountKey("@a:test".to_owned()),
         kind: TimelineKind::Thread {
@@ -435,8 +431,8 @@ fn thread_projection_diagnostic_records_only_thread_batches() {
         11,
     );
 
-    let records = koushi_diagnostics::test_support::detail_snapshot().records;
-    let appended = records[baseline..]
+    let records = koushi_diagnostics::test_support::detail_records_since(baseline);
+    let appended = records
         .iter()
         .filter(|record| record.event.source == "core.thread_timeline")
         .collect::<Vec<_>>();
@@ -458,9 +454,7 @@ fn thread_projection_diagnostic_records_only_thread_batches() {
 #[test]
 fn thread_summary_diagnostic_is_closed_and_private_data_free() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
-    let baseline = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let baseline = koushi_diagnostics::test_support::detail_cursor();
     for (source, relation, decision) in [
         ("rehydration", "missing", "advance"),
         ("live_reply", "different", "advance"),
@@ -480,8 +474,8 @@ fn thread_summary_diagnostic_is_closed_and_private_data_free() {
         );
     }
 
-    let records = koushi_diagnostics::test_support::detail_snapshot().records;
-    let events = records[baseline..]
+    let records = koushi_diagnostics::test_support::detail_records_since(baseline);
+    let events = records
         .iter()
         .filter(|record| {
             record.event.source == "core.thread_summary" && record.event.stage == "reconciled"

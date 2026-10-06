@@ -166,7 +166,7 @@ async fn provisional_verification_hands_one_encryption_sync_owner_to_normal_runt
 
 #[tokio::test]
 async fn e2ee_trust_account_command_settles_without_an_sdk_session() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut connection = runtime.attach();
 
     runtime.inject_actions(restore_ready_actions()).await;

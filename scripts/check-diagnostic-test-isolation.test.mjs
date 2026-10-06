@@ -56,3 +56,36 @@ test("does not confuse a nested ignored child with its parent test", () => {
     "fixture.rs:7:child"
   ]);
 });
+
+test("detects detail-ring and cursor readers without the shared lock", () => {
+  for (const read of [
+    "koushi_diagnostics::test_support::detail_snapshot().records.len()",
+    "koushi_diagnostics::test_support::detail_cursor()",
+    "test_support::detail_records_since(cursor).len()",
+    "test_support::rotation_snapshot().records.len()"
+  ]) {
+    const source = `
+    #[test]
+    fn reads_diagnostics() {
+      let _ = ${read};
+    }
+  `;
+    assert.deepEqual(
+      findDiagnosticTestIsolationViolations(source, "fixture.rs"),
+      ["fixture.rs:2:reads_diagnostics"],
+      read
+    );
+  }
+});
+
+test("accepts cursor readers under an imported shared lock", () => {
+  const source = `
+    #[test]
+    fn reads_diagnostics() {
+      let _guard = test_support::lock();
+      let cursor = test_support::detail_cursor();
+      assert!(test_support::detail_records_since(cursor).is_empty());
+    }
+  `;
+  assert.deepEqual(findDiagnosticTestIsolationViolations(source, "fixture.rs"), []);
+});

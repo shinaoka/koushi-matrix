@@ -585,6 +585,7 @@ fn room_list_room_from_counts_carries_room_tags() {
 }
 #[test]
 fn unread_diagnostic_snapshot_rejects_private_synthetic_inputs() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock();
     let latest_event = Some(crate::MatrixRoomLatestEventSummary {
         event_id: "$event:example.invalid".to_owned(),
         sender_id: Some("@user:example.invalid".to_owned()),

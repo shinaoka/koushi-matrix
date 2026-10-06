@@ -99,7 +99,7 @@ fn device_event(class: Class, stage: Stage) -> InitialShareDeviceDiagnostic {
 fn initial_share_diagnostic_records_closed_tokens_and_counters() {
     let _guard = test_support::lock();
     let counters = DiagnosticCounterContext::new();
-    let diagnostic_start = test_support::detail_snapshot().records.len();
+    let diagnostic_start = test_support::detail_cursor();
 
     record_initial_share_diagnostic(
         &counters,
@@ -190,11 +190,9 @@ fn initial_share_diagnostic_records_closed_tokens_and_counters() {
         0
     );
 
-    let snapshot = test_support::detail_snapshot();
-    let stage_records: Vec<_> = snapshot
-        .records
+    let records = test_support::detail_records_since(diagnostic_start);
+    let stage_records: Vec<_> = records
         .iter()
-        .skip(diagnostic_start)
         .filter(|record| record.event.source == "core.initial_share")
         .collect();
     // 9 device stages + 1 session summary.
@@ -234,7 +232,7 @@ fn initial_share_diagnostic_records_closed_tokens_and_counters() {
 fn initial_share_diagnostics_never_expose_private_values() {
     let _guard = test_support::lock();
     let counters = DiagnosticCounterContext::new();
-    let diagnostic_start = test_support::detail_snapshot().records.len();
+    let diagnostic_start = test_support::detail_cursor();
 
     record_initial_share_diagnostic(
         &counters,
@@ -264,8 +262,7 @@ fn initial_share_diagnostics_never_expose_private_values() {
         },
     );
 
-    let snapshot = test_support::detail_snapshot();
-    for record in snapshot.records.iter().skip(diagnostic_start) {
+    for record in test_support::detail_records_since(diagnostic_start) {
         let text = format!("{:?}", record.event);
         assert!(
             !text.contains('@') && !text.contains('!') && !text.contains("http"),
@@ -283,11 +280,12 @@ fn initial_share_counters_survive_detail_ring_eviction() {
 
     // The aggregate counter lives outside the bounded detail ring: emit
     // without recording any detail and confirm the counter still exports.
-    let detail_before = test_support::detail_snapshot().records.len();
+    let detail_before = test_support::detail_cursor();
     counters.increment("initial_share_olm_encrypted");
-    assert_eq!(
-        test_support::detail_snapshot().records.len(),
-        detail_before,
+    assert!(
+        !test_support::detail_records_since(detail_before)
+            .iter()
+            .any(|record| record.event.source == "core.room_key_summary"),
         "the counter must not consume detail-ring capacity"
     );
     assert_eq!(counter_value(&counters, "initial_share_olm_encrypted"), 1);

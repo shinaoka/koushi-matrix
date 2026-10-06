@@ -404,6 +404,28 @@ impl DiagnosticBuffer {
             dropped_records,
         }
     }
+
+    /// Records appended at or after `cursor`, where a cursor is the number of
+    /// records ever appended to this ring. With a non-zero capacity every
+    /// eviction increments `dropped_records`, so the oldest retained record is
+    /// number `dropped_records`. Returns `Err(evicted)` when records after the
+    /// cursor were already evicted, instead of silently returning fewer.
+    fn records_since(&self, cursor: u64) -> Result<Vec<DiagnosticRecord>, u64> {
+        let records = lock_best_effort(&self.records);
+        let first = *lock_best_effort(&self.dropped_records);
+        if cursor < first {
+            return Err(first - cursor);
+        }
+        let skip = usize::try_from(cursor - first).unwrap_or(usize::MAX);
+        Ok(records.iter().skip(skip).cloned().collect())
+    }
+
+    /// The cursor just past the newest record; see [`Self::records_since`].
+    fn end_cursor(&self) -> u64 {
+        let records = lock_best_effort(&self.records);
+        let first = *lock_best_effort(&self.dropped_records);
+        first.saturating_add(records.len() as u64)
+    }
 }
 
 static GLOBAL_BUFFER: OnceLock<DiagnosticBuffer> = OnceLock::new();
@@ -422,8 +444,8 @@ pub mod test_support {
 
     use super::{
         DEFAULT_DIAGNOSTIC_CAPACITY, DEFAULT_ROTATION_DIAGNOSTIC_CAPACITY, DiagnosticBuffer,
-        DiagnosticSnapshot, GLOBAL_BUFFER, GLOBAL_ROTATION_LEDGER, RotationDiagnosticLedger,
-        RotationDiagnosticSnapshot,
+        DiagnosticRecord, DiagnosticSnapshot, GLOBAL_BUFFER, GLOBAL_ROTATION_LEDGER,
+        RotationDiagnosticLedger, RotationDiagnosticSnapshot,
     };
 
     // An async-aware mutex: asynchronous tests hold this process-wide lock
@@ -445,13 +467,38 @@ pub mod test_support {
         GLOBAL_DIAGNOSTIC_TEST_LOCK.lock().await
     }
 
-    /// Snapshot only the bounded detail ring. Tests that compare positions
-    /// before and after one emission must not include synthesized aggregate
-    /// counter records, whose count can change independently of the ring.
+    /// Snapshot only the bounded detail ring. Use it for content checks over
+    /// the whole ring; a test that needs "records since X" must use
+    /// [`detail_cursor`] and [`detail_records_since`] instead of a snapshot
+    /// length, which stops growing once the ring is full.
     pub fn detail_snapshot() -> DiagnosticSnapshot {
-        GLOBAL_BUFFER
-            .get_or_init(|| DiagnosticBuffer::new(DEFAULT_DIAGNOSTIC_CAPACITY))
-            .snapshot()
+        global_detail_buffer().snapshot()
+    }
+
+    /// A monotonic position in the global detail ring: the number of records
+    /// ever appended. Unlike `detail_snapshot().records.len()` it keeps
+    /// advancing after the ring is full and starts evicting.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+    pub struct DetailCursor(u64);
+
+    pub fn detail_cursor() -> DetailCursor {
+        DetailCursor(global_detail_buffer().end_cursor())
+    }
+
+    /// Every detail record appended at or after `cursor`, oldest first.
+    ///
+    /// Panics if the ring has already evicted any of them, so an overflowing
+    /// ring fails loudly instead of silently hiding the records under test.
+    pub fn detail_records_since(cursor: DetailCursor) -> Vec<DiagnosticRecord> {
+        global_detail_buffer()
+            .records_since(cursor.0)
+            .unwrap_or_else(|evicted| {
+                panic!("the diagnostic ring evicted {evicted} record(s) after the test cursor")
+            })
+    }
+
+    fn global_detail_buffer() -> &'static DiagnosticBuffer {
+        GLOBAL_BUFFER.get_or_init(|| DiagnosticBuffer::new(DEFAULT_DIAGNOSTIC_CAPACITY))
     }
 
     pub fn rotation_snapshot() -> RotationDiagnosticSnapshot {
