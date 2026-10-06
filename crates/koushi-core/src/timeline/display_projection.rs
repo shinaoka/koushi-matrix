@@ -1856,6 +1856,8 @@ pub(super) fn timeline_diffs_include_prepend(diffs: &[TimelineDiff]) -> bool {
 #[cfg(test)]
 mod issue_1110_tests;
 #[cfg(test)]
+mod issue_1141_tests;
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]

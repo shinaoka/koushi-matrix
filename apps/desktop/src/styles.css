@@ -1752,6 +1752,14 @@ button:disabled {
   outline: none;
 }
 
+/* The application-owned clear button is the only clear control (#1145).
+   Scoped to this field: other search inputs keep their native behavior. */
+.room-list-filter-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
 .room-list-filter-clear {
   flex: 0 0 auto;
   inline-size: 22px;

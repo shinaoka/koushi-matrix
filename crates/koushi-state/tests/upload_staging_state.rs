@@ -484,3 +484,82 @@ fn open_thread_projects_only_its_staging_and_close_clears_it() {
     reduce(&mut state, AppAction::CloseThread);
     assert!(state.upload_staging.items_for_target(&target).is_empty());
 }
+
+/// #1144: attaching a file only stages it. Staging must never consume, clear,
+/// or advance the composer draft the user typed before attaching, for either
+/// the main or the thread composer.
+#[test]
+fn staging_an_attachment_keeps_the_typed_main_and_thread_drafts() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::OpenThread {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            intent: koushi_state::ThreadOpenIntent::ExistingThread,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadSubscribed {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChanged {
+            room_id: "room-a".to_owned(),
+            document: caption("main text typed before attaching"),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadComposerDraftChanged {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            document: caption("thread text typed before attaching"),
+        },
+    );
+    let main_revision = state.composer_drafts.room_revision("room-a");
+    let thread_revision = state.composer_drafts.thread_revision("room-a", "$root");
+
+    for target in [
+        ComposerTarget::Main {
+            room_id: "room-a".to_owned(),
+        },
+        ComposerTarget::Thread {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+        },
+    ] {
+        reduce(
+            &mut state,
+            AppAction::UploadStagingChanged {
+                target,
+                items: vec![staged_file("stage-1", "room-a", 1)],
+            },
+        );
+    }
+
+    assert_eq!(state.timeline.staged_uploads.len(), 1);
+    assert_eq!(
+        state.timeline.composer.draft,
+        "main text typed before attaching"
+    );
+    assert_eq!(state.composer_drafts.room_revision("room-a"), main_revision);
+    let koushi_state::ThreadPaneState::Open {
+        staged_uploads,
+        composer,
+        ..
+    } = &state.thread
+    else {
+        panic!("thread should be open");
+    };
+    assert_eq!(staged_uploads.len(), 1);
+    assert_eq!(composer.draft, "thread text typed before attaching");
+    assert_eq!(
+        state.composer_drafts.thread_revision("room-a", "$root"),
+        thread_revision
+    );
+}
