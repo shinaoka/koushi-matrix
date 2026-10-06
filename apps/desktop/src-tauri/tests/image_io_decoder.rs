@@ -8,6 +8,7 @@
 #![cfg(target_os = "macos")]
 
 use std::ffi::c_void;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use koushi_core::media_preparation::{MediaPreparationRegistry, StageUploadBytesInput};
@@ -109,7 +110,8 @@ fn diagnose(label: &str, bytes: &[u8]) -> String {
     unsafe {
         let source_type = source.r#type().map(|value| value.to_string());
         let primary = source.primary_image_index();
-        report += &format!(
+        let _ = write!(
+            report,
             "; type={source_type:?} count={} primary={primary} status={:?} status_at_primary={:?}",
             source.count(),
             source.status(),
@@ -128,18 +130,19 @@ fn diagnose(label: &str, bytes: &[u8]) -> String {
                     } else {
                         "..".to_owned()
                     };
-                    report += &format!("; {key}<{kind}>={shown}");
+                    let _ = write!(report, "; {key}<{kind}>={shown}");
                 }
             }
         }
         match source.image_at_index(primary, None) {
             None => report += "; CGImageSourceCreateImageAtIndex=NULL",
             Some(image) => {
-                report += &format!(
+                let _ = write!(
+                    report,
                     "; image_at_index={}x{}",
                     CGImage::width(Some(&*image)),
                     CGImage::height(Some(&*image))
-                )
+                );
             }
         }
     }

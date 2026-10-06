@@ -444,7 +444,9 @@ pub(super) enum TimelineActorMessage {
     TestBeginRestore {
         request_id: RequestId,
         event_id: String,
-        acknowledged: oneshot::Sender<()>,
+        /// Answers the batch id the first post-restore emission or buffered
+        /// batch will take, so tests can tell pre-restore stragglers apart.
+        acknowledged: oneshot::Sender<TimelineBatchId>,
     },
     #[cfg(test)]
     TestInjectRestoreDiff {
@@ -2846,7 +2848,7 @@ impl TimelineActor {
                     continuation_serial: None,
                     anchor_relay_wait: None,
                 });
-                let _ = acknowledged.send(());
+                let _ = acknowledged.send(self.next_batch_id);
             }
             #[cfg(test)]
             TimelineActorMessage::TestInjectRestoreDiff {

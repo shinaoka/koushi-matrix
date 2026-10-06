@@ -55,6 +55,8 @@ pub(crate) mod startup_trace;
 pub mod state_delta;
 pub mod store;
 pub mod sync;
+#[cfg(any(test, feature = "test-hooks"))]
+mod test_isolation;
 pub mod threads_list;
 mod time;
 pub mod timeline;

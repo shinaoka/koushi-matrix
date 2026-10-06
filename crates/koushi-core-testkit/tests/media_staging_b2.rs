@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use koushi_core::CoreRuntime;
 use koushi_core::media_preparation::StageUploadBytesInput;
+use koushi_core::runtime::IsolatedStores;
 use koushi_state::{
     AppAction, ComposerTarget, RoomSummary, StagedUploadFormatChoice, StagedUploadOutputSelection,
     StagedUploadResizeChoice,
@@ -32,8 +33,8 @@ fn image(id: &str) -> StageUploadBytesInput {
     }
 }
 
-async fn ready_runtime() -> (CoreRuntime, koushi_core::CoreConnection) {
-    let runtime = CoreRuntime::start_with_event_capacity(64);
+async fn ready_runtime() -> (CoreRuntime, koushi_core::CoreConnection, IsolatedStores) {
+    let (runtime, _stores) = CoreRuntime::start_isolated_with_event_capacity(64);
     let mut connection = runtime.attach();
     let mut actions = support::restore_ready_actions();
     actions.extend([
@@ -53,12 +54,12 @@ async fn ready_runtime() -> (CoreRuntime, koushi_core::CoreConnection) {
         state.timeline.room_id.as_deref() == Some(ROOM_ID)
     })
     .await;
-    (runtime, connection)
+    (runtime, connection, _stores)
 }
 
 #[tokio::test]
 async fn prepared_preview_is_core_owned_and_target_fenced() {
-    let (runtime, mut connection) = ready_runtime().await;
+    let (runtime, mut connection, _stores) = ready_runtime().await;
     let staged = connection
         .stage_upload_bytes(target(), vec![image("preview")])
         .await
@@ -93,7 +94,7 @@ async fn prepared_preview_is_core_owned_and_target_fenced() {
 
 #[tokio::test]
 async fn same_target_preparation_admission_is_serialized() {
-    let (runtime, mut connection) = ready_runtime().await;
+    let (runtime, mut connection, _stores) = ready_runtime().await;
     connection
         .stage_upload_bytes(target(), vec![image("race")])
         .await
@@ -149,7 +150,7 @@ async fn same_target_preparation_admission_is_serialized() {
 
 #[tokio::test]
 async fn prepared_send_rejects_before_upload_when_account_or_target_fence_fails() {
-    let (runtime, mut connection) = ready_runtime().await;
+    let (runtime, mut connection, _stores) = ready_runtime().await;
     let generation = connection
         .begin_composer_draft_renderer_generation()
         .expect("renderer generation");

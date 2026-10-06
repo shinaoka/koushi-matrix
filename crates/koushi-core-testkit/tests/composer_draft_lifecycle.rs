@@ -242,7 +242,7 @@ async fn retired_renderer_generation_cannot_submit_or_recreate_target() {
 
 #[tokio::test]
 async fn account_runtime_teardown_revokes_live_renderer_generation() {
-    let runtime = koushi_core::CoreRuntime::start();
+    let (runtime, _stores) = koushi_core::CoreRuntime::start_isolated();
     let registry = runtime.composer_draft_lease_registry_for_testing();
     let scope = main_scope(session_key(), "teardown-room");
     let generation = registry

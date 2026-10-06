@@ -52,7 +52,7 @@ async fn mount_echo_login(server: &MatrixMockServer, token: &'static str, user_i
 
 #[tokio::test]
 async fn password_command_projects_authentication_before_account_actor_completion() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut connection = runtime.attach();
     let request_id = connection.next_request_id();
     connection
@@ -267,7 +267,7 @@ async fn wait_for_runtime_account(
 
 #[tokio::test]
 async fn active_session_rejects_a_new_password_login_before_account_routing() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut connection = runtime.attach();
     runtime.inject_actions(restore_ready_actions()).await;
     wait_for_state(&mut connection, |state| {
@@ -309,7 +309,7 @@ use support::*;
 
 #[tokio::test]
 async fn unauthenticated_session_commands_are_rejected() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut connection = runtime.attach();
 
     let request_id = connection.next_request_id();
@@ -352,7 +352,7 @@ async fn ready_session_routes_past_appactor_session_gate() {
     // AccountActor, so AccountActor emits SessionRequired from its own guard.
     // That is a valid "routes to AccountActor" signal: the AppActor did not
     // short-circuit it with a different failure.
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut connection = runtime.attach();
     runtime.inject_actions(restore_ready_actions()).await;
     // Wait for the Ready snapshot before submitting.
@@ -417,7 +417,7 @@ async fn actor_projected_session_gate_and_authentication_lock_execute_stop_sync_
 }
 
 async fn assert_projected_session_exit_stops_sync(action: AppAction, authentication_locked: bool) {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut connection = runtime.attach();
 
     runtime.inject_actions(restore_ready_actions()).await;
@@ -460,7 +460,7 @@ async fn assert_projected_session_exit_stops_sync(action: AppAction, authenticat
 
 #[tokio::test]
 async fn authoritative_trust_loss_publishes_one_atomic_reset_delta_after_setup_quiesces() {
-    let runtime = CoreRuntime::start_with_event_capacity(128);
+    let (runtime, _stores) = CoreRuntime::start_isolated_with_event_capacity(128);
     let mut connection = runtime.attach();
     let room_id = "!room:example.invalid".to_owned();
     let event_id = "$focused:example.invalid".to_owned();
@@ -607,7 +607,7 @@ enum RecoveryRouteTarget {
 }
 
 async fn assert_upload_staging_command_routes_for_recovery_session(target: RecoveryRouteTarget) {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut connection = runtime.attach();
     let room_id = "!room:example.test";
     let attempt_id = LoginAttemptId::new(0, 1);

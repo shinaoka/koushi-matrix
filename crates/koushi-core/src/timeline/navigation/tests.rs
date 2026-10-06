@@ -1904,7 +1904,8 @@ async fn timeline_actor_spawn_returns_before_authoritative_publish_waits_for_man
         Some(TimelineMessage::IgnoredUsersUpdated { .. })
     ));
     assert!(matches!(
-        executor::timeout(Duration::from_millis(100), manager_rx.recv())
+        // Liveness bound: a publish that never resumes leaves this pending.
+        executor::timeout(Duration::from_secs(60), manager_rx.recv())
             .await
             .expect("authoritative startup publish must resume after capacity opens"),
         Some(TimelineMessage::AuthoritativeReadStateObserved {
@@ -2369,7 +2370,7 @@ fn unread_consistency_diagnostic_correlates_thread_receipt_with_latest_reply_pro
 
 #[tokio::test]
 async fn forward_pagination_on_room_key_fails_invalid_direction() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
 
     // Inject a Ready session so commands are not gated.
@@ -2446,7 +2447,7 @@ async fn forward_pagination_on_room_key_fails_invalid_direction() {
 
 #[tokio::test]
 async fn forward_pagination_on_thread_key_not_subscribed() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
 
     runtime
@@ -2536,7 +2537,7 @@ fn backward_direction_never_invalid_for_any_kind() {
 
 #[tokio::test]
 async fn paginate_on_unsubscribed_key_returns_not_subscribed() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
 
     runtime

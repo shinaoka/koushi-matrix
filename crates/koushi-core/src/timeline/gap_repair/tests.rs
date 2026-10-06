@@ -111,11 +111,11 @@ fn projected_gap_position(
     }
 }
 fn timeline_gap_repair_diagnostic_count_since(
-    diagnostic_start: usize,
+    diagnostic_start: koushi_diagnostics::test_support::DetailCursor,
     stage: &str,
     demand_revision: u64,
 ) -> usize {
-    koushi_diagnostics::test_support::detail_snapshot().records[diagnostic_start..]
+    koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
         .iter()
         .filter(|record| {
             record.event.source == "core.timeline_gap_repair"
@@ -1548,9 +1548,7 @@ fn gap_repair_attempt_diagnostics_classify_attempt_resets() {
 #[test]
 fn gap_repair_attempt_diagnostics_emit_once_per_changed_admission() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
-    let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
     let demand_revision = 9_004_001;
     let mut tracker = TimelineGapRepairTracker::default();
 
@@ -1580,8 +1578,8 @@ fn gap_repair_attempt_diagnostics_emit_once_per_changed_admission() {
         demand_revision + 1,
     ));
 
-    let records = koushi_diagnostics::test_support::detail_snapshot().records;
-    let admissions = records[diagnostic_start..]
+    let records = koushi_diagnostics::test_support::detail_records_since(diagnostic_start);
+    let admissions = records
         .iter()
         .filter(|record| {
             record.event.source == "core.timeline_gap_repair"
@@ -1617,9 +1615,7 @@ fn gap_repair_attempt_diagnostics_emit_once_per_changed_admission() {
 #[test]
 fn gap_repair_attempt_diagnostics_emit_one_budget_update_per_sdk_result() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
-    let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
     let demand_revision = 9_004_101;
     let mut tracker = TimelineGapRepairTracker::default();
     tracker
