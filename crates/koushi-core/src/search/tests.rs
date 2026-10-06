@@ -7,6 +7,60 @@ use koushi_search::{
     SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent, SensitiveString,
 };
 
+fn search_result_fixture(
+    room_id: &str,
+    event_id: &str,
+    timestamp_ms: u64,
+    snippet: &str,
+) -> koushi_state::SearchResult {
+    koushi_state::SearchResult {
+        room_id: room_id.to_owned(),
+        event_id: event_id.to_owned(),
+        context_label: None,
+        sender: "@user:localhost".to_owned(),
+        timestamp_ms,
+        score_millis: 0,
+        snippet: snippet.to_owned(),
+        match_field: koushi_state::SearchMatchField::MessageBody,
+        highlights: Vec::new(),
+        match_kind: koushi_state::SearchMatchKind::Exact,
+    }
+}
+
+#[test]
+fn merge_resolved_results_keeps_the_store_verdict_and_orders_newest_first() {
+    let stored = vec![search_result_fixture("!a:x", "$a1:x", 100, "from store")];
+    let resolved = vec![
+        search_result_fixture("!a:x", "$a1:x", 100, "from cache"),
+        search_result_fixture("!b:x", "$b1:x", 300, "newest"),
+        search_result_fixture("!c:x", "$c1:x", 200, "middle"),
+    ];
+
+    let merged = merge_resolved_results(stored, resolved);
+
+    assert_eq!(
+        merged
+            .iter()
+            .map(|result| result.event_id.as_str())
+            .collect::<Vec<_>>(),
+        ["$b1:x", "$c1:x", "$a1:x"]
+    );
+    // The store already verified this key, so its verdict wins over the cache.
+    assert_eq!(merged[2].snippet, "from store");
+}
+
+#[test]
+fn merge_resolved_results_truncates_to_the_candidate_limit() {
+    let resolved = (0..SEARCH_CANDIDATE_LIMIT + 5)
+        .map(|index| search_result_fixture("!a:x", &format!("$e{index}:x"), index as u64, "body"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        merge_resolved_results(Vec::new(), resolved).len(),
+        SEARCH_CANDIDATE_LIMIT
+    );
+}
+
 #[tokio::test]
 async fn search_actor_shutdown_waits_for_actor_task_settlement() {
     let (tx, mut rx) = mpsc::channel(1);

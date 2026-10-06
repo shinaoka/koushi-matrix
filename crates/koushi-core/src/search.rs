@@ -606,6 +606,39 @@ pub(crate) struct SearchActor {
     crawl_delay_timer: Option<executor::JoinHandle<()>>,
 }
 
+/// Union store-verified results with cache-resolved ones.
+///
+/// A key the store already verified wins, so its verdict (and the match field
+/// it fixed for the resident document) is never replaced. The union is ordered
+/// newest first and capped, matching the store projection's own ordering.
+fn merge_resolved_results(
+    mut results: Vec<koushi_state::SearchResult>,
+    resolved: Vec<koushi_state::SearchResult>,
+) -> Vec<koushi_state::SearchResult> {
+    if resolved.is_empty() {
+        return results;
+    }
+
+    let mut seen: HashSet<(String, String)> = results
+        .iter()
+        .map(|result| (result.room_id.clone(), result.event_id.clone()))
+        .collect();
+    for result in resolved {
+        if seen.insert((result.room_id.clone(), result.event_id.clone())) {
+            results.push(result);
+        }
+    }
+
+    results.sort_by(|left, right| {
+        right
+            .timestamp_ms
+            .cmp(&left.timestamp_ms)
+            .then_with(|| left.event_id.cmp(&right.event_id))
+    });
+    results.truncate(SEARCH_CANDIDATE_LIMIT);
+    results
+}
+
 impl SearchActor {
     /// Spawn the actor and return its handle.
     pub fn spawn(
@@ -856,8 +889,9 @@ impl SearchActor {
             variants.iter().any(|variant| variant != query),
         );
 
-        let projected_results =
-            self.project_search_results(request_id, query, &room_filter, &[], 0);
+        let projected_results = self
+            .project_search_results(request_id, query, &room_filter, &[], 0)
+            .await;
         record_search_finish(
             request_id,
             "local_finish",
@@ -910,13 +944,15 @@ impl SearchActor {
             }
         };
         let projection_started = Instant::now();
-        let projected_results = self.project_search_results(
-            result.request_id,
-            &result.query,
-            &result.room_filter,
-            &sdk_candidates,
-            result.sdk_total_ms,
-        );
+        let projected_results = self
+            .project_search_results(
+                result.request_id,
+                &result.query,
+                &result.room_filter,
+                &sdk_candidates,
+                result.sdk_total_ms,
+            )
+            .await;
         record_search_finish(
             result.request_id,
             "finish",
@@ -937,7 +973,7 @@ impl SearchActor {
         }));
     }
 
-    fn project_search_results(
+    async fn project_search_results(
         &self,
         request_id: RequestId,
         query: &str,
@@ -974,7 +1010,70 @@ impl SearchActor {
             projection_elapsed_ms,
             &projection.stats,
         ));
-        projection.results
+
+        let results = projection.results;
+        let resolved = self
+            .resolve_indexed_candidates(query, room_filter, sdk_candidates)
+            .await;
+        merge_resolved_results(results, resolved)
+    }
+
+    /// Verify literal index candidates by resolving their current content from
+    /// the encrypted event cache.
+    ///
+    /// This is what makes an indexed message findable before the history crawl
+    /// reaches it, and it reads bodies on demand instead of retaining every
+    /// body in memory. Resolution is cache-only, so it never hits the network.
+    async fn resolve_indexed_candidates(
+        &self,
+        query: &str,
+        room_filter: &SearchRoomFilter,
+        sdk_candidates: &[SearchCandidate],
+    ) -> Vec<koushi_state::SearchResult> {
+        let mut results = Vec::new();
+
+        for candidate in sdk_candidates {
+            if !room_filter.contains(&candidate.room_id) {
+                continue;
+            }
+            // A missing or redacted cached event simply drops out of the
+            // supplement; the store path above stays the authority.
+            let Ok(Some(resolved)) = koushi_sdk::resolve_cached_message(
+                &self.session,
+                &candidate.room_id,
+                &candidate.event_id,
+            )
+            .await
+            else {
+                continue;
+            };
+            // The index may answer with an edit event id; the resolved reader
+            // reports the original identity plus current content.
+            let event = SearchableEvent {
+                room_id: candidate.room_id.clone(),
+                event_id: resolved.event_id.clone(),
+                sender: resolved.sender.clone(),
+                timestamp_ms: resolved.timestamp_ms.unwrap_or(0),
+                body: resolved.body.clone().map(SensitiveString::new),
+                attachment_filename: resolved
+                    .attachment_filename
+                    .clone()
+                    .map(SensitiveString::new),
+                attachment: None,
+            };
+            let resolved_candidate = SearchCandidate {
+                room_id: candidate.room_id.clone(),
+                event_id: resolved.event_id,
+                score_millis: candidate.score_millis,
+            };
+            if let Some(result) =
+                koushi_search::verify_candidate(&resolved_candidate, &event, query)
+            {
+                results.push(result);
+            }
+        }
+
+        results
     }
 
     async fn handle_attachments(
