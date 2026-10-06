@@ -148,6 +148,34 @@ root causes against the source and changed several of the planned fixes. Its ver
   and network-backed), which warming the room's live cache cannot accelerate, and a larger cache-only
   budget would spend itself before discovering that the target is out of reach. Pending a decision.
 
+### Fix round 2 (post-implementation review of round 1)
+
+The round-1 fixes were reviewed on the diff. Every fix was present; the review
+found one privacy blocker and nine further defects. Fixed in `5cba5be7`:
+
+- a content-policy change while a query runs now invalidates that query's result
+  (re-verified under the current policy) instead of publishing an opted-out snippet;
+- the index contract moves to version 2, because version 1 named a different index
+  directory and had no content policy in the record, so a version-1 commitment
+  describes an index this build never opens;
+- attachment edits order by the edit's own time with `canonical` only as the
+  tiebreak, so a newer crawl edit is not pinned by an older canonical observation;
+  an edit rollback arrives as the redaction of the applied edit, which retires it
+  (and any pending copy);
+- the Files rebuild marks a room done only after a successful store read, clears
+  its markers when the document store is cleared, bounds its projection to the
+  newest events, and refuses a replacement from a different sender;
+- the room-list notification (content policy + commitment pruning) is emitted at
+  every speed and for an empty room list, so a restart with crawling paused no
+  longer keeps the restrictive placeholder forever;
+- a completed search request is no longer reported as superseded.
+
+Still open from round 2: the once-per-session Files marker can hold rows a room's
+later sync mutation should change until a catch-up crawl or timeline message
+arrives (finding: currentness), and the whole-store read holds the event-cache
+store lock for its duration (bounded per room, not per page). The M4 decision is
+still pending.
+
 Also raised: migrate commitments already written without an acknowledgement, make the "rebuild
 search database" action actually rebuild the persistent index (the user help promises it), cover
 attachment edit rollback and mixed producers, measure pending-edit residency in the memory probe,
