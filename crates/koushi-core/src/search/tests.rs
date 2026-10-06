@@ -305,6 +305,160 @@ fn search_verify_event_preserves_private_data_free_scan_and_duration_fields() {
     );
 }
 
+#[tokio::test]
+async fn files_rows_are_rebuilt_from_the_persisted_event_cache() {
+    use matrix_sdk::ruma::{event_id, owned_mxc_uri, room_id, user_id};
+    use matrix_sdk_test::{JoinedRoomBuilder, event_factory::EventFactory};
+
+    let server = matrix_sdk::test_utils::mocks::MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = room_id!("!files-refresh:example.invalid");
+    client
+        .event_cache()
+        .subscribe()
+        .expect("event cache subscription");
+    let factory = EventFactory::new()
+        .room(room_id)
+        .sender(user_id!("@alice:example.invalid"));
+    server
+        .mock_sync()
+        .ok_and_run(&client, |builder| {
+            builder.add_joined_room(
+                JoinedRoomBuilder::new(room_id)
+                    .add_timeline_event(
+                        factory
+                            .text_msg("no attachment here")
+                            .event_id(event_id!("$plain")),
+                    )
+                    .add_timeline_event(
+                        factory
+                            .image(
+                                "agenda.pdf".to_owned(),
+                                owned_mxc_uri!("mxc://example.invalid/agenda"),
+                            )
+                            .event_id(event_id!("$with-attachment")),
+                    ),
+            );
+        })
+        .await;
+
+    let session_info = koushi_state::SessionInfo {
+        homeserver: server.server().uri(),
+        user_id: client.user_id().expect("mock client user id").to_string(),
+        device_id: client
+            .device_id()
+            .expect("mock client device id")
+            .to_string(),
+        authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+    };
+    let session = MatrixClientSession::from_client_for_testing(client.clone(), session_info);
+
+    // The room's crawl is already committed, so this store read is the only
+    // source of its Files rows after a restart.
+    let events = koushi_sdk::persisted_room_events(&session, room_id.as_str())
+        .await
+        .expect("the persisted event cache should be readable");
+    assert_eq!(events.len(), 2, "both synced events are persisted");
+
+    let messages =
+        attachment_messages_from_events(room_id.as_str(), &events, &SearchCrawlerSettings::default());
+    let attachments: Vec<_> = messages
+        .iter()
+        .filter_map(|message| match message {
+            SearchIndexMessage::Upsert {
+                event_id,
+                attachment: Some(attachment),
+                attachment_filename,
+                ..
+            } => Some((event_id.clone(), attachment.clone(), attachment_filename.clone())),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        attachments.len(),
+        1,
+        "only the media message carries attachment metadata"
+    );
+    assert!(
+        messages.iter().any(|message| matches!(
+            message,
+            SearchIndexMessage::Upsert {
+                event_id,
+                attachment: None,
+                ..
+            } if event_id == "$plain"
+        )),
+        "a message without an attachment projects without one and is not retained"
+    );
+    assert_eq!(attachments[0].0, "$with-attachment");
+    assert_eq!(
+        attachments[0].1.filename.as_str(),
+        "agenda.pdf"
+    );
+    assert_eq!(
+        attachments[0].2.as_deref(),
+        Some("agenda.pdf")
+    );
+}
+
+#[test]
+fn the_files_refresh_applies_the_content_policy() {
+    let media = timeline_event_from_json(serde_json::json!({
+        "type": "m.room.message",
+        "event_id": "$image:test",
+        "room_id": "!r:test",
+        "sender": "@alice:test",
+        "origin_server_ts": 1_000,
+        "content": {
+            "msgtype": "m.image",
+            "body": "agenda.pdf",
+            "url": "mxc://example.invalid/agenda",
+        },
+    }));
+
+    let with_filenames = SearchCrawlerSettings {
+        include_media_captions: true,
+        include_filenames: true,
+        ..SearchCrawlerSettings::default()
+    };
+    let without_filenames = SearchCrawlerSettings {
+        include_media_captions: true,
+        include_filenames: false,
+        ..SearchCrawlerSettings::default()
+    };
+
+    let rows = |settings| {
+        attachment_messages_from_events("!r:test", std::slice::from_ref(&media), settings)
+            .into_iter()
+            .filter(|message| {
+                matches!(
+                    message,
+                    SearchIndexMessage::Upsert {
+                        attachment: Some(_),
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+
+    assert_eq!(rows(&with_filenames), 1, "a filename opt-in yields a Files row");
+    assert_eq!(
+        rows(&without_filenames),
+        0,
+        "an opted-out filename must not reach the Files view"
+    );
+}
+
+fn timeline_event_from_json(
+    json: serde_json::Value,
+) -> matrix_sdk::deserialized_responses::TimelineEvent {
+    matrix_sdk::deserialized_responses::TimelineEvent::from_plaintext(
+        matrix_sdk::ruma::serde::Raw::from_json_string(json.to_string()).expect("raw event"),
+    )
+}
+
 // Helper constructors
 fn make_event(room_id: &str, event_id: &str, body: &str) -> SearchableEvent {
     SearchableEvent {

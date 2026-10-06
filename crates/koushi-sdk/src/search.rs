@@ -503,6 +503,39 @@ pub async fn index_room_events_now(
         .map_err(|error| matrix_search_error_from_index(&error))
 }
 
+/// Read a room's persisted events from the local encrypted event cache.
+///
+/// Unlike `RoomEventCache::events` this is not limited to the linked chunks the
+/// cache currently holds in memory: it reads what is on disk, with no network
+/// access. Callers use it to rebuild derived metadata (attachment rows) for a
+/// room whose history crawl was already committed and is therefore not crawled
+/// again.
+pub async fn persisted_room_events(
+    session: &MatrixClientSession,
+    room_id: &str,
+) -> Result<Vec<matrix_sdk::deserialized_responses::TimelineEvent>, MatrixSearchError> {
+    use matrix_sdk_base::event_cache::store::EventCacheStoreLockState;
+
+    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| MatrixSearchError::Query)?;
+    let state = session
+        .client()
+        .event_cache_store()
+        .lock()
+        .await
+        .map_err(|_| MatrixSearchError::Internal)?;
+    // `Dirty` says another holder may have written since this process last
+    // acquired the lock, which matters for synchronization; the rows are still
+    // readable, and this is a read-only reconstruction.
+    let guard = match state {
+        EventCacheStoreLockState::Clean(guard) | EventCacheStoreLockState::Dirty(guard) => guard,
+    };
+
+    guard
+        .get_room_events(&room_id, None, None)
+        .await
+        .map_err(|_| MatrixSearchError::Internal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

@@ -655,6 +655,10 @@ pub(crate) struct SearchActor {
     crawl_delay_elapsed: bool,
     /// One-shot startup-delay timer; its completion is awaited in `run`.
     crawl_delay_timer: Option<executor::JoinHandle<()>>,
+    /// Rooms whose Files rows were already rebuilt from the persisted event
+    /// cache this session, so the Files view does not re-read the store on every
+    /// query.
+    refreshed_attachment_rooms: HashSet<String>,
     /// Content-indexing settings the verifier must apply.
     ///
     /// The crawler honours these when it indexes, but the persistent index also
@@ -740,6 +744,7 @@ impl SearchActor {
             crawl_settings_generation: 0,
             crawl_delay_elapsed: false,
             crawl_delay_timer: None,
+            refreshed_attachment_rooms: HashSet::new(),
             crawler_settings: restricted_crawler_settings(),
         };
 
@@ -1036,12 +1041,13 @@ impl SearchActor {
     }
 
     async fn handle_attachments(
-        &self,
+        &mut self,
         request_id: RequestId,
         scope: AttachmentScope,
         filter: AttachmentFilter,
         sort: AttachmentSort,
     ) {
+        self.refresh_attachment_rows(&scope).await;
         let results = self.document_store.attachments(&scope, &filter, sort);
 
         let _ = self
@@ -1099,7 +1105,58 @@ impl SearchActor {
         });
     }
 
+    /// Rebuild attachment rows for a scope's rooms from the persisted event
+    /// cache, once per room per session.
+    ///
+    /// A room whose history crawl was already committed is not crawled again
+    /// after a restart (#1150 M3), so its Files rows would otherwise stay empty
+    /// until the user opens the room. The Files view is what needs them, so it
+    /// pays for the reconstruction; only the local encrypted store is read, and
+    /// nothing else is retained beyond the attachment metadata the rows hold.
+    async fn refresh_attachment_rows(&mut self, scope: &AttachmentScope) {
+        let room_ids = match scope {
+            AttachmentScope::Account => self
+                .session
+                .client()
+                .rooms()
+                .into_iter()
+                .map(|room| room.room_id().to_string())
+                .collect::<Vec<_>>(),
+            AttachmentScope::Room { room_id } => vec![room_id.clone()],
+            AttachmentScope::Space { child_room_ids, .. } => child_room_ids.clone(),
+        };
+
+        for room_id in room_ids {
+            if !self.refreshed_attachment_rooms.insert(room_id.clone()) {
+                continue;
+            }
+            let Ok(events) = koushi_sdk::persisted_room_events(&self.session, &room_id).await
+            else {
+                continue;
+            };
+            for message in
+                attachment_messages_from_events(&room_id, &events, &self.crawler_settings)
+            {
+                self.apply_index_message(message);
+            }
+        }
+    }
+
     fn handle_index(&mut self, msg: SearchIndexMessage) {
+        if let Some((room_id, event_id)) = self.apply_index_message(msg) {
+            self.emit(CoreEvent::Search(SearchEvent::IndexUpdated {
+                room_id,
+                event_id,
+            }));
+        }
+    }
+
+    /// Apply one index message to the document store.
+    ///
+    /// Returns the row it changed, for the `IndexUpdated` wake-up, when there is
+    /// one. Callers that rebuild rows in bulk (the Files-view refresh) use this
+    /// directly so a bulk rebuild does not emit one event per message.
+    fn apply_index_message(&mut self, msg: SearchIndexMessage) -> Option<(String, String)> {
         match msg {
             SearchIndexMessage::Upsert {
                 room_id,
@@ -1126,10 +1183,7 @@ impl SearchActor {
                     attachment,
                 };
                 self.document_store.upsert_message(event, canonical);
-                self.emit(CoreEvent::Search(SearchEvent::IndexUpdated {
-                    room_id: indexed_room_id,
-                    event_id: indexed_event_id,
-                }));
+                Some((indexed_room_id, indexed_event_id))
             }
             SearchIndexMessage::Edit {
                 edit_event_id,
@@ -1160,15 +1214,11 @@ impl SearchActor {
                     attachment,
                 };
                 self.document_store.upsert_edit(edit, canonical);
-                if let Some(room_id) = edited_room_id {
-                    self.emit(CoreEvent::Search(SearchEvent::IndexUpdated {
-                        room_id,
-                        event_id: edited_event_id,
-                    }));
-                }
+                edited_room_id.map(|room_id| (room_id, edited_event_id))
             }
             SearchIndexMessage::Redact { event_id } => {
                 self.document_store.redact(&event_id);
+                None
             }
         }
     }
@@ -2007,6 +2057,32 @@ async fn verify_literal_candidates(
     }
 
     Ok(verification)
+}
+
+/// Project persisted events into the document store's attachment messages.
+///
+/// The Files-view refresh rebuilds rows for a room the crawler no longer walks,
+/// so it goes through the crawler's own projection: the same message types, the
+/// same attachment metadata, and the same content policy.
+fn attachment_messages_from_events(
+    room_id: &str,
+    events: &[matrix_sdk::deserialized_responses::TimelineEvent],
+    settings: &SearchCrawlerSettings,
+) -> Vec<SearchIndexMessage> {
+    let mut pending_redactions = HashSet::new();
+    events
+        .iter()
+        .filter(|event| !event.kind.is_utd())
+        .filter_map(|event| {
+            let raw = event.kind.raw();
+            crate::search_crawler::event_json_to_index_message(
+                room_id,
+                raw.json().get(),
+                settings,
+                &mut pending_redactions,
+            )
+        })
+        .collect()
 }
 
 /// Content settings that expose nothing until the account's own arrive.

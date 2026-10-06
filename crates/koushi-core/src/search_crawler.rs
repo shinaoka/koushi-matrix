@@ -371,7 +371,7 @@ fn crawl_batch_size(speed: SearchCrawlerSpeed) -> u32 {
     }
 }
 
-fn event_json_to_index_message(
+pub(crate) fn event_json_to_index_message(
     room_id: &str,
     json: &str,
     settings: &SearchCrawlerSettings,
