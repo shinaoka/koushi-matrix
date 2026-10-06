@@ -4022,6 +4022,9 @@ dependencies = [
  "tantivy",
  "thiserror 2.0.20",
  "tracing",
+ "unicode-casefold",
+ "unicode-normalization",
+ "unicode-segmentation",
  "zeroize",
 ]
 
