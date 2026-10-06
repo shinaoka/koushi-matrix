@@ -1673,6 +1673,93 @@ test("sending staged attachments never wipes the typed composer draft (#1130)", 
   await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0);
 });
 
+test("attach button stages the file and keeps the typed main draft (#1144)", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await composer.fill("Text typed before attaching");
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("set_composer_draft").at(-1)?.args)
+    )
+    .toMatchObject({
+      document: { inlines: [{ kind: "text", text: "Text typed before attaching" }] }
+    });
+  await attachFile(page, {
+    name: "attach-1144.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("browser-headless attach fixture")
+  });
+
+  // Attaching only stages: the file waits in the staging dialog for an
+  // explicit send, and neither the attachment nor the typed text is sent.
+  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toBeVisible();
+  await expect(page.getByText("attach-1144.txt", { exact: true })).toBeVisible();
+  await expect.poll(() => invocationCount(page, "stage_upload_bytes")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("stage_upload_bytes")[0]?.args.target)
+    )
+    .toEqual({ kind: "main", room_id: HARNESS_ROOM_ID });
+  expect(await invocationCount(page, "send_prepared_uploads")).toBe(0);
+  expect(await invocationCount(page, "send_text")).toBe(0);
+  // The staging settlement must not overwrite or clear the typed draft.
+  await expect(composer).toHaveText("Text typed before attaching");
+  const lastDraftWrite = await page.evaluate(
+    () => window.__harness.invocationsOf("set_composer_draft").at(-1)?.args
+  );
+  expect(lastDraftWrite).toMatchObject({
+    document: { inlines: [{ kind: "text", text: "Text typed before attaching" }] }
+  });
+});
+
+test("thread attach button stages the file and keeps the typed thread draft (#1144)", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.getByRole("button", { name: /2 replies/ }).click();
+  await expect(page.getByText(t("panel.thread"), { exact: true })).toBeVisible();
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  const contextPanel = page.locator('aside[aria-label="Context panel"]');
+  const threadComposer = page.getByRole("textbox", { name: t("timeline.threadComposer") });
+  await threadComposer.fill("Thread text typed before attaching");
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("set_thread_composer_draft").at(-1)?.args)
+    )
+    .toMatchObject({
+      document: { inlines: [{ kind: "text", text: "Thread text typed before attaching" }] }
+    });
+  await contextPanel.getByRole("button", { name: "Attach file", exact: true }).click();
+  await contextPanel
+    .locator('input[type="file"][aria-label="Attach file input"]')
+    .setInputFiles({
+      name: "thread-attach-1144.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("browser-headless thread attach fixture")
+    });
+
+  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toBeVisible();
+  await expect(page.getByText("thread-attach-1144.txt", { exact: true })).toBeVisible();
+  await expect.poll(() => invocationCount(page, "stage_upload_bytes")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("stage_upload_bytes")[0]?.args.target)
+    )
+    .toMatchObject({ kind: "thread", room_id: HARNESS_ROOM_ID });
+  expect(await invocationCount(page, "send_prepared_uploads")).toBe(0);
+  expect(await invocationCount(page, "send_thread_reply")).toBe(0);
+  await expect(threadComposer).toHaveText("Thread text typed before attaching");
+  const lastDraftWrite = await page.evaluate(
+    () => window.__harness.invocationsOf("set_thread_composer_draft").at(-1)?.args
+  );
+  expect(lastDraftWrite).toMatchObject({
+    document: { inlines: [{ kind: "text", text: "Thread text typed before attaching" }] }
+  });
+});
+
 test("paste/drop upload UX stages ordinary files for the captured main composer target", async ({
   page
 }) => {

@@ -236,6 +236,11 @@ describe("desktop release scripts", () => {
         join(desktopDirectory, "package.json"),
         JSON.stringify({ version: packageVersion })
       );
+      // The npm lockfile root is synchronized as well (#1137).
+      writeFileSync(
+        join(desktopDirectory, "package-lock.json"),
+        JSON.stringify({ version: packageVersion, packages: { "": { version: packageVersion } } })
+      );
       writeFileSync(
         join(tauriDirectory, "tauri.conf.json"),
         JSON.stringify({ version: tauriVersion })
@@ -435,6 +440,7 @@ describe("desktop release scripts", () => {
     }
     for (const manifest of [
       "apps/desktop/package.json",
+      "apps/desktop/package-lock.json",
       "apps/desktop/src-tauri/tauri.conf.json",
       "apps/desktop/src-tauri/Cargo.toml"
     ]) {

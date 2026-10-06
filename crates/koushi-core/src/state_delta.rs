@@ -442,7 +442,7 @@ pub fn build_state_delta(
 
     Some(StateDelta {
         generation,
-        changed,
+        changed: Box::new(changed),
     })
 }
 

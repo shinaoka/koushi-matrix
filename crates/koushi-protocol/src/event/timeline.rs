@@ -83,7 +83,9 @@ pub enum TimelineEvent {
     },
     NavigationUpdated {
         key: TimelineKey,
-        snapshot: TimelineNavigationSnapshot,
+        /// Boxed so the ~144 B snapshot stays out of the inline `TimelineEvent`
+        /// (and therefore `CoreEvent`) representation (#1150).
+        snapshot: Box<TimelineNavigationSnapshot>,
     },
     GapPositionsUpdated {
         key: TimelineKey,
@@ -133,7 +135,9 @@ pub enum TimelineEvent {
     MessageSourceLoaded {
         request_id: RequestId,
         key: TimelineKey,
-        source: TimelineMessageSource,
+        /// Boxed so the ~208 B source stays out of the inline `TimelineEvent`
+        /// (and therefore `CoreEvent`) representation (#1150).
+        source: Box<TimelineMessageSource>,
     },
     MediaUploadProgress {
         request_id: Option<RequestId>,

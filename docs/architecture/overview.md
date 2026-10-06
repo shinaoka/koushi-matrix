@@ -1583,7 +1583,15 @@ fails on real accounts:
   `ACTOR_MESSAGE_QUEUE_CAPACITY`
 - AppActor action-projection inbox (actors project `Vec<AppAction>` here at high
   volume during sync): `ACTION_QUEUE_CAPACITY`
-- discrete core events per consumer: `EVENT_QUEUE_CAPACITY`
+- discrete core events per consumer: `EVENT_QUEUE_CAPACITY`, whose per-account
+  ring allocation (capacity, rounded up to a power of two, times the slot size
+  plus a documented per-slot overhead) is held under
+  `EVENT_QUEUE_SLOT_BUDGET_BYTES` by a compile-time assertion. Large event
+  payloads stay boxed out of the inline `CoreEvent` representation so one slot
+  never inherits a whole `StateDelta` (#1150, 1-5 MiB/account slot budget for
+  event buffering). Retained heap payloads beyond those slots are NOT yet
+  byte-budgeted; a lagging consumer can still hold boxed payloads, and bounding
+  them is an open follow-up on #1150.
 - timeline diff batches per subscribed timeline: 128
 - search index mutation queue: 512
 

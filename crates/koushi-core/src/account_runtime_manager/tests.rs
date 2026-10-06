@@ -571,6 +571,16 @@ async fn account_runtimes_isolate_account_settings_and_share_app_settings() {
         }))
         .await
         .expect("update shared app settings");
+    // `command` returns once the command is queued. Bob observing the shared
+    // watch update does not imply Alice has published her own snapshot yet
+    // (#1139), so wait for each runtime independently before asserting.
+    wait_for(&mut alice_connection, |snapshot| {
+        snapshot.settings.values.appearance.theme == ThemePreference::Light
+            && snapshot.settings.values.search_crawler.speed
+                == koushi_state::SearchCrawlerSpeed::Slow
+            && snapshot.settings.persistence == koushi_state::SettingsPersistenceState::Idle
+    })
+    .await;
     wait_for(&mut bob_connection, |snapshot| {
         snapshot.settings.values.appearance.theme == ThemePreference::Light
             && snapshot.settings.values.search_crawler.speed

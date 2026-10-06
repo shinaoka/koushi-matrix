@@ -3,6 +3,7 @@
  *
  * Drives headless Chromium against the Vite-served harness page
  * (harness.html → src/test/harnessMain.tsx → real TimelineView + mock IPC).
+ * A short allow-list of engine-sensitive specs also runs in headless WebKit.
  *
  * ABSOLUTELY NO GUI: headless only, no Tauri app, no native window. The Vite
  * dev server is started by Playwright on port 5183 (NOT the canonical 5173,
@@ -39,6 +40,17 @@ export default defineConfig({
       ? { args: process.env.KOUSHI_PLAYWRIGHT_EXTRA_ARGS.split(" ") }
       : undefined
   },
+  projects: [
+    { name: "chromium", use: { browserName: "chromium" } },
+    // WebKit covers the macOS WKWebView and Linux WebKitGTK engine family for
+    // specs whose defect is engine-native (search-field decorations, #1145).
+    // Opt a spec in by adding it here; everything else stays Chromium-only.
+    {
+      name: "webkit",
+      use: { browserName: "webkit" },
+      testMatch: [/room-list-filter-native-clear\.spec\.ts$/]
+    }
+  ],
   webServer: {
     command: `npx vite --port ${HARNESS_PORT}`,
     url: `http://127.0.0.1:${HARNESS_PORT}/harness.html`,

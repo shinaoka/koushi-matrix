@@ -115,7 +115,28 @@ pub const COMMAND_INBOX_CAPACITY: usize = 256;
 /// `InitialItems` (blank timeline) and `select_room`'s correlated event ("room
 /// selection did not complete"). Sized to absorb a full large-account burst;
 /// genuine lag still self-heals via `EventStreamLag` -> resync.
+///
+/// The ring pre-allocates one slot per capacity entry per account, so large
+/// payloads must stay boxed out of the inline `CoreEvent` representation; see
+/// `EVENT_QUEUE_SLOT_BUDGET_BYTES` below for the enforced bound (#1150).
 pub const EVENT_QUEUE_CAPACITY: usize = 16384;
+/// Byte budget for the per-account event-queue slots. `CoreEvent` must stay
+/// compact enough that the always-allocated ring fits here; see the compile-time
+/// assertion below. Retained heap payloads are NOT budgeted here: a lagging
+/// consumer can still retain boxed `StateDelta`/timeline payloads, and bounding
+/// those needs a separate admission policy (follow-up).
+pub const EVENT_QUEUE_SLOT_BUDGET_BYTES: usize = 5 * 1024 * 1024;
+/// Conservative per-slot overhead outside the event value. `tokio::broadcast`
+/// stores `Mutex<Slot<T>>` (a reader count and a position alongside the value),
+/// and rounds capacity up to a power of two, so `size_of::<T>()` alone
+/// understates the ring.
+const EVENT_QUEUE_SLOT_OVERHEAD_BYTES: usize = 32;
+const _: () = assert!(
+    EVENT_QUEUE_CAPACITY.next_power_of_two()
+        * (std::mem::size_of::<CoreEvent>() + EVENT_QUEUE_SLOT_OVERHEAD_BYTES)
+        <= EVENT_QUEUE_SLOT_BUDGET_BYTES,
+    "CoreEvent no longer fits the per-account event-queue slot budget; box the new payload (#1150)"
+);
 /// AppActor action-projection inbox. Actors project a high volume of
 /// `Vec<AppAction>` here during large-account (100+ room) sync. It MUST be large
 /// enough that bursts never overflow.
@@ -1490,6 +1511,9 @@ impl AppActor {
         // #1060: the requested room (`None` for a Space) of AppActor-local
         // navigation whose enrichment is scheduled after publication.
         let mut local_navigation_target: Option<Option<String>> = None;
+        // #1146: event navigations whose focused subscription failed in this
+        // batch; settled after publication like select outcomes.
+        let mut focused_subscription_failures = Vec::new();
         for action in actions {
             let Some(action) = normalize_activity_resolution_action(&self.state, action) else {
                 continue;
@@ -1613,6 +1637,13 @@ impl AppActor {
                 // retain only Open and wait for the WebView projection ACK.
                 self.pending_date_navigation_request_id = None;
                 continue;
+            }
+            if let AppAction::FocusedContextSubscriptionFailed {
+                room_id, event_id, ..
+            } = &action
+                && let Some(owner) = self.focused_subscription_failure_owner(room_id, event_id)
+            {
+                focused_subscription_failures.push(owner);
             }
             // For SelectRoom: capture observable facts BEFORE reduce so
             // we can classify the outcome afterwards and emit the
@@ -1884,6 +1915,11 @@ impl AppActor {
                 outcome,
                 published_generation,
             });
+        }
+
+        for (request_id, generation) in focused_subscription_failures {
+            self.settle_focused_subscription_failure(request_id, generation)
+                .await;
         }
 
         // Only after publication and every terminal has been emitted may
