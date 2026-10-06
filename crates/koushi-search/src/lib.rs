@@ -4,8 +4,7 @@ mod sensitive;
 mod verify;
 
 pub use document::{
-    AttachmentDocument, SearchCandidate, SearchDocumentStore, SearchEdit, SearchScanStats,
-    SearchWithCandidatesOutcome, SearchWithCandidatesStats, SearchableEvent,
+    AttachmentDocument, SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent,
     cjk_search_query_variants,
 };
 pub use koushi_state::SearchRoomFilter;

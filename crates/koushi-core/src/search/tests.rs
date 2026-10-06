@@ -3,9 +3,7 @@ use std::time::Duration;
 use super::*;
 use koushi_protocol::command::SearchScope;
 use koushi_protocol::ids::{RequestId, RuntimeConnectionId};
-use koushi_search::{
-    SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent, SensitiveString,
-};
+use koushi_search::{SearchDocumentStore, SearchEdit, SearchableEvent, SensitiveString};
 
 #[tokio::test]
 async fn search_actor_shutdown_waits_for_actor_task_settlement() {
@@ -156,12 +154,57 @@ fn make_event(room_id: &str, event_id: &str, body: &str) -> SearchableEvent {
     }
 }
 
-fn make_candidate(room_id: &str, event_id: &str) -> SearchCandidate {
-    SearchCandidate {
+fn make_attachment_event(room_id: &str, event_id: &str, filename: &str) -> SearchableEvent {
+    SearchableEvent {
         room_id: room_id.to_owned(),
         event_id: event_id.to_owned(),
-        score_millis: 900,
+        sender: "@alice:test".to_owned(),
+        timestamp_ms: 1000,
+        body: None,
+        attachment_filename: Some(SensitiveString::new(filename.to_owned())),
+        attachment: Some(attachment_document(filename)),
     }
+}
+
+fn attachment_document(filename: &str) -> koushi_search::AttachmentDocument {
+    koushi_search::AttachmentDocument {
+        kind: koushi_state::AttachmentKind::File,
+        msgtype: "m.file".to_owned(),
+        mimetype: Some("application/pdf".to_owned()),
+        size: Some(1024),
+        source_mxc: "mxc://example.invalid/source".to_owned(),
+        thumbnail_mxc: None,
+        filename: SensitiveString::new(filename.to_owned()),
+        thread_root: None,
+        encrypted: false,
+        encryption_version: None,
+        width: None,
+        height: None,
+        is_edited: false,
+    }
+}
+
+fn make_attachment_edit(target: &str, filename: &str) -> SearchEdit {
+    SearchEdit {
+        edit_event_id: format!("{target}_edit"),
+        target_event_id: target.to_owned(),
+        sender: "@alice:test".to_owned(),
+        timestamp_ms: 2000,
+        body: None,
+        attachment_filename: Some(SensitiveString::new(filename.to_owned())),
+        attachment: None,
+    }
+}
+
+fn attachment_rows(store: &SearchDocumentStore) -> Vec<koushi_state::AttachmentResult> {
+    store.attachments(
+        &koushi_state::AttachmentScope::Account,
+        &koushi_state::AttachmentFilter {
+            kinds: Vec::new(),
+            filename_query: None,
+        },
+        koushi_state::AttachmentSort::NewestFirst,
+    )
 }
 
 fn make_edit(target: &str, new_body: &str) -> SearchEdit {
@@ -176,196 +219,100 @@ fn make_edit(target: &str, new_body: &str) -> SearchEdit {
     }
 }
 
-// --- Candidate verification rejects index false positives ---
+// --- Store maintenance retains attachment metadata only ---
 
 #[test]
-fn verify_candidate_rejects_false_positive() {
+fn plain_messages_are_not_retained() {
     let mut store = SearchDocumentStore::default();
     store.upsert_message(make_event("!r:test", "$e1", "hello world"));
-    // Candidate for a different event not in the store — must reject.
-    let candidate = make_candidate("!r:test", "$not_indexed");
-    assert!(
-        store.verify_candidate(candidate, "hello").is_none(),
-        "candidate for unindexed event must not verify"
+
+    assert_eq!(
+        store.document_count(),
+        0,
+        "message bodies must not be retained in RAM"
     );
 }
 
 #[test]
-fn verify_candidate_rejects_stale_query() {
+fn attachment_rows_are_retained_for_the_files_view() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(make_event("!r:test", "$e1", "hello world"));
-    let candidate = make_candidate("!r:test", "$e1");
-    // Query doesn't appear in the body — false positive.
-    assert!(
-        store
-            .verify_candidate(candidate, "foobar_not_present")
-            .is_none(),
-        "candidate must not verify against a query not in the body"
-    );
+    store.upsert_message(make_attachment_event("!r:test", "$e1", "agenda.pdf"));
+
+    let rows = attachment_rows(&store);
+
+    assert_eq!(store.document_count(), 1);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].filename, "agenda.pdf");
+    assert!(!rows[0].is_edited);
+}
+
+// --- Edits only touch attachment metadata ---
+
+#[test]
+fn edit_before_attachment_is_pending_until_it_arrives() {
+    let mut store = SearchDocumentStore::default();
+    // Arrive edit BEFORE the attachment — it must not become a message row.
+    store.upsert_edit(make_attachment_edit("$original", "renamed.pdf"));
+
+    assert_eq!(store.document_count(), 0);
+    assert_eq!(store.pending_edit_count(), 1);
+
+    store.upsert_message(make_attachment_event(
+        "!r:test",
+        "$original",
+        "original.pdf",
+    ));
+
+    assert_eq!(store.pending_edit_count(), 0, "pending edit must resolve");
+    let rows = attachment_rows(&store);
+    assert_eq!(rows[0].filename, "renamed.pdf");
+    assert!(rows[0].is_edited);
 }
 
 #[test]
-fn verify_candidate_accepts_exact_match() {
+fn caption_only_edit_still_marks_the_row_edited() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(make_event("!r:test", "$e1", "検索対象メッセージ test body"));
-    let candidate = make_candidate("!r:test", "$e1");
-    assert!(
-        store.verify_candidate(candidate, "検索対象").is_some(),
-        "CJK substring must verify"
+    store.upsert_message(make_attachment_event("!r:test", "$e1", "agenda.pdf"));
+    store.upsert_edit(make_edit("$e1", "a new caption"));
+
+    let rows = attachment_rows(&store);
+
+    assert_eq!(
+        rows[0].filename, "agenda.pdf",
+        "a caption edit keeps the name"
     );
+    assert!(rows[0].is_edited);
 }
 
-// --- Edit mutation removes old terms and finds new ---
+// --- Redaction removes the row ---
 
 #[test]
-fn edit_removes_old_body_and_indexes_new() {
+fn redaction_removes_the_attachment_row() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(make_event("!r:test", "$e1", "original text"));
-
-    // Verify old text matches before edit.
-    let candidate_before = make_candidate("!r:test", "$e1");
-    assert!(
-        store
-            .verify_candidate(candidate_before, "original")
-            .is_some(),
-        "original body must verify before edit"
-    );
-
-    // Apply edit.
-    store.upsert_edit(make_edit("$e1", "replacement text"));
-
-    // Old query must no longer verify.
-    let candidate_after_old = make_candidate("!r:test", "$e1");
-    assert!(
-        store
-            .verify_candidate(candidate_after_old, "original")
-            .is_none(),
-        "old body must not verify after edit"
-    );
-
-    // New query must verify.
-    let candidate_after_new = make_candidate("!r:test", "$e1");
-    assert!(
-        store
-            .verify_candidate(candidate_after_new, "replacement")
-            .is_some(),
-        "new body must verify after edit"
-    );
-}
-
-// --- Redaction removes document ---
-
-#[test]
-fn redaction_removes_document_from_store() {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_message(make_event("!r:test", "$e1", "secret content"));
-
-    let candidate_before = make_candidate("!r:test", "$e1");
-    assert!(
-        store.verify_candidate(candidate_before, "secret").is_some(),
-        "must verify before redaction"
-    );
+    store.upsert_message(make_attachment_event("!r:test", "$e1", "secret.pdf"));
 
     store.redact("$e1");
 
-    let candidate_after = make_candidate("!r:test", "$e1");
-    assert!(
-        store.verify_candidate(candidate_after, "secret").is_none(),
-        "must not verify after redaction"
-    );
-    assert_eq!(store.document_count(), 0, "document count must drop to 0");
+    assert_eq!(store.document_count(), 0, "redacted row must drop out");
+    assert!(attachment_rows(&store).is_empty());
 }
 
 #[test]
-fn clear_removes_documents_edits_pending_edits_and_aliases() {
+fn clear_removes_documents_and_pending_edits() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(make_event("!r:test", "$e1", "original content"));
-    store.upsert_edit(make_edit("$e1", "edited content"));
-    store.upsert_edit(make_edit("$missing", "pending edit"));
+    store.upsert_message(make_attachment_event("!r:test", "$e1", "original.pdf"));
+    store.upsert_edit(make_attachment_edit("$e1", "edited.pdf"));
+    store.upsert_edit(make_attachment_edit("$missing", "pending.pdf"));
 
     assert_eq!(store.document_count(), 1);
     assert_eq!(store.pending_edit_count(), 1);
-    assert!(
-        store
-            .verify_candidate(make_candidate("!r:test", "$e1_edit"), "edited")
-            .is_some(),
-        "edit alias must verify before clear"
-    );
+    assert_eq!(attachment_rows(&store)[0].filename, "edited.pdf");
 
     store.clear();
 
     assert_eq!(store.document_count(), 0);
     assert_eq!(store.pending_edit_count(), 0);
-    assert!(
-        store
-            .verify_candidate(make_candidate("!r:test", "$e1"), "edited")
-            .is_none(),
-        "cleared document must not verify"
-    );
-    assert!(
-        store
-            .verify_candidate(make_candidate("!r:test", "$e1_edit"), "edited")
-            .is_none(),
-        "cleared edit alias must not verify"
-    );
-    assert!(
-        store
-            .verify_candidate(make_candidate("!r:test", "$missing"), "pending")
-            .is_none(),
-        "cleared pending edit must not verify"
-    );
-}
-
-// --- Unresolved replacement not indexed as standalone ---
-
-#[test]
-fn unresolved_replacement_not_indexed_as_standalone() {
-    let mut store = SearchDocumentStore::default();
-    // Arrive edit BEFORE original — should be a pending edit, not a standalone message.
-    store.upsert_edit(make_edit("$original", "edited content"));
-
-    // The pending edit must NOT be reachable as a standalone document.
-    assert_eq!(
-        store.document_count(),
-        0,
-        "edit before original must not appear as a document"
-    );
-    assert_eq!(
-        store.pending_edit_count(),
-        1,
-        "edit before original must be pending"
-    );
-
-    // Querying for edited content must return nothing (no candidate to verify).
-    let candidate = make_candidate("!r:test", "$original");
-    assert!(
-        store.verify_candidate(candidate, "edited").is_none(),
-        "unresolved replacement must not be searchable"
-    );
-}
-
-#[test]
-fn unresolved_replacement_resolves_when_original_arrives() {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_edit(make_edit("$original", "edited content"));
-
-    // Now original arrives — document_store should apply the pending edit.
-    store.upsert_message(make_event("!r:test", "$original", "original content"));
-
-    // Pending edit must have resolved.
-    assert_eq!(store.pending_edit_count(), 0, "pending edit must resolve");
-
-    // "edited content" must verify; "original content" must not.
-    let c1 = make_candidate("!r:test", "$original");
-    assert!(
-        store.verify_candidate(c1, "edited").is_some(),
-        "resolved edit body must be searchable"
-    );
-    let c2 = make_candidate("!r:test", "$original");
-    assert!(
-        store.verify_candidate(c2, "original content").is_none(),
-        "superseded original body must not verify"
-    );
+    assert!(attachment_rows(&store).is_empty());
 }
 
 // --- Failure kinds ---

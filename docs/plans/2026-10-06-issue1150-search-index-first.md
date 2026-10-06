@@ -24,29 +24,16 @@ folding, filename-field attribution, false-positive rejection).
   `koushi_search::verify_candidate`). The document-store scan and store-based
   candidate verification are no longer called; the verify diagnostic now
   reports `candidates_in_scope`, `cache_resolved`, `verified`.
+- `SearchDocumentStore` retains attachment metadata only: messages without an
+  attachment are not stored, edit text is never retained, a filename edit lands
+  on the attachment (which is what the Files view reads) and marks the row
+  edited, and redaction removes the row. The store-level matching tests moved to
+  the pure verifier (`koushi-search/tests/`), and the actor's store maintenance
+  tests now assert the attachment contract.
 
 ## Remaining
 
-1. **Shrink `SearchDocumentStore` to attachment metadata.** Delete
-   `scan_candidates`, `verify_candidate`, `search_with_candidates*`,
-   `SearchScanStats`/`SearchWithCandidatesStats` and `edit_aliases`; keep only
-   what the Files view needs (room, event, sender, timestamp, filename,
-   attachment, `is_edited`). Do not add an LRU around the dead API.
-   - The Files view reads `attachment.filename`, not `attachment_filename`, and
-     filename-only edits currently update only the latter — fix while shrinking.
-   - `None` in an edit currently means "leave unchanged"; attachment removal
-     needs explicit replacement semantics.
-   - Crawled attachments start `is_edited = false`, unlike timeline projections.
-   - Migrate the scenarios that `crates/koushi-search/tests/search_adapter.rs`,
-     `crates/koushi-search/tests/unicode_search.rs` and
-     `crates/koushi-core/src/search/tests.rs` cover (matching semantics to the
-     pure verifier, candidate/resolution and scope ordering to index+cache+Core).
-     Scan-stat assertions can go with the scan. Keep the Debug-redaction and
-     maintenance tests.
-   - Remove now-unused exports and stale module docs
-     (`crates/koushi-search/src/lib.rs`, the header comment of
-     `crates/koushi-core/src/search.rs`).
-2. **Bounded filtered refill.** Core fetches one candidate page per query
+1. **Bounded filtered refill.** Core fetches one candidate page per query
    variant before verification, so a heavily filtered query can under-report
    older matches. Page until enough results pass verification or the pager is
    exhausted, with a bounded total candidate budget.

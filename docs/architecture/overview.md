@@ -256,8 +256,9 @@ Crate responsibilities:
 - `koushi-key` — platform-neutral credential-store port, key derivation (HKDF
   from the local unlock secret), and zeroizing secret wrappers. The OS keyring
   backend lives in Tauri.
-- `koushi-search` — candidate verification, document store, index
-  maintenance queue.
+- `koushi-search` — pure candidate verification for the persistent ngram
+  index, attachment metadata for the Files view, and the index maintenance
+  queue.
 - `koushi-media` — pure image decode-limit, resize/format, encoding and byte-kind
   classification helpers. Core owns media/cache lifecycle and state projection;
   adapters own platform delivery.
@@ -696,9 +697,11 @@ Each account remains an in-process actor system in `koushi-core`:
   current `SyncService` builder in the vendored SDK has no direct presence
   setter. Do not move presence semantics into React while that SDK/API decision
   remains open.
-- `SearchActor` — ngram candidates, canonical-text verification,
-  document-level index mutations for edits/redactions/late decryptions, and
-  Element-style background history crawling. Historical `/messages` requests
+- `SearchActor` — literal, offset-free paging over the persistent ngram index,
+  cache-only resolution of each candidate's current content for
+  canonical-text verification, attachment-metadata maintenance for the Files
+  view, and Element-style background history crawling. Historical `/messages`
+  requests
   are account-wide backpressured: `TimelineActor` pagination and
   `SearchActor` crawler pages share one gate per account, and user-visible
   timeline pagination has priority over background crawler work.

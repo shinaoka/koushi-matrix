@@ -1,14 +1,174 @@
 use koushi_search::{
-    SearchCandidate, SearchDocumentStore, SearchEdit, SearchMaintenanceQueue, SearchRoomFilter,
+    AttachmentDocument, SearchCandidate, SearchDocumentStore, SearchEdit, SearchMaintenanceQueue,
     SearchableEvent, SensitiveString, cjk_search_query_variants,
 };
-use koushi_state::{SearchMatchField, SearchMatchKind, TextRange};
+use koushi_state::{
+    AttachmentFilter, AttachmentKind, AttachmentScope, AttachmentSort, SearchMatchField,
+    SearchMatchKind, TextRange,
+};
+
+/// Verify one event's visible content with the same pure matcher the Core search
+/// path uses; the store no longer holds bodies, so matching is tested directly.
+fn verify(event: &SearchableEvent, query: &str) -> Option<koushi_state::SearchResult> {
+    let candidate = SearchCandidate {
+        room_id: event.room_id.clone(),
+        event_id: event.event_id.clone(),
+        score_millis: 900,
+    };
+    koushi_search::verify_candidate(&candidate, event, query)
+}
+
+fn message(event_id: &str, body: &str) -> SearchableEvent {
+    SearchableEvent {
+        room_id: "!room-a:example.invalid".into(),
+        event_id: event_id.into(),
+        sender: "@user-a:example.invalid".into(),
+        timestamp_ms: 1_700_000_000_000,
+        body: Some(SensitiveString::new(body.to_owned())),
+        attachment_filename: None,
+        attachment: None,
+    }
+}
+
+fn attachment(filename: &str) -> AttachmentDocument {
+    AttachmentDocument {
+        kind: AttachmentKind::File,
+        msgtype: "m.file".to_owned(),
+        mimetype: Some("application/pdf".to_owned()),
+        size: Some(4096),
+        source_mxc: "mxc://example.invalid/source".to_owned(),
+        thumbnail_mxc: None,
+        filename: SensitiveString::new(filename.to_owned()),
+        thread_root: None,
+        encrypted: false,
+        encryption_version: None,
+        width: None,
+        height: None,
+        is_edited: false,
+    }
+}
+
+fn attachment_message(event_id: &str, filename: &str) -> SearchableEvent {
+    SearchableEvent {
+        room_id: "!room-a:example.invalid".into(),
+        event_id: event_id.into(),
+        sender: "@user-a:example.invalid".into(),
+        timestamp_ms: 1_700_000_000_000,
+        body: None,
+        attachment_filename: Some(SensitiveString::new(filename.to_owned())),
+        attachment: Some(attachment(filename)),
+    }
+}
 
 #[test]
-fn search_document_store_can_be_created() {
-    let store = SearchDocumentStore::default();
+fn messages_without_attachments_are_not_retained() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(message("$plain", "history stays out of RAM"));
 
     assert_eq!(store.document_count(), 0);
+}
+
+#[test]
+fn attachment_metadata_is_retained_without_the_message_body() {
+    let mut store = SearchDocumentStore::default();
+    let mut event = attachment_message("$file", "agenda.pdf");
+    event.body = Some(SensitiveString::new("caption text"));
+
+    store.upsert_message(event);
+
+    let rows = store.attachments(
+        &AttachmentScope::Account,
+        &AttachmentFilter {
+            kinds: Vec::new(),
+            filename_query: None,
+        },
+        AttachmentSort::NewestFirst,
+    );
+
+    assert_eq!(store.document_count(), 1);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].filename, "agenda.pdf");
+    assert!(!rows[0].is_edited);
+}
+
+#[test]
+fn filename_edit_updates_the_files_row_name() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(attachment_message("$file", "draft.pdf"));
+    store.upsert_edit(SearchEdit {
+        edit_event_id: "$edit".into(),
+        target_event_id: "$file".into(),
+        sender: "@user-a:example.invalid".into(),
+        timestamp_ms: 1_700_000_000_100,
+        body: None,
+        attachment_filename: Some(SensitiveString::new("final.pdf")),
+        attachment: None,
+    });
+
+    let rows = store.attachments(
+        &AttachmentScope::Account,
+        &AttachmentFilter {
+            kinds: Vec::new(),
+            filename_query: None,
+        },
+        AttachmentSort::NewestFirst,
+    );
+
+    // The Files view renders `attachment.filename`, so a rename must land there.
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].filename, "final.pdf");
+    assert!(rows[0].is_edited);
+}
+
+#[test]
+fn rename_before_the_attachment_arrives_is_applied_when_it_does() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_edit(SearchEdit {
+        edit_event_id: "$edit".into(),
+        target_event_id: "$file".into(),
+        sender: "@user-a:example.invalid".into(),
+        timestamp_ms: 1_700_000_000_100,
+        body: None,
+        attachment_filename: Some(SensitiveString::new("final.pdf")),
+        attachment: None,
+    });
+
+    assert_eq!(store.pending_edit_count(), 1);
+
+    store.upsert_message(attachment_message("$file", "draft.pdf"));
+
+    assert_eq!(store.pending_edit_count(), 0);
+    let rows = store.attachments(
+        &AttachmentScope::Account,
+        &AttachmentFilter {
+            kinds: Vec::new(),
+            filename_query: None,
+        },
+        AttachmentSort::NewestFirst,
+    );
+    assert_eq!(rows[0].filename, "final.pdf");
+}
+
+#[test]
+fn redacted_attachment_is_not_listed() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(attachment_message("$file", "agenda.pdf"));
+
+    store.redact("$file");
+
+    assert_eq!(store.document_count(), 0);
+    assert!(
+        store
+            .attachments(
+                &AttachmentScope::Account,
+                &AttachmentFilter {
+                    kinds: Vec::new(),
+                    filename_query: None,
+                },
+                AttachmentSort::NewestFirst,
+            )
+            .is_empty()
+    );
 }
 
 #[test]
@@ -32,26 +192,7 @@ fn debug_output_redacts_decrypted_search_text() {
 
 #[test]
 fn exact_message_body_match_returns_utf16_highlight() {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_message(SearchableEvent {
-        room_id: "!room-a:example.invalid".into(),
-        event_id: "$event".into(),
-        sender: "@user-a:example.invalid".into(),
-        timestamp_ms: 1_700_000_000_000,
-        body: Some(SensitiveString::new("再アンケートです")),
-        attachment_filename: None,
-        attachment: None,
-    });
-
-    let result = store
-        .verify_candidate(
-            SearchCandidate {
-                room_id: "!room-a:example.invalid".into(),
-                event_id: "$event".into(),
-                score_millis: 900,
-            },
-            "アンケート",
-        )
+    let result = verify(&message("$event", "再アンケートです"), "アンケート")
         .expect("candidate should verify");
 
     assert_eq!(result.event_id, "$event");
@@ -69,26 +210,7 @@ fn exact_message_body_match_returns_utf16_highlight() {
 
 #[test]
 fn six_character_ascii_exact_match_highlights_full_word() {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_message(SearchableEvent {
-        room_id: "!room-a:example.invalid".into(),
-        event_id: "$ascii-event".into(),
-        sender: "@user-a:example.invalid".into(),
-        timestamp_ms: 1_700_000_000_000,
-        body: Some(SensitiveString::new("prefix Signal suffix")),
-        attachment_filename: None,
-        attachment: None,
-    });
-
-    let result = store
-        .verify_candidate(
-            SearchCandidate {
-                room_id: "!room-a:example.invalid".into(),
-                event_id: "$ascii-event".into(),
-                score_millis: 900,
-            },
-            "Signal",
-        )
+    let result = verify(&message("$ascii-event", "prefix Signal suffix"), "Signal")
         .expect("candidate should verify");
 
     assert_eq!(
@@ -102,26 +224,7 @@ fn six_character_ascii_exact_match_highlights_full_word() {
 
 #[test]
 fn full_width_query_matches_half_width_indexed_message_body() {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_message(SearchableEvent {
-        room_id: "!room-a:example.invalid".into(),
-        event_id: "$event".into(),
-        sender: "@user-a:example.invalid".into(),
-        timestamp_ms: 1_700_000_000_000,
-        body: Some(SensitiveString::new("会議資料 ABC123 ready")),
-        attachment_filename: None,
-        attachment: None,
-    });
-
-    let result = store
-        .verify_candidate(
-            SearchCandidate {
-                room_id: "!room-a:example.invalid".into(),
-                event_id: "$event".into(),
-                score_millis: 900,
-            },
-            "ＡＢＣ１２３",
-        )
+    let result = verify(&message("$event", "会議資料 ABC123 ready"), "ＡＢＣ１２３")
         .expect("width-folded query should verify against canonical body text");
 
     assert_eq!(result.snippet, "会議資料 ABC123 ready");
@@ -137,26 +240,7 @@ fn full_width_query_matches_half_width_indexed_message_body() {
 
 #[test]
 fn half_width_query_matches_full_width_indexed_message_body() {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_message(SearchableEvent {
-        room_id: "!room-a:example.invalid".into(),
-        event_id: "$event".into(),
-        sender: "@user-a:example.invalid".into(),
-        timestamp_ms: 1_700_000_000_000,
-        body: Some(SensitiveString::new("会議資料 ＡＢＣ１２３ ready")),
-        attachment_filename: None,
-        attachment: None,
-    });
-
-    let result = store
-        .verify_candidate(
-            SearchCandidate {
-                room_id: "!room-a:example.invalid".into(),
-                event_id: "$event".into(),
-                score_millis: 900,
-            },
-            "ABC123",
-        )
+    let result = verify(&message("$event", "会議資料 ＡＢＣ１２３ ready"), "ABC123")
         .expect("canonical query should verify against width-folded body text");
 
     assert_eq!(result.snippet, "会議資料 ＡＢＣ１２３ ready");
@@ -172,26 +256,7 @@ fn half_width_query_matches_full_width_indexed_message_body() {
 
 #[test]
 fn voiced_half_width_kana_query_matches_canonical_kana_and_highlights_source_cluster() {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_message(SearchableEvent {
-        room_id: "!room-a:example.invalid".into(),
-        event_id: "$event".into(),
-        sender: "@user-a:example.invalid".into(),
-        timestamp_ms: 1_700_000_000_000,
-        body: Some(SensitiveString::new("会議資料 ﾊﾞﾅﾅ ready")),
-        attachment_filename: None,
-        attachment: None,
-    });
-
-    let result = store
-        .verify_candidate(
-            SearchCandidate {
-                room_id: "!room-a:example.invalid".into(),
-                event_id: "$event".into(),
-                score_millis: 900,
-            },
-            "バナナ",
-        )
+    let result = verify(&message("$event", "会議資料 ﾊﾞﾅﾅ ready"), "バナナ")
         .expect("voiced half-width kana should verify against canonical query text");
 
     assert_eq!(result.snippet, "会議資料 ﾊﾞﾅﾅ ready");
@@ -232,27 +297,11 @@ fn ascii_case_variant_generation_matches_displayed_query_case() {
 
 #[test]
 fn uppercase_ascii_query_verifies_lowercase_message_body() {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_message(SearchableEvent {
-        room_id: "!room-a:example.invalid".into(),
-        event_id: "$event".into(),
-        sender: "@user-a:example.invalid".into(),
-        timestamp_ms: 1_700_000_000_000,
-        body: Some(SensitiveString::new("open https://chatgpt.example/share")),
-        attachment_filename: None,
-        attachment: None,
-    });
-
-    let result = store
-        .verify_candidate(
-            SearchCandidate {
-                room_id: "!room-a:example.invalid".into(),
-                event_id: "$event".into(),
-                score_millis: 900,
-            },
-            "Gpt",
-        )
-        .expect("normalized verification should match lowercase body text");
+    let result = verify(
+        &message("$event", "open https://chatgpt.example/share"),
+        "Gpt",
+    )
+    .expect("normalized verification should match lowercase body text");
 
     assert_eq!(result.event_id, "$event");
     assert_eq!(
@@ -266,8 +315,7 @@ fn uppercase_ascii_query_verifies_lowercase_message_body() {
 
 #[test]
 fn attachment_filename_match_uses_attachment_field() {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_message(SearchableEvent {
+    let event = SearchableEvent {
         room_id: "!room-a:example.invalid".into(),
         event_id: "$file".into(),
         sender: "@user-a:example.invalid".into(),
@@ -275,18 +323,9 @@ fn attachment_filename_match_uses_attachment_field() {
         body: None,
         attachment_filename: Some(SensitiveString::new("seminar_schedule.pdf")),
         attachment: None,
-    });
+    };
 
-    let result = store
-        .verify_candidate(
-            SearchCandidate {
-                room_id: "!room-a:example.invalid".into(),
-                event_id: "$file".into(),
-                score_millis: 875,
-            },
-            "schedule",
-        )
-        .expect("filename candidate should verify");
+    let result = verify(&event, "schedule").expect("filename candidate should verify");
 
     assert_eq!(result.event_id, "$file");
     assert_eq!(result.snippet, "seminar_schedule.pdf");
@@ -302,110 +341,7 @@ fn attachment_filename_match_uses_attachment_field() {
 
 #[test]
 fn ngram_false_positive_without_exact_span_is_dropped() {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_message(SearchableEvent {
-        room_id: "!room-a:example.invalid".into(),
-        event_id: "$event".into(),
-        sender: "@user-a:example.invalid".into(),
-        timestamp_ms: 1_700_000_000_000,
-        body: Some(SensitiveString::new("再アンケートです")),
-        attachment_filename: None,
-        attachment: None,
-    });
-
-    let result = store.verify_candidate(
-        SearchCandidate {
-            room_id: "!room-a:example.invalid".into(),
-            event_id: "$event".into(),
-            score_millis: 900,
-        },
-        "欠席",
-    );
-
-    assert!(result.is_none());
-}
-
-#[test]
-fn edit_before_target_is_pending_until_original_arrives() {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_edit(SearchEdit {
-        edit_event_id: "$edit".into(),
-        target_event_id: "$original".into(),
-        sender: "@user-a:example.invalid".into(),
-        timestamp_ms: 1_700_000_000_100,
-        body: Some(SensitiveString::new("edited agenda")),
-        attachment_filename: None,
-        attachment: None,
-    });
-
-    assert_eq!(store.pending_edit_count(), 1);
-    assert!(
-        store
-            .verify_candidate(
-                SearchCandidate {
-                    room_id: "!room-a:example.invalid".into(),
-                    event_id: "$original".into(),
-                    score_millis: 900,
-                },
-                "edited",
-            )
-            .is_none()
-    );
-
-    store.upsert_message(SearchableEvent {
-        room_id: "!room-a:example.invalid".into(),
-        event_id: "$original".into(),
-        sender: "@user-a:example.invalid".into(),
-        timestamp_ms: 1_700_000_000_000,
-        body: Some(SensitiveString::new("old agenda")),
-        attachment_filename: None,
-        attachment: None,
-    });
-
-    let result = store
-        .verify_candidate(
-            SearchCandidate {
-                room_id: "!room-a:example.invalid".into(),
-                event_id: "$original".into(),
-                score_millis: 900,
-            },
-            "edited",
-        )
-        .expect("pending edit should apply after original arrives");
-
-    assert_eq!(store.pending_edit_count(), 0);
-    assert_eq!(result.event_id, "$original");
-    assert_eq!(result.snippet, "edited agenda");
-}
-
-#[test]
-fn redacted_event_is_not_returned() {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_message(SearchableEvent {
-        room_id: "!room-a:example.invalid".into(),
-        event_id: "$event".into(),
-        sender: "@user-a:example.invalid".into(),
-        timestamp_ms: 1_700_000_000_000,
-        body: Some(SensitiveString::new("visible before redaction")),
-        attachment_filename: Some(SensitiveString::new("visible.pdf")),
-        attachment: None,
-    });
-
-    store.redact("$event");
-
-    assert_eq!(store.document_count(), 0);
-    assert!(
-        store
-            .verify_candidate(
-                SearchCandidate {
-                    room_id: "!room-a:example.invalid".into(),
-                    event_id: "$event".into(),
-                    score_millis: 900,
-                },
-                "visible",
-            )
-            .is_none()
-    );
+    assert!(verify(&message("$event", "再アンケートです"), "欠席").is_none());
 }
 
 #[test]
@@ -442,255 +378,4 @@ fn event_cache_lag_marks_room_for_reindex_once() {
         vec!["!room-a:example.invalid", "!room-b:example.invalid"]
     );
     assert!(queue.drain_reindex_rooms().is_empty());
-}
-
-// #162: the document store is a first-class candidate source. A message koushi
-// has indexed (e.g. crawled history) must be findable via a direct scan even
-// when the SDK ngram index would not surface it as a candidate.
-#[test]
-fn document_store_scan_finds_body_candidate_without_index() {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_message(SearchableEvent {
-        room_id: "!room-a:example.invalid".into(),
-        event_id: "$scan-1".into(),
-        sender: "@user-a:example.invalid".into(),
-        timestamp_ms: 1_700_000_000_000,
-        // synthetic 2-char CJK body (mirrors the reported shape without private data)
-        body: Some(SensitiveString::new("検査しました")),
-        attachment_filename: None,
-        attachment: None,
-    });
-
-    let hits = store.scan_candidates("検査", &SearchRoomFilter::AllRooms, 50);
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].event_id, "$scan-1");
-    assert_eq!(hits[0].match_field, SearchMatchField::MessageBody);
-    assert_eq!(hits[0].match_kind, SearchMatchKind::Exact);
-
-    // Absent query text yields no candidates.
-    assert!(
-        store
-            .scan_candidates("不一致語", &SearchRoomFilter::AllRooms, 50)
-            .is_empty()
-    );
-
-    // Room filter restricts scope.
-    assert!(
-        store
-            .scan_candidates(
-                "検査",
-                &SearchRoomFilter::OnlyRooms(vec!["!other:example.invalid".to_owned()]),
-                50,
-            )
-            .is_empty()
-    );
-    assert_eq!(
-        store
-            .scan_candidates(
-                "検査",
-                &SearchRoomFilter::OnlyRooms(vec!["!room-a:example.invalid".to_owned()]),
-                50,
-            )
-            .len(),
-        1
-    );
-}
-
-// #162: scan ordering is most-recent-first and respects the cap.
-#[test]
-fn document_store_scan_orders_recent_first_and_caps() {
-    let mut store = SearchDocumentStore::default();
-    for (idx, ts) in [("$old", 1_000u64), ("$new", 3_000u64), ("$mid", 2_000u64)] {
-        store.upsert_message(SearchableEvent {
-            room_id: "!room-a:example.invalid".into(),
-            event_id: idx.into(),
-            sender: "@user-a:example.invalid".into(),
-            timestamp_ms: ts,
-            body: Some(SensitiveString::new("検査")),
-            attachment_filename: None,
-            attachment: None,
-        });
-    }
-
-    let hits = store.scan_candidates("検査", &SearchRoomFilter::AllRooms, 50);
-    assert_eq!(
-        hits.iter().map(|h| h.event_id.as_str()).collect::<Vec<_>>(),
-        vec!["$new", "$mid", "$old"]
-    );
-
-    let capped = store.scan_candidates("検査", &SearchRoomFilter::AllRooms, 2);
-    assert_eq!(capped.len(), 2);
-    assert_eq!(capped[0].event_id, "$new");
-}
-
-// #162: search_with_candidates unions SDK ngram-index candidates (accelerator)
-// with a direct store scan (authority). A store message is found even when the
-// SDK candidate list is empty; results are newest-first and deduped.
-#[test]
-fn search_with_candidates_unions_store_scan_with_index_candidates() {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_message(SearchableEvent {
-        room_id: "!room-a:example.invalid".into(),
-        event_id: "$store-only".into(),
-        sender: "@user-a:example.invalid".into(),
-        timestamp_ms: 1_700_000_000_000,
-        body: Some(SensitiveString::new("検査しました")),
-        attachment_filename: None,
-        attachment: None,
-    });
-
-    // No SDK candidate at all → still found via the store scan (the reported bug).
-    let store_only = store.search_with_candidates("検査", &SearchRoomFilter::AllRooms, &[], 50);
-    assert_eq!(store_only.len(), 1);
-    assert_eq!(store_only[0].event_id, "$store-only");
-
-    // Supplying the same event as an SDK candidate does not duplicate it.
-    let deduped = store.search_with_candidates(
-        "検査",
-        &SearchRoomFilter::AllRooms,
-        &[SearchCandidate {
-            room_id: "!room-a:example.invalid".into(),
-            event_id: "$store-only".into(),
-            score_millis: 900,
-        }],
-        50,
-    );
-    assert_eq!(deduped.len(), 1);
-    assert_eq!(deduped[0].event_id, "$store-only");
-
-    // A non-matching SDK candidate is never fabricated into a result.
-    let no_fabrication = store.search_with_candidates(
-        "検査",
-        &SearchRoomFilter::AllRooms,
-        &[SearchCandidate {
-            room_id: "!room-a:example.invalid".into(),
-            event_id: "$does-not-exist".into(),
-            score_millis: 900,
-        }],
-        50,
-    );
-    assert_eq!(no_fabrication.len(), 1);
-    assert_eq!(no_fabrication[0].event_id, "$store-only");
-
-    // Room filter restricts scope.
-    assert!(
-        store
-            .search_with_candidates(
-                "検査",
-                &SearchRoomFilter::OnlyRooms(vec!["!other:example.invalid".to_owned()]),
-                &[],
-                50,
-            )
-            .is_empty()
-    );
-}
-
-#[test]
-fn search_with_candidates_filters_explicit_room_sets() {
-    let mut store = SearchDocumentStore::default();
-    for (event_id, room_id, body) in [
-        ("$space-a", "!space-child-a:example.invalid", "GPT scoped"),
-        ("$space-b", "!space-child-b:example.invalid", "GPT scoped"),
-        ("$outside", "!outside:example.invalid", "GPT scoped"),
-    ] {
-        store.upsert_message(SearchableEvent {
-            room_id: room_id.into(),
-            event_id: event_id.into(),
-            sender: "@user-a:example.invalid".into(),
-            timestamp_ms: 1_700_000_000_000,
-            body: Some(SensitiveString::new(body)),
-            attachment_filename: None,
-            attachment: None,
-        });
-    }
-
-    let hits = store.search_with_candidates(
-        "GPT",
-        &SearchRoomFilter::OnlyRooms(vec![
-            "!space-child-a:example.invalid".to_owned(),
-            "!space-child-b:example.invalid".to_owned(),
-        ]),
-        &[SearchCandidate {
-            room_id: "!outside:example.invalid".into(),
-            event_id: "$outside".into(),
-            score_millis: 1_000,
-        }],
-        50,
-    );
-
-    assert_eq!(
-        hits.iter()
-            .map(|result| result.event_id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["$space-a", "$space-b"]
-    );
-}
-
-#[test]
-fn search_with_candidates_orders_results_newest_first_before_score() {
-    let mut store = SearchDocumentStore::default();
-    for (event_id, timestamp_ms) in [("$old-high-score", 1_000u64), ("$new-low-score", 3_000u64)] {
-        store.upsert_message(SearchableEvent {
-            room_id: "!room-a:example.invalid".into(),
-            event_id: event_id.into(),
-            sender: "@user-a:example.invalid".into(),
-            timestamp_ms,
-            body: Some(SensitiveString::new("検査しました")),
-            attachment_filename: None,
-            attachment: None,
-        });
-    }
-
-    let hits = store.search_with_candidates(
-        "検査",
-        &SearchRoomFilter::AllRooms,
-        &[SearchCandidate {
-            room_id: "!room-a:example.invalid".into(),
-            event_id: "$old-high-score".into(),
-            score_millis: 1_000,
-        }],
-        50,
-    );
-
-    assert_eq!(
-        hits.iter()
-            .map(|hit| hit.event_id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["$new-low-score", "$old-high-score"]
-    );
-}
-
-#[test]
-fn search_with_candidates_stats_report_store_scan_work() {
-    let mut store = SearchDocumentStore::default();
-    for (event_id, room_id, body) in [
-        ("$match-a", "!room-a:example.invalid", "検査しました"),
-        ("$miss-a", "!room-a:example.invalid", "別件です"),
-        ("$match-b", "!room-b:example.invalid", "検査しました"),
-    ] {
-        store.upsert_message(SearchableEvent {
-            room_id: room_id.into(),
-            event_id: event_id.into(),
-            sender: "@user-a:example.invalid".into(),
-            timestamp_ms: 1_700_000_000_000,
-            body: Some(SensitiveString::new(body)),
-            attachment_filename: None,
-            attachment: None,
-        });
-    }
-
-    let outcome = store.search_with_candidates_with_stats(
-        "検査",
-        &SearchRoomFilter::OnlyRooms(vec!["!room-a:example.invalid".to_owned()]),
-        &[],
-        50,
-    );
-
-    assert_eq!(outcome.results.len(), 1);
-    assert_eq!(outcome.results[0].event_id, "$match-a");
-    assert_eq!(outcome.stats.verified_sdk_count, 0);
-    assert_eq!(outcome.stats.scan.documents_visited, 3);
-    assert_eq!(outcome.stats.scan.documents_in_scope, 2);
-    assert_eq!(outcome.stats.scan.matches_before_limit, 1);
-    assert_eq!(outcome.stats.scan.returned, 1);
 }

@@ -11,14 +11,16 @@
 //! ngram index; configured by `StoreActor::account_search_index_config`).
 //! The SDK's sync loop feeds the ngram index automatically as events arrive.
 //!
-//! The `SearchDocumentStore` (from `koushi-search`) is our in-process
-//! verification layer: it mirrors the visible canonical text for every indexed
-//! event. Timeline diffs arrive via an `mpsc` channel (`SearchIndexMessage`)
+//! The `SearchDocumentStore` (from `koushi-search`) holds attachment metadata
+//! for the Files view only; it retains no message body and no edit text.
+//! Timeline diffs still arrive via an `mpsc` channel (`SearchIndexMessage`)
 //! forwarded from the `TimelineManagerActor`/`TimelineActor`.
 //!
 //! ## Query pipeline (overview.md Security Model — Search)
-//! `SearchCommand::Query` → SDK `client.search_messages()` → candidate list
-//! → verify each against `SearchDocumentStore::verify_candidate()` → emit
+//! `SearchCommand::Query` → `MatrixLiteralSearchPager` over the persistent
+//! ngram index (literal, newest-first, offset-free) → resolve each candidate's
+//! current content from the encrypted event cache (edits and redactions
+//! applied) → verify with `koushi_search::verify_candidate()` → emit
 //! `SearchEvent::Results`. Candidates that fail verification (false positives,
 //! stale index entries) are silently dropped — never surfaced as results.
 //!
@@ -29,15 +31,15 @@
 //! falls back to a plaintext index (Security Model).
 //!
 //! ## Document-level mutations (overview.md Async rule 4, Security Model Search)
-//! - **Upsert**: a new or updated visible message is indexed into the document
-//!   store. The SDK ngram index is fed by sync automatically.
-//! - **Edit**: `SearchDocumentStore::upsert_edit` updates only the affected
-//!   document. Old terms are no longer verified against the canonical text, so
-//!   they drop out of results naturally.
-//! - **Redact**: `SearchDocumentStore::redact` removes the document; candidates
-//!   for that event will no longer verify.
-//! - **Unresolved replacement** (edit before original): stored as a pending edit
-//!   in `SearchDocumentStore`; not indexed as a standalone message (canon).
+//! The SDK ngram index is fed by sync and crawl automatically; these paths only
+//! maintain the Files view's attachment metadata.
+//! - **Upsert**: a message carrying an attachment is recorded as a Files row;
+//!   messages without one are not stored.
+//! - **Edit**: `SearchDocumentStore::upsert_edit` updates the row's filename or
+//!   attachment and marks it edited. Edit text is never retained.
+//! - **Redact**: `SearchDocumentStore::redact` removes the row.
+//! - **Unresolved replacement** (edit before original): held as a pending edit
+//!   in `SearchDocumentStore` until the attachment row arrives.
 //!
 //! ## Debug redaction
 //! Search queries and snippets must not appear in Debug of internal messages
