@@ -257,7 +257,10 @@ impl SearchDocumentStore {
 
         if self.documents.contains_key(&edit.target_event_id) {
             self.apply_edit_if_newer(&edit, canonical);
-        } else {
+        } else if edit.attachment.is_some() || edit.attachment_filename.is_some() {
+            // A pending edit is only useful for a row that will carry an
+            // attachment; a body-only edit cannot change one, and holding it
+            // would grow with message history the store otherwise never keeps.
             self.pending_edits
                 .entry(edit.target_event_id.clone())
                 .or_default()

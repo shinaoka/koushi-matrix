@@ -2637,6 +2637,7 @@ fn search_state_matches(
             scope: state_scope,
             ..
         } if *state_request_id == request_id.sequence
+            && state.search_request_connection_id == Some(request_id.connection_id.0)
             && state_query == query
             && state_scope == scope
     )

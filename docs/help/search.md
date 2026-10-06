@@ -46,7 +46,9 @@ messages. They need not be equal. **Index media captions** and **Index file
 names** control those additional searchable fields; this is not a promise to
 search text inside attached documents.
 
-**Rebuild search database** clears the local search index and retrieves history
-again after confirmation. Use it when intentionally rebuilding the index;
-results may be incomplete while it runs. It cannot restore encryption keys or
+**Rebuild search database** clears the local search metadata and queues every
+room for a fresh history crawl after confirmation. It does not remove the
+encrypted ngram index itself, and the crawl does not re-extract messages that
+are already indexed; use it when you want the crawl state reset, and expect
+results to be incomplete while it runs. It cannot restore encryption keys or
 make inaccessible server history available.

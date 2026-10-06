@@ -60,6 +60,10 @@ pub(crate) fn handle_search_submitted(
     // so an untrimmed identity could never match its own result and the request
     // would never settle.
     let query = query.trim().to_owned();
+    // Record the submitting connection before any early return: a later
+    // transition classifies ownership by it, so a too-short submission that
+    // replaced another request must not leave the previous connection behind.
+    state.search_request_connection_id = Some(connection_id);
 
     if let Some(min_chars) = search_query_too_short(&query) {
         state.search = SearchState::TooShort {
@@ -73,7 +77,6 @@ pub(crate) fn handle_search_submitted(
 
     let room_filter = search_room_filter(state, &scope);
     let content_policy = state.settings.values.search_crawler.clone();
-    state.search_request_connection_id = Some(connection_id);
     state.search = SearchState::Searching {
         request_id,
         query: query.clone(),
@@ -494,6 +497,16 @@ pub(crate) fn handle_files_view_closed(state: &mut AppState) -> Vec<AppEffect> {
 
     state.files_view = FilesViewState::Closed;
     vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]
+}
+
+/// Close the Files view when the account's content policy changes.
+///
+/// The listing it holds was built under the previous policy, and a listing in
+/// flight may still be answering under it. Closing means a later result cannot
+/// match the state, and the filenames the account has just opted out of are not
+/// displayed.
+pub(crate) fn close_files_view_for_content_policy_change(state: &mut AppState) -> Vec<AppEffect> {
+    handle_files_view_closed(state)
 }
 
 pub(crate) fn handle_files_view_query_requested(

@@ -303,6 +303,7 @@ fn close_current_room_search_for_room_change(
     };
 
     if should_close {
+        state.search_request_connection_id = None;
         state.search = SearchState::Closed;
         effects.push(AppEffect::EmitUiEvent(UiEvent::SearchChanged));
     }

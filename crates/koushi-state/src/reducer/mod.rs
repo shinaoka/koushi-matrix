@@ -2107,6 +2107,7 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.thread = ThreadPaneState::Closed;
     state.thread_attention = ThreadAttentionState::Closed;
     state.focused_context = FocusedContextState::Closed;
+    state.search_request_connection_id = None;
     state.search = SearchState::Closed;
     state.search_crawler = Default::default();
     state.files_view = FilesViewState::Closed;

@@ -267,6 +267,14 @@ path it was meant to speed up. Both are scope decisions for the maintainer: drop
 M3 and M4 (the PR becomes M2: index-first search and bounded memory) or keep them
 and finish the two items above.
 
+### Known contract gap (not M3-related)
+
+The user help promised that "Rebuild search database" clears the persistent
+index. It clears the first-party search metadata and re-queues a crawl, and the
+crawl does not re-extract events the index already holds (`RoomIndex::add` skips
+them). The help text now says what the action does; rebuilding the persistent
+index needs an index generation the settings store owns, which is follow-up work.
+
 Also raised: migrate commitments already written without an acknowledgement, make the "rebuild
 search database" action actually rebuild the persistent index (the user help promises it), cover
 attachment edit rollback and mixed producers, measure pending-edit residency in the memory probe,

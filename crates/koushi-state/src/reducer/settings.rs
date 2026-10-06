@@ -19,10 +19,15 @@ const SETTINGS_PERSIST_FAILED_MESSAGE: &str = "Settings could not be saved";
 /// for that request cannot match the state, and the user's next search runs
 /// under the new policy.
 fn close_search_for_content_policy_change(state: &mut AppState, effects: &mut Vec<AppEffect>) {
+    state.search_request_connection_id = None;
     if state.search != crate::state::SearchState::Closed {
         state.search = crate::state::SearchState::Closed;
         effects.push(AppEffect::EmitUiEvent(UiEvent::SearchChanged));
     }
+    // The Files view lists attachment filenames, so it is a policy surface too.
+    effects.extend(super::search::close_files_view_for_content_policy_change(
+        state,
+    ));
 }
 
 pub(crate) fn handle_settings_loaded(
