@@ -832,6 +832,7 @@ async fn duplicate_submission_routes_one_manager_enqueue_worker() {
         hide_redacted: false,
         timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
         live_tail_refreshes: LiveTailRefreshCoordinator::new(),
+        focused_builds: Default::default(),
         test_session_available: true,
     };
     manager.send_enqueue_workers.tasks.push(Box::pin(async {
@@ -1309,6 +1310,7 @@ async fn shutdown_cleans_captured_room_keys_before_acknowledging() {
         hide_redacted: false,
         timeline_actor_generations: generations.clone(),
         live_tail_refreshes: LiveTailRefreshCoordinator::new(),
+        focused_builds: Default::default(),
         test_session_available: true,
     };
     let run = executor::spawn(async move { manager.run().await });
@@ -1402,6 +1404,7 @@ async fn manager_enqueue_worker_waits_for_reducer_acceptance_delivery() {
         hide_redacted: false,
         timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
         live_tail_refreshes: LiveTailRefreshCoordinator::new(),
+        focused_builds: Default::default(),
         test_session_available: true,
     };
     let submission_id = SubmissionId::new("paused-admission");
