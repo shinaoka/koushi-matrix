@@ -425,6 +425,9 @@ fn event_json_to_index_message(
                     body: text_body,
                     attachment_filename,
                     attachment,
+                    // A crawl reports what history showed, not the current
+                    // visible content.
+                    canonical: false,
                 });
             }
             let msgtype = content.get("msgtype")?.as_str()?;
@@ -442,6 +445,7 @@ fn event_json_to_index_message(
                 body: text_body,
                 attachment_filename,
                 attachment,
+                canonical: false,
             })
         }
         "m.sticker" => {
@@ -464,6 +468,7 @@ fn event_json_to_index_message(
                 body: text_body,
                 attachment_filename,
                 attachment,
+                canonical: false,
             })
         }
         _ => None,

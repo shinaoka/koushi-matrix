@@ -63,7 +63,7 @@ fn attachment_message(event_id: &str, filename: &str) -> SearchableEvent {
 #[test]
 fn messages_without_attachments_are_not_retained() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(message("$plain", "history stays out of RAM"));
+    store.upsert_message(message("$plain", "history stays out of RAM"), true);
 
     assert_eq!(store.document_count(), 0);
 }
@@ -74,7 +74,7 @@ fn attachment_metadata_is_retained_without_the_message_body() {
     let mut event = attachment_message("$file", "agenda.pdf");
     event.body = Some(SensitiveString::new("caption text"));
 
-    store.upsert_message(event);
+    store.upsert_message(event, true);
 
     let rows = store.attachments(
         &AttachmentScope::Account,
@@ -94,7 +94,7 @@ fn attachment_metadata_is_retained_without_the_message_body() {
 #[test]
 fn filename_edit_updates_the_files_row_name() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(attachment_message("$file", "draft.pdf"));
+    store.upsert_message(attachment_message("$file", "draft.pdf"), true);
     store.upsert_edit(SearchEdit {
         edit_event_id: "$edit".into(),
         target_event_id: "$file".into(),
@@ -103,7 +103,7 @@ fn filename_edit_updates_the_files_row_name() {
         body: None,
         attachment_filename: Some(SensitiveString::new("final.pdf")),
         attachment: None,
-    });
+    }, true);
 
     let rows = store.attachments(
         &AttachmentScope::Account,
@@ -131,11 +131,11 @@ fn rename_before_the_attachment_arrives_is_applied_when_it_does() {
         body: None,
         attachment_filename: Some(SensitiveString::new("final.pdf")),
         attachment: None,
-    });
+    }, true);
 
     assert_eq!(store.pending_edit_count(), 1);
 
-    store.upsert_message(attachment_message("$file", "draft.pdf"));
+    store.upsert_message(attachment_message("$file", "draft.pdf"), true);
 
     assert_eq!(store.pending_edit_count(), 0);
     let rows = store.attachments(
@@ -152,7 +152,7 @@ fn rename_before_the_attachment_arrives_is_applied_when_it_does() {
 #[test]
 fn redacted_attachment_is_not_listed() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(attachment_message("$file", "agenda.pdf"));
+    store.upsert_message(attachment_message("$file", "agenda.pdf"), true);
 
     store.redact("$file");
 

@@ -188,6 +188,10 @@ pub enum SearchIndexMessage {
         body: Option<String>,
         attachment_filename: Option<String>,
         attachment: Option<AttachmentDocument>,
+        /// True when the timeline projection sends this: it always carries the
+        /// message's current visible content. A history crawl sends `false`, and
+        /// the store then keeps an attachment an edit already produced.
+        canonical: bool,
     },
     /// A message was edited. Update the document store.
     Edit {
@@ -198,6 +202,9 @@ pub enum SearchIndexMessage {
         body: Option<String>,
         attachment_filename: Option<String>,
         attachment: Option<AttachmentDocument>,
+        /// See [`SearchIndexMessage::Upsert::canonical`]. A canonical edit also
+        /// outranks a history edit, so an edit rollback applies.
+        canonical: bool,
     },
     /// A message was redacted. Remove it from the document store.
     Redact { event_id: String },
@@ -1102,6 +1109,7 @@ impl SearchActor {
                 body,
                 attachment_filename,
                 attachment,
+                canonical,
             } => {
                 // Capture the visible-state identifiers before the payload is
                 // consumed by the document store, so `IndexUpdated` can wake
@@ -1117,7 +1125,7 @@ impl SearchActor {
                     attachment_filename: attachment_filename.map(SensitiveString::new),
                     attachment,
                 };
-                self.document_store.upsert_message(event);
+                self.document_store.upsert_message(event, canonical);
                 self.emit(CoreEvent::Search(SearchEvent::IndexUpdated {
                     room_id: indexed_room_id,
                     event_id: indexed_event_id,
@@ -1131,6 +1139,7 @@ impl SearchActor {
                 body,
                 attachment_filename,
                 attachment,
+                canonical,
             } => {
                 // The Edit payload only names the target event id; resolve its
                 // room id from the document store so `IndexUpdated` stays honest
@@ -1150,7 +1159,7 @@ impl SearchActor {
                     attachment_filename: attachment_filename.map(SensitiveString::new),
                     attachment,
                 };
-                self.document_store.upsert_edit(edit);
+                self.document_store.upsert_edit(edit, canonical);
                 if let Some(room_id) = edited_room_id {
                     self.emit(CoreEvent::Search(SearchEvent::IndexUpdated {
                         room_id,

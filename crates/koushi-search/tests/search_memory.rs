@@ -61,7 +61,7 @@ fn attachment(index: usize) -> SearchableEvent {
 fn indexed_history_retains_no_message_bodies() {
     let mut store = SearchDocumentStore::default();
     for index in 0..HISTORY_EVENTS {
-        store.upsert_message(message(index));
+        store.upsert_message(message(index), true);
     }
 
     assert_eq!(
@@ -77,7 +77,7 @@ fn indexed_history_retains_no_message_bodies() {
 fn attachment_history_retains_metadata_only() {
     let mut store = SearchDocumentStore::default();
     for index in 0..ATTACHMENT_EVENTS {
-        store.upsert_message(attachment(index));
+        store.upsert_message(attachment(index), true);
     }
 
     assert_eq!(store.document_count(), ATTACHMENT_EVENTS);

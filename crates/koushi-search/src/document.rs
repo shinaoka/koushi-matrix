@@ -77,8 +77,32 @@ impl std::fmt::Debug for AttachmentDocument {
 pub struct SearchDocumentStore {
     /// event_id -> visible metadata of a message that carries an attachment.
     documents: BTreeMap<String, SearchableEvent>,
-    /// Edits that arrived before their target, oldest first.
-    pending_edits: BTreeMap<String, Vec<SearchEdit>>,
+    /// event_id -> the edit whose content the row currently holds.
+    applied_edits: BTreeMap<String, AppliedEdit>,
+    /// Edits that arrived before their target.
+    pending_edits: BTreeMap<String, Vec<PendingEdit>>,
+}
+
+/// The edit whose content a row currently holds.
+///
+/// Kept so a replayed or out-of-order message/edit cannot regress the row: the
+/// canonical timeline projection always carries the current visible state, while
+/// a history crawl can replay an older version of the same message.
+///
+/// The derived `Ord` is the ordering: a canonical edit outranks every history
+/// edit, and history edits order by their own event time and id (the crawler
+/// pages newest first, so a later page can still carry an older edit).
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct AppliedEdit {
+    canonical: bool,
+    timestamp_ms: u64,
+    edit_event_id: String,
+}
+
+/// An edit waiting for its original message.
+struct PendingEdit {
+    edit: SearchEdit,
+    canonical: bool,
 }
 
 impl SearchDocumentStore {
@@ -119,13 +143,24 @@ impl SearchDocumentStore {
 
     pub fn clear(&mut self) {
         self.documents.clear();
+        self.applied_edits.clear();
         self.pending_edits.clear();
     }
 
-    pub fn upsert_message(&mut self, mut event: SearchableEvent) {
+    /// Record a message's attachment metadata.
+    ///
+    /// `canonical` marks the timeline projection, which always carries the
+    /// message's current visible content; a history crawl reports what its
+    /// crawl saw, which may be an older version of the same message.
+    pub fn upsert_message(&mut self, mut event: SearchableEvent, canonical: bool) {
         if event.attachment.is_none() {
             // Nothing to show in the Files view, and search does not read this
             // store, so retaining the message would only cost memory.
+            return;
+        }
+        if !canonical && self.applied_edits.contains_key(&event.event_id) {
+            // A replay of this message's original must not replace the
+            // attachment an edit already produced.
             return;
         }
         retain_attachment_metadata(&mut event);
@@ -133,32 +168,58 @@ impl SearchDocumentStore {
         let event_id = event.event_id.clone();
         self.documents.insert(event_id.clone(), event);
 
-        if let Some(edits) = self.pending_edits.remove(&event_id)
-            && let Some(latest) = latest_edit(edits)
-            && let Some(stored) = self.documents.get_mut(&event_id)
-        {
-            apply_edit(stored, &latest);
+        if let Some(pending) = self.pending_edits.remove(&event_id) {
+            for pending in pending {
+                self.apply_edit_if_newer(&pending.edit, pending.canonical);
+            }
         }
     }
 
-    pub fn upsert_edit(&mut self, mut edit: SearchEdit) {
+    pub fn upsert_edit(&mut self, mut edit: SearchEdit, canonical: bool) {
         // Edit text is never retained, here or while the edit is pending.
         edit.body = None;
         // The edit body's own content is dropped, but the edit event id and
         // timestamp still mark the attachment as edited.
 
-        if let Some(event) = self.documents.get_mut(&edit.target_event_id) {
-            apply_edit(event, &edit);
+        if self.documents.contains_key(&edit.target_event_id) {
+            self.apply_edit_if_newer(&edit, canonical);
         } else {
             self.pending_edits
                 .entry(edit.target_event_id.clone())
                 .or_default()
-                .push(edit);
+                .push(PendingEdit { edit, canonical });
         }
+    }
+
+    /// Apply one edit unless the row already holds a newer one.
+    ///
+    /// A canonical edit always wins: it is the current visible state, so it may
+    /// revise a history edit and it also covers an edit rollback, where the
+    /// newest history edit was redacted and the canonical content moves back to
+    /// an older edit.
+    fn apply_edit_if_newer(&mut self, edit: &SearchEdit, canonical: bool) -> bool {
+        let incoming = AppliedEdit {
+            canonical,
+            timestamp_ms: edit.timestamp_ms,
+            edit_event_id: edit.edit_event_id.clone(),
+        };
+        if let Some(applied) = self.applied_edits.get(&edit.target_event_id)
+            && !canonical
+            && *applied >= incoming
+        {
+            return false;
+        }
+        if let Some(event) = self.documents.get_mut(&edit.target_event_id) {
+            apply_edit(event, edit);
+        }
+        self.applied_edits
+            .insert(edit.target_event_id.clone(), incoming);
+        true
     }
 
     pub fn redact(&mut self, event_id: &str) {
         self.documents.remove(event_id);
+        self.applied_edits.remove(event_id);
         self.pending_edits.remove(event_id);
     }
 
@@ -355,11 +416,4 @@ impl std::fmt::Debug for SearchEdit {
             .field("attachment", &self.attachment)
             .finish()
     }
-}
-
-fn latest_edit(edits: Vec<SearchEdit>) -> Option<SearchEdit> {
-    edits.into_iter().max_by(|left, right| {
-        (left.timestamp_ms, left.edit_event_id.as_str())
-            .cmp(&(right.timestamp_ms, right.edit_event_id.as_str()))
-    })
 }

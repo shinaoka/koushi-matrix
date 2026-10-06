@@ -56,14 +56,14 @@ fn room_scope_filters_attachments_to_single_room() {
         "@user-a:example.invalid",
         1_700_000_000_000,
         attachment(AttachmentKind::Image, "a.png"),
-    ));
+    ), true);
     store.upsert_message(event(
         "!room-b:example.invalid",
         "$event-b1",
         "@user-b:example.invalid",
         1_700_000_000_001,
         attachment(AttachmentKind::File, "b.pdf"),
-    ));
+    ), true);
 
     let results = store.attachments(
         &AttachmentScope::Room {
@@ -87,21 +87,21 @@ fn space_scope_includes_only_child_room_attachments() {
         "@user-a:example.invalid",
         1_700_000_000_000,
         attachment(AttachmentKind::Image, "alpha.png"),
-    ));
+    ), true);
     store.upsert_message(event(
         "!room-beta:example.invalid",
         "$event-beta",
         "@user-b:example.invalid",
         1_700_000_000_001,
         attachment(AttachmentKind::Audio, "beta.mp3"),
-    ));
+    ), true);
     store.upsert_message(event(
         "!room-gamma:example.invalid",
         "$event-gamma",
         "@user-c:example.invalid",
         1_700_000_000_002,
         attachment(AttachmentKind::Video, "gamma.mp4"),
-    ));
+    ), true);
 
     let results = store.attachments(
         &AttachmentScope::Space {
@@ -131,14 +131,14 @@ fn account_scope_returns_all_attachments() {
         "@user-a:example.invalid",
         1_700_000_000_000,
         attachment(AttachmentKind::Image, "a.png"),
-    ));
+    ), true);
     store.upsert_message(event(
         "!room-b:example.invalid",
         "$event-b",
         "@user-b:example.invalid",
         1_700_000_000_001,
         attachment(AttachmentKind::File, "b.pdf"),
-    ));
+    ), true);
 
     let results = store.attachments(
         &AttachmentScope::Account,
@@ -158,35 +158,35 @@ fn kind_filter_selects_requested_attachment_kinds() {
         "@user-a:example.invalid",
         1,
         attachment(AttachmentKind::Image, "img.png"),
-    ));
+    ), true);
     store.upsert_message(event(
         "!room-a:example.invalid",
         "$vid",
         "@user-a:example.invalid",
         2,
         attachment(AttachmentKind::Video, "vid.mp4"),
-    ));
+    ), true);
     store.upsert_message(event(
         "!room-a:example.invalid",
         "$aud",
         "@user-a:example.invalid",
         3,
         attachment(AttachmentKind::Audio, "aud.mp3"),
-    ));
+    ), true);
     store.upsert_message(event(
         "!room-a:example.invalid",
         "$file",
         "@user-a:example.invalid",
         4,
         attachment(AttachmentKind::File, "file.pdf"),
-    ));
+    ), true);
     store.upsert_message(event(
         "!room-a:example.invalid",
         "$sticker",
         "@user-a:example.invalid",
         5,
         attachment(AttachmentKind::Sticker, "sticker.png"),
-    ));
+    ), true);
 
     let results = store.attachments(
         &AttachmentScope::Account,
@@ -212,14 +212,14 @@ fn filename_query_matches_substring_case_insensitively() {
         "@user-a:example.invalid",
         1,
         attachment(AttachmentKind::File, "Quarterly_REPORT.pdf"),
-    ));
+    ), true);
     store.upsert_message(event(
         "!room-a:example.invalid",
         "$event-2",
         "@user-a:example.invalid",
         2,
         attachment(AttachmentKind::File, "notes.txt"),
-    ));
+    ), true);
 
     let results = store.attachments(
         &AttachmentScope::Account,
@@ -243,7 +243,7 @@ fn filename_query_matches_cjk_filename() {
         "@user-a:example.invalid",
         1,
         attachment(AttachmentKind::File, "会議資料.pdf"),
-    ));
+    ), true);
 
     let results = store.attachments(
         &AttachmentScope::Account,
@@ -267,21 +267,21 @@ fn sort_by_timestamp_orders_results() {
         "@user-a:example.invalid",
         1_700_000_000_000,
         attachment(AttachmentKind::Image, "oldest.png"),
-    ));
+    ), true);
     store.upsert_message(event(
         "!room-a:example.invalid",
         "$middle",
         "@user-a:example.invalid",
         1_700_000_000_001,
         attachment(AttachmentKind::Image, "middle.png"),
-    ));
+    ), true);
     store.upsert_message(event(
         "!room-a:example.invalid",
         "$newest",
         "@user-a:example.invalid",
         1_700_000_000_002,
         attachment(AttachmentKind::Image, "newest.png"),
-    ));
+    ), true);
 
     let results = store.attachments(
         &AttachmentScope::Account,
@@ -321,21 +321,21 @@ fn sort_by_filename_orders_results_alphabetically() {
         "@user-a:example.invalid",
         1,
         attachment(AttachmentKind::File, "charlie.txt"),
-    ));
+    ), true);
     store.upsert_message(event(
         "!room-a:example.invalid",
         "$event-a",
         "@user-a:example.invalid",
         2,
         attachment(AttachmentKind::File, "alpha.txt"),
-    ));
+    ), true);
     store.upsert_message(event(
         "!room-a:example.invalid",
         "$event-b",
         "@user-a:example.invalid",
         3,
         attachment(AttachmentKind::File, "bravo.txt"),
-    ));
+    ), true);
 
     let results = store.attachments(
         &AttachmentScope::Account,
@@ -361,7 +361,7 @@ fn edit_updates_attachment_for_query() {
         "@user-a:example.invalid",
         1,
         attachment(AttachmentKind::Image, "draft.png"),
-    ));
+    ), true);
 
     store.upsert_edit(SearchEdit {
         edit_event_id: "$edit".into(),
@@ -371,7 +371,7 @@ fn edit_updates_attachment_for_query() {
         body: None,
         attachment_filename: None,
         attachment: Some(attachment(AttachmentKind::File, "final_report.pdf")),
-    });
+    }, true);
 
     let results = store.attachments(
         &AttachmentScope::Account,
@@ -397,7 +397,7 @@ fn redacted_attachment_is_excluded_from_results() {
         "@user-a:example.invalid",
         1,
         attachment(AttachmentKind::File, "secret.pdf"),
-    ));
+    ), true);
 
     store.redact("$redacted");
 

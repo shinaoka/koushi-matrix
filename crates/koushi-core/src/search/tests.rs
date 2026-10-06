@@ -360,6 +360,92 @@ fn make_attachment_edit(target: &str, filename: &str) -> SearchEdit {
     }
 }
 
+/// An edit as a producer would report it: the edit event's own time and id.
+fn make_edit_at(target: &str, edit_event_id: &str, timestamp_ms: u64, filename: &str) -> SearchEdit {
+    SearchEdit {
+        edit_event_id: edit_event_id.to_owned(),
+        target_event_id: target.to_owned(),
+        sender: "@alice:test".to_owned(),
+        timestamp_ms,
+        body: None,
+        attachment_filename: Some(SensitiveString::new(filename.to_owned())),
+        attachment: None,
+    }
+}
+
+fn first_filename(store: &SearchDocumentStore) -> Option<String> {
+    attachment_rows(store).first().map(|row| row.filename.clone())
+}
+
+#[test]
+fn a_history_replay_of_the_original_cannot_replace_an_applied_rename() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        true,
+    );
+    store.upsert_edit(make_edit_at("$e1", "$edit1", 2_000, "renamed.pdf"), true);
+
+    // A history crawl replays the message's original attachment.
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        false,
+    );
+
+    assert_eq!(first_filename(&store).as_deref(), Some("renamed.pdf"));
+}
+
+#[test]
+fn an_older_history_edit_cannot_outrank_a_newer_one() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        false,
+    );
+
+    // The crawler pages newest first: the older edit arrives last.
+    store.upsert_edit(make_edit_at("$e1", "$newer", 2_000, "newer.pdf"), false);
+    store.upsert_edit(make_edit_at("$e1", "$older", 1_000, "older.pdf"), false);
+
+    assert_eq!(first_filename(&store).as_deref(), Some("newer.pdf"));
+}
+
+#[test]
+fn a_canonical_edit_revises_a_history_edit_even_when_it_is_older() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        false,
+    );
+    // A history crawl saw a later edit that the canonical state no longer shows
+    // (for example its redaction moved the visible content back).
+    store.upsert_edit(make_edit_at("$e1", "$redacted", 5_000, "stale.pdf"), false);
+
+    store.upsert_edit(make_edit_at("$e1", "$current", 1_000, "current.pdf"), true);
+
+    assert_eq!(first_filename(&store).as_deref(), Some("current.pdf"));
+
+    // ... and a later history replay still cannot undo it.
+    store.upsert_edit(make_edit_at("$e1", "$redacted", 6_000, "stale.pdf"), false);
+    assert_eq!(first_filename(&store).as_deref(), Some("current.pdf"));
+}
+
+#[test]
+fn an_edit_before_its_message_keeps_the_newest_of_the_pending_edits() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_edit(make_edit_at("$e1", "$older", 1_000, "older.pdf"), false);
+    store.upsert_edit(make_edit_at("$e1", "$newer", 2_000, "newer.pdf"), false);
+    assert_eq!(store.pending_edit_count(), 2);
+
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        false,
+    );
+
+    assert_eq!(store.pending_edit_count(), 0);
+    assert_eq!(first_filename(&store).as_deref(), Some("newer.pdf"));
+}
+
 fn attachment_rows(store: &SearchDocumentStore) -> Vec<koushi_state::AttachmentResult> {
     store.attachments(
         &koushi_state::AttachmentScope::Account,
@@ -388,7 +474,7 @@ fn make_edit(target: &str, new_body: &str) -> SearchEdit {
 #[test]
 fn plain_messages_are_not_retained() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(make_event("!r:test", "$e1", "hello world"));
+    store.upsert_message(make_event("!r:test", "$e1", "hello world"), true);
 
     assert_eq!(
         store.document_count(),
@@ -400,7 +486,7 @@ fn plain_messages_are_not_retained() {
 #[test]
 fn attachment_rows_are_retained_for_the_files_view() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(make_attachment_event("!r:test", "$e1", "agenda.pdf"));
+    store.upsert_message(make_attachment_event("!r:test", "$e1", "agenda.pdf"), true);
 
     let rows = attachment_rows(&store);
 
@@ -416,7 +502,7 @@ fn attachment_rows_are_retained_for_the_files_view() {
 fn edit_before_attachment_is_pending_until_it_arrives() {
     let mut store = SearchDocumentStore::default();
     // Arrive edit BEFORE the attachment — it must not become a message row.
-    store.upsert_edit(make_attachment_edit("$original", "renamed.pdf"));
+    store.upsert_edit(make_attachment_edit("$original", "renamed.pdf"), true);
 
     assert_eq!(store.document_count(), 0);
     assert_eq!(store.pending_edit_count(), 1);
@@ -425,7 +511,7 @@ fn edit_before_attachment_is_pending_until_it_arrives() {
         "!r:test",
         "$original",
         "original.pdf",
-    ));
+    ), true);
 
     assert_eq!(store.pending_edit_count(), 0, "pending edit must resolve");
     let rows = attachment_rows(&store);
@@ -436,8 +522,8 @@ fn edit_before_attachment_is_pending_until_it_arrives() {
 #[test]
 fn caption_only_edit_still_marks_the_row_edited() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(make_attachment_event("!r:test", "$e1", "agenda.pdf"));
-    store.upsert_edit(make_edit("$e1", "a new caption"));
+    store.upsert_message(make_attachment_event("!r:test", "$e1", "agenda.pdf"), true);
+    store.upsert_edit(make_edit("$e1", "a new caption"), true);
 
     let rows = attachment_rows(&store);
 
@@ -453,7 +539,7 @@ fn caption_only_edit_still_marks_the_row_edited() {
 #[test]
 fn redaction_removes_the_attachment_row() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(make_attachment_event("!r:test", "$e1", "secret.pdf"));
+    store.upsert_message(make_attachment_event("!r:test", "$e1", "secret.pdf"), true);
 
     store.redact("$e1");
 
@@ -464,9 +550,9 @@ fn redaction_removes_the_attachment_row() {
 #[test]
 fn clear_removes_documents_and_pending_edits() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(make_attachment_event("!r:test", "$e1", "original.pdf"));
-    store.upsert_edit(make_attachment_edit("$e1", "edited.pdf"));
-    store.upsert_edit(make_attachment_edit("$missing", "pending.pdf"));
+    store.upsert_message(make_attachment_event("!r:test", "$e1", "original.pdf"), true);
+    store.upsert_edit(make_attachment_edit("$e1", "edited.pdf"), true);
+    store.upsert_edit(make_attachment_edit("$missing", "pending.pdf"), true);
 
     assert_eq!(store.document_count(), 1);
     assert_eq!(store.pending_edit_count(), 1);
@@ -559,6 +645,7 @@ fn search_index_message_upsert_redacts_body_in_debug() {
         body: Some("very-private-message-body".to_owned()),
         attachment_filename: None,
         attachment: None,
+        canonical: true,
     };
     let debug = format!("{msg:?}");
     assert!(
@@ -577,6 +664,7 @@ fn search_index_message_edit_redacts_body_in_debug() {
         body: Some("private-edited-content".to_owned()),
         attachment_filename: None,
         attachment: None,
+        canonical: true,
     };
     let debug = format!("{msg:?}");
     assert!(
