@@ -571,8 +571,10 @@ describe("desktop release scripts", () => {
     );
 
     expect(credentialStore).toContain("const ENV_FILE_CREDENTIAL_STORE_DIR");
+    // The env override is never compiled into release builds, and unit tests
+    // ignore it so a developer's exported QA directory cannot redirect them.
     expect(credentialStore).toMatch(
-      /#\[cfg\(any\(debug_assertions, test, feature = "test-hooks"\)\)\]\nconst ENV_FILE_CREDENTIAL_STORE_DIR/
+      /#\[cfg\(all\(any\(debug_assertions, feature = "test-hooks"\), not\(test\)\)\)\]\nconst ENV_FILE_CREDENTIAL_STORE_DIR/
     );
     expect(credentialStore).toMatch(
       /#\[cfg\(any\(debug_assertions, test, feature = "test-hooks"\)\)\]\n(?:#\[derive\([^\n]+\)\]\n)?pub struct FileCredentialStore/
