@@ -111,8 +111,10 @@ pub struct MatrixResolvedMessage {
     pub current_event_id: String,
     pub sender: String,
     pub timestamp_ms: Option<u64>,
-    /// Visible searchable text; never logged.
-    pub body: String,
+    /// Visible text: the body of a text message, or a media caption.
+    pub body: Option<String>,
+    /// Filename of a media message; never logged.
+    pub attachment_filename: Option<String>,
 }
 
 impl fmt::Debug for MatrixResolvedMessage {
@@ -123,7 +125,14 @@ impl fmt::Debug for MatrixResolvedMessage {
             .field("current_event_id", &"EventId(..)")
             .field("sender", &"UserId(..)")
             .field("timestamp_ms", &self.timestamp_ms)
-            .field("body", &"MessageBody(..)")
+            .field("body", &self.body.as_ref().map(|_| "MessageBody(..)"))
+            .field(
+                "attachment_filename",
+                &self
+                    .attachment_filename
+                    .as_ref()
+                    .map(|_| "AttachmentFilename(..)"),
+            )
             .finish()
     }
 }
@@ -484,6 +493,7 @@ pub async fn resolve_cached_message(
         sender: message.sender.to_string(),
         timestamp_ms: message.timestamp_millis,
         body: message.body,
+        attachment_filename: message.attachment_filename,
     }))
 }
 
