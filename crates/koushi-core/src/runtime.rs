@@ -1470,6 +1470,9 @@ impl AppActor {
         // #1060: the requested room (`None` for a Space) of AppActor-local
         // navigation whose enrichment is scheduled after publication.
         let mut local_navigation_target: Option<Option<String>> = None;
+        // #1146: event navigations whose focused subscription failed in this
+        // batch; settled after publication like select outcomes.
+        let mut focused_subscription_failures = Vec::new();
         for action in actions {
             let Some(action) = normalize_activity_resolution_action(&self.state, action) else {
                 continue;
@@ -1593,6 +1596,13 @@ impl AppActor {
                 // retain only Open and wait for the WebView projection ACK.
                 self.pending_date_navigation_request_id = None;
                 continue;
+            }
+            if let AppAction::FocusedContextSubscriptionFailed {
+                room_id, event_id, ..
+            } = &action
+                && let Some(owner) = self.focused_subscription_failure_owner(room_id, event_id)
+            {
+                focused_subscription_failures.push(owner);
             }
             // For SelectRoom: capture observable facts BEFORE reduce so
             // we can classify the outcome afterwards and emit the
@@ -1864,6 +1874,11 @@ impl AppActor {
                 outcome,
                 published_generation,
             });
+        }
+
+        for (request_id, generation) in focused_subscription_failures {
+            self.settle_focused_subscription_failure(request_id, generation)
+                .await;
         }
 
         // Only after publication and every terminal has been emitted may

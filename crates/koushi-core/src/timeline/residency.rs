@@ -380,6 +380,7 @@ impl TimelineManagerActor {
             thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
             timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
             live_tail_refreshes: LiveTailRefreshCoordinator::new(),
+            focused_builds: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             test_session_available: true,
         }
@@ -409,12 +410,15 @@ impl TimelineManagerActor {
     pub(crate) async fn room_subscription_residency_test_admit_key(&mut self, key: TimelineKey) {
         self.handle_subscribe(
             internal_timeline_request_id(),
-            key,
+            key.clone(),
             false,
             false,
             koushi_protocol::command::InitialBackfillPolicy::Disabled,
         )
         .await;
+        // #1146: this harness drives the manager directly, so it also drives
+        // the focused-build completion the run loop would poll.
+        self.settle_pending_focused_build_for_testing(&key).await;
     }
     #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
