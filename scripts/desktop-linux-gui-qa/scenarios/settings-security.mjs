@@ -1,9 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
-import { safeTimestamp } from "../evidence.mjs";
 import { cleanupLocalGuiScenario,recordLocalGuiEvidence,startLocalGuiScenario,waitForAuthScreen,waitForLocalLoginReady,writeLocalLoginPipe } from "../local-session.mjs";
 import { timeoutMs } from "../options.mjs";
-import { clickKeyManagementFormButton,clickVisibleButtonByTextPrefix,ensureUserSettingsKeyManagementOpen,setKeyManagementFormInput,waitForDocumentText,waitForDocumentTheme,waitForElementAttribute,waitForFileExists,waitForKeyManagementStatus } from "../webdriver.mjs";
+import { clickKeyManagementFormButton,clickVisibleButtonByTextPrefix,ensureUserSettingsKeyManagementOpen,waitForDocumentText,waitForDocumentTheme,waitForElementAttribute,waitForFileExists,waitForKeyManagementStatus } from "../webdriver.mjs";
 
 export async function runLocalSettingsScenario() {
   const session = await startLocalGuiScenario();
@@ -68,27 +66,18 @@ export async function runLocalE2eeKeyManagementScenario() {
 
     await ensureUserSettingsKeyManagementOpen(session.browser, timeoutMs);
 
-    const keyFilePath = join(session.runDir, "room-keys.txt");
-    const keyFilePassphrase = `koushi-key-transfer-${safeTimestamp()}`;
+    // The debug-only KOUSHI_QA_ROOM_KEY_FILE override answers the adapter's
+    // export and import dialogs with this file.
+    const keyFilePath = session.roomKeyFile;
+    const keyFilePassphrase = randomBytes(24).toString("base64url");
 
-    await setKeyManagementFormInput(
-      session.browser,
-      "Room key export",
-      "Key export destination",
-      keyFilePath
-    );
-    await setKeyManagementFormInput(
-      session.browser,
-      "Room key export",
-      "Room key passphrase",
-      keyFilePassphrase
-    );
     await clickKeyManagementFormButton(
       session.browser,
       "Room key export",
       "Export room keys",
       timeoutMs
     );
+    await submitRoomKeyPassphrase(session.browser, keyFilePassphrase, "Export room keys");
     await waitForKeyManagementStatus(
       session.browser,
       "room-key-export-state",
@@ -99,24 +88,13 @@ export async function runLocalE2eeKeyManagementScenario() {
     await waitForFileExists(keyFilePath, timeoutMs, "local GUI room-key export artifact");
     console.log("gui_room_key_export=ok");
 
-    await setKeyManagementFormInput(
-      session.browser,
-      "Room key import",
-      "Key import source",
-      keyFilePath
-    );
-    await setKeyManagementFormInput(
-      session.browser,
-      "Room key import",
-      "Room key passphrase",
-      keyFilePassphrase
-    );
     await clickKeyManagementFormButton(
       session.browser,
       "Room key import",
       "Import room keys",
       timeoutMs
     );
+    await submitRoomKeyPassphrase(session.browser, keyFilePassphrase, "Import room keys");
     await waitForKeyManagementStatus(
       session.browser,
       "room-key-import-state",
@@ -222,4 +200,26 @@ async function setSecretFormField(browser, formLabel, fieldLabel, value) {
   if (landed !== "set") {
     throw new Error(`local GUI ${fieldLabel} input failed: ${landed}`);
   }
+}
+
+// The room-key passphrase is asked in a modal after the file is chosen.
+async function submitRoomKeyPassphrase(browser, passphrase, submitLabel) {
+  const input = await browser.$('input[aria-label="Room key passphrase"]');
+  await input.waitForDisplayed({ timeout: timeoutMs });
+  const landed = await browser.execute((nextValue) => {
+    const input = document.querySelector('input[aria-label="Room key passphrase"]');
+    if (!(input instanceof HTMLInputElement)) return "missing-input";
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, nextValue);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return input.value === nextValue ? "set" : "value-mismatch";
+  }, passphrase);
+  if (landed !== "set") {
+    throw new Error(`local GUI room-key passphrase input failed: ${landed}`);
+  }
+  const submit = await browser.$(
+    `//*[@aria-labelledby="room-key-passphrase-title"]//button[@type="submit" and normalize-space()="${submitLabel}"]`
+  );
+  await submit.waitForDisplayed({ timeout: timeoutMs });
+  await submit.click();
 }

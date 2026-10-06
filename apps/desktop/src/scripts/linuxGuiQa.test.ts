@@ -52,6 +52,28 @@ describe("desktop release scripts", () => {
     expect(source).toContain("gui_local_history_export_period=ok");
     expect(source).toContain("gui_local_room_history_export=ok");
     expect(source).toContain("KOUSHI_QA_HISTORY_EXPORT_DIR");
+    // Room-key export/import answer the adapter dialogs through the
+    // debug-only override instead of typing into removed path fields.
+    expect(source).toContain("KOUSHI_QA_ROOM_KEY_FILE");
+    expect(source).toContain("gui_room_key_export=ok");
+    expect(source).toContain("gui_room_key_import=ok");
+    expect(source).not.toContain('"Key export destination"');
+    expect(source).not.toContain('"Key import source"');
+  });
+
+  test("the room-key QA file override is compiled out of release builds", () => {
+    const adapter = readFileSync(
+      new URL("../../src-tauri/src/commands/room_key_files.rs", import.meta.url),
+      "utf8"
+    );
+    const releaseGate = readFileSync(
+      new URL("../../../../scripts/desktop-release-gate-check.mjs", import.meta.url),
+      "utf8"
+    );
+    expect(adapter).toMatch(
+      /#\[cfg\(any\(debug_assertions, test\)\)\]\nconst QA_ROOM_KEY_FILE_ENV: &str = "KOUSHI_QA_ROOM_KEY_FILE";/
+    );
+    expect(releaseGate).toContain(`'"KOUSHI_QA_ROOM_KEY_FILE"'`);
   });
 
   test("linux GUI local logout/relogin uses the gated QA control pipe", () => {

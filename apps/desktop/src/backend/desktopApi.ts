@@ -194,6 +194,8 @@ export interface DesktopApi {
   enableKeyBackup(): Promise<CommandAdmission>;
   exportRoomKeys(destinationPath: string, passphrase: string): Promise<CommandAdmission>;
   importRoomKeys(sourcePath: string, passphrase: string): Promise<CommandAdmission>;
+  chooseRoomKeyExportDestination(dialogTitle: string): Promise<string | null>;
+  chooseRoomKeyImportSource(dialogTitle: string): Promise<string | null>;
   historyExportTimeZone(): Promise<string>;
   exportHistory(
     scope: HistoryExportScopeInput,

@@ -224,7 +224,7 @@ scenario run. See [environment.md](environment.md#reusing-a-debug-build) for the
 | `local-alias` | sets a local alias through `set_local_user_alias`, waits for Rust-projected timeline/member labels, clears it, waits for both surfaces to revert | `gui_local_alias_set=ok`, `gui_local_alias_clear=ok` |
 | `local-cjk` | long Japanese/CJK room name and message; verifies `line-break: strict`, `word-break: normal`, `hyphens: none`, room ellipsis, message wrapping, no horizontal document overflow | `gui_local_cjk=ok` |
 | `local-settings` | real Settings UI: composer shortcut and theme, E2EE trust section presence, waits for `aria-pressed="true"` / `data-theme="dark"` | — |
-| `local-e2ee-key-management` | room-key export, import, then the `local-secure-backup` steps | `gui_room_key_export=ok`, `gui_room_key_import=ok`, `gui_secure_backup_setup=ok`, `gui_secure_backup_passphrase_change=ok` |
+| `local-e2ee-key-management` | room-key export and import through the adapter-owned file dialogs, then the `local-secure-backup` steps | `gui_room_key_export=ok`, `gui_room_key_import=ok`, `gui_secure_backup_setup=ok`, `gui_secure_backup_passphrase_change=ok` |
 | `local-secure-backup` | the login's new-identity gate reveal (Create, then **I saved the recovery key**) leaves Settings reporting the backup `Enabled`; a Settings passphrase change reveals a new key on screen and only **I saved the recovery key** dismisses it; the optional save is skipped and the key is never read | `gui_secure_backup_setup=ok`, `gui_secure_backup_passphrase_change=ok` |
 
 Lane scope notes:
@@ -261,10 +261,11 @@ Lane scope notes:
   export is resumed. Release builds compile the override out
   (`scripts/desktop-release-gate-check.mjs`). The lane prints only counts and
   booleans; the files hold synthetic local-homeserver data.
-- `local-e2ee-key-management` room-key export/import still type into
-  destination fields that Settings replaced with native file dialogs, so that
-  half fails until a debug-only path override lands (follow-up to #1049); run
-  `local-secure-backup` for the secure-backup half on its own.
+- `local-e2ee-key-management` cannot drive the native room-key file dialogs.
+  Its run sets the debug-build-only `KOUSHI_QA_ROOM_KEY_FILE`, and the Tauri
+  adapter answers both the export and the import dialog with that ignored
+  run-directory file. Release builds compile the override out
+  (`scripts/desktop-release-gate-check.mjs`).
 
 ## Browser-headless (Playwright) lane
 

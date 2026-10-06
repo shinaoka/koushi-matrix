@@ -512,6 +512,8 @@ describe("TauriDesktopApi", () => {
     const api = new TauriDesktopApi();
     await api.exportRoomKeys("/tmp/export.txt", "room-key-passphrase");
     await api.importRoomKeys("/tmp/import.txt", "room-key-passphrase");
+    await api.chooseRoomKeyExportDestination("Room key export");
+    await api.chooseRoomKeyImportSource("Room key import");
     await api.bootstrapSecureBackup("secure-backup-passphrase", { kind: "initialSetup" });
     await api.changeSecureBackupPassphrase(
       "old-secure-backup-passphrase",
@@ -520,6 +522,13 @@ describe("TauriDesktopApi", () => {
     await api.saveSecureBackupRecoveryKey(41, "/tmp/recovery.txt");
     await api.confirmSecureBackupRecoveryKeySaved(41);
 
+    // The adapter owns the room-key file dialogs (debug QA can answer them).
+    expect(invoke).toHaveBeenCalledWith("choose_room_key_export_destination", {
+      dialogTitle: "Room key export"
+    });
+    expect(invoke).toHaveBeenCalledWith("choose_room_key_import_source", {
+      dialogTitle: "Room key import"
+    });
     expect(invoke).toHaveBeenCalledWith("export_room_keys", {
       destinationPath: "/tmp/export.txt",
       passphrase: "room-key-passphrase"

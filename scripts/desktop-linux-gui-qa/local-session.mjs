@@ -70,6 +70,7 @@ export async function startLocalGuiScenario() {
     primaryUserId: null,
     seedRoomId: null,
     historyExportDir: null,
+    roomKeyFile: null,
     historyExportSeedBodies: null,
     seedInviteRoomName: null,
     readerDisplayNames: [],
@@ -294,6 +295,10 @@ export async function startLocalGuiScenario() {
       mkdirSync(session.historyExportDir, { recursive: true });
     }
 
+    if (guiScenario === "local-e2ee-key-management") {
+      session.roomKeyFile = join(runDir, "room-keys.txt");
+    }
+
     if (guiScenario === "local-room-management") {
       const helperUsername = `qa_management_${userSuffix}`;
       const helperPassword = `koushi-desktop-helper-${userSuffix}`;
@@ -367,6 +372,11 @@ export async function startLocalGuiScenario() {
       // Debug-build-only adapter override: WebDriver cannot drive the native
       // save dialog, so the export is written to this ignored run directory.
       baseEnv.KOUSHI_QA_HISTORY_EXPORT_DIR = session.historyExportDir;
+    }
+    if (session.roomKeyFile) {
+      // Debug-build-only adapter override: the room-key export and import
+      // dialogs answer with this ignored run-directory file.
+      baseEnv.KOUSHI_QA_ROOM_KEY_FILE = session.roomKeyFile;
     }
     session.dbusSession = ensureDbusSession(logPath, baseEnv);
     session.buildEnv = {
