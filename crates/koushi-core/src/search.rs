@@ -1626,13 +1626,17 @@ async fn run_sdk_query(
         HashMap::new();
     for (variant_index, query_variant) in variants.iter().enumerate() {
         let variant_started = Instant::now();
-        let candidates = koushi_sdk::search_message_candidates_scoped(
+        // Literal paging over the persistent ngram index: operators and field
+        // syntax are inert, raw and normalization-equivalent text are both
+        // covered, and paging never skips offsets. The in-process scan below
+        // still unions the store, so no store-held message becomes unfindable.
+        let mut pager = koushi_sdk::MatrixLiteralSearchPager::new(
             &session,
             query_variant,
-            sdk_scope.clone(),
+            &sdk_scope,
             SEARCH_CANDIDATE_LIMIT,
-        )
-        .await;
+        );
+        let candidates = pager.next_page(&session, SEARCH_CANDIDATE_LIMIT).await;
 
         let candidates = match candidates {
             Ok(candidates) => candidates,
