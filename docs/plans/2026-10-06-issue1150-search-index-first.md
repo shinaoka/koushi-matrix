@@ -275,6 +275,33 @@ crawl does not re-extract events the index already holds (`RoomIndex::add` skips
 them). The help text now says what the action does; rebuilding the persistent
 index needs an index generation the settings store owns, which is follow-up work.
 
+### Fix round 7 (review of the trimmed M2 diff)
+
+Round 7 confirmed the M3 removal left no dangling Rust references and that the
+content-policy story is coherent for message search. Fixed in `ff2fc3ee`: the
+Files view is a policy surface too and now closes on a content-policy change
+(its pending results cannot match a closed view), a body-only pending edit is
+dropped by the store instead of accumulating with history, a too-short
+submission records its connection before the early return, the request-outcome
+tracker matches the submitting connection, the connection field is cleared
+wherever the search view closes, and the user help no longer promises that
+"Rebuild search database" clears the persistent index.
+
+Remaining from round 7:
+
+- **in-session convergence after a redacted edit** (IMPORTANT): the SDK promotes
+  the older surviving edit, but both halves of that older canonical observation
+  are refused by the store's timestamp guards (and a keyless restoration is
+  refused too), so the row keeps the redacted edit's filename until a restart
+  crawl. The fix is an observation sequence: stamp each timeline projection with
+  a monotonically increasing value (the relay and item-projection entry points
+  already have `&mut self`), carry it on the upsert/edit pair, and let the store
+  apply a canonical message whose observation is newer than the one it holds,
+  falling back to the timestamp rule when the held edit came from a crawl. That
+  keeps a stale observation from erasing a newer crawl rename while letting a
+  rollback converge.
+- **M4** (warm set) still needs the maintainer's decision.
+
 Also raised: migrate commitments already written without an acknowledgement, make the "rebuild
 search database" action actually rebuild the persistent index (the user help promises it), cover
 attachment edit rollback and mixed producers, measure pending-edit residency in the memory probe,
