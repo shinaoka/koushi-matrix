@@ -83,7 +83,7 @@ export async function runSignedOutScenario() {
       await writeRealLoginPipe(qaLoginPipePath, realLogin);
       realLoginCleanupRequired = true;
       await waitForLocalLoginReady(
-        { browser, allowNewIdentityBootstrap: false, bootstrapTempDirs: new Set() },
+        { browser, allowNewIdentityBootstrap: false },
         timeoutMs
       );
       console.log("gui_real_login=ok");

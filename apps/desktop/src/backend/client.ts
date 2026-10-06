@@ -494,7 +494,7 @@ export class TauriDesktopApi implements DesktopApi {
   async startOwnUserSas(): Promise<CommandAdmission> { return this.invokeCommand("start_own_user_sas"); }
   async retryCurrentDeviceTrustDiscovery(): Promise<CommandAdmission> { return this.invokeCommand("retry_current_device_trust_discovery"); }
   async mismatchSasVerification(flowId: number): Promise<CommandAdmission> { return this.invokeCommand("mismatch_sas_verification", { flowId }); }
-  async startSessionBootstrap(passphrase: string | null, recoveryKeyDestinationPath: string): Promise<CommandAdmission> { return this.invokeCommand("start_session_bootstrap", { passphrase, recoveryKeyDestinationPath }); }
+  async startSessionBootstrap(passphrase: string | null): Promise<CommandAdmission> { return this.invokeCommand("start_session_bootstrap", { passphrase }); }
   async confirmSessionBootstrapSaved(flowId: number): Promise<CommandAdmission> { return this.invokeCommand("confirm_session_bootstrap_saved", { flowId }); }
 
   async confirmSasVerification(flowId: number): Promise<CommandAdmission> {

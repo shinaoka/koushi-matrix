@@ -13,6 +13,9 @@ Account sign-in and access to encryption keys are separate steps. At
   **Verify with another device**, and follow the confirmation. If matching emoji
   are displayed, compare them on both devices before choosing **They match**.
   Choose **They do not match** if they differ.
+- On a brand-new account, choose **Create secure backup** (a backup
+  passphrase is optional). Your new recovery key is shown on screen; record it
+  as described in the next section, then choose **I saved the recovery key**.
 
 The available choices depend on your account. Koushi recommends the recovery
 key when available; another device can be offline or missing keys. Wait for

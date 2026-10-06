@@ -2437,7 +2437,6 @@ impl AppActor {
                         | AccountCommand::EraseDeviceCleanupLocalDataAnyway { .. }
                         | AccountCommand::SubmitRecovery { .. }
                         | AccountCommand::StartSessionBootstrap { .. }
-                        | AccountCommand::ConfirmSessionBootstrapSaved { .. }
                         | AccountCommand::StartOwnUserSas { .. }
                         | AccountCommand::ExportHistory { .. }
                         | AccountCommand::RetryHistoryExport { .. }
@@ -5224,6 +5223,14 @@ fn secure_backup_setup_projection_failure(
 }
 
 fn is_verification_gate_command(command: &CoreCommand, session: &SessionState) -> bool {
+    // The optional "Save to file" for the identity bootstrap's revealed key
+    // (#1049); AccountActor validates the reveal id against its held copy.
+    if matches!(
+        command,
+        CoreCommand::Account(AccountCommand::SaveSecureBackupRecoveryKey { .. })
+    ) {
+        return matches!(session, SessionState::AwaitingBootstrapConfirmation { .. });
+    }
     if matches!(
         command,
         CoreCommand::Account(AccountCommand::RetryCurrentDeviceTrustDiscovery { .. })
@@ -5340,9 +5347,6 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 method: koushi_state::VerificationMethod::ExistingDeviceSas,
                 flow_id: *flow_id,
             })
-        }
-        AccountCommand::ConfirmSessionBootstrapSaved { flow_id, .. } => {
-            Some(AppAction::BootstrapRecoverySavedConfirmed { flow_id: *flow_id })
         }
         AccountCommand::AcceptVerification { flow_id, .. } => {
             Some(AppAction::VerificationAccepted {
@@ -5595,6 +5599,9 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         | AccountCommand::RetryCurrentDeviceTrustDiscovery { .. }
         // The actor validates the revealed key and settles the save outcome.
         | AccountCommand::SaveSecureBackupRecoveryKey { .. }
+        // The actor clears the persisted delivery marker before the reveal
+        // may drop the key (#1049), then settles the confirmation.
+        | AccountCommand::ConfirmSessionBootstrapSaved { .. }
         | AccountCommand::SwitchAccount { .. } => None,
     }
 }

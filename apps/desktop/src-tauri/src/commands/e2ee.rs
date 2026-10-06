@@ -54,11 +54,13 @@ pub async fn mismatch_sas_verification(
     Ok(admission)
 }
 
+/// Verification-gate identity bootstrap (#1049). The recovery key is
+/// revealed on screen; the optional "Save to file" is
+/// `save_secure_backup_recovery_key` with the flow id as the reveal id.
 #[tauri::command]
 pub async fn start_session_bootstrap(
     account_tab_id: Option<String>,
     passphrase: Option<String>,
-    recovery_key_destination_path: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
@@ -66,14 +68,7 @@ pub async fn start_session_bootstrap(
     let flow_id = request_id.sequence;
     let command =
         build_start_session_bootstrap_command(request_id, flow_id, passphrase.map(AuthSecret::new));
-    let admission = submit_core_command_with_native_artifact(
-        state.inner(),
-        request_id,
-        NativeArtifactKind::RecoveryKeyDestination,
-        recovery_key_destination_path,
-        command,
-    )
-    .await?;
+    let admission = submit_core_command_with_admission(state.inner(), command).await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(admission)
 }
@@ -537,11 +532,7 @@ pub(super) fn build_start_session_bootstrap_command(
         request_id,
         flow_id,
         auth: None,
-        request: SecureBackupSetupRequest {
-            passphrase,
-            recovery_key_destination_requested: true,
-            intent: koushi_state::SecureBackupSetupIntent::InitialSetup,
-        },
+        passphrase,
     })
 }
 
