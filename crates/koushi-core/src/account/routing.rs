@@ -326,12 +326,26 @@ impl AccountActor {
                 {
                     self.emit_search_failed(*request_id, query, scope, SEARCH_UNAVAILABLE_MESSAGE)
                         .await;
+                    // A correlated terminal event, so a caller waiting on the
+                    // request settles instead of timing out.
+                    self.emit_failure(
+                        *request_id,
+                        CoreFailure::SearchFailed {
+                            kind: koushi_protocol::failure::SearchFailureKind::IndexUnavailable,
+                        },
+                    );
                 }
             }
             None => {
                 if let Some((request_id, query, scope)) = query_context.as_ref() {
                     self.emit_search_failed(*request_id, query, scope, SEARCH_UNAVAILABLE_MESSAGE)
                         .await;
+                    self.emit_failure(
+                        *request_id,
+                        CoreFailure::SearchFailed {
+                            kind: koushi_protocol::failure::SearchFailureKind::IndexUnavailable,
+                        },
+                    );
                 }
             }
         }

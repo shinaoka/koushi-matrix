@@ -1151,6 +1151,24 @@ enum SettingsLoadStatus {
     Failed,
 }
 
+/// The search request the state owns.
+#[derive(Clone, Copy, Debug)]
+struct ActiveSearchRequest {
+    request_id: RequestId,
+    /// The state admitted this request's result, so a later transition must not
+    /// report it as superseded. Publication still needs the identity.
+    settled: bool,
+}
+
+impl ActiveSearchRequest {
+    fn dispatched(request_id: RequestId) -> Self {
+        Self {
+            request_id,
+            settled: false,
+        }
+    }
+}
+
 struct AppActor {
     view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry,
     command_tx: mpsc::WeakSender<CoreCommandEnvelope>,
@@ -1216,7 +1234,13 @@ struct AppActor {
     /// The search request currently owned by the search state, so a transition
     /// that supersedes it can settle it with `IntentLifecycle` (the
     /// `SearchActor` aborts its in-flight query without emitting an outcome).
-    active_search_request: Option<RequestId>,
+    /// The search request the state owns, with whether it already produced the
+    /// result the state holds.
+    ///
+    /// Publication needs the full request identity after admission, while the
+    /// supersede check needs to know that an admitted request must not later be
+    /// reported as superseded.
+    active_search_request: Option<ActiveSearchRequest>,
     /// #1037: a date jump superseded by an accepted main send while its
     /// server lookup was in flight. The account actor's late
     /// `OpenFocusedContext` + `EnterAnchoredTimeline` reply is dropped and its
@@ -4361,6 +4385,12 @@ impl AppActor {
     async fn handle_app_effects(&mut self, request_id: RequestId, effects: Vec<AppEffect>) {
         for effect in effects {
             match effect {
+                AppEffect::PublishSearchResults {
+                    request_id: effect_request_id,
+                    ref results,
+                } => {
+                    self.publish_admitted_search_results(effect_request_id, results);
+                }
                 AppEffect::ContinueSlidingSyncAdmission {
                     account_epoch,
                     request_id,
@@ -4554,7 +4584,7 @@ impl AppActor {
                     }
                     // The state now owns this query; the transition that
                     // replaces it settles it as superseded.
-                    self.active_search_request = Some(request_id);
+                    self.active_search_request = Some(ActiveSearchRequest::dispatched(request_id));
                     let _ = self
                         .account_actor
                         .send(crate::account::AccountMessage::SearchQuery {
@@ -4733,24 +4763,6 @@ impl AppActor {
                     }
                     self.persist_room_preferences(&preferences).await;
                 }
-                AppEffect::PublishSearchResults {
-                    request_id: effect_request_id,
-                    results,
-                } => {
-                    // The state admitted these results against the accepted query
-                    // and the account's current content policy, so this is the
-                    // authoritative publication point.
-                    if let Some(active) = self.active_search_request
-                        && active.sequence == effect_request_id
-                    {
-                        self.emit(CoreEvent::Search(
-                            koushi_protocol::event::SearchEvent::Results {
-                                request_id: active,
-                                results: crate::search::compact_search_results(&results),
-                            },
-                        ));
-                    }
-                }
                 AppEffect::EmitUiEvent(ui_event) => {
                     self.handle_ui_event_effect(&ui_event).await;
                 }
@@ -4828,6 +4840,17 @@ impl AppActor {
     ) {
         for effect in effects {
             match effect {
+                AppEffect::PublishSearchResults {
+                    request_id: effect_request_id,
+                    results,
+                } => {
+                    // The state admitted these results against the accepted query
+                    // and the account's current content policy, so this is the
+                    // authoritative publication point. This path owns the effects
+                    // of actor-originated (projection) actions, which is where a
+                    // search result arrives.
+                    self.publish_admitted_search_results(*effect_request_id, results);
+                }
                 AppEffect::ContinueSlidingSyncAdmission {
                     account_epoch,
                     request_id,
@@ -5073,7 +5096,6 @@ impl AppActor {
                 | AppEffect::SendText { .. }
                 | AppEffect::OpenThreadTimeline { .. }
                 | AppEffect::SearchMessages { .. }
-                | AppEffect::PublishSearchResults { .. }
                 | AppEffect::SearchAttachments { .. }
                 | AppEffect::SubscribeThreadsList { .. }
                 | AppEffect::SubscribeThreadsListScoped { .. }
@@ -5260,6 +5282,31 @@ impl AppActor {
             self.current_thread_timeline_key(),
             replacement_key,
         )
+    }
+
+    /// Publish a result set the state admitted.
+    ///
+    /// Only the accepted query's own result reaches the event stream, and only
+    /// once: the state is the authority on both.
+    fn publish_admitted_search_results(
+        &mut self,
+        request_sequence: u64,
+        results: &[koushi_state::SearchResult],
+    ) {
+        let Some(active) = self
+            .active_search_request
+            .as_ref()
+            .filter(|active| active.request_id.sequence == request_sequence)
+        else {
+            return;
+        };
+        let request_id = active.request_id;
+        self.emit(CoreEvent::Search(
+            koushi_protocol::event::SearchEvent::Results {
+                request_id,
+                results: crate::search::compact_search_results(results),
+            },
+        ));
     }
 
     fn emit(&self, event: CoreEvent) {

@@ -1427,7 +1427,7 @@ async fn a_superseded_search_request_settles_as_a_benign_no_op() {
     };
     // The first query is the state's own: production sets this when the
     // `SearchMessages` effect dispatches it.
-    actor.active_search_request = Some(superseded);
+    actor.active_search_request = Some(ActiveSearchRequest::dispatched(superseded));
 
     // A newer query replaces it. The reducer ignores any late outcome for the
     // old request, and `SearchActor` aborts it without emitting one, so the
@@ -1461,7 +1461,7 @@ async fn a_superseded_search_request_settles_as_a_benign_no_op() {
 
     // A query that completed is no longer outstanding: its result settled the
     // request, so a later transition must not report it as superseded.
-    actor.active_search_request = Some(latest);
+    actor.active_search_request = Some(ActiveSearchRequest::dispatched(latest));
     actor
         .reduce_app_action(AppAction::SearchSucceeded {
             request_id: latest.sequence,
@@ -1481,7 +1481,7 @@ async fn a_superseded_search_request_settles_as_a_benign_no_op() {
     );
 
     // Closing search supersedes whatever is still in flight.
-    actor.active_search_request = Some(latest);
+    actor.active_search_request = Some(ActiveSearchRequest::dispatched(latest));
     actor.reduce_app_action(AppAction::SearchClosed).await;
     let settled = event_rx
         .try_recv()
@@ -1496,6 +1496,67 @@ async fn a_superseded_search_request_settles_as_a_benign_no_op() {
             } if request_id == latest
         ),
         "unexpected settlement: {settled:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_admitted_search_result_publishes_one_terminal_event() {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let session = SessionInfo {
+        homeserver: "https://example.invalid".to_owned(),
+        user_id: "@synthetic:example.invalid".to_owned(),
+        device_id: "SYNTHETIC".to_owned(),
+        authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+    };
+    let state = AppState {
+        session: SessionState::Ready(session),
+        ..AppState::default()
+    };
+    let (mut actor, _command_tx, _action_tx, _account_rx, mut event_rx, ..) =
+        app_actor_event_navigation_fixture(data_dir.path(), state);
+    let request = RequestId {
+        connection_id: RuntimeConnectionId(5),
+        sequence: 7,
+    };
+    actor.active_search_request = Some(ActiveSearchRequest::dispatched(request));
+    actor.reduce_app_action_state(AppAction::SearchSubmitted {
+        request_id: request.sequence,
+        query: "needle".to_owned(),
+        scope: koushi_state::SearchScope::AllRooms,
+    });
+
+    // The state admits the result: the owner is marked settled but kept, because
+    // publication of that very result still needs the request identity.
+    let (effects, _) = actor.reduce_app_action_state(AppAction::SearchSucceeded {
+        request_id: request.sequence,
+        query: "needle".to_owned(),
+        scope: koushi_state::SearchScope::AllRooms,
+        results: Vec::new(),
+    });
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::PublishSearchResults { .. })),
+        "an admitted result asks for publication"
+    );
+    actor.publish_admitted_search_results(request.sequence, &[]);
+
+    let published = event_rx
+        .try_recv()
+        .expect("an admitted result must publish");
+    assert!(
+        matches!(
+            published,
+            CoreEvent::Search(koushi_protocol::event::SearchEvent::Results {
+                request_id: published_request,
+                ..
+            }) if published_request == request
+        ),
+        "unexpected event: {published:?}"
+    );
+    assert!(
+        event_rx.try_recv().is_err(),
+        "an admitted result publishes exactly once"
     );
 }
 

@@ -1277,6 +1277,21 @@ impl SearchActor {
         }
     }
 
+    /// Whether the account's content policy excludes this attachment metadata.
+    ///
+    /// The Files view lists attachments by filename, which the account can opt
+    /// out of indexing. The timeline projection sends attachment metadata without
+    /// consulting the policy, so the policy is applied here, once, for every
+    /// producer.
+    fn attachment_policy_excludes(
+        &self,
+        attachment: &Option<AttachmentDocument>,
+        attachment_filename: Option<&str>,
+    ) -> bool {
+        !self.crawler_settings.include_filenames
+            && (attachment.is_some() || attachment_filename.is_some())
+    }
+
     fn handle_index(&mut self, msg: SearchIndexMessage) {
         if let Some((room_id, event_id)) = self.apply_index_message(msg) {
             self.emit(CoreEvent::Search(SearchEvent::IndexUpdated {
@@ -1304,6 +1319,9 @@ impl SearchActor {
                 canonical,
                 edit,
             } => {
+                if self.attachment_policy_excludes(&attachment, attachment_filename.as_deref()) {
+                    return None;
+                }
                 // Capture the visible-state identifiers before the payload is
                 // consumed by the document store, so `IndexUpdated` can wake
                 // pollers (room/event ids only — never the body).
@@ -1331,6 +1349,9 @@ impl SearchActor {
                 attachment,
                 canonical,
             } => {
+                if self.attachment_policy_excludes(&attachment, attachment_filename.as_deref()) {
+                    return None;
+                }
                 // The Edit payload only names the target event id; resolve its
                 // room id from the document store so `IndexUpdated` stays honest
                 // (no fabricated room id). An edit whose original is not yet
@@ -1365,7 +1386,10 @@ impl SearchActor {
         room_id: String,
         settings: SearchCrawlerSettings,
     ) {
-        self.set_crawler_settings(settings.clone());
+        // The command's settings configure this crawl only. The verifier and the
+        // Files projection follow the account's policy, which arrives with a
+        // query and with the room-list notification, so a caller-supplied crawl
+        // policy cannot widen what a search may match.
         self.seed_committed_rooms();
         self.remove_history_crawl_room(&room_id).await;
         self.completed_rooms.remove(&room_id);

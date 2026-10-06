@@ -301,7 +301,9 @@ impl SearchDocumentStore {
         for event_id in event_ids {
             self.documents.remove(&event_id);
             self.applied_edits.remove(&event_id);
-            self.retired_edits.remove(&event_id);
+            // A retirement tombstone outlives the row: a rebuild reads the same
+            // cache the redaction came from, and a delayed replay of the redacted
+            // edit must still be refused afterwards.
             self.pending_edits.remove(&event_id);
         }
     }

@@ -347,16 +347,24 @@ impl super::AppActor {
         // without emitting one, and the reducer ignores a late action whose
         // request identity no longer matches. Settle it at the transition that
         // left it behind, so a caller awaiting the request stops waiting.
-        if let Some(request_id) = self.active_search_request {
-            match search_request_status(&self.state.search, request_id.sequence) {
+        if let Some(active) = self.active_search_request {
+            match search_request_status(&self.state.search, active.request_id.sequence) {
                 // Still in flight: this transition did not touch it.
                 SearchRequestStatus::Awaiting => {}
                 // The request produced its own result. Nothing to settle, and a
-                // later transition must not report it as superseded.
-                SearchRequestStatus::Settled => self.active_search_request = None,
+                // later transition must not report it as superseded; the identity
+                // is kept because publication of that result still needs it.
+                SearchRequestStatus::Settled => {
+                    self.active_search_request = Some(super::ActiveSearchRequest {
+                        settled: true,
+                        ..active
+                    });
+                }
                 SearchRequestStatus::Superseded => {
                     self.active_search_request = None;
-                    deferred.superseded_search_request = Some(request_id);
+                    if !active.settled {
+                        deferred.superseded_search_request = Some(active.request_id);
+                    }
                 }
             }
         }

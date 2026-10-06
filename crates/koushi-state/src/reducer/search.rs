@@ -55,6 +55,11 @@ pub(crate) fn handle_search_submitted(
         return Vec::new();
     }
 
+    // Trim once, here: the search actor trims the query before answering with it,
+    // so an untrimmed identity could never match its own result and the request
+    // would never settle.
+    let query = query.trim().to_owned();
+
     if let Some(min_chars) = search_query_too_short(&query) {
         state.search = SearchState::TooShort {
             request_id,
