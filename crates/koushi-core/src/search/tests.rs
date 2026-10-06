@@ -5,6 +5,39 @@ use koushi_protocol::command::SearchScope;
 use koushi_protocol::ids::{RequestId, RuntimeConnectionId};
 use koushi_search::{SearchDocumentStore, SearchEdit, SearchableEvent, SensitiveString};
 
+#[test]
+fn newest_first_orders_by_timestamp_then_event_id_and_caps() {
+    let result = |event_id: &str, timestamp_ms: u64| koushi_state::SearchResult {
+        room_id: "!room-a:test".to_owned(),
+        event_id: event_id.to_owned(),
+        context_label: None,
+        sender: "@alice:test".to_owned(),
+        timestamp_ms,
+        score_millis: 0,
+        snippet: "body".to_owned(),
+        match_field: koushi_state::SearchMatchField::MessageBody,
+        highlights: Vec::new(),
+        match_kind: koushi_state::SearchMatchKind::Exact,
+    };
+
+    let mut results = vec![
+        result("$older", 100),
+        result("$newer-b", 200),
+        result("$newer-a", 200),
+    ];
+    for index in 0..SEARCH_CANDIDATE_LIMIT {
+        results.push(result(&format!("$filler-{index}"), index as u64));
+    }
+
+    let ordered = newest_first(results);
+
+    assert_eq!(ordered.len(), SEARCH_CANDIDATE_LIMIT);
+    // Same-timestamp ties break by larger event id, matching the index order.
+    assert_eq!(ordered[0].event_id, "$newer-b");
+    assert_eq!(ordered[1].event_id, "$newer-a");
+    assert_eq!(ordered[2].event_id, "$older");
+}
+
 #[tokio::test]
 async fn search_actor_shutdown_waits_for_actor_task_settlement() {
     let (tx, mut rx) = mpsc::channel(1);
@@ -92,12 +125,11 @@ fn search_verify_event_preserves_private_data_free_scan_and_duration_fields() {
             connection_id: RuntimeConnectionId(21),
             sequence: 34,
         },
-        5,
-        2,
         13,
         17,
         &IndexCandidateVerification {
             in_scope: 3,
+            rooms: ["!room-a:test".to_owned()].into_iter().collect(),
             resolved: 2,
             verified: 1,
             results: Vec::new(),
@@ -118,12 +150,11 @@ fn search_verify_event_preserves_private_data_free_scan_and_duration_fields() {
                     sequence: 34,
                 },
             ),
-            ("sdk_unique", koushi_diagnostics::DiagnosticValue::Count(5)),
-            ("sdk_rooms", koushi_diagnostics::DiagnosticValue::Count(2)),
             (
                 "candidates_in_scope",
                 koushi_diagnostics::DiagnosticValue::Count(3)
             ),
+            ("rooms", koushi_diagnostics::DiagnosticValue::Count(1)),
             (
                 "cache_resolved",
                 koushi_diagnostics::DiagnosticValue::Count(2)

@@ -6,6 +6,10 @@ use koushi_protocol::command::{
 use koushi_protocol::ids::{RequestId, TimelineKind};
 use koushi_state::{AppAction, AppState, OperationFailureKind, admit_space_leave_room_ids};
 
+/// Protocol message accompanying a failed search, shared by the routing layer
+/// and the search actor so both settle the UI the same way.
+pub(crate) const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
+
 /// Narrow a `LeaveSpace` command's child rooms to the Space's current leave
 /// candidates, so a stale or forged ID never leaves a room outside the Space.
 /// Every other command passes through unchanged.

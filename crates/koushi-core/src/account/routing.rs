@@ -7,7 +7,8 @@ use koushi_protocol::SessionKeyId;
 use koushi_state::{AppAction, OperationFailureKind};
 
 use crate::command_policy::{
-    search_scope_to_state, space_member_forward_failure_action, timeline_composer_account_fence,
+    SEARCH_UNAVAILABLE_MESSAGE, search_scope_to_state, space_member_forward_failure_action,
+    timeline_composer_account_fence,
 };
 use crate::composer_draft_lifecycle::ForwardedComposerDraftPermit;
 use crate::room::RoomMessage;
@@ -25,7 +26,6 @@ use koushi_protocol::ids::{RequestId, TimelineKey, TimelineKind};
 use super::actor::{AccountActor, trace_restore};
 use super::scheduled_send::admit_secure_backup_user_content;
 
-const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
 const ROOM_EVENT_CACHE_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const ROOM_EVENT_CACHE_TEST_TIMEOUT: Duration = Duration::from_millis(25);

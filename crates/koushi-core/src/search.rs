@@ -63,17 +63,23 @@ use koushi_state::{
 use tokio::sync::{broadcast, mpsc};
 
 use crate::account_work::AccountWorkScheduler;
-use crate::command_policy::search_scope_to_state;
+use crate::command_policy::{SEARCH_UNAVAILABLE_MESSAGE, search_scope_to_state};
+
 use crate::executor;
 use crate::search_crawler::{HistoryCrawlCheckpoint, HistoryCrawlPageResult};
 use koushi_protocol::command::{SearchCommand, SearchScope};
 use koushi_protocol::event::{CoreEvent, SearchEvent, SearchResultItem};
-use koushi_protocol::failure::SearchFailureKind;
+use koushi_protocol::failure::{CoreFailure, SearchFailureKind};
 use koushi_protocol::ids::RequestId;
 
 /// Maximum number of candidates requested from the SDK ngram index.
 /// Verification filters this down; the final result set may be smaller.
 const SEARCH_CANDIDATE_LIMIT: usize = 50;
+/// Candidates requested per index page while verifying a query variant.
+const SEARCH_CANDIDATE_PAGE: usize = 50;
+/// Upper bound on candidates examined for one query variant, so a query whose
+/// matches mostly fail verification still terminates with bounded work.
+const SEARCH_CANDIDATE_SCAN_BUDGET: usize = 500;
 /// Search index mutation queue capacity (canon, overview.md: 512).
 pub const SEARCH_INDEX_MUTATION_QUEUE: usize = 512;
 const SEARCH_ACTOR_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_secs(1);
@@ -130,8 +136,6 @@ fn trace_search_start(
 
 fn search_verify_diagnostic_event(
     request_id: RequestId,
-    sdk_unique: usize,
-    sdk_rooms: usize,
     sdk_total_ms: u128,
     project_ms: u128,
     verification: &IndexCandidateVerification,
@@ -142,11 +146,13 @@ fn search_verify_diagnostic_event(
             request_id.connection_id.0,
             request_id.sequence,
         ))
-        .field(DiagnosticField::count("sdk_unique", sdk_unique as u64))
-        .field(DiagnosticField::count("sdk_rooms", sdk_rooms as u64))
         .field(DiagnosticField::count(
             "candidates_in_scope",
             verification.in_scope as u64,
+        ))
+        .field(DiagnosticField::count(
+            "rooms",
+            verification.rooms.len() as u64,
         ))
         .field(DiagnosticField::count(
             "cache_resolved",
@@ -316,9 +322,16 @@ struct SearchSdkQueryResult {
     request_id: RequestId,
     query: String,
     scope: SearchScope,
-    room_filter: SearchRoomFilter,
-    candidates: Result<Vec<SearchCandidate>, SearchFailureKind>,
+    projection: Result<SearchProjection, SearchFailureKind>,
     sdk_total_ms: u128,
+}
+
+/// Verified outcome of one SDK query task.
+struct SearchProjection {
+    results: Vec<koushi_state::SearchResult>,
+    verification: IndexCandidateVerification,
+    /// Milliseconds the task spent resolving and verifying candidates.
+    project_ms: u128,
 }
 
 // Redact query text in Debug (queries may contain message content).
@@ -590,11 +603,13 @@ pub(crate) struct SearchActor {
     crawl_delay_timer: Option<executor::JoinHandle<()>>,
 }
 
-/// Outcome of verifying one page of index candidates against the event cache.
+/// Outcome of verifying index candidates against the event cache.
 #[derive(Default)]
 struct IndexCandidateVerification {
     /// Candidates inside the Rust-resolved scope filter.
     in_scope: usize,
+    /// Rooms the examined candidates came from.
+    rooms: HashSet<String>,
     /// Candidates whose current content was available in the cache.
     resolved: usize,
     /// Candidates that matched the query.
@@ -839,7 +854,6 @@ impl SearchActor {
             return;
         }
 
-        let query_started = Instant::now();
         let queued_ms = enqueued_at.elapsed().as_millis();
         let variants = cjk_search_query_variants(query);
         trace_search_start(
@@ -852,24 +866,16 @@ impl SearchActor {
             variants.iter().any(|variant| variant != query),
         );
 
-        let projected_results = self
-            .project_search_results(request_id, query, &room_filter, &[], 0)
-            .await;
-        record_search_finish(
-            request_id,
-            "local_finish",
-            &projected_results,
-            query_started.elapsed().as_millis(),
-        );
-        let compact_results = compact_search_results(&projected_results);
-        self.emit_search_succeeded(request_id, query, &scope, projected_results)
-            .await;
-        self.emit(CoreEvent::Search(SearchEvent::Results {
-            request_id,
-            results: compact_results,
-        }));
-
+        // Search is index-first: there is no in-process history to scan, so the
+        // first emission is the verified SDK page. Emitting an empty placeholder
+        // first would look like a settled empty answer to callers.
         if matches!(&room_filter, SearchRoomFilter::OnlyRooms(room_ids) if room_ids.is_empty()) {
+            self.emit_search_succeeded(request_id, query, &scope, Vec::new())
+                .await;
+            self.emit(CoreEvent::Search(SearchEvent::Results {
+                request_id,
+                results: Vec::new(),
+            }));
             return;
         }
 
@@ -899,28 +905,27 @@ impl SearchActor {
             return;
         }
 
-        let sdk_candidates = match result.candidates {
-            Ok(candidates) => candidates,
+        let projection = match result.projection {
+            Ok(projection) => projection,
             Err(kind) => {
                 record_search_sdk_failure(result.request_id, kind, result.sdk_total_ms);
+                self.emit_search_failed(result.request_id, &result.query, &result.scope, kind)
+                    .await;
                 return;
             }
         };
-        let projection_started = Instant::now();
-        let projected_results = self
-            .project_search_results(
-                result.request_id,
-                &result.query,
-                &result.room_filter,
-                &sdk_candidates,
-                result.sdk_total_ms,
-            )
-            .await;
+        record(search_verify_diagnostic_event(
+            result.request_id,
+            result.sdk_total_ms,
+            projection.project_ms,
+            &projection.verification,
+        ));
+        let projected_results = projection.results;
         record_search_finish(
             result.request_id,
             "finish",
             &projected_results,
-            projection_started.elapsed().as_millis() + result.sdk_total_ms,
+            result.sdk_total_ms,
         );
         let compact_results = compact_search_results(&projected_results);
         self.emit_search_succeeded(
@@ -934,113 +939,6 @@ impl SearchActor {
             request_id: result.request_id,
             results: compact_results,
         }));
-    }
-
-    async fn project_search_results(
-        &self,
-        request_id: RequestId,
-        query: &str,
-        room_filter: &SearchRoomFilter,
-        sdk_candidates: &[SearchCandidate],
-        sdk_total_ms: u128,
-    ) -> Vec<koushi_state::SearchResult> {
-        let sdk_room_count = {
-            sdk_candidates
-                .iter()
-                .map(|candidate| candidate.room_id.as_str())
-                .collect::<HashSet<_>>()
-                .len()
-        };
-
-        // The persistent ngram index is the sole candidate source: it indexes
-        // raw and normalized text for every accepted query length, so paging it
-        // is complete without scanning a RAM copy of history. Each candidate's
-        // current content is then resolved from the encrypted event cache on
-        // demand, so no message body is retained between queries.
-        let projection_started = Instant::now();
-        let verification = self
-            .resolve_indexed_candidates(query, room_filter, sdk_candidates)
-            .await;
-        let projection_elapsed_ms = projection_started.elapsed().as_millis();
-        record(search_verify_diagnostic_event(
-            request_id,
-            sdk_candidates.len(),
-            sdk_room_count,
-            sdk_total_ms,
-            projection_elapsed_ms,
-            &verification,
-        ));
-
-        let mut results = verification.results;
-        results.sort_by(|left, right| {
-            right
-                .timestamp_ms
-                .cmp(&left.timestamp_ms)
-                .then_with(|| left.event_id.cmp(&right.event_id))
-        });
-        results.truncate(SEARCH_CANDIDATE_LIMIT);
-        results
-    }
-
-    /// Verify literal index candidates by resolving their current content from
-    /// the encrypted event cache.
-    ///
-    /// This is what makes an indexed message findable without a RAM copy of the
-    /// history, and it reads bodies on demand. Resolution is cache-only, so it
-    /// never hits the network.
-    async fn resolve_indexed_candidates(
-        &self,
-        query: &str,
-        room_filter: &SearchRoomFilter,
-        sdk_candidates: &[SearchCandidate],
-    ) -> IndexCandidateVerification {
-        let mut verification = IndexCandidateVerification::default();
-
-        for candidate in sdk_candidates {
-            if !room_filter.contains(&candidate.room_id) {
-                continue;
-            }
-            verification.in_scope += 1;
-            // A missing or redacted cached event simply drops out of the page.
-            let Ok(Some(resolved)) = koushi_sdk::resolve_cached_message(
-                &self.session,
-                &candidate.room_id,
-                &candidate.event_id,
-            )
-            .await
-            else {
-                continue;
-            };
-            verification.resolved += 1;
-
-            // The index may answer with an edit event id; the resolved reader
-            // reports the original identity plus current content.
-            let event = SearchableEvent {
-                room_id: candidate.room_id.clone(),
-                event_id: resolved.event_id.clone(),
-                sender: resolved.sender.clone(),
-                timestamp_ms: resolved.timestamp_ms.unwrap_or(0),
-                body: resolved.body.clone().map(SensitiveString::new),
-                attachment_filename: resolved
-                    .attachment_filename
-                    .clone()
-                    .map(SensitiveString::new),
-                attachment: None,
-            };
-            let resolved_candidate = SearchCandidate {
-                room_id: candidate.room_id.clone(),
-                event_id: resolved.event_id,
-                score_millis: candidate.score_millis,
-            };
-            if let Some(result) =
-                koushi_search::verify_candidate(&resolved_candidate, &event, query)
-            {
-                verification.verified += 1;
-                verification.results.push(result);
-            }
-        }
-
-        verification
     }
 
     async fn handle_attachments(
@@ -1082,6 +980,29 @@ impl SearchActor {
                 results,
             }])
             .await;
+    }
+
+    /// Settle a query that could not produce results, so the UI stops waiting.
+    async fn emit_search_failed(
+        &self,
+        request_id: RequestId,
+        query: &str,
+        scope: &SearchScope,
+        kind: SearchFailureKind,
+    ) {
+        let _ = self
+            .action_tx
+            .send(vec![AppAction::SearchFailed {
+                request_id: request_id.sequence,
+                query: query.to_owned(),
+                scope: search_scope_to_state(scope),
+                message: SEARCH_UNAVAILABLE_MESSAGE.to_owned(),
+            }])
+            .await;
+        self.emit(CoreEvent::OperationFailed {
+            request_id,
+            failure: CoreFailure::SearchFailed { kind },
+        });
     }
 
     fn handle_index(&mut self, msg: SearchIndexMessage) {
@@ -1688,32 +1609,27 @@ async fn run_sdk_query(
     variants: Vec<String>,
 ) -> SearchSdkQueryResult {
     let sdk_started = Instant::now();
-    let mut candidates_by_key: HashMap<(String, String), koushi_sdk::MatrixSearchCandidate> =
-        HashMap::new();
+    let mut verification = IndexCandidateVerification::default();
+    let mut verified_by_key: HashMap<(String, String), koushi_state::SearchResult> = HashMap::new();
+
     for (variant_index, query_variant) in variants.iter().enumerate() {
         let variant_started = Instant::now();
-        // Literal paging over the persistent ngram index: operators and field
-        // syntax are inert, raw and normalization-equivalent text are both
-        // covered, and paging never skips offsets. The in-process scan below
-        // still unions the store, so no store-held message becomes unfindable.
-        let mut pager = koushi_sdk::MatrixLiteralSearchPager::new(
+        let outcome = match verify_literal_candidates(
             &session,
             query_variant,
             &sdk_scope,
-            SEARCH_CANDIDATE_LIMIT,
-        );
-        let candidates = pager.next_page(&session, SEARCH_CANDIDATE_LIMIT).await;
-
-        let candidates = match candidates {
-            Ok(candidates) => candidates,
-            Err(error) => {
+            &room_filter,
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(kind) => {
                 return SearchSdkQueryResult {
                     generation,
                     request_id,
                     query,
                     scope,
-                    room_filter,
-                    candidates: Err(classify_matrix_search_error(&error)),
+                    projection: Err(kind),
                     sdk_total_ms: sdk_started.elapsed().as_millis(),
                 };
             }
@@ -1733,40 +1649,127 @@ async fn run_sdk_query(
                 ))
                 .field(DiagnosticField::count(
                     "candidates",
-                    candidates.len() as u64,
+                    outcome.in_scope as u64,
                 ))
+                .field(DiagnosticField::count("verified", outcome.verified as u64))
                 .field(DiagnosticField::milliseconds("duration", elapsed_ms)),
         );
 
-        for candidate in candidates {
-            let key = (candidate.room_id.clone(), candidate.event_id.clone());
-            candidates_by_key
-                .entry(key)
-                .and_modify(|current| {
-                    if candidate.score_millis > current.score_millis {
-                        *current = candidate.clone();
-                    }
-                })
-                .or_insert(candidate);
+        verification.in_scope += outcome.in_scope;
+        verification.resolved += outcome.resolved;
+        verification.verified += outcome.verified;
+        verification.rooms.extend(outcome.rooms);
+        for result in outcome.results {
+            verified_by_key
+                .entry((result.room_id.clone(), result.event_id.clone()))
+                .or_insert(result);
         }
     }
 
+    let total_ms = sdk_started.elapsed().as_millis();
     SearchSdkQueryResult {
         generation,
         request_id,
         query,
         scope,
-        room_filter,
-        candidates: Ok(candidates_by_key
-            .into_values()
-            .map(|candidate| SearchCandidate {
-                room_id: candidate.room_id,
-                event_id: candidate.event_id,
-                score_millis: candidate.score_millis,
-            })
-            .collect()),
-        sdk_total_ms: sdk_started.elapsed().as_millis(),
+        projection: Ok(SearchProjection {
+            results: newest_first(verified_by_key.into_values().collect()),
+            verification,
+            project_ms: total_ms,
+        }),
+        sdk_total_ms: total_ms,
     }
+}
+
+/// Sort verified results newest first and cap them at the result limit.
+///
+/// The tiebreak matches the index's `(timestamp, event_id)` order, so the
+/// newest results presented are the newest candidates the scan examined.
+fn newest_first(mut results: Vec<koushi_state::SearchResult>) -> Vec<koushi_state::SearchResult> {
+    results.sort_by(|left, right| {
+        right
+            .timestamp_ms
+            .cmp(&left.timestamp_ms)
+            .then_with(|| right.event_id.cmp(&left.event_id))
+    });
+    results.truncate(SEARCH_CANDIDATE_LIMIT);
+    results
+}
+
+/// Verify one query variant, paging the index until enough candidates match or
+/// the scan budget is spent.
+///
+/// Verification filters candidates, so a single page can under-report when most
+/// of it fails to match; refilling keeps the answer complete while the candidate
+/// scan stays bounded and no offset is ever used.
+async fn verify_literal_candidates(
+    session: &Arc<MatrixClientSession>,
+    query: &str,
+    sdk_scope: &koushi_sdk::MatrixSearchScope,
+    room_filter: &SearchRoomFilter,
+) -> Result<IndexCandidateVerification, SearchFailureKind> {
+    let mut pager =
+        koushi_sdk::MatrixLiteralSearchPager::new(session, query, sdk_scope, SEARCH_CANDIDATE_PAGE);
+    let mut verification = IndexCandidateVerification::default();
+
+    while verification.results.len() < SEARCH_CANDIDATE_LIMIT
+        && verification.in_scope < SEARCH_CANDIDATE_SCAN_BUDGET
+    {
+        let page = pager
+            .next_page(session, SEARCH_CANDIDATE_PAGE)
+            .await
+            .map_err(|error| classify_matrix_search_error(&error))?;
+        if page.is_empty() {
+            break;
+        }
+
+        for candidate in page {
+            if !room_filter.contains(&candidate.room_id) {
+                continue;
+            }
+            verification.in_scope += 1;
+            verification.rooms.insert(candidate.room_id.clone());
+            // A missing or redacted cached event simply drops out of the page.
+            let Ok(Some(resolved)) = koushi_sdk::resolve_cached_message(
+                session,
+                &candidate.room_id,
+                &candidate.event_id,
+            )
+            .await
+            else {
+                continue;
+            };
+            verification.resolved += 1;
+
+            // The index may answer with an edit event id; the resolved reader
+            // reports the original identity plus current content.
+            let event = SearchableEvent {
+                room_id: candidate.room_id.clone(),
+                event_id: resolved.event_id.clone(),
+                sender: resolved.sender.clone(),
+                timestamp_ms: resolved.timestamp_ms.unwrap_or(0),
+                body: resolved.body.clone().map(SensitiveString::new),
+                attachment_filename: resolved
+                    .attachment_filename
+                    .clone()
+                    .map(SensitiveString::new),
+                attachment: None,
+            };
+            let resolved_candidate = SearchCandidate {
+                room_id: candidate.room_id.clone(),
+                event_id: resolved.event_id,
+                score_millis: candidate.score_millis,
+            };
+            if let Some(result) =
+                koushi_search::verify_candidate(&resolved_candidate, &event, query)
+            {
+                verification.verified += 1;
+                verification.results.push(result);
+            }
+        }
+    }
+
+    Ok(verification)
 }
 
 fn classify_matrix_search_error(error: &koushi_sdk::MatrixSearchError) -> SearchFailureKind {

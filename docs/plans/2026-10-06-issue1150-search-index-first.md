@@ -30,23 +30,25 @@ folding, filename-field attribution, false-positive rejection).
   edited, and redaction removes the row. The store-level matching tests moved to
   the pure verifier (`koushi-search/tests/`), and the actor's store maintenance
   tests now assert the attachment contract.
+- Bounded filtered refill: the SDK task verifies each index page and keeps paging
+  until it has enough verified results or the candidate scan budget (`500`) is
+  spent, with `50` candidates per page. The pre-SDK local emission is gone, so a
+  query emits exactly one `Results`; an SDK failure emits
+  `AppAction::SearchFailed` plus `CoreEvent::OperationFailed`.
 
 ## Remaining
 
-1. **Bounded filtered refill.** Core fetches one candidate page per query
-   variant before verification, so a heavily filtered query can under-report
-   older matches. Until this lands, the branch also emits an empty first
-   `Results` (the local store scan it used to precede is gone), which the QA
-   absence check can mistake for a settled empty answer. Page until enough
-   results pass verification or the pager is exhausted, with a bounded total
-   candidate budget, and drop the now-vacuous first emission.
-3. **QA false-green.** The headless QA scenario accepts the first `Results`
-   event, which can be Core's initial empty emission, so absence checks can pass
-   vacuously. Require a settled generation before asserting absence.
-4. **M3** durable, generation-tagged index-commit checkpoints for a resumable
+1. **Typed failure on an SDK query failure** (done here): the actor previously
+   relied on the pre-SDK local emission to settle the UI, so an SDK failure
+   would have left it waiting. It now emits `AppAction::SearchFailed` and
+   `CoreEvent::OperationFailed { CoreFailure::SearchFailed }`.
+2. **QA false-green** is addressed by removing the pre-SDK emission: each
+   accepted query now emits exactly one `Results`, so the QA helper that accepts
+   the first `Results` can no longer read an empty placeholder as settled.
+3. **M3** durable, generation-tagged index-commit checkpoints for a resumable
    bounded crawl, and typed missing/failure outcomes for cache-only offline
    reads.
-5. **M4** warm set on the existing encrypted navigation persistence bringing the
+4. **M4** warm set on the existing encrypted navigation persistence bringing the
    SDK display window up before timeline construction, with a startup-latency
    RED gate.
 
