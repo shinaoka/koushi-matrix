@@ -207,6 +207,35 @@ Still open from round 3 (both need a design round, not a patch):
   change the room's latest event (an edit or redaction of a non-latest event) is
   not picked up until a catch-up crawl or timeline message arrives.
 
+### Fix round 4 (post-implementation review of round 3)
+
+Round 4 confirmed fixes 5, 6, 7, 8, 9, 10 and found five new defects, all in the
+round-3 additions. Fixed in `559cb72e` and `b34b8f7a`:
+
+- a redacted edit is retired for both halves of its upsert/edit pair, and a row
+  remembers several retired ids, so retiring a newer edit does not forget an
+  older one;
+- a keyless observation no longer replaces a row that holds an edit (it can be a
+  queued observation from before the edit), so a crawl rename cannot be erased;
+- the Files rebuild projects its bounded collection as one set, so a rename whose
+  original sits in an older page is not discarded, and a partial rebuild no
+  longer deletes rows outside the range it read;
+- the search actor no longer publishes `SearchEvent::Results` itself: the state
+  admits a result and the AppActor publishes it, so publication is fenced by the
+  authoritative policy and accepted query identity. An admitted result is the
+  query's single settlement (a later result no longer replaces the answer);
+- the retired local-first supplement wording is gone from the canon.
+
+Still open from round 4: the *verification* policy of a brand-new query is still
+derived from crawler notifications, so a query dispatched right after a policy
+change can verify under the previous policy until the notification arrives. Its
+result is now published only if the state admits it, and the state closes the
+search view on a policy change, so the exposure needs the user's window between
+the change and the notification to be short. The fix is to carry the account's
+content policy with the query: `AppEffect::SearchMessages` gains the policy, the
+AppActor forwards it in an internal account message, and `SearchActorMessage::Query`
+adopts it before capturing the generation.
+
 Also raised: migrate commitments already written without an acknowledgement, make the "rebuild
 search database" action actually rebuild the persistent index (the user help promises it), cover
 attachment edit rollback and mixed producers, measure pending-edit residency in the memory probe,
