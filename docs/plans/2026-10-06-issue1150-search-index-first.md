@@ -56,8 +56,25 @@ folding, filename-field attribution, false-positive rejection).
    the first `Results` can no longer read an empty placeholder as settled.
 3. **M4** warm set on the existing encrypted navigation persistence bringing the
    SDK display window up before timeline construction, with a startup-latency
-   RED gate.
-4. **Evidence still outstanding**: a synthetic history-scale measurement showing
+   RED gate (see the implementation pointers in Remaining).
+4. **M4 warm set.** The app already has the cache-only primitive: the SDK fork's
+   patch surface exposes `RoomPagination::run_backwards_cache_only`
+   (`CacheOnlyBackOutcome { anchor_present, .. }`), and
+   `crates/koushi-core/src/timeline/navigation.rs` uses `anchor_present` to load
+   backwards until an anchor is resident without network. The warm set is the
+   persisted active room/anchor plus recent search room/event pairs run through
+   that same load before timeline construction, so the first navigation does not
+   wait on `/context` or `/messages`. Work needed: (a) persist a bounded,
+   deduped recent search-target list (identifiers only) alongside the existing
+   `NavigationState` fields (`active_room_id`, `main_timeline_anchor`,
+   `room_scroll_anchors`), (b) prime at startup before the timeline is built
+   (`timeline/actor.rs` subscribes the event cache and traces `cache` vs
+   `network` origin; `timeline/focused_build.rs` owns the focused build that can
+   wait on a remote `/context`), (c) a RED startup-latency gate. The documented
+   startup-latency lane needs maintainer GO and real-homeserver credentials, so
+   the local gate should be an instrumented headless measurement of the primed
+   phase at 1 thread, recorded with the effective thread count.
+5. **Evidence still outstanding**: a synthetic history-scale measurement showing
    zero retained body/edit bytes as indexed history grows (with index/disk size
    reported separately), the real-homeserver QA lane, and the SDK PR merge
    decision (its red checks are fork-wide pre-existing failures).
