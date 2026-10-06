@@ -55,12 +55,6 @@ use koushi_protocol::event::{
 use koushi_protocol::failure::{CoreFailure, TimelineFailureKind};
 use koushi_protocol::ids::{RequestId, TimelineKey, TimelineKind};
 
-/// Observation counter for the search document store.
-///
-/// The timeline projection stamps every message it produces, so the store can
-/// order two observations of the same message without comparing edit times.
-static NEXT_SEARCH_OBSERVATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 // BEGIN GENERATED SIBLING IMPORTS
 use super::actor::{
     TimelineActor, TimelineActorMessage, canonical_activity_window_action,
@@ -976,11 +970,6 @@ impl TimelineActor {
         item: &Arc<SdkTimelineItem>,
     ) -> Vec<SearchIndexMessage> {
         use matrix_sdk_ui::timeline::TimelineItemKind;
-
-        // Stamped per projected item, so two canonical observations of the same
-        // message can be ordered even when their edit timestamps disagree.
-        let observation =
-            NEXT_SEARCH_OBSERVATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let event_item = match item.kind() {
             TimelineItemKind::Event(e) => e,
             TimelineItemKind::Virtual(_) => return Vec::new(),
@@ -1073,7 +1062,6 @@ impl TimelineActor {
                         edit_event_id: edit_event_id.to_string(),
                         timestamp_ms: edit_timestamp_ms.unwrap_or(timestamp_ms),
                     }),
-                    observation,
                 },
                 SearchIndexMessage::Edit {
                     edit_event_id,
@@ -1086,7 +1074,6 @@ impl TimelineActor {
                     attachment_filename,
                     attachment,
                     canonical: true,
-                    observation,
                 },
             ]
         } else {
@@ -1101,7 +1088,6 @@ impl TimelineActor {
                 attachment,
                 canonical: true,
                 edit: None,
-                observation,
             }]
         }
     }

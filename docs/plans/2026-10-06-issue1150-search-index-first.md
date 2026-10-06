@@ -289,15 +289,17 @@ wherever the search view closes, and the user help no longer promises that
 
 Remaining from round 7:
 
-- **in-session convergence after a redacted edit** (IMPORTANT): fixed by an
-  observation sequence. The timeline projection stamps every message it produces
-  (`NEXT_SEARCH_OBSERVATION` in `timeline/item_projection.rs`); the store records
-  the newest canonical observation it accepted per row and applies a stamped
-  canonical message only when it is newer. A stale or queued observation (the
-  same or an older value) cannot undo a newer edit from any producer, while a
-  rollback — the SDK promoting the older surviving edit, or the message becoming
-  unedited — carries a newer observation and applies. Unstamped messages (a
-  history crawl) keep the edit-time rules.
+- **in-session convergence after a redacted edit** (IMPORTANT): the SDK promotes
+  the older surviving edit, but both halves of that older canonical observation
+  are refused by the store's timestamp guards (and a keyless restoration is
+  refused too), so the row keeps the redacted edit's filename until a restart
+  crawl. The fix is an observation sequence: stamp each timeline projection with
+  a monotonically increasing value (the relay and item-projection entry points
+  already have `&mut self`), carry it on the upsert/edit pair, and let the store
+  apply a canonical message whose observation is newer than the one it holds,
+  falling back to the timestamp rule when the held edit came from a crawl. That
+  keeps a stale observation from erasing a newer crawl rename while letting a
+  rollback converge.
 - **M4** (warm set) still needs the maintainer's decision.
 
 ### M4 removed (decision: delete the warm set)

@@ -82,14 +82,6 @@ pub struct SearchDocumentStore {
     /// event_id -> the redacted edits of that row, so a replay of any of them
     /// cannot come back. Bounded per row by [`RETIRED_EDITS_PER_ROW`].
     retired_edits: BTreeMap<String, Vec<String>>,
-    /// event_id -> the newest canonical observation accepted for that row.
-    ///
-    /// The timeline projection stamps every message it produces with a
-    /// monotonically increasing observation value, so a canonical message can be
-    /// ordered against the one the row already holds without relying on the
-    /// edit's own timestamp: a stale observation of an older state is refused,
-    /// while a rollback (the SDK promoting an older surviving edit) applies.
-    canonical_observations: BTreeMap<String, u64>,
     /// Edits that arrived before their target.
     pending_edits: BTreeMap<String, Vec<PendingEdit>>,
 }
@@ -111,9 +103,6 @@ struct AppliedEdit {
     timestamp_ms: u64,
     canonical: bool,
     edit_event_id: String,
-    /// The canonical observation this edit was applied under; `0` when a crawl
-    /// applied it.
-    observation: u64,
 }
 
 /// Identity of the edit whose content a message carries.
@@ -133,12 +122,11 @@ impl SearchEditKey {
 }
 
 impl AppliedEdit {
-    fn from_key(key: &SearchEditKey, canonical: bool, observation: u64) -> Self {
+    fn from_key(key: &SearchEditKey, canonical: bool) -> Self {
         Self {
             timestamp_ms: key.timestamp_ms,
             canonical,
             edit_event_id: key.edit_event_id.clone(),
-            observation,
         }
     }
 }
@@ -151,7 +139,6 @@ const RETIRED_EDITS_PER_ROW: usize = 8;
 struct PendingEdit {
     edit: SearchEdit,
     canonical: bool,
-    observation: u64,
 }
 
 impl SearchDocumentStore {
@@ -194,7 +181,6 @@ impl SearchDocumentStore {
         self.documents.clear();
         self.applied_edits.clear();
         self.retired_edits.clear();
-        self.canonical_observations.clear();
         self.pending_edits.clear();
     }
 
@@ -209,15 +195,27 @@ impl SearchDocumentStore {
         mut event: SearchableEvent,
         canonical: bool,
         edit: Option<SearchEditKey>,
-        observation: u64,
     ) {
         if event.attachment.is_none() {
             // Nothing to show in the Files view, and search does not read this
             // store, so retaining the message would only cost memory.
             return;
         }
-        if !self.admits_message(&event.event_id, canonical, observation, edit.as_ref()) {
-            return;
+        let applied = self.applied_edits.get(&event.event_id).cloned();
+        match (&edit, &applied) {
+            // A keyless observation says nothing about the edit the row already
+            // holds: it can be a queued observation from before that edit existed,
+            // so it must not replace the attachment the edit produced. An edit
+            // rollback reaches the row as the redaction of the applied edit, which
+            // retires it.
+            (None, Some(_)) => return,
+            // The content half of an upsert-plus-edit pair is guarded exactly
+            // like the edit half, so an older observation of an edited message
+            // cannot undo a newer edit another producer applied.
+            (Some(key), Some(applied)) if *applied >= AppliedEdit::from_key(key, canonical) => {
+                return;
+            }
+            _ => {}
         }
         // A redacted edit must not come back through the content half of its
         // pair either: the redaction dropped the metadata it produced, and this
@@ -233,10 +231,8 @@ impl SearchDocumentStore {
         self.documents.insert(event_id.clone(), event);
 
         if let Some(key) = edit {
-            self.applied_edits.insert(
-                event_id.clone(),
-                AppliedEdit::from_key(&key, canonical, observation),
-            );
+            self.applied_edits
+                .insert(event_id.clone(), AppliedEdit::from_key(&key, canonical));
         }
         // A keyless upsert says nothing about an edit the row already holds: it
         // can be a queued observation from before that edit existed, so only a
@@ -244,55 +240,12 @@ impl SearchDocumentStore {
 
         if let Some(pending) = self.pending_edits.remove(&event_id) {
             for pending in pending {
-                self.apply_edit_if_newer(&pending.edit, pending.canonical, pending.observation);
+                self.apply_edit_if_newer(&pending.edit, pending.canonical);
             }
         }
     }
 
-    /// Whether an incoming message may replace what the row already holds.
-    ///
-    /// A stamped canonical (timeline) message is ordered by the observation the
-    /// projection gave it, so a stale observation cannot undo a newer edit
-    /// another producer applied while a rollback still applies. Anything
-    /// unstamped (`observation == 0`, a history crawl or a caller that does not
-    /// stamp) falls back to the edit-time rules, and a message's original never
-    /// replaces the attachment an applied edit produced.
-    fn admits_message(
-        &mut self,
-        event_id: &str,
-        canonical: bool,
-        observation: u64,
-        edit: Option<&SearchEditKey>,
-    ) -> bool {
-        if canonical && observation > 0 {
-            return self.admits_observation(event_id, observation);
-        }
-
-        let applied = self.applied_edits.get(event_id).cloned();
-        match (edit, &applied) {
-            (None, Some(_)) => false,
-            (Some(key), Some(applied))
-                if *applied >= AppliedEdit::from_key(key, canonical, observation) =>
-            {
-                false
-            }
-            _ => true,
-        }
-    }
-
-    /// Apply the observation ordering for one row, recording the accepted value.
-    fn admits_observation(&mut self, event_id: &str, observation: u64) -> bool {
-        match self.canonical_observations.get(event_id).copied() {
-            Some(last) if observation <= last => false,
-            _ => {
-                self.canonical_observations
-                    .insert(event_id.to_owned(), observation);
-                true
-            }
-        }
-    }
-
-    pub fn upsert_edit(&mut self, mut edit: SearchEdit, canonical: bool, observation: u64) {
+    pub fn upsert_edit(&mut self, mut edit: SearchEdit, canonical: bool) {
         // Edit text is never retained, here or while the edit is pending.
         edit.body = None;
         if self.is_retired_edit(&edit.target_event_id, &edit.edit_event_id) {
@@ -303,7 +256,7 @@ impl SearchDocumentStore {
         // timestamp still mark the attachment as edited.
 
         if self.documents.contains_key(&edit.target_event_id) {
-            self.apply_edit_if_newer(&edit, canonical, observation);
+            self.apply_edit_if_newer(&edit, canonical);
         } else if edit.attachment.is_some() || edit.attachment_filename.is_some() {
             // A pending edit is only useful for a row that will carry an
             // attachment; a body-only edit cannot change one, and holding it
@@ -311,51 +264,22 @@ impl SearchDocumentStore {
             self.pending_edits
                 .entry(edit.target_event_id.clone())
                 .or_default()
-                .push(PendingEdit {
-                    edit,
-                    canonical,
-                    observation,
-                });
+                .push(PendingEdit { edit, canonical });
         }
-    }
-
-    /// Whether an incoming edit may replace what the row already holds.
-    fn admits_edit(
-        &mut self,
-        target_event_id: &str,
-        canonical: bool,
-        observation: u64,
-        edit: &SearchEdit,
-    ) -> bool {
-        if canonical && observation > 0 {
-            return self.admits_observation(target_event_id, observation);
-        }
-
-        let incoming = AppliedEdit::from_key(
-            &SearchEditKey::new(edit.edit_event_id.clone(), edit.timestamp_ms),
-            canonical,
-            observation,
-        );
-        self.applied_edits
-            .get(target_event_id)
-            .is_none_or(|applied| *applied < incoming)
     }
 
     /// Apply one edit unless the row already holds the same or a newer one.
-    fn apply_edit_if_newer(
-        &mut self,
-        edit: &SearchEdit,
-        canonical: bool,
-        observation: u64,
-    ) -> bool {
-        if !self.admits_edit(&edit.target_event_id, canonical, observation, edit) {
+    fn apply_edit_if_newer(&mut self, edit: &SearchEdit, canonical: bool) -> bool {
+        let incoming = AppliedEdit {
+            timestamp_ms: edit.timestamp_ms,
+            canonical,
+            edit_event_id: edit.edit_event_id.clone(),
+        };
+        if let Some(applied) = self.applied_edits.get(&edit.target_event_id)
+            && *applied >= incoming
+        {
             return false;
         }
-        let incoming = AppliedEdit::from_key(
-            &SearchEditKey::new(edit.edit_event_id.clone(), edit.timestamp_ms),
-            canonical,
-            observation,
-        );
         if let Some(event) = self.documents.get_mut(&edit.target_event_id) {
             apply_edit(event, edit);
         }
