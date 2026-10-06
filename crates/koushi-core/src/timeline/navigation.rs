@@ -693,7 +693,7 @@ pub(super) fn publish_restore_settlement_for_generation(
     if let Some(snapshot) = settlement.navigation_snapshot {
         terminal_events.push(TimelineEvent::NavigationUpdated {
             key: key.clone(),
-            snapshot,
+            snapshot: Box::new(snapshot),
         });
     }
     if let Some((request_id, status)) = settlement.terminal {
@@ -1774,7 +1774,7 @@ impl TimelineActor {
         self.last_navigation_snapshot = Some(snapshot.clone());
         self.emit(CoreEvent::Timeline(TimelineEvent::NavigationUpdated {
             key: self.key.clone(),
-            snapshot,
+            snapshot: Box::new(snapshot),
         }));
     }
     fn emit_anchor_restore_finished(

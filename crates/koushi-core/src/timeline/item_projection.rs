@@ -154,7 +154,7 @@ impl TimelineActor {
         self.emit(CoreEvent::Timeline(TimelineEvent::MessageSourceLoaded {
             request_id,
             key: self.key.clone(),
-            source,
+            source: Box::new(source),
         }));
     }
     pub(super) async fn handle_edit_text(
