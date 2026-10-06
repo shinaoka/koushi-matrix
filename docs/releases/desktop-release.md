@@ -42,6 +42,14 @@ Claude Code and OpenCode have equivalent discovery entry points under
   an Intel Mac artifact.
 - The Windows x64 NSIS installer remains explicitly unsigned until a Windows
   certificate and signing gate are approved.
+- The Windows signing preparation is tracked in the [draft code signing
+  policy](../security/code-signing-policy.md); this draft does not make the
+  current unsigned artifact signed or approved for public distribution.
+- The Windows build entry point supports `--build-only` for producing the main
+  executable and `--bundle-only --signed-input` for rebuilding the NSIS
+  installer after an external signing step. The public release workflow does
+  not use those signing stages until the provider and protected CI gate are
+  approved.
 - The Linux x64 AppImage, deb, and RPM packages are unsigned; users verify
   the adjacent SHA-256 files. Credentials use the freedesktop Secret Service
   (GNOME Keyring / KWallet) via the `koushi-desktop` service.
