@@ -68,7 +68,10 @@ pub(super) enum FocusedBuildFailure {
 
 impl FocusedBuildFailure {
     pub(super) fn timeline_failure_kind(self) -> TimelineFailureKind {
-        TimelineFailureKind::Sdk
+        match self {
+            Self::TimedOut => TimelineFailureKind::Timeout,
+            Self::Sdk | Self::Interrupted => TimelineFailureKind::Sdk,
+        }
     }
 
     fn token(self) -> &'static str {

@@ -318,7 +318,7 @@ async fn blocked_focused_build_times_out_releases_ownership_and_retry_succeeds()
     })
     .await
     .expect("a blocked focused build must reach a bounded failure");
-    assert_eq!(failed, TimelineFailureKind::Sdk);
+    assert_eq!(failed, TimelineFailureKind::Timeout);
     assert!(matches!(
         harness.next_action().await,
         AppAction::FocusedContextSubscriptionFailed { .. }
