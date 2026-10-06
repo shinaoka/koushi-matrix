@@ -19,6 +19,11 @@ feasibility gate. Historical plans below are not the new implementation brief.
 
 ## Runtime and roadmap
 
+[#1150 index-first search and bounded memory](2026-10-06-issue1150-search-index-first.md)
+tracks M2: making the persistent ngram index the only candidate source and
+removing full-history RAM body/edit retention, with the remaining store
+shrink, bounded refill and M3/M4 work.
+
 - Rooms / DMs collapsible sidebar sections (design and implementation record):
   [2026-09-19-sidebar-sections-design.md](../superpowers/specs/2026-09-19-sidebar-sections-design.md)
   — its Low priority removal is superseded by #955 below.
