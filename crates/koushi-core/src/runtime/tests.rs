@@ -10,7 +10,7 @@ use koushi_state::{
 
 #[tokio::test]
 async fn space_invite_explicit_id_search_settles_after_publishing_candidate() {
-    let runtime = CoreRuntime::start_with_event_capacity(64);
+    let (runtime, _stores) = isolated_runtime(64);
     let mut connection = runtime.attach();
     let space_id = "!invite-space:example.invalid";
     runtime
@@ -244,12 +244,30 @@ fn closed_forward_space_member_fixture(
     ]
 }
 
+/// Start a runtime over test-owned data and credential stores, so concurrent
+/// test processes never share persisted session views. Keep the returned
+/// directories alive for the runtime's lifetime.
+fn isolated_runtime(event_capacity: usize) -> (CoreRuntime, [tempfile::TempDir; 2]) {
+    let data_dir = tempfile::tempdir().expect("data tempdir");
+    let credential_dir = tempfile::tempdir().expect("credential tempdir");
+    let runtime = CoreRuntime::start_with_event_capacity_and_file_credentials(
+        event_capacity,
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    (runtime, [data_dir, credential_dir])
+}
+
+/// Deadlock watchdog for waits that must succeed: scheduler load alone must
+/// never reach it.
+const RUNTIME_LIVENESS: Duration = Duration::from_secs(60);
+
 async fn wait_for_runtime_snapshot(
     connection: &mut CoreConnection,
     predicate: impl Fn(&AppState) -> bool,
 ) -> AppState {
     // Content/events are the causal barrier; this timeout is only a deadlock watchdog.
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(RUNTIME_LIVENESS, async {
         loop {
             let snapshot = connection.snapshot();
             if predicate(&snapshot) {
@@ -324,7 +342,10 @@ async fn run_closed_space_member_forwarding_case(
     command: impl FnOnce(RequestId) -> koushi_protocol::command::RoomCommand,
 ) -> (AppState, CoreFailure, u64) {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
-    let runtime = CoreRuntime::start_with_event_capacity(64);
+    // The post-commit navigation load reads this session's persisted view; a
+    // data dir shared with concurrent test processes can replace the fixture
+    // Space selection and clear its member projection.
+    let (runtime, _stores) = isolated_runtime(64);
     let mut connection = runtime.attach();
     let space_id = "!closed-forward-space:example.invalid";
     let user_id = "@closed-forward-user:example.invalid";
@@ -376,7 +397,7 @@ async fn run_closed_space_member_forwarding_case(
         .await
         .expect("closed-channel command should enter AppActor");
 
-    let failure = tokio::time::timeout(Duration::from_secs(1), async {
+    let failure = tokio::time::timeout(RUNTIME_LIVENESS, async {
         loop {
             match connection
                 .recv_event()
@@ -664,7 +685,7 @@ fn search_scope_round_trips_non_all_scope_kinds() {
 
 #[tokio::test]
 async fn versioned_snapshot_generation_matches_state_delta_generation() {
-    let runtime = CoreRuntime::start_with_event_capacity(8);
+    let (runtime, _stores) = isolated_runtime(8);
     let mut connection = runtime.attach();
 
     runtime
@@ -846,7 +867,7 @@ async fn rejected_space_invites_are_fenced_before_room_actor_route() {
 
 #[tokio::test]
 async fn projection_rejected_restore_emits_one_correlated_failure_without_routing() {
-    let runtime = CoreRuntime::start_with_event_capacity(16);
+    let (runtime, _stores) = isolated_runtime(16);
     let mut connection = runtime.attach();
     runtime
         .inject_actions(vec![AppAction::LogoutRequested])
@@ -925,7 +946,7 @@ async fn projection_rejected_restore_emits_one_correlated_failure_without_routin
 
 #[tokio::test]
 async fn actor_profile_changes_emit_timeline_display_label_updates() {
-    let runtime = CoreRuntime::start_with_event_capacity(8);
+    let (runtime, _stores) = isolated_runtime(8);
     let mut connection = runtime.attach();
 
     runtime
@@ -983,7 +1004,7 @@ async fn actor_profile_changes_emit_timeline_display_label_updates() {
 
 #[tokio::test]
 async fn settings_update_emits_timeline_display_policy_update() {
-    let runtime = CoreRuntime::start_with_event_capacity(16);
+    let (runtime, _stores) = isolated_runtime(16);
     let mut connection = runtime.attach();
 
     let request_id = connection.next_request_id();
@@ -1028,7 +1049,7 @@ async fn settings_update_emits_timeline_display_policy_update() {
 
 #[tokio::test]
 async fn local_alias_clear_command_emits_target_display_label_update() {
-    let runtime = CoreRuntime::start_with_event_capacity(16);
+    let (runtime, _stores) = isolated_runtime(16);
     let mut connection = runtime.attach();
     let user_id = "@unknown:example.invalid";
 

@@ -552,6 +552,21 @@ impl CoreRuntime {
         data_dir: PathBuf,
         credential_dir: PathBuf,
     ) -> Self {
+        Self::start_with_event_capacity_and_file_credentials(
+            EVENT_QUEUE_CAPACITY,
+            data_dir,
+            credential_dir,
+        )
+    }
+
+    /// Start over test-owned data and credential directories, so concurrent
+    /// test processes never share persisted session views.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn start_with_event_capacity_and_file_credentials(
+        event_capacity: usize,
+        data_dir: PathBuf,
+        credential_dir: PathBuf,
+    ) -> Self {
         let account_store_actor = StoreActor::with_backend(
             koushi_store::CredentialStoreBackend::FileDir(koushi_store::FileCredentialStore::new(
                 credential_dir.clone(),
@@ -565,7 +580,7 @@ impl CoreRuntime {
             data_dir.clone(),
         );
         Self::start_inner(
-            EVENT_QUEUE_CAPACITY,
+            event_capacity,
             data_dir,
             account_store_actor,
             composer_draft_store_actor,
