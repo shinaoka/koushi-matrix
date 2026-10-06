@@ -1,8 +1,9 @@
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { safeTimestamp } from "../evidence.mjs";
 import { cleanupLocalGuiScenario,recordLocalGuiEvidence,startLocalGuiScenario,waitForAuthScreen,waitForLocalLoginReady,writeLocalLoginPipe } from "../local-session.mjs";
 import { timeoutMs } from "../options.mjs";
-import { clickKeyManagementFormButton,ensureUserSettingsKeyManagementOpen,setKeyManagementFormInput,waitForDocumentText,waitForDocumentTheme,waitForElementAttribute,waitForFileExists,waitForKeyManagementStatus,waitForSecureBackupSetupEvidence } from "../webdriver.mjs";
+import { clickKeyManagementFormButton,clickVisibleButtonByTextPrefix,ensureUserSettingsKeyManagementOpen,setKeyManagementFormInput,waitForDocumentText,waitForDocumentTheme,waitForElementAttribute,waitForFileExists,waitForKeyManagementStatus } from "../webdriver.mjs";
 
 export async function runLocalSettingsScenario() {
   const session = await startLocalGuiScenario();
@@ -68,9 +69,7 @@ export async function runLocalE2eeKeyManagementScenario() {
     await ensureUserSettingsKeyManagementOpen(session.browser, timeoutMs);
 
     const keyFilePath = join(session.runDir, "room-keys.txt");
-    const recoveryKeyPath = join(session.runDir, "secure-backup-recovery.txt");
     const keyFilePassphrase = `koushi-key-transfer-${safeTimestamp()}`;
-    const secureBackupPassphrase = `koushi-desktop-secure-backup-${safeTimestamp()}`;
 
     await setKeyManagementFormInput(
       session.browser,
@@ -127,35 +126,100 @@ export async function runLocalE2eeKeyManagementScenario() {
     );
     console.log("gui_room_key_import=ok");
 
-    await setKeyManagementFormInput(
-      session.browser,
-      "Secure backup",
-      "Secure backup passphrase",
-      secureBackupPassphrase
-    );
-    await setKeyManagementFormInput(
-      session.browser,
-      "Secure backup",
-      "Recovery key destination",
-      recoveryKeyPath
-    );
-    await waitForKeyManagementStatus(
-      session.browser,
-      "secure-backup-state",
-      ["Not set up"],
-      timeoutMs,
-      "local GUI secure-backup initial status"
-    );
-    await clickKeyManagementFormButton(
-      session.browser,
-      "Secure backup",
-      "Set up secure backup",
-      timeoutMs
-    );
-    await waitForFileExists(recoveryKeyPath, timeoutMs, "local GUI secure-backup artifact");
-    await waitForSecureBackupSetupEvidence(session.browser, timeoutMs);
-    console.log("gui_secure_backup_setup=ok");
+    await exerciseSecureBackupRevealFlows(session);
   } finally {
     await cleanupLocalGuiScenario(session);
+  }
+}
+
+// The secure-backup half of `local-e2ee-key-management`, also runnable alone.
+export async function runLocalSecureBackupScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session, timeoutMs);
+    await ensureUserSettingsKeyManagementOpen(session.browser, timeoutMs);
+    await exerciseSecureBackupRevealFlows(session);
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
+// #1049: the new-identity login already created the Secure Backup through
+// the gate's on-screen reveal (Create, then "I saved the recovery key"), so
+// Settings must report it enabled; Core rejects a second InitialSetup. The
+// Settings on-screen reveal is exercised by a passphrase change. The revealed
+// key is never read, saved, or logged; the optional save is skipped.
+async function exerciseSecureBackupRevealFlows(session) {
+  if (!session.bootstrapPassphrase) {
+    throw new Error("local GUI login did not complete the new-identity bootstrap reveal");
+  }
+  await waitForKeyManagementStatus(
+    session.browser,
+    "secure-backup-state",
+    ["Enabled"],
+    timeoutMs,
+    "local GUI secure backup created by the bootstrap reveal"
+  );
+  console.log("gui_secure_backup_setup=ok");
+
+  const formLabel = "Change secure backup passphrase";
+  await setSecretFormField(
+    session.browser,
+    formLabel,
+    "Current recovery secret",
+    session.bootstrapPassphrase
+  );
+  await setSecretFormField(
+    session.browser,
+    formLabel,
+    "New secure backup passphrase",
+    randomBytes(32).toString("base64url")
+  );
+  await clickKeyManagementFormButton(
+    session.browser,
+    formLabel,
+    "Update secure backup passphrase",
+    timeoutMs
+  );
+  await waitForKeyManagementStatus(
+    session.browser,
+    "secure-backup-passphrase-change-state",
+    ["Changed"],
+    timeoutMs,
+    "local GUI passphrase change reveal"
+  );
+  await clickVisibleButtonByTextPrefix(
+    session.browser,
+    "I saved the recovery key",
+    timeoutMs,
+    "local GUI passphrase change confirmation"
+  );
+  await waitForKeyManagementStatus(
+    session.browser,
+    "secure-backup-passphrase-change-state",
+    ["No passphrase change"],
+    timeoutMs,
+    "local GUI passphrase change confirmed"
+  );
+  console.log("gui_secure_backup_passphrase_change=ok");
+}
+
+// Sets a secret field through the native value setter (as the login gate
+// does) and reports only whether the value landed intact, never the value.
+async function setSecretFormField(browser, formLabel, fieldLabel, value) {
+  const landed = await browser.execute(({ form, field, nextValue }) => {
+    const input = Array.from(document.querySelectorAll(`form[aria-label="${form}"] label`))
+      .find((label) => label.querySelector("span")?.textContent?.trim() === field)
+      ?.querySelector("input");
+    if (!(input instanceof HTMLInputElement)) return "missing-input";
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, nextValue);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return input.value === nextValue ? "set" : "value-mismatch";
+  }, { form: formLabel, field: fieldLabel, nextValue: value });
+  if (landed !== "set") {
+    throw new Error(`local GUI ${fieldLabel} input failed: ${landed}`);
   }
 }

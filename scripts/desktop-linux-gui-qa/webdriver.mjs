@@ -134,12 +134,19 @@ export async function waitForDocumentText(browser, expectedTexts, timeout, descr
 
 export async function ensureUserSettingsKeyManagementOpen(browser, timeout) {
   const expectedTexts = ["Key management", "Room key export", "Room key import", "Secure backup"];
-  if (await documentContainsAll(browser, expectedTexts)) {
+  // Settings render every category page and hide the inactive ones, so text
+  // presence alone does not prove the encryption page is visible.
+  const encryptionPage = await browser.$("#settings-page-encryption");
+  if (await encryptionPage.isDisplayed().catch(() => false)) {
     return;
   }
-  const userSettings = await browser.$('button[aria-label="User settings"]');
-  await userSettings.waitForDisplayed({ timeout });
-  await userSettings.click();
+  const accountSettings = await browser.$('button[aria-label="Account Settings"]');
+  await accountSettings.waitForDisplayed({ timeout });
+  await accountSettings.click();
+  const encryptionTab = await browser.$("#settings-tab-encryption");
+  await encryptionTab.waitForDisplayed({ timeout });
+  await encryptionTab.click();
+  await encryptionPage.waitForDisplayed({ timeout });
   try {
     await waitForDocumentText(
       browser,
@@ -151,14 +158,6 @@ export async function ensureUserSettingsKeyManagementOpen(browser, timeout) {
     const diagnostics = await safeUserSettingsDiagnostics(browser);
     throw new Error(`${error.message}. Diagnostics: ${JSON.stringify(diagnostics)}`);
   }
-}
-
-
-async function documentContainsAll(browser, expectedTexts) {
-  return browser.execute((texts) => {
-    const bodyText = document.body.textContent ?? "";
-    return texts.every((text) => bodyText.includes(text));
-  }, expectedTexts);
 }
 
 
@@ -222,36 +221,6 @@ export async function waitForKeyManagementStatus(browser, testId, expectedTexts,
     await sleep(250);
   }
   throw new Error(`${description} did not reach expected status. Last text: ${lastText}`);
-}
-
-
-export async function waitForSecureBackupSetupEvidence(browser, timeout) {
-  const startedAt = Date.now();
-  let last = { title: "", statusText: "" };
-  while (Date.now() - startedAt < timeout) {
-    last = await browser.execute(() => {
-      const statusElement = document.querySelector('[data-testid="secure-backup-state"]');
-      return {
-        title: document.title,
-        statusText: (statusElement?.textContent ?? "").replace(/\s+/g, " ").trim()
-      };
-    });
-    if (["Recovery key saved", "Enabled"].some((text) => last.statusText.includes(text))) {
-      return;
-    }
-    const status = parseQaTitle(last.title);
-    if (
-      status.errors === 0 &&
-      status.panel === "recovery" &&
-      (status.session === "needsRecovery" || status.session === "recovering")
-    ) {
-      return;
-    }
-    await sleep(250);
-  }
-  throw new Error(
-    `local GUI secure-backup setup did not reach status or recovery panel. Last status=${last.statusText} title=${last.title}`
-  );
 }
 
 
