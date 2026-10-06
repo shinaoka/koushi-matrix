@@ -64,9 +64,12 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::account_work::AccountWorkScheduler;
 use crate::command_policy::{SEARCH_UNAVAILABLE_MESSAGE, search_scope_to_state};
+use crate::store::StoreActor;
+use crate::store::search_crawl::{CommittedRoomCrawl, SearchCrawlProgress};
 
 use crate::executor;
 use crate::search_crawler::{HistoryCrawlCheckpoint, HistoryCrawlPageResult};
+use koushi_protocol::SessionKeyId;
 use koushi_protocol::command::{SearchCommand, SearchScope};
 use koushi_protocol::event::{CoreEvent, SearchEvent, SearchResultItem};
 use koushi_protocol::failure::{CoreFailure, SearchFailureKind};
@@ -396,6 +399,7 @@ impl std::fmt::Debug for SearchActorMessage {
 }
 
 /// What the actor remembers about a room whose crawl completed this session.
+#[derive(Clone)]
 struct CompletedHistoryCrawl {
     /// Latest event id when the completed crawl started; a catch-up crawl
     /// stops at this event (#996).
@@ -551,6 +555,47 @@ impl Drop for SearchActorHandle {
 // Actor
 // ---------------------------------------------------------------------------
 
+/// Seed the in-session completed-room map from a durable crawl record.
+///
+/// Only commitments from the current backend version are adopted; anything else
+/// is re-crawled, which is what makes an index or extraction change a migration.
+fn completed_rooms_from_committed(
+    progress: &SearchCrawlProgress,
+) -> HashMap<String, CompletedHistoryCrawl> {
+    progress
+        .committed_rooms()
+        .into_iter()
+        .map(|(room_id, crawl)| {
+            (
+                room_id,
+                CompletedHistoryCrawl {
+                    latest_event_id: crawl.latest_event_id,
+                    processed: crawl.processed,
+                    indexed: crawl.indexed,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Durable crawl-commit plumbing handed to the actor when it is spawned.
+///
+/// `store` is `None` when the account has no key id yet; the crawl then runs
+/// exactly as before but forgets its progress on a restart.
+pub(crate) struct SearchCrawlDurability {
+    pub progress: SearchCrawlProgress,
+    pub store: Option<(StoreActor, SessionKeyId)>,
+}
+
+impl Default for SearchCrawlDurability {
+    fn default() -> Self {
+        Self {
+            progress: SearchCrawlProgress::new(),
+            store: None,
+        }
+    }
+}
+
 pub(crate) struct SearchActor {
     session: Arc<MatrixClientSession>,
     document_store: SearchDocumentStore,
@@ -590,6 +635,12 @@ pub(crate) struct SearchActor {
     /// `handle_rooms_available` skips their auto-start unless their latest
     /// event changed since completion, which queues a catch-up (#996).
     completed_rooms: HashMap<String, CompletedHistoryCrawl>,
+    /// Durable record of the rooms whose crawl is committed to the index, so a
+    /// restart resumes instead of crawling the same history again.
+    crawl_progress: SearchCrawlProgress,
+    /// Where the durable record is written; `None` when no account key id is
+    /// available yet.
+    crawl_progress_store: Option<(StoreActor, SessionKeyId)>,
     /// Room id to latest event id from the newest `RoomsAvailable` snapshot.
     latest_event_ids: std::collections::BTreeMap<String, String>,
     /// Monotonically increasing generation counter. Incremented each time
@@ -624,9 +675,14 @@ impl SearchActor {
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
         account_work: AccountWorkScheduler,
+        durability: SearchCrawlDurability,
     ) -> SearchActorHandle {
         let (tx, msg_rx) = mpsc::channel(64);
         let (index_tx, index_rx) = mpsc::channel(SEARCH_INDEX_MUTATION_QUEUE);
+
+        // Rooms committed by an earlier run are already in the index, so they
+        // start completed and are only re-crawled for new events (#996).
+        let completed_rooms = completed_rooms_from_committed(&durability.progress);
 
         let actor = SearchActor {
             session,
@@ -644,7 +700,9 @@ impl SearchActor {
             available_crawl_rooms: HashSet::new(),
             active_crawl_page: None,
             active_crawl_checkpoint: None,
-            completed_rooms: HashMap::new(),
+            completed_rooms,
+            crawl_progress: durability.progress,
+            crawl_progress_store: durability.store,
             latest_event_ids: std::collections::BTreeMap::new(),
             crawl_settings_generation: 0,
             crawl_delay_elapsed: false,
@@ -1308,14 +1366,15 @@ impl SearchActor {
                     }])
                     .await;
                 if completed {
-                    self.completed_rooms.insert(
-                        checkpoint.room_id.clone(),
-                        CompletedHistoryCrawl {
-                            latest_event_id: checkpoint.latest_event_id_at_start.clone(),
-                            processed: checkpoint.processed,
-                            indexed: checkpoint.indexed,
-                        },
-                    );
+                    let crawl = CompletedHistoryCrawl {
+                        latest_event_id: checkpoint.latest_event_id_at_start.clone(),
+                        processed: checkpoint.processed,
+                        indexed: checkpoint.indexed,
+                    };
+                    self.completed_rooms
+                        .insert(checkpoint.room_id.clone(), crawl.clone());
+                    self.commit_crawl_progress(checkpoint.room_id.clone(), crawl)
+                        .await;
                     let _ = self
                         .action_tx
                         .send(vec![AppAction::HistoryCrawlCompleted {
@@ -1375,6 +1434,39 @@ impl SearchActor {
         }
     }
 
+    /// Record a finished room in the durable crawl record.
+    async fn commit_crawl_progress(&mut self, room_id: String, crawl: CompletedHistoryCrawl) {
+        self.crawl_progress.commit(
+            room_id,
+            CommittedRoomCrawl {
+                latest_event_id: crawl.latest_event_id,
+                processed: crawl.processed,
+                indexed: crawl.indexed,
+            },
+        );
+        self.save_crawl_progress().await;
+    }
+
+    /// Persist the durable crawl record.
+    ///
+    /// The file holds identifiers and counters only, and a failed write is
+    /// reported without stopping the crawl: crawling again is the fallback.
+    async fn save_crawl_progress(&mut self) {
+        let Some((store, key_id)) = self.crawl_progress_store.clone() else {
+            return;
+        };
+        let progress = self.crawl_progress.clone();
+        let outcome =
+            executor::spawn_blocking(move || store.save_search_crawl_progress(&key_id, &progress))
+                .await;
+        if !matches!(outcome, Ok(Ok(()))) {
+            record(
+                DiagnosticEvent::new(DiagnosticLevel::Debug, "core.search", "crawl_progress")
+                    .field(DiagnosticField::token("outcome", "save_failed")),
+            );
+        }
+    }
+
     fn retain_history_crawl_rooms(&mut self) -> Vec<String> {
         let mut stopped_room_ids = std::collections::BTreeSet::new();
         for room_id in self.completed_rooms.keys() {
@@ -1421,7 +1513,10 @@ impl SearchActor {
         self.crawl_queue
             .retain(|checkpoint| checkpoint.room_id != room_id);
         self.queued_crawl_rooms.remove(room_id);
-        self.completed_rooms.remove(room_id);
+        if self.completed_rooms.remove(room_id).is_some() {
+            self.crawl_progress.forget(room_id);
+            self.save_crawl_progress().await;
+        }
         let active_matches = self
             .active_crawl_checkpoint
             .as_ref()

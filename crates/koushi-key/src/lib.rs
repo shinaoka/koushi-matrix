@@ -27,6 +27,7 @@ const NAVIGATION_INFO: &[u8] = b"koushi-desktop:navigation";
 const ROOM_PREFERENCES_INFO: &[u8] = b"koushi-desktop:room-preferences";
 const ACCOUNT_SETTINGS_INFO: &[u8] = b"koushi-desktop:account-settings";
 const READ_STATE_OUTBOX_INFO: &[u8] = b"koushi-desktop:read-state-outbox";
+const SEARCH_CRAWL_INFO: &[u8] = b"koushi-desktop:search-crawl";
 const LAST_SESSION_ACCOUNT_NAME: &str = "koushi-desktop:last-session:v1";
 const SAVED_SESSIONS_ACCOUNT_NAME: &str = "koushi-desktop:saved-sessions:v1";
 const CREDENTIAL_VAULT_KEY_ACCOUNT_NAME: &str = "koushi-desktop:credential-vault-key:v1";
@@ -649,6 +650,16 @@ pub struct ReadStateOutboxKey {
     key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
 }
 
+pub struct SearchCrawlKey {
+    key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
+}
+
+impl SearchCrawlKey {
+    pub fn as_bytes(&self) -> &[u8; LOCAL_UNLOCK_SECRET_LEN] {
+        &self.key
+    }
+}
+
 impl ReadStateOutboxKey {
     pub fn as_bytes(&self) -> &[u8; LOCAL_UNLOCK_SECRET_LEN] {
         &self.key
@@ -873,6 +884,14 @@ impl LocalUnlockSecret {
         ReadStateOutboxKey {
             key: self
                 .derive_key(READ_STATE_OUTBOX_INFO)
+                .expect("32-byte HKDF output length is valid"),
+        }
+    }
+
+    pub fn derive_search_crawl_key(&self) -> SearchCrawlKey {
+        SearchCrawlKey {
+            key: self
+                .derive_key(SEARCH_CRAWL_INFO)
                 .expect("32-byte HKDF output length is valid"),
         }
     }

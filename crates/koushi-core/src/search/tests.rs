@@ -38,6 +38,27 @@ fn newest_first_orders_by_timestamp_then_event_id_and_caps() {
     assert_eq!(ordered[2].event_id, "$older");
 }
 
+#[test]
+fn committed_rooms_seed_the_completed_map_for_the_current_backend_version() {
+    let mut progress = crate::store::search_crawl::SearchCrawlProgress::new();
+    progress.commit(
+        "!room-a:test".to_owned(),
+        crate::store::search_crawl::CommittedRoomCrawl {
+            latest_event_id: Some("$e9".to_owned()),
+            processed: 12,
+            indexed: 7,
+        },
+    );
+
+    let completed = completed_rooms_from_committed(&progress);
+
+    assert_eq!(completed.len(), 1);
+    let crawl = completed.get("!room-a:test").expect("seeded room");
+    assert_eq!(crawl.latest_event_id.as_deref(), Some("$e9"));
+    assert_eq!(crawl.processed, 12);
+    assert_eq!(crawl.indexed, 7);
+}
+
 #[tokio::test]
 async fn search_actor_shutdown_waits_for_actor_task_settlement() {
     let (tx, mut rx) = mpsc::channel(1);
