@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkInstalledHomeserver,createRoom,freePort,inviteUser as inviteUserToRoom,joinRoom,registerUser,sendReadMarkers,sendRoomFormattedMessage,sendRoomMessage,setDisplayName,startHomeserver,stopProcess,tuwunelConfig,waitForHomeserver } from "../lib/local-homeserver-qa.mjs";
 import { writeSensitivePayloadToPath } from "../lib/sensitive-fifo.mjs";
@@ -47,7 +46,6 @@ export async function startLocalGuiScenario() {
   const session = {
     appDataDir,
     allowNewIdentityBootstrap: true,
-    bootstrapTempDirs: new Set(),
     browser: null,
     buildEnv: null,
     dbusMonitor: null,
@@ -416,7 +414,6 @@ export async function startLocalGuiScenario() {
 
 
 export async function cleanupLocalGuiScenario(session) {
-  cleanupBootstrapTempDirs(session);
   try {
     if (session.dbusMonitor) {
       terminateProcessGroup(session.dbusMonitor.child, "SIGTERM");
@@ -446,18 +443,6 @@ export async function cleanupLocalGuiScenario(session) {
     }
   }
 }
-
-function cleanupBootstrapTempDirs(session) {
-  for (const bootstrapDir of session.bootstrapTempDirs ?? []) {
-    try {
-      rmSync(bootstrapDir, { recursive: true, force: true });
-    } catch {
-      // Best effort: never turn process teardown into a secret-bearing error.
-    }
-    session.bootstrapTempDirs.delete(bootstrapDir);
-  }
-}
-
 
 export async function recordLocalGuiEvidence(session) {
   session.dbusMonitor = startDbusMonitor(session.logPath, session.buildEnv);
@@ -510,29 +495,24 @@ export async function waitForLocalLoginReady(session, timeout) {
 async function completeNewIdentityBootstrapIfOffered(session, deadline, bootstrapAttempt) {
   if (bootstrapAttempt.attempted) return false;
   const browser = session.browser;
+  // #1049: the bootstrap reveals the recovery key on screen; no file
+  // destination is chosen and the key is never read or logged here.
   const labels = {
-    destination: "Recovery key destination",
     passphrase: "Backup passphrase",
     submit: "Create secure backup",
     saved: "I saved the recovery key"
   };
-  const [destinationInputs, passphraseInputs, submitButtons] = await Promise.all([
-    browser.$$(`//input[@aria-label=${xpathLiteral(labels.destination)}]`),
+  const [passphraseInputs, submitButtons] = await Promise.all([
     browser.$$(`//input[@aria-label=${xpathLiteral(labels.passphrase)}]`),
     browser.$$(`//button[normalize-space(.)=${xpathLiteral(labels.submit)}]`)
   ]);
-  if (destinationInputs.length === 0 || passphraseInputs.length === 0 || submitButtons.length === 0) {
+  if (passphraseInputs.length === 0 || submitButtons.length === 0) {
     return false;
   }
 
   bootstrapAttempt.attempted = true;
-  let bootstrapDir;
   try {
-    bootstrapDir = mkdtempSync(join(tmpdir(), "koushi-linux-gui-bootstrap-"));
-    session.bootstrapTempDirs.add(bootstrapDir);
-    const destination = join(bootstrapDir, "recovery-key.txt");
     const bootstrapPassphrase = randomBytes(32).toString("base64url");
-    await setTextInputValueByLabel(browser, destination, labels.destination);
     await setTextInputValueByLabel(browser, bootstrapPassphrase, labels.passphrase);
     await clickVisibleButtonByTextPrefix(
       browser,
@@ -549,15 +529,6 @@ async function completeNewIdentityBootstrapIfOffered(session, deadline, bootstra
     return true;
   } catch {
     return false;
-  } finally {
-    if (bootstrapDir) {
-      try {
-        rmSync(bootstrapDir, { recursive: true, force: true });
-        session.bootstrapTempDirs.delete(bootstrapDir);
-      } catch {
-        // The session teardown keeps the directory tracked for one final cleanup attempt.
-      }
-    }
   }
 }
 

@@ -540,14 +540,22 @@ pub enum AppAction {
     VerificationSessionRejected {
         reason: crate::state::VerificationGateRejectReason,
     },
-    BootstrapRecoveryKeyDelivered {
+    /// The identity bootstrap created a recovery key for on-screen reveal
+    /// (#1049). `Debug` falls back to the redacted `AppAction(..)`.
+    BootstrapRecoveryKeyReady {
         flow_id: u64,
+        recovery_key: crate::state::RecoveryKeyMaterial,
     },
     BootstrapRecoveryKeyDeliveryFailed {
         flow_id: u64,
         kind: crate::state::VerificationGateFailureKind,
     },
     BootstrapRecoverySavedConfirmed {
+        flow_id: u64,
+    },
+    /// The saved confirmation could not clear the persisted delivery marker;
+    /// the reveal stays and asks the user to confirm again.
+    BootstrapRecoverySavedConfirmFailed {
         flow_id: u64,
     },
     ProvisionalSessionDiscarded,

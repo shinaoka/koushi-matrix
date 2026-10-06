@@ -41,7 +41,9 @@ async fn rejected_command_releases_its_exact_native_artifact_registration() {
 }
 
 #[tokio::test]
-async fn rejected_bootstrap_releases_its_recovery_key_destination() {
+async fn rejected_recovery_key_save_releases_its_destination() {
+    // #1049: the identity bootstrap reveals its key on screen; only the
+    // optional save (here rejected without a session) owns a destination.
     let data_dir = tempfile::tempdir().expect("data dir");
     let registry = Arc::new(NativeArtifactRegistry::new());
     let runtime = CoreRuntime::start_with_data_dir_and_native_artifact_port(
@@ -60,15 +62,9 @@ async fn rejected_bootstrap_releases_its_recovery_key_destination() {
 
     connection
         .command_with_admission(CoreCommand::Account(
-            AccountCommand::StartSessionBootstrap {
+            AccountCommand::SaveSecureBackupRecoveryKey {
                 request_id,
-                flow_id: 1,
-                auth: None,
-                request: koushi_protocol::SecureBackupSetupRequest {
-                    passphrase: None,
-                    recovery_key_destination_requested: true,
-                    intent: koushi_state::SecureBackupSetupIntent::InitialSetup,
-                },
+                reveal_request_id: 1,
             },
         ))
         .await

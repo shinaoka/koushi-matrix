@@ -163,7 +163,6 @@ fn recovery_sessions() -> Vec<SessionState> {
             info: info.clone(),
             gate: recovery_gate(),
             flow_id: 1,
-            destination_written: false,
         },
         SessionState::Locked(info),
     ]

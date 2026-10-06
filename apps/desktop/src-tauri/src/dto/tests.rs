@@ -1043,6 +1043,72 @@ fn frontend_snapshot_serializes_verification_gate() {
     assert_eq!(value["state"]["domain"]["sync"], json!("running"));
 }
 
+/// #1049: the identity bootstrap's recovery key reaches the WebView only
+/// through the #927 reveal slot; the session DTO stays coarse.
+#[test]
+fn frontend_snapshot_reveals_the_bootstrap_key_only_in_the_reveal_slot() {
+    const SYNTHETIC_KEY: &str = "synthetic-bootstrap-dto-key-1049";
+    let mut state = AppState {
+        session: SessionState::AwaitingBootstrapConfirmation {
+            info: SessionInfo {
+                homeserver: "https://matrix.example.invalid".to_owned(),
+                user_id: "@user:example.invalid".to_owned(),
+                device_id: "DEVICE".to_owned(),
+                authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+            },
+            gate: koushi_state::VerificationGateState {
+                methods: vec![koushi_state::VerificationMethodCapability::Bootstrap],
+                account_kind: koushi_state::VerificationAccountKind::NewIdentity,
+                failure: None,
+            },
+            flow_id: 41,
+        },
+        ..AppState::default()
+    };
+    state.e2ee_trust.key_management.secure_backup_setup =
+        koushi_state::SecureBackupSetupState::RecoveryKeyReady {
+            request_id: 41,
+            recovery_key: koushi_state::RecoveryKeyMaterial::new(SYNTHETIC_KEY),
+            delivery: koushi_state::RecoveryKeyDeliveryState::NotWritten,
+            confirmation_failed: false,
+        };
+
+    let revealed = state.clone();
+    let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))
+        .expect("snapshot should serialize");
+
+    let session = &value["state"]["domain"]["session"];
+    assert_eq!(
+        session,
+        &json!({
+            "kind": "awaitingBootstrapConfirmation",
+            "homeserver": "https://matrix.example.invalid",
+            "user_id": "@user:example.invalid",
+            "device_id": "DEVICE",
+            "gate": { "methods": ["bootstrap"], "account_kind": "newIdentity", "failureKind": null },
+            "flow_id": 41
+        })
+    );
+    assert_eq!(
+        value["state"]["domain"]["e2ee_trust"]["key_management"]["secure_backup_setup"],
+        json!({
+            "kind": "recoveryKeyReady",
+            "request_id": 41,
+            "recovery_key": SYNTHETIC_KEY,
+            "delivery": { "kind": "notWritten" },
+            "confirmation_failed": false
+        })
+    );
+
+    // The QA window title observes the gate but never the revealed key.
+    let title = crate::commands::qa_window_title_string(&revealed, 0);
+    assert!(
+        title.contains("session=awaitingBootstrapConfirmation"),
+        "{title}"
+    );
+    assert!(!title.contains(SYNTHETIC_KEY), "{title}");
+}
+
 #[test]
 fn frontend_session_gate_variants_are_private_safe_json() {
     let info = SessionInfo {
@@ -1087,7 +1153,6 @@ fn frontend_session_gate_variants_are_private_safe_json() {
             info: info.clone(),
             gate: gate.clone(),
             flow_id: 8,
-            destination_written: true,
         },
         SessionState::Rejecting {
             info,

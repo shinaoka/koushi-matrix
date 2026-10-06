@@ -135,15 +135,9 @@ pub(crate) fn native_artifact_for_account_command(
         AccountCommand::ExportHistory { request_id, .. } => {
             Some((*request_id, NativeArtifactKind::HistoryExportDirectory))
         }
-        AccountCommand::StartSessionBootstrap {
-            request_id,
-            request,
-            ..
-        } if request.recovery_key_destination_requested => {
-            Some((*request_id, NativeArtifactKind::RecoveryKeyDestination))
-        }
-        // Secure Backup setup and passphrase change reveal the key on screen
-        // (#927); only the optional save command consumes a destination.
+        // Secure Backup setup, passphrase change (#927), and the identity
+        // bootstrap (#1049) reveal the key on screen; only the optional save
+        // command consumes a destination.
         AccountCommand::SaveSecureBackupRecoveryKey { request_id, .. } => {
             Some((*request_id, NativeArtifactKind::RecoveryKeyDestination))
         }

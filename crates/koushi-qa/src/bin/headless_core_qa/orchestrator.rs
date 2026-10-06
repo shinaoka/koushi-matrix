@@ -186,8 +186,7 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
     // completing the gate unconditionally here cannot reach them. The helper
     // returns `Ok(None)` when the session is already `Ready`.
     let bootstrap_recovery_secret_a =
-        complete_new_identity_gate_for_qa(&mut conn_a, &config.password_a, "gate-bootstrap-a")
-            .await?;
+        complete_new_identity_gate_for_qa(&mut conn_a, &config.password_a).await?;
     println!("gate_new_identity_bootstrap=ok");
 
     let mut account_key_a = wait_for_logged_in(&mut conn_a, login_a_id, "login A").await?;

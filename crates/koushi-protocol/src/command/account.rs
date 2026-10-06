@@ -439,11 +439,14 @@ pub enum AccountCommand {
         request_id: RequestId,
         request: RecoveryRequest,
     },
+    /// Verification-gate identity bootstrap (#1049). The created recovery
+    /// key is revealed on screen; saving it to a file is the optional
+    /// `SaveSecureBackupRecoveryKey { reveal_request_id: flow_id }`.
     StartSessionBootstrap {
         request_id: RequestId,
         flow_id: u64,
         auth: Option<koushi_state::AuthSecret>,
-        request: SecureBackupSetupRequest,
+        passphrase: Option<koushi_state::AuthSecret>,
     },
     ConfirmSessionBootstrapSaved {
         request_id: RequestId,
@@ -797,13 +800,13 @@ impl fmt::Debug for AccountCommand {
                 request_id,
                 flow_id,
                 auth,
-                request,
+                passphrase,
             } => formatter
                 .debug_struct("StartSessionBootstrap")
                 .field("request_id", request_id)
                 .field("flow_id", flow_id)
                 .field("has_auth", &auth.is_some())
-                .field("request", request)
+                .field("has_passphrase", &passphrase.is_some())
                 .finish(),
             Self::ConfirmSessionBootstrapSaved {
                 request_id,

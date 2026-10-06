@@ -223,7 +223,8 @@ export interface DesktopApi {
   startOwnUserSas(): Promise<CommandAdmission>;
   retryCurrentDeviceTrustDiscovery(): Promise<CommandAdmission>;
   mismatchSasVerification(flowId: number): Promise<CommandAdmission>;
-  startSessionBootstrap(passphrase: string | null, recoveryKeyDestinationPath: string): Promise<CommandAdmission>;
+  /** Identity bootstrap (#1049); the recovery key is revealed on screen. */
+  startSessionBootstrap(passphrase: string | null): Promise<CommandAdmission>;
   confirmSessionBootstrapSaved(flowId: number): Promise<CommandAdmission>;
   confirmSasVerification(flowId: number): Promise<CommandAdmission>;
   cancelVerification(flowId: number): Promise<CommandAdmission>;

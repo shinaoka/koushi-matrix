@@ -1042,6 +1042,104 @@ describe("SessionVerificationGate interactions", () => {
     expect(bootstrapSecureBackup).toHaveBeenCalledTimes(1);
   });
 
+  function bootstrapSnapshot(
+    snapshot: DesktopSnapshot,
+    phase: "awaiting" | "revealed",
+    confirmationFailed = false
+  ): DesktopSnapshot {
+    const identity = {
+      homeserver: "https://example.invalid",
+      user_id: "@new:example.invalid",
+      device_id: "NEWDEVICE",
+      gate: { methods: ["bootstrap" as const], account_kind: "newIdentity" as const, failureKind: null }
+    };
+    if (phase === "awaiting") {
+      snapshot.state.domain.session = { kind: "awaitingVerification", ...identity };
+      return snapshot;
+    }
+    snapshot.state.domain.session = { kind: "awaitingBootstrapConfirmation", ...identity, flow_id: 41 };
+    snapshot.state.domain.e2ee_trust.key_management.secure_backup_setup = {
+      kind: "recoveryKeyReady",
+      request_id: 41,
+      recovery_key: SYNTHETIC_RECOVERY_KEY,
+      delivery: { kind: "notWritten" },
+      confirmation_failed: confirmationFailed
+    };
+    return snapshot;
+  }
+
+  test("identity bootstrap needs no file destination and reveals the key until confirmed", async () => {
+    const fixture = createDesktopApiFixture();
+    const base = await fixture.getSnapshot();
+    const copyRecoveryKey = vi.fn(async () => undefined);
+    const saveSecureBackupRecoveryKey = vi.fn(async () => commandReceipt);
+    const renderGate = (nextSnapshot: DesktopSnapshot) => (
+      <SessionVerificationGate
+        desktopApi={fixture}
+        snapshot={nextSnapshot}
+        onReceipt={async () => undefined}
+        onSignOut={() => undefined}
+        operations={secureBackupOperations(nextSnapshot, {
+          copyRecoveryKey,
+          saveSecureBackupRecoveryKey
+        })}
+      />
+    );
+    const { rerender } = render(renderGate(bootstrapSnapshot(structuredClone(base), "awaiting")));
+
+    expect(screen.queryByLabelText(/destination/i)).toBeNull();
+    const passphrase = screen.getByLabelText("Backup passphrase") as HTMLInputElement;
+    fireEvent.change(passphrase, { target: { value: "synthetic-passphrase" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create secure backup" }));
+    await vi.waitFor(() =>
+      expect(fixture.ipc.invocationsOf("start_session_bootstrap")[0]?.args).toEqual({
+        passphrase: "[REDACTED]"
+      })
+    );
+    expect(passphrase.value).toBe("");
+
+    rerender(renderGate(bootstrapSnapshot(structuredClone(base), "revealed")));
+    expect(screen.getByRole("heading", { name: "Save your recovery key" })).toBeTruthy();
+    const reveal = screen.getByRole("region", { name: "Your recovery key" });
+    expect(within(reveal).getByText(SYNTHETIC_RECOVERY_KEY).tagName).toBe("CODE");
+    expect(screen.queryByRole("button", { name: "Create secure backup" })).toBeNull();
+
+    fireEvent.click(within(reveal).getByRole("button", { name: "Copy" }));
+    await vi.waitFor(() => expect(copyRecoveryKey).toHaveBeenCalledWith(SYNTHETIC_RECOVERY_KEY));
+    fireEvent.click(within(reveal).getByRole("button", { name: "Save to file…" }));
+    await vi.waitFor(() => expect(saveSecureBackupRecoveryKey).toHaveBeenCalledWith(41));
+    expect(fixture.ipc.invocationsOf("confirm_session_bootstrap_saved")).toHaveLength(0);
+    expect(fixture.ipc.invocationsOf("confirm_secure_backup_recovery_key_saved")).toHaveLength(0);
+
+    const confirm = within(reveal).getByRole("button", {
+      name: "I saved the recovery key"
+    }) as HTMLButtonElement;
+    await vi.waitFor(() => expect(confirm.disabled).toBe(false));
+    fireEvent.click(confirm);
+    await vi.waitFor(() =>
+      expect(fixture.ipc.invocationsOf("confirm_session_bootstrap_saved")[0]?.args).toEqual({
+        flowId: 41
+      })
+    );
+    expect(fixture.ipc.invocationsOf("confirm_secure_backup_recovery_key_saved")).toHaveLength(0);
+  });
+
+  test("explains a failed bootstrap confirmation while keeping the key revealed", async () => {
+    const base = await createDesktopApiFixture().getSnapshot();
+    render(
+      <SessionVerificationGate
+        snapshot={bootstrapSnapshot(base, "revealed", true)}
+        onReceipt={async () => undefined}
+        onSignOut={() => undefined}
+        operations={secureBackupOperations(base)}
+      />
+    );
+    expect(screen.getByText(SYNTHETIC_RECOVERY_KEY)).toBeTruthy();
+    expect(
+      screen.getByText(/Your confirmation could not be saved/)
+    ).toBeTruthy();
+  });
+
   test("renders typed upload progress without exposing a raw count or error", async () => {
     const snapshot = secureBackupSnapshot(
       await createDesktopApiFixture().getSnapshot(),
