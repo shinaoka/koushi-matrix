@@ -3334,6 +3334,7 @@ name = "koushi-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "dirs",
  "eyeball",
  "eyeball-im",
  "futures-util",

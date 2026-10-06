@@ -1542,7 +1542,7 @@ fn submission_admission_tombstones_are_bounded_and_active_is_retained() {
 
 #[tokio::test]
 async fn send_without_authoritative_account_session_fails_closed() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _stores) = CoreRuntime::start_isolated();
     let mut conn = runtime.attach();
 
     runtime
@@ -2173,9 +2173,7 @@ fn hydrated_sent_projection_cache_evicts_oldest_without_consuming_active_capacit
 #[test]
 fn send_failure_trace_records_only_closed_failure_fields() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
-    let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
     let key = room_key();
     let mut trace = SendLifecycleTrace::new(&key, true);
     let correlation = trace.correlation();
@@ -2190,8 +2188,8 @@ fn send_failure_trace_records_only_closed_failure_fields() {
         },
     );
 
-    let diagnostics = koushi_diagnostics::test_support::detail_snapshot();
-    let event = &diagnostics.records[diagnostic_start..]
+    let diagnostics = koushi_diagnostics::test_support::detail_records_since(diagnostic_start);
+    let event = &diagnostics
         .iter()
         .find(|record| {
             record.event.source == "core.send"
@@ -2229,9 +2227,7 @@ fn send_failure_trace_records_only_closed_failure_fields() {
 #[test]
 fn encrypted_send_local_store_diagnostics_are_correlated_and_privacy_safe() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
-    let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
     let key = room_key();
     let trace = SendLifecycleTrace::new(&key, true);
     let correlation = trace.correlation();
@@ -2247,8 +2243,8 @@ fn encrypted_send_local_store_diagnostics_are_correlated_and_privacy_safe() {
         dehydrated_own_other_device_count: Some(1),
         blacklisted_own_other_device_count: Some(1),
     });
-    let diagnostics = koushi_diagnostics::test_support::detail_snapshot();
-    let record = diagnostics.records[diagnostic_start..]
+    let diagnostics = koushi_diagnostics::test_support::detail_records_since(diagnostic_start);
+    let record = diagnostics
         .iter()
         .find(|record| {
             record.event.source == "core.send"

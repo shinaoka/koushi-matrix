@@ -383,3 +383,40 @@ fn rotation_ledger_exports_only_closed_private_data_free_fields() {
         assert!(!encoded.contains(forbidden), "privacy leak: {forbidden}");
     }
 }
+
+#[test]
+fn cursor_window_survives_ring_eviction() {
+    let buffer = DiagnosticBuffer::new(3);
+    buffer.record(event("before-a"));
+    buffer.record(event("before-b"));
+    buffer.record(event("before-c"));
+    // The ring is full: a snapshot length no longer moves, the cursor does.
+    let cursor = buffer.end_cursor();
+    assert_eq!(cursor, 3);
+    buffer.record(event("after-a"));
+    buffer.record(event("after-b"));
+    assert_eq!(buffer.snapshot().records.len(), 3);
+    let stages = buffer
+        .records_since(cursor)
+        .expect("nothing after the cursor was evicted")
+        .into_iter()
+        .map(|record| record.event.stage)
+        .collect::<Vec<_>>();
+    assert_eq!(stages, ["after-a", "after-b"]);
+    assert!(
+        buffer
+            .records_since(buffer.end_cursor())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn cursor_window_reports_evicted_records_instead_of_hiding_them() {
+    let buffer = DiagnosticBuffer::new(2);
+    let cursor = buffer.end_cursor();
+    buffer.record_batch([event("a"), event("b"), event("c")]);
+    assert_eq!(buffer.records_since(cursor), Err(1));
+    let retained = buffer.records_since(cursor + 1).unwrap();
+    assert_eq!(retained.len(), 2);
+}

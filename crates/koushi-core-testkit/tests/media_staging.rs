@@ -5,6 +5,7 @@ use koushi_core::media_preparation::StageUploadBytesInput;
 use koushi_core::media_staging::{
     MAX_MEDIA_STAGING_BATCH_BYTES, MAX_MEDIA_STAGING_BATCH_SIZE, MediaStagingError,
 };
+use koushi_core::runtime::IsolatedStores;
 use koushi_state::{
     AppAction, ComposerDocument, ComposerInline, ComposerTarget, ImageUploadCompressionMode,
     RoomSummary, StagedUploadCompressionChoice, StagedUploadFormatChoice, StagedUploadPreparation,
@@ -49,8 +50,8 @@ fn png_item(id: &str, position: u64) -> StageUploadBytesInput {
     }
 }
 
-async fn ready_runtime() -> (CoreRuntime, koushi_core::CoreConnection) {
-    let runtime = CoreRuntime::start_with_event_capacity(64);
+async fn ready_runtime() -> (CoreRuntime, koushi_core::CoreConnection, IsolatedStores) {
+    let (runtime, _stores) = CoreRuntime::start_isolated_with_event_capacity(64);
     let mut connection = runtime.attach();
     let mut actions = support::restore_ready_actions();
     actions.extend([
@@ -70,7 +71,7 @@ async fn ready_runtime() -> (CoreRuntime, koushi_core::CoreConnection) {
         state.timeline.room_id.as_deref() == Some(ROOM_ID)
     })
     .await;
-    (runtime, connection)
+    (runtime, connection, _stores)
 }
 
 #[test]
@@ -81,7 +82,7 @@ fn media_staging_limits_are_named_and_checked_before_preparation() {
 
 #[tokio::test]
 async fn staging_publishes_preparing_then_ready_and_normalizes_mime() {
-    let (_runtime, mut connection) = ready_runtime().await;
+    let (_runtime, mut connection, _stores) = ready_runtime().await;
     let before = connection.versioned_snapshot();
     let snapshot = connection
         .stage_upload_bytes(target(), vec![item("one", b"bytes")])
@@ -102,7 +103,7 @@ async fn staging_publishes_preparing_then_ready_and_normalizes_mime() {
 
 #[tokio::test]
 async fn duplicate_ids_and_overflow_are_rejected_without_state_change() {
-    let (runtime, mut connection) = ready_runtime().await;
+    let (runtime, mut connection, _stores) = ready_runtime().await;
     let before = connection.versioned_snapshot();
     let duplicate = runtime.media_staging().stage_upload_bytes(
         &mut connection,
@@ -128,7 +129,7 @@ async fn duplicate_ids_and_overflow_are_rejected_without_state_change() {
 
 #[tokio::test]
 async fn caption_survives_preparation_and_replacement() {
-    let (runtime, mut connection) = ready_runtime().await;
+    let (runtime, mut connection, _stores) = ready_runtime().await;
     let staged = runtime
         .media_staging()
         .stage_upload_bytes(&mut connection, target(), vec![item("one", b"bytes")])
@@ -162,7 +163,7 @@ async fn caption_survives_preparation_and_replacement() {
 
 #[tokio::test]
 async fn empty_preparation_is_a_typed_failure_and_clear_releases_bytes() {
-    let (runtime, mut connection) = ready_runtime().await;
+    let (runtime, mut connection, _stores) = ready_runtime().await;
     let snapshot = runtime
         .media_staging()
         .stage_upload_bytes(&mut connection, target(), vec![item("empty", b"")])
@@ -190,7 +191,7 @@ async fn empty_preparation_is_a_typed_failure_and_clear_releases_bytes() {
 
 #[tokio::test]
 async fn select_retry_original_and_compression_are_targeted_operations() {
-    let (runtime, mut connection) = ready_runtime().await;
+    let (runtime, mut connection, _stores) = ready_runtime().await;
     runtime
         .media_staging()
         .stage_upload_bytes(&mut connection, target(), vec![png_item("image", 1)])
@@ -282,7 +283,7 @@ async fn select_retry_original_and_compression_are_targeted_operations() {
 
 #[tokio::test]
 async fn thread_target_isolated_from_main_target() {
-    let (runtime, mut connection) = ready_runtime().await;
+    let (runtime, mut connection, _stores) = ready_runtime().await;
     let root_event_id = "$root:example.invalid";
     runtime
         .inject_actions(vec![
@@ -326,7 +327,7 @@ async fn thread_target_isolated_from_main_target() {
 
 #[tokio::test]
 async fn positions_are_nonzero_unique_and_second_batches_settle_in_order() {
-    let (runtime, mut connection) = ready_runtime().await;
+    let (runtime, mut connection, _stores) = ready_runtime().await;
     assert!(matches!(
         connection
             .stage_upload_bytes(target(), vec![item_at("zero", 0, b"x")])
@@ -371,7 +372,7 @@ async fn positions_are_nonzero_unique_and_second_batches_settle_in_order() {
 
 #[tokio::test]
 async fn invalid_selection_is_immediate_and_missing_select_is_typed() {
-    let (runtime, mut connection) = ready_runtime().await;
+    let (runtime, mut connection, _stores) = ready_runtime().await;
     runtime
         .media_staging()
         .stage_upload_bytes(&mut connection, target(), vec![item("file", b"file")])
@@ -397,7 +398,7 @@ async fn invalid_selection_is_immediate_and_missing_select_is_typed() {
 
 #[tokio::test]
 async fn blocked_preparation_preserves_caption_and_releases_removed_bytes() {
-    let (runtime, mut connection) = ready_runtime().await;
+    let (runtime, mut connection, _stores) = ready_runtime().await;
     let mut barrier = runtime
         .media_staging()
         .install_preparation_barrier_for_testing();
@@ -470,7 +471,7 @@ async fn blocked_preparation_preserves_caption_and_releases_removed_bytes() {
 
 #[tokio::test]
 async fn stale_account_and_replaced_target_do_not_publish_prepared_items() {
-    let (runtime, mut connection) = ready_runtime().await;
+    let (runtime, mut connection, _stores) = ready_runtime().await;
     let mut barrier = runtime
         .media_staging()
         .install_preparation_barrier_for_testing();
@@ -500,7 +501,7 @@ async fn stale_account_and_replaced_target_do_not_publish_prepared_items() {
 
 #[tokio::test]
 async fn selection_generation_race_is_latest_wins_and_stale_is_explicit() {
-    let (runtime, mut connection) = ready_runtime().await;
+    let (runtime, mut connection, _stores) = ready_runtime().await;
     runtime
         .media_staging()
         .stage_upload_bytes(&mut connection, target(), vec![png_item("race", 1)])
@@ -562,7 +563,7 @@ async fn selection_generation_race_is_latest_wins_and_stale_is_explicit() {
 
 #[tokio::test]
 async fn settings_change_fences_blocked_preparation() {
-    let (runtime, connection) = ready_runtime().await;
+    let (runtime, connection, _stores) = ready_runtime().await;
     let mut barrier = runtime
         .media_staging()
         .install_preparation_barrier_for_testing();

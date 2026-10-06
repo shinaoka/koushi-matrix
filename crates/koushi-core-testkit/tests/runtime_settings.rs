@@ -135,7 +135,10 @@ async fn legacy_settings_import_rejects_a_failed_initial_load() {
 #[tokio::test]
 async fn failed_account_settings_load_does_not_commit_legacy_import_marker() {
     let data_dir = tempfile::tempdir().expect("tempdir");
-    let store = StoreActor::new(data_dir.path());
+    let store = StoreActor::with_backend(
+        koushi_core::store::TestCredentialStoreBackend::in_memory(),
+        data_dir.path(),
+    );
     let account_settings_file = store
         .account_local_data_dir(&support::session_key())
         .join("settings/account-settings.v1.enc");
