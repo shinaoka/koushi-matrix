@@ -38,11 +38,14 @@ describe("link/media platform selection", () => {
     expect(tauriLinkMediaPort.mediaSourceUrl).toHaveBeenCalledWith("/tmp/media.png");
     expect(tauriLinkMediaPort.saveMediaFile).toHaveBeenCalledWith(
       "asset://media",
-      "media.png"
+      "media.png",
+      null,
+      undefined
     );
     expect(tauriLinkMediaPort.saveMediaFile).toHaveBeenCalledWith(
       "asset://account-media",
       "account.png",
+      null,
       "tab-alice"
     );
     expect(browserLinkMediaPort.openHttpUrl).not.toHaveBeenCalled();
@@ -63,7 +66,9 @@ describe("link/media platform selection", () => {
     expect(browserLinkMediaPort.mediaSourceUrl).toHaveBeenCalledWith("/tmp/media.png");
     expect(browserLinkMediaPort.saveMediaFile).toHaveBeenCalledWith(
       "/tmp/media.png",
-      "media.png"
+      "media.png",
+      null,
+      undefined
     );
     expect(tauriLinkMediaPort.openHttpUrl).not.toHaveBeenCalled();
     expect(tauriLinkMediaPort.mediaSourceUrl).not.toHaveBeenCalled();

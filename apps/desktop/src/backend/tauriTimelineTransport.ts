@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { isRendererSelectedAccountTabId } from "./client";
 import { desktopEventPort } from "./desktopEventRuntime";
+import type { MediaSaveNameFacts } from "./linkMediaPort";
 import { saveReadyMediaFile } from "./linkMediaRuntime";
 import { isTauriRuntime } from "./runtimeEnvironment";
 import type { TimelineTransport } from "../components/timeline/TimelineTransport";
@@ -123,8 +124,12 @@ export function createTauriTimelineTransport(accountTabId?: string): TimelineTra
     async downloadMedia(roomId: string, eventId: string) {
       await invokeAccount("download_media", { roomId, eventId });
     },
-    async saveMediaFile(sourceUrl: string, filename: string) {
-      await saveReadyMediaFile(sourceUrl, filename, accountTabId);
+    async saveMediaFile(
+      sourceUrl: string,
+      filename: string,
+      saveName: MediaSaveNameFacts | null = null
+    ) {
+      await saveReadyMediaFile(sourceUrl, filename, accountTabId, saveName);
     },
     async downloadAvatarThumbnail(mxcUri: string): Promise<string> {
       return invokeAccount<string>("download_avatar_thumbnail", { mxcUri });

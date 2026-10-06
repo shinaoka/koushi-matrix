@@ -362,6 +362,24 @@ export function datetimeLocalValueFromTimestamp(timestampMs: number): string {
   ].join("");
 }
 
+/**
+ * Shift a `datetime-local` value by whole minutes, keeping the wall-clock format.
+ *
+ * #1124: the scheduled-send fields are native `datetime-local` controls. Their
+ * picker is the platform's, and on Linux it belongs to the WebKitGTK UI process:
+ * the date comes from a popup the page cannot drive, and the time of day is only
+ * reachable by discovering the control's keyboard segments. These adjustments let
+ * the moment be moved with the mouse on every platform, without replacing the
+ * native field.
+ */
+export function shiftScheduledSendValue(value: string, deltaMinutes: number): string {
+  const timestampMs = scheduledSendTimestampFromInput(value);
+  if (timestampMs === null) {
+    return value;
+  }
+  return datetimeLocalValueFromTimestamp(timestampMs + deltaMinutes * 60_000);
+}
+
 export function scheduledSendTimestampFromInput(value: string): number | null {
   if (!value.trim()) {
     return null;

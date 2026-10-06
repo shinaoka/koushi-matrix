@@ -36,7 +36,7 @@ import {
   type TimelineRowActionHandlers
 } from "./TimelineView";
 import { ImeSafeForm } from "./ImeTextControl";
-import { Composer } from "./composer";
+import { Composer, ScheduledSendTimeAdjustments } from "./composer";
 import { documentFromText, plainBodyFromDocument } from "../domain/composerDocument";
 import {
   ICON_SIZE,
@@ -322,6 +322,7 @@ function ScheduledMessagesList({
                       onChange={(event) => setEditValue(event.currentTarget.value)}
                     />
                   </label>
+                  <ScheduledSendTimeAdjustments value={editValue} onChange={setEditValue} />
                   <div className="scheduled-message-actions">
                     <button
                       className="timeline-send-bar-action"

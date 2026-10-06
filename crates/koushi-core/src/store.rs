@@ -147,6 +147,8 @@ pub struct AccountSearchIndexConfig {
 pub struct StoreActor {
     pub(crate) credential_store: CredentialStoreBackend,
     data_dir: PathBuf,
+    /// #1134: whether this process is the only owner of the SDK store root.
+    exclusive_store_root: bool,
     #[cfg(any(test, feature = "test-hooks"))]
     composer_draft_io_probe: Arc<Mutex<Option<ComposerDraftIoProbe>>>,
     #[cfg(test)]
@@ -679,6 +681,7 @@ impl StoreActor {
         Self {
             credential_store: CredentialStoreBackend::resolve(),
             data_dir: data_dir.into(),
+            exclusive_store_root: false,
             #[cfg(any(test, feature = "test-hooks"))]
             composer_draft_io_probe: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -699,6 +702,7 @@ impl StoreActor {
                 os_backend,
             ),
             data_dir,
+            exclusive_store_root: false,
             #[cfg(any(test, feature = "test-hooks"))]
             composer_draft_io_probe: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -707,6 +711,18 @@ impl StoreActor {
     }
 
     /// Access the credential store backend (for session persistence in AccountActor).
+    /// Declare that this process is the only owner of every store root this actor
+    /// derives (#1134).
+    ///
+    /// Only the packaged desktop app may: the shell refuses a second instance for
+    /// its identifier and each account has its own store directory. Entry points
+    /// that accept a reusable data directory (QA, smoke, tests) leave this off and
+    /// keep the SDK's cross-process store coordination.
+    pub fn with_exclusive_store_root(mut self) -> Self {
+        self.exclusive_store_root = true;
+        self
+    }
+
     pub fn credential_backend(&self) -> &CredentialStoreBackend {
         &self.credential_store
     }
@@ -730,6 +746,8 @@ impl StoreActor {
         Self {
             credential_store,
             data_dir: data_dir.into(),
+            // Test/QA fixtures may be pointed at a reusable data directory.
+            exclusive_store_root: false,
             #[cfg(any(test, feature = "test-hooks"))]
             composer_draft_io_probe: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -807,12 +825,16 @@ impl StoreActor {
             .join("accounts")
             .join("v2")
             .join(store_id.as_str());
-        MatrixClientStoreConfig::new(root.join("store"), store_key)
+        let mut store_config = MatrixClientStoreConfig::new(root.join("store"), store_key)
             .with_cache_path(root.join("cache"))
             .with_search_index_store(MatrixSearchIndexStoreConfig::new(
                 root.join("search-index"),
                 MatrixSearchIndexKey::new(search_key.as_str()),
-            ))
+            ));
+        if self.exclusive_store_root {
+            store_config = store_config.with_exclusive_store_root();
+        }
+        store_config
     }
 
     /// Derive the encrypted ngram search index configuration for the given

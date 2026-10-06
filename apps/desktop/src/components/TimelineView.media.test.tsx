@@ -304,7 +304,10 @@ describe("TimelineView", () => {
     );
 
     await waitFor(() =>
-      expect(saveMediaFile).toHaveBeenCalledWith("asset://localhost/notes.pdf", "notes.pdf")
+      expect(saveMediaFile).toHaveBeenCalledWith("asset://localhost/notes.pdf", "notes.pdf", {
+        kind: "file",
+        timestampMs: 1_800_000_000_000
+      })
     );
     expect(saveMediaFile).toHaveBeenCalledTimes(1);
   });
@@ -428,7 +431,10 @@ describe("TimelineView", () => {
     );
 
     await waitFor(() =>
-      expect(saveMediaFile).toHaveBeenCalledWith("asset://localhost/notes.pdf", "notes.pdf")
+      expect(saveMediaFile).toHaveBeenCalledWith("asset://localhost/notes.pdf", "notes.pdf", {
+        kind: "file",
+        timestampMs: 1_800_000_000_000
+      })
     );
     expect(saveMediaFile).toHaveBeenCalledTimes(1);
   });
@@ -498,7 +504,8 @@ describe("TimelineView", () => {
     await waitFor(() => {
       expect(saveMediaFile).toHaveBeenCalledWith(
         "asset://localhost/original-photo.png",
-        "photo.png"
+        "photo.png",
+        { kind: "image", timestampMs: 1_800_000_000_000 }
       );
     });
     expect(fetchMock).not.toHaveBeenCalled();

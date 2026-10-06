@@ -857,6 +857,52 @@ export async function runLocalScheduledSendScenario() {
       Date.now() + 48 * 60 * 60_000
     );
     await setDatetimeLocalValue(session.browser, editedValue, "Scheduled send time");
+    // #1124: the moment must be movable with the mouse, without the native
+    // picker or the control's keyboard segments.
+    const beforeAdjust = await session.browser.execute(() => {
+      const input = Array.from(document.querySelectorAll("input")).find(
+        (candidate) => candidate.getAttribute("aria-label") === "Scheduled send time"
+      );
+      return input instanceof HTMLInputElement ? input.value : null;
+    });
+    await clickVisibleButtonByAriaLabel(
+      session.browser,
+      "1 hour later",
+      timeoutMs,
+      "local GUI scheduled send adjust"
+    );
+    const afterAdjust = await session.browser.execute(() => {
+      const input = Array.from(document.querySelectorAll("input")).find(
+        (candidate) => candidate.getAttribute("aria-label") === "Scheduled send time"
+      );
+      return input instanceof HTMLInputElement ? input.value : null;
+    });
+    const expectedAdjust = await session.browser.execute(
+      (value) => {
+        const shifted = new Date(`${value}:00`);
+        shifted.setHours(shifted.getHours() + 1);
+        const pad = (part) => String(part).padStart(2, "0");
+        return [
+          shifted.getFullYear(),
+          "-",
+          pad(shifted.getMonth() + 1),
+          "-",
+          pad(shifted.getDate()),
+          "T",
+          pad(shifted.getHours()),
+          ":",
+          pad(shifted.getMinutes())
+        ].join("");
+      },
+      editedValue
+    );
+    if (afterAdjust !== expectedAdjust) {
+      throw new Error(
+        `local GUI scheduled send adjust did not move the time by one hour (expected=${expectedAdjust} after=${afterAdjust})`
+      );
+    }
+    console.log("gui_local_scheduled_adjust=ok");
+
     // The edit form's submit is labelled `Save scheduled send` but its visible
     // text is `Save`, so match the accessible name instead of the text.
     await clickVisibleButtonByAriaLabel(
@@ -881,7 +927,7 @@ export async function runLocalScheduledSendScenario() {
     await waitForEditableValue(
       session.browser,
       'input[aria-label="Scheduled send time"]',
-      editedValue,
+      expectedAdjust,
       timeoutMs,
       "local GUI scheduled send reschedule"
     );
