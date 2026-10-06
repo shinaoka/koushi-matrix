@@ -537,7 +537,7 @@ fn message_source_and_forward_events_are_typed_and_redacted_in_debug() {
     let loaded = TimelineEvent::MessageSourceLoaded {
         request_id: fake_rid(30),
         key: key.clone(),
-        source: source.clone(),
+        source: Box::new(source.clone()),
     };
     let forwarded = TimelineEvent::MessageForwarded {
         request_id: fake_rid(31),

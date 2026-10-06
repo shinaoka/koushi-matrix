@@ -1000,7 +1000,7 @@ async fn restore_terminal_flush_publishes_two_projected_batches_once_then_reboun
         Ok(CoreEvent::Timeline(TimelineEvent::NavigationUpdated {
             snapshot,
             ..
-        })) if snapshot == navigation_snapshot
+        })) if *snapshot == navigation_snapshot
     ));
     assert!(matches!(
         event_rx.recv().await,

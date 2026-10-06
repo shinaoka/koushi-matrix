@@ -162,7 +162,7 @@ fn qa_operation_failed_event(request_id: RequestId) -> CoreEvent {
 fn qa_state_delta_event() -> CoreEvent {
     CoreEvent::StateDelta(koushi_core::StateDelta {
         generation: 1,
-        changed: koushi_core::StateDeltaChangedSlices::default(),
+        changed: Box::default(),
     })
 }
 

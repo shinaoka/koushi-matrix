@@ -870,7 +870,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
         serialize_core_event(&CoreEvent::Timeline(TimelineEvent::MessageSourceLoaded {
             request_id,
             key: key.clone(),
-            source: TimelineMessageSource {
+            source: Box::new(TimelineMessageSource {
                 event_id: "$e1".to_owned(),
                 sender: Some("@u:example.test".to_owned()),
                 timestamp_ms: Some(123),
@@ -884,7 +884,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
                 megolm_message_index: Some(2),
                 megolm_session_rotation_reason: Some(TimelineMegolmSessionReason::ExpiredTime),
                 original_json: None,
-            },
+            }),
         }))
         .expect("serialize message source loaded");
     let message_forwarded =
@@ -940,7 +940,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
     let navigation_updated =
         serialize_core_event(&CoreEvent::Timeline(TimelineEvent::NavigationUpdated {
             key: key.clone(),
-            snapshot: TimelineNavigationSnapshot {
+            snapshot: Box::new(TimelineNavigationSnapshot {
                 read_marker_event_id: Some("$read:example.test".to_owned()),
                 read_marker_display_event_id: Some("$read:example.test".to_owned()),
                 first_unread_event_id: Some("$unread:example.test".to_owned()),
@@ -951,7 +951,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
                 unread_position: TimelineUnreadPosition::BelowViewport,
                 newer_event_count: 3,
                 can_jump_to_bottom: true,
-            },
+            }),
         }))
         .expect("serialize navigation update event");
     assert_eq!(
