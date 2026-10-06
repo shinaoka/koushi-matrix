@@ -53,7 +53,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::future;
 use std::path::PathBuf;
 #[cfg(any(test, feature = "test-hooks"))]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, atomic::AtomicU64};
 #[cfg(test)]
 use std::time::Duration;
@@ -392,7 +392,7 @@ pub struct ComposerDraftIoBarrierForTesting {
     save_completed: oneshot::Receiver<()>,
     load_started: oneshot::Receiver<()>,
     load_completed: oneshot::Receiver<()>,
-    load_attempt_count: Arc<AtomicUsize>,
+    load_counts: crate::store::ComposerDraftLoadCounts,
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -404,7 +404,13 @@ impl ComposerDraftIoBarrierForTesting {
     }
 
     pub fn load_attempt_count(&self) -> usize {
-        self.load_attempt_count.load(Ordering::Acquire)
+        self.load_counts.attempts.load(Ordering::Acquire)
+    }
+
+    /// Failed loads of this runtime only (each also records one
+    /// `core.composer_draft/load_failed` diagnostic).
+    pub fn load_failure_count(&self) -> usize {
+        self.load_counts.failures.load(Ordering::Acquire)
     }
 
     pub fn load_started_before_release(&mut self) -> bool {
@@ -851,7 +857,7 @@ impl CoreRuntime {
         let (save_completed_tx, save_completed) = oneshot::channel();
         let (load_started_tx, load_started) = oneshot::channel();
         let (load_completed_tx, load_completed) = oneshot::channel();
-        let load_attempt_count = Arc::new(AtomicUsize::new(0));
+        let load_counts = crate::store::ComposerDraftLoadCounts::default();
         self.composer_draft_store_actor_for_testing
             .install_composer_draft_io_probe(
                 save_started_tx,
@@ -859,7 +865,7 @@ impl CoreRuntime {
                 save_completed_tx,
                 load_started_tx,
                 load_completed_tx,
-                Arc::clone(&load_attempt_count),
+                load_counts.clone(),
             );
         ComposerDraftIoBarrierForTesting {
             save_started,
@@ -867,7 +873,7 @@ impl CoreRuntime {
             save_completed,
             load_started,
             load_completed,
-            load_attempt_count,
+            load_counts,
         }
     }
 

@@ -475,7 +475,7 @@ impl StoreActor {
         save_completed: tokio::sync::oneshot::Sender<()>,
         load_started: tokio::sync::oneshot::Sender<()>,
         load_completed: tokio::sync::oneshot::Sender<()>,
-        load_attempt_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        load_counts: super::ComposerDraftLoadCounts,
     ) {
         *self
             .composer_draft_io_probe
@@ -486,7 +486,7 @@ impl StoreActor {
             save_completed: Some(save_completed),
             load_started: Some(load_started),
             load_completed: Some(load_completed),
-            load_attempt_count,
+            load_counts,
         });
     }
 
@@ -534,12 +534,31 @@ impl StoreActor {
                 return;
             };
             probe
-                .load_attempt_count
+                .load_counts
+                .attempts
                 .fetch_add(1, std::sync::atomic::Ordering::Release);
             probe.load_started.take()
         };
         if let Some(started) = started {
             let _ = started.send(());
+        }
+    }
+
+    /// Counts failed loads per installed probe, so a test can attribute
+    /// failures to its own runtime: the `core.composer_draft/load_failed`
+    /// diagnostic carries no owner and other runtimes in the process emit it.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn notify_composer_draft_load_failed_for_testing(&self) {
+        if let Some(probe) = self
+            .composer_draft_io_probe
+            .lock()
+            .expect("composer draft I/O probe mutex")
+            .as_ref()
+        {
+            probe
+                .load_counts
+                .failures
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
         }
     }
 

@@ -668,7 +668,15 @@ struct ComposerDraftIoProbe {
     save_completed: Option<tokio::sync::oneshot::Sender<()>>,
     load_started: Option<tokio::sync::oneshot::Sender<()>>,
     load_completed: Option<tokio::sync::oneshot::Sender<()>>,
-    load_attempt_count: Arc<AtomicUsize>,
+    load_counts: ComposerDraftLoadCounts,
+}
+
+/// Per-probe load attempt and failure counters shared with the test barrier.
+#[cfg(any(test, feature = "test-hooks"))]
+#[derive(Clone, Default)]
+pub(crate) struct ComposerDraftLoadCounts {
+    pub(crate) attempts: Arc<AtomicUsize>,
+    pub(crate) failures: Arc<AtomicUsize>,
 }
 
 impl StoreActor {

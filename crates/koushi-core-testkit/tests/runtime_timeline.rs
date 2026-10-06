@@ -542,7 +542,10 @@ async fn submitted_text_rejects_a_stale_full_session_owner_before_timeline_routi
 
 #[tokio::test]
 async fn app_command_sets_and_clears_reply_target() {
-    let runtime = CoreRuntime::start();
+    // Disposable stores: the default data dir is the developer's real
+    // profile, and its failed composer load raced the owner-scoped corrupt
+    // load evidence below (#1153).
+    let (runtime, _data_dir, _credential_dir) = runtime_with_file_credentials();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![
@@ -985,12 +988,17 @@ async fn composer_drafts_persist_after_debounce_and_load_on_restart() {
 static CORRUPT_COMPOSER_LOAD_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const SAME_SESSION_LOAD_STRESS_UPDATES: usize = 64;
 
-fn composer_load_diagnostic_count(stage: &str) -> usize {
-    koushi_diagnostics::snapshot()
-        .records
+/// `core.composer_draft/load_failed` records since `cursor`. The record
+/// carries no owner, and any runtime in this process can emit it, so it only
+/// proves emission; per-runtime attribution comes from each runtime's
+/// `load_failure_count` probe.
+fn composer_load_failed_records_since(
+    cursor: koushi_diagnostics::test_support::DetailCursor,
+) -> usize {
+    koushi_diagnostics::test_support::detail_records_since(cursor)
         .into_iter()
         .filter(|record| {
-            record.event.source == "core.composer_draft" && record.event.stage == stage
+            record.event.source == "core.composer_draft" && record.event.stage == "load_failed"
         })
         .count()
 }
@@ -1157,8 +1165,15 @@ async fn concurrent_corrupt_runtime_evidence_is_owner_scoped() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
     let first_prepared = CorruptComposerLoadFixture::prepare().await;
     let second_prepared = CorruptComposerLoadFixture::prepare().await;
-    let failed_before = composer_load_diagnostic_count("load_failed");
-    let (first, second) = tokio::join!(first_prepared.start(), second_prepared.start());
+    // A third corrupt runtime emits the same owner-less diagnostic at the
+    // same time, standing in for every other runtime in the process.
+    let bystander_prepared = CorruptComposerLoadFixture::prepare().await;
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
+    let (first, second, bystander) = tokio::join!(
+        first_prepared.start(),
+        second_prepared.start(),
+        bystander_prepared.start()
+    );
     let first_settled = {
         let state = first.connection.snapshot();
         matches!(state.session, SessionState::Ready(_))
@@ -1173,20 +1188,29 @@ async fn concurrent_corrupt_runtime_evidence_is_owner_scoped() {
         first_settled && second_settled,
         "both corrupt runtimes must settle before attribution read: first_settled={first_settled} second_settled={second_settled}"
     );
-    let owner_counts = [
+    let owner_attempts = [
         first.failed_load_probe.load_attempt_count(),
         second.failed_load_probe.load_attempt_count(),
     ];
-    assert_eq!(owner_counts, [1, 1]);
-    let actual = composer_load_diagnostic_count("load_failed");
-    let actual_delta = actual.saturating_sub(failed_before);
+    assert_eq!(owner_attempts, [1, 1]);
+    let owner_failures = [
+        first.failed_load_probe.load_failure_count(),
+        second.failed_load_probe.load_failure_count(),
+    ];
     assert_eq!(
-        actual,
-        failed_before + 2,
-        "global composer-load count expected_delta=2 actual_delta={actual_delta} baseline={failed_before} first_settled={first_settled} second_settled={second_settled}"
+        owner_failures,
+        [1, 1],
+        "each owner records exactly its own failed load, not the bystander's"
+    );
+    assert_eq!(bystander.failed_load_probe.load_failure_count(), 1);
+    let emitted = composer_load_failed_records_since(diagnostic_start);
+    assert!(
+        emitted >= 3,
+        "every failed load records one diagnostic: emitted={emitted}"
     );
     first.shutdown().await;
     second.shutdown().await;
+    bystander.shutdown().await;
 }
 
 #[tokio::test]
@@ -2084,7 +2108,10 @@ async fn send_completion_clears_reply_mode_through_runtime() {
     // Regression: production send/reply completion must be Rust-owned. The core
     // drives SendTextSubmitted -> SendTextFinished into AppState so the composer
     // returns to Plain without React repairing product state after the fact.
-    let runtime = CoreRuntime::start();
+    // Disposable stores: the default data dir is the developer's real
+    // profile, and its failed composer load raced the owner-scoped corrupt
+    // load evidence below (#1153).
+    let (runtime, _data_dir, _credential_dir) = runtime_with_file_credentials();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![
