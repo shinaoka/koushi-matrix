@@ -65,7 +65,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::account_work::AccountWorkScheduler;
 use crate::command_policy::{SEARCH_UNAVAILABLE_MESSAGE, search_scope_to_state};
 use crate::store::StoreActor;
-use crate::store::search_crawl::{CommittedRoomCrawl, SearchCrawlProgress};
+use crate::store::search_crawl::{CommittedRoomCrawl, CrawlContentPolicy, SearchCrawlProgress};
 
 use crate::executor;
 use crate::search_crawler::{HistoryCrawlCheckpoint, HistoryCrawlPageResult};
@@ -561,9 +561,10 @@ impl Drop for SearchActorHandle {
 /// is re-crawled, which is what makes an index or extraction change a migration.
 fn completed_rooms_from_committed(
     progress: &SearchCrawlProgress,
+    policy: CrawlContentPolicy,
 ) -> HashMap<String, CompletedHistoryCrawl> {
     progress
-        .committed_rooms()
+        .committed_rooms(policy)
         .into_iter()
         .map(|(room_id, crawl)| {
             (
@@ -647,6 +648,15 @@ pub(crate) struct SearchActor {
     crawl_delay_elapsed: bool,
     /// One-shot startup-delay timer; its completion is awaited in `run`.
     crawl_delay_timer: Option<executor::JoinHandle<()>>,
+    /// Content-indexing settings the verifier must apply.
+    ///
+    /// The crawler honours these when it indexes, but the persistent index also
+    /// receives events from sync, so verification is the enforcement point: a
+    /// query must never match a caption or filename the account opted out of.
+    /// Seeded restrictively until the account's own settings arrive with the
+    /// first `RoomsAvailable` notification, so an opted-out value can never be
+    /// exposed in the window before that.
+    crawler_settings: SearchCrawlerSettings,
 }
 
 /// Outcome of verifying index candidates against the event cache.
@@ -676,8 +686,10 @@ impl SearchActor {
         let (index_tx, index_rx) = mpsc::channel(SEARCH_INDEX_MUTATION_QUEUE);
 
         // Rooms committed by an earlier run are already in the index, so they
-        // start completed and are only re-crawled for new events (#996).
-        let completed_rooms = completed_rooms_from_committed(&durability.progress);
+        // start completed and are only re-crawled for new events (#996). The
+        // record can only be judged once the account's content policy is known,
+        // so the set is seeded from the first settings-bearing notification.
+        let completed_rooms = HashMap::new();
 
         let actor = SearchActor {
             session,
@@ -701,6 +713,7 @@ impl SearchActor {
             crawl_settings_generation: 0,
             crawl_delay_elapsed: false,
             crawl_delay_timer: None,
+            crawler_settings: restricted_crawler_settings(),
         };
 
         // Spawn the actor task.
@@ -934,6 +947,7 @@ impl SearchActor {
         let session = self.session.clone();
         let query = query.to_owned();
         let sdk_scope = matrix_sdk_search_scope(&scope, &room_filter);
+        let settings = self.crawler_settings.clone();
         self.active_sdk_search = Some(executor::spawn(run_sdk_query(
             session,
             generation,
@@ -942,6 +956,7 @@ impl SearchActor {
             scope,
             room_filter,
             sdk_scope,
+            settings,
             variants,
         )));
     }
@@ -1135,6 +1150,8 @@ impl SearchActor {
         room_id: String,
         settings: SearchCrawlerSettings,
     ) {
+        self.crawler_settings = settings.clone();
+        self.seed_committed_rooms();
         self.remove_history_crawl_room(&room_id).await;
         self.completed_rooms.remove(&room_id);
         if settings.speed == SearchCrawlerSpeed::Paused {
@@ -1175,18 +1192,25 @@ impl SearchActor {
         } = notification;
         self.available_crawl_rooms = room_ids.iter().cloned().collect();
         self.latest_event_ids = latest_event_ids;
+        // The account's content policy applies to queries even while the
+        // crawler is paused, so record it before the speed check.
+        self.crawler_settings = settings.clone();
+        self.seed_committed_rooms();
 
-        if settings.speed == SearchCrawlerSpeed::Paused {
-            self.stop_all_history_crawls().await;
-            return;
-        }
-
-        let mut stopped_room_ids = self.retain_history_crawl_rooms();
+        // Membership changes prune the crawl set (and its durable record) even
+        // while the crawler is paused; otherwise a departed room stays
+        // committed and the restart after it rejoins skips its crawl.
+        let mut stopped_room_ids = self.retain_history_crawl_rooms().await;
         if let Some(room_id) = self.abort_active_history_crawl_if_retired().await {
             stopped_room_ids.push(room_id);
         }
         for room_id in stopped_room_ids {
             self.emit_history_crawl_stopped(room_id).await;
+        }
+
+        if settings.speed == SearchCrawlerSpeed::Paused {
+            self.stop_all_history_crawls().await;
+            return;
         }
 
         for room_id in room_ids {
@@ -1428,8 +1452,30 @@ impl SearchActor {
         }
     }
 
+    /// Content policy the durable commitments are keyed by.
+    fn crawl_content_policy(&self) -> CrawlContentPolicy {
+        CrawlContentPolicy::new(
+            self.crawler_settings.include_media_captions,
+            self.crawler_settings.include_filenames,
+        )
+    }
+
+    /// Adopt durable crawl commitments once the account's content policy is known.
+    ///
+    /// Seeding when the actor starts would use the restrictive placeholder
+    /// policy and reject every commitment, so this waits for the first
+    /// notification (or manual crawl) that carries the account's own settings.
+    /// A completion recorded in this session wins over the durable one.
+    fn seed_committed_rooms(&mut self) {
+        let policy = self.crawl_content_policy();
+        for (room_id, crawl) in completed_rooms_from_committed(&self.crawl_progress, policy) {
+            self.completed_rooms.entry(room_id).or_insert(crawl);
+        }
+    }
+
     /// Record a finished room in the durable crawl record.
     async fn commit_crawl_progress(&mut self, room_id: String, crawl: CompletedHistoryCrawl) {
+        let policy = self.crawl_content_policy();
         self.crawl_progress.commit(
             room_id,
             CommittedRoomCrawl {
@@ -1437,6 +1483,7 @@ impl SearchActor {
                 processed: crawl.processed,
                 indexed: crawl.indexed,
             },
+            policy,
         );
         self.save_crawl_progress().await;
     }
@@ -1461,7 +1508,7 @@ impl SearchActor {
         }
     }
 
-    fn retain_history_crawl_rooms(&mut self) -> Vec<String> {
+    async fn retain_history_crawl_rooms(&mut self) -> Vec<String> {
         let mut stopped_room_ids = std::collections::BTreeSet::new();
         for room_id in self.completed_rooms.keys() {
             if !self.available_crawl_rooms.contains(room_id) {
@@ -1483,6 +1530,18 @@ impl SearchActor {
             .iter()
             .map(|checkpoint| checkpoint.room_id.clone())
             .collect();
+
+        // Keep the durable record in step with the in-memory set: a room that is
+        // no longer available must not stay committed, or the restart after it
+        // is rejoined would skip the crawl it needs.
+        let mut forgot_any = false;
+        for room_id in &stopped_room_ids {
+            forgot_any |= self.crawl_progress.forget(room_id);
+        }
+        if forgot_any {
+            self.save_crawl_progress().await;
+        }
+
         stopped_room_ids.into_iter().collect()
     }
 
@@ -1545,6 +1604,14 @@ impl SearchActor {
 
     async fn invalidate_history_crawler_cache(&mut self) {
         self.completed_rooms.clear();
+        // The durable record must be cleared with the in-memory set, or a
+        // restart would re-seed these rooms as committed and skip exactly the
+        // re-crawl this invalidation exists to force. The record also carries the
+        // content policy it was produced under, so a settings change that could
+        // not be saved is still detected on the next start.
+        if self.crawl_progress.clear() {
+            self.save_crawl_progress().await;
+        }
         self.stop_all_history_crawls().await;
     }
 
@@ -1694,6 +1761,7 @@ async fn run_sdk_query(
     scope: SearchScope,
     room_filter: SearchRoomFilter,
     sdk_scope: koushi_sdk::MatrixSearchScope,
+    settings: SearchCrawlerSettings,
     variants: Vec<String>,
 ) -> SearchSdkQueryResult {
     let sdk_started = Instant::now();
@@ -1707,6 +1775,7 @@ async fn run_sdk_query(
             query_variant,
             &sdk_scope,
             &room_filter,
+            &settings,
         )
         .await
         {
@@ -1795,6 +1864,7 @@ async fn verify_literal_candidates(
     query: &str,
     sdk_scope: &koushi_sdk::MatrixSearchScope,
     room_filter: &SearchRoomFilter,
+    settings: &SearchCrawlerSettings,
 ) -> Result<IndexCandidateVerification, SearchFailureKind> {
     let mut pager =
         koushi_sdk::MatrixLiteralSearchPager::new(session, query, sdk_scope, SEARCH_CANDIDATE_PAGE);
@@ -1830,17 +1900,24 @@ async fn verify_literal_candidates(
             verification.resolved += 1;
 
             // The index may answer with an edit event id; the resolved reader
-            // reports the original identity plus current content.
+            // reports the original identity plus current content. The content
+            // policy is applied here: the index also gets events from sync, so
+            // this is the only place an opted-out caption or filename can be
+            // kept out of results.
+            let Some((body, attachment_filename)) = visible_content(
+                settings,
+                resolved.body.as_deref(),
+                resolved.attachment_filename.as_deref(),
+            ) else {
+                continue;
+            };
             let event = SearchableEvent {
                 room_id: candidate.room_id.clone(),
                 event_id: resolved.event_id.clone(),
                 sender: resolved.sender.clone(),
                 timestamp_ms: resolved.timestamp_ms.unwrap_or(0),
-                body: resolved.body.clone().map(SensitiveString::new),
-                attachment_filename: resolved
-                    .attachment_filename
-                    .clone()
-                    .map(SensitiveString::new),
+                body: body.map(SensitiveString::new),
+                attachment_filename: attachment_filename.map(SensitiveString::new),
                 attachment: None,
             };
             let resolved_candidate = SearchCandidate {
@@ -1858,6 +1935,44 @@ async fn verify_literal_candidates(
     }
 
     Ok(verification)
+}
+
+/// Content settings that expose nothing until the account's own arrive.
+///
+/// Media captions and filenames are opt-in content for search; before the first
+/// `RoomsAvailable` notification carries the account's settings, a query must
+/// miss them rather than reveal them.
+fn restricted_crawler_settings() -> SearchCrawlerSettings {
+    SearchCrawlerSettings {
+        include_media_captions: false,
+        include_filenames: false,
+        ..SearchCrawlerSettings::default()
+    }
+}
+
+/// Project a cache-resolved message onto the content the search policy allows.
+///
+/// `attachment_filename.is_some()` marks a media message: the SDK resolver fills
+/// it for image/video/audio/file and never for text-like messages
+/// (`resolved_text` in the fork's `search_index`). This mirrors the crawler's
+/// own projection (`search_crawler_project_message_content`) so a query can
+/// never match text the account opted out of indexing. Returns `None` when the
+/// policy leaves nothing to match.
+fn visible_content(
+    settings: &SearchCrawlerSettings,
+    body: Option<&str>,
+    attachment_filename: Option<&str>,
+) -> Option<(Option<String>, Option<String>)> {
+    let Some(filename) = attachment_filename else {
+        // A text-like message keeps its body; the policy governs media only.
+        return body.map(|body| (Some(body.to_owned()), None));
+    };
+    let caption = settings
+        .include_media_captions
+        .then(|| body.map(str::to_owned))
+        .flatten();
+    let filename = settings.include_filenames.then(|| filename.to_owned());
+    (caption.is_some() || filename.is_some()).then_some((caption, filename))
 }
 
 fn classify_matrix_search_error(error: &koushi_sdk::MatrixSearchError) -> SearchFailureKind {

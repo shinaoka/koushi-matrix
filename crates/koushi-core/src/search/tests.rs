@@ -6,6 +6,71 @@ use koushi_protocol::ids::{RequestId, RuntimeConnectionId};
 use koushi_search::{SearchDocumentStore, SearchEdit, SearchableEvent, SensitiveString};
 
 #[test]
+fn visible_content_applies_the_account_content_policy() {
+    let both = SearchCrawlerSettings {
+        include_media_captions: true,
+        include_filenames: true,
+        ..SearchCrawlerSettings::default()
+    };
+    let captions_only = SearchCrawlerSettings {
+        include_media_captions: true,
+        include_filenames: false,
+        ..both.clone()
+    };
+    let filenames_only = SearchCrawlerSettings {
+        include_media_captions: false,
+        include_filenames: true,
+        ..both.clone()
+    };
+    let neither = SearchCrawlerSettings {
+        include_media_captions: false,
+        include_filenames: false,
+        ..both.clone()
+    };
+
+    // A text message always keeps its body; the policy governs media only.
+    assert_eq!(
+        visible_content(&neither, Some("hello"), None),
+        Some((Some("hello".to_owned()), None))
+    );
+
+    // A media message is marked by the resolver's filename field.
+    assert_eq!(
+        visible_content(&both, Some("holiday"), Some("beach.jpg")),
+        Some((Some("holiday".to_owned()), Some("beach.jpg".to_owned())))
+    );
+    assert_eq!(
+        visible_content(&captions_only, Some("holiday"), Some("beach.jpg")),
+        Some((Some("holiday".to_owned()), None))
+    );
+    assert_eq!(
+        visible_content(&filenames_only, Some("holiday"), Some("beach.jpg")),
+        Some((None, Some("beach.jpg".to_owned())))
+    );
+    assert_eq!(
+        visible_content(&neither, Some("holiday"), Some("beach.jpg")),
+        None
+    );
+    // A filename-only media message is dropped when filenames are opted out.
+    assert_eq!(
+        visible_content(&captions_only, None, Some("beach.jpg")),
+        None
+    );
+}
+
+#[test]
+fn the_content_policy_starts_restricted_until_the_account_settings_arrive() {
+    let seeded = restricted_crawler_settings();
+
+    assert!(!seeded.include_media_captions);
+    assert!(!seeded.include_filenames);
+    assert_eq!(
+        visible_content(&seeded, Some("holiday"), Some("beach.jpg")),
+        None
+    );
+}
+
+#[test]
 fn newest_first_orders_by_timestamp_then_event_id_and_caps() {
     let result = |event_id: &str, timestamp_ms: u64| koushi_state::SearchResult {
         room_id: "!room-a:test".to_owned(),
@@ -40,6 +105,7 @@ fn newest_first_orders_by_timestamp_then_event_id_and_caps() {
 
 #[test]
 fn committed_rooms_seed_the_completed_map_for_the_current_backend_version() {
+    let policy = crate::store::search_crawl::CrawlContentPolicy::new(false, false);
     let mut progress = crate::store::search_crawl::SearchCrawlProgress::new();
     progress.commit(
         "!room-a:test".to_owned(),
@@ -48,15 +114,26 @@ fn committed_rooms_seed_the_completed_map_for_the_current_backend_version() {
             processed: 12,
             indexed: 7,
         },
+        policy,
     );
 
-    let completed = completed_rooms_from_committed(&progress);
+    let completed = completed_rooms_from_committed(&progress, policy);
 
     assert_eq!(completed.len(), 1);
     let crawl = completed.get("!room-a:test").expect("seeded room");
     assert_eq!(crawl.latest_event_id.as_deref(), Some("$e9"));
     assert_eq!(crawl.processed, 12);
     assert_eq!(crawl.indexed, 7);
+
+    // A different content policy invalidates the same record.
+    assert!(
+        completed_rooms_from_committed(
+            &progress,
+            crate::store::search_crawl::CrawlContentPolicy::new(true, false)
+        )
+        .is_empty(),
+        "a commitment recorded under another content policy must not be trusted"
+    );
 }
 
 #[tokio::test]

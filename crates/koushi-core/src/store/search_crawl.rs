@@ -20,15 +20,40 @@ const SEARCH_CRAWL_FILE_MAGIC: &[u8] = b"KOUSHI-SEARCH-CRAWL-V1\0";
 /// Version of the durable search-crawl contract.
 ///
 /// Bump when an index or extraction change means rooms committed under the old
-/// behavior must be crawled again. Progress recorded under another version is
-/// ignored and dropped on the next save.
+/// behavior must be crawled again. The same version names the account's search
+/// index directory, so a bump re-crawls and starts from an empty index in one
+/// step: a re-crawl alone cannot rewrite documents the index already holds.
+/// Progress recorded under another version is ignored and dropped on the next save.
 pub(crate) const SEARCH_CRAWL_BACKEND_VERSION: u32 = 1;
 
 /// Committed crawls for one account.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct SearchCrawlProgress {
     backend_version: u32,
+    /// Content policy the commitments were produced under. Part of the record's
+    /// identity: a room committed while media captions or filenames were
+    /// searchable must not be trusted after the account turns them off, and the
+    /// other way round. Defaults to the restrictive policy, so a record written
+    /// before this field existed is only trusted when nothing is exposed.
+    #[serde(default)]
+    content_policy: CrawlContentPolicy,
     rooms: BTreeMap<String, CommittedRoomCrawl>,
+}
+
+/// The two content-extraction switches a commitment depends on.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct CrawlContentPolicy {
+    pub include_media_captions: bool,
+    pub include_filenames: bool,
+}
+
+impl CrawlContentPolicy {
+    pub(crate) fn new(include_media_captions: bool, include_filenames: bool) -> Self {
+        Self {
+            include_media_captions,
+            include_filenames,
+        }
+    }
 }
 
 /// What a completed crawl of one room committed to the index.
@@ -45,32 +70,53 @@ impl SearchCrawlProgress {
     pub(crate) fn new() -> Self {
         Self {
             backend_version: SEARCH_CRAWL_BACKEND_VERSION,
+            content_policy: CrawlContentPolicy::default(),
             rooms: BTreeMap::new(),
         }
     }
 
-    /// Rooms already committed for the current backend version.
+    /// Rooms already committed for the current backend version and content policy.
     ///
-    /// Anything recorded under another version is left out, so a contract change
-    /// re-crawls those rooms instead of trusting a stale commitment.
-    pub(crate) fn committed_rooms(&self) -> BTreeMap<String, CommittedRoomCrawl> {
-        if self.backend_version == SEARCH_CRAWL_BACKEND_VERSION {
+    /// Anything recorded under another version or another content policy is left
+    /// out, so a contract or settings change re-crawls those rooms instead of
+    /// trusting a stale commitment.
+    pub(crate) fn committed_rooms(
+        &self,
+        policy: CrawlContentPolicy,
+    ) -> BTreeMap<String, CommittedRoomCrawl> {
+        if self.backend_version == SEARCH_CRAWL_BACKEND_VERSION && self.content_policy == policy {
             self.rooms.clone()
         } else {
             BTreeMap::new()
         }
     }
 
-    pub(crate) fn commit(&mut self, room_id: String, crawl: CommittedRoomCrawl) {
-        if self.backend_version != SEARCH_CRAWL_BACKEND_VERSION {
+    pub(crate) fn commit(
+        &mut self,
+        room_id: String,
+        crawl: CommittedRoomCrawl,
+        policy: CrawlContentPolicy,
+    ) {
+        if self.backend_version != SEARCH_CRAWL_BACKEND_VERSION || self.content_policy != policy {
             self.backend_version = SEARCH_CRAWL_BACKEND_VERSION;
+            self.content_policy = policy;
             self.rooms.clear();
         }
         self.rooms.insert(room_id, crawl);
     }
 
-    pub(crate) fn forget(&mut self, room_id: &str) {
-        self.rooms.remove(room_id);
+    /// Forget one room. Returns whether the record changed.
+    pub(crate) fn forget(&mut self, room_id: &str) -> bool {
+        self.rooms.remove(room_id).is_some()
+    }
+
+    /// Forget every room, keeping the version and policy identity.
+    pub(crate) fn clear(&mut self) -> bool {
+        if self.rooms.is_empty() {
+            return false;
+        }
+        self.rooms.clear();
+        true
     }
 
     pub(crate) fn is_empty(&self) -> bool {

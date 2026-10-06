@@ -497,6 +497,42 @@ pub async fn resolve_cached_message(
     }))
 }
 
+/// Index a room's events in the persistent ngram index now, awaiting the commit.
+///
+/// The SDK's own indexing runs in a background subscriber task that consumes
+/// linked-chunk updates and can lag (`RecvError::Lagged`) or fail silently, so a
+/// caller that needs an acknowledgement -- a durable crawl checkpoint -- must
+/// write through here instead: the fork's index guard commits synchronously, so
+/// an `Ok` return means the events are persisted. Indexing an event that is
+/// already present is a no-op, and the guard's mutex serialises this with the
+/// subscriber, so either way `Ok` is a real acknowledgement.
+pub async fn index_room_events_now(
+    session: &MatrixClientSession,
+    room_id: &str,
+    events: Vec<matrix_sdk::deserialized_responses::TimelineEvent>,
+) -> Result<(), MatrixSearchError> {
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| MatrixSearchError::Query)?;
+    let Some(room) = session.client().get_room(&room_id) else {
+        return Err(MatrixSearchError::Query);
+    };
+    let (room_cache, _drop_handles) = room
+        .event_cache()
+        .await
+        .map_err(|_| MatrixSearchError::Internal)?;
+    let redaction_rules = room.clone_info().room_version_rules_or_default().redaction;
+
+    let client = session.client();
+    let mut guard = client.search_index().lock().await;
+    guard
+        .bulk_handle_timeline_event(events.into_iter(), &room_cache, &room_id, &redaction_rules)
+        .await
+        .map_err(|error| matrix_search_error_from_index(&error))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

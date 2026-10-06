@@ -1,6 +1,10 @@
 //! Search history crawler: pages older room events through `/rooms/{roomId}/messages`,
 //! decrypts them locally, and feeds searchable text into the document store.
 //!
+//! Each page is also committed to the persistent ngram index before it is
+//! reported as successful, so a durable crawl checkpoint always has an
+//! index-commit acknowledgement behind it.
+//!
 //! Media file bytes are never fetched; only MXC URIs, filenames, captions and
 //! metadata are indexed. This keeps the crawler a text-only backfill worker.
 
@@ -266,10 +270,14 @@ async fn run_history_crawl_page(
     checkpoint.processed += events.len() as u64;
 
     let mut index_messages = Vec::new();
+    let mut index_events = Vec::new();
     for timeline_event in events {
         if timeline_event.kind.is_utd() {
             continue;
         }
+        // The same page is written to the persistent index below; keep the
+        // owned events for that write.
+        index_events.push(timeline_event.clone());
 
         let raw = timeline_event.kind.raw();
         let json = raw.json().get();
@@ -306,12 +314,51 @@ async fn run_history_crawl_page(
         chunk_len,
     );
 
+    // A completed crawl may only advance the durable checkpoint once the index
+    // has committed this page. The SDK's own indexing runs in a background
+    // subscriber that can lag or drop failures, so a room marked done without
+    // this acknowledgement can lose its history for search permanently.
+    if let Err(kind) = index_page_events(&session, &checkpoint.room_id, index_events).await {
+        trace_crawler_page(
+            DiagnosticLevel::Warn,
+            "index_failed",
+            checkpoint.processed,
+            checkpoint.indexed,
+            chunk_len,
+        );
+        return HistoryCrawlPageResult::Failed { checkpoint, kind };
+    }
+
     HistoryCrawlPageResult::Success {
         checkpoint,
         messages: index_messages,
         completed,
         work_permit: Some(work_permit),
     }
+}
+
+/// Commit one crawled page's events to the persistent index, or say why not.
+///
+/// The caller must not advance the durable crawl checkpoint unless this returns
+/// `Ok`.
+async fn index_page_events(
+    session: &Arc<koushi_sdk::MatrixClientSession>,
+    room_id: &str,
+    events: Vec<matrix_sdk::deserialized_responses::TimelineEvent>,
+) -> Result<(), SearchCrawlerFailureKind> {
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    koushi_sdk::index_room_events_now(session, room_id, events)
+        .await
+        .map_err(|error| match error {
+            koushi_sdk::MatrixSearchError::IndexUnavailable => {
+                SearchCrawlerFailureKind::IndexUnavailable
+            }
+            koushi_sdk::MatrixSearchError::Query => SearchCrawlerFailureKind::RoomNotFound,
+            koushi_sdk::MatrixSearchError::Internal => SearchCrawlerFailureKind::Sdk,
+        })
 }
 
 /// The shared scheduler controls work rate; this controls one admitted page's

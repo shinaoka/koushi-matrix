@@ -398,8 +398,14 @@ impl AccountActor {
                         progress,
                         store: Some((self.store.clone(), key_id)),
                     },
-                    Ok(Err(_)) => crate::search::SearchCrawlDurability::default(),
-                    Err(_) => crate::search::SearchCrawlDurability::default(),
+                    // An unreadable record means "crawl again", but the account
+                    // must still be able to persist the fresh commitments it
+                    // earns in this session; disabling the store here would
+                    // forget them on every restart.
+                    Ok(Err(_)) | Err(_) => crate::search::SearchCrawlDurability {
+                        progress: crate::store::search_crawl::SearchCrawlProgress::new(),
+                        store: Some((self.store.clone(), key_id)),
+                    },
                 }
             }
             None => crate::search::SearchCrawlDurability::default(),
