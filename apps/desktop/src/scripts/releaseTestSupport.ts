@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-export const repoRoot = new URL("../../../../", import.meta.url).pathname;
+export const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 
 export function runScript(script: string, args: string[] = []): string {
   return execFileSync(process.execPath, [script, ...args], { cwd: repoRoot, encoding: "utf8" });

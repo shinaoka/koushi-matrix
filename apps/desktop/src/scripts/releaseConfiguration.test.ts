@@ -41,6 +41,42 @@ describe("desktop release scripts", () => {
     }
   );
 
+  test("Windows build entry point exposes the split signing stages", () => {
+    const buildOnly = runScript("scripts/desktop-build-windows.mjs", ["--print-command", "--build-only"]);
+    expect(buildOnly).toContain("tauri -- build --no-bundle");
+    expect(buildOnly).toContain("--target x86_64-pc-windows-msvc");
+
+    const bundleOnly = runScript("scripts/desktop-build-windows.mjs", [
+      "--print-command", "--bundle-only", "--signed-input"
+    ]);
+    expect(bundleOnly).toContain("tauri -- bundle --bundles nsis --no-binary-patching");
+
+    const trial = runScript("scripts/desktop-build-windows.mjs", ["--print-command"]);
+    expect(trial).toContain("tauri -- build --bundles nsis");
+    expect(trial).not.toContain("--no-binary-patching");
+  });
+
+  test("Windows release preparation uses a Tauri CLI that supports no-binary-patching", () => {
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../../../../apps/desktop/package.json", import.meta.url), "utf8")
+    );
+    const version = packageJson.devDependencies["@tauri-apps/cli"].replace(/^\^/, "");
+    const [major, minor] = version.split(".").map(Number);
+    expect(major).toBe(2);
+    expect(minor).toBeGreaterThanOrEqual(12);
+  });
+
+  test("Authenticode verification script fails closed on missing signatures", () => {
+    const script = readFileSync(
+      new URL("../../../../scripts/verify-authenticode.ps1", import.meta.url),
+      "utf8"
+    );
+    expect(script).toContain("Get-AuthenticodeSignature");
+    expect(script).toContain("SignatureStatus]::Valid");
+    expect(script).toContain("No signer certificate");
+    expect(script).toContain("Get-FileHash -Algorithm SHA256");
+  });
+
   test("tracked text artifacts contain no previous branding residue", () => {
     const oldLatinBrand = "Ru" + "ri";
     const oldLowerBrand = oldLatinBrand.toLowerCase();

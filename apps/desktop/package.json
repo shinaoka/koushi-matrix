@@ -61,7 +61,7 @@
   "devDependencies": {
     "@playwright/test": "^1.60.0",
     "@puppeteer/browsers": "file:./puppeteer-browsers-2.13.3.tgz",
-    "@tauri-apps/cli": "^2.11.2",
+    "@tauri-apps/cli": "^2.12.1",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^25.9.2",
     "@types/react": "^19.2.17",

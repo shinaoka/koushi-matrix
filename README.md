@@ -100,6 +100,7 @@ after all platform builds succeed:
 - [Linux x64 RPM package](https://github.com/shinaoka/koushi-matrix/releases/latest/download/Koushi-linux-x64.rpm) — untested
 - [Latest release and checksums](https://github.com/shinaoka/koushi-matrix/releases/latest)
 - [Maintainer release runbook](docs/releases/desktop-release.md)
+- [Windows code signing policy (draft)](docs/security/code-signing-policy.md)
 
 Verify the adjacent `.sha256` file when testing any downloaded installer.
 
