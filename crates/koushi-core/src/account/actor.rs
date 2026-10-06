@@ -1128,6 +1128,10 @@ pub struct AccountActor {
     /// exists. Created at the same time as SyncActor; stopped in the ordered
     /// shutdown between timelines and sync (canon Async rule 12 step 3).
     pub(super) search_actor: Option<SearchActorHandle>,
+    /// The startup warm-prime task for the active session. Retained so the
+    /// ordered shutdown can cancel and await it before the store is torn down;
+    /// a dropped handle would let it touch a closing store.
+    pub(super) search_warm_task: Option<crate::executor::JoinHandle<()>>,
     /// ThreadsListActor handle. Present only while the threads list view is
     /// open. Dropping the handle cancels the actor and its SDK subscriptions.
     pub(super) threads_list_actor: Option<crate::threads_list::ThreadsListActorHandle>,
@@ -1423,6 +1427,7 @@ impl AccountActor {
             link_preview_policy: initial_link_preview_policy,
             send_read_receipts: initial_send_read_receipts,
             search_actor: None,
+            search_warm_task: None,
             threads_list_actor: None,
             recovery_observer: None,
             identity_reset_handle: None,

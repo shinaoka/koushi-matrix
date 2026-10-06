@@ -1479,6 +1479,44 @@ async fn a_superseded_search_request_settles_as_a_benign_no_op() {
 }
 
 #[tokio::test]
+async fn opening_a_search_result_schedules_the_durable_navigation_write() {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let session = SessionInfo {
+        homeserver: "https://example.invalid".to_owned(),
+        user_id: "@synthetic:example.invalid".to_owned(),
+        device_id: "SYNTHETIC".to_owned(),
+        authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+    };
+    let state = AppState {
+        session: SessionState::Ready(session),
+        ..AppState::default()
+    };
+    let (mut actor, ..) = app_actor_event_navigation_fixture(data_dir.path(), state);
+
+    // The warm target lives in the navigation state, so it must go through the
+    // reduction that detects a durable navigation change; a bare `reduce` left
+    // it in memory only, and a restart then had nothing to warm.
+    let (_, deferred) = actor.reduce_app_action_state(AppAction::SearchResultOpened {
+        room_id: "!room:example.invalid".to_owned(),
+        event_id: "$event:example.invalid".to_owned(),
+    });
+
+    assert!(
+        deferred.has_navigation_persist(),
+        "opening a search result must schedule the durable navigation write"
+    );
+    assert_eq!(
+        actor
+            .state
+            .navigation
+            .search_warm_targets
+            .first()
+            .map(|target| target.event_id.as_str()),
+        Some("$event:example.invalid")
+    );
+}
+
+#[tokio::test]
 async fn same_batch_select_room_settles_only_final_selection() {
     let data_dir = tempfile::tempdir().expect("runtime data directory");
     let (account_tx, _account_rx) = mpsc::channel(16);

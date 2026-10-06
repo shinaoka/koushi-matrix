@@ -483,6 +483,7 @@ async fn reset_local_data_clears_current_account_persistence_and_signs_out_local
         pending_oidc_login: None,
         oidc_completion_override: None,
         search_actor: None,
+        search_warm_task: None,
         threads_list_actor: None,
         recovery_observer: None,
         identity_reset_handle: None,

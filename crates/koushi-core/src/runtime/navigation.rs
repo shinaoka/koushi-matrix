@@ -468,24 +468,28 @@ impl AppActor {
             });
             return false;
         }
-        if source == EventNavigationSource::Search {
-            // Remember what the user opened so the next startup can warm it
-            // before timeline construction.
-            let effects = reduce(
-                &mut self.state,
-                AppAction::SearchResultOpened {
-                    room_id: room_id.clone(),
-                    event_id: event_id.clone(),
-                },
-            );
-            self.handle_ui_event_effects(&effects).await;
-        }
         if !matches!(self.state.session, SessionState::Ready(_)) {
             self.emit(CoreEvent::OperationFailed {
                 request_id,
                 failure: CoreFailure::SessionRequired,
             });
             return false;
+        }
+        if source == EventNavigationSource::Search {
+            // Remember what the user opened so the next startup can warm it
+            // before timeline construction. This goes through the same reduction
+            // path as every other navigation mutation, so the navigation diff
+            // schedules the durable write; a bare `reduce` kept it in memory
+            // only. It is a recording side effect, not the navigation itself, so
+            // a session whose navigation state cannot be persisted still
+            // navigates (the deferred side effects suppress the write).
+            let before_state = self.snapshot_tx.borrow().state.clone();
+            let (_, deferred) = self.reduce_app_action_state(AppAction::SearchResultOpened {
+                room_id: room_id.clone(),
+                event_id: event_id.clone(),
+            });
+            self.publish_state_delta(&before_state);
+            self.apply_deferred_reducer_side_effects(deferred).await;
         }
 
         let focused_key = self

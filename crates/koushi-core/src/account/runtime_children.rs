@@ -70,12 +70,10 @@ fn spawn_search_warm_prime(
     session: Arc<MatrixClientSession>,
     store: StoreActor,
     key_id: Option<SessionKeyId>,
-) {
-    let Some(key_id) = key_id else {
-        return;
-    };
+) -> Option<executor::JoinHandle<()>> {
+    let key_id = key_id?;
 
-    executor::spawn(async move {
+    Some(executor::spawn(async move {
         let Ok(Ok(navigation)) =
             executor::spawn_blocking(move || store.load_navigation(&key_id)).await
         else {
@@ -91,7 +89,7 @@ fn spawn_search_warm_prime(
         for target in &navigation.search_warm_targets {
             warm_cached_display_window(&session, target).await;
         }
-    });
+    }))
 }
 
 /// Load one search target's display window from the local store, cache-only.
@@ -243,6 +241,13 @@ impl AccountActor {
         // Clear any buffered notification so it is not replayed for the next
         // session after logout or account switch.
         self.pending_crawler_notification = None;
+        // The warm prime reads the navigation state and the event cache from
+        // the store, so it must be cancelled and awaited before the store is
+        // torn down (shutdown step 7).
+        if let Some(task) = self.search_warm_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
         if let Some(handle) = self.search_actor.take() {
             handle.shutdown().await;
         }
@@ -420,7 +425,7 @@ impl AccountActor {
         let search_index_tx = search_handle.index_sender();
 
         self.search_actor = Some(search_handle);
-        spawn_search_warm_prime(
+        self.search_warm_task = spawn_search_warm_prime(
             session.clone(),
             self.store.clone(),
             self.session_key_id.clone(),
