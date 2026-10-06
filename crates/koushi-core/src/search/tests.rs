@@ -3,7 +3,9 @@ use std::time::Duration;
 use super::*;
 use koushi_protocol::command::SearchScope;
 use koushi_protocol::ids::{RequestId, RuntimeConnectionId};
-use koushi_search::{SearchDocumentStore, SearchEdit, SearchableEvent, SensitiveString};
+use koushi_search::{
+    SearchDocumentStore, SearchEdit, SearchEditKey, SearchableEvent, SensitiveString,
+};
 
 #[test]
 fn visible_content_applies_the_account_content_policy() {
@@ -634,6 +636,7 @@ fn a_history_replay_of_the_original_cannot_replace_an_applied_rename() {
     store.upsert_message(
         make_attachment_event("!r:test", "$e1", "original.pdf"),
         true,
+        None,
     );
     store.upsert_edit(make_edit_at("$e1", "$edit1", 2_000, "renamed.pdf"), true);
 
@@ -641,6 +644,7 @@ fn a_history_replay_of_the_original_cannot_replace_an_applied_rename() {
     store.upsert_message(
         make_attachment_event("!r:test", "$e1", "original.pdf"),
         false,
+        None,
     );
 
     assert_eq!(first_filename(&store).as_deref(), Some("renamed.pdf"));
@@ -652,6 +656,7 @@ fn an_older_history_edit_cannot_outrank_a_newer_one() {
     store.upsert_message(
         make_attachment_event("!r:test", "$e1", "original.pdf"),
         false,
+        None,
     );
 
     // The crawler pages newest first: the older edit arrives last.
@@ -667,16 +672,80 @@ fn redacting_an_applied_edit_lets_the_current_content_set_the_row() {
     store.upsert_message(
         make_attachment_event("!r:test", "$e1", "original.pdf"),
         false,
+        None,
     );
     // A history crawl saw a later edit that the canonical state no longer shows.
     store.upsert_edit(make_edit_at("$e1", "$redacted", 5_000, "stale.pdf"), false);
 
-    // The redaction retires that edit, so the content the canonical projection
-    // still shows (an older edit) can set the row.
+    // The redaction retires that edit and drops the metadata it produced.
     store.redact("$redacted");
+    assert!(
+        attachment_rows(&store).is_empty(),
+        "a redacted rename must not stay visible"
+    );
+
+    // The canonical projection then sends the content it still shows, as one
+    // guarded upsert + edit pair.
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "current.pdf"),
+        true,
+        Some(SearchEditKey::new("$current", 1_000)),
+    );
     store.upsert_edit(make_edit_at("$e1", "$current", 1_000, "current.pdf"), true);
 
     assert_eq!(first_filename(&store).as_deref(), Some("current.pdf"));
+}
+
+#[test]
+fn an_older_canonical_upsert_cannot_undo_a_newer_applied_edit() {
+    let mut store = SearchDocumentStore::default();
+    // The timeline observed edit A.
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "a.pdf"),
+        true,
+        Some(SearchEditKey::new("$a", 2_000)),
+    );
+    store.upsert_edit(make_edit_at("$e1", "$a", 2_000, "a.pdf"), true);
+
+    // A catch-up crawl then supplied a genuinely newer edit B.
+    store.upsert_edit(make_edit_at("$e1", "$b", 3_000, "b.pdf"), false);
+    assert_eq!(first_filename(&store).as_deref(), Some("b.pdf"));
+
+    // A delayed canonical observation of A -- both halves of its pair -- must not
+    // overwrite B.
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "a.pdf"),
+        true,
+        Some(SearchEditKey::new("$a", 2_000)),
+    );
+    store.upsert_edit(make_edit_at("$e1", "$a", 2_000, "a.pdf"), true);
+    assert_eq!(first_filename(&store).as_deref(), Some("b.pdf"));
+}
+
+#[test]
+fn a_redacted_edit_cannot_be_replayed() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        false,
+        None,
+    );
+    store.upsert_edit(make_edit_at("$e1", "$applied", 2_000, "renamed.pdf"), false);
+    store.redact("$applied");
+
+    // The redacted edit must not come back through a replay, not even as a
+    // pending edit for a row that is gone.
+    store.upsert_edit(make_edit_at("$e1", "$applied", 2_000, "renamed.pdf"), false);
+    assert_eq!(store.pending_edit_count(), 0);
+    assert!(attachment_rows(&store).is_empty());
+
+    // A replay of the original restores the row with its original metadata.
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "original.pdf"),
+        false,
+        None,
+    );
+    assert_eq!(first_filename(&store).as_deref(), Some("original.pdf"));
 }
 
 #[test]
@@ -685,6 +754,7 @@ fn a_newer_history_edit_beats_an_older_canonical_one() {
     store.upsert_message(
         make_attachment_event("!r:test", "$e1", "original.pdf"),
         true,
+        None,
     );
     // The timeline was open and showed an earlier rename.
     store.upsert_edit(make_edit_at("$e1", "$earlier", 2_000, "earlier.pdf"), true);
@@ -706,6 +776,7 @@ fn redacting_an_edit_retires_it_from_an_applied_row_and_from_pending_edits() {
     store.upsert_message(
         make_attachment_event("!r:test", "$e1", "original.pdf"),
         false,
+        None,
     );
     store.upsert_edit(make_edit_at("$e1", "$applied", 2_000, "renamed.pdf"), false);
     store.upsert_edit(
@@ -722,6 +793,7 @@ fn redacting_an_edit_retires_it_from_an_applied_row_and_from_pending_edits() {
     store.upsert_message(
         make_attachment_event("!r:test", "$e1", "original.pdf"),
         false,
+        None,
     );
     assert_eq!(first_filename(&store).as_deref(), Some("original.pdf"));
 }
@@ -736,6 +808,7 @@ fn an_edit_before_its_message_keeps_the_newest_of_the_pending_edits() {
     store.upsert_message(
         make_attachment_event("!r:test", "$e1", "original.pdf"),
         false,
+        None,
     );
 
     assert_eq!(store.pending_edit_count(), 0);
@@ -770,7 +843,7 @@ fn make_edit(target: &str, new_body: &str) -> SearchEdit {
 #[test]
 fn plain_messages_are_not_retained() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(make_event("!r:test", "$e1", "hello world"), true);
+    store.upsert_message(make_event("!r:test", "$e1", "hello world"), true, None);
 
     assert_eq!(
         store.document_count(),
@@ -782,7 +855,11 @@ fn plain_messages_are_not_retained() {
 #[test]
 fn attachment_rows_are_retained_for_the_files_view() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(make_attachment_event("!r:test", "$e1", "agenda.pdf"), true);
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "agenda.pdf"),
+        true,
+        None,
+    );
 
     let rows = attachment_rows(&store);
 
@@ -806,6 +883,7 @@ fn edit_before_attachment_is_pending_until_it_arrives() {
     store.upsert_message(
         make_attachment_event("!r:test", "$original", "original.pdf"),
         true,
+        None,
     );
 
     assert_eq!(store.pending_edit_count(), 0, "pending edit must resolve");
@@ -817,7 +895,11 @@ fn edit_before_attachment_is_pending_until_it_arrives() {
 #[test]
 fn caption_only_edit_still_marks_the_row_edited() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(make_attachment_event("!r:test", "$e1", "agenda.pdf"), true);
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "agenda.pdf"),
+        true,
+        None,
+    );
     store.upsert_edit(make_edit("$e1", "a new caption"), true);
 
     let rows = attachment_rows(&store);
@@ -834,7 +916,11 @@ fn caption_only_edit_still_marks_the_row_edited() {
 #[test]
 fn redaction_removes_the_attachment_row() {
     let mut store = SearchDocumentStore::default();
-    store.upsert_message(make_attachment_event("!r:test", "$e1", "secret.pdf"), true);
+    store.upsert_message(
+        make_attachment_event("!r:test", "$e1", "secret.pdf"),
+        true,
+        None,
+    );
 
     store.redact("$e1");
 
@@ -848,6 +934,7 @@ fn clear_removes_documents_and_pending_edits() {
     store.upsert_message(
         make_attachment_event("!r:test", "$e1", "original.pdf"),
         true,
+        None,
     );
     store.upsert_edit(make_attachment_edit("$e1", "edited.pdf"), true);
     store.upsert_edit(make_attachment_edit("$missing", "pending.pdf"), true);
@@ -944,6 +1031,7 @@ fn search_index_message_upsert_redacts_body_in_debug() {
         attachment_filename: None,
         attachment: None,
         canonical: true,
+        edit: None,
     };
     let debug = format!("{msg:?}");
     assert!(

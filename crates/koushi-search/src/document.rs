@@ -79,6 +79,9 @@ pub struct SearchDocumentStore {
     documents: BTreeMap<String, SearchableEvent>,
     /// event_id -> the edit whose content the row currently holds.
     applied_edits: BTreeMap<String, AppliedEdit>,
+    /// event_id -> the newest redacted edit of that row, so a replay of a
+    /// redacted edit cannot come back.
+    retired_edits: BTreeMap<String, String>,
     /// Edits that arrived before their target.
     pending_edits: BTreeMap<String, Vec<PendingEdit>>,
 }
@@ -100,6 +103,32 @@ struct AppliedEdit {
     timestamp_ms: u64,
     canonical: bool,
     edit_event_id: String,
+}
+
+/// Identity of the edit whose content a message carries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchEditKey {
+    pub edit_event_id: String,
+    pub timestamp_ms: u64,
+}
+
+impl SearchEditKey {
+    pub fn new(edit_event_id: impl Into<String>, timestamp_ms: u64) -> Self {
+        Self {
+            edit_event_id: edit_event_id.into(),
+            timestamp_ms,
+        }
+    }
+}
+
+impl AppliedEdit {
+    fn from_key(key: &SearchEditKey, canonical: bool) -> Self {
+        Self {
+            timestamp_ms: key.timestamp_ms,
+            canonical,
+            edit_event_id: key.edit_event_id.clone(),
+        }
+    }
 }
 
 /// An edit waiting for its original message.
@@ -147,6 +176,7 @@ impl SearchDocumentStore {
     pub fn clear(&mut self) {
         self.documents.clear();
         self.applied_edits.clear();
+        self.retired_edits.clear();
         self.pending_edits.clear();
     }
 
@@ -155,21 +185,48 @@ impl SearchDocumentStore {
     /// `canonical` marks the timeline projection, which always carries the
     /// message's current visible content; a history crawl reports what its
     /// crawl saw, which may be an older version of the same message.
-    pub fn upsert_message(&mut self, mut event: SearchableEvent, canonical: bool) {
+    pub fn upsert_message(
+        &mut self,
+        mut event: SearchableEvent,
+        canonical: bool,
+        edit: Option<SearchEditKey>,
+    ) {
         if event.attachment.is_none() {
             // Nothing to show in the Files view, and search does not read this
             // store, so retaining the message would only cost memory.
             return;
         }
-        if !canonical && self.applied_edits.contains_key(&event.event_id) {
+        let applied = self.applied_edits.get(&event.event_id).cloned();
+        match (&edit, &applied) {
             // A replay of this message's original must not replace the
             // attachment an edit already produced.
-            return;
+            (None, Some(_)) if !canonical => return,
+            // The message's content and the edit it carries are one update, so
+            // an older observation of an edited message cannot undo a newer edit
+            // another producer applied. Without this, the content half of an
+            // upsert-plus-edit pair slips past the edit ordering.
+            (Some(key), Some(applied)) if *applied >= AppliedEdit::from_key(key, canonical) => {
+                return;
+            }
+            _ => {}
         }
         retain_attachment_metadata(&mut event);
 
         let event_id = event.event_id.clone();
         self.documents.insert(event_id.clone(), event);
+
+        match edit {
+            Some(key) => {
+                self.applied_edits
+                    .insert(event_id.clone(), AppliedEdit::from_key(&key, canonical));
+            }
+            // The canonical projection is not showing an edit, so the row is not
+            // edited any more (an edit rollback).
+            None if canonical => {
+                self.applied_edits.remove(&event_id);
+            }
+            None => {}
+        }
 
         if let Some(pending) = self.pending_edits.remove(&event_id) {
             for pending in pending {
@@ -181,6 +238,10 @@ impl SearchDocumentStore {
     pub fn upsert_edit(&mut self, mut edit: SearchEdit, canonical: bool) {
         // Edit text is never retained, here or while the edit is pending.
         edit.body = None;
+        if self.retired_edits.get(&edit.target_event_id) == Some(&edit.edit_event_id) {
+            // The edit was redacted; it must not come back through a replay.
+            return;
+        }
         // The edit body's own content is dropped, but the edit event id and
         // timestamp still mark the attachment as edited.
 
@@ -222,12 +283,36 @@ impl SearchDocumentStore {
     /// canonical projection's current content -- can then set the row. Without
     /// this, an applied rename would pin the row against every later message.
     pub fn redact(&mut self, event_id: &str) {
-        self.applied_edits
-            .retain(|_, applied| applied.edit_event_id != event_id);
-        self.pending_edits.retain(|_, pending| {
-            pending.retain(|pending| pending.edit.edit_event_id != event_id);
-            !pending.is_empty()
-        });
+        // A redacted edit is no longer visible, so it is retired and its content
+        // is dropped: the row's attachment metadata came from that edit, and
+        // nothing here can rebuild the version it replaced. The next message for
+        // the target -- a replay of the original, or the canonical projection's
+        // current content -- sets the row again.
+        let mut affected: Vec<String> = self
+            .applied_edits
+            .iter()
+            .filter(|(_, applied)| applied.edit_event_id == event_id)
+            .map(|(target, _)| target.clone())
+            .collect();
+        affected.extend(
+            self.pending_edits
+                .iter()
+                .filter(|(_, pending)| {
+                    pending
+                        .iter()
+                        .any(|pending| pending.edit.edit_event_id == event_id)
+                })
+                .map(|(target, _)| target.clone()),
+        );
+        for target in affected {
+            self.retired_edits
+                .insert(target.clone(), event_id.to_owned());
+            self.documents.remove(&target);
+            self.applied_edits.remove(&target);
+            self.pending_edits.remove(&target);
+        }
+
+        self.retired_edits.remove(event_id);
         self.documents.remove(event_id);
         self.applied_edits.remove(event_id);
         self.pending_edits.remove(event_id);

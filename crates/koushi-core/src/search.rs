@@ -53,8 +53,8 @@ use std::time::{Duration, Instant};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_sdk::MatrixClientSession;
 use koushi_search::{
-    AttachmentDocument, SearchCandidate, SearchDocumentStore, SearchEdit, SearchRoomFilter,
-    SearchableEvent, SensitiveString, cjk_search_query_variants,
+    AttachmentDocument, SearchCandidate, SearchDocumentStore, SearchEdit, SearchEditKey,
+    SearchRoomFilter, SearchableEvent, SensitiveString, cjk_search_query_variants,
 };
 use koushi_state::{
     AppAction, AttachmentFilter, AttachmentScope, AttachmentSort, SearchCrawlerSettings,
@@ -198,6 +198,9 @@ pub enum SearchIndexMessage {
         /// message's current visible content. A history crawl sends `false`, and
         /// the store then keeps an attachment an edit already produced.
         canonical: bool,
+        /// The edit that produced this content, when the message is edited, so
+        /// the content and the edit that follows are one guarded update.
+        edit: Option<SearchEditKey>,
     },
     /// A message was edited. Update the document store.
     Edit {
@@ -1247,6 +1250,7 @@ impl SearchActor {
                 attachment_filename,
                 attachment,
                 canonical,
+                edit,
             } => {
                 // Capture the visible-state identifiers before the payload is
                 // consumed by the document store, so `IndexUpdated` can wake
@@ -1262,7 +1266,7 @@ impl SearchActor {
                     attachment_filename: attachment_filename.map(SensitiveString::new),
                     attachment,
                 };
-                self.document_store.upsert_message(event, canonical);
+                self.document_store.upsert_message(event, canonical, edit);
                 Some((indexed_room_id, indexed_event_id))
             }
             SearchIndexMessage::Edit {
@@ -1297,6 +1301,12 @@ impl SearchActor {
                 edited_room_id.map(|room_id| (room_id, edited_event_id))
             }
             SearchIndexMessage::Redact { event_id } => {
+                // A redacted edit drops the attachment metadata it produced, so
+                // the room's Files rows must be rebuilt from the store again
+                // rather than served from a once-per-session snapshot.
+                if let Some(room_id) = self.document_store.room_id_of(&event_id) {
+                    self.refreshed_attachment_rooms.remove(room_id);
+                }
                 self.document_store.redact(&event_id);
                 None
             }
@@ -2172,20 +2182,16 @@ fn attachment_messages_from_events(
     events: &[matrix_sdk::deserialized_responses::TimelineEvent],
     settings: &SearchCrawlerSettings,
 ) -> Vec<SearchIndexMessage> {
-    // A replacement is only visible when it comes from the sender of the message
-    // it replaces. The event cache can hold one that does not, and applying it
-    // would attribute another sender's attachment metadata to this row. The SDK
-    // projection validates replacements too; this is the subset the crawler
-    // projection can check on its own.
-    let senders: HashMap<String, String> = events
+    // A replacement is only visible content when the SDK's validity rules accept
+    // it: the event cache can hold one that is not (another sender, another event
+    // type, an edit of an edit), and replaying it would attribute that metadata
+    // to this row. An unknown target cannot be validated, so it is refused too.
+    let by_id: HashMap<String, &matrix_sdk::deserialized_responses::TimelineEvent> = events
         .iter()
         .filter_map(|event| {
             let json: serde_json::Value =
                 serde_json::from_str(event.kind.raw().json().get()).ok()?;
-            Some((
-                json.get("event_id")?.as_str()?.to_owned(),
-                json.get("sender")?.as_str()?.to_owned(),
-            ))
+            Some((json.get("event_id")?.as_str()?.to_owned(), event))
         })
         .collect();
 
@@ -2199,11 +2205,9 @@ fn attachment_messages_from_events(
             let value: serde_json::Value = serde_json::from_str(json).ok()?;
             let content = value.get("content")?;
             if crate::search_crawler::is_edit_event(content) {
-                let sender = value.get("sender").and_then(|sender| sender.as_str())?;
                 let target = crate::search_crawler::edit_target_event_id(content)?;
-                if senders.get(&target).map(String::as_str) != Some(sender) {
-                    // Unknown target or a different sender: not a visible
-                    // replacement, so its metadata must not reach the row.
+                let original = by_id.get(&target)?;
+                if !koushi_sdk::replacement_is_valid(original, event) {
                     return None;
                 }
             }

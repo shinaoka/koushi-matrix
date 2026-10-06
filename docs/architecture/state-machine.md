@@ -4923,10 +4923,14 @@ stateDiagram-v2
 - Search result context labels are Rust-owned projections. They may include a
   space label plus room label for disambiguation, but the frontend only renders
   the DTO and must not recompute cross-space context.
-- The search actor returns local index results first and may later supplement
-  them with SDK search results for the same request/query/scope. New search
-  messages preempt older SDK supplement work: the actor aborts or drops stale SDK
-  completions and must not make a newer query wait for an older remote search.
+- Search is index-first: the persistent encrypted ngram index is the only
+  candidate source, and a query emits exactly one `Results` (or a typed failure).
+  A newer query preempts an older one: the actor aborts the in-flight SDK work and
+  the superseded request is settled with `IntentLifecycle` `BenignNoOp`/`Superseded`
+  at the transition that replaced it, so its caller stops waiting.
+- A query verifies candidates with the account's content policy captured when it
+  started. A policy change invalidates a result verified under the previous policy,
+  and the actor re-verifies the same query under the current one.
 
 The ngram index is a candidate generator, not the source of display truth. Before
 returning a result, the search adapter must run a second-pass verification over
@@ -5027,9 +5031,12 @@ stateDiagram-v2
   re-checks the newest known latest event id so an event that arrived during
   the catch-up is not missed.
 
-- **Auto-start (idempotent)**: `RoomListUpdated` emits
-  `AppEffect::NotifySearchCrawlerRoomsAvailable` with all current joined rooms
-  whenever `speed != Paused`. The `SearchActor` owns an Element-style
+- **Auto-start (idempotent)**: every authoritative room list emits
+  `AppEffect::NotifySearchCrawlerRoomsAvailable` with all current joined rooms and
+  the account's content policy, whatever `speed` is and even when the room list is
+  empty: the notification is also how the actor learns the content policy (which
+  governs queries while crawling is paused) and how commitments for rooms that are
+  gone are pruned. Paused settings only mean the actor starts no crawls. The `SearchActor` owns an Element-style
   checkpoint queue: it skips rooms already queued, actively paging, or
   completed (unless a catch-up is due, above), fetches one bounded `/messages` page at a time, and pushes an
   unfinished checkpoint to the back of the queue. This round-robin shape avoids

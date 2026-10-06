@@ -446,6 +446,7 @@ pub(crate) fn event_json_to_index_message(
                 attachment_filename,
                 attachment,
                 canonical: false,
+                edit: None,
             })
         }
         "m.sticker" => {
@@ -469,6 +470,7 @@ pub(crate) fn event_json_to_index_message(
                 attachment_filename,
                 attachment,
                 canonical: false,
+                edit: None,
             })
         }
         _ => None,

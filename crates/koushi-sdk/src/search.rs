@@ -536,6 +536,26 @@ pub async fn persisted_room_events(
         .map_err(|_| MatrixSearchError::Internal)
 }
 
+/// Whether `replacement` is a valid visible edit of `original`.
+///
+/// The SDK's authoritative check (sender, event type, state key, replacement
+/// target, edit-of-edit, encryption compatibility), so a caller that replays raw
+/// persisted events cannot accept a replacement the SDK would reject. The event
+/// cache can hold such an event, and applying it would attribute the
+/// replacement's metadata to the original message.
+pub fn replacement_is_valid(
+    original: &matrix_sdk::deserialized_responses::TimelineEvent,
+    replacement: &matrix_sdk::deserialized_responses::TimelineEvent,
+) -> bool {
+    matrix_sdk_base::check_validity_of_replacement_events(
+        original.kind.raw(),
+        original.encryption_info().map(|info| &**info),
+        replacement.kind.raw(),
+        replacement.encryption_info().map(|info| &**info),
+    )
+    .is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

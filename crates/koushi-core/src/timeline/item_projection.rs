@@ -1058,6 +1058,10 @@ impl TimelineActor {
                     attachment: attachment.clone(),
                     // The timeline projection carries the current visible state.
                     canonical: true,
+                    edit: Some(koushi_search::SearchEditKey {
+                        edit_event_id: edit_event_id.to_string(),
+                        timestamp_ms: edit_timestamp_ms.unwrap_or(timestamp_ms),
+                    }),
                 },
                 SearchIndexMessage::Edit {
                     edit_event_id,
@@ -1083,6 +1087,7 @@ impl TimelineActor {
                 attachment_filename,
                 attachment,
                 canonical: true,
+                edit: None,
             }]
         }
     }

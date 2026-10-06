@@ -59,6 +59,7 @@ fn room_scope_filters_attachments_to_single_room() {
             attachment(AttachmentKind::Image, "a.png"),
         ),
         true,
+        None,
     );
     store.upsert_message(
         event(
@@ -69,6 +70,7 @@ fn room_scope_filters_attachments_to_single_room() {
             attachment(AttachmentKind::File, "b.pdf"),
         ),
         true,
+        None,
     );
 
     let results = store.attachments(
@@ -96,6 +98,7 @@ fn space_scope_includes_only_child_room_attachments() {
             attachment(AttachmentKind::Image, "alpha.png"),
         ),
         true,
+        None,
     );
     store.upsert_message(
         event(
@@ -106,6 +109,7 @@ fn space_scope_includes_only_child_room_attachments() {
             attachment(AttachmentKind::Audio, "beta.mp3"),
         ),
         true,
+        None,
     );
     store.upsert_message(
         event(
@@ -116,6 +120,7 @@ fn space_scope_includes_only_child_room_attachments() {
             attachment(AttachmentKind::Video, "gamma.mp4"),
         ),
         true,
+        None,
     );
 
     let results = store.attachments(
@@ -149,6 +154,7 @@ fn account_scope_returns_all_attachments() {
             attachment(AttachmentKind::Image, "a.png"),
         ),
         true,
+        None,
     );
     store.upsert_message(
         event(
@@ -159,6 +165,7 @@ fn account_scope_returns_all_attachments() {
             attachment(AttachmentKind::File, "b.pdf"),
         ),
         true,
+        None,
     );
 
     let results = store.attachments(
@@ -182,6 +189,7 @@ fn kind_filter_selects_requested_attachment_kinds() {
             attachment(AttachmentKind::Image, "img.png"),
         ),
         true,
+        None,
     );
     store.upsert_message(
         event(
@@ -192,6 +200,7 @@ fn kind_filter_selects_requested_attachment_kinds() {
             attachment(AttachmentKind::Video, "vid.mp4"),
         ),
         true,
+        None,
     );
     store.upsert_message(
         event(
@@ -202,6 +211,7 @@ fn kind_filter_selects_requested_attachment_kinds() {
             attachment(AttachmentKind::Audio, "aud.mp3"),
         ),
         true,
+        None,
     );
     store.upsert_message(
         event(
@@ -212,6 +222,7 @@ fn kind_filter_selects_requested_attachment_kinds() {
             attachment(AttachmentKind::File, "file.pdf"),
         ),
         true,
+        None,
     );
     store.upsert_message(
         event(
@@ -222,6 +233,7 @@ fn kind_filter_selects_requested_attachment_kinds() {
             attachment(AttachmentKind::Sticker, "sticker.png"),
         ),
         true,
+        None,
     );
 
     let results = store.attachments(
@@ -251,6 +263,7 @@ fn filename_query_matches_substring_case_insensitively() {
             attachment(AttachmentKind::File, "Quarterly_REPORT.pdf"),
         ),
         true,
+        None,
     );
     store.upsert_message(
         event(
@@ -261,6 +274,7 @@ fn filename_query_matches_substring_case_insensitively() {
             attachment(AttachmentKind::File, "notes.txt"),
         ),
         true,
+        None,
     );
 
     let results = store.attachments(
@@ -288,6 +302,7 @@ fn filename_query_matches_cjk_filename() {
             attachment(AttachmentKind::File, "会議資料.pdf"),
         ),
         true,
+        None,
     );
 
     let results = store.attachments(
@@ -315,6 +330,7 @@ fn sort_by_timestamp_orders_results() {
             attachment(AttachmentKind::Image, "oldest.png"),
         ),
         true,
+        None,
     );
     store.upsert_message(
         event(
@@ -325,6 +341,7 @@ fn sort_by_timestamp_orders_results() {
             attachment(AttachmentKind::Image, "middle.png"),
         ),
         true,
+        None,
     );
     store.upsert_message(
         event(
@@ -335,6 +352,7 @@ fn sort_by_timestamp_orders_results() {
             attachment(AttachmentKind::Image, "newest.png"),
         ),
         true,
+        None,
     );
 
     let results = store.attachments(
@@ -378,6 +396,7 @@ fn sort_by_filename_orders_results_alphabetically() {
             attachment(AttachmentKind::File, "charlie.txt"),
         ),
         true,
+        None,
     );
     store.upsert_message(
         event(
@@ -388,6 +407,7 @@ fn sort_by_filename_orders_results_alphabetically() {
             attachment(AttachmentKind::File, "alpha.txt"),
         ),
         true,
+        None,
     );
     store.upsert_message(
         event(
@@ -398,6 +418,7 @@ fn sort_by_filename_orders_results_alphabetically() {
             attachment(AttachmentKind::File, "bravo.txt"),
         ),
         true,
+        None,
     );
 
     let results = store.attachments(
@@ -427,6 +448,7 @@ fn edit_updates_attachment_for_query() {
             attachment(AttachmentKind::Image, "draft.png"),
         ),
         true,
+        None,
     );
 
     store.upsert_edit(
@@ -469,6 +491,7 @@ fn redacted_attachment_is_excluded_from_results() {
             attachment(AttachmentKind::File, "secret.pdf"),
         ),
         true,
+        None,
     );
 
     store.redact("$redacted");
