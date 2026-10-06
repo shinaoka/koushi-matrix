@@ -1763,9 +1763,6 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             scope,
             message,
         } => search::handle_search_failed(state, request_id, connection_id, query, scope, message),
-        AppAction::SearchResultOpened { room_id, event_id } => {
-            navigation::handle_search_result_opened(state, room_id, event_id)
-        }
         AppAction::SearchClosed => search::handle_search_closed(state),
         AppAction::SearchIndexRebuildRequested { request_id: _ } => {
             search::handle_search_index_rebuild_requested(state)

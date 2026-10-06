@@ -33,19 +33,6 @@ pub(crate) fn handle_invite_list_updated(
     vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
 }
 
-pub(crate) fn handle_search_result_opened(
-    state: &mut AppState,
-    room_id: String,
-    event_id: String,
-) -> Vec<AppEffect> {
-    // Identifiers only; the navigation diff persists it through the existing
-    // encrypted navigation state.
-    state
-        .navigation
-        .record_search_warm_target(&room_id, &event_id);
-    Vec::new()
-}
-
 pub(crate) fn handle_navigation_loaded(
     state: &mut AppState,
     navigation: NavigationState,

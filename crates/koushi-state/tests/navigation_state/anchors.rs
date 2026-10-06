@@ -62,7 +62,6 @@ fn navigation_state_round_trips_scroll_anchors_through_serde() {
         home_selection: koushi_state::HomeSelection::default(),
         space_local_presentations: koushi_state::SpaceLocalPresentations::default(),
         legacy_frontend_preferences_imported: false,
-        search_warm_targets: Vec::new(),
         space_order: vec!["!space:test.example.com".to_owned()],
         last_room_by_space_id: BTreeMap::from([(
             "!space:test.example.com".to_owned(),
@@ -234,73 +233,4 @@ fn closing_focused_context_returns_main_pane_to_live() {
     // #161: returning to live from the anchored view drops the stale room scroll
     // anchor so the live timeline pins to the live edge, not a pre-jump position.
     assert!(!state.navigation.room_scroll_anchors.contains_key("room-a"));
-}
-
-#[test]
-fn search_warm_targets_stay_most_recent_first_deduplicated_and_bounded() {
-    let mut navigation = koushi_state::NavigationState::default();
-
-    for index in 0..koushi_state::MAX_SEARCH_WARM_TARGETS + 3 {
-        assert!(navigation.record_search_warm_target("room-a", &format!("$event-{index}")));
-    }
-
-    assert_eq!(
-        navigation.search_warm_targets.len(),
-        koushi_state::MAX_SEARCH_WARM_TARGETS
-    );
-    let newest = koushi_state::MAX_SEARCH_WARM_TARGETS + 2;
-    assert_eq!(
-        navigation.search_warm_targets[0].event_id,
-        format!("$event-{newest}")
-    );
-
-    // Re-opening an older target moves it to the front instead of duplicating.
-    assert!(navigation.record_search_warm_target("room-a", "$event-4"));
-    assert_eq!(navigation.search_warm_targets[0].event_id, "$event-4");
-    assert_eq!(
-        navigation
-            .search_warm_targets
-            .iter()
-            .filter(|target| target.event_id == "$event-4")
-            .count(),
-        1
-    );
-
-    // Re-opening the newest target is a no-op.
-    assert!(!navigation.record_search_warm_target("room-a", "$event-4"));
-}
-
-#[test]
-fn search_warm_targets_survive_the_persistence_view() {
-    let mut navigation = koushi_state::NavigationState::default();
-    navigation.record_search_warm_target("!room:test", "$event:test");
-
-    let persisted = navigation.persistence_view();
-
-    assert_eq!(
-        persisted.search_warm_targets,
-        navigation.search_warm_targets
-    );
-}
-
-#[test]
-fn opening_a_search_result_records_a_warm_target() {
-    let mut state = ready_state();
-    state.navigation.active_room_id = Some("room-a".to_owned());
-
-    reduce(
-        &mut state,
-        AppAction::SearchResultOpened {
-            room_id: "room-b".to_owned(),
-            event_id: "$hit:test".to_owned(),
-        },
-    );
-
-    assert_eq!(
-        state.navigation.search_warm_targets,
-        vec![koushi_state::SearchWarmTarget {
-            room_id: "room-b".to_owned(),
-            event_id: "$hit:test".to_owned(),
-        }]
-    );
 }

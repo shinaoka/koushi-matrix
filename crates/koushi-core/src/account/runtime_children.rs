@@ -54,72 +54,6 @@ fn record_read_persistence(
     );
 }
 
-/// Lower bound on the display window warmed per search target, in disk chunks.
-const SEARCH_WARM_CHUNKS: u16 = 2;
-/// Upper bound on the events a warm target may load from disk.
-const SEARCH_WARM_EVENTS: u16 = 200;
-
-/// Warm the persisted search results' display windows from the local store
-/// before the user opens one (#1150 M4).
-///
-/// Runs off the actor's critical path: it reloads the encrypted navigation
-/// state, then loads each target's disk chunks cache-only. A miss or an
-/// unreadable state is not an error — the target then loads exactly as it would
-/// without a warm set.
-fn spawn_search_warm_prime(
-    session: Arc<MatrixClientSession>,
-    store: StoreActor,
-    key_id: Option<SessionKeyId>,
-) -> Option<executor::JoinHandle<()>> {
-    let key_id = key_id?;
-
-    Some(executor::spawn(async move {
-        let Ok(Ok(navigation)) =
-            executor::spawn_blocking(move || store.load_navigation(&key_id)).await
-        else {
-            return;
-        };
-        if navigation.search_warm_targets.is_empty() {
-            return;
-        }
-
-        // The cache-only load needs an active event-cache subscription; it is
-        // idempotent, so worst case this is already done.
-        let _ = session.client().event_cache().subscribe();
-        for target in &navigation.search_warm_targets {
-            warm_cached_display_window(&session, target).await;
-        }
-    }))
-}
-
-/// Load one search target's display window from the local store, cache-only.
-///
-/// Bounded by `SEARCH_WARM_CHUNKS`/`SEARCH_WARM_EVENTS` and stops as soon as
-/// the target event's chunk is resident, so a long history never turns into a
-/// full read.
-async fn warm_cached_display_window(
-    session: &MatrixClientSession,
-    target: &koushi_state::SearchWarmTarget,
-) {
-    let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&target.room_id) else {
-        return;
-    };
-    let Some(room) = session.client().get_room(&room_id) else {
-        return;
-    };
-    let Ok(event_id) = matrix_sdk::ruma::EventId::parse(&target.event_id) else {
-        return;
-    };
-    let Ok((cache, _guards)) = room.event_cache().await else {
-        return;
-    };
-
-    let _ = cache
-        .pagination()
-        .run_backwards_cache_only(SEARCH_WARM_EVENTS, Some(&event_id), SEARCH_WARM_CHUNKS)
-        .await;
-}
-
 pub(super) fn next_read_persistence_session_generation() -> u64 {
     READ_PERSISTENCE_SESSION_SERIAL
         .fetch_add(1, Ordering::Relaxed)
@@ -241,13 +175,6 @@ impl AccountActor {
         // Clear any buffered notification so it is not replayed for the next
         // session after logout or account switch.
         self.pending_crawler_notification = None;
-        // The warm prime reads the navigation state and the event cache from
-        // the store, so it must be cancelled and awaited before the store is
-        // torn down (shutdown step 7).
-        if let Some(task) = self.search_warm_task.take() {
-            task.abort();
-            let _ = task.await;
-        }
         if let Some(handle) = self.search_actor.take() {
             handle.shutdown().await;
         }
@@ -396,11 +323,6 @@ impl AccountActor {
         let search_index_tx = search_handle.index_sender();
 
         self.search_actor = Some(search_handle);
-        self.search_warm_task = spawn_search_warm_prime(
-            session.clone(),
-            self.store.clone(),
-            self.session_key_id.clone(),
-        );
         // Replay any notification that arrived before the actor was ready so
         // rooms already known to the reducer at session-restore time are not
         // missed by the auto-start logic. Flush is non-blocking; if the search

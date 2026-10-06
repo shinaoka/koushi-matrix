@@ -302,6 +302,16 @@ Remaining from round 7:
   rollback converge.
 - **M4** (warm set) still needs the maintainer's decision.
 
+### M4 removed (decision: delete the warm set)
+
+The maintainer chose deletion. Removed: `spawn_search_warm_prime`,
+`warm_cached_display_window` and their chunk/event budgets, `AccountActor`'s
+warm-task handle and its shutdown step, `NavigationState::search_warm_targets`
+and its bound, `AppAction::SearchResultOpened` with its reducer handler, the
+durable navigation write it scheduled, and the tests that covered them. The
+plan's startup-latency gate is therefore not required; M4 is deferred to a
+follow-up that must first show a benefit on the path it claims to speed up.
+
 Also raised: migrate commitments already written without an acknowledgement, make the "rebuild
 search database" action actually rebuild the persistent index (the user help promises it), cover
 attachment edit rollback and mixed producers, measure pending-edit residency in the memory probe,

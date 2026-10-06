@@ -22,8 +22,8 @@ feasibility gate. Historical plans below are not the new implementation brief.
 [#1150 index-first search and bounded memory](2026-10-06-issue1150-search-index-first.md)
 tracks M2: making the persistent ngram index the only candidate source and
 removing full-history RAM body/edit retention, with the remaining store shrink
-and bounded refill. M3 (durable crawl commitments) was dropped from the PR and
-M4 (startup warm set) is pending a decision.
+and bounded refill. M3 (durable crawl commitments) and M4 (startup warm set)
+were dropped from the PR.
 
 - Rooms / DMs collapsible sidebar sections (design and implementation record):
   [2026-09-19-sidebar-sections-design.md](../superpowers/specs/2026-09-19-sidebar-sections-design.md)

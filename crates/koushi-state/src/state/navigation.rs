@@ -186,13 +186,6 @@ pub struct NavigationState {
     pub main_timeline_anchor: Option<MainTimelineAnchor>,
     #[serde(default)]
     pub event_navigation: EventNavigationState,
-    /// Recently opened search results, most recent first.
-    ///
-    /// Startup loads these rooms' display windows from the local store before
-    /// timeline construction, so returning to a search result does not wait on
-    /// the network. Identifiers only.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub search_warm_targets: Vec<SearchWarmTarget>,
 }
 
 impl Default for NavigationState {
@@ -209,7 +202,6 @@ impl Default for NavigationState {
             room_scroll_anchors: BTreeMap::new(),
             main_timeline_anchor: None,
             event_navigation: EventNavigationState::Idle,
-            search_warm_targets: Vec::new(),
         }
     }
 }
@@ -289,17 +281,6 @@ impl fmt::Debug for SpaceLocalPresentation {
 
 pub const MAX_SPACE_LOCAL_PRESENTATIONS: usize = 256;
 
-/// How many recently opened search results stay warm across a restart.
-pub const MAX_SEARCH_WARM_TARGETS: usize = 8;
-
-/// A room/event pair worth warming at startup: the event a search result
-/// pointed at. Identifiers only, never message text.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct SearchWarmTarget {
-    pub room_id: String,
-    pub event_id: String,
-}
-
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SpaceLocalPresentations(pub BTreeMap<String, SpaceLocalPresentation>);
@@ -338,27 +319,6 @@ impl NavigationState {
         let mut navigation = self.clone();
         navigation.event_navigation = EventNavigationState::Idle;
         navigation
-    }
-
-    /// Remember the event a search result pointed at so a later startup can
-    /// warm its display window.
-    ///
-    /// Returns whether the persisted state changed. The list stays most recent
-    /// first, deduplicated by `(room, event)` and bounded; re-opening an older
-    /// entry moves it to the front rather than duplicating it.
-    pub fn record_search_warm_target(&mut self, room_id: &str, event_id: &str) -> bool {
-        let target = SearchWarmTarget {
-            room_id: room_id.to_owned(),
-            event_id: event_id.to_owned(),
-        };
-        if self.search_warm_targets.first() == Some(&target) {
-            return false;
-        }
-        self.search_warm_targets
-            .retain(|existing| existing != &target);
-        self.search_warm_targets.insert(0, target);
-        self.search_warm_targets.truncate(MAX_SEARCH_WARM_TARGETS);
-        true
     }
 
     pub fn apply_preference_update(&mut self, update: NavigationPreferenceUpdate) -> bool {

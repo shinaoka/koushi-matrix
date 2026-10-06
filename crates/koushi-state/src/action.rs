@@ -1472,10 +1472,6 @@ pub enum AppAction {
     },
     CloseFocusedContext,
     /// The user opened a search result at `(room_id, event_id)`.
-    SearchResultOpened {
-        room_id: String,
-        event_id: String,
-    },
     SearchClosed,
     SearchEdited {
         query: String,
