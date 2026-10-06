@@ -419,6 +419,16 @@ export class TauriDesktopApi implements DesktopApi {
     return this.invokeCommand<CommandAdmission>("import_room_keys", { sourcePath, passphrase });
   }
 
+  /** Native save dialog owned by the adapter; `null` when dismissed. */
+  async chooseRoomKeyExportDestination(dialogTitle: string): Promise<string | null> {
+    return this.invokeCommand<string | null>("choose_room_key_export_destination", { dialogTitle });
+  }
+
+  /** Native open dialog owned by the adapter; `null` when dismissed. */
+  async chooseRoomKeyImportSource(dialogTitle: string): Promise<string | null> {
+    return this.invokeCommand<string | null>("choose_room_key_import_source", { dialogTitle });
+  }
+
   async historyExportTimeZone(): Promise<string> {
     return this.invokeCommand<string>("history_export_time_zone");
   }

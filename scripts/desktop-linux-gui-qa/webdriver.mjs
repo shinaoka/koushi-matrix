@@ -189,14 +189,6 @@ async function safeUserSettingsDiagnostics(browser) {
 }
 
 
-export async function setKeyManagementFormInput(browser, formLabel, fieldLabel, value) {
-  const selector = keyManagementFormInputXpath(formLabel, fieldLabel);
-  const input = await browser.$(selector);
-  await input.waitForDisplayed({ timeout: timeoutMs });
-  await input.setValue(value);
-}
-
-
 export async function clickKeyManagementFormButton(browser, formLabel, buttonLabel, timeout) {
   const selector = `//form[@aria-label=${xpathLiteral(
     formLabel
@@ -1642,11 +1634,6 @@ export async function waitForInputValue(browser, label, expectedValue, timeout, 
 
 function roomButtonXpath(sectionId, roomName) {
   return `//section[@data-room-section=${xpathLiteral(sectionId)}]//button[@data-testid="room-item"][.//span[normalize-space()=${xpathLiteral(roomName)}]]`;
-}
-
-
-function keyManagementFormInputXpath(formLabel, fieldLabel) {
-  return `//form[@aria-label=${xpathLiteral(formLabel)}]//label[.//span[normalize-space()=${xpathLiteral(fieldLabel)}]]//input`;
 }
 
 

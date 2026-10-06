@@ -1656,6 +1656,8 @@ pub fn run() {
             commands::e2ee::export_room_keys,
             commands::e2ee::import_room_keys,
             commands::history_export::history_export_time_zone,
+            commands::room_key_files::choose_room_key_export_destination,
+            commands::room_key_files::choose_room_key_import_source,
             commands::history_export::export_history,
             commands::history_export::stop_history_export,
             commands::history_export::retry_history_export,

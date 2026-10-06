@@ -3191,16 +3191,13 @@ function AccountContent({
     await settleCommand(api.importRoomKeys(sourcePath, passphrase));
   }
 
+  // The adapter owns the room-key file dialogs so unattended GUI QA can answer
+  // them with a debug-only fixed file.
   async function chooseRoomKeyExportDestination(): Promise<string | null> {
     if (!isTauriRuntime()) {
       return null;
     }
-    const selected = await windowDialogPort.saveFile({
-      title: t("settings.roomKeyExport"),
-      defaultPath: "koushi-room-keys.txt",
-      filters: [{ name: t("settings.roomKeyExport"), extensions: ["txt", "json"] }]
-    });
-    return selected || null;
+    return api.chooseRoomKeyExportDestination(t("settings.roomKeyExport"));
   }
 
   async function chooseSecureBackupDestination(): Promise<string | null> {
@@ -3224,13 +3221,7 @@ function AccountContent({
     if (!isTauriRuntime()) {
       return null;
     }
-    const selected = await windowDialogPort.openFile({
-      title: t("settings.roomKeyImport"),
-      multiple: false,
-      filters: [{ name: t("settings.roomKeyImport"), extensions: ["txt", "json"] }],
-      fileAccessMode: "scoped"
-    });
-    return typeof selected === "string" ? selected : null;
+    return api.chooseRoomKeyImportSource(t("settings.roomKeyImport"));
   }
 
   async function bootstrapSecureBackup(
