@@ -35,6 +35,15 @@ folding, filename-field attribution, false-positive rejection).
   spent, with `50` candidates per page. The pre-SDK local emission is gone, so a
   query emits exactly one `Results`; an SDK failure emits
   `AppAction::SearchFailed` plus `CoreEvent::OperationFailed`.
+- **M3 durable crawl commitments**: an encrypted per-account record
+  (`store/search_crawl.rs`) holds, per crawled room, the boundary event id and
+  the counters the room row reports. Startup seeds the completed-room set from
+  it, so a restart no longer re-crawls committed history; a completed or removed
+  room updates it. The record is generation-tagged
+  (`SEARCH_CRAWL_BACKEND_VERSION`): commitments from another version are ignored
+  and dropped, making an index or extraction change a migration. Only
+  identifiers and counters are stored; a missing file is an empty commit set and
+  an unreadable one is a typed `StoreUnavailable` that means "crawl again".
 
 ## Remaining
 
@@ -45,12 +54,13 @@ folding, filename-field attribution, false-positive rejection).
 2. **QA false-green** is addressed by removing the pre-SDK emission: each
    accepted query now emits exactly one `Results`, so the QA helper that accepts
    the first `Results` can no longer read an empty placeholder as settled.
-3. **M3** durable, generation-tagged index-commit checkpoints for a resumable
-   bounded crawl, and typed missing/failure outcomes for cache-only offline
-   reads.
-4. **M4** warm set on the existing encrypted navigation persistence bringing the
+3. **M4** warm set on the existing encrypted navigation persistence bringing the
    SDK display window up before timeline construction, with a startup-latency
    RED gate.
+4. **Evidence still outstanding**: a synthetic history-scale measurement showing
+   zero retained body/edit bytes as indexed history grows (with index/disk size
+   reported separately), the real-homeserver QA lane, and the SDK PR merge
+   decision (its red checks are fork-wide pre-existing failures).
 
 ## Required evidence
 
