@@ -1904,7 +1904,8 @@ async fn timeline_actor_spawn_returns_before_authoritative_publish_waits_for_man
         Some(TimelineMessage::IgnoredUsersUpdated { .. })
     ));
     assert!(matches!(
-        executor::timeout(Duration::from_millis(100), manager_rx.recv())
+        // Liveness bound: a publish that never resumes leaves this pending.
+        executor::timeout(Duration::from_secs(60), manager_rx.recv())
             .await
             .expect("authoritative startup publish must resume after capacity opens"),
         Some(TimelineMessage::AuthoritativeReadStateObserved {

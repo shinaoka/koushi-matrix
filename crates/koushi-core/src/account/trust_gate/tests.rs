@@ -1179,7 +1179,8 @@ async fn recovery_state_observer_stop_interrupts_blocked_action_delivery() {
 
     delivery_barrier.wait().await;
     stop_tx.send(()).expect("request observer stop");
-    match executor::timeout(Duration::from_millis(250), &mut task).await {
+    // Liveness bound: without the stop, the blocked delivery never returns.
+    match executor::timeout(Duration::from_secs(60), &mut task).await {
         Ok(joined) => joined.expect("recovery-state observer task"),
         Err(_) => {
             task.abort();

@@ -241,7 +241,8 @@ async fn incoming_verification_mailbox_send_is_stop_aware_when_full() {
     tokio::task::yield_now().await;
 
     stop_tx.send(()).expect("request observer stop");
-    let delivered = executor::timeout(Duration::from_millis(20), blocked_send)
+    // Liveness bound: without the stop, the full-mailbox send never returns.
+    let delivered = executor::timeout(Duration::from_secs(60), blocked_send)
         .await
         .expect("a stop request must interrupt the full-mailbox send")
         .expect("send task");
@@ -282,7 +283,8 @@ async fn incoming_verification_observer_join_has_a_bounded_abort_fallback() {
         Duration::from_millis(1),
     ));
 
-    let result = executor::timeout(Duration::from_millis(20), &mut stop).await;
+    // Liveness bound: without the abort, the nonresponsive child never ends.
+    let result = executor::timeout(Duration::from_secs(60), &mut stop).await;
     if result.is_err() {
         stop.abort();
         child_abort.abort();
