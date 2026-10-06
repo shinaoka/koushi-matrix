@@ -668,9 +668,29 @@ struct IndexCandidateVerification {
     rooms: HashSet<String>,
     /// Candidates whose current content was available in the cache.
     resolved: usize,
-    /// Candidates that matched the query.
+    /// Candidates that matched the query, in pager order and deduplicated by
+    /// resolved identity.
     verified: usize,
-    results: Vec<koushi_state::SearchResult>,
+    results: Vec<VerifiedCandidate>,
+}
+
+/// The `(timestamp, event_id)` key the persistent index pages a room's matches
+/// by, descending.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct IndexOrderKey {
+    timestamp_millis: i64,
+    event_id: String,
+}
+
+/// A verified candidate together with the key its candidate scan was ordered by.
+///
+/// Verification filters candidates, so the newest results are the newest *by
+/// this key*: the scan can only have seen candidates at or below it. The
+/// resolved content's timestamp (an edit's, for example) need not agree with it,
+/// so selection must not re-order by that timestamp before capping the results.
+struct VerifiedCandidate {
+    index_key: IndexOrderKey,
+    result: koushi_state::SearchResult,
 }
 
 impl SearchActor {
@@ -1766,7 +1786,7 @@ async fn run_sdk_query(
 ) -> SearchSdkQueryResult {
     let sdk_started = Instant::now();
     let mut verification = IndexCandidateVerification::default();
-    let mut verified_by_key: HashMap<(String, String), koushi_state::SearchResult> = HashMap::new();
+    let mut verified_by_identity: HashMap<(String, String), VerifiedCandidate> = HashMap::new();
 
     for (variant_index, query_variant) in variants.iter().enumerate() {
         let variant_started = Instant::now();
@@ -1816,10 +1836,23 @@ async fn run_sdk_query(
         verification.resolved += outcome.resolved;
         verification.verified += outcome.verified;
         verification.rooms.extend(outcome.rooms);
-        for result in outcome.results {
-            verified_by_key
-                .entry((result.room_id.clone(), result.event_id.clone()))
-                .or_insert(result);
+        for candidate in outcome.results {
+            let identity = (
+                candidate.result.room_id.clone(),
+                candidate.result.event_id.clone(),
+            );
+            match verified_by_identity.entry(identity) {
+                // One message can match more than one query variant; keep the
+                // newer index position of the two.
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    if entry.get().index_key < candidate.index_key {
+                        entry.insert(candidate);
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(candidate);
+                }
+            }
         }
     }
 
@@ -1830,7 +1863,7 @@ async fn run_sdk_query(
         query,
         scope,
         projection: Ok(SearchProjection {
-            results: newest_first(verified_by_key.into_values().collect()),
+            results: select_newest(verified_by_identity.into_values().collect()),
             verification,
             project_ms: total_ms,
         }),
@@ -1838,19 +1871,32 @@ async fn run_sdk_query(
     }
 }
 
-/// Sort verified results newest first and cap them at the result limit.
+/// Cap verified candidates at the result limit and order them for display.
 ///
-/// The tiebreak matches the index's `(timestamp, event_id)` order, so the
-/// newest results presented are the newest candidates the scan examined.
-fn newest_first(mut results: Vec<koushi_state::SearchResult>) -> Vec<koushi_state::SearchResult> {
-    results.sort_by(|left, right| {
+/// The cap must be applied in the order the candidate scan used -- the index's
+/// `(timestamp, event_id)` key, descending -- because that is the only order in
+/// which "newest" is knowable: re-ordering by the displayed (resolved) timestamp
+/// first can drop a result the scan did see as newer. Callers deduplicate by
+/// resolved identity before this point.
+fn select_newest(mut candidates: Vec<VerifiedCandidate>) -> Vec<koushi_state::SearchResult> {
+    candidates.sort_by(|left, right| {
         right
-            .timestamp_ms
-            .cmp(&left.timestamp_ms)
-            .then_with(|| right.event_id.cmp(&left.event_id))
+            .index_key
+            .cmp(&left.index_key)
+            .then_with(|| right.result.event_id.cmp(&left.result.event_id))
     });
-    results.truncate(SEARCH_CANDIDATE_LIMIT);
-    results
+    candidates.truncate(SEARCH_CANDIDATE_LIMIT);
+    candidates.sort_by(|left, right| {
+        right
+            .result
+            .timestamp_ms
+            .cmp(&left.result.timestamp_ms)
+            .then_with(|| right.index_key.cmp(&left.index_key))
+    });
+    candidates
+        .into_iter()
+        .map(|candidate| candidate.result)
+        .collect()
 }
 
 /// Verify one query variant, paging the index until enough candidates match or
@@ -1869,6 +1915,7 @@ async fn verify_literal_candidates(
     let mut pager =
         koushi_sdk::MatrixLiteralSearchPager::new(session, query, sdk_scope, SEARCH_CANDIDATE_PAGE);
     let mut verification = IndexCandidateVerification::default();
+    let mut seen_identities: HashSet<(String, String)> = HashSet::new();
 
     while verification.results.len() < SEARCH_CANDIDATE_LIMIT
         && verification.in_scope < SEARCH_CANDIDATE_SCAN_BUDGET
@@ -1923,13 +1970,29 @@ async fn verify_literal_candidates(
             let resolved_candidate = SearchCandidate {
                 room_id: candidate.room_id.clone(),
                 event_id: resolved.event_id,
-                score_millis: candidate.score_millis,
+                score_millis: 0,
             };
             if let Some(result) =
                 koushi_search::verify_candidate(&resolved_candidate, &event, query)
             {
+                // An edit event id and its root can both come back from the
+                // index. Deduplicate by the resolved identity before the result
+                // counts toward the quota, so a duplicate cannot consume a slot
+                // that a distinct message needs.
+                if !seen_identities.insert((
+                    candidate.room_id.clone(),
+                    resolved_candidate.event_id.clone(),
+                )) {
+                    continue;
+                }
                 verification.verified += 1;
-                verification.results.push(result);
+                verification.results.push(VerifiedCandidate {
+                    index_key: IndexOrderKey {
+                        timestamp_millis: candidate.timestamp_millis,
+                        event_id: candidate.event_id,
+                    },
+                    result,
+                });
             }
         }
     }

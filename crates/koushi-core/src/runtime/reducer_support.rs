@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
+use koushi_protocol::event::{CoreEvent, IntentNoOpReason, IntentOutcome};
 use koushi_state::{
-    ActivityState, AppAction, AppEffect, AppState, ComposerDraftStore, NavigationState, reduce,
+    ActivityState, AppAction, AppEffect, AppState, ComposerDraftStore, NavigationState, SearchState,
+    reduce,
 };
 
 use super::composer::{
@@ -71,6 +73,20 @@ fn live_room_profile_changes(
     Some((room_id.clone(), before))
 }
 
+/// Whether the search state still owns the request with this sequence id.
+///
+/// Mirrors what `runtime::request_outcome` requires of a settled search request:
+/// a state that no longer names it can never produce its terminal outcome.
+fn search_state_tracks_request(search: &SearchState, sequence: u64) -> bool {
+    match search {
+        SearchState::TooShort { request_id, .. }
+        | SearchState::Searching { request_id, .. }
+        | SearchState::Results { request_id, .. }
+        | SearchState::Failed { request_id, .. } => *request_id == sequence,
+        SearchState::Closed | SearchState::Editing { .. } => false,
+    }
+}
+
 fn reduce_with_unread_diagnostics(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
     let room_list_trace = match &action {
         AppAction::RoomListUpdated { rooms, .. }
@@ -109,6 +125,9 @@ pub(super) struct DeferredReducerSideEffects {
     /// that `TimelineKind::Focused` actor and its room lease, so it releases
     /// them for every reducer transition, not only the explicit close command.
     release_focused_timeline: Option<koushi_protocol::ids::TimelineKey>,
+    /// A search request this transition left behind (a new query, an edited
+    /// query, too-short, close, room selection).
+    superseded_search_request: Option<koushi_protocol::ids::RequestId>,
 }
 
 impl DeferredReducerSideEffects {
@@ -169,8 +188,7 @@ impl super::AppActor {
         let previous_navigation = self.state.navigation.clone();
         let previous_event_navigation = self.state.navigation.event_navigation;
         let previous_scheduled_session = scheduled_send_session_key(&self.state);
-        let previous_scheduled_sends = self.state.scheduled_sends.clone();
-        let internal_event_navigation_select = is_internal_event_navigation_select(
+        let previous_scheduled_sends = self.state.scheduled_sends.clone();        let internal_event_navigation_select = is_internal_event_navigation_select(
             self.pending_event_navigation.as_ref(),
             &self.pending_select,
             &action,
@@ -311,6 +329,17 @@ impl super::AppActor {
             release_focused_timeline,
             ..DeferredReducerSideEffects::default()
         };
+        // A search request the state no longer tracks can never receive a
+        // terminal outcome: `SearchActor` aborts a superseded in-flight query
+        // without emitting one, and the reducer ignores a late action whose
+        // request identity no longer matches. Settle it at the transition that
+        // left it behind, so a caller awaiting the request stops waiting.
+        if let Some(request_id) = self.active_search_request
+            && !search_state_tracks_request(&self.state.search, request_id.sequence)
+        {
+            self.active_search_request = None;
+            deferred.superseded_search_request = Some(request_id);
+        }
         let previous_persisted_navigation = previous_navigation.persistence_view();
         let current_persisted_navigation = self.state.navigation.persistence_view();
         if previous_persisted_navigation != current_persisted_navigation {
@@ -381,6 +410,13 @@ impl super::AppActor {
         &mut self,
         deferred: DeferredReducerSideEffects,
     ) {
+        if let Some(request_id) = deferred.superseded_search_request {
+            self.emit(CoreEvent::IntentLifecycle {
+                request_id,
+                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                published_generation: self.state_generation,
+            });
+        }
         // Release before the event-navigation owner cleanup so a matching
         // pending focused navigation is unsubscribed exactly once here.
         if let Some(key) = deferred.release_focused_timeline {

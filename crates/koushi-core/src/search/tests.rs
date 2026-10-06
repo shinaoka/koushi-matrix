@@ -71,36 +71,70 @@ fn the_content_policy_starts_restricted_until_the_account_settings_arrive() {
 }
 
 #[test]
-fn newest_first_orders_by_timestamp_then_event_id_and_caps() {
-    let result = |event_id: &str, timestamp_ms: u64| koushi_state::SearchResult {
-        room_id: "!room-a:test".to_owned(),
-        event_id: event_id.to_owned(),
-        context_label: None,
-        sender: "@alice:test".to_owned(),
-        timestamp_ms,
-        score_millis: 0,
-        snippet: "body".to_owned(),
-        match_field: koushi_state::SearchMatchField::MessageBody,
-        highlights: Vec::new(),
-        match_kind: koushi_state::SearchMatchKind::Exact,
-    };
-
-    let mut results = vec![
-        result("$older", 100),
-        result("$newer-b", 200),
-        result("$newer-a", 200),
-    ];
+fn select_newest_caps_by_the_key_the_candidate_scan_used() {
+    let mut candidates = Vec::new();
+    // 50 results the index holds newest-first, all displaying an old timestamp.
     for index in 0..SEARCH_CANDIDATE_LIMIT {
-        results.push(result(&format!("$filler-{index}"), index as u64));
+        candidates.push(verified_candidate(
+            1_000 + index as i64,
+            &format!("$filler-{index}"),
+            500,
+        ));
     }
+    // An out-of-order older edit: a newer displayed timestamp at an older index
+    // position. Selection must not let it displace a newer result.
+    candidates.push(verified_candidate(100, "$stale", 10_000));
+    // A newer index position with an older displayed timestamp.
+    candidates.push(verified_candidate(200, "$fresh", 10));
 
-    let ordered = newest_first(results);
+    let ordered = select_newest(candidates);
 
     assert_eq!(ordered.len(), SEARCH_CANDIDATE_LIMIT);
-    // Same-timestamp ties break by larger event id, matching the index order.
-    assert_eq!(ordered[0].event_id, "$newer-b");
-    assert_eq!(ordered[1].event_id, "$newer-a");
-    assert_eq!(ordered[2].event_id, "$older");
+    assert!(
+        !ordered.iter().any(|result| result.event_id == "$stale"),
+        "a candidate the scan saw as older must not displace a newer one just because it displays a newer timestamp"
+    );
+    assert!(!ordered.iter().any(|result| result.event_id == "$fresh"));
+}
+
+#[test]
+fn select_newest_presents_by_displayed_timestamp_with_an_index_tiebreak() {
+    let ordered = select_newest(vec![
+        verified_candidate(300, "$older-index", 900),
+        verified_candidate(100, "$newest-index", 900),
+        verified_candidate(200, "$oldest-display", 100),
+    ]);
+
+    // Same displayed timestamp: the newer index position comes first, matching
+    // the index's `(timestamp, event_id)` order.
+    assert_eq!(ordered[0].event_id, "$older-index");
+    assert_eq!(ordered[1].event_id, "$newest-index");
+    assert_eq!(ordered[2].event_id, "$oldest-display");
+}
+
+fn verified_candidate(
+    index_timestamp_millis: i64,
+    index_event_id: &str,
+    displayed_timestamp_ms: u64,
+) -> VerifiedCandidate {
+    VerifiedCandidate {
+        index_key: IndexOrderKey {
+            timestamp_millis: index_timestamp_millis,
+            event_id: index_event_id.to_owned(),
+        },
+        result: koushi_state::SearchResult {
+            room_id: "!room-a:test".to_owned(),
+            event_id: index_event_id.to_owned(),
+            context_label: None,
+            sender: "@alice:test".to_owned(),
+            timestamp_ms: displayed_timestamp_ms,
+            score_millis: 0,
+            snippet: "body".to_owned(),
+            match_field: koushi_state::SearchMatchField::MessageBody,
+            highlights: Vec::new(),
+            match_kind: koushi_state::SearchMatchKind::Exact,
+        },
+    }
 }
 
 #[test]

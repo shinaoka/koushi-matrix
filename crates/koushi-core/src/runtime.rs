@@ -832,6 +832,7 @@ impl CoreRuntime {
             room_preferences_loaded_for: None,
             account_settings_loaded_for: None,
             state_generation: 0,
+            active_search_request: None,
             pending_composer_draft_persist: None,
             pending_navigation_persist: None,
             composer_draft_leases: Arc::clone(&composer_draft_leases),
@@ -1212,6 +1213,10 @@ struct AppActor {
     pending_focused_navigation: Option<PendingFocusedNavigation>,
     latest_focused_projection_generation: HashMap<TimelineKey, (u64, TimelineGeneration)>,
     pending_date_navigation_request_id: Option<RequestId>,
+    /// The search request currently owned by the search state, so a transition
+    /// that supersedes it can settle it with `IntentLifecycle` (the
+    /// `SearchActor` aborts its in-flight query without emitting an outcome).
+    active_search_request: Option<RequestId>,
     /// #1037: a date jump superseded by an accepted main send while its
     /// server lookup was in flight. The account actor's late
     /// `OpenFocusedContext` + `EnterAnchoredTimeline` reply is dropped and its
@@ -4546,6 +4551,9 @@ impl AppActor {
                     if effect_request_id != request_id.sequence {
                         continue;
                     }
+                    // The state now owns this query; the transition that
+                    // replaces it settles it as superseded.
+                    self.active_search_request = Some(request_id);
                     let _ = self
                         .account_actor
                         .send(crate::account::AccountMessage::SearchCommand(

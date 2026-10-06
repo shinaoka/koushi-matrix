@@ -1301,6 +1301,7 @@ async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
         room_preferences_loaded_for: Some(session_key),
         account_settings_loaded_for: None,
         state_generation: 0,
+        active_search_request: None,
         pending_composer_draft_persist: None,
         pending_navigation_persist: None,
         composer_draft_leases,
@@ -1388,6 +1389,92 @@ async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
     assert!(
         saturated_account_rx.try_recv().is_ok(),
         "ordinary mailbox remained saturated throughout the selection"
+    );
+}
+
+#[tokio::test]
+async fn a_superseded_search_request_settles_as_a_benign_no_op() {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let session = SessionInfo {
+        homeserver: "https://example.invalid".to_owned(),
+        user_id: "@synthetic:example.invalid".to_owned(),
+        device_id: "SYNTHETIC".to_owned(),
+        authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+    };
+    let state = AppState {
+        session: SessionState::Ready(session),
+        ..AppState::default()
+    };
+    let (
+        mut actor,
+        _command_tx,
+        _action_tx,
+        _account_rx,
+        mut event_rx,
+        _snapshot_rx,
+        _navigation_projection_rx,
+        _event_navigation_prepared_tx,
+        _focused_projection_tx,
+    ) = app_actor_event_navigation_fixture(data_dir.path(), state);
+
+    let superseded = RequestId {
+        connection_id: RuntimeConnectionId(41),
+        sequence: 11,
+    };
+    let latest = RequestId {
+        connection_id: RuntimeConnectionId(41),
+        sequence: 12,
+    };
+    // The first query is the state's own: production sets this when the
+    // `SearchMessages` effect dispatches it.
+    actor.active_search_request = Some(superseded);
+
+    // A newer query replaces it. The reducer ignores any late outcome for the
+    // old request, and `SearchActor` aborts it without emitting one, so the
+    // transition itself must settle it.
+    actor
+        .reduce_app_action(AppAction::SearchSubmitted {
+            request_id: latest.sequence,
+            query: "second".to_owned(),
+            scope: koushi_state::SearchScope::AllRooms,
+        })
+        .await;
+
+    let settled = event_rx
+        .try_recv()
+        .expect("the superseded query must settle");
+    assert!(
+        matches!(
+            settled,
+            CoreEvent::IntentLifecycle {
+                request_id,
+                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                ..
+            } if request_id == superseded
+        ),
+        "unexpected settlement: {settled:?}"
+    );
+    assert!(
+        event_rx.try_recv().is_err(),
+        "a superseded request settles exactly once"
+    );
+
+    // Closing search supersedes whatever is still in flight.
+    actor.active_search_request = Some(latest);
+    actor.reduce_app_action(AppAction::SearchClosed).await;
+    let settled = event_rx
+        .try_recv()
+        .expect("closing search must settle the in-flight query");
+    assert!(
+        matches!(
+            settled,
+            CoreEvent::IntentLifecycle {
+                request_id,
+                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                ..
+            } if request_id == latest
+        ),
+        "unexpected settlement: {settled:?}"
     );
 }
 
@@ -1485,6 +1572,7 @@ async fn same_batch_select_room_settles_only_final_selection() {
         room_preferences_loaded_for: Some(session_key),
         account_settings_loaded_for: None,
         state_generation: 0,
+        active_search_request: None,
         pending_composer_draft_persist: None,
         pending_navigation_persist: None,
         composer_draft_leases,
@@ -3166,6 +3254,7 @@ fn app_actor_fixture_with_account_capacity(
         room_preferences_loaded_for: Some(session_key),
         account_settings_loaded_for: None,
         state_generation: 0,
+        active_search_request: None,
         pending_composer_draft_persist: None,
         pending_navigation_persist: None,
         composer_draft_leases,

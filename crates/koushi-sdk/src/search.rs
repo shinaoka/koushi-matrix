@@ -96,11 +96,15 @@ impl MatrixSearchCursor {
 
 /// One page of literal search candidates from the persistent index.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MatrixSearchCandidatePage {
-    pub candidates: Vec<MatrixSearchCandidate>,
-    /// Cursor for the next, older page; `None` when the caller has reached the
-    /// oldest indexed match for the query.
-    pub next_cursor: Option<MatrixSearchCursor>,
+pub struct MatrixLiteralCandidate {
+    pub room_id: String,
+    /// The event id the index holds for this match. It may be an edit event id;
+    /// resolution reports the original message identity.
+    pub event_id: String,
+    /// Milliseconds since the Unix epoch of the indexed entry, as the index
+    /// ordered it. Together with `event_id` this is the key the candidate scan
+    /// is ordered by, which is not necessarily the resolved content's timestamp.
+    pub timestamp_millis: i64,
 }
 
 /// Current visible content resolved from the local event cache, edits and
@@ -263,40 +267,6 @@ fn matrix_search_error_from_index(error: &IndexError) -> MatrixSearchError {
     }
 }
 
-/// Page literal search candidates for one room from the persistent index,
-/// newest first, without offsets.
-pub async fn search_message_candidates_literal_page(
-    session: &MatrixClientSession,
-    room_id: &str,
-    query: &str,
-    limit: usize,
-    cursor: Option<MatrixSearchCursor>,
-) -> Result<MatrixSearchCandidatePage, MatrixSearchError> {
-    if query.trim().is_empty() || limit == 0 {
-        return Ok(MatrixSearchCandidatePage {
-            candidates: Vec::new(),
-            next_cursor: None,
-        });
-    }
-
-    let page = fetch_literal_page(session, query, room_id, limit, cursor).await?;
-
-    let next_cursor = page.last().cloned();
-    let candidates = page
-        .into_iter()
-        .map(|cursor| MatrixSearchCandidate {
-            room_id: room_id.to_owned(),
-            event_id: cursor.event_id().to_owned(),
-            score_millis: 0,
-        })
-        .collect();
-
-    Ok(MatrixSearchCandidatePage {
-        candidates,
-        next_cursor,
-    })
-}
-
 /// Fetch one bounded, newest-first page of cursors for a single room.
 async fn fetch_literal_page(
     session: &MatrixClientSession,
@@ -383,7 +353,7 @@ impl MatrixLiteralSearchPager {
         &mut self,
         session: &MatrixClientSession,
         limit: usize,
-    ) -> Result<Vec<MatrixSearchCandidate>, MatrixSearchError> {
+    ) -> Result<Vec<MatrixLiteralCandidate>, MatrixSearchError> {
         let Self {
             query,
             page_size,
@@ -426,10 +396,10 @@ impl MatrixLiteralSearchPager {
                 .buffered
                 .pop_front()
                 .expect("the chosen room has a buffered candidate");
-            page.push(MatrixSearchCandidate {
+            page.push(MatrixLiteralCandidate {
                 room_id: hit.room_id,
                 event_id: hit.event_id,
-                score_millis: 0,
+                timestamp_millis: hit.timestamp_millis,
             });
         }
 
