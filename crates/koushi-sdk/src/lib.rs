@@ -171,9 +171,10 @@ pub use room_projection::{
 };
 
 pub use search::{
-    MatrixResolvedMessage, MatrixSearchCandidate, MatrixSearchCandidatePage, MatrixSearchCursor,
-    MatrixSearchError, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig, MatrixSearchScope,
-    resolve_cached_message, search_message_candidates, search_message_candidates_blocking,
+    MatrixLiteralSearchPager, MatrixResolvedMessage, MatrixSearchCandidate,
+    MatrixSearchCandidatePage, MatrixSearchCursor, MatrixSearchError, MatrixSearchIndexKey,
+    MatrixSearchIndexStoreConfig, MatrixSearchScope, resolve_cached_message,
+    search_message_candidates, search_message_candidates_blocking,
     search_message_candidates_literal_page, search_message_candidates_scoped,
 };
 
