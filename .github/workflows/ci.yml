@@ -203,9 +203,11 @@ jobs:
         run: node scripts/check-sdk-submodule.mjs
       - name: Release version checker tests
         run: node --test scripts/desktop-release-version.test.mjs
-      # Every PR, not only a release PR: a stale Cargo.lock version is rewritten
-      # by the next `cargo` command on any branch, so the release bump would
-      # otherwise land in an unrelated PR (observed after v0.11.1).
+      # Every PR, not only a release PR: a stale Cargo.lock or npm lockfile
+      # version is rewritten by the next `cargo` / `npm install` on any branch,
+      # so the release bump would otherwise land in an unrelated PR (observed
+      # after v0.11.1, #1137). The guard also fails on any tracked
+      # version-bearing desktop file that it does not list.
       - name: Release version and lockfile sync guard
         run: node scripts/desktop-release-version.mjs
       - name: Diagnostic test isolation checker tests

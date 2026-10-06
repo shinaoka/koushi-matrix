@@ -24,17 +24,26 @@ Claude Code and OpenCode have equivalent discovery entry points under
 
 - A release starts with an explicit SemVer target such as `0.2.0` or
   `0.2.0-beta.1`.
-- The version must increase and must match in all four version files:
+- The version must increase and must match in every version file:
   - `apps/desktop/package.json`
+  - `apps/desktop/package-lock.json` (the root `version` and `packages[""].version`)
   - `apps/desktop/src-tauri/tauri.conf.json`
   - `apps/desktop/src-tauri/Cargo.toml`
   - `Cargo.lock` (the `koushi-desktop` package entry)
-- `Cargo.lock` is part of the release change, not an incidental artifact. The
-  first `cargo` command run on any later branch rewrites the stale entry, so a
-  release that skips it lands its version bump in an unrelated PR. v0.11.1
-  shipped with `Cargo.lock` still on `0.11.0`; #955 had to carry the repair.
-  `node scripts/desktop-release-version.mjs` enforces all four and runs on
-  every PR, not only release PRs.
+- The lockfiles are part of the release change, not incidental artifacts. A
+  stale lockfile entry is rewritten by the next `cargo` command or
+  `npm install` on any later branch, so a release that skips it lands its
+  version bump in an unrelated PR. v0.11.1 shipped with `Cargo.lock` still on
+  `0.11.0`; #955 had to carry the repair. `npm ci` does not validate the npm
+  lockfile's root version, so `apps/desktop/package-lock.json` silently lagged
+  the manifests through v0.18.0 and v0.19.0 until #1137.
+- `node scripts/desktop-release-version.mjs` enforces this on every PR, not
+  only release PRs. Its `VERSION_FILES` table is the single list of version
+  files: the check, the `--set` rewrite, and this runbook follow it. The script
+  also fails when any other tracked file declares the desktop package's version
+  (a `koushi-desktop` npm or Cargo manifest or lockfile, or a desktop Tauri
+  config with a `version` key) without being listed there, so a newly added
+  version-bearing file cannot drift unnoticed.
 - Do not create `v<version>` manually. The publish job creates the tag only
   after every required artifact passes its gates.
 - The macOS arm64 artifact must be Developer ID signed, notarized, stapled,
@@ -80,18 +89,26 @@ backend, makes no update request, and never spawns `pkexec`, `sudo`, `dpkg`, or
 1. Fetch `origin/main` and confirm the worktree state. Preserve unrelated user
    changes; do not discard or overwrite them.
 2. Create a release branch from the current `origin/main`.
-3. Update the three manifests above to the exact requested version. Do not
-   change dependency versions unless that is separately required.
-4. Refresh the lockfile entry without touching dependency resolution:
+3. Rewrite every version file to the exact requested version:
 
    ```bash
-   cargo metadata --format-version 1 >/dev/null
-   git diff --stat Cargo.lock
+   node scripts/desktop-release-version.mjs --set <version>
+   git diff --stat
    ```
 
-   The diff must be the single `koushi-desktop` version line. If `cargo`
-   rewrote anything else, restore `Cargo.lock` and resolve that separately —
-   a release PR does not carry a dependency update.
+   The command edits only the version fields listed above and then runs the
+   consistency and discovery checks. Do not change dependency versions unless
+   that is separately required.
+4. Confirm that neither lockfile carries a dependency change:
+
+   ```bash
+   git diff Cargo.lock apps/desktop/package-lock.json
+   ```
+
+   The diff must be the single `koushi-desktop` version line in `Cargo.lock`
+   and the two root version lines in `package-lock.json`. If anything else
+   changed, restore the lockfile and resolve that separately — a release PR
+   does not carry a dependency update.
 5. Run the local release checks from the repository root:
 
    ```bash
@@ -108,8 +125,8 @@ backend, makes no update request, and never spawns `pkexec`, `sudo`, `dpkg`, or
    the protected workflow after merge.
 
 6. Review the diff. The release-only PR should normally contain the three
-   synchronized manifest changes plus the one `Cargo.lock` version line, and no
-   generated installer.
+   synchronized manifest changes plus the lockfile version lines from step 4,
+   and no generated installer.
 7. Commit, push, create the PR, make it ready for review, or merge only when the
    user has requested the corresponding external action.
 
