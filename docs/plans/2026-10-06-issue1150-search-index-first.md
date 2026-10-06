@@ -101,6 +101,16 @@ plus per-event map overhead), and 5,000 attachment messages retain 5,000 Files
 rows with `resident_body_bytes() == 0`. Index/disk residency and process RSS are
 reported by the QA lanes, not by this probe.
 
+## Open review findings (PR #1157, blocking merge)
+
+An independent post-implementation review of the finished diff found twelve issues; two are
+verified against source (content-policy bypass, `SearchResultOpened` bypassing the navigation
+persistence diff) and the rest are on the PR for triage. The full list and severities are in the
+PR #1157 comment. Fix order: content policy and index-commit acknowledgement first (both
+blocking), then the durable-record invalidation/attachment-rebuild pairing, the edit-order and
+sticker regressions, the supersede/settlement gap, and finally the warm-task ownership and
+window-priming corrections.
+
 ## Required evidence
 
 RED-then-GREEN for literal completeness (operators/fields inert, raw+normalized,
