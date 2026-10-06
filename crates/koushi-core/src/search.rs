@@ -130,10 +130,9 @@ fn search_verify_diagnostic_event(
     request_id: RequestId,
     sdk_unique: usize,
     sdk_rooms: usize,
-    store_docs: usize,
     sdk_total_ms: u128,
     project_ms: u128,
-    stats: &koushi_search::SearchWithCandidatesStats,
+    verification: &IndexCandidateVerification,
 ) -> DiagnosticEvent {
     DiagnosticEvent::new(DiagnosticLevel::Debug, "core.search", "verify")
         .field(DiagnosticField::request_id(
@@ -144,36 +143,19 @@ fn search_verify_diagnostic_event(
         .field(DiagnosticField::count("sdk_unique", sdk_unique as u64))
         .field(DiagnosticField::count("sdk_rooms", sdk_rooms as u64))
         .field(DiagnosticField::count(
-            "sdk_in_scope",
-            stats.sdk_candidates_in_scope as u64,
+            "candidates_in_scope",
+            verification.in_scope as u64,
         ))
         .field(DiagnosticField::count(
-            "verified_sdk",
-            stats.verified_sdk_count as u64,
-        ))
-        .field(DiagnosticField::count("store_docs", store_docs as u64))
-        .field(DiagnosticField::count(
-            "scan_visited",
-            stats.scan.documents_visited as u64,
+            "cache_resolved",
+            verification.resolved as u64,
         ))
         .field(DiagnosticField::count(
-            "scan_in_scope",
-            stats.scan.documents_in_scope as u64,
-        ))
-        .field(DiagnosticField::count(
-            "scan_matches",
-            stats.scan.matches_before_limit as u64,
-        ))
-        .field(DiagnosticField::count(
-            "scan_returned",
-            stats.scan.returned as u64,
+            "verified",
+            verification.verified as u64,
         ))
         .field(DiagnosticField::milliseconds("sdk_total_ms", sdk_total_ms))
         .field(DiagnosticField::milliseconds("project_ms", project_ms))
-        .field(DiagnosticField::milliseconds(
-            "scan_ms",
-            stats.scan_elapsed_ms,
-        ))
 }
 
 // ---------------------------------------------------------------------------
@@ -606,37 +588,16 @@ pub(crate) struct SearchActor {
     crawl_delay_timer: Option<executor::JoinHandle<()>>,
 }
 
-/// Union store-verified results with cache-resolved ones.
-///
-/// A key the store already verified wins, so its verdict (and the match field
-/// it fixed for the resident document) is never replaced. The union is ordered
-/// newest first and capped, matching the store projection's own ordering.
-fn merge_resolved_results(
-    mut results: Vec<koushi_state::SearchResult>,
-    resolved: Vec<koushi_state::SearchResult>,
-) -> Vec<koushi_state::SearchResult> {
-    if resolved.is_empty() {
-        return results;
-    }
-
-    let mut seen: HashSet<(String, String)> = results
-        .iter()
-        .map(|result| (result.room_id.clone(), result.event_id.clone()))
-        .collect();
-    for result in resolved {
-        if seen.insert((result.room_id.clone(), result.event_id.clone())) {
-            results.push(result);
-        }
-    }
-
-    results.sort_by(|left, right| {
-        right
-            .timestamp_ms
-            .cmp(&left.timestamp_ms)
-            .then_with(|| left.event_id.cmp(&right.event_id))
-    });
-    results.truncate(SEARCH_CANDIDATE_LIMIT);
-    results
+/// Outcome of verifying one page of index candidates against the event cache.
+#[derive(Default)]
+struct IndexCandidateVerification {
+    /// Candidates inside the Rust-resolved scope filter.
+    in_scope: usize,
+    /// Candidates whose current content was available in the cache.
+    resolved: usize,
+    /// Candidates that matched the query.
+    verified: usize,
+    results: Vec<koushi_state::SearchResult>,
 }
 
 impl SearchActor {
@@ -989,55 +950,56 @@ impl SearchActor {
                 .len()
         };
 
-        // #162/#341: the SDK ngram index is an accelerator, not the authority.
-        // The direct document-store scan runs first and with the same
-        // Rust-resolved scope filter, so indexed local results are visible even
-        // while an SDK supplement is still pending.
+        // The persistent ngram index is the sole candidate source: it indexes
+        // raw and normalized text for every accepted query length, so paging it
+        // is complete without scanning a RAM copy of history. Each candidate's
+        // current content is then resolved from the encrypted event cache on
+        // demand, so no message body is retained between queries.
         let projection_started = Instant::now();
-        let projection = self.document_store.search_with_candidates_with_stats(
-            query,
-            room_filter,
-            sdk_candidates,
-            SEARCH_CANDIDATE_LIMIT,
-        );
+        let verification = self
+            .resolve_indexed_candidates(query, room_filter, sdk_candidates)
+            .await;
         let projection_elapsed_ms = projection_started.elapsed().as_millis();
         record(search_verify_diagnostic_event(
             request_id,
             sdk_candidates.len(),
             sdk_room_count,
-            self.document_store.document_count(),
             sdk_total_ms,
             projection_elapsed_ms,
-            &projection.stats,
+            &verification,
         ));
 
-        let results = projection.results;
-        let resolved = self
-            .resolve_indexed_candidates(query, room_filter, sdk_candidates)
-            .await;
-        merge_resolved_results(results, resolved)
+        let mut results = verification.results;
+        results.sort_by(|left, right| {
+            right
+                .timestamp_ms
+                .cmp(&left.timestamp_ms)
+                .then_with(|| left.event_id.cmp(&right.event_id))
+        });
+        results.truncate(SEARCH_CANDIDATE_LIMIT);
+        results
     }
 
     /// Verify literal index candidates by resolving their current content from
     /// the encrypted event cache.
     ///
-    /// This is what makes an indexed message findable before the history crawl
-    /// reaches it, and it reads bodies on demand instead of retaining every
-    /// body in memory. Resolution is cache-only, so it never hits the network.
+    /// This is what makes an indexed message findable without a RAM copy of the
+    /// history, and it reads bodies on demand. Resolution is cache-only, so it
+    /// never hits the network.
     async fn resolve_indexed_candidates(
         &self,
         query: &str,
         room_filter: &SearchRoomFilter,
         sdk_candidates: &[SearchCandidate],
-    ) -> Vec<koushi_state::SearchResult> {
-        let mut results = Vec::new();
+    ) -> IndexCandidateVerification {
+        let mut verification = IndexCandidateVerification::default();
 
         for candidate in sdk_candidates {
             if !room_filter.contains(&candidate.room_id) {
                 continue;
             }
-            // A missing or redacted cached event simply drops out of the
-            // supplement; the store path above stays the authority.
+            verification.in_scope += 1;
+            // A missing or redacted cached event simply drops out of the page.
             let Ok(Some(resolved)) = koushi_sdk::resolve_cached_message(
                 &self.session,
                 &candidate.room_id,
@@ -1047,6 +1009,8 @@ impl SearchActor {
             else {
                 continue;
             };
+            verification.resolved += 1;
+
             // The index may answer with an edit event id; the resolved reader
             // reports the original identity plus current content.
             let event = SearchableEvent {
@@ -1069,11 +1033,12 @@ impl SearchActor {
             if let Some(result) =
                 koushi_search::verify_candidate(&resolved_candidate, &event, query)
             {
-                results.push(result);
+                verification.verified += 1;
+                verification.results.push(result);
             }
         }
 
-        results
+        verification
     }
 
     async fn handle_attachments(

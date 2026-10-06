@@ -7,60 +7,6 @@ use koushi_search::{
     SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent, SensitiveString,
 };
 
-fn search_result_fixture(
-    room_id: &str,
-    event_id: &str,
-    timestamp_ms: u64,
-    snippet: &str,
-) -> koushi_state::SearchResult {
-    koushi_state::SearchResult {
-        room_id: room_id.to_owned(),
-        event_id: event_id.to_owned(),
-        context_label: None,
-        sender: "@user:localhost".to_owned(),
-        timestamp_ms,
-        score_millis: 0,
-        snippet: snippet.to_owned(),
-        match_field: koushi_state::SearchMatchField::MessageBody,
-        highlights: Vec::new(),
-        match_kind: koushi_state::SearchMatchKind::Exact,
-    }
-}
-
-#[test]
-fn merge_resolved_results_keeps_the_store_verdict_and_orders_newest_first() {
-    let stored = vec![search_result_fixture("!a:x", "$a1:x", 100, "from store")];
-    let resolved = vec![
-        search_result_fixture("!a:x", "$a1:x", 100, "from cache"),
-        search_result_fixture("!b:x", "$b1:x", 300, "newest"),
-        search_result_fixture("!c:x", "$c1:x", 200, "middle"),
-    ];
-
-    let merged = merge_resolved_results(stored, resolved);
-
-    assert_eq!(
-        merged
-            .iter()
-            .map(|result| result.event_id.as_str())
-            .collect::<Vec<_>>(),
-        ["$b1:x", "$c1:x", "$a1:x"]
-    );
-    // The store already verified this key, so its verdict wins over the cache.
-    assert_eq!(merged[2].snippet, "from store");
-}
-
-#[test]
-fn merge_resolved_results_truncates_to_the_candidate_limit() {
-    let resolved = (0..SEARCH_CANDIDATE_LIMIT + 5)
-        .map(|index| search_result_fixture("!a:x", &format!("$e{index}:x"), index as u64, "body"))
-        .collect::<Vec<_>>();
-
-    assert_eq!(
-        merge_resolved_results(Vec::new(), resolved).len(),
-        SEARCH_CANDIDATE_LIMIT
-    );
-}
-
 #[tokio::test]
 async fn search_actor_shutdown_waits_for_actor_task_settlement() {
     let (tx, mut rx) = mpsc::channel(1);
@@ -150,21 +96,13 @@ fn search_verify_event_preserves_private_data_free_scan_and_duration_fields() {
         },
         5,
         2,
-        89,
         13,
         17,
-        &koushi_search::SearchWithCandidatesStats {
-            sdk_candidates_in_scope: 3,
-            verified_sdk_count: 2,
-            scan_elapsed_ms: 19,
-            scan: koushi_search::SearchScanStats {
-                documents_visited: 55,
-                documents_in_scope: 44,
-                matches_before_limit: 8,
-                returned: 7,
-            },
-            results_before_limit: 9,
-            returned: 7,
+        &IndexCandidateVerification {
+            in_scope: 3,
+            resolved: 2,
+            verified: 1,
+            results: Vec::new(),
         },
     );
 
@@ -185,30 +123,14 @@ fn search_verify_event_preserves_private_data_free_scan_and_duration_fields() {
             ("sdk_unique", koushi_diagnostics::DiagnosticValue::Count(5)),
             ("sdk_rooms", koushi_diagnostics::DiagnosticValue::Count(2)),
             (
-                "sdk_in_scope",
+                "candidates_in_scope",
                 koushi_diagnostics::DiagnosticValue::Count(3)
             ),
             (
-                "verified_sdk",
+                "cache_resolved",
                 koushi_diagnostics::DiagnosticValue::Count(2)
             ),
-            ("store_docs", koushi_diagnostics::DiagnosticValue::Count(89)),
-            (
-                "scan_visited",
-                koushi_diagnostics::DiagnosticValue::Count(55)
-            ),
-            (
-                "scan_in_scope",
-                koushi_diagnostics::DiagnosticValue::Count(44)
-            ),
-            (
-                "scan_matches",
-                koushi_diagnostics::DiagnosticValue::Count(8)
-            ),
-            (
-                "scan_returned",
-                koushi_diagnostics::DiagnosticValue::Count(7)
-            ),
+            ("verified", koushi_diagnostics::DiagnosticValue::Count(1)),
             (
                 "sdk_total_ms",
                 koushi_diagnostics::DiagnosticValue::Milliseconds(13),
@@ -216,10 +138,6 @@ fn search_verify_event_preserves_private_data_free_scan_and_duration_fields() {
             (
                 "project_ms",
                 koushi_diagnostics::DiagnosticValue::Milliseconds(17),
-            ),
-            (
-                "scan_ms",
-                koushi_diagnostics::DiagnosticValue::Milliseconds(19),
             ),
         ]
     );
