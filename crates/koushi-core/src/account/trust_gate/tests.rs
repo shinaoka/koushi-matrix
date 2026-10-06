@@ -723,9 +723,7 @@ async fn network_trust_recheck_settlement_records_generation_without_authenticat
         })
         .await;
     acknowledge_next_verified_projection(&handle, &mut action_rx).await;
-    let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
 
     handle
         .send(AccountMessage::CurrentDeviceTrustRecheckFinished {
@@ -741,7 +739,7 @@ async fn network_trust_recheck_settlement_records_generation_without_authenticat
     let expected =
         "stage=trust_recheck_finished_failed generation=2 transition_id=0 failure_kind=network";
     assert!(
-        koushi_diagnostics::test_support::detail_snapshot().records[diagnostic_start..]
+        koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
             .iter()
             .any(|record| koushi_diagnostics::format_event(&record.event) == expected),
         "missing exact trust-recheck settlement diagnostic: {expected}"
@@ -983,12 +981,10 @@ async fn explicit_trust_recheck_arriving_in_flight_is_replayed_after_settlement(
 #[tokio::test]
 async fn verification_to_normal_sync_handoff_has_one_owner() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
-    let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
     let (handle, mut action_rx) = login_gated_actor().await;
     assert!(
-        koushi_diagnostics::test_support::detail_snapshot().records[diagnostic_start..]
+        koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
             .iter()
             .any(|record| {
                 record.event.source == "core.verification_admission"

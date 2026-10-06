@@ -2812,9 +2812,7 @@ async fn scoped_receipt_window_prepares_only_its_selected_profiles() {
             })
             .collect(),
     };
-    let before = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let before = koushi_diagnostics::test_support::detail_cursor();
     record_concurrent_local_lookup_decoy();
     let (mut reply, _receiver) = tokio::sync::oneshot::channel();
     assert!(
@@ -2838,15 +2836,12 @@ async fn scoped_receipt_window_prepares_only_its_selected_profiles() {
         Some("Current alias")
     );
     assert_eq!(window.total_count, SCOPED_WINDOW_TOTAL);
-    let snapshot = koushi_diagnostics::test_support::detail_snapshot();
-    let requested = snapshot
-        .records
+    let requested = koushi_diagnostics::test_support::detail_records_since(before)
         .iter()
-        .skip(before)
         .find_map(|record| local_lookup_field(record, SCOPED_WINDOW_TOTAL, "requested_user_count"))
         .expect("production profile lookup count");
     assert_eq!(requested, 3);
-    let before_cancel = snapshot.records.len();
+    let before_cancel = koushi_diagnostics::test_support::detail_cursor();
     record_concurrent_local_lookup_decoy();
     let (mut cancelled, receiver) = tokio::sync::oneshot::channel();
     drop(receiver);
@@ -2859,12 +2854,9 @@ async fn scoped_receipt_window_prepares_only_its_selected_profiles() {
         )
         .await
     );
-    let after = koushi_diagnostics::test_support::detail_snapshot();
     assert!(
-        !after
-            .records
+        !koushi_diagnostics::test_support::detail_records_since(before_cancel)
             .iter()
-            .skip(before_cancel)
             .any(
                 |record| local_lookup_field(record, SCOPED_WINDOW_TOTAL, "receipt_count").is_some()
             )
@@ -2909,9 +2901,7 @@ async fn compact_receipt_profile_lookup_is_bounded_for_1500_readers() {
     let generations = Arc::new(TimelineActorGenerationGate::default());
     let actor_generation = generations.activate_after_quiescence(&key).await.generation;
     let (action_tx, mut action_rx) = mpsc::channel(1);
-    let records_before = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let records_before = koushi_diagnostics::test_support::detail_cursor();
     record_concurrent_local_lookup_decoy();
     assert!(
         emit_live_receipt_observation_actions(
@@ -2937,11 +2927,8 @@ async fn compact_receipt_profile_lookup_is_bounded_for_1500_readers() {
         COMPACT_READER_COUNT
     );
 
-    let snapshot = koushi_diagnostics::test_support::detail_snapshot();
-    let requested = snapshot
-        .records
+    let requested = koushi_diagnostics::test_support::detail_records_since(records_before)
         .iter()
-        .skip(records_before)
         .find_map(|record| local_lookup_field(record, COMPACT_READER_COUNT, "requested_user_count"))
         .expect("production profile-lookup count");
     // No full-reader surface is open: five or more readers show three plus a count.
@@ -2987,9 +2974,7 @@ async fn production_receipt_diff_delivery_sends_receipts_when_local_lookup_fails
     let generations = Arc::new(TimelineActorGenerationGate::default());
     let actor_generation = generations.activate_after_quiescence(&key).await.generation;
     let (action_tx, mut action_rx) = mpsc::channel(1);
-    let records_before = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let records_before = koushi_diagnostics::test_support::detail_cursor();
     assert!(
         emit_live_receipt_observation_actions(
             session.as_ref(),
@@ -3008,10 +2993,8 @@ async fn production_receipt_diff_delivery_sends_receipts_when_local_lookup_fails
         [AppAction::LiveRoomReceiptSummariesUpdated { .. }]
     ));
     assert!(
-        koushi_diagnostics::test_support::detail_snapshot()
-            .records
+        koushi_diagnostics::test_support::detail_records_since(records_before)
             .iter()
-            .skip(records_before)
             .any(|record| {
                 record.event.source == "core.read_receipt_profile"
                     && record.event.stage == "local_lookup"

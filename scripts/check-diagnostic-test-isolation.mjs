@@ -6,10 +6,24 @@ import { fileURLToPath } from "node:url";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, "..");
-const diagnosticTestRoots = [
-  path.join(repositoryRoot, "crates/koushi-core/src"),
-  path.join(repositoryRoot, "crates/koushi-core/tests")
+// Every crate whose tests can read the process-wide diagnostic ring. The
+// diagnostics crate itself is excluded: its tests use private buffers.
+const diagnosticTestRoots = fs
+  .readdirSync(path.join(repositoryRoot, "crates"), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory() && entry.name !== "koushi-diagnostics")
+  .flatMap((entry) => ["src", "tests"].map((dir) => path.join(repositoryRoot, "crates", entry.name, dir)))
+  .filter((directory) => fs.existsSync(directory));
+
+// Reads of the shared global ring. A cursor or detail window is a read too:
+// it is only meaningful while no other reader can interleave its own setup.
+const globalDiagnosticReads = [
+  /\bkoushi_diagnostics::snapshot\(\)/u,
+  /\btest_support::detail_snapshot\(\)/u,
+  /\btest_support::detail_cursor\(\)/u,
+  /\btest_support::detail_records_since\(/u,
+  /\btest_support::rotation_snapshot\(\)/u
 ];
+const sharedLocks = [/\btest_support::lock\(\)/u, /\btest_support::lock_async\(\)\.await/u];
 
 export function findDiagnosticTestIsolationViolations(source, fileName) {
   const violations = [];
@@ -34,9 +48,8 @@ export function findDiagnosticTestIsolationViolations(source, fileName) {
     }
     const body = stripRustStringsAndComments(source.slice(signatureEnd + 1, bodyEnd));
     if (
-      body.includes("koushi_diagnostics::snapshot()") &&
-      !body.includes("koushi_diagnostics::test_support::lock()") &&
-      !body.includes("koushi_diagnostics::test_support::lock_async().await")
+      globalDiagnosticReads.some((read) => read.test(body)) &&
+      !sharedLocks.some((lock) => lock.test(body))
     ) {
       const line = source.slice(0, attributeMatch.index).split("\n").length;
       violations.push(`${fileName}:${line}:${functionName}`);

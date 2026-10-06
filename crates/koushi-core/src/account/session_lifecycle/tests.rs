@@ -587,9 +587,7 @@ async fn change_homeserver_retires_a_pending_oidc_attempt() {
 #[tokio::test]
 async fn verified_warm_restore_skips_restricted_and_full_state_preparation() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
-    let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
     let homeserver = spawn_quarantine_password_server();
     let cred_dir = tempdir().expect("tempdir");
     let data_dir = tempdir().expect("tempdir");
@@ -627,8 +625,8 @@ async fn verified_warm_restore_skips_restricted_and_full_state_preparation() {
         (false, false, true),
         "normal sync must be the sole owner after Ready projection acknowledgement"
     );
-    let snapshot = koushi_diagnostics::test_support::detail_snapshot();
-    let stages = snapshot.records[diagnostic_start..]
+    let records = koushi_diagnostics::test_support::detail_records_since(diagnostic_start);
+    let stages = records
         .iter()
         .filter(|record| record.event.source == "core.verification_admission")
         .map(|record| record.event.stage)
@@ -1684,9 +1682,7 @@ async fn session_change_observer_records_exact_unknown_token_diagnostics_for_bot
     let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
 
     for soft_logout in [true, false] {
-        let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-            .records
-            .len();
+        let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
         let (tx, mut receiver) = mpsc::channel(1);
         let (change_tx, change_rx) = broadcast::channel(1);
         let (_stop_tx, stop_rx) = oneshot::channel();
@@ -1712,7 +1708,7 @@ async fn session_change_observer_records_exact_unknown_token_diagnostics_for_bot
             "stage=session_change_received source=matrix_sdk reason=unknown_token soft_logout={soft_logout}"
         );
         assert!(
-            koushi_diagnostics::test_support::detail_snapshot().records[diagnostic_start..]
+            koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
                 .iter()
                 .any(|record| koushi_diagnostics::format_event(&record.event) == expected),
             "missing exact observer diagnostic: {expected}"
@@ -1724,9 +1720,7 @@ async fn session_change_observer_records_exact_unknown_token_diagnostics_for_bot
 async fn session_change_observer_forwards_token_rotation_and_keeps_observing() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
 
-    let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
     let (tx, mut receiver) = mpsc::channel(2);
     let (change_tx, change_rx) = broadcast::channel(2);
     let (_stop_tx, stop_rx) = oneshot::channel();
@@ -1758,7 +1752,7 @@ async fn session_change_observer_forwards_token_rotation_and_keeps_observing() {
     let expected =
         "stage=session_change_received source=matrix_sdk reason=tokens_refreshed".to_owned();
     assert!(
-        koushi_diagnostics::test_support::detail_snapshot().records[diagnostic_start..]
+        koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
             .iter()
             .any(|record| koushi_diagnostics::format_event(&record.event) == expected),
         "missing exact observer diagnostic: {expected}"
@@ -1779,9 +1773,7 @@ async fn admitted_unknown_token_records_exact_lock_diagnostics_for_both_soft_log
             })
             .await;
         acknowledge_next_verified_projection(&handle, &mut action_rx).await;
-        let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-            .records
-            .len();
+        let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
 
         assert!(
             handle
@@ -1807,7 +1799,7 @@ async fn admitted_unknown_token_records_exact_lock_diagnostics_for_both_soft_log
             "stage=session_invalidated reason=unknown_token soft_logout={soft_logout} action=lock"
         );
         assert!(
-            koushi_diagnostics::test_support::detail_snapshot().records[diagnostic_start..]
+            koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
                 .iter()
                 .any(|record| koushi_diagnostics::format_event(&record.event) == expected),
             "missing exact admission diagnostic: {expected}"
@@ -1825,9 +1817,7 @@ async fn unknown_token_before_session_promotion_is_inert_and_not_diagnosed() {
     let before = inspect_session_runtime(&handle).await;
     assert!(before.0, "the provisional actor must still own a session");
     assert!(!before.1, "the session must not be promoted yet");
-    let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
 
     assert!(
         handle
@@ -1855,7 +1845,7 @@ async fn unknown_token_before_session_promotion_is_inert_and_not_diagnosed() {
         );
     }
     assert!(
-        !koushi_diagnostics::test_support::detail_snapshot().records[diagnostic_start..]
+        !koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
             .iter()
             .any(|record| {
                 record.event.source == "core.account" && record.event.stage == "session_invalidated"
@@ -1937,9 +1927,7 @@ async fn post_teardown_unknown_token_message_is_inert_and_not_diagnosed() {
         action_rx.recv().await.as_deref(),
         Some([AppAction::LogoutFinished])
     ) {}
-    let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
-        .records
-        .len();
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
 
     assert!(
         handle
@@ -1962,7 +1950,7 @@ async fn post_teardown_unknown_token_message_is_inert_and_not_diagnosed() {
         );
     }
     assert!(
-        !koushi_diagnostics::test_support::detail_snapshot().records[diagnostic_start..]
+        !koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
             .iter()
             .any(|record| {
                 record.event.source == "core.account" && record.event.stage == "session_invalidated"

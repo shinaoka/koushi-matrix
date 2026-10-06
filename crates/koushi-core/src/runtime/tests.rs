@@ -598,39 +598,35 @@ pub(super) fn unread_diagnostic_room(room_id: &str) -> RoomSummary {
 #[test]
 fn app_loop_trace_ignores_subthreshold_iterations() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
-    let before = koushi_diagnostics::snapshot();
+    let before = koushi_diagnostics::test_support::detail_cursor();
     app_loop_trace("test_boundary", 1, 2, Duration::from_millis(99));
-    let after = koushi_diagnostics::snapshot();
-    assert_eq!(
-        after
-            .records
+    assert!(
+        !koushi_diagnostics::test_support::detail_records_since(before)
             .iter()
-            .filter(
-                |record| record.event.source == "core.runtime" && record.event.stage == "app_loop"
-            )
-            .count(),
-        before
-            .records
-            .iter()
-            .filter(
-                |record| record.event.source == "core.runtime" && record.event.stage == "app_loop"
-            )
-            .count()
+            .any(is_test_boundary_app_loop_record)
     );
+}
+
+/// This test's own `app_loop` record: real AppActors in concurrent tests emit
+/// `core.runtime/app_loop` too, but never with the `test_boundary` arm.
+fn is_test_boundary_app_loop_record(record: &koushi_diagnostics::DiagnosticRecord) -> bool {
+    record.event.source == "core.runtime"
+        && record.event.stage == "app_loop"
+        && record.event.fields.iter().any(|field| {
+            field.key == "arm"
+                && field.value == koushi_diagnostics::DiagnosticValue::Token("test_boundary")
+        })
 }
 
 #[test]
 fn app_loop_trace_records_at_threshold_without_environment_switch() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
-    let before = koushi_diagnostics::snapshot();
+    let before = koushi_diagnostics::test_support::detail_cursor();
     app_loop_trace("test_boundary", 3, 4, Duration::from_millis(100));
-    let after = koushi_diagnostics::snapshot();
-    assert!(after.records.len() > before.records.len());
-    let record = after
-        .records
+    let records = koushi_diagnostics::test_support::detail_records_since(before);
+    let record = records
         .iter()
-        .rev()
-        .find(|record| record.event.source == "core.runtime" && record.event.stage == "app_loop")
+        .find(|record| is_test_boundary_app_loop_record(record))
         .expect("threshold iteration should be collected");
     assert!(record.event.fields.iter().any(|field| field.key == "count"));
 }
