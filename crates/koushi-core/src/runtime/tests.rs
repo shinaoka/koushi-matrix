@@ -4633,6 +4633,134 @@ async fn current_event_navigation_deadline_failure_clears_focused_owner_and_fenc
     ));
 }
 
+#[tokio::test]
+async fn focused_subscription_failure_settles_the_current_event_navigation_promptly() {
+    // #1146: a bounded TimelineManager build failure/timeout must leave the
+    // pending state immediately, not only at the 15 s navigation deadline.
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let room_id = "!focused-room:example.invalid".to_owned();
+    let event_id = "$focused-event:example.invalid".to_owned();
+    let account_key = AccountKey("@synthetic:example.invalid".to_owned());
+    let generation = 9;
+    let request_id = RequestId {
+        connection_id: RuntimeConnectionId(1146),
+        sequence: 1,
+    };
+    let focused_key = TimelineKey {
+        account_key: account_key.clone(),
+        kind: TimelineKind::Focused {
+            room_id: room_id.clone(),
+            event_id: event_id.clone(),
+        },
+    };
+    let mut state = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: account_key.0.clone(),
+            device_id: "SYNTHETIC".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        focused_context: koushi_state::FocusedContextState::Opening {
+            room_id: room_id.clone(),
+            event_id: event_id.clone(),
+        },
+        ..AppState::default()
+    };
+    state.navigation.active_room_id = Some(room_id.clone());
+    state.navigation.event_navigation = koushi_state::EventNavigationState::Opening {
+        generation,
+        source: koushi_state::EventNavigationSource::Activity,
+    };
+    let (
+        mut actor,
+        _command_tx,
+        _action_tx,
+        _account_rx,
+        mut event_rx,
+        _snapshot_rx,
+        mut navigation_projection_rx,
+        _event_navigation_prepared_tx,
+        _focused_projection_tx,
+    ) = app_actor_event_navigation_fixture(data_dir.path(), state);
+    actor.pending_event_navigation = Some(PendingEventNavigation {
+        request_id,
+        select_request_id: RequestId {
+            connection_id: request_id.connection_id,
+            sequence: 2,
+        },
+        room_id: room_id.clone(),
+        event_id: event_id.clone(),
+        source: koushi_state::EventNavigationSource::Activity,
+        generation,
+    });
+    actor.pending_focused_navigation = Some(PendingFocusedNavigation {
+        projection_request_id: request_id,
+        key: focused_key.clone(),
+        room_id: room_id.clone(),
+        event_id: event_id.clone(),
+        allow_live_fallback: true,
+        generation: Some(TimelineGeneration(generation)),
+    });
+
+    // A stale failure for another focused target is not this navigation's.
+    actor
+        .commit_action_batch(
+            vec![AppAction::FocusedContextSubscriptionFailed {
+                room_id: room_id.clone(),
+                event_id: "$stale-event:example.invalid".to_owned(),
+                message: "timeline subscription failed".to_owned(),
+            }],
+            ActionBatchOrigin::Actor,
+        )
+        .await;
+    assert!(actor.pending_event_navigation.is_some());
+    assert!(matches!(
+        actor.state.navigation.event_navigation,
+        koushi_state::EventNavigationState::Opening { .. }
+    ));
+
+    actor
+        .commit_action_batch(
+            vec![AppAction::FocusedContextSubscriptionFailed {
+                room_id: room_id.clone(),
+                event_id: event_id.clone(),
+                message: "timeline subscription failed".to_owned(),
+            }],
+            ActionBatchOrigin::Actor,
+        )
+        .await;
+
+    assert!(matches!(
+        actor.state.navigation.event_navigation,
+        koushi_state::EventNavigationState::Failed {
+            generation: current_generation,
+            source: koushi_state::EventNavigationSource::Activity,
+            failure_kind: koushi_state::EventNavigationFailureKind::Timeline,
+        } if current_generation == generation
+    ));
+    assert!(actor.pending_event_navigation.is_none());
+    assert!(actor.pending_focused_navigation.is_none());
+    assert!(actor.event_navigation_deadline_task.is_none());
+    let mut lifecycle = None;
+    while let Ok(event) = event_rx.try_recv() {
+        if let CoreEvent::IntentLifecycle {
+            request_id: lifecycle_request_id,
+            outcome,
+            ..
+        } = event
+            && lifecycle_request_id == request_id
+        {
+            assert!(lifecycle.is_none(), "exactly one terminal");
+            lifecycle = Some(outcome);
+        }
+    }
+    assert_eq!(
+        lifecycle,
+        Some(IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState))
+    );
+    assert_eq!(navigation_projection_rx.borrow_and_update().focused, None);
+}
+
 async fn wait_for_runtime_sync_running(runtime: &CoreRuntime, stage: &'static str) {
     let mut snapshot_rx = runtime.snapshot_rx.clone();
     tokio::time::timeout(std::time::Duration::from_secs(10), async {

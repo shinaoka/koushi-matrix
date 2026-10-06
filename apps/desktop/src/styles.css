@@ -1127,6 +1127,40 @@ button:disabled {
   margin: 0;
 }
 
+/*
+ * #1146: pending event navigation shares the failure banner's position. It is
+ * revealed only after a short delay so a fast navigation does not flash it.
+ */
+.navigation-pending {
+  position: fixed;
+  z-index: 20;
+  inset-block-start: 52px;
+  inset-inline: 0;
+  inline-size: fit-content;
+  max-inline-size: min(360px, calc(100vw - 24px));
+  margin: 0 auto;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  background: var(--surface);
+  pointer-events: none;
+  animation: navigation-pending-reveal 0s linear 300ms both;
+}
+
+.navigation-pending-text {
+  margin: 0;
+}
+
+@keyframes navigation-pending-reveal {
+  from {
+    visibility: hidden;
+  }
+  to {
+    visibility: visible;
+  }
+}
+
 .app-grid {
   display: grid;
   position: relative;
@@ -3324,7 +3358,7 @@ button:disabled {
   display: grid;
   min-width: 156px;
   padding: 4px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
   box-shadow: 0 12px 32px rgb(15 23 42 / 16%);
@@ -3385,7 +3419,7 @@ button:disabled {
   width: min(920px, calc(100% - 32px));
   max-block-size: min(72vh, 760px, calc(100dvh - 48px - var(--native-titlebar-safe-block)));
   padding: 16px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
   box-shadow: 0 12px 32px rgb(15 23 42 / 16%);
@@ -3436,7 +3470,7 @@ button:disabled {
   display: grid;
   gap: 8px;
   padding: 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--surface-hover);
 }
@@ -3500,7 +3534,7 @@ button:disabled {
   max-block-size: 48vh;
   margin: 0;
   padding: 16px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--surface-hover);
   color: var(--text);
