@@ -288,6 +288,10 @@ jobs:
       # dependency metadata from the check above.
       - name: Clippy the macOS Tauri crate
         run: cargo clippy --profile ci -p koushi-desktop --all-targets --locked -- -D warnings
+      # #1147: run the native ImageIO HEIC decoder for real. Linux CI only
+      # type-checks this macOS-only adapter.
+      - name: macOS ImageIO decoder tests
+        run: cargo test --profile ci -p koushi-desktop --test image_io_decoder --locked
 
   core-invites:
     # Prove invitation projection through the sole Simplified Sliding Sync
