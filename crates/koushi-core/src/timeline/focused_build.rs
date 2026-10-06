@@ -271,6 +271,23 @@ pub(super) fn record_focused_build_settled(
     );
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
+impl super::manager::TimelineManagerActor {
+    /// For harnesses that call manager handlers directly instead of running
+    /// its loop: consume focused-build completions, through the same
+    /// production handler, until `key` has no pending build. Bounded by
+    /// `FOCUSED_TIMELINE_BUILD_TIMEOUT`.
+    pub(super) async fn settle_pending_focused_build_for_testing(&mut self, key: &TimelineKey) {
+        use futures_util::StreamExt;
+        while self.focused_builds.pending.contains_key(key) {
+            let Some(completion) = self.focused_builds.tasks.next().await else {
+                return;
+            };
+            self.handle_focused_build_completion(completion).await;
+        }
+    }
+}
+
 /// Test-only view of one key's focused-build ownership inside a running
 /// manager.
 #[cfg(test)]
