@@ -57,7 +57,19 @@ folding, filename-field attribution, false-positive rejection).
 3. **M4** warm set on the existing encrypted navigation persistence bringing the
    SDK display window up before timeline construction, with a startup-latency
    RED gate (see the implementation pointers in Remaining).
-4. **M4 warm set.** The app already has the cache-only primitive: the SDK fork's
+4. **M4 warm set.** Landed: `NavigationState` now persists a bounded, deduplicated
+   most-recent-first list of opened search results (identifiers only) via
+   `AppAction::SearchResultOpened`, and the account actor loads each target's
+   disk chunks cache-only (2 chunks / 200 events per target) once the session is
+   up, so the first navigation reuses a warm display window. **Remaining: the
+   startup-latency RED gate** proving the improvement, which the documented lane
+   cannot supply without maintainer GO and real-homeserver credentials; the
+   alternatives are a behavioural headless gate (network-blocked navigation to a
+   warm target succeeds from the cache, and fails without the warm set) or an
+   instrumented headless measurement of the primed phase at 1 thread with the
+   effective thread count recorded.
+
+The app already has the cache-only primitive: the SDK fork's
    patch surface exposes `RoomPagination::run_backwards_cache_only`
    (`CacheOnlyBackOutcome { anchor_present, .. }`), and
    `crates/koushi-core/src/timeline/navigation.rs` uses `anchor_present` to load
