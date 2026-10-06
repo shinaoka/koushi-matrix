@@ -120,7 +120,7 @@ stateDiagram-v2
     Provisional --> Provisional: TrustUnknown / remain retryable without method discovery or cleanup
     Provisional --> Ready: AuthoritativeDeviceTrustChanged(Verified)
     AwaitingVerification --> Verifying: VerificationMethodSubmitted / clear prior failure
-    AwaitingVerification --> Rejecting: RejectSession / no proof
+    AwaitingVerification --> Rejecting: RejectSession
     Verifying --> AwaitingVerification: Cancelled / failed / timeout
     Verifying --> Ready: AuthoritativeDeviceTrustChanged(Verified)
     Verifying --> Rejecting: RejectSession
@@ -528,7 +528,9 @@ stateDiagram-v2
 ```
 - A genuine missing cross-signing identity may enter mandatory bootstrap. An
   existing identity without a verified other device or usable recovery method
-  enters `Rejecting`; identity reset, skip, and verify-later are not gate exits.
+  stays in `AwaitingVerification` with a `NoProofMethod` failure and the
+  provisional-device cleanup offered; identity reset, skip, and verify-later
+  are not gate exits.
 - Current-device strictness does not create a peer-device send gate. Eligible
   unverified peer devices remain non-blocking; blocked devices and cryptographic
   integrity/key-mismatch failures remain failures.

@@ -1,4 +1,5 @@
 use super::cleanup::{cleanup_e2ee_multi_device_participants, leave_e2ee_login_store_room};
+use super::diagnostics::gate_session_phase;
 use super::event_wait::{
     QaEventDeadline, find_timeline_item_with_body, start_sync_for_qa, subscribe_timeline_for_qa,
     timeline_item_is_decryption_failure, wait_for_initial_items, wait_for_invite_in_snapshot,
@@ -998,19 +999,51 @@ pub(super) async fn run_gate_no_proof_stage(config: &QaConfig) -> Result<(), Str
     }))
     .await
     .map_err(|_| "no-proof Core login submit failed".to_owned())?;
+    // An existing identity without a verified device or recovery method stays
+    // fail-closed in AwaitingVerification with the provisional-device cleanup
+    // offered; it must never be admitted to Ready.
     let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
-    let mut saw_rejecting = false;
     loop {
-        saw_rejecting |= matches!(conn.snapshot().session, SessionState::Rejecting { .. });
-        if matches!(conn.snapshot().session, SessionState::SignedOut) && saw_rejecting {
+        let snapshot = conn.snapshot();
+        if matches!(snapshot.session, SessionState::Ready(_)) {
+            return Err("no-proof session was admitted to Ready".to_owned());
+        }
+        if let SessionState::AwaitingVerification { gate, .. } = &snapshot.session
+            && gate.account_kind == koushi_state::VerificationAccountKind::ExistingIdentity
+            && gate.methods.is_empty()
+            && gate.failure == Some(koushi_state::VerificationGateFailureKind::NoProofMethod)
+            && matches!(
+                snapshot.device_cleanup,
+                DeviceCleanupState::Offered {
+                    reason: koushi_state::DeviceCleanupOfferReason::NoProofMethod,
+                }
+            )
+        {
             break;
         }
         tokio::time::timeout_at(deadline, conn.recv_event())
             .await
-            .map_err(|_| "no-proof rejection timed out".to_owned())?
+            .map_err(|_| {
+                format!(
+                    "no-proof gate timed out; phase={}",
+                    gate_session_phase(&conn.snapshot().session)
+                )
+            })?
             .map_err(|_| "no-proof event stream closed".to_owned())?;
     }
-    println!("gate_no_proof_rejected=ok");
+    println!("gate_no_proof_cleanup_offered=ok");
+    let blocked_sync = conn.next_request_id();
+    conn.command(CoreCommand::Sync(SyncCommand::Start {
+        request_id: blocked_sync,
+    }))
+    .await
+    .map_err(|_| "no-proof sync submit failed".to_owned())?;
+    let failure =
+        wait_for_operation_failed(&mut conn, blocked_sync, "no-proof normal command").await?;
+    if failure != CoreFailure::SessionRequired {
+        return Err("no-proof normal command returned unexpected failure kind".to_owned());
+    }
+    println!("gate_no_proof_commands_blocked=ok");
     drop(conn);
     runtime.shutdown().await;
 
@@ -1293,8 +1326,14 @@ pub(super) async fn run_gate_negative_stage(
         "gate negative trust loss reset",
     )
     .await?;
-    wait_for_locked_snapshot(conn_a, "gate negative primary trust loss").await?;
-    println!("gate_trust_loss_locked=ok");
+    // Trust loss re-enters the verification gate on the same device; it is not
+    // a soft-logout Locked session.
+    let regated =
+        wait_for_existing_identity_gate(conn_a, "gate negative primary trust loss").await?;
+    if regated.user_id != session_a.user_id || regated.device_id != session_a.device_id {
+        return Err("gate negative trust loss re-gated a different session".to_owned());
+    }
+    println!("gate_trust_loss_regated=ok");
     let blocked_sync = conn_a.next_request_id();
     conn_a
         .command(CoreCommand::Sync(SyncCommand::Start {

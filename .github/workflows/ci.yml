@@ -355,6 +355,18 @@ jobs:
           node scripts/desktop-headless-local-qa.mjs --run \
             --server=${{ matrix.server }} --core --scenario=invites_dm --cargo-profile=ci \
             --timeout-ms=240000
+      # The verification-gate negative paths are not part of `all`; run them
+      # here so they cannot drift unnoticed. They reuse this job's build.
+      - name: Verification-gate trust-loss and SAS/recovery retry scenario
+        run: |
+          node scripts/desktop-headless-local-qa.mjs --run \
+            --server=${{ matrix.server }} --core --scenario=gate_negative --cargo-profile=ci \
+            --timeout-ms=400000
+      - name: Verification-gate no-proof scenario
+        run: |
+          node scripts/desktop-headless-local-qa.mjs --run \
+            --server=${{ matrix.server }} --core --scenario=gate_no_proof --cargo-profile=ci \
+            --timeout-ms=240000
       - name: Upload server-specific core QA logs on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
