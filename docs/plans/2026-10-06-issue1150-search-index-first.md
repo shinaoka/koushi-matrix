@@ -111,6 +111,48 @@ blocking), then the durable-record invalidation/attachment-rebuild pairing, the 
 sticker regressions, the supersede/settlement gap, and finally the warm-task ownership and
 window-priming corrections.
 
+### Fix round 1 (in review)
+
+A second independent pre-implementation review (GPT-6.1 Sol) of the fix plan confirmed all twelve
+root causes against the source and changed several of the planned fixes. Its verdicts:
+
+- **#1, #2 (blocking)** - the planned fixes hold. #2 is implemented as "index the page, then report
+  it": the crawler writes the page through the index guard (which commits synchronously) and a page
+  whose write fails is reported as failed, so `Success` always carries an acknowledgement. No new
+  result field; the existing failure outcome is reused.
+- **#3** - remove-then-add rewriting is not a general migration and does not repair schema or
+  tokenizer changes. Implemented instead by naming the index directory after the index contract
+  version (`search-index.v{N}`), so a bump opens a fresh index before the client is built. The same
+  version keys the durable crawl commitments, so an extraction change re-crawls and re-extracts
+  together.
+- **#4** - implemented, plus two corrections the review added: the durable record now also carries
+  the content policy it was produced under (so a settings change that could not be saved is still
+  detected on the next start), and membership pruning happens before the paused-crawler early
+  return. An unreadable record no longer disables persistence for the session.
+- **#5** - the planned cache-only attachment refresh is rejected as tail-only: `event_cache.events()`
+  returns the loaded linked chunk, not the persisted history. The fix must rebuild attachment rows
+  from persisted SDK events (identifier-only record plus SDK resolution) instead.
+- **#6** - the planned timestamp watermark would break a real producer: the canonical timeline path
+  records the original item timestamp for both Upsert and Edit (`timeline/item_projection.rs`),
+  while the crawler records the edit event's timestamp. Version information must be normalised
+  across both producers first.
+- **#7** - fix sticker resolution; do **not** extend the resolver to polls while the index ignores
+  poll replacements (stale poll text would pass verification as canonical). Removing unsupported
+  poll indexing is the alternative.
+- **#8** - carry both the pager timestamp and the indexed primary event id, and dedupe by resolved
+  identity before counting toward the 50-result quota.
+- **#9** - settle supersession where the search state actually changes (AppActor), not in
+  `SearchActor`, because a new query is not the only invalidator (edit, too-short, close).
+- **#10-#12** - the review recommends deleting the M4 warm set rather than tuning it: search-result
+  navigation goes through the SDK's event-focused `/context` build (`EventFocusedCache` is in-memory
+  and network-backed), which warming the room's live cache cannot accelerate, and a larger cache-only
+  budget would spend itself before discovering that the target is out of reach. Pending a decision.
+
+Also raised: migrate commitments already written without an acknowledgement, make the "rebuild
+search database" action actually rebuild the persistent index (the user help promises it), cover
+attachment edit rollback and mixed producers, measure pending-edit residency in the memory probe,
+and update the stale canon in `docs/architecture/state-machine.md`.
+
 ## Required evidence
 
 RED-then-GREEN for literal completeness (operators/fields inert, raw+normalized,
