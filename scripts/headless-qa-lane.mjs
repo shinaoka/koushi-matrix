@@ -36,14 +36,25 @@ export function failureStage(stderr) {
     .filter((entry) => entry.startsWith("Headless core QA failed: "))
     .at(-1);
   if (line === undefined) return "unknown";
-  const stage = line
+  const words = line
     .slice("Headless core QA failed: ".length)
     .split(":")[0]
     .toLowerCase()
     .replace(/[^a-z0-9 _-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 80);
+    .split(/\s+/)
+    .filter((word) => word !== "");
+  // Measured values ("held 1 closed 0", "observed_total=1") vary run to run;
+  // drop each number and the counter name before it so a recurring failure
+  // keeps one issue title instead of filing a new one every night.
+  const kept = [];
+  for (const word of words) {
+    if (/\d/.test(word)) {
+      if (kept.length > 0 && !/\d/.test(kept.at(-1))) kept.pop();
+      continue;
+    }
+    kept.push(word);
+  }
+  const stage = kept.join(" ").slice(0, 80).trim();
   return stage === "" ? "unknown" : stage;
 }
 
