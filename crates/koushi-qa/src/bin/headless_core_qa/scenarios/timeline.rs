@@ -2,6 +2,7 @@ use super::cleanup::cleanup_logged_in_runtime;
 use super::diagnostics::{
     QaCannedTimelineEvent, QaTcpProxy, diagnostic_count_field, diagnostic_token_field,
 };
+use super::event_wait::subscribe_timeline_for_qa;
 use super::event_wait::{
     QaEventDeadline, SendQueueLocalEcho, cancel_send_queue_item, find_timeline_item_with_body,
     retry_send_queue_item, send_text_expect_local_echo, start_sync_for_qa, stop_sync_for_qa,
@@ -838,7 +839,7 @@ pub(super) async fn run_scheduled_send_stage(
             fire_lease,
             CoreCommand::App(AppCommand::ScheduleSend {
                 request_id: fire_id,
-                expected_account,
+                expected_account: expected_account.clone(),
                 room_id: room_id.to_owned(),
                 thread_root_event_id: None,
                 body: SCHEDULED_FIRE_BODY.to_owned(),
@@ -866,6 +867,108 @@ pub(super) async fn run_scheduled_send_stage(
     )
     .await?;
     println!("scheduled_fire=ok");
+
+    // -------------------------------------------------------------------
+    // #1159 criterion 5b: a scheduled *thread* reply must be delivered with its
+    // relation intact, not merely accepted into the queue. #1181 is what makes
+    // an accepted thread reservation reach the room-level projection this stage
+    // waits on.
+    // -------------------------------------------------------------------
+    const SCHEDULED_THREAD_ROOT_BODY: &str = "Koushi scheduled thread root QA body";
+    const SCHEDULED_THREAD_REPLY_BODY: &str = "Koushi scheduled thread reply QA body";
+
+    // An ordinary room message becomes the thread root; its event id is the
+    // relation the scheduled reply has to carry.
+    let root_request_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        request_id: root_request_id,
+        key: key.clone(),
+        transaction_id: "qa-scheduled-thread-root".to_owned(),
+        document: koushi_state::ComposerDocument::from_plain_text(
+            SCHEDULED_THREAD_ROOT_BODY.to_owned(),
+        ),
+    }))
+    .await
+    .map_err(|e| format!("scheduled_send thread: root submission failed: {e}"))?;
+    let (_root_txn, root_event_id) =
+        wait_for_send_completed(conn, root_request_id, key, "scheduled_send thread root").await?;
+
+    let thread_key = TimelineKey {
+        account_key: key.account_key.clone(),
+        kind: TimelineKind::Thread {
+            room_id: room_id.to_owned(),
+            root_event_id: root_event_id.clone(),
+        },
+    };
+    // The reply lands in the thread timeline, so that is the surface the fire is
+    // observed on.
+    let _thread_initial =
+        subscribe_timeline_for_qa(conn, &thread_key, "scheduled_send thread subscribe").await?;
+
+    let thread_scope = ComposerDraftScope {
+        account: expected_account.clone(),
+        target: ComposerTarget::Thread {
+            room_id: room_id.to_owned(),
+            root_event_id: root_event_id.clone(),
+        },
+    };
+    let thread_lease = conn
+        .acquire_composer_draft_lease(composer_generation, thread_scope)
+        .map_err(|error| format!("scheduled_send thread: acquire lease failed: {error:?}"))?;
+    let thread_schedule_id = conn.next_request_id();
+    let thread_schedule = conn
+        .command_with_composer_lease(
+            composer_generation,
+            thread_lease,
+            CoreCommand::App(AppCommand::ScheduleSend {
+                request_id: thread_schedule_id,
+                expected_account: expected_account.clone(),
+                room_id: room_id.to_owned(),
+                thread_root_event_id: Some(root_event_id.clone()),
+                body: SCHEDULED_THREAD_REPLY_BODY.to_owned(),
+                send_at_ms: scheduled_qa_epoch_ms(Duration::from_millis(250)),
+                draft_revision: 0.into(),
+            }),
+        )
+        .await;
+    conn.release_composer_draft_lease(composer_generation, thread_lease)
+        .map_err(|error| format!("scheduled_send thread: release lease failed: {error:?}"))?;
+    thread_schedule
+        .map_err(|error| format!("scheduled_send thread: submit schedule failed: {error}"))?;
+
+    let thread_created =
+        wait_for_scheduled_send_count(conn, 1, "scheduled_send thread create").await?;
+    let thread_scheduled_id = thread_created
+        .timeline
+        .scheduled_sends
+        .iter()
+        .find(|item| item.thread_root_event_id.as_deref() == Some(root_event_id.as_str()))
+        .map(|item| item.scheduled_id.clone())
+        .ok_or_else(|| {
+            "scheduled_send thread: the thread reservation never reached the room projection"
+                .to_owned()
+        })?;
+
+    wait_for_scheduled_send_fired(
+        conn,
+        &thread_key,
+        &thread_scheduled_id,
+        SCHEDULED_THREAD_REPLY_BODY,
+        "scheduled_send thread fire",
+    )
+    .await?;
+    // The fire wait above already consumed the reply's own diff, so read the
+    // current thread projection instead of waiting for another one.
+    let thread_items =
+        subscribe_timeline_for_qa(conn, &thread_key, "scheduled_send thread re-subscribe").await?;
+    let thread_reply = thread_items
+        .iter()
+        .find(|item| timeline_item_body_matches(item, SCHEDULED_THREAD_REPLY_BODY))
+        .ok_or_else(|| {
+            "scheduled_send thread: the fired reply was missing from the thread timeline".to_owned()
+        })?;
+    assert_thread_reply_relation(thread_reply, &root_event_id)?;
+    println!("scheduled_thread_reply=ok");
     Ok(())
 }
 
