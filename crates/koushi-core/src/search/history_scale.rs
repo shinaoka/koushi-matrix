@@ -102,7 +102,9 @@ async fn encrypted_history_index_grows_without_resident_first_party_bodies() {
             {
                 let cache_store = client.event_cache_store().lock().await.unwrap();
                 for event in &events {
-                    cache_store.as_clean().unwrap()
+                    cache_store
+                        .as_clean()
+                        .unwrap()
                         .save_event(room_id, event.clone())
                         .await
                         .unwrap();

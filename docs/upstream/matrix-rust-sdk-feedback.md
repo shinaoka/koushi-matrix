@@ -1101,6 +1101,32 @@ duplicating cache ownership. This minimal fork fix is intended for upstream
 submission with its production-redaction and cache-restoration regression.
 See [reproduction and historical limits](2026-09-15-redacted-notifications.md).
 
+## 2026-10-07: Explicit redaction proof for Files metadata (#1150)
+
+The existing shared pending-redaction registry (Stage 3 above) was reconstructed
+from storage but not updated by live room redaction processing. A redaction for
+an absent target was therefore forgotten until a reopen; a later cached replay
+could remain unredacted. The actual room `handle_sync` regression test reproduces
+this without a reopen. Live processing now remembers the committed redaction
+before the absent-target return, reusing the same encrypted-store-backed registry.
+A separate reconstruction test verifies proof after reopening with an absent
+target. No second registry or first-party body store is added.
+
+Files mutation admission needs positive redaction evidence even when an edit
+exists only in a focused timeline or bundled relation. Public `find_event` cannot
+provide that (and suppresses some storage errors). The minimal fork accessor
+`RoomEventCache::redacted_event_ids` checks requested IDs under one room-state
+guard, using a single pending-registry snapshot and fallible cached-event reads.
+Missing events are not proof; malformed cached events and storage errors remain
+errors. Core/adapters, not the SDK, own Files policy, retry bounds and failure
+settlement. SDK resident registry/index allocations are distinct from the
+first-party zero-history-body budget; entries remain necessary for later thread
+copies as explained above.
+
+Upstreaming intent: submit the absent-target regression/fix and positive-evidence
+accessor alongside the existing shared-redaction patch. The checked-out fork is
+pinned by the app gitlink; fork PR #19 remains a separate, unmerged decision.
+
 ## 2026-10-01: Reject partial `/keys/query` results for user identity
 
 A successful HTTP response may list the contact's homeserver under

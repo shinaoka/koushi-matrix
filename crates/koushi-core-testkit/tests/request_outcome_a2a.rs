@@ -315,6 +315,7 @@ async fn search_start_keeps_exact_account_scope_and_query() {
     }));
 
     let mut wrong_account = ready_state("@bob:example.invalid");
+    wrong_account.search_request_connection_id = Some(request_id.connection_id.0);
     wrong_account.search = koushi_state::SearchState::Searching {
         request_id: request_id.sequence,
         query: "synthetic query".to_owned(),
@@ -324,6 +325,7 @@ async fn search_start_keeps_exact_account_scope_and_query() {
     assert!(waiter.as_mut().now_or_never().is_none());
 
     let mut wrong_query = ready_state("@alice:example.invalid");
+    wrong_query.search_request_connection_id = Some(request_id.connection_id.0);
     wrong_query.search = koushi_state::SearchState::Searching {
         request_id: request_id.sequence,
         query: "other synthetic query".to_owned(),
@@ -333,6 +335,7 @@ async fn search_start_keeps_exact_account_scope_and_query() {
     assert!(waiter.as_mut().now_or_never().is_none());
 
     let mut wrong_scope = ready_state("@alice:example.invalid");
+    wrong_scope.search_request_connection_id = Some(request_id.connection_id.0);
     wrong_scope.search = koushi_state::SearchState::Searching {
         request_id: request_id.sequence,
         query: "synthetic query".to_owned(),
@@ -344,12 +347,16 @@ async fn search_start_keeps_exact_account_scope_and_query() {
     assert!(waiter.as_mut().now_or_never().is_none());
 
     let mut state = ready_state("@alice:example.invalid");
+    state.search_request_connection_id = Some(request_id.connection_id.0 + 1);
     state.search = koushi_state::SearchState::Searching {
         request_id: request_id.sequence,
         query: "synthetic query".to_owned(),
         scope,
     };
-    control.send_snapshot(versioned(state, 4));
+    control.send_snapshot(versioned(state.clone(), 4));
+    assert!(waiter.as_mut().now_or_never().is_none());
+    state.search_request_connection_id = Some(request_id.connection_id.0);
+    control.send_snapshot(versioned(state, 5));
     assert!(matches!(waiter.await, Ok(RequestOutcome::Search { .. })));
 }
 
