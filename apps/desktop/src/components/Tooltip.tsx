@@ -4,6 +4,7 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -95,11 +96,7 @@ export function Tooltip({ children, label, placement = "right", delayMs = 250 }:
   // and pane scrollports clip an in-row bubble (the same reason the read-receipt
   // popup does). It is measured after mount, prefers the requested side, flips
   // when that side cannot fit, and is clamped inside the viewport.
-  useLayoutEffect(() => {
-    if (!isOpen) {
-      setStyle({ visibility: "hidden" });
-      return;
-    }
+  const positionBubble = useCallback(() => {
     const host = hostRef.current;
     const bubble = bubbleRef.current;
     if (!host) {
@@ -132,8 +129,41 @@ export function Tooltip({ children, label, placement = "right", delayMs = 250 }:
         viewportHeight - TOOLTIP_VIEWPORT_MARGIN_PX - height
       )
     );
-    setStyle({ position: "fixed", left: `${left}px`, top: `${top}px`, visibility: "visible" });
-  }, [isOpen, label, placement]);
+    const next: CSSProperties = {
+      position: "fixed",
+      left: `${left}px`,
+      top: `${top}px`,
+      visibility: "visible"
+    };
+    // Identical geometry keeps the previous object, so a scroll frame that does
+    // not move the anchor cannot re-render in a loop.
+    setStyle((previous) =>
+      previous.left === next.left && previous.top === next.top ? previous : next
+    );
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      setStyle({ visibility: "hidden" });
+      return;
+    }
+    positionBubble();
+  }, [isOpen, label, placement, positionBubble]);
+
+  // A focused trigger can stay open while its pane scrolls or the window
+  // resizes, so the bubble follows the anchor instead of staying behind.
+  useEffect(() => {
+    if (!isOpen) {
+      return undefined;
+    }
+    const onMove = () => positionBubble();
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
+    return () => {
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
+    };
+  }, [isOpen, positionBubble]);
 
   const triggerProps: TooltipTriggerProps = {
     "aria-describedby": isOpen ? tooltipId : undefined,

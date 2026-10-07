@@ -1316,6 +1316,9 @@ button:disabled {
 .tooltip-bubble.is-floating {
   inset-block-start: auto;
   inset-inline-start: auto;
+  /* The floating layer positions the bubble from measured coordinates, so the
+     inline variant's vertical centering transform must not apply. */
+  transform: none;
 }
 
 .tooltip-bubble.is-open {

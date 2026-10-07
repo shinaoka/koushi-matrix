@@ -140,6 +140,16 @@ test("room rows render the projected access condition with its tooltip", async (
     t("access.inviteOnlyDescription")
   );
 
+  // A bubble anchored to the first row is clamped inside the viewport instead of
+  // being pushed above its top edge.
+  await plainRow.locator(".room-access-badge").first().hover();
+  const topBubble = page
+    .locator("body > .tooltip-bubble.is-open")
+    .filter({ hasText: t("access.checkingDescription") });
+  await expect(topBubble).toHaveCount(1);
+  await expect(topBubble).toBeInViewport({ ratio: 1 });
+  expect((await topBubble.boundingBox())?.y ?? -1).toBeGreaterThanOrEqual(0);
+
   // Hovering the icon or a badge explains it.
   // The bubble renders in the body-level floating layer, so it is not clipped by
   // the sidebar's scrollport.
@@ -148,14 +158,14 @@ test("room rows render the projected access condition with its tooltip", async (
     .locator("body > .tooltip-bubble.is-open")
     .filter({ hasText: t("access.inviteOnlyDescription") });
   await expect(iconBubble).toHaveCount(1);
-  await expect(iconBubble).toBeInViewport();
+  await expect(iconBubble).toBeInViewport({ ratio: 1 });
 
   await bothRow.locator(".room-access-badge").first().hover();
   const routeBubble = page
     .locator("body > .tooltip-bubble.is-open")
     .filter({ hasText: t("access.conditionsRouteDescription") });
   await expect(routeBubble).toHaveCount(1);
-  await expect(routeBubble).toBeInViewport();
+  await expect(routeBubble).toBeInViewport({ ratio: 1 });
 
   // The trailing badge's tooltip — the one the old in-row bubble clipped — is
   // fully inside the viewport too.
@@ -164,7 +174,7 @@ test("room rows render the projected access condition with its tooltip", async (
     .locator("body > .tooltip-bubble.is-open")
     .filter({ hasText: t("access.requestRouteDescription") });
   await expect(requestBubble).toHaveCount(1);
-  await expect(requestBubble).toBeInViewport();
+  await expect(requestBubble).toBeInViewport({ ratio: 1 });
 });
 
 test("the room header shows the active room's access condition", async ({ page }) => {
@@ -184,7 +194,7 @@ test("the room header shows the active room's access condition", async ({ page }
     .locator("body > .tooltip-bubble.is-open")
     .filter({ hasText: t("access.conditionsRouteDescription") });
   await expect(headerBubble).toHaveCount(1);
-  await expect(headerBubble).toBeInViewport();
+  await expect(headerBubble).toBeInViewport({ ratio: 1 });
 });
 
 test("the header uses the full unknown and checking labels", async ({ page }) => {
