@@ -152,29 +152,47 @@ function messageSelectionWithin(element: HTMLElement): string | undefined {
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
     return undefined;
   }
-  const text = selection.toString();
+  const text = selectedRangeText(selection);
   if (!text.trim()) {
     return undefined;
   }
+  const editableSurfaces = element.querySelectorAll(
+    "input, textarea, [contenteditable='true'], [contenteditable='']"
+  );
   for (let index = 0; index < selection.rangeCount; index += 1) {
     const range = selection.getRangeAt(index);
     if (!element.contains(range.commonAncestorContainer)) {
       return undefined;
     }
-    const container = range.commonAncestorContainer;
-    const containerElement =
-      container.nodeType === Node.ELEMENT_NODE
-        ? (container as Element)
-        : container.parentElement;
-    if (
-      containerElement?.closest(
-        "input, textarea, [contenteditable='true'], [contenteditable='']"
-      )
-    ) {
-      return undefined;
+    // Draft text is not message text: reject a range that intersects any
+    // editable surface in this row, whether it sits inside it or encloses it
+    // (selecting the whole inline edit form has a common ancestor outside the
+    // editor and would otherwise pass).
+    for (const editable of editableSurfaces) {
+      if (range.intersectsNode(editable)) {
+        return undefined;
+      }
     }
   }
   return text;
+}
+
+/// The rendered plain text of a selection, with the message body's line breaks.
+///
+/// The body renders a newline as a `<br>`; `Range.toString()` concatenates text
+/// nodes only, so it would drop every line break and Copy would not reproduce
+/// what the user sees. Block-level markup (lists, code fences) keeps its own
+/// text without an added separator.
+function selectedRangeText(selection: Selection): string {
+  const parts: string[] = [];
+  for (let index = 0; index < selection.rangeCount; index += 1) {
+    const fragment = selection.getRangeAt(index).cloneContents();
+    fragment.querySelectorAll("br").forEach((lineBreak) => {
+      lineBreak.replaceWith(document.createTextNode("\n"));
+    });
+    parts.push(fragment.textContent ?? "");
+  }
+  return parts.join("\n");
 }
 
 function reactionPickerBoundaryElement(anchor: Element): Element | null {
