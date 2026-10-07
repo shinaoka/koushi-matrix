@@ -977,17 +977,27 @@ local flag:
   room list keeps one timeline event per room, so for a room the client has never
   read they are a lower bound (a never-read room with several unread messages
   reports 1) until something paginates the room. While no own read receipt is
-  anchored in the loaded timeline, or receipts are still unmatched against loaded
-  events (`read_receipts().latest_active.is_none()` or a nonempty `pending`), the
-  room-list projection therefore tops each counter up with the server's
-  `unread_notification_counts` (per-counter maximum). The top-up must stay before
-  the read-marker suppression below, so a stale server count is still zeroed when
-  the fully-read marker or the unthreaded private receipt covers the projected
-  latest event and the room is not manually marked unread. On homeservers that
-  report dummy zero server counts the top-up is
-  a no-op. A stored receipt can be recorded as active while its target is absent
-  from the loaded chunk; that residual cold-start undercount is not detected here
-  and would need a gap-aware recount of the loaded suffix.
+  anchored in the loaded timeline (`read_receipts().latest_active.is_none()`), the
+  room-list projection therefore tops the notification and mention counters up
+  with the server's `unread_notification_counts` (per-counter maximum). A nonempty
+  `pending` is deliberately not part of that condition: an unmatched receipt does
+  not make the client counters a lower bound, because they are counted from the
+  newest boundary the SDK did find. The top-up must stay before the read-marker
+  suppression below, so a stale server count is still zeroed when the fully-read
+  marker or the unthreaded private receipt covers the projected latest event and
+  the room is not manually marked unread. On homeservers that report dummy zero
+  server counts the top-up is a no-op.
+  The unread-message counter is not topped up: `notification_count` is the total
+  number of unread *notifications* and not an unread-message count, so
+  `RoomSummary.unread_count` keeps the SDK value. Two cold-start residuals follow
+  and are accepted for now: a stored receipt can be recorded as active while its
+  target is absent from the loaded chunk (undercount this projection cannot
+  detect), and a muted room — whose display count uses the greater of the unread
+  and notification counters — still shows the SDK's lower bound until the room is
+  paginated. Fixing either needs more loaded history, not a different counter.
+  The vendored SDK keeps the counts already known for a room when a sync response
+  carries no `unread_notifications` pair at all (an empty pair means "no count
+  update", not "none"), so a later sync cannot silently zero the top-up.
   These observations can arrive later than a
   local command response, and historical Matrix Rust SDK releases have had
   unread-count/read-receipt convergence bugs (for example

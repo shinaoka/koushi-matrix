@@ -498,8 +498,8 @@ async fn explicit_empty_direct_map_overrides_cached_room_direct_targets() {
 }
 /// #1176: a cold-start room list caches a single event per room, so the SDK's
 /// client-side counters are a lower bound while no own read receipt is anchored
-/// in (and no receipt is left unmatched against) the loaded timeline. The
-/// server counts that are already in hand must top the projection up.
+/// in the loaded timeline. The server counts that are already in hand must top
+/// the notification projection up.
 async fn mock_room_with_unread_state(
     room_id: &matrix_sdk::ruma::RoomId,
     receipts: matrix_sdk_base::read_receipts::ReadReceipts,
@@ -565,7 +565,7 @@ fn server_counts(
 }
 
 #[tokio::test]
-async fn cold_start_unread_lower_bound_is_topped_up_by_server_counts() {
+async fn cold_start_notification_lower_bound_is_topped_up_by_server_counts() {
     use matrix_sdk::ruma::room_id;
 
     let (_server, room) = mock_room_with_unread_state(
@@ -576,15 +576,20 @@ async fn cold_start_unread_lower_bound_is_topped_up_by_server_counts() {
     .await;
 
     let projected = projected_single_room(room).await;
-    assert_eq!(projected.unread_count, 3);
+    // The unread-message projection stays the SDK's own value: the server has no
+    // unread-message count (see `effective_room_notification_counts`).
+    assert_eq!(projected.unread_count, 1);
     assert_eq!(projected.notification_count, 3);
     assert_eq!(projected.highlight_count, 0);
 }
 
 #[tokio::test]
-async fn unmatched_pending_receipts_also_take_the_server_counts() {
+async fn pending_receipts_do_not_top_up_an_anchored_client_count() {
     use matrix_sdk::ruma::room_id;
 
+    // A pending receipt only means some receipt is still unmatched; the client
+    // counters are still counted from the newest boundary the SDK found, so the
+    // higher server count must not replace them.
     let mut receipts = read_receipts(1, 0, 0, Some("$anchored:example.invalid"));
     receipts
         .pending
@@ -597,7 +602,8 @@ async fn unmatched_pending_receipts_also_take_the_server_counts() {
     .await;
 
     let projected = projected_single_room(room).await;
-    assert_eq!(projected.unread_count, 2);
+    assert_eq!(projected.unread_count, 1);
+    assert_eq!(projected.notification_count, 0);
 }
 
 #[tokio::test]
