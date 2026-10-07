@@ -96,6 +96,48 @@ fn delete_account_credentials_does_not_panic_when_absent() {
         .expect("account credentials delete");
 }
 #[test]
+fn deleting_a_bound_unpromoted_account_releases_its_pending_login_record() {
+    let data_dir = tempdir().expect("tempdir");
+    let cred_dir = tempdir().expect("tempdir");
+    let actor = file_store_actor(&data_dir, &cred_dir);
+    let key_id = make_key_id();
+    let owner = actor.pending_login_owner();
+
+    // A password sign-in binds its pending allocation to the new device but
+    // stays in the verification gate, so promotion never completes the record.
+    let pending = owner
+        .resume_or_create(
+            &key_id.homeserver,
+            "password",
+            Some(&key_id.user_id),
+            "DEVICE1",
+        )
+        .expect("first pending allocation");
+    owner
+        .bind(
+            &pending.allocation_id,
+            pending.attempt_generation,
+            key_id.clone(),
+        )
+        .expect("bind allocation to the provisional device");
+
+    // Provisional device cleanup (or a local reset) deletes that account.
+    actor
+        .delete_account_credentials(&key_id)
+        .expect("account credentials deleted");
+
+    // The next sign-in on this install must not trip over the removed root.
+    owner
+        .resume_or_create(
+            &key_id.homeserver,
+            "password",
+            Some(&key_id.user_id),
+            "DEVICE2",
+        )
+        .expect("a later sign-in must get a pending allocation");
+}
+
+#[test]
 fn store_actor_probe_maps_credential_backend_health_without_raw_errors() {
     let data_dir = tempdir().expect("tempdir");
     let backend = koushi_key::InMemoryCredentialBackend::default();

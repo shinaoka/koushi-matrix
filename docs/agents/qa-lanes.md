@@ -156,6 +156,26 @@ observer needs a bounded debug/test `SyncOnce` on the observer account after
 `SetTyping` is acknowledged, to wake the same Rust-owned typing observer. Do not
 replace this with React polling or local UI timers.
 
+### Automated scenario lanes
+
+[`scripts/lib/headless-qa-lanes.mjs`](../../scripts/lib/headless-qa-lanes.mjs)
+is the single source for which automation runs each scenario:
+
+- `COVERED_BY_ALL`: stages the nightly `--scenario=all` aggregate job runs.
+- `PR_CI_SCENARIOS`: short focused scenarios run on every PR by the
+  `core-invites` job on both servers.
+- `NIGHTLY_SCENARIOS`: focused scenarios outside `all`, run by the nightly
+  `focused` job one at a time; a failure does not stop the rest, and each
+  failing scenario files or comments on one open `nightly-qa` issue titled
+  `nightly-qa: <scenario> failed (<server>/<stage>)`.
+- `EXCLUDED_SCENARIOS`: scenarios in no lane, each with a written reason.
+
+`node scripts/headless-qa-lane.mjs --lane=pr|nightly --server=<server>` runs a
+lane locally the same way CI does. PR CI runs
+`node scripts/check-headless-qa-lanes.mjs`, which fails when a scenario
+registered in `registry.rs` is in none of these lists. When adding a scenario,
+place it in a lane or record why it is excluded.
+
 ### Multi-stage QA participant ownership
 
 Multi-stage QA must thread participant ownership through typed helper inputs.
