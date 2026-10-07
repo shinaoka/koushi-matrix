@@ -458,6 +458,73 @@ pub async fn cached_redacted_event_ids(
     Ok(redacted.into_iter().map(|id| id.to_string()).collect())
 }
 
+/// Return positively invalid replacements for one target using the SDK rules.
+/// Both events are read from the same room cache. Missing/UTD events are unknown,
+/// not invalid; read failures propagate. This makes no network request.
+///
+/// # Errors
+/// Returns `Query` for invalid identifiers/unknown rooms and `Internal` for
+/// cache-read failures.
+pub async fn cached_invalid_replacement_ids(
+    session: &MatrixClientSession,
+    room_id: &str,
+    target: &str,
+    event_ids: &[String],
+) -> Result<HashSet<String>, MatrixSearchError> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| MatrixSearchError::Query)?;
+    let target = matrix_sdk::ruma::EventId::parse(target).map_err(|_| MatrixSearchError::Query)?;
+    let event_ids = event_ids
+        .iter()
+        .map(matrix_sdk::ruma::EventId::parse)
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(|_| MatrixSearchError::Query)?;
+    let room = session
+        .client()
+        .get_room(&room_id)
+        .ok_or(MatrixSearchError::Query)?;
+    let (cache, _handles) = room
+        .event_cache()
+        .await
+        .map_err(|_| MatrixSearchError::Internal)?;
+    let Some(root) = cache
+        .find_event(&target)
+        .await
+        .map_err(|_| MatrixSearchError::Internal)?
+    else {
+        return Ok(HashSet::new());
+    };
+    if root.kind.is_utd() {
+        return Ok(HashSet::new());
+    }
+    let mut invalid = HashSet::new();
+    for id in event_ids {
+        if id == target {
+            continue;
+        }
+        let Some(edit) = cache
+            .find_event(&id)
+            .await
+            .map_err(|_| MatrixSearchError::Internal)?
+        else {
+            continue;
+        };
+        if edit.kind.is_utd() {
+            continue;
+        }
+        if matrix_sdk_base::check_validity_of_replacement_events(
+            root.raw(),
+            root.encryption_info().map(AsRef::as_ref),
+            edit.raw(),
+            edit.encryption_info().map(AsRef::as_ref),
+        )
+        .is_err()
+        {
+            invalid.insert(id.to_string());
+        }
+    }
+    Ok(invalid)
+}
+
 /// Resolve a message to its current visible content, reading only the local
 /// event cache (no network). Returns `None` when it is missing or redacted.
 pub async fn resolve_cached_message(

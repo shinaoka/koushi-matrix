@@ -263,6 +263,29 @@ async fn failed_proof_retries_at_files_query_without_resubmission() {
 }
 
 #[tokio::test]
+async fn focused_text_replacement_survives_a_queued_attachment_without_cache_coverage() {
+    for crawl_page in [false, true] {
+        let (server, mut actor) = fixture(crawl_page).await;
+        if crawl_page {
+            actor.queue_crawl_messages(vec![upsert(None)]);
+        } else {
+            actor.handle_index(upsert(None)).await; // failed proof retains the file
+        }
+        actor.handle_index(edit("$focused-text", 4, false)).await;
+        assert_eq!(
+            actor.attachment_retries.len(),
+            if crawl_page { 1 } else { 2 }
+        );
+        if !crawl_page {
+            join(&server, &actor.session.client()).await;
+        }
+        assert!(actor.reconcile_attachment_redactions().await);
+        assert!(names(&actor).is_empty());
+        assert_eq!(actor.document_store.resident_body_bytes(), 0);
+    }
+}
+
+#[tokio::test]
 async fn files_read_rechecks_redaction_after_mutation_admission() {
     let (server, mut actor) = fixture(true).await;
     actor.handle_index(upsert(Some(("$b", 3)))).await;
@@ -395,6 +418,180 @@ async fn crawled_foreign_sender_edit_is_rejected_before_or_after_root_admission(
         }
         assert!(actor.reconcile_attachment_redactions().await);
         assert_eq!(names(&actor), ["original.pdf"]);
+    }
+}
+
+#[tokio::test]
+async fn plain_replacement_of_an_encrypted_root_cannot_change_files() {
+    use matrix_sdk::deserialized_responses::{
+        AlgorithmInfo, DecryptedRoomEvent, EncryptionInfo, TimelineEvent, VerificationState,
+    };
+    // Incoming, genuinely pending, and already-applied while root coverage was
+    // absent. Once the root is cached, every invalid version is refused.
+    for mode in 0..3 {
+        let (_, mut actor) = fixture(true).await;
+        let client = actor.session.client();
+        let info = Arc::new(EncryptionInfo {
+            sender: matrix_sdk::ruma::user_id!("@member:example.invalid").to_owned(),
+            sender_device: None,
+            forwarder: None,
+            algorithm_info: AlgorithmInfo::MegolmV1AesSha2 {
+                curve25519_key: "synthetic-public-key".into(),
+                sender_claimed_keys: Default::default(),
+                session_id: Some("synthetic-session".into()),
+            },
+            verification_state: VerificationState::Verified,
+        });
+        let root_json = serde_json::json!({
+            "room_id": ROOM, "event_id": TARGET, "sender": "@member:example.invalid", "origin_server_ts": 1,
+            "type": "m.room.message", "content": {"msgtype": "m.file", "body": "original.pdf", "url": "mxc://example.invalid/file"}
+        });
+        let edit_json = serde_json::json!({
+            "room_id": ROOM, "event_id": "$plain-edit", "sender": "@member:example.invalid", "origin_server_ts": 10,
+            "type": "m.room.message", "content": {"msgtype": "m.file", "body": "* forged.bin", "url": "mxc://example.invalid/forged",
+                "m.new_content": {"msgtype": "m.file", "body": "forged.bin", "url": "mxc://example.invalid/forged"},
+                "m.relates_to": {"rel_type": "m.replace", "event_id": TARGET}}
+        });
+        // SDK decryption metadata fixture, not a crypto end-to-end proof.
+        let decrypted = |json: serde_json::Value| {
+            TimelineEvent::from_decrypted(
+                DecryptedRoomEvent {
+                    event: serde_json::from_value(json).unwrap(),
+                    encryption_info: info.clone(),
+                    unsigned_encryption_info: None,
+                },
+                None,
+            )
+        };
+        {
+            let store = client.event_cache_store().lock().await.unwrap();
+            let store = store.as_clean().unwrap();
+            if mode == 0 {
+                store
+                    .save_event(
+                        matrix_sdk::ruma::room_id!("!admission:example.invalid"),
+                        decrypted(root_json.clone()),
+                    )
+                    .await
+                    .unwrap();
+            }
+            store
+                .save_event(
+                    matrix_sdk::ruma::room_id!("!admission:example.invalid"),
+                    TimelineEvent::from_plaintext(
+                        serde_json::from_value(edit_json.clone()).unwrap(),
+                    ),
+                )
+                .await
+                .unwrap();
+        }
+        let mut redactions = HashSet::new();
+        let edit = crate::search_crawler::event_json_to_index_message(
+            ROOM,
+            &edit_json.to_string(),
+            &actor.crawler_settings,
+            &mut redactions,
+        )
+        .unwrap();
+        if mode != 1 {
+            actor.handle_index(upsert(None)).await;
+        }
+        actor.handle_index(edit).await;
+        if mode == 1 {
+            assert_eq!(actor.document_store.pending_edit_count(), 1);
+            let mut sibling = edit_json.clone();
+            sibling["event_id"] = serde_json::json!("$survivor-edit");
+            sibling["origin_server_ts"] = serde_json::json!(9);
+            sibling["content"]["m.new_content"]["body"] = serde_json::json!("survivor.pdf");
+            {
+                let store = client.event_cache_store().lock().await.unwrap();
+                store
+                    .as_clean()
+                    .unwrap()
+                    .save_event(
+                        matrix_sdk::ruma::room_id!("!admission:example.invalid"),
+                        decrypted(sibling.clone()),
+                    )
+                    .await
+                    .unwrap();
+            }
+            actor
+                .handle_index(
+                    crate::search_crawler::event_json_to_index_message(
+                        ROOM,
+                        &sibling.to_string(),
+                        &actor.crawler_settings,
+                        &mut redactions,
+                    )
+                    .unwrap(),
+                )
+                .await;
+            assert_eq!(actor.document_store.pending_edit_count(), 2);
+        }
+        if mode != 0 {
+            let store = client.event_cache_store().lock().await.unwrap();
+            store
+                .as_clean()
+                .unwrap()
+                .save_event(
+                    matrix_sdk::ruma::room_id!("!admission:example.invalid"),
+                    decrypted(root_json),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            koushi_sdk::resolve_cached_message(&actor.session, ROOM, TARGET)
+                .await
+                .unwrap()
+                .unwrap()
+                .current_event_id,
+            if mode == 1 { "$survivor-edit" } else { TARGET }
+        );
+        if mode == 2 {
+            assert!(actor.reconcile_attachment_redactions().await);
+            assert!(!names(&actor).contains(&"forged.bin".into()));
+        }
+        actor.handle_index(upsert(None)).await;
+        assert!(actor.reconcile_attachment_redactions().await);
+        assert_eq!(actor.document_store.pending_edit_count(), 0);
+        assert_eq!(
+            names(&actor),
+            [if mode == 1 {
+                "survivor.pdf"
+            } else {
+                "original.pdf"
+            }]
+        );
+        // A genuinely encrypted replacement remains admissible.
+        let mut valid_json = edit_json;
+        valid_json["event_id"] = serde_json::json!("$encrypted-edit");
+        valid_json["origin_server_ts"] = serde_json::json!(11);
+        valid_json["content"]["m.new_content"]["body"] = serde_json::json!("encrypted.pdf");
+        {
+            let store = client.event_cache_store().lock().await.unwrap();
+            store
+                .as_clean()
+                .unwrap()
+                .save_event(
+                    matrix_sdk::ruma::room_id!("!admission:example.invalid"),
+                    decrypted(valid_json.clone()),
+                )
+                .await
+                .unwrap();
+        }
+        actor
+            .handle_index(
+                crate::search_crawler::event_json_to_index_message(
+                    ROOM,
+                    &valid_json.to_string(),
+                    &actor.crawler_settings,
+                    &mut redactions,
+                )
+                .unwrap(),
+            )
+            .await;
+        assert_eq!(names(&actor), ["encrypted.pdf"]);
     }
 }
 

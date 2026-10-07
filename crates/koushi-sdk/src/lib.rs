@@ -173,9 +173,9 @@ pub use room_projection::{
 pub use search::{
     MatrixLiteralCandidate, MatrixLiteralSearchPager, MatrixResolvedMessage, MatrixSearchCandidate,
     MatrixSearchCursor, MatrixSearchError, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig,
-    MatrixSearchScope, cached_redacted_event_ids, index_room_events_now, resolve_cached_message,
-    search_message_candidates, search_message_candidates_blocking,
-    search_message_candidates_scoped,
+    MatrixSearchScope, cached_invalid_replacement_ids, cached_redacted_event_ids,
+    index_room_events_now, resolve_cached_message, search_message_candidates,
+    search_message_candidates_blocking, search_message_candidates_scoped,
 };
 
 pub use sync::{

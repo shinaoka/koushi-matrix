@@ -193,7 +193,9 @@ impl SearchDocumentStore {
     }
 
     pub fn affects_attachment(&self, target: &str) -> bool {
-        self.documents.contains_key(target) || self.pending_edits.contains_key(target)
+        self.documents.contains_key(target)
+            || self.pending_edits.contains_key(target)
+            || self.retired_edits.contains_key(target)
     }
 
     pub fn pending_edit_count(&self) -> usize {
@@ -295,6 +297,7 @@ impl SearchDocumentStore {
         } else if edit.attachment.is_some()
             || edit.attachment_filename.is_some()
             || self.pending_edits.contains_key(&edit.target_event_id)
+            || self.retired_edits.contains_key(&edit.target_event_id)
         {
             // A pending edit is only useful for a row that will carry an
             // attachment; a body-only edit cannot change one, and holding it

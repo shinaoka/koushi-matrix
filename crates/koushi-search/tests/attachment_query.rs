@@ -116,6 +116,33 @@ fn room_message_edit_does_not_replace_sticker_root() {
 }
 
 #[test]
+fn text_provenance_survives_retirement_of_the_media_version() {
+    for canonical_upsert in [false, true] {
+        let mut store = SearchDocumentStore::default();
+        store.upsert_message(original(), false, None);
+        store.upsert_edit(replacement("$media", 3, true), false);
+        store.retire_edit("$original", "$media");
+        if canonical_upsert {
+            let mut text = original();
+            text.attachment = None;
+            store.upsert_message(
+                text,
+                true,
+                Some(koushi_search::SearchEditKey::new("$text", 4)),
+            );
+        } else {
+            store.upsert_edit(replacement("$text", 4, false), true);
+        }
+        store.upsert_message(original(), false, None);
+        assert!(
+            files(&store).is_empty(),
+            "old media must not resurrect after text"
+        );
+        assert_eq!(store.resident_body_bytes(), 0);
+    }
+}
+
+#[test]
 fn retiring_one_pending_edit_preserves_the_survivor() {
     let mut store = SearchDocumentStore::default();
     store.upsert_edit(replacement("$a", 2, true), false);

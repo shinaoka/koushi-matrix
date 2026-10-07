@@ -2666,11 +2666,13 @@ stateDiagram-v2
   in-flight `request_id` while the state is `Loading`. Stale successes, stale
   failures, duplicate completions, and completions when no query is in flight
   are ignored.
-- Before a Files success, SearchActor reconciles explicit SDK redactions and
-  retries body-free attachment mutations under one bounded deadline. Cache errors
-  or deadline expiry preserve metadata/retry state and emit `FilesViewQueryFailed`
-  plus the correlated `AttachmentsFailed` event; missing events alone are not
-  redaction proof. No unchecked resident row is returned on proof failure.
+- Before a Files success, SearchActor obtains SDK redaction and target-scoped
+  replacement-validity proofs, then retries body-free attachment mutations under
+  one bounded deadline. Invalid versions are selectively refused; missing/UTD
+  events are unknown rather than invalid. Media roots are seeded before queued
+  text provenance is consumed. Cache errors or deadline expiry preserve
+  metadata/retry state and emit `FilesViewQueryFailed` plus the correlated
+  `AttachmentsFailed` event. No resident row is returned on proof failure.
 - `FilesViewSelectionChanged { event_id }` updates `selected_event_id` only when
   the view is `Open`. Equal updates are a no-op. Selection changes when the view
   is `Closed`, `Loading`, or `Failed` are ignored.

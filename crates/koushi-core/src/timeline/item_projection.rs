@@ -947,10 +947,10 @@ impl TimelineActor {
             VectorDiff::PushFront { value }
             | VectorDiff::PushBack { value }
             | VectorDiff::Insert { value, .. }
-            | VectorDiff::Set { value, .. } => self.search_index_messages_for_item(room_id, value),
+            | VectorDiff::Set { value, .. } => Self::search_index_messages_for_item(room_id, value),
             VectorDiff::Append { values } | VectorDiff::Reset { values } => values
                 .iter()
-                .flat_map(|item| self.search_index_messages_for_item(room_id, item))
+                .flat_map(|item| Self::search_index_messages_for_item(room_id, item))
                 .collect(),
             VectorDiff::Remove { .. }
             | VectorDiff::Truncate { .. }
@@ -965,7 +965,6 @@ impl TimelineActor {
         }
     }
     fn search_index_messages_for_item(
-        &self,
         room_id: &str,
         item: &Arc<SdkTimelineItem>,
     ) -> Vec<SearchIndexMessage> {

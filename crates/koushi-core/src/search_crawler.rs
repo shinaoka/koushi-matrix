@@ -378,6 +378,9 @@ pub(crate) fn event_json_to_index_message(
     pending_redactions: &mut HashSet<String>,
 ) -> Option<SearchIndexMessage> {
     let value: Value = serde_json::from_str(json).ok()?;
+    if value.get("state_key").is_some() {
+        return None; // State events are not room messages or replacements.
+    }
     let event_id = value.get("event_id")?.as_str()?.to_owned();
     let sender = value.get("sender")?.as_str()?.to_owned();
     let timestamp_ms = value.get("origin_server_ts")?.as_u64()?;

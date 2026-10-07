@@ -64,10 +64,23 @@ payloads remain admissible through the ordinary edit-order guards.
 
 Pending edits are rechecked before consumption, including root sender/room/type
 validity: another user's replacement cannot mutate an attachment or poison its
-edit ordering, even if it arrived before the root. Retirement removes only the
+edit ordering, even if it arrived before the root. Cached replacements use the
+existing SDK validator, scoped by target (not every edit in the room), including
+encrypted-root/plain-edit protection. Missing/UTD events stay unknown and do not
+reject legitimate SDK projections. No encryption flags are added across DTOs.
+Retirement removes only the
 specified version, preserving other pending survivors. The bounded synchronous
 store tombstone cache is not the arbitrary-replay guarantee: SDK evidence also
 rejects already-superseded redactions and older IDs evicted from that cache.
+Retired attachment targets retain body-free text provenance; a text replacement
+arriving before a queued media root waits in the existing bounded queue.
+Reconciliation seeds media before consuming text, without using server timestamps
+as redaction proof. Both cases have RED→GREEN regressions. A same-sender
+decrypted-root/plain-edit case also failed before the SDK validator was wired in
+and passed afterward (incoming, applied and pending with a valid survivor).
+A real SDK bundled timeline projection remains admitted when its edit is not
+independently cached. The decryption-info fixture is not a crypto key-exchange
+end-to-end claim.
 Ordering is `(edit timestamp, edit ID, canonical tie-break)`, not canonical status
 before edit ID. Text replacements remove the attachment while retaining no body;
 the existing cache resolver recovers body-free text-replacement provenance when

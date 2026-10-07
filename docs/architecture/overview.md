@@ -1835,9 +1835,11 @@ architectural invariants:
   mutation owner, SearchActor, admits attachment-affecting updates and Files
   reads against explicit SDK cache redactions, including redactions whose
   targets are not loaded. An older timeline observation is not redaction proof.
-  Missing focused/bundled events remain eligible through ordinary edit ordering;
-  replacements must match the root's sender, room and event type, including at
-  pending-edit consumption. Search and Files requests carry the account's
+  Missing/UTD focused or bundled events are unknown, not invalid. Known cached
+  replacements use the SDK's complete validity rules (including encrypted-root
+  protection), scoped per target before pending-edit consumption. Ordinary
+  sender/room/type and edit-order guards still apply when cache coverage is absent.
+  Body-free text provenance survives media retirement and queued-root admission. Search and Files requests carry the account's
   submission policy rather than waiting for deferred crawler notifications.
   Content and relation lookup errors preserve body-free retry state and fail the
   Files request rather than deleting rows or publishing unchecked content.

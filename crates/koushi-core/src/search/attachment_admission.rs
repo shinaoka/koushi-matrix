@@ -1,4 +1,4 @@
-//! Files metadata admission uses actual SDK redactions, not timeline ordering.
+//! Files admission uses SDK validity/redaction evidence, not observation ordering.
 use super::*;
 
 const MUTATION_PROOF_TIMEOUT: Duration = Duration::from_millis(250);
@@ -51,14 +51,14 @@ impl SearchIndexMessage {
     }
 }
 
-/// Apply only proven redactions; absence and ordering never retire an edit.
-fn retire_proven_edits(store: &mut SearchDocumentStore, target: &str, redacted: &HashSet<String>) {
-    if redacted.contains(target) {
+/// Retire SDK-proven redacted/invalid versions, never absence or ordering.
+fn retire_proven_edits(store: &mut SearchDocumentStore, target: &str, denied: &HashSet<String>) {
+    if denied.contains(target) {
         store.redact(target);
         return;
     }
     for id in store.mutation_event_ids(target) {
-        if id != target && redacted.contains(&id) {
+        if id != target && denied.contains(&id) {
             store.retire_edit(target, &id);
         }
     }
@@ -91,7 +91,7 @@ async fn cached_text_replacement(
 
 impl SearchActor {
     fn attachment_message_is_relevant(&self, message: &SearchIndexMessage) -> bool {
-        let Some((_, target)) = message.attachment_target() else {
+        let Some((room, target)) = message.attachment_target() else {
             return true;
         };
         message.carries_attachment()
@@ -100,11 +100,7 @@ impl SearchActor {
                 .attachment_retries
                 .iter()
                 .chain(self.queued_crawl_index.iter())
-                .any(|queued| {
-                    queued
-                        .attachment_target()
-                        .is_some_and(|(_, id)| id == target)
-                })
+                .any(|queued| queued.attachment_target() == Some((room, target)))
     }
 
     pub(super) fn queue_crawl_messages(&mut self, mut messages: Vec<SearchIndexMessage>) {
@@ -137,14 +133,18 @@ impl SearchActor {
         &mut self,
         message: SearchIndexMessage,
         redacted: &HashSet<String>,
+        invalid: &HashSet<String>,
     ) -> Option<(String, String)> {
         if let Some((_, target)) = message.attachment_target() {
             retire_proven_edits(&mut self.document_store, target, redacted);
-            if redacted.contains(target)
-                || message
-                    .incoming_edit_id()
-                    .is_some_and(|id| redacted.contains(id))
+            retire_proven_edits(&mut self.document_store, target, invalid);
+            if redacted.contains(target) {
+                return None;
+            }
+            if let Some(id) = message.incoming_edit_id()
+                && (redacted.contains(id) || invalid.contains(id))
             {
+                self.document_store.retire_edit(target, id);
                 return None;
             }
         }
@@ -160,6 +160,16 @@ impl SearchActor {
         if !self.crawler_settings.include_filenames {
             return;
         }
+        if let Some((_, target)) = message.attachment_target()
+            && !message.carries_attachment()
+            && !self.document_store.affects_attachment(target)
+        {
+            // Relevance came from a queued file, not a resident root. A focused
+            // text edit may never enter the SDK room cache: retain its body-free
+            // payload until the known file is admitted, even if proof succeeds.
+            self.attachment_retries.push_back(message);
+            return;
+        }
         let updated = if let Some((room, target)) = message.attachment_target() {
             let mut ids = self.document_store.mutation_event_ids(target);
             if let Some(id) = message.incoming_edit_id() {
@@ -170,17 +180,21 @@ impl SearchActor {
                 if let Some(text) = &text {
                     ids.push(text.edit_event_id.clone());
                 }
+                let invalid =
+                    koushi_sdk::cached_invalid_replacement_ids(&self.session, room, target, &ids)
+                        .await?;
                 let redacted =
                     koushi_sdk::cached_redacted_event_ids(&self.session, room, &ids).await?;
-                Ok::<_, koushi_sdk::MatrixSearchError>((redacted, text))
+                Ok::<_, koushi_sdk::MatrixSearchError>((redacted, invalid, text))
             })
             .await;
             match proof {
-                Ok(Ok((redacted, text))) => {
-                    let updated = self.apply_proven_index_message(message, &redacted);
+                Ok(Ok((redacted, invalid, text))) => {
+                    let updated = self.apply_proven_index_message(message, &redacted, &invalid);
                     if let Some(text) = text
                         && !redacted.contains(&text.edit_event_id)
                         && !redacted.contains(&text.target_event_id)
+                        && !invalid.contains(&text.edit_event_id)
                     {
                         self.document_store.upsert_edit(text, true);
                     }
@@ -208,23 +222,28 @@ impl SearchActor {
     /// One deadline covers every room and retry. Errors preserve state and fail
     /// the Files request, rather than exposing unverified rows or deleting them.
     pub(super) async fn reconcile_attachment_redactions(&mut self) -> bool {
-        let mut room_ids: HashMap<String, HashSet<String>> = HashMap::new();
-        let mut targets: HashSet<(String, String)> =
-            self.document_store.mutation_targets().into_iter().collect();
-        for (room, target) in self.document_store.mutation_targets() {
-            room_ids
-                .entry(room)
-                .or_default()
-                .extend(self.document_store.mutation_event_ids(&target));
-        }
+        let mut targets: HashMap<(String, String), HashSet<String>> = self
+            .document_store
+            .mutation_targets()
+            .into_iter()
+            .map(|(room, target)| {
+                let ids = self
+                    .document_store
+                    .mutation_event_ids(&target)
+                    .into_iter()
+                    .collect();
+                ((room, target), ids)
+            })
+            .collect();
         for message in self
             .attachment_retries
             .iter()
             .chain(self.queued_crawl_index.iter())
         {
             if let Some((room, target)) = message.attachment_target() {
-                targets.insert((room.to_owned(), target.to_owned()));
-                let ids = room_ids.entry(room.to_owned()).or_default();
+                let ids = targets
+                    .entry((room.to_owned(), target.to_owned()))
+                    .or_default();
                 ids.extend(self.document_store.mutation_event_ids(target));
                 if let Some(id) = message.incoming_edit_id() {
                     ids.insert(id.to_owned());
@@ -233,14 +252,24 @@ impl SearchActor {
         }
         let proofs = executor::timeout(FILES_PROOF_TIMEOUT, async {
             let mut texts = Vec::new();
-            for (room, target) in targets {
-                if let Some(text) = cached_text_replacement(&self.session, &room, &target).await? {
-                    room_ids
-                        .entry(room)
-                        .or_default()
-                        .insert(text.edit_event_id.clone());
+            for ((room, target), ids) in &mut targets {
+                if let Some(text) = cached_text_replacement(&self.session, room, target).await? {
+                    ids.insert(text.edit_event_id.clone());
                     texts.push(text);
                 }
+            }
+            let mut room_ids: HashMap<String, HashSet<String>> = HashMap::new();
+            let mut invalid = HashMap::new();
+            for ((room, target), ids) in targets {
+                room_ids
+                    .entry(room.clone())
+                    .or_default()
+                    .extend(ids.iter().cloned());
+                let ids: Vec<_> = ids.into_iter().collect();
+                let rejected =
+                    koushi_sdk::cached_invalid_replacement_ids(&self.session, &room, &target, &ids)
+                        .await?;
+                invalid.insert((room, target), rejected);
             }
             let mut proofs = HashMap::new();
             for (room, ids) in room_ids {
@@ -249,33 +278,48 @@ impl SearchActor {
                     koushi_sdk::cached_redacted_event_ids(&self.session, &room, &ids).await?;
                 proofs.insert(room, redacted);
             }
-            Ok::<_, koushi_sdk::MatrixSearchError>((proofs, texts))
+            Ok::<_, koushi_sdk::MatrixSearchError>((proofs, invalid, texts))
         })
         .await;
-        let Ok(Ok((proofs, texts))) = proofs else {
+        let Ok(Ok((proofs, invalid, texts))) = proofs else {
             return false;
         };
         for (room, target) in self.document_store.mutation_targets() {
             if let Some(redacted) = proofs.get(&room) {
                 retire_proven_edits(&mut self.document_store, &target, redacted);
             }
+            if let Some(rejected) = invalid.get(&(room, target.clone())) {
+                retire_proven_edits(&mut self.document_store, &target, rejected);
+            }
         }
         let empty = HashSet::new();
-        while let Some(message) = self
+        let mut messages: Vec<_> = self
             .attachment_retries
-            .pop_front()
-            .or_else(|| self.queued_crawl_index.pop_front())
-        {
+            .drain(..)
+            .chain(self.queued_crawl_index.drain(..))
+            .collect();
+        // Seed known media before consuming text provenance, regardless of
+        // producer order or server-clock skew. Edit guards still pick the newest
+        // version; no timestamp is treated as proof of a redaction.
+        messages.sort_by_key(|message| !message.carries_attachment());
+        for message in messages {
             let redacted = message
                 .attachment_target()
                 .and_then(|(room, _)| proofs.get(room))
                 .unwrap_or(&empty);
-            self.apply_proven_index_message(message, redacted);
+            let rejected = message
+                .attachment_target()
+                .and_then(|(room, target)| invalid.get(&(room.to_owned(), target.to_owned())))
+                .unwrap_or(&empty);
+            self.apply_proven_index_message(message, redacted, rejected);
         }
         for text in texts {
             if let Some(redacted) = proofs.get(&text.room_id)
                 && !redacted.contains(&text.edit_event_id)
                 && !redacted.contains(&text.target_event_id)
+                && !invalid
+                    .get(&(text.room_id.clone(), text.target_event_id.clone()))
+                    .is_some_and(|ids| ids.contains(&text.edit_event_id))
             {
                 self.document_store.upsert_edit(text, true);
             }
