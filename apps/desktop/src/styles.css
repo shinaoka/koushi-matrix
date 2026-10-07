@@ -9652,3 +9652,46 @@ kbd {
 .export-progress-phase,
 .export-progress-note { font-size: 0.85em; color: var(--text-muted); }
 .export-progress-list li[data-phase="failed"] .export-progress-phase { color: var(--danger); }
+
+/* #1166: access conditions. The globe means public, the closed padlock means an
+   invitation is required, and the compact badges carry the other rules; none of
+   them is an encryption indicator. */
+.room-name-shell {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.room-access-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--text-muted);
+}
+
+.room-access-badge,
+.channel-access-badge {
+  flex: 0 0 auto;
+  padding-inline: var(--room-count-padding-inline);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  color: var(--text-muted);
+  font-size: var(--room-count-font-size);
+  line-height: var(--room-count-block-size);
+  white-space: nowrap;
+}
+
+.channel-access-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--text-muted);
+}
+
+.channel-title .channel-name {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

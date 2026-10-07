@@ -5,6 +5,7 @@ import {
   type ReactNode,
   type RefObject,
   useEffect,
+  useId,
   useRef,
   useState
 } from "react";
@@ -15,7 +16,9 @@ import {
   ChevronDown,
   Clock3,
   Compass,
+  Globe2,
   Home,
+  LockKeyhole,
   MessageSquare,
   MoreHorizontal,
   Plus,
@@ -40,6 +43,7 @@ import type {
 } from "../domain/types";
 import { contextMenuItems } from "../domain/contextMenus";
 import { renderableThumbnailSourceUrl } from "../backend/linkMediaRuntime";
+import { ROOM_ACCESS_CHECKING, roomAccessIndicator } from "../domain/accessCondition";
 import { Tooltip } from "./Tooltip";
 import { ImeTextField } from "./ImeTextControl";
 import { useRecoverableImageSource } from "./avatarImage";
@@ -1192,10 +1196,23 @@ function RoomButton({
   const displayCount = room.display_count ?? room.unread_count;
   const mentionCount = room.highlight_count ?? (room.has_unread_mention ? 1 : 0);
   const attentionHighlighted = room.is_attention_highlighted ?? mentionCount;
+  // #1166: a joined row shows its own access condition; while it has not been
+  // projected the row says so instead of guessing. Lanes that have no joined
+  // condition (invitations, not-joined) render none.
+  const access =
+    roomAccessIndicator(room.access_join_rule) ??
+    (kind === "room" || kind === "dm" ? ROOM_ACCESS_CHECKING : null);
+  const roomLabel = roomListItemLabel(room);
+  // #1166: the condition is announced as the row's *description*, so the row's
+  // accessible name stays exactly the room label other surfaces and tests match
+  // on. The visible icon and badges stay the sighted affordance.
+  const accessDescriptionId = useId();
   return (
     <button
       className={`room-item ${room.room_id === activeRoomId ? "is-active" : ""}`}
-      aria-label={roomListItemLabel(room)}
+      aria-label={roomLabel}
+      aria-describedby={access ? accessDescriptionId : undefined}
+      data-access={access?.icon ?? undefined}
       data-mention-count={mentionCount || undefined}
       data-room-kind={kind}
       data-testid="room-item"
@@ -1249,7 +1266,44 @@ function RoomButton({
         />
         {isOnlineDm ? <span className="room-presence-dot" aria-hidden="true" /> : null}
       </span>
-      <span className="room-name" dir="auto">{roomListItemLabel(room)}</span>
+      {access ? (
+        <span className="sr-only" id={accessDescriptionId}>
+          {t(access.descriptionMessageId)}
+        </span>
+      ) : null}
+      {/* #1166: the icon, name and compact badges share the grid's name cell so
+          the avatar and the trailing unread area keep their columns. */}
+      <span className="room-name-shell">
+        {access?.icon ? (
+          <Tooltip label={t(access.descriptionMessageId)}>
+            {(triggerProps) => (
+              <span
+                className="room-access-icon"
+                data-room-access={access.icon}
+                {...triggerProps}
+              >
+                {access.icon === "globe" ? (
+                  <Globe2 size={ICON_SIZE.micro} aria-hidden="true" />
+                ) : (
+                  <LockKeyhole size={ICON_SIZE.micro} aria-hidden="true" />
+                )}
+              </span>
+            )}
+          </Tooltip>
+        ) : null}
+        <span className="room-name" dir="auto">{roomLabel}</span>
+        {access
+          ? access.badges.map((badge) => (
+              <Tooltip key={badge.labelMessageId} label={t(badge.descriptionMessageId)}>
+                {(triggerProps) => (
+                  <span className="room-access-badge" {...triggerProps}>
+                    {t(badge.labelMessageId)}
+                  </span>
+                )}
+              </Tooltip>
+            ))
+          : null}
+      </span>
       <span className="room-trailing">
         {/*
           Issue #961: a room outside the account's joined rooms says which

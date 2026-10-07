@@ -11,7 +11,9 @@ import {
   Check,
   Clock3,
   Compass,
+  Globe2,
   Image as ImageIcon,
+  LockKeyhole,
   MessageCircle,
   MoreHorizontal,
   Search,
@@ -19,6 +21,7 @@ import {
   X
 } from "lucide-react";
 import { t } from "../i18n/messages";
+import { Tooltip } from "./Tooltip";
 import type {
   StagedUploadOutputSelection,
   ActivityMarkReadTarget,
@@ -35,6 +38,7 @@ import type {
 } from "../domain/types";
 import { focusedTimelineKey, roomTimelineKey } from "../domain/coreEvents";
 import { invitePreviewLabel } from "../domain/roomDisplayLabel";
+import { roomAccessHeaderBadges, roomAccessIndicator, ROOM_ACCESS_CHECKING, sidebarRoomJoinRule } from "../domain/accessCondition";
 import {
   ICON_SIZE,
   avatarInitial,
@@ -823,6 +827,12 @@ export function TimelinePane({
   const activeRoom = timelineRoomId
     ? snapshot.state.domain.rooms.find((room) => room.room_id === timelineRoomId) ?? null
     : null;
+  // #1166: the header shows the active room's own access condition, from the
+  // same Rust projection the room list uses.
+  const headerAccess = timelineRoomId
+    ? roomAccessIndicator(sidebarRoomJoinRule(snapshot.sidebar, timelineRoomId)) ??
+      ROOM_ACCESS_CHECKING
+    : null;
   const liveLatestEventId = roomLatestDisplayEventId(activeRoom?.latest_event);
   const threadAttention = snapshot.state.domain.thread_attention;
   const trackingThreadAttention = threadAttention.kind === "tracking" ? threadAttention : null;
@@ -982,7 +992,35 @@ export function TimelinePane({
             colorSeed={activeRoom?.room_id ?? activeRoomName}
             fallback={avatarInitial(activeRoomName)}
           />
-          <span dir="auto">{activeRoomName}</span>
+          {headerAccess?.icon ? (
+            <Tooltip label={t(headerAccess.descriptionMessageId)}>
+              {(triggerProps) => (
+                <span
+                  className="channel-access-icon"
+                  data-room-access={headerAccess.icon}
+                  {...triggerProps}
+                >
+                  {headerAccess.icon === "globe" ? (
+                    <Globe2 size={ICON_SIZE.small} aria-hidden="true" />
+                  ) : (
+                    <LockKeyhole size={ICON_SIZE.small} aria-hidden="true" />
+                  )}
+                </span>
+              )}
+            </Tooltip>
+          ) : null}
+          <span className="channel-name" dir="auto">{activeRoomName}</span>
+          {headerAccess
+            ? roomAccessHeaderBadges(headerAccess).map((badge) => (
+                <Tooltip key={badge.labelMessageId} label={t(badge.descriptionMessageId)}>
+                  {(triggerProps) => (
+                    <span className="channel-access-badge" {...triggerProps}>
+                      {t(badge.labelMessageId)}
+                    </span>
+                  )}
+                </Tooltip>
+              ))
+            : null}
         </div>
         <div className="channel-actions">
           <nav className="timeline-header-navigation" aria-label={t("timeline.navigation")}>

@@ -1,6 +1,24 @@
 export type Locale = "en" | "ja" | "pseudo";
 
 export type MessageId =
+  | "access.public"
+  | "access.inviteOnly"
+  | "access.conditionsApply"
+  | "access.canRequest"
+  | "access.unknown"
+  | "access.unknownFull"
+  | "access.checking"
+  | "access.checkingFull"
+  | "access.publicDescription"
+  | "access.inviteOnlyDescription"
+  | "access.conditionsDescription"
+  | "access.requestDescription"
+  | "access.knockRestrictedDescription"
+  | "access.conditionsRouteDescription"
+  | "access.requestRouteDescription"
+  | "access.unknownDescription"
+  | "access.checkingDescription"
+  | "access.labelSeparator"
   | "help.title"
   | "help.askAi"
   | "help.copyRepositoryUrl"
@@ -1750,6 +1768,32 @@ export function pseudoLocalize(input: string, mode: PseudoLocaleMode = "accented
 }
 
 const en: Catalog = {
+  // #1166: one access-condition vocabulary for rooms and Spaces. The labels are
+  // the issue's exact wording; the padlock notes an invitation requirement and
+  // is never used as an encryption indicator.
+  "access.public": "Public",
+  "access.inviteOnly": "Invite only",
+  "access.conditionsApply": "Conditions apply",
+  "access.canRequest": "Can request",
+  "access.unknown": "Unknown",
+  "access.unknownFull": "Unknown join conditions",
+  "access.checking": "Checking",
+  "access.checkingFull": "Checking join conditions",
+  "access.publicDescription": "Anyone can join without an invitation.",
+  "access.inviteOnlyDescription": "An invitation is required to join.",
+  "access.conditionsDescription":
+    "Members of specified Spaces or rooms can join without an invitation. Others need an invitation.",
+  "access.requestDescription":
+    "You can request an invitation. An invitation is required to join.",
+  "access.knockRestrictedDescription":
+    "Members of specified Spaces or rooms can join without an invitation. Others can request an invitation or accept one.",
+  "access.conditionsRouteDescription":
+    "Members of specified Spaces or rooms can join without an invitation.",
+  "access.requestRouteDescription":
+    "Others can request an invitation or accept one.",
+  "access.unknownDescription": "This app does not recognize these join conditions.",
+  "access.checkingDescription": "Join conditions are not available yet.",
+  "access.labelSeparator": ", ",
   "help.title": "Koushi Help",
   "help.askAi": "Copy this GitHub URL and ask ChatGPT or another AI assistant how to use Koushi. Include your Koushi version, operating system, and question.",
   "help.copyRepositoryUrl": "Copy GitHub URL",
@@ -3432,6 +3476,31 @@ const en: Catalog = {
 
 const ja: Catalog = {
   ...en,
+  // #1166: 参加条件の表示語彙。ラベルは issue 指定の文言。鍵アイコンは招待が
+  // 必要なことだけを示し、E2EE の表示には使わない。
+  "access.public": "公開",
+  "access.inviteOnly": "招待制",
+  "access.conditionsApply": "参加条件有",
+  "access.canRequest": "申請可",
+  "access.unknown": "不明",
+  "access.unknownFull": "参加条件不明",
+  "access.checking": "確認中",
+  "access.checkingFull": "参加条件確認中",
+  "access.publicDescription": "誰でも招待なしで参加できます。",
+  "access.inviteOnlyDescription": "参加には招待が必要です。",
+  "access.conditionsDescription":
+    "指定されたSpace・ルームのメンバーは招待なしで参加できます。それ以外は招待が必要です。",
+  "access.requestDescription":
+    "参加を申請できます。参加には招待が必要です。",
+  "access.knockRestrictedDescription":
+    "指定されたSpace・ルームのメンバーは招待なしで参加できます。それ以外は参加を申請するか、招待を受ける必要があります。",
+  "access.conditionsRouteDescription":
+    "指定されたSpace・ルームのメンバーは招待なしで参加できます。",
+  "access.requestRouteDescription":
+    "それ以外は参加を申請するか、招待を受ける必要があります。",
+  "access.unknownDescription": "この参加条件はアプリで認識できません。",
+  "access.checkingDescription": "参加条件をまだ確認できません。",
+  "access.labelSeparator": "、",
   "help.title": "Koushiのヘルプ",
   "help.askAi": "このGitHub URLをコピーして、ChatGPTなどのAIにKoushiの使い方を質問してください。利用バージョン、OS、知りたいことを添えてください。",
   "help.copyRepositoryUrl": "GitHub URLをコピー",
