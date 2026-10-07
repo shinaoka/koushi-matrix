@@ -4,12 +4,12 @@ use super::diagnostics::{
 };
 use super::event_wait::{
     QaEventDeadline, SendQueueLocalEcho, cancel_send_queue_item, find_timeline_item_with_body,
-    retry_send_queue_item, send_text_expect_local_echo, start_sync_for_qa, stop_sync_for_qa,
-    timeline_item_body_matches, timeline_item_event_id, timeline_item_is_decryption_failure,
-    timeline_item_transaction_id, visit_timeline_diff_items, wait_for_dm_room_in_room_list,
-    wait_for_encrypted_room_projection_for_qa, wait_for_event_item_with_body,
-    wait_for_event_item_with_body_or_retry_not_sent, wait_for_initial_items,
-    wait_for_invite_in_snapshot, wait_for_item_with_body,
+    paginate_backward_to_end_reached, retry_send_queue_item, send_text_expect_local_echo,
+    start_sync_for_qa, stop_sync_for_qa, timeline_item_body_matches, timeline_item_event_id,
+    timeline_item_is_decryption_failure, timeline_item_transaction_id, visit_timeline_diff_items,
+    wait_for_dm_room_in_room_list, wait_for_encrypted_room_projection_for_qa,
+    wait_for_event_item_with_body, wait_for_event_item_with_body_or_retry_not_sent,
+    wait_for_initial_items, wait_for_invite_in_snapshot, wait_for_item_with_body,
     wait_for_item_with_body_or_decryption_failure, wait_for_link_preview_item_projection,
     wait_for_logged_in, wait_for_logged_out, wait_for_media_download_completed,
     wait_for_media_item, wait_for_media_send_flow_completion, wait_for_ready_snapshot,
@@ -1104,7 +1104,6 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
     let mut room_ids: Vec<String> = Vec::with_capacity(num_rooms);
     let mut deep_anchors: Vec<String> = Vec::with_capacity(num_rooms);
     for room_idx in 0..num_rooms {
-        let anchor_body = format!("cache_restore fixture r{room_idx} m0");
         let room_id = create_room_for_qa(
             &mut conn,
             &format!("QA Cache Restore Room {room_idx}"),
@@ -1123,12 +1122,14 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
         }))
         .await
         .map_err(|e| format!("cache_restore: submit subscribe failed: {e}"))?;
-        let initial_items =
-            wait_for_initial_items(&mut conn, &key, sub_id, "cache_restore subscribe").await?;
-        // Track all items across the paginate so we can find m0 at the end.
-        let mut all_items = initial_items;
+        let _ = wait_for_initial_items(&mut conn, &key, sub_id, "cache_restore subscribe").await?;
 
-        // Send DEPTH messages sequentially so they land in the event cache.
+        // Send DEPTH messages sequentially so they land in the event cache, and
+        // capture m0's event_id directly from the first SendFlowOutcome. The
+        // earlier item-diff accumulation started from the subscribe snapshot and
+        // never observed the send-phase diffs, so it could not find the deep
+        // anchor (#1170/#1167); the send outcome is authoritative instead.
+        let mut deep_anchor_id: Option<String> = None;
         for msg_idx in 0..depth {
             let txn = format!("qa-cr-{room_idx}-{msg_idx}");
             let send_id = conn.next_request_id();
@@ -1142,7 +1143,7 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
             }))
             .await
             .map_err(|e| format!("cache_restore: submit send failed: {e}"))?;
-            wait_for_send_flow_completion(
+            let outcome = wait_for_send_flow_completion(
                 &mut conn,
                 send_id,
                 &key,
@@ -1151,97 +1152,26 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
                 "cache_restore send",
             )
             .await?;
-        }
-
-        // Paginate backward to EndReached, accumulating diffs so all_items
-        // reflects the full history and we can find m0 deterministically.
-        let pag_id = conn.next_request_id();
-        conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
-            request_id: pag_id,
-            key: key.clone(),
-            direction: PaginationDirection::Backward,
-            event_count: CACHE_RESTORE_PAGINATE_BATCH,
-        }))
-        .await
-        .map_err(|e| format!("cache_restore: submit paginate failed: {e}"))?;
-        let _ = pag_id;
-        let mut saw_paginating = false;
-        loop {
-            let event = tokio::time::timeout(Duration::from_secs(120), conn.recv_event())
-                .await
-                .map_err(|_| {
-                    "cache_restore populate: timed out waiting for paginate event".to_owned()
-                })?
-                .map_err(|lag| {
-                    format!(
-                        "cache_restore populate: event stream lagged (skipped={})",
-                        lag.skipped
-                    )
-                })?;
-            match event {
-                CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
-                    key: ref ev_key,
-                    direction,
-                    ref state,
-                    ..
-                }) if ev_key == &key && direction == PaginationDirection::Backward => match state {
-                    PaginationState::Paginating => {
-                        saw_paginating = true;
-                    }
-                    PaginationState::Idle => {
-                        if !saw_paginating {
-                            return Err(
-                                "cache_restore populate: Idle without Paginating".to_owned()
-                            );
-                        }
-                        saw_paginating = false;
-                        let repag_id = conn.next_request_id();
-                        conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
-                            request_id: repag_id,
-                            key: key.clone(),
-                            direction: PaginationDirection::Backward,
-                            event_count: CACHE_RESTORE_PAGINATE_BATCH,
-                        }))
-                        .await
-                        .map_err(|e| format!("cache_restore: re-paginate failed: {e}"))?;
-                    }
-                    PaginationState::EndReached => {
-                        break;
-                    }
-                    PaginationState::Failed { .. } => {
-                        return Err("cache_restore populate: paginate failed".to_owned());
-                    }
-                },
-                CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-                    key: ref ev_key,
-                    ref diffs,
-                    ..
-                }) if ev_key == &key => {
-                    for diff in diffs {
-                        apply_timeline_diff(&mut all_items, diff);
-                    }
-                }
-                _ => {}
+            if msg_idx == 0 {
+                deep_anchor_id = Some(outcome.event_id.clone());
             }
         }
 
-        // Find the deterministic deep anchor: m0 is the first-sent (oldest) message.
-        let anchor_item =
-            find_timeline_item_with_body(&all_items, &anchor_body).ok_or_else(|| {
-                format!(
-                    "cache_restore: m0 anchor not found after full paginate \
-                     (room_idx={room_idx}, items={})",
-                    all_items.len()
-                )
-            })?;
-        let anchor_event_id = match &anchor_item.id {
-            TimelineItemId::Event { event_id } => event_id.clone(),
-            other => {
-                return Err(format!(
-                    "cache_restore: m0 anchor item has non-Event id: {other:?}"
-                ));
-            }
-        };
+        // Paginate backward to EndReached so the full history is warmed into the
+        // event cache before the restart below.
+        paginate_backward_to_end_reached(
+            &mut conn,
+            &key,
+            CACHE_RESTORE_PAGINATE_BATCH,
+            "cache_restore populate",
+            Duration::from_secs(120),
+            &mut |_diffs| {},
+        )
+        .await?;
+
+        let anchor_event_id = deep_anchor_id.ok_or_else(|| {
+            format!("cache_restore: no fixture message sent (room_idx={room_idx})")
+        })?;
 
         let unsub_id = conn.next_request_id();
         conn.command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
@@ -1339,64 +1269,15 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
     // Paginate backward to EndReached to warm the event cache so that
     // live_restore_from_cache can serve the anchor from the stored chunk on
     // restart (without a network call).
-    let shallow_pag_id = conn.next_request_id();
-    conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
-        request_id: shallow_pag_id,
-        key: shallow_key.clone(),
-        direction: PaginationDirection::Backward,
-        event_count: CACHE_RESTORE_PAGINATE_BATCH,
-    }))
-    .await
-    .map_err(|e| format!("cache_restore shallow: paginate failed: {e}"))?;
-    let _ = shallow_pag_id;
-    let mut shallow_saw_paginating = false;
-    loop {
-        let event = tokio::time::timeout(Duration::from_secs(60), conn.recv_event())
-            .await
-            .map_err(|_| "cache_restore shallow: timed out waiting for paginate event".to_owned())?
-            .map_err(|lag| {
-                format!(
-                    "cache_restore shallow: event stream lagged (skipped={})",
-                    lag.skipped
-                )
-            })?;
-        match event {
-            CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
-                key: ref ev_key,
-                direction,
-                ref state,
-                ..
-            }) if ev_key == &shallow_key && direction == PaginationDirection::Backward => {
-                match state {
-                    PaginationState::Paginating => {
-                        shallow_saw_paginating = true;
-                    }
-                    PaginationState::Idle => {
-                        if !shallow_saw_paginating {
-                            return Err("cache_restore shallow: Idle without Paginating".to_owned());
-                        }
-                        shallow_saw_paginating = false;
-                        let repag_id = conn.next_request_id();
-                        conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
-                            request_id: repag_id,
-                            key: shallow_key.clone(),
-                            direction: PaginationDirection::Backward,
-                            event_count: CACHE_RESTORE_PAGINATE_BATCH,
-                        }))
-                        .await
-                        .map_err(|e| format!("cache_restore shallow: re-paginate failed: {e}"))?;
-                    }
-                    PaginationState::EndReached => {
-                        break;
-                    }
-                    PaginationState::Failed { .. } => {
-                        return Err("cache_restore shallow: paginate failed".to_owned());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
+    paginate_backward_to_end_reached(
+        &mut conn,
+        &shallow_key,
+        CACHE_RESTORE_PAGINATE_BATCH,
+        "cache_restore shallow",
+        Duration::from_secs(60),
+        &mut |_diffs| {},
+    )
+    .await?;
 
     let shallow_unsub_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {

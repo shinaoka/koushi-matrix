@@ -9,10 +9,10 @@ use super::registry::{
 };
 use super::{
     AccountEvent, AccountKey, AppState, BTreeSet, CoreCommand, CoreConnection, CoreEvent,
-    CoreFailure, Duration, EventStreamLag, Future, PaginationState, Pin, RequestId, RoomEvent,
-    SessionState, SettingsPersistenceState, SyncCommand, SyncEvent, TimelineCommand, TimelineDiff,
-    TimelineEvent, TimelineItem, TimelineItemId, TimelineKey, TimelineMessageActions,
-    TimelineSendState,
+    CoreFailure, Duration, EventStreamLag, Future, PaginationDirection, PaginationState, Pin,
+    RequestId, RoomEvent, SessionState, SettingsPersistenceState, SyncCommand, SyncEvent,
+    TimelineCommand, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineKey,
+    TimelineMessageActions, TimelineSendState,
 };
 
 pub(super) type QaEventFuture<'a> =
@@ -1397,6 +1397,102 @@ impl<'a> BodyWaitObserver<'a> {
 
 /// Wait for `TimelineEvent::InitialItems` for the given key and request_id.
 /// Returns the initial item list.
+/// Submit one backward-pagination request for `key`.
+async fn submit_backward_paginate(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    event_count: u16,
+    label: &str,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
+        request_id,
+        key: key.clone(),
+        direction: PaginationDirection::Backward,
+        event_count,
+    }))
+    .await
+    .map_err(|e| format!("{label}: paginate failed: {e}"))
+}
+
+/// Drive backward pagination to `EndReached`, applying every timeline diff to
+/// `on_diffs` so the caller keeps its accumulated view of the room.
+///
+/// Core answers a pagination request with `Idle` and no `Paginating` phase while
+/// gap repair owns the timeline, and publishes `GapRepairReleased` for the key
+/// once that work reaches an idle scheduler "so a UI pagination request rejected
+/// while repair was active may retry now". Failing the gate on that documented
+/// "not now" answer is what made `cache_restore` fail on both homeservers
+/// (#1170/#1167); wait for the release signal and re-issue instead. The event
+/// deadline and the `EndReached` requirement still bound the gate.
+pub(super) async fn paginate_backward_to_end_reached(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    event_count: u16,
+    label: &str,
+    event_timeout: Duration,
+    on_diffs: &mut dyn FnMut(&[TimelineDiff]),
+) -> Result<(), String> {
+    submit_backward_paginate(conn, key, event_count, label).await?;
+    let mut saw_paginating = false;
+    let mut awaiting_repair_release = false;
+    loop {
+        let event = tokio::time::timeout(event_timeout, conn.recv_event())
+            .await
+            .map_err(|_| {
+                if awaiting_repair_release {
+                    format!(
+                        "{label}: paginate was answered Idle while gap repair owned the \
+                         timeline and no GapRepairReleased arrived"
+                    )
+                } else {
+                    format!("{label}: timed out waiting for paginate event")
+                }
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        match event {
+            CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                key: ref ev_key,
+                direction,
+                ref state,
+                ..
+            }) if ev_key == key && direction == PaginationDirection::Backward => match state {
+                PaginationState::Paginating => {
+                    saw_paginating = true;
+                    awaiting_repair_release = false;
+                }
+                PaginationState::Idle => {
+                    if saw_paginating {
+                        // A page finished; ask for the next one.
+                        saw_paginating = false;
+                        submit_backward_paginate(conn, key, event_count, label).await?;
+                    } else if !awaiting_repair_release {
+                        // Rejected because gap repair owns the timeline: retry
+                        // only once the release signal proves it settled.
+                        awaiting_repair_release = true;
+                    }
+                }
+                PaginationState::EndReached => return Ok(()),
+                PaginationState::Failed { .. } => {
+                    return Err(format!("{label}: paginate failed"));
+                }
+            },
+            CoreEvent::Timeline(TimelineEvent::GapRepairReleased {
+                key: ref ev_key, ..
+            }) if ev_key == key && awaiting_repair_release => {
+                awaiting_repair_release = false;
+                submit_backward_paginate(conn, key, event_count, label).await?;
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                ref diffs,
+                ..
+            }) if ev_key == key => on_diffs(diffs),
+            _ => {}
+        }
+    }
+}
+
 pub(super) async fn wait_for_initial_items(
     conn: &mut CoreConnection,
     key: &TimelineKey,
