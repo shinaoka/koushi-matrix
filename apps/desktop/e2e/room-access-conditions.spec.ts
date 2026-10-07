@@ -1,5 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
-import type { DesktopSnapshot, RoomJoinRule, RoomListItem } from "../src/domain/types";
+import type {
+  DesktopSnapshot,
+  RoomJoinRule,
+  RoomListItem,
+  SpaceSummary
+} from "../src/domain/types";
 import { t } from "../src/i18n/messages";
 import { HARNESS_ROOM_ID } from "./support/basicOperations";
 import { pushSnapshot } from "./support/stateUpdates";
@@ -217,4 +222,129 @@ test("the header uses the full unknown and checking labels", async ({ page }) =>
     t("access.checkingFull")
   ]);
   await expect(header.locator(".channel-access-badge")).toBeVisible();
+});
+
+function space(space_id: string, display_name: string, rule: RoomJoinRule | null): SpaceSummary {
+  return {
+    space_id,
+    raw_name: null,
+    display_name,
+    avatar: null,
+    join_rule: rule,
+    child_room_ids: [],
+    parent_side_child_room_ids: []
+  };
+}
+
+const SPACES: SpaceSummary[] = [
+  space("!open-space:example.invalid", "Open Space", "public"),
+  space("!invite-space:example.invalid", "Invite Space", "invite"),
+  space("!conditional-space:example.invalid", "Conditional Space", "restricted"),
+  space("!unknown-space:example.invalid", "Unknown Space", "unknown"),
+  space("!quiet-space:example.invalid", "Quiet Space", null)
+];
+
+function spaceRailItem(item: SpaceSummary, is_active: boolean, unread_count = 0) {
+  return {
+    space_id: item.space_id,
+    display_name: item.display_name,
+    local_icon: null,
+    avatar: null,
+    unread_count,
+    highlight_count: 0,
+    is_active,
+    leave_candidates: []
+  };
+}
+
+async function pushSpaces(page: Page, activeSpaceId: string | null): Promise<void> {
+  const base = await openHarness(page);
+  await pushSnapshot(page, {
+    ...base,
+    sidebar: {
+      ...base.sidebar,
+      space_rail: SPACES.map((item) =>
+        spaceRailItem(item, item.space_id === activeSpaceId, item.space_id === "!invite-space:example.invalid" ? 3 : 0)
+      ),
+      account_home: { ...base.sidebar.account_home, is_active: activeSpaceId === null }
+    },
+    state: {
+      ...base.state,
+      domain: { ...base.state.domain, spaces: SPACES },
+      ui: {
+        ...base.state.ui,
+        navigation: {
+          ...base.state.ui.navigation,
+          active_space_id: activeSpaceId
+        }
+      }
+    }
+  });
+}
+
+test("the Space rail summarises each access condition and keeps the unread badge", async ({
+  page
+}) => {
+  await pushSpaces(page, null);
+  const rail = page.getByRole("navigation", { name: t("workspace.workspaces") });
+
+  await expect(rail.locator('[data-space-access="globe"]')).toHaveCount(1);
+  await expect(rail.locator('[data-space-access="padlock"]')).toHaveCount(1);
+  await expect(rail.locator('[data-space-access="info"]')).toHaveCount(1);
+  await expect(rail.locator('[data-space-access="question"]')).toHaveCount(1);
+  await expect(rail.locator('[data-space-access="loading"]')).toHaveCount(1);
+
+  // The rail item keeps the Space name and explains access, and the bubble is
+  // not clipped by the rail.
+  const inviteItem = rail.getByRole("button", { name: "Invite Space", exact: true });
+  await inviteItem.hover();
+  const bubble = page
+    .locator("body > .tooltip-bubble.is-open")
+    .filter({ hasText: `Invite Space${t("access.conditionSummarySeparator")}${t("access.inviteOnlyDescription")}` });
+  await expect(bubble).toHaveCount(1);
+  await expect(bubble).toBeInViewport({ ratio: 1 });
+
+  // The unread badge keeps the lower trailing corner; the access overlay stays
+  // in the upper half so it cannot obscure it.
+  await expect(inviteItem).toHaveAttribute("data-count", "3");
+  const itemBox = await inviteItem.boundingBox();
+  const overlayBox = await inviteItem.locator("[data-space-access]").boundingBox();
+  expect(itemBox).not.toBeNull();
+  expect(overlayBox).not.toBeNull();
+  expect(overlayBox!.y + overlayBox!.height).toBeLessThanOrEqual(
+    itemBox!.y + itemBox!.height / 2
+  );
+});
+
+test("the Space header shows the active Space's access condition", async ({ page }) => {
+  await pushSpaces(page, "!open-space:example.invalid");
+  const header = page.locator(".workspace-header");
+
+  await expect(header.locator(".workspace-name")).toHaveText("Open Space");
+  await expect(header.locator('[data-space-access="globe"]')).toHaveCount(1);
+  await expect(header.locator(".workspace-access-badge")).toHaveText([t("access.public")]);
+
+  // An unrecognised rule reads as the full unknown label.
+  await pushSpaces(page, "!unknown-space:example.invalid");
+  await expect(header.locator(".workspace-name")).toHaveText("Unknown Space");
+  await expect(header.locator(".workspace-access-badge")).toHaveText([
+    t("access.unknownFull")
+  ]);
+
+  // A Space whose rule has not been projected yet reads as the full checking label.
+  await pushSpaces(page, "!quiet-space:example.invalid");
+  await expect(header.locator(".workspace-access-badge")).toHaveText([
+    t("access.checkingFull")
+  ]);
+  await expect(header.locator('[data-space-access]')).toHaveCount(0);
+
+  // The header badge explains the condition on hover.
+  await pushSpaces(page, "!invite-space:example.invalid");
+  await expect(header.locator('[data-space-access="padlock"]')).toHaveCount(1);
+  await header.locator(".workspace-access-badge").first().hover();
+  const bubble = page
+    .locator("body > .tooltip-bubble.is-open")
+    .filter({ hasText: t("access.inviteOnlyDescription") });
+  await expect(bubble).toHaveCount(1);
+  await expect(bubble).toBeInViewport({ ratio: 1 });
 });

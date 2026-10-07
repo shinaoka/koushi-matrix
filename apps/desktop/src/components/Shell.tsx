@@ -19,6 +19,9 @@ import {
   Globe2,
   Home,
   LockKeyhole,
+  CircleHelp,
+  Info,
+  LoaderCircle,
   MessageSquare,
   MoreHorizontal,
   Plus,
@@ -43,7 +46,12 @@ import type {
 } from "../domain/types";
 import { contextMenuItems } from "../domain/contextMenus";
 import { renderableThumbnailSourceUrl } from "../backend/linkMediaRuntime";
-import { ROOM_ACCESS_CHECKING, roomAccessIndicator } from "../domain/accessCondition";
+import {
+  ROOM_ACCESS_CHECKING,
+  roomAccessHeaderBadges,
+  roomAccessIndicator,
+  roomAccessRailSummary
+} from "../domain/accessCondition";
 import { Tooltip } from "./Tooltip";
 import { ImeTextField } from "./ImeTextControl";
 import { useRecoverableImageSource } from "./avatarImage";
@@ -417,6 +425,11 @@ export function WorkspaceRail({
   const [draggedSpaceId, setDraggedSpaceId] = useState<string | null>(null);
   const [dragOverSpaceId, setDragOverSpaceId] = useState<string | null>(null);
   const spaceIds = snapshot.sidebar.space_rail.map((space) => space.space_id);
+  // #1166: each Space's own access condition, from Rust (`SpaceSummary.join_rule`);
+  // the rail item type itself carries no rule.
+  const spaceJoinRules = new Map(
+    snapshot.state.domain.spaces.map((space) => [space.space_id, space.join_rule ?? null])
+  );
 
   function dropSpaceOn(targetSpaceId: string, event: DragEvent<HTMLButtonElement>) {
     event.preventDefault();
@@ -464,8 +477,18 @@ export function WorkspaceRail({
           {snapshot.sidebar.space_rail.map((space) => {
             const localIcon = space.local_icon?.trim();
             const fallbackName = space.display_name.trim() || space.space_id || "?";
+            // #1166: the rail item keeps the Space name and explains its access
+            // condition, and a bounded overlay summarises it at the avatar.
+            const spaceRule = spaceJoinRules.get(space.space_id) ?? null;
+            const spaceAccess = roomAccessIndicator(spaceRule) ?? ROOM_ACCESS_CHECKING;
+            const railSummary = roomAccessRailSummary(spaceRule);
             return (
-            <Tooltip label={fallbackName} key={space.space_id}>
+            <Tooltip
+              label={`${fallbackName}${t("access.conditionSummarySeparator")}${t(
+                spaceAccess.descriptionMessageId
+              )}`}
+              key={space.space_id}
+            >
               {(tooltipProps) => (
                 <button
                   className={`workspace-button workspace-space-button ${
@@ -515,6 +538,26 @@ export function WorkspaceRail({
                     fallbackMode={localIcon ? "compactLabel" : "elementSpace"}
                     onRequestAvatarThumbnail={onRequestAvatarThumbnail}
                   />
+                  {/* The overlay sits at the avatar's *upper* trailing corner: the
+                      unread/notification count owns the lower one, and the access
+                      overlay must never obscure it. */}
+                  <span
+                    className="workspace-access-overlay"
+                    data-space-access={railSummary}
+                    aria-hidden="true"
+                  >
+                    {railSummary === "globe" ? (
+                      <Globe2 size={ICON_SIZE.micro} aria-hidden="true" />
+                    ) : railSummary === "padlock" ? (
+                      <LockKeyhole size={ICON_SIZE.micro} aria-hidden="true" />
+                    ) : railSummary === "info" ? (
+                      <Info size={ICON_SIZE.micro} aria-hidden="true" />
+                    ) : railSummary === "question" ? (
+                      <CircleHelp size={ICON_SIZE.micro} aria-hidden="true" />
+                    ) : (
+                      <LoaderCircle size={ICON_SIZE.micro} aria-hidden="true" />
+                    )}
+                  </span>
                 </button>
               )}
             </Tooltip>
@@ -596,6 +639,15 @@ export function Sidebar({
   const collapsedSections = sidebarSettings.collapsed;
   const activeSpace = snapshot.sidebar.space_rail.find((space) => space.is_active);
   const activeSpaceName = activeSpace?.display_name ?? snapshot.sidebar.account_home.display_name;
+  // #1166: each Space's own access condition, from Rust (`SpaceSummary.join_rule`);
+  // the rail item type itself carries no rule.
+  const spaceJoinRules = new Map(
+    snapshot.state.domain.spaces.map((space) => [space.space_id, space.join_rule ?? null])
+  );
+  const activeSpaceAccess = activeSpace
+    ? roomAccessIndicator(spaceJoinRules.get(activeSpace.space_id) ?? null) ??
+      ROOM_ACCESS_CHECKING
+    : null;
   const accountHomeActive = snapshot.sidebar.account_home.is_active && !activeSpace;
   const roomById = new Map(snapshot.state.domain.rooms.map((room) => [room.room_id, room]));
   const presence = snapshot.state.domain.live_signals.presence;
@@ -634,9 +686,37 @@ export function Sidebar({
     <aside className="sidebar" aria-label={t("workspace.rooms")}>
       <div className="workspace-header">
         <div className="workspace-header-title">
+          {activeSpaceAccess?.icon ? (
+            <Tooltip label={t(activeSpaceAccess.descriptionMessageId)}>
+              {(triggerProps) => (
+                <span
+                  className="workspace-access-icon"
+                  data-space-access={activeSpaceAccess.icon}
+                  {...triggerProps}
+                >
+                  {activeSpaceAccess.icon === "globe" ? (
+                    <Globe2 size={ICON_SIZE.small} aria-hidden="true" />
+                  ) : (
+                    <LockKeyhole size={ICON_SIZE.small} aria-hidden="true" />
+                  )}
+                </span>
+              )}
+            </Tooltip>
+          ) : null}
           <div className="workspace-name" dir="auto">
             {activeSpaceName}
           </div>
+          {activeSpaceAccess
+            ? roomAccessHeaderBadges(activeSpaceAccess).map((badge) => (
+                <Tooltip key={badge.labelMessageId} label={t(badge.descriptionMessageId)}>
+                  {(triggerProps) => (
+                    <span className="workspace-access-badge" {...triggerProps}>
+                      {t(badge.labelMessageId)}
+                    </span>
+                  )}
+                </Tooltip>
+              ))
+            : null}
         </div>
         <div className="workspace-header-actions no-wrap">
           {activeSpace ? (

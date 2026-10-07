@@ -173,3 +173,32 @@ export function sidebarRoomJoinRule(
   ].find((item) => item.room_id === roomId);
   return row?.access_join_rule ?? null;
 }
+
+/**
+ * The compact summary a narrow Space-rail item shows at its avatar.
+ *
+ * The rail has no room for badges, so the five states collapse to one glyph.
+ * None of them may read as public or invite-only when the rule is unknown or
+ * still unavailable.
+ */
+export type RoomAccessRailSummary = "globe" | "padlock" | "info" | "question" | "loading";
+
+export function roomAccessRailSummary(
+  rule: RoomJoinRule | null | undefined
+): RoomAccessRailSummary {
+  switch (rule) {
+    case "public":
+      return "globe";
+    case "invite":
+      return "padlock";
+    case "restricted":
+    case "knock":
+    case "knockRestricted":
+      return "info";
+    case "private":
+    case "unknown":
+      return "question";
+    default:
+      return "loading";
+  }
+}

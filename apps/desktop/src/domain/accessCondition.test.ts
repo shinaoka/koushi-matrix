@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   ROOM_ACCESS_CHECKING,
   roomAccessHeaderBadges,
-  roomAccessIndicator
+  roomAccessIndicator,
+  roomAccessRailSummary
 } from "./accessCondition";
 
 describe("room access indicator (#1166)", () => {
@@ -113,5 +114,20 @@ describe("room access header badges", () => {
         descriptionMessageId: "access.checkingDescription"
       }
     ]);
+  });
+});
+
+describe("room access rail summary", () => {
+  it("collapses the five states to one glyph that never reads as a known icon for unknowns", () => {
+    expect(roomAccessRailSummary("public")).toBe("globe");
+    expect(roomAccessRailSummary("invite")).toBe("padlock");
+    for (const rule of ["restricted", "knock", "knockRestricted"] as const) {
+      expect(roomAccessRailSummary(rule)).toBe("info");
+    }
+    for (const rule of ["private", "unknown"] as const) {
+      expect(roomAccessRailSummary(rule)).toBe("question");
+    }
+    expect(roomAccessRailSummary(null)).toBe("loading");
+    expect(roomAccessRailSummary(undefined)).toBe("loading");
   });
 });

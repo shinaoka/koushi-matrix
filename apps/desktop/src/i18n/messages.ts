@@ -19,6 +19,7 @@ export type MessageId =
   | "access.unknownDescription"
   | "access.checkingDescription"
   | "access.labelSeparator"
+  | "access.conditionSummarySeparator"
   | "help.title"
   | "help.askAi"
   | "help.copyRepositoryUrl"
@@ -1794,6 +1795,7 @@ const en: Catalog = {
   "access.unknownDescription": "This app does not recognize these join conditions.",
   "access.checkingDescription": "Join conditions are not available yet.",
   "access.labelSeparator": ", ",
+  "access.conditionSummarySeparator": " — ",
   "help.title": "Koushi Help",
   "help.askAi": "Copy this GitHub URL and ask ChatGPT or another AI assistant how to use Koushi. Include your Koushi version, operating system, and question.",
   "help.copyRepositoryUrl": "Copy GitHub URL",
@@ -3501,6 +3503,7 @@ const ja: Catalog = {
   "access.unknownDescription": "この参加条件はアプリで認識できません。",
   "access.checkingDescription": "参加条件をまだ確認できません。",
   "access.labelSeparator": "、",
+  "access.conditionSummarySeparator": " — ",
   "help.title": "Koushiのヘルプ",
   "help.askAi": "このGitHub URLをコピーして、ChatGPTなどのAIにKoushiの使い方を質問してください。利用バージョン、OS、知りたいことを添えてください。",
   "help.copyRepositoryUrl": "GitHub URLをコピー",
