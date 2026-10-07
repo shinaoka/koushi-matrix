@@ -2800,6 +2800,13 @@ export interface SpaceRailItem {
   unread_count: number;
   highlight_count: number;
   is_active: boolean;
+  /** The Space's own access condition (#1166); absent means not yet projected. */
+  access_join_rule?: RoomJoinRule | null;
+  /**
+   * Restricted-rule allow-condition facts; absent when the rule is not
+   * restricted or has not been projected.
+   */
+  access_restricted_conditions?: RestrictedConditions | null;
   /**
    * Joined, non-DM rooms this Space shows, which a Space leave may take with
    * it. Rust projection; the `leave_space` command re-admits against it.

@@ -87,6 +87,15 @@ pub struct SpaceRailItem {
     pub unread_count: u64,
     pub highlight_count: u64,
     pub is_active: bool,
+    /// The Space's own authoritative access condition (#1166), from the same
+    /// projected slice the room rows use. `None` means it has not been projected
+    /// yet, never a guessed rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_join_rule: Option<RoomJoinRule>,
+    /// Restricted-rule allow-condition facts; `None` when the rule is not
+    /// restricted or has not been projected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_restricted_conditions: Option<RestrictedConditions>,
     /// The joined child rooms the Space-leave confirmation offers to leave
     /// with this Space.
     #[serde(default)]
@@ -256,6 +265,12 @@ fn compose_sidebar_with_preferences(
                     room_notification_settings,
                 ),
                 is_active: active_space_id == Some(space.space_id.as_str()),
+                access_join_rule: room_access
+                    .get(&space.space_id)
+                    .map(|condition| condition.join_rule),
+                access_restricted_conditions: room_access
+                    .get(&space.space_id)
+                    .and_then(|condition| condition.restricted),
                 leave_candidates: crate::space_leave::space_leave_candidates(
                     space,
                     spaces,

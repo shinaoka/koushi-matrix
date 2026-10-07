@@ -41,13 +41,15 @@ pub(crate) fn handle_room_access_updated(
     if !is_session_ready(state) {
         return Vec::new();
     }
-    // The snapshot arm of this batch already ran, so `state.rooms` is the
-    // accepted room set: a room filtered out there (local leave, unjoined) must
-    // not keep or regain an access condition through a stale payload.
+    // The snapshot arm of this batch already ran, so the accepted room list is
+    // in state: a room or Space filtered out there (local leave, unjoined) must
+    // not keep or regain an access condition through a stale payload. Spaces
+    // carry their own condition on the rail, so they are retained too.
     let retained: std::collections::BTreeSet<&str> = state
         .rooms
         .iter()
         .map(|room| room.room_id.as_str())
+        .chain(state.spaces.iter().map(|space| space.space_id.as_str()))
         .collect();
     let access = access
         .into_iter()

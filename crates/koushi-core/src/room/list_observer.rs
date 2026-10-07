@@ -1551,13 +1551,17 @@ async fn normalize_and_project_entries(
         direct_targets_by_room,
     )
     .await;
+    // Spaces carry their own condition on the rail, so their facts are projected
+    // alongside the joined rooms (#1166); anything the snapshot dropped is not.
     let room_access = snapshot
         .rooms
         .iter()
-        .filter_map(|room| {
+        .map(|room| room.room_id.as_str())
+        .chain(snapshot.spaces.iter().map(|space| space.space_id.as_str()))
+        .filter_map(|room_id| {
             joined_access
-                .get(&room.room_id)
-                .map(|rule| (room.room_id.clone(), *rule))
+                .get(room_id)
+                .map(|condition| (room_id.to_owned(), *condition))
         })
         .collect::<std::collections::BTreeMap<_, _>>();
     snapshot.invites = koushi_sdk::matrix_invite_previews_from_rooms(invited_rooms).await;

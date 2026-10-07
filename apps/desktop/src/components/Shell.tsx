@@ -425,11 +425,6 @@ export function WorkspaceRail({
   const [draggedSpaceId, setDraggedSpaceId] = useState<string | null>(null);
   const [dragOverSpaceId, setDragOverSpaceId] = useState<string | null>(null);
   const spaceIds = snapshot.sidebar.space_rail.map((space) => space.space_id);
-  // #1166: each Space's own access condition, from Rust (`SpaceSummary.join_rule`);
-  // the rail item type itself carries no rule.
-  const spaceJoinRules = new Map(
-    snapshot.state.domain.spaces.map((space) => [space.space_id, space.join_rule ?? null])
-  );
 
   function dropSpaceOn(targetSpaceId: string, event: DragEvent<HTMLButtonElement>) {
     event.preventDefault();
@@ -479,8 +474,11 @@ export function WorkspaceRail({
             const fallbackName = space.display_name.trim() || space.space_id || "?";
             // #1166: the rail item keeps the Space name and explains its access
             // condition, and a bounded overlay summarises it at the avatar.
-            const spaceRule = spaceJoinRules.get(space.space_id) ?? null;
-            const spaceAccess = roomAccessIndicator(spaceRule) ?? ROOM_ACCESS_CHECKING;
+            // #1166: the rail item carries its own projected access condition.
+            const spaceRule = space.access_join_rule ?? null;
+            const spaceAccess =
+              roomAccessIndicator(spaceRule, space.access_restricted_conditions) ??
+              ROOM_ACCESS_CHECKING;
             const railSummary = roomAccessRailSummary(spaceRule);
             return (
             <Tooltip
@@ -639,14 +637,13 @@ export function Sidebar({
   const collapsedSections = sidebarSettings.collapsed;
   const activeSpace = snapshot.sidebar.space_rail.find((space) => space.is_active);
   const activeSpaceName = activeSpace?.display_name ?? snapshot.sidebar.account_home.display_name;
-  // #1166: each Space's own access condition, from Rust (`SpaceSummary.join_rule`);
-  // the rail item type itself carries no rule.
-  const spaceJoinRules = new Map(
-    snapshot.state.domain.spaces.map((space) => [space.space_id, space.join_rule ?? null])
-  );
+  // #1166: the active Space's access condition comes from the rail item Rust
+  // projected for it.
   const activeSpaceAccess = activeSpace
-    ? roomAccessIndicator(spaceJoinRules.get(activeSpace.space_id) ?? null) ??
-      ROOM_ACCESS_CHECKING
+    ? roomAccessIndicator(
+        activeSpace.access_join_rule ?? null,
+        activeSpace.access_restricted_conditions
+      ) ?? ROOM_ACCESS_CHECKING
     : null;
   const accountHomeActive = snapshot.sidebar.account_home.is_active && !activeSpace;
   const roomById = new Map(snapshot.state.domain.rooms.map((room) => [room.room_id, room]));

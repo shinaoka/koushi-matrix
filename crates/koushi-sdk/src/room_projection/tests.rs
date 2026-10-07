@@ -828,6 +828,34 @@ async fn restricted_rule_conditions_separate_usable_from_unknown_allow_rules() {
         Some(super::MatrixRestrictedConditions::UnknownAllowRule)
     );
 
+    // A usable route wins even when unrecognized entries sit beside it, in
+    // either order: the membership route is what the user actually gets.
+    let custom_first: AllowRule =
+        serde_json::from_value(serde_json::json!({ "type": "m.custom_allow_rule" }))
+            .expect("custom allow rule deserializes");
+    let mixed_custom_first = synced(JoinRule::Restricted(Restricted::new(vec![
+        custom_first,
+        AllowRule::room_membership(room_id!("!allowed:example.invalid").to_owned()),
+    ])))
+    .await;
+    assert_eq!(
+        super::matrix_room_restricted_conditions(&mixed_custom_first),
+        Some(super::MatrixRestrictedConditions::Usable)
+    );
+
+    let custom_last: AllowRule =
+        serde_json::from_value(serde_json::json!({ "type": "m.custom_allow_rule" }))
+            .expect("custom allow rule deserializes");
+    let mixed_custom_last = synced(JoinRule::KnockRestricted(Restricted::new(vec![
+        AllowRule::room_membership(room_id!("!allowed:example.invalid").to_owned()),
+        custom_last,
+    ])))
+    .await;
+    assert_eq!(
+        super::matrix_room_restricted_conditions(&mixed_custom_last),
+        Some(super::MatrixRestrictedConditions::Usable)
+    );
+
     // A non-restricted rule claims nothing about allow lists.
     let public = synced(JoinRule::Public).await;
     assert_eq!(super::matrix_room_restricted_conditions(&public), None);

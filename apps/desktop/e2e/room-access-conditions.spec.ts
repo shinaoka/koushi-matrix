@@ -38,7 +38,10 @@ function row(room_id: string, display_name: string, rule?: RoomJoinRule): RoomLi
 const PLAIN_ROOM = row("!plain:example.invalid", "Plain Room");
 const PUBLIC_ROOM = row("!open:example.invalid", "Open Room", "public");
 const INVITE_ROOM = row("!invite:example.invalid", "Invite Room", "invite");
-const RESTRICTED_ROOM = row("!conditional:example.invalid", "Conditional Room", "restricted");
+const RESTRICTED_ROOM = {
+  ...row("!conditional:example.invalid", "Conditional Room", "restricted"),
+  access_restricted_conditions: "usable" as const
+};
 const NO_USABLE_ROOM = {
   ...row("!no-usable:example.invalid", "No Usable Room", "restricted"),
   access_restricted_conditions: "noneUsable" as const
@@ -254,7 +257,12 @@ const SPACES: SpaceSummary[] = [
   space("!quiet-space:example.invalid", "Quiet Space", null)
 ];
 
-function spaceRailItem(item: SpaceSummary, is_active: boolean, unread_count = 0) {
+function spaceRailItem(
+  item: SpaceSummary,
+  is_active: boolean,
+  unread_count = 0,
+  restricted?: "usable" | "noneUsable" | "unknownAllowRule"
+) {
   return {
     space_id: item.space_id,
     display_name: item.display_name,
@@ -263,6 +271,8 @@ function spaceRailItem(item: SpaceSummary, is_active: boolean, unread_count = 0)
     unread_count,
     highlight_count: 0,
     is_active,
+    access_join_rule: item.join_rule,
+    ...(restricted ? { access_restricted_conditions: restricted } : {}),
     leave_candidates: []
   };
 }
@@ -274,7 +284,12 @@ async function pushSpaces(page: Page, activeSpaceId: string | null): Promise<voi
     sidebar: {
       ...base.sidebar,
       space_rail: SPACES.map((item) =>
-        spaceRailItem(item, item.space_id === activeSpaceId, item.space_id === "!invite-space:example.invalid" ? 3 : 0)
+        spaceRailItem(
+          item,
+          item.space_id === activeSpaceId,
+          item.space_id === "!invite-space:example.invalid" ? 3 : 0,
+          item.space_id === "!conditional-space:example.invalid" ? "noneUsable" : undefined
+        )
       ),
       account_home: { ...base.sidebar.account_home, is_active: activeSpaceId === null }
     },
@@ -422,12 +437,52 @@ test("a restricted room explains a confirmed missing membership route (#1166)", 
       .filter({ hasText: t("access.restrictedNoUsableConditionsDescription") })
   ).toHaveCount(0);
 
-  // The ordinary restricted room keeps the membership explanation.
+  // An explicitly usable condition keeps the membership explanation, and never
+  // claims an invitation is required.
   const conditionalRow = rooms.getByRole("button", { name: "Conditional Room", exact: true });
   await conditionalRow.locator(".room-access-badge").first().hover();
   await expect(
     page
       .locator("body > .tooltip-bubble.is-open")
       .filter({ hasText: t("access.conditionsDescription") })
+  ).toHaveCount(1);
+  await expect(
+    page
+      .locator("body > .tooltip-bubble.is-open")
+      .filter({ hasText: t("access.restrictedNoUsableConditionsDescription") })
+  ).toHaveCount(0);
+});
+
+test("a restricted Space with no usable condition explains the invitation requirement", async ({
+  page
+}) => {
+  await pushSpaces(page, "!conditional-space:example.invalid");
+  const header = page.locator(".workspace-header");
+
+  // The Space header explains the confirmed absence of a membership route.
+  await header.locator(".workspace-access-badge").first().hover();
+  await expect(
+    page
+      .locator("body > .tooltip-bubble.is-open")
+      .filter({ hasText: t("access.restrictedNoUsableConditionsDescription") })
+  ).toHaveCount(1);
+  await expect(
+    page
+      .locator("body > .tooltip-bubble.is-open")
+      .filter({ hasText: t("access.conditionsDescription") })
+  ).toHaveCount(0);
+
+  // The rail item keeps the same explanation.
+  const rail = page.getByRole("navigation", { name: t("workspace.workspaces") });
+  const item = rail.getByRole("button", { name: "Conditional Space", exact: true });
+  await item.hover();
+  await expect(
+    page
+      .locator("body > .tooltip-bubble.is-open")
+      .filter({
+        hasText: `Conditional Space${t("access.conditionSummarySeparator")}${t(
+          "access.restrictedNoUsableConditionsDescription"
+        )}`
+      })
   ).toHaveCount(1);
 });
