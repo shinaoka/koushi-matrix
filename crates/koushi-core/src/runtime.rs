@@ -20,6 +20,8 @@ mod scheduled_send;
 #[cfg(test)]
 mod secure_backup_admission_tests;
 
+pub(crate) use crate::executor::AbortOnDrop;
+
 pub use composer::COMPOSER_DRAFT_PERSIST_DEBOUNCE;
 use composer::{
     ComposerAcceptanceIdentity, ComposerDraftLoadStatus, PendingComposerAcceptance,
@@ -331,53 +333,6 @@ impl CoreCommandEnvelope {
             }
             Self::Qa(_) => panic!("expected public command envelope"),
         }
-    }
-}
-
-/// A task handle that is aborted if its owner is dropped without an orderly
-/// shutdown. Explicit shutdown takes the handle and awaits it; error paths in
-/// headless QA and embedding callers therefore cannot leave detached runtime
-/// tasks keeping the process alive indefinitely.
-pub(crate) struct AbortOnDrop<T> {
-    handle: Option<executor::JoinHandle<T>>,
-}
-
-impl<T> AbortOnDrop<T> {
-    pub(crate) fn new(handle: executor::JoinHandle<T>) -> Self {
-        Self {
-            handle: Some(handle),
-        }
-    }
-
-    fn get(&self) -> &executor::JoinHandle<T> {
-        self.handle
-            .as_ref()
-            .expect("abort-on-drop task handle must remain present")
-    }
-
-    fn take(&mut self) -> executor::JoinHandle<T> {
-        self.handle
-            .take()
-            .expect("abort-on-drop task handle must be taken once")
-    }
-
-    pub(crate) fn abort(&self) {
-        if let Some(handle) = &self.handle {
-            handle.abort();
-        }
-    }
-
-    pub(crate) async fn settle(&mut self) {
-        if let Some(handle) = &mut self.handle {
-            let _ = handle.await;
-        }
-        self.handle.take();
-    }
-}
-
-impl<T> Drop for AbortOnDrop<T> {
-    fn drop(&mut self) {
-        self.abort();
     }
 }
 

@@ -93,7 +93,7 @@ pub(super) struct PendingFocusedBuild {
     pub(super) lease_added: bool,
     pub(super) reconcile_trigger: SubscriptionReconcileTrigger,
     pub(super) started: executor::Instant,
-    task: crate::runtime::AbortOnDrop<()>,
+    task: executor::AbortOnDrop<()>,
 }
 
 impl PendingFocusedBuild {
@@ -174,7 +174,7 @@ impl FocusedBuildSupervisor {
                 lease_added,
                 reconcile_trigger,
                 started: executor::Instant::now(),
-                task: crate::runtime::AbortOnDrop::new(task),
+                task: executor::AbortOnDrop::new(task),
             },
         );
     }
