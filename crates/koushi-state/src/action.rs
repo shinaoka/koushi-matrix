@@ -1259,6 +1259,16 @@ pub enum AppAction {
     ScheduledSendCapabilityChanged {
         capability: ScheduledSendCapability,
     },
+    /// Each joined room's authoritative access condition (#1166). Sent in the
+    /// same batch as the room-list snapshot it describes and fenced by the same
+    /// generation/source decision, so a rejected snapshot cannot overwrite it.
+    /// An absent room means "not yet known".
+    RoomAccessUpdated {
+        generation: u64,
+        source: RoomListSource,
+        authoritative: bool,
+        access: std::collections::BTreeMap<String, crate::state::RoomAccessCondition>,
+    },
     ScheduledSendsLoaded {
         scheduled_sends: crate::state::ScheduledSendStore,
     },
