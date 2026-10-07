@@ -5,6 +5,7 @@ import {
   type ReactNode,
   type RefObject,
   useEffect,
+  useId,
   useRef,
   useState
 } from "react";
@@ -15,7 +16,12 @@ import {
   ChevronDown,
   Clock3,
   Compass,
+  Globe2,
   Home,
+  LockKeyhole,
+  CircleHelp,
+  Info,
+  LoaderCircle,
   MessageSquare,
   MoreHorizontal,
   Plus,
@@ -40,11 +46,18 @@ import type {
 } from "../domain/types";
 import { contextMenuItems } from "../domain/contextMenus";
 import { renderableThumbnailSourceUrl } from "../backend/linkMediaRuntime";
+import {
+  ROOM_ACCESS_CHECKING,
+  roomAccessHeaderBadges,
+  roomAccessIndicator,
+  roomAccessRailSummary
+} from "../domain/accessCondition";
 import { Tooltip } from "./Tooltip";
 import { ImeTextField } from "./ImeTextControl";
 import { useRecoverableImageSource } from "./avatarImage";
 import {
   ICON_SIZE,
+  roomAccessTooltipLabel,
   type OpenContextMenu,
   type PrimaryView,
   avatarInitial,
@@ -460,8 +473,22 @@ export function WorkspaceRail({
           {snapshot.sidebar.space_rail.map((space) => {
             const localIcon = space.local_icon?.trim();
             const fallbackName = space.display_name.trim() || space.space_id || "?";
+            // #1166: the rail item keeps the Space name and explains its access
+            // condition, and a bounded overlay summarises it at the avatar.
+            // #1166: the rail item carries its own projected access condition.
+            const spaceRule = space.access_join_rule ?? null;
+            const spaceAccess =
+              roomAccessIndicator(spaceRule, space.access_restricted_conditions) ??
+              ROOM_ACCESS_CHECKING;
+            const railSummary = roomAccessRailSummary(spaceRule);
             return (
-            <Tooltip label={fallbackName} key={space.space_id}>
+            <Tooltip
+              label={`${fallbackName}${t("access.conditionSummarySeparator")}${roomAccessTooltipLabel(
+                spaceAccess.descriptionMessageId,
+                space.access_allowed_room_names
+              )}`}
+              key={space.space_id}
+            >
               {(tooltipProps) => (
                 <button
                   className={`workspace-button workspace-space-button ${
@@ -511,6 +538,26 @@ export function WorkspaceRail({
                     fallbackMode={localIcon ? "compactLabel" : "elementSpace"}
                     onRequestAvatarThumbnail={onRequestAvatarThumbnail}
                   />
+                  {/* The overlay sits at the avatar's *upper* trailing corner: the
+                      unread/notification count owns the lower one, and the access
+                      overlay must never obscure it. */}
+                  <span
+                    className="workspace-access-overlay"
+                    data-space-access={railSummary}
+                    aria-hidden="true"
+                  >
+                    {railSummary === "globe" ? (
+                      <Globe2 size={ICON_SIZE.micro} aria-hidden="true" />
+                    ) : railSummary === "padlock" ? (
+                      <LockKeyhole size={ICON_SIZE.micro} aria-hidden="true" />
+                    ) : railSummary === "info" ? (
+                      <Info size={ICON_SIZE.micro} aria-hidden="true" />
+                    ) : railSummary === "question" ? (
+                      <CircleHelp size={ICON_SIZE.micro} aria-hidden="true" />
+                    ) : (
+                      <LoaderCircle size={ICON_SIZE.micro} aria-hidden="true" />
+                    )}
+                  </span>
                 </button>
               )}
             </Tooltip>
@@ -592,6 +639,14 @@ export function Sidebar({
   const collapsedSections = sidebarSettings.collapsed;
   const activeSpace = snapshot.sidebar.space_rail.find((space) => space.is_active);
   const activeSpaceName = activeSpace?.display_name ?? snapshot.sidebar.account_home.display_name;
+  // #1166: the active Space's access condition comes from the rail item Rust
+  // projected for it.
+  const activeSpaceAccess = activeSpace
+    ? roomAccessIndicator(
+        activeSpace.access_join_rule ?? null,
+        activeSpace.access_restricted_conditions
+      ) ?? ROOM_ACCESS_CHECKING
+    : null;
   const accountHomeActive = snapshot.sidebar.account_home.is_active && !activeSpace;
   const roomById = new Map(snapshot.state.domain.rooms.map((room) => [room.room_id, room]));
   const presence = snapshot.state.domain.live_signals.presence;
@@ -630,9 +685,53 @@ export function Sidebar({
     <aside className="sidebar" aria-label={t("workspace.rooms")}>
       <div className="workspace-header">
         <div className="workspace-header-title">
+          {activeSpaceAccess?.icon ? (
+            <Tooltip
+              label={roomAccessTooltipLabel(
+                activeSpaceAccess.descriptionMessageId,
+                activeSpace?.access_allowed_room_names
+              )}
+            >
+              {(triggerProps) => (
+                <span
+                  className="workspace-access-icon"
+                  data-space-access={activeSpaceAccess.icon}
+                  tabIndex={0}
+                  {...triggerProps}
+                >
+                  {activeSpaceAccess.icon === "globe" ? (
+                    <Globe2 size={ICON_SIZE.small} aria-hidden="true" />
+                  ) : (
+                    <LockKeyhole size={ICON_SIZE.small} aria-hidden="true" />
+                  )}
+                </span>
+              )}
+            </Tooltip>
+          ) : null}
           <div className="workspace-name" dir="auto">
             {activeSpaceName}
           </div>
+          {activeSpaceAccess
+            ? roomAccessHeaderBadges(activeSpaceAccess).map((badge) => (
+                <Tooltip
+                  key={badge.labelMessageId}
+                  label={
+                    badge.labelMessageId === "access.conditionsApply"
+                      ? roomAccessTooltipLabel(
+                          badge.descriptionMessageId,
+                          activeSpace?.access_allowed_room_names
+                        )
+                      : t(badge.descriptionMessageId)
+                  }
+                >
+                  {(triggerProps) => (
+                    <span className="workspace-access-badge" tabIndex={0} {...triggerProps}>
+                      {t(badge.labelMessageId)}
+                    </span>
+                  )}
+                </Tooltip>
+              ))
+            : null}
         </div>
         <div className="workspace-header-actions no-wrap">
           {activeSpace ? (
@@ -1192,10 +1291,23 @@ function RoomButton({
   const displayCount = room.display_count ?? room.unread_count;
   const mentionCount = room.highlight_count ?? (room.has_unread_mention ? 1 : 0);
   const attentionHighlighted = room.is_attention_highlighted ?? mentionCount;
+  // #1166: a joined row shows its own access condition; while it has not been
+  // projected the row says so instead of guessing. Lanes that have no joined
+  // condition (invitations, not-joined) render none.
+  const access =
+    roomAccessIndicator(room.access_join_rule, room.access_restricted_conditions) ??
+    (kind === "room" || kind === "dm" ? ROOM_ACCESS_CHECKING : null);
+  const roomLabel = roomListItemLabel(room);
+  // #1166: the condition is announced as the row's *description*, so the row's
+  // accessible name stays exactly the room label other surfaces and tests match
+  // on. The visible icon and badges stay the sighted affordance.
+  const accessDescriptionId = useId();
   return (
     <button
       className={`room-item ${room.room_id === activeRoomId ? "is-active" : ""}`}
-      aria-label={roomListItemLabel(room)}
+      aria-label={roomLabel}
+      aria-describedby={access ? accessDescriptionId : undefined}
+      data-access={access?.icon ?? undefined}
       data-mention-count={mentionCount || undefined}
       data-room-kind={kind}
       data-testid="room-item"
@@ -1249,7 +1361,59 @@ function RoomButton({
         />
         {isOnlineDm ? <span className="room-presence-dot" aria-hidden="true" /> : null}
       </span>
-      <span className="room-name" dir="auto">{roomListItemLabel(room)}</span>
+      {access ? (
+        <span className="sr-only" id={accessDescriptionId}>
+          {t(access.descriptionMessageId)}
+        </span>
+      ) : null}
+      {/* #1166: the icon, name and compact badges share the grid's name cell so
+          the avatar and the trailing unread area keep their columns. */}
+      <span className="room-name-shell">
+        {access?.icon ? (
+          <Tooltip
+            label={roomAccessTooltipLabel(
+              access.descriptionMessageId,
+              room.access_allowed_room_names
+            )}
+          >
+            {(triggerProps) => (
+              <span
+                className="room-access-icon"
+                data-room-access={access.icon}
+                {...triggerProps}
+              >
+                {access.icon === "globe" ? (
+                  <Globe2 size={ICON_SIZE.micro} aria-hidden="true" />
+                ) : (
+                  <LockKeyhole size={ICON_SIZE.micro} aria-hidden="true" />
+                )}
+              </span>
+            )}
+          </Tooltip>
+        ) : null}
+        <span className="room-name" dir="auto">{roomLabel}</span>
+        {access
+          ? access.badges.map((badge) => (
+              <Tooltip
+                key={badge.labelMessageId}
+                label={
+                  badge.labelMessageId === "access.conditionsApply"
+                    ? roomAccessTooltipLabel(
+                        badge.descriptionMessageId,
+                        room.access_allowed_room_names
+                      )
+                    : t(badge.descriptionMessageId)
+                }
+              >
+                {(triggerProps) => (
+                  <span className="room-access-badge" {...triggerProps}>
+                    {t(badge.labelMessageId)}
+                  </span>
+                )}
+              </Tooltip>
+            ))
+          : null}
+      </span>
       <span className="room-trailing">
         {/*
           Issue #961: a room outside the account's joined rooms says which

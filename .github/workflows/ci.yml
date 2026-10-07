@@ -203,6 +203,8 @@ jobs:
             libdbus-1-dev
       - name: Submodule sync guard
         run: node scripts/check-sdk-submodule.mjs
+      - name: SDK upstream release checker tests
+        run: node --test scripts/sdk-upstream-release-check.test.mjs
       - name: Release version checker tests
         run: node --test scripts/desktop-release-version.test.mjs
       # Every PR, not only a release PR: a stale Cargo.lock or npm lockfile

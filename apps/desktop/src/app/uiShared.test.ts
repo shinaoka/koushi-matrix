@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { t } from "../i18n/messages";
 import {
   SCHEDULED_SEND_PERSISTENCE_FAILED_CODE,
-  hasScheduledSendPersistenceFailure
+  hasScheduledSendPersistenceFailure,
+  roomAccessTooltipLabel
 } from "./uiShared";
 
 describe("scheduled-send persistence failure (#1159)", () => {
@@ -21,6 +23,34 @@ describe("scheduled-send persistence failure (#1159)", () => {
     // crates/koushi-state/src/reducer/timeline.rs.
     expect(SCHEDULED_SEND_PERSISTENCE_FAILED_CODE).toBe(
       "scheduled_send_persistence_failed"
+    );
+  });
+});
+
+describe("room access tooltip label (#1166)", () => {
+  it("lists a restricted rule's named routes only when they were resolved", () => {
+    expect(
+      roomAccessTooltipLabel("access.conditionsDescription", ["Alpha Room", "Beta Space"])
+    ).toBe(
+      `${t("access.conditionsDescription")} ${t("access.allowedRooms", {
+        rooms: `Alpha Room${t("access.labelSeparator")}Beta Space`
+      })}`
+    );
+  });
+
+  it("falls back to the plain explanation when nothing resolved", () => {
+    // No resolved names: never a raw id and never a guessed label.
+    expect(roomAccessTooltipLabel("access.conditionsDescription", [])).toBe(
+      t("access.conditionsDescription")
+    );
+    expect(roomAccessTooltipLabel("access.conditionsDescription", ["   "])).toBe(
+      t("access.conditionsDescription")
+    );
+    expect(roomAccessTooltipLabel("access.conditionsDescription", null)).toBe(
+      t("access.conditionsDescription")
+    );
+    expect(roomAccessTooltipLabel("access.conditionsDescription")).toBe(
+      t("access.conditionsDescription")
     );
   });
 });
