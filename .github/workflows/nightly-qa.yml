@@ -142,7 +142,8 @@ jobs:
   focused:
     name: Focused scenarios outside all (${{ matrix.server }})
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # 14 scenarios at up to 10 min each, plus the build.
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
