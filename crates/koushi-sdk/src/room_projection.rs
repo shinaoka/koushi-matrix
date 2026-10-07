@@ -1926,14 +1926,97 @@ pub(super) fn room_settings_snapshot_with_change(
     snapshot
 }
 
-/// A room without an `m.room.join_rules` event is invite-only (Matrix spec,
-/// and Element's own default). The event is in the room list's
-/// `required_state`, so a synced room without it has none.
-pub(super) fn matrix_room_join_rule_or_default(room: &matrix_sdk::Room) -> MatrixRoomJoinRule {
+/// A room's own authoritative access condition: its `m.room.join_rules` rule
+/// (#1166).
+///
+/// A room without an `m.room.join_rules` event is invite-only (Matrix spec, and
+/// Element's own default). The event is in the room list's `required_state`, so
+/// a synced room without it has none. The condition is never derived from
+/// encryption, directory visibility, history visibility, parent Space privacy,
+/// `is_dm`, the viewer's membership or `can_join`.
+pub fn matrix_room_join_rule_or_default(room: &matrix_sdk::Room) -> MatrixRoomJoinRule {
     room.join_rule()
         .as_ref()
         .map(matrix_room_join_rule)
         .unwrap_or(MatrixRoomJoinRule::Invite)
+}
+
+/// Whether a `restricted`/`knock_restricted` rule's allow list contains a
+/// condition this client can actually evaluate (#1166).
+///
+/// A `restricted` rule with no usable allow condition still classifies as
+/// `Restricted`, but the product must not imply that a membership route works:
+/// the tooltip then says an invitation is required. An allow-rule type this
+/// client does not model must never be reported as a confirmed empty set, which
+/// is what separates [`MatrixRestrictedConditions::UnknownAllowRule`] from
+/// [`MatrixRestrictedConditions::NoneUsable`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixRestrictedConditions {
+    /// At least one allow entry is a room-membership rule: a real route exists.
+    Usable,
+    /// Every allow entry is a rule type this client models, and none of them
+    /// admits joining without an invitation.
+    NoneUsable,
+    /// At least one entry uses a rule type this client does not model, so the
+    /// absence of a usable condition is not confirmed.
+    UnknownAllowRule,
+}
+
+/// The restricted-rule condition facts for a room (#1166). `None` when the
+/// room's rule is not restricted, so nothing is claimed about allow lists.
+pub fn matrix_room_restricted_conditions(
+    room: &matrix_sdk::Room,
+) -> Option<MatrixRestrictedConditions> {
+    use matrix_sdk::ruma::events::room::join_rules::{AllowRule, JoinRule};
+    let rule = room.join_rule();
+    let restricted = match rule.as_ref()? {
+        JoinRule::Restricted(restricted) | JoinRule::KnockRestricted(restricted) => restricted,
+        _ => return None,
+    };
+    let usable = restricted
+        .allow
+        .iter()
+        .any(|allow| matches!(allow, AllowRule::RoomMembership(_)));
+    if usable {
+        return Some(MatrixRestrictedConditions::Usable);
+    }
+    let unknown = restricted
+        .allow
+        .iter()
+        .any(|allow| !matches!(allow, AllowRule::RoomMembership(_)));
+    Some(if unknown {
+        MatrixRestrictedConditions::UnknownAllowRule
+    } else {
+        MatrixRestrictedConditions::NoneUsable
+    })
+}
+
+/// The rooms and Spaces a `restricted`/`knock_restricted` rule names as
+/// membership routes (#1166), in the order the event lists them and without
+/// duplicates. Empty when the rule is not restricted or names none.
+///
+/// Ids stay inside Rust state: the sidebar resolves them to display labels and
+/// only resolved names reach the renderer, so an inaccessible or unknown entry
+/// is never guessed at or exposed.
+pub fn matrix_room_restricted_allow_room_ids(room: &matrix_sdk::Room) -> Vec<String> {
+    use matrix_sdk::ruma::events::room::join_rules::{AllowRule, JoinRule};
+    let rule = room.join_rule();
+    let restricted = match rule.as_ref() {
+        Some(JoinRule::Restricted(restricted) | JoinRule::KnockRestricted(restricted)) => {
+            restricted
+        }
+        _ => return Vec::new(),
+    };
+    let mut ids: Vec<String> = Vec::new();
+    for allow in &restricted.allow {
+        if let AllowRule::RoomMembership(membership) = allow {
+            let id = membership.room_id.to_string();
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    ids
 }
 
 pub(super) fn matrix_room_join_rule(

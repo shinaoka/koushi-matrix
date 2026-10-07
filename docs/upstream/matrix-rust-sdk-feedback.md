@@ -50,6 +50,37 @@ or SDK boundary without logging private Matrix payloads.
 
 ## Upstreamable Patch Material
 
+- Cancellation-safe event-focused initialization (#1146, 2026-10-07, fork
+  topic `8c861d4` on `fix/1146-transactional-focused-cache`) changes only `event_cache/caches/event_focused/mod.rs` and its constructor caller in
+  `event_cache/caches/mod.rs`. Initial context loading now completes on local,
+  unpublished state inside `StateLock::try_insert_once_with`; only success
+  registers the state and publishes the reusable handle, without another await
+  between those steps. Previously an HTTP error or cancelled `/context` left
+  registered state without a handle, so retry failed with
+  `CacheStateAlreadyExists`. No public API can remove that orphaned selector,
+  and dropping the whole room cache is not a targeted cancellation substitute.
+  The existing lock ordering and context errors are preserved. Core's
+  `sdk_focused_cache_context_error_does_not_poison_retry` reproduces the orphan
+  against the old SDK and passes with this patch; the real-SDK
+  `sdk_focused_build_waiting_on_context_is_cancelled_and_retry_starts_fresh`
+  proves a second request succeeds without releasing the original delayed
+  response. Upstream intent: submit this transactional-construction correction
+  with standalone SDK regressions; remove the fork topic once incorporated.
+  No upstream PR has been submitted by this session.
+- Cancellation-safe room-cache publication (#1146, 2026-10-07, fork topic
+  `1d3df6d8` on `fix/1146-transactional-focused-cache`) follows the focused-state
+  patch in the same file (`event_cache/caches/mod.rs`). `Caches::new` registered
+  the room state through `try_insert_once_with` and then awaited
+  `room_state.read()` for its emptiness probe; the enclosing `Caches` handle is
+  published only after `Caches::new` returns, so an aborted or failed caller in
+  that window left the room state registered without a handle, and every later
+  construction for that room failed with `CacheStateAlreadyExists`. The probe now
+  runs on the freshly constructed value inside the constructor, so no await
+  remains between registration and publication. Core cancels focused SDK
+  construction deliberately (#1146), which is what made that window reachable.
+  Upstream intent: submit together with the focused-state correction as one
+  transactional-construction change.
+
 The [2026-09-14 thread unread evidence packet](2026-09-14-thread-unread-regressions.md) records exact historical revisions, separate reproduction cases, sanitized RED/GREEN results, and patch export instructions. It distinguishes fork test evidence from still-pending clean upstream verification.
 
 - Absent `unread_notifications` must not clear a room's counts (#1176, 2026-10-08,
