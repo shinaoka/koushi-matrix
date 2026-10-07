@@ -1,0 +1,67 @@
+name: Matrix SDK upstream release check
+
+# Daily check that upstream matrix-org/matrix-rust-sdk published a `matrix-sdk`
+# release newer than the release the vendored fork is based on. The issue is the
+# only signal: at most one OPEN issue carries the `sdk-update` label, and it is
+# closed once the pinned submodule gitlink moves past that release.
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+# A rerun must not race an in-flight run into two issues.
+concurrency:
+  group: sdk-upstream-release-check
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Compare the pinned fork base with upstream latest
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      # Read the one manifest from the pinned fork commit instead of cloning the
+      # SDK submodule; the checkout already carries the gitlink.
+      - name: Read the pinned fork's matrix-sdk version
+        run: |
+          sha="$(git ls-tree HEAD vendor/matrix-rust-sdk | awk '{print $3}')"
+          url="$(git config -f .gitmodules --get submodule.vendor/matrix-rust-sdk.url)"
+          slug="${url#https://github.com/}"
+          slug="${slug%.git}"
+          gh api "repos/${slug}/contents/crates/matrix-sdk/Cargo.toml?ref=${sha}" \
+            -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/matrix-sdk-Cargo.toml"
+      - name: Compare with upstream's latest matrix-sdk release
+        id: compare
+        run: |
+          node scripts/sdk-upstream-release-check.mjs \
+            --sdk-manifest "$RUNNER_TEMP/matrix-sdk-Cargo.toml" \
+            --github-output
+      - name: Open the SDK update issue
+        if: steps.compare.outputs.update_required == 'true'
+        run: |
+          if [ "$(gh issue list --label sdk-update --state open --limit 1 --json number --jq 'length')" != "0" ]; then
+            echo "an open sdk-update issue already exists; not opening another"
+            exit 0
+          fi
+          gh issue create \
+            --title "Update the vendored Matrix Rust SDK fork base version" \
+            --label sdk-update \
+            --body-file - <<'EOF'
+          Upstream published a `matrix-sdk` release newer than the release the
+          vendored fork is based on, so the pinned SDK lags upstream fixes.
+
+          - pinned fork base: ${{ steps.compare.outputs.base_version }}
+          - upstream latest: ${{ steps.compare.outputs.latest_version }}
+
+          Merge upstream into the fork and move the `vendor/matrix-rust-sdk`
+          gitlink to the merge result (see `docs/agents/environment.md`).
+          EOF
