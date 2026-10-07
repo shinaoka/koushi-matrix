@@ -3420,7 +3420,12 @@ Ordered shutdown gives the complete manager-owned enqueue-worker set one
 absolute, count-independent five-second graceful deadline while the global SDK
 terminal observer can still admit their results. Enqueue futures and the global
 observer are boxed futures directly polled by the manager; enqueue panic is
-caught at a fail-closed boundary. Graceful drain polls both worker and observer,
+caught at a fail-closed boundary. Because the manager is their only poller, every inline
+manager await that can block on an SDK lock (live timeline build, actor
+spawn, initial thread hydration) keeps polling all manager-owned worker sets
+(enqueue, focused-build, read, observer) and applies their completions
+afterwards; a parked worker can otherwise own the lock permit the inline
+await is queued behind. Graceful drain polls both worker and observer,
 then gives the observer one final non-blocking poll after worker quiescence or
 deadline cancellation so a queued exact terminal can be admitted. At the
 deadline the manager synchronously drops remaining cooperative enqueue futures,

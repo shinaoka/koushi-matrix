@@ -1091,39 +1091,6 @@ impl TimelineManagerActor {
             self.refresh_pending_send_projection(&key).await;
         }
     }
-    /// Await `future` inline while still polling the manager-owned enqueue
-    /// workers.
-    ///
-    /// Those workers have no poller other than the manager, and they take SDK
-    /// event-cache locks (e.g. `load_or_fetch_event`). Tokio locks hand a
-    /// released permit to the next queued waiter even when nobody polls it, so
-    /// an inline manager await on the same lock (a live timeline build) would
-    /// wait forever on a permit owned by a parked worker. Any inline manager
-    /// await that can block on an SDK lock must go through this helper.
-    /// Completions are applied after `future` settles, in arrival order.
-    pub(super) async fn await_driving_send_enqueue_workers<F: Future>(
-        &mut self,
-        future: F,
-    ) -> F::Output {
-        let mut future = std::pin::pin!(future);
-        let mut completions = Vec::new();
-        let output = loop {
-            tokio::select! {
-                biased;
-                output = &mut future => break output,
-                worker = self.send_enqueue_workers.tasks.next(),
-                    if !self.send_enqueue_workers.tasks.is_empty() => {
-                    if let Some(completion) = worker {
-                        completions.push(completion);
-                    }
-                }
-            }
-        };
-        for completion in completions {
-            self.handle_send_enqueue_worker_completion(completion).await;
-        }
-        output
-    }
     async fn drive_send_enqueue_until_preflight_started(
         &mut self,
         mut preflight_started: oneshot::Receiver<()>,

@@ -2164,6 +2164,78 @@ impl TimelineManagerActor {
             }
         }
     }
+    /// Await `future` inline while still polling every manager-owned worker
+    /// set.
+    ///
+    /// Send-enqueue workers, focused-build completions, read workers and their
+    /// retry wakes, and the global send-completion observer have no poller
+    /// other than this manager. Some take SDK locks (send-enqueue workers reach
+    /// the event cache through `load_or_fetch_event`). Tokio locks hand a
+    /// released permit to the next queued waiter even when nobody polls it, so
+    /// an inline manager await on the same lock would wait forever on a permit
+    /// owned by a parked worker. Any inline manager await that can block on an
+    /// SDK lock must go through this helper. Completions are applied after
+    /// `future` settles, in arrival order.
+    pub(super) async fn await_driving_manager_workers<F: std::future::Future>(
+        &mut self,
+        future: F,
+    ) -> F::Output {
+        #[expect(
+            clippy::large_enum_variant,
+            reason = "short-lived value moved once; boxing would add an allocation per completion"
+        )]
+        enum Driven {
+            SendEnqueue(super::outbound_send::SendEnqueueWorkerCompletion),
+            FocusedBuild(super::focused_build::FocusedBuildCompletion),
+            Read(super::read_state::ReadWorkerCompletion),
+        }
+        // Boxed: the wrapped SDK futures (timeline build, actor spawn) are large,
+        // and nesting them inline in this state machine overflows the stack.
+        let mut future = Box::pin(future);
+        let mut driven = Vec::new();
+        let output = loop {
+            tokio::select! {
+                biased;
+                output = &mut future => break output,
+                worker = self.send_enqueue_workers.tasks.next(),
+                    if !self.send_enqueue_workers.tasks.is_empty() => {
+                    driven.extend(worker.map(Driven::SendEnqueue));
+                }
+                completion = self.focused_builds.tasks.next(),
+                    if !self.focused_builds.tasks.is_empty() => {
+                    driven.extend(completion.map(Driven::FocusedBuild));
+                }
+                completion = self.read_workers.tasks.next(),
+                    if !self.read_workers.tasks.is_empty() => {
+                    driven.extend(completion.map(Driven::Read));
+                }
+                retry = self.read_workers.retry_tasks.next(),
+                    if !self.read_workers.retry_tasks.is_empty() => {
+                    driven.extend(retry.map(Driven::Read));
+                }
+                _ = super::outbound_send::poll_global_send_completion_observer(
+                    &mut self.global_send_completion_observer_future,
+                ) => {
+                    self.global_send_completion_observer_future = None;
+                }
+            }
+        };
+        for completion in driven {
+            match completion {
+                Driven::SendEnqueue(completion) => {
+                    self.handle_send_enqueue_worker_completion(completion).await;
+                }
+                Driven::FocusedBuild(completion) => {
+                    // Installing a focused build spawns its actor through this
+                    // helper again; box the cycle.
+                    Box::pin(self.handle_focused_build_completion(completion)).await;
+                }
+                Driven::Read(completion) => self.handle_read_worker_completion(completion).await,
+            }
+        }
+        output
+    }
+
     pub(super) async fn build_timeline_actor_handle(
         &mut self,
         request_id: RequestId,
@@ -2223,7 +2295,7 @@ impl TimelineManagerActor {
         trace("build_begin");
         let build_started = Some(startup_trace::now());
         let timeline_result = self
-            .await_driving_send_enqueue_workers(koushi_timeline_builder(&room, focus).build())
+            .await_driving_manager_workers(koushi_timeline_builder(&room, focus).build())
             .await;
         startup_trace::trace_phase(StartupPhase::TimelineBuild, build_started);
         trace("build_done");
@@ -2238,7 +2310,9 @@ impl TimelineManagerActor {
             InitialBackfillPolicy::RequiredForExistingThread
         ) && matches!(key.kind, TimelineKind::Thread { .. })
         {
-            let (initial_items, _) = timeline.subscribe().await;
+            let (initial_items, _) = self
+                .await_driving_manager_workers(timeline.subscribe())
+                .await;
             if initial_items.is_empty() {
                 let _permit = self
                     .account_work
@@ -2250,7 +2324,7 @@ impl TimelineManagerActor {
                 let root_event_id = matrix_sdk::ruma::EventId::parse(root_event_id)
                     .map_err(|_| TimelineFailureKind::Sdk)?;
                 if !self
-                    .await_driving_send_enqueue_workers(hydrate_initial_thread(
+                    .await_driving_manager_workers(hydrate_initial_thread(
                         &timeline,
                         &client,
                         &room_id,
@@ -2285,7 +2359,8 @@ impl TimelineManagerActor {
         subscription_generation: Option<u64>,
     ) -> TimelineActorHandle {
         record_subscribe_stage("spawn_begin", None);
-        let handle = TimelineActor::spawn(
+        // The actor's initial load subscribes the event cache and may paginate.
+        let spawn = TimelineActor::spawn(
             key.clone(),
             timeline,
             session,
@@ -2307,8 +2382,8 @@ impl TimelineManagerActor {
             Arc::clone(&self.send_completion),
             self.terminal_ingress.clone(),
             self.msg_tx.clone(),
-        )
-        .await;
+        );
+        let handle = self.await_driving_manager_workers(spawn).await;
         record_subscribe_stage("spawn_done", None);
         handle
     }
