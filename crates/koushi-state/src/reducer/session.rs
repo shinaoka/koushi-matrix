@@ -5,10 +5,10 @@ use crate::{
         AppError, AppState, CurrentDeviceTrustState, DeviceCleanupAuthMode,
         DeviceCleanupFailureKind, DeviceCleanupLocalMode, DeviceCleanupOfferReason,
         DeviceCleanupRemoteOutcome, DeviceCleanupState, LoginAttemptId, ProvisionalPhase,
-        SessionLockReason, SessionState, SlidingSyncCapabilityState, SoftLogoutReauthState,
-        SyncState, VerificationAccountKind, VerificationGateFailureKind,
-        VerificationGateRejectReason, VerificationGateState, VerificationMethod,
-        VerificationMethodCapability,
+        RecoveryKeyDeliveryState, RecoveryKeyMaterial, SecureBackupSetupState, SessionLockReason,
+        SessionState, SlidingSyncCapabilityState, SoftLogoutReauthState, SyncState,
+        VerificationAccountKind, VerificationGateFailureKind, VerificationGateRejectReason,
+        VerificationGateState, VerificationMethod, VerificationMethodCapability,
     },
 };
 
@@ -545,9 +545,14 @@ pub(crate) fn handle_device_cleanup_completed(
     vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
 }
 
-pub(crate) fn handle_bootstrap_recovery_key_delivered(
+/// The identity bootstrap created a recovery key (#1049). The session moves
+/// to the coarse `AwaitingBootstrapConfirmation`; the key enters only the
+/// #927 reveal slot keyed by the flow id, so the Secure Backup reveal UI and
+/// the optional "Save to file" serve both flows.
+pub(crate) fn handle_bootstrap_recovery_key_ready(
     state: &mut AppState,
     flow_id: u64,
+    recovery_key: RecoveryKeyMaterial,
 ) -> Vec<AppEffect> {
     let SessionState::Verifying {
         info,
@@ -566,9 +571,19 @@ pub(crate) fn handle_bootstrap_recovery_key_delivered(
         info: info.clone(),
         gate: gate.clone(),
         flow_id,
-        destination_written: true,
     };
-    vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+    state.e2ee_trust.key_management.secure_backup_setup =
+        SecureBackupSetupState::RecoveryKeyReady {
+            request_id: flow_id,
+            recovery_key,
+            delivery: RecoveryKeyDeliveryState::NotWritten,
+            confirmation_failed: false,
+        };
+    vec![
+        AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+        AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+        AppEffect::EmitUiEvent(UiEvent::E2eeKeyManagementChanged),
+    ]
 }
 
 pub(crate) fn handle_bootstrap_recovery_key_delivery_failed(
@@ -598,6 +613,9 @@ pub(crate) fn handle_bootstrap_recovery_key_delivery_failed(
     vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
 }
 
+/// AccountActor settled the explicit saved confirmation: the persisted
+/// delivery marker is cleared and its held copy dropped. The reveal drops the
+/// key and the gate re-checks trust.
 pub(crate) fn handle_bootstrap_recovery_saved_confirmed(
     state: &mut AppState,
     flow_id: u64,
@@ -605,7 +623,6 @@ pub(crate) fn handle_bootstrap_recovery_saved_confirmed(
     let SessionState::AwaitingBootstrapConfirmation {
         info,
         flow_id: active_flow_id,
-        destination_written: true,
         ..
     } = &state.session
     else {
@@ -618,9 +635,52 @@ pub(crate) fn handle_bootstrap_recovery_saved_confirmed(
         info: info.clone(),
         phase: ProvisionalPhase::RecheckingTrust { failure: None },
     };
-    vec![
+    let mut effects = vec![
         AppEffect::CheckCurrentDeviceTrust,
         AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+    ];
+    if matches!(
+        state.e2ee_trust.key_management.secure_backup_setup,
+        SecureBackupSetupState::RecoveryKeyReady { request_id, .. } if request_id == flow_id
+    ) {
+        state.e2ee_trust.key_management.secure_backup_setup = SecureBackupSetupState::Enabled {
+            request_id: flow_id,
+        };
+        effects.extend([
+            AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+            AppEffect::EmitUiEvent(UiEvent::E2eeKeyManagementChanged),
+        ]);
+    }
+    effects
+}
+
+/// AccountActor could not clear the persisted delivery marker, so it kept
+/// its copy; the reveal stays and asks for the confirmation again.
+pub(crate) fn handle_bootstrap_recovery_saved_confirm_failed(
+    state: &mut AppState,
+    flow_id: u64,
+) -> Vec<AppEffect> {
+    if !matches!(
+        state.session,
+        SessionState::AwaitingBootstrapConfirmation { flow_id: active, .. } if active == flow_id
+    ) {
+        return Vec::new();
+    }
+    let SecureBackupSetupState::RecoveryKeyReady {
+        request_id,
+        confirmation_failed,
+        ..
+    } = &mut state.e2ee_trust.key_management.secure_backup_setup
+    else {
+        return Vec::new();
+    };
+    if *request_id != flow_id || *confirmation_failed {
+        return Vec::new();
+    }
+    *confirmation_failed = true;
+    vec![
+        AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+        AppEffect::EmitUiEvent(UiEvent::E2eeKeyManagementChanged),
     ]
 }
 

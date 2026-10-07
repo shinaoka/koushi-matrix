@@ -35,11 +35,14 @@ pub enum SessionState {
         #[serde(default)]
         sas_emojis: Vec<crate::state::SasEmoji>,
     },
+    /// The identity bootstrap succeeded and its recovery key is revealed
+    /// (#1049). The key itself lives only in the reveal slot
+    /// `SecureBackupSetupState::RecoveryKeyReady { request_id: flow_id }`,
+    /// never in this widely observed session state.
     AwaitingBootstrapConfirmation {
         info: SessionInfo,
         gate: VerificationGateState,
         flow_id: u64,
-        destination_written: bool,
     },
     Rejecting {
         info: SessionInfo,

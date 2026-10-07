@@ -37,7 +37,11 @@ const SNAPSHOT_READ_COMMANDS = new Set([
   "settlement_snapshot",
   "resync_snapshot"
 ]);
-const RESOURCE_COMMANDS = new Set(["read_receipt_reader_resource"]);
+const RESOURCE_COMMANDS = new Set([
+  "read_receipt_reader_resource",
+  "choose_room_key_export_destination",
+  "choose_room_key_import_source"
+]);
 const REQUEST_COMMANDS = new Set(["download_avatar_thumbnail"]);
 const VOID_COMMANDS = new Set([
   "download_avatar_thumbnail",

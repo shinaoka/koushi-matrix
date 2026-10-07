@@ -419,6 +419,16 @@ export class TauriDesktopApi implements DesktopApi {
     return this.invokeCommand<CommandAdmission>("import_room_keys", { sourcePath, passphrase });
   }
 
+  /** Native save dialog owned by the adapter; `null` when dismissed. */
+  async chooseRoomKeyExportDestination(dialogTitle: string): Promise<string | null> {
+    return this.invokeCommand<string | null>("choose_room_key_export_destination", { dialogTitle });
+  }
+
+  /** Native open dialog owned by the adapter; `null` when dismissed. */
+  async chooseRoomKeyImportSource(dialogTitle: string): Promise<string | null> {
+    return this.invokeCommand<string | null>("choose_room_key_import_source", { dialogTitle });
+  }
+
   async historyExportTimeZone(): Promise<string> {
     return this.invokeCommand<string>("history_export_time_zone");
   }
@@ -494,7 +504,7 @@ export class TauriDesktopApi implements DesktopApi {
   async startOwnUserSas(): Promise<CommandAdmission> { return this.invokeCommand("start_own_user_sas"); }
   async retryCurrentDeviceTrustDiscovery(): Promise<CommandAdmission> { return this.invokeCommand("retry_current_device_trust_discovery"); }
   async mismatchSasVerification(flowId: number): Promise<CommandAdmission> { return this.invokeCommand("mismatch_sas_verification", { flowId }); }
-  async startSessionBootstrap(passphrase: string | null, recoveryKeyDestinationPath: string): Promise<CommandAdmission> { return this.invokeCommand("start_session_bootstrap", { passphrase, recoveryKeyDestinationPath }); }
+  async startSessionBootstrap(passphrase: string | null): Promise<CommandAdmission> { return this.invokeCommand("start_session_bootstrap", { passphrase }); }
   async confirmSessionBootstrapSaved(flowId: number): Promise<CommandAdmission> { return this.invokeCommand("confirm_session_bootstrap_saved", { flowId }); }
 
   async confirmSasVerification(flowId: number): Promise<CommandAdmission> {

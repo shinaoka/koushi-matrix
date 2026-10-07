@@ -2398,17 +2398,26 @@ mock.setCommandResponse("mismatch_sas_verification", ({ flowId }: { flowId: numb
   if (session.kind === "verifying" && session.flow_id === flowId) next.state.domain.session = { kind: "awaitingVerification", homeserver: session.homeserver, user_id: session.user_id, device_id: session.device_id, gate: { ...session.gate, failureKind: "mismatch" } };
   return setCurrentSnapshot(next);
 });
-mock.setCommandResponse("start_session_bootstrap", ({ recoveryKeyDestinationPath }: { recoveryKeyDestinationPath: string }) => {
+// #1049: the identity bootstrap reveals its key through the #927 reveal slot
+// keyed by the flow id; it never takes a destination.
+mock.setCommandResponse("start_session_bootstrap", () => {
   const flowId = nextGateFlowId++;
   const next = structuredClone(currentSnapshot);
   const session = next.state.domain.session;
-  if (session.kind === "awaitingVerification" && recoveryKeyDestinationPath.trim()) next.state.domain.session = { kind: "awaitingBootstrapConfirmation", homeserver: session.homeserver, user_id: session.user_id, device_id: session.device_id, gate: { ...session.gate, failureKind: null }, flow_id: flowId, destination_written: true };
+  if (session.kind === "awaitingVerification") {
+    next.state.domain.session = { kind: "awaitingBootstrapConfirmation", homeserver: session.homeserver, user_id: session.user_id, device_id: session.device_id, gate: { ...session.gate, failureKind: null }, flow_id: flowId };
+    next.state.domain.e2ee_trust.key_management.secure_backup_setup = { kind: "recoveryKeyReady", request_id: flowId, recovery_key: HARNESS_RECOVERY_KEY, delivery: { kind: "notWritten" }, confirmation_failed: false };
+  }
   return setCurrentSnapshot(next);
 });
 mock.setCommandResponse("confirm_session_bootstrap_saved", ({ flowId }: { flowId: number }) => {
   const next = structuredClone(currentSnapshot);
   const session = next.state.domain.session;
-  if (session.kind === "awaitingBootstrapConfirmation" && session.flow_id === flowId) next.state.domain.session = { kind: "provisional", homeserver: session.homeserver, user_id: session.user_id, device_id: session.device_id, phase: { recheckingTrust: {} } };
+  const setup = next.state.domain.e2ee_trust.key_management.secure_backup_setup;
+  if (session.kind === "awaitingBootstrapConfirmation" && session.flow_id === flowId) {
+    next.state.domain.session = { kind: "provisional", homeserver: session.homeserver, user_id: session.user_id, device_id: session.device_id, phase: { recheckingTrust: {} } };
+    if (setup.kind === "recoveryKeyReady" && setup.request_id === flowId) next.state.domain.e2ee_trust.key_management.secure_backup_setup = { kind: "enabled", request_id: flowId };
+  }
   return setCurrentSnapshot(next);
 });
 mock.setCommandResponse("confirm_sas_verification", ({ flowId }: { flowId: number }) => {

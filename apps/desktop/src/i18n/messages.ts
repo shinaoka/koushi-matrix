@@ -1056,7 +1056,6 @@ export type MessageId =
   | "gate.mismatch"
   | "gate.recoverySecret"
   | "gate.recover"
-  | "gate.destination"
   | "gate.passphrase"
   | "gate.bootstrap"
   | "gate.saved"
@@ -2838,7 +2837,6 @@ const en: Catalog = {
   "gate.mismatch": "They do not match",
   "gate.recoverySecret": "Recovery secret",
   "gate.recover": "Recover",
-  "gate.destination": "Recovery key destination",
   "gate.passphrase": "Backup passphrase",
   "gate.bootstrap": "Create secure backup",
   "gate.saved": "I saved the recovery key",
@@ -4518,7 +4516,6 @@ const ja: Catalog = {
   "gate.mismatch": "一致していません",
   "gate.recoverySecret": "リカバリーシークレット",
   "gate.recover": "復旧",
-  "gate.destination": "リカバリーキーの保存先",
   "gate.passphrase": "バックアップ用パスフレーズ",
   "gate.bootstrap": "安全なバックアップを作成",
   "gate.saved": "リカバリーキーを保存しました",

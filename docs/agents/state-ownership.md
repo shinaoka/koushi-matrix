@@ -1282,7 +1282,8 @@ normal QA-title mode and cannot change product title semantics.
   password), `EnableKeyBackup` (optional recovery passphrase), and
   `RestoreKeyBackup` (recovery secret). Their reducer actions, effects, events,
   snapshots, logs, and `Debug` output must remain secret-free.
-- Secure-backup setup/recovery-key reset/passphrase-change reveal the SDK-produced
+- Secure-backup setup/recovery-key reset/passphrase-change and the
+  verification-gate identity bootstrap (#1049) reveal the SDK-produced
   recovery key on screen (#927). The reducer owns it only as
   `RecoveryKeyMaterial` inside `SecureBackupSetupState::RecoveryKeyReady` /
   `SecureBackupPassphraseChangeState::Changed`; AccountActor holds the one
@@ -1292,7 +1293,11 @@ normal QA-title mode and cannot change product title semantics.
   `ConfirmSecureBackupRecoveryKeySaved` does. If AccountActor cannot then
   clear the persisted delivery marker it keeps its copy and
   `SecureBackupRecoveryKeyConfirmFailed` restores the setup reveal with
-  `confirmation_failed: true` (TS mirror `confirmation_failed: boolean`). The privacy contract is
+  `confirmation_failed: true` (TS mirror `confirmation_failed: boolean`).
+  The identity bootstrap keys the same slot by its flow id; its exit is
+  `ConfirmSessionBootstrapSaved`, settled by AccountActor (marker clear
+  first), and `SessionState::AwaitingBootstrapConfirmation` and its TS mirror
+  carry only `flow_id` and coarse gate state. The privacy contract is
   [engineering rule 11](../policies/engineering-rules.md); the gate
   transitions are in the [state machines](../architecture/state-machine.md).
 - Secure-backup setup/re-enable confirmation policy is Rust-owned. The closed

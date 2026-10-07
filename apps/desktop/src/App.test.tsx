@@ -331,17 +331,12 @@ describe("ContextualRightPanel", () => {
     const importSource = source.slice(importStart, importEnd);
 
     expect(exportSource).toContain("if (!isTauriRuntime())");
-    expect(exportSource).toContain("windowDialogPort.saveFile");
-    expect(exportSource).toContain('defaultPath: "koushi-room-keys.txt"');
-    expect(exportSource).toContain("return selected || null");
+    expect(exportSource).toContain("api.chooseRoomKeyExportDestination(");
     expect(backupSource).toContain("if (!isTauriRuntime())");
     expect(backupSource).toContain("windowDialogPort.saveFile");
     expect(backupSource).toContain('defaultPath: "koushi-secure-backup-recovery-key.txt"');
     expect(importSource).toContain("if (!isTauriRuntime())");
-    expect(importSource).toContain("windowDialogPort.openFile");
-    expect(importSource).toContain("multiple: false");
-    expect(importSource).toContain('fileAccessMode: "scoped"');
-    expect(importSource).toContain('typeof selected === "string" ? selected : null');
+    expect(importSource).toContain("api.chooseRoomKeyImportSource(");
     expect(source).toContain("runInBackground(windowDialogPort.toggleFullscreen())");
     expect(source).toContain("windowDialogPort.startDragging().catch(() => undefined)");
   });

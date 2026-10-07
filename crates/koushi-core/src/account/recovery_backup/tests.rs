@@ -1109,9 +1109,12 @@ async fn saved_confirmation_clears_the_marker_before_dropping_the_matching_key()
     let mut slot = Some(revealed_key(7));
 
     assert!(matches!(
-        super::confirm_revealed_recovery_key(&mut slot, 8, async {
-            panic!("a stale confirmation must not touch the marker")
-        })
+        super::confirm_revealed_recovery_key(
+            &mut slot,
+            8,
+            super::RecoveryKeyConfirmation::SecureBackup,
+            async { panic!("a stale confirmation must not touch the marker") }
+        )
         .await,
         super::RecoveryKeyConfirmOutcome::Stale
     ));
@@ -1119,10 +1122,15 @@ async fn saved_confirmation_clears_the_marker_before_dropping_the_matching_key()
 
     let cleared = std::cell::Cell::new(false);
     assert!(matches!(
-        super::confirm_revealed_recovery_key(&mut slot, 7, async {
-            cleared.set(true);
-            Ok(())
-        })
+        super::confirm_revealed_recovery_key(
+            &mut slot,
+            7,
+            super::RecoveryKeyConfirmation::SecureBackup,
+            async {
+                cleared.set(true);
+                Ok(())
+            }
+        )
         .await,
         super::RecoveryKeyConfirmOutcome::MarkerCleared
     ));
@@ -1136,9 +1144,12 @@ async fn a_failed_marker_clear_keeps_the_key_and_restores_the_reveal() {
     held.delivery = koushi_state::RecoveryKeyDeliveryState::Written;
     let mut slot = Some(held);
 
-    let outcome = super::confirm_revealed_recovery_key(&mut slot, 7, async {
-        Err(koushi_sdk::E2eeTrustError::SecureBackupInspectionInconclusive)
-    })
+    let outcome = super::confirm_revealed_recovery_key(
+        &mut slot,
+        7,
+        super::RecoveryKeyConfirmation::SecureBackup,
+        async { Err(koushi_sdk::E2eeTrustError::SecureBackupInspectionInconclusive) },
+    )
     .await;
 
     let super::RecoveryKeyConfirmOutcome::MarkerClearFailed { restore, .. } = outcome else {
@@ -1169,9 +1180,12 @@ async fn passphrase_change_confirmation_drops_the_key_without_the_marker() {
     let mut slot = Some(held);
 
     assert!(matches!(
-        super::confirm_revealed_recovery_key(&mut slot, 11, async {
-            panic!("passphrase change never owns the setup delivery marker")
-        })
+        super::confirm_revealed_recovery_key(
+            &mut slot,
+            11,
+            super::RecoveryKeyConfirmation::SecureBackup,
+            async { panic!("passphrase change never owns the setup delivery marker") }
+        )
         .await,
         super::RecoveryKeyConfirmOutcome::Dismissed
     ));
@@ -1301,4 +1315,106 @@ async fn session_teardown_drops_the_held_recovery_key() {
 fn revealed_key_debug_is_redacted() {
     let debug = format!("{:?}", revealed_key(7));
     assert!(!debug.contains("synthetic-actor-held-key"), "{debug}");
+}
+
+#[test]
+fn session_bootstrap_holds_the_key_and_keeps_the_delivery_marker_pending() {
+    // #1049: the identity bootstrap reveals its key without a destination.
+    let mut slot = None;
+    let mut delivery_pending = false;
+
+    let actions = super::hold_session_bootstrap_recovery_key(
+        &mut slot,
+        &mut delivery_pending,
+        41,
+        "synthetic-bootstrap-held-key",
+    );
+
+    assert!(delivery_pending, "the marker stays set until confirmation");
+    let held = slot.as_ref().expect("the created key is held");
+    assert_eq!(held.reveal_request_id, 41);
+    assert_eq!(
+        held.source,
+        super::RecoveryKeyRevealSource::SessionBootstrap
+    );
+    assert!(matches!(
+        actions.as_slice(),
+        [AppAction::BootstrapRecoveryKeyReady { flow_id: 41, recovery_key }]
+            if recovery_key.expose_secret() == "synthetic-bootstrap-held-key"
+    ));
+}
+
+#[tokio::test]
+async fn session_bootstrap_and_secure_backup_confirmations_never_cross() {
+    let mut bootstrap = revealed_key(41);
+    bootstrap.source = super::RecoveryKeyRevealSource::SessionBootstrap;
+    let mut slot = Some(bootstrap);
+    assert!(matches!(
+        super::confirm_revealed_recovery_key(
+            &mut slot,
+            41,
+            super::RecoveryKeyConfirmation::SecureBackup,
+            async { panic!("a Secure Backup confirmation must not settle the bootstrap reveal") }
+        )
+        .await,
+        super::RecoveryKeyConfirmOutcome::Stale
+    ));
+    assert!(slot.is_some());
+
+    let mut setup_slot = Some(revealed_key(7));
+    assert!(matches!(
+        super::confirm_revealed_recovery_key(
+            &mut setup_slot,
+            7,
+            super::RecoveryKeyConfirmation::SessionBootstrap,
+            async { panic!("a bootstrap confirmation must not settle a setup reveal") }
+        )
+        .await,
+        super::RecoveryKeyConfirmOutcome::Stale
+    ));
+    assert!(setup_slot.is_some());
+
+    let cleared = std::cell::Cell::new(false);
+    assert!(matches!(
+        super::confirm_revealed_recovery_key(
+            &mut slot,
+            41,
+            super::RecoveryKeyConfirmation::SessionBootstrap,
+            async {
+                cleared.set(true);
+                Ok(())
+            }
+        )
+        .await,
+        super::RecoveryKeyConfirmOutcome::MarkerCleared
+    ));
+    assert!(
+        cleared.get(),
+        "bootstrap confirmation must clear the marker"
+    );
+    assert!(slot.is_none(), "confirmation must drop the held key");
+}
+
+#[tokio::test]
+async fn a_failed_bootstrap_marker_clear_keeps_the_key_and_the_reveal() {
+    let mut bootstrap = revealed_key(41);
+    bootstrap.source = super::RecoveryKeyRevealSource::SessionBootstrap;
+    let mut slot = Some(bootstrap);
+
+    let outcome = super::confirm_revealed_recovery_key(
+        &mut slot,
+        41,
+        super::RecoveryKeyConfirmation::SessionBootstrap,
+        async { Err(koushi_sdk::E2eeTrustError::SecureBackupInspectionInconclusive) },
+    )
+    .await;
+
+    let super::RecoveryKeyConfirmOutcome::MarkerClearFailed { restore, .. } = outcome else {
+        panic!("expected a kept reveal, got {outcome:?}");
+    };
+    assert_eq!(
+        *restore,
+        AppAction::BootstrapRecoverySavedConfirmFailed { flow_id: 41 }
+    );
+    assert!(slot.is_some(), "the saved key must stay held");
 }

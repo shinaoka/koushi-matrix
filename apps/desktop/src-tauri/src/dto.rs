@@ -778,7 +778,6 @@ pub enum FrontendSessionState {
         device_id: String,
         gate: VerificationGateState,
         flow_id: u64,
-        destination_written: bool,
     },
     Rejecting {
         homeserver: String,
@@ -862,14 +861,12 @@ impl From<SessionState> for FrontendSessionState {
                 info,
                 gate,
                 flow_id,
-                destination_written,
             } => Self::AwaitingBootstrapConfirmation {
                 homeserver: info.homeserver,
                 user_id: info.user_id,
                 device_id: info.device_id,
                 gate,
                 flow_id,
-                destination_written,
             },
             SessionState::Rejecting { info, reason } => Self::Rejecting {
                 homeserver: info.homeserver,

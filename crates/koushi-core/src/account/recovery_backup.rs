@@ -36,6 +36,17 @@ pub(super) enum RecoveryKeyRevealSource {
     Setup,
     /// Passphrase change: confirmation only dismisses the reveal.
     PassphraseChange,
+    /// Verification-gate identity bootstrap (#1049), keyed by its flow id:
+    /// confirmation clears the persisted delivery marker and re-checks trust.
+    SessionBootstrap,
+}
+
+/// Which command family is confirming a held key. A Secure Backup
+/// confirmation never settles the identity-bootstrap reveal, or vice versa.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RecoveryKeyConfirmation {
+    SecureBackup,
+    SessionBootstrap,
 }
 
 /// The actor-held copy of a revealed recovery key (#927), used only by the
@@ -78,6 +89,30 @@ pub(super) fn hold_created_setup_recovery_key(
     ]
 }
 
+/// Holds the recovery key the verification-gate identity bootstrap just
+/// created (#1049) and projects its reveal. Like setup, the persisted
+/// delivery marker stays set until the saved confirmation, so an interrupted
+/// reveal re-enters `RecoveryKeyDeliveryRequired` after restart.
+pub(super) fn hold_session_bootstrap_recovery_key(
+    slot: &mut Option<RevealedRecoveryKey>,
+    delivery_pending: &mut bool,
+    flow_id: u64,
+    created_key: &str,
+) -> Vec<AppAction> {
+    *delivery_pending = true;
+    let recovery_key = koushi_state::RecoveryKeyMaterial::new(created_key);
+    *slot = Some(RevealedRecoveryKey {
+        reveal_request_id: flow_id,
+        source: RecoveryKeyRevealSource::SessionBootstrap,
+        key: recovery_key.clone(),
+        delivery: koushi_state::RecoveryKeyDeliveryState::NotWritten,
+    });
+    vec![AppAction::BootstrapRecoveryKeyReady {
+        flow_id,
+        recovery_key,
+    }]
+}
+
 /// A failed setup, re-enable, or reset must not leave the gate in
 /// `CreatingBackup` (which offers no controls): it returns to `Checking` and
 /// the caller re-inspects, so the gate re-projects a recoverable state.
@@ -108,20 +143,23 @@ pub(super) enum RecoveryKeyConfirmOutcome {
     },
 }
 
-/// Applies the saved confirmation to the held key. For setup the persisted
-/// delivery marker is cleared (`clear_marker`) BEFORE the key is dropped.
+/// Applies the saved confirmation to the held key. For setup and the
+/// identity bootstrap the persisted delivery marker is cleared
+/// (`clear_marker`) BEFORE the key is dropped.
 pub(super) async fn confirm_revealed_recovery_key<F>(
     slot: &mut Option<RevealedRecoveryKey>,
     reveal_request_id: u64,
+    confirmation: RecoveryKeyConfirmation,
     clear_marker: F,
 ) -> RecoveryKeyConfirmOutcome
 where
     F: std::future::Future<Output = Result<(), koushi_sdk::E2eeTrustError>>,
 {
-    let Some(revealed) = slot
-        .as_ref()
-        .filter(|revealed| revealed.reveal_request_id == reveal_request_id)
-    else {
+    let Some(revealed) = slot.as_ref().filter(|revealed| {
+        revealed.reveal_request_id == reveal_request_id
+            && (revealed.source == RecoveryKeyRevealSource::SessionBootstrap)
+                == (confirmation == RecoveryKeyConfirmation::SessionBootstrap)
+    }) else {
         return RecoveryKeyConfirmOutcome::Stale;
     };
     if revealed.source == RecoveryKeyRevealSource::PassphraseChange {
@@ -132,6 +170,16 @@ where
         Ok(()) => {
             *slot = None;
             RecoveryKeyConfirmOutcome::MarkerCleared
+        }
+        // The bootstrap reveal never left reducer state (its confirmation is
+        // not projected ahead of the actor), so only the failure is flagged.
+        Err(error) if revealed.source == RecoveryKeyRevealSource::SessionBootstrap => {
+            RecoveryKeyConfirmOutcome::MarkerClearFailed {
+                restore: Box::new(AppAction::BootstrapRecoverySavedConfirmFailed {
+                    flow_id: reveal_request_id,
+                }),
+                error,
+            }
         }
         Err(error) => RecoveryKeyConfirmOutcome::MarkerClearFailed {
             restore: Box::new(AppAction::SecureBackupRecoveryKeyConfirmFailed {
@@ -1198,6 +1246,7 @@ impl AccountActor {
         match confirm_revealed_recovery_key(
             &mut self.revealed_recovery_key,
             reveal_request_id,
+            RecoveryKeyConfirmation::SecureBackup,
             clear_marker,
         )
         .await
@@ -1271,33 +1320,23 @@ impl AccountActor {
         }
     }
 
+    /// Verification-gate identity bootstrap (#1049): bootstraps
+    /// cross-signing, creates the Secure Backup, and reveals the recovery key
+    /// on screen exactly like Secure Backup setup (#927). No file destination
+    /// is required; the gate holds until the explicit saved confirmation.
     pub(super) async fn handle_start_session_bootstrap(
         &mut self,
         request_id: RequestId,
         flow_id: u64,
         auth: Option<koushi_state::AuthSecret>,
-        request: SecureBackupSetupRequest,
+        passphrase: Option<koushi_state::AuthSecret>,
     ) {
         let Some(session) = self.session.clone() else {
-            self.native_artifacts
-                .unregister(request_id, NativeArtifactKind::RecoveryKeyDestination);
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
-        if !request.recovery_key_destination_requested {
-            self.native_artifacts
-                .unregister(request_id, NativeArtifactKind::RecoveryKeyDestination);
-            self.send_actions(vec![AppAction::BootstrapRecoveryKeyDeliveryFailed {
-                flow_id,
-                kind: koushi_state::VerificationGateFailureKind::Sdk,
-            }])
-            .await;
-            return;
-        }
         if let Err(error) = koushi_sdk::bootstrap_cross_signing(&session, auth.as_ref()).await {
             drop(auth);
-            self.native_artifacts
-                .unregister(request_id, NativeArtifactKind::RecoveryKeyDestination);
             self.send_actions(vec![AppAction::BootstrapRecoveryKeyDeliveryFailed {
                 flow_id,
                 kind: verification_gate_failure_kind(&error),
@@ -1306,47 +1345,20 @@ impl AccountActor {
             return;
         }
         drop(auth);
-        let SecureBackupSetupRequest {
-            passphrase,
-            recovery_key_destination_requested: _,
-            intent: _,
-        } = request;
-        let recovery_key_destination_path = match self
-            .native_artifacts
-            .take(request_id, NativeArtifactKind::RecoveryKeyDestination)
-        {
-            Ok(path) => path,
-            Err(_) => {
-                self.send_actions(vec![AppAction::BootstrapRecoveryKeyDeliveryFailed {
-                    flow_id,
-                    kind: koushi_state::VerificationGateFailureKind::Sdk,
-                }])
-                .await;
-                return;
-            }
-        };
-        let result = koushi_sdk::bootstrap_secure_backup(&session, passphrase.as_ref()).await;
+        let result = session
+            .bootstrap_identity_secure_backup(passphrase.as_ref())
+            .await;
         drop(passphrase);
-        // Session bootstrap keeps its native-destination delivery; only the
-        // Secure Backup gate reveals the key on screen (#927).
-        let delivered = result.map(|summary| {
-            koushi_sdk::write_recovery_key_material(
-                summary.recovery_key.as_str(),
-                recovery_key_destination_path,
-            )
-            .is_ok()
-        });
-        match delivered {
-            Ok(true) => {
-                self.send_actions(vec![AppAction::BootstrapRecoveryKeyDelivered { flow_id }])
-                    .await;
-            }
-            Ok(false) => {
-                self.send_actions(vec![AppAction::BootstrapRecoveryKeyDeliveryFailed {
+        match result {
+            Ok(summary) => {
+                let actions = hold_session_bootstrap_recovery_key(
+                    &mut self.revealed_recovery_key,
+                    &mut self.recovery_key_delivery_pending,
                     flow_id,
-                    kind: koushi_state::VerificationGateFailureKind::Sdk,
-                }])
-                .await;
+                    summary.recovery_key.as_str(),
+                );
+                drop(summary);
+                self.send_actions(actions).await;
             }
             Err(error) => {
                 self.send_actions(vec![AppAction::BootstrapRecoveryKeyDeliveryFailed {
@@ -1354,6 +1366,53 @@ impl AccountActor {
                     kind: verification_gate_failure_kind(&error),
                 }])
                 .await;
+            }
+        }
+    }
+
+    /// The explicit "I saved the recovery key" confirmation for the identity
+    /// bootstrap (#1049). The persisted delivery marker is cleared first; only
+    /// then is the held key dropped and the reveal settled, so a failed clear
+    /// never strands a saved key behind a forced reset.
+    pub(super) async fn handle_confirm_session_bootstrap_saved(
+        &mut self,
+        request_id: RequestId,
+        flow_id: u64,
+    ) {
+        let session = self.session.clone();
+        let clear_marker = async move {
+            match session {
+                Some(session) => session.confirm_recovery_key_delivered().await,
+                None => Err(koushi_sdk::E2eeTrustError::SecureBackupInspectionInconclusive),
+            }
+        };
+        match confirm_revealed_recovery_key(
+            &mut self.revealed_recovery_key,
+            flow_id,
+            RecoveryKeyConfirmation::SessionBootstrap,
+            clear_marker,
+        )
+        .await
+        {
+            RecoveryKeyConfirmOutcome::MarkerCleared => {
+                self.recovery_key_delivery_pending = false;
+                self.send_actions(vec![AppAction::BootstrapRecoverySavedConfirmed { flow_id }])
+                    .await;
+                self.request_authoritative_trust_recheck();
+            }
+            RecoveryKeyConfirmOutcome::MarkerClearFailed { restore, error } => {
+                self.send_actions(vec![*restore]).await;
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::AccountOperationFailed {
+                        kind: classify_e2ee_trust_auth_failure(&error),
+                    },
+                );
+            }
+            // No matching bootstrap reveal is held (stale or forged flow id,
+            // or a racing teardown).
+            RecoveryKeyConfirmOutcome::Stale | RecoveryKeyConfirmOutcome::Dismissed => {
+                self.emit_failure(request_id, CoreFailure::SecureBackupSetupFailedNoOp);
             }
         }
     }
@@ -1833,10 +1892,12 @@ impl AccountActor {
         // While a setup reveal is held the gate stays in
         // `RecoveryKeyDeliveryRequired` whatever a background inspection
         // reports, so the reveal is never replaced before the confirmation.
-        let setup_key_held = self
-            .revealed_recovery_key
-            .as_ref()
-            .is_some_and(|revealed| revealed.source == RecoveryKeyRevealSource::Setup);
+        let setup_key_held = self.revealed_recovery_key.as_ref().is_some_and(|revealed| {
+            matches!(
+                revealed.source,
+                RecoveryKeyRevealSource::Setup | RecoveryKeyRevealSource::SessionBootstrap
+            )
+        });
         if setup_key_held
             || (self.recovery_key_delivery_pending
                 && matches!(

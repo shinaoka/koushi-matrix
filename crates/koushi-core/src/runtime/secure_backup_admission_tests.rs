@@ -235,3 +235,67 @@ fn setup_is_rejected_while_a_revealed_key_awaits_confirmation() {
         None
     );
 }
+
+fn bootstrap_gate_session(awaiting_confirmation: bool) -> SessionState {
+    let info = SessionInfo {
+        homeserver: "https://server.example.invalid".to_owned(),
+        user_id: "@alice:example.invalid".to_owned(),
+        device_id: "DEVICE".to_owned(),
+        authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+    };
+    let gate = koushi_state::VerificationGateState {
+        methods: vec![koushi_state::VerificationMethodCapability::Bootstrap],
+        account_kind: koushi_state::VerificationAccountKind::NewIdentity,
+        failure: None,
+    };
+    if awaiting_confirmation {
+        SessionState::AwaitingBootstrapConfirmation {
+            info,
+            gate,
+            flow_id: 41,
+        }
+    } else {
+        SessionState::AwaitingVerification { info, gate }
+    }
+}
+
+#[test]
+fn session_bootstrap_never_requires_a_destination_and_its_reveal_admits_the_optional_save() {
+    // #1049: the identity bootstrap reveals the key like Secure Backup setup;
+    // only the optional save consumes a native destination.
+    let bootstrap = AccountCommand::StartSessionBootstrap {
+        request_id: request_id(10),
+        flow_id: 10,
+        auth: None,
+        passphrase: Some(koushi_state::AuthSecret::new("synthetic-phrase")),
+    };
+    assert_eq!(
+        crate::command_policy::native_artifact_for_account_command(&bootstrap),
+        None
+    );
+    let save = koushi_protocol::CoreCommand::Account(AccountCommand::SaveSecureBackupRecoveryKey {
+        request_id: request_id(11),
+        reveal_request_id: 41,
+    });
+    assert!(super::is_verification_gate_command(
+        &save,
+        &bootstrap_gate_session(true)
+    ));
+    assert!(!super::is_verification_gate_command(
+        &save,
+        &bootstrap_gate_session(false)
+    ));
+}
+
+#[test]
+fn session_bootstrap_confirmation_is_settled_by_the_actor_not_projected() {
+    // The actor clears the persisted delivery marker first; only then may
+    // the reveal drop the key and the gate re-check trust.
+    assert_eq!(
+        account_command_projected_action(&AccountCommand::ConfirmSessionBootstrapSaved {
+            request_id: request_id(12),
+            flow_id: 41,
+        }),
+        None
+    );
+}

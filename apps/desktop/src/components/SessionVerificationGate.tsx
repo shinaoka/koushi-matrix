@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ImeSafeForm, ImeTextField, SecureImeTextField } from "./ImeTextControl";
+import { ImeSafeForm, SecureImeTextField } from "./ImeTextControl";
 import { ResetLocalDataConfirmationDialog } from "./dialogs";
 import { RecoveryKeyReveal, copyRecoveryKeyToClipboard } from "./RecoveryKeyReveal";
 import { t } from "../i18n/messages";
@@ -192,7 +192,6 @@ export function SessionVerificationGate({
   const secureBackupPassphraseRef = useRef<HTMLInputElement>(null);
   const cleanupPasswordRef = useRef<HTMLInputElement>(null);
   const passphraseRef = useRef<HTMLInputElement>(null);
-  const destinationRef = useRef<HTMLInputElement>(null);
   const flowId = session.flow_id;
   const methods = session.gate?.methods ?? [];
   const awaiting = session.kind === "awaitingVerification";
@@ -233,6 +232,12 @@ export function SessionVerificationGate({
   const secureBackupSetupState = snapshot.state.domain.e2ee_trust.key_management.secure_backup_setup;
   const revealedSetupKey =
     secureBackupSetupState.kind === "recoveryKeyReady" ? secureBackupSetupState : null;
+  // #1049: the identity bootstrap reuses the same Rust reveal slot, keyed by
+  // its flow id, while the session waits for the saved confirmation.
+  const revealedBootstrapKey =
+    session.kind === "awaitingBootstrapConfirmation" && revealedSetupKey?.request_id === flowId
+      ? revealedSetupKey
+      : null;
   const gateOperationsRef = useRef(new Set<GateOperationKind>());
   const secureBackupOperationRef = useRef<SecureBackupOperationKind | null>(null);
   const run = async (
@@ -391,7 +396,7 @@ export function SessionVerificationGate({
   };
   const heading = authenticationInvalidated
     ? t("gate.sessionExpired")
-    : secureBackupGateRequired && revealedSetupKey !== null
+    : (secureBackupGateRequired || revealedBootstrapKey !== null) && revealedSetupKey !== null
     ? t("gate.secureBackupDeliveryTitle")
     : secureBackupGateRequired
     ? secureBackupGateHeading(secureBackupGate)
@@ -618,8 +623,28 @@ export function SessionVerificationGate({
     </div>}
     {sasVerifying && session.sas_emojis?.length === 7 && <div className="session-verification-emojis">{session.sas_emojis.map((emoji, index) => <span key={index}>{emoji.symbol} {emoji.description}</span>)}</div>}
     {sasVerifying && session.sas_emojis?.length === 7 && flowId !== undefined && <><button onClick={() => void run("sas", () => api.confirmSasVerification(flowId))}>{t("gate.match")}</button><button onClick={() => void run("sas", () => api.mismatchSasVerification(flowId))}>{t("gate.mismatch")}</button></>}
-    {awaiting && methods.includes("bootstrap") && <ImeSafeForm onSubmit={(event) => { event.preventDefault(); const destination = destinationRef.current?.value.trim() ?? ""; const passphrase = passphraseRef.current?.value || null; if (destinationRef.current) destinationRef.current.value = ""; if (passphraseRef.current) passphraseRef.current.value = ""; if (destination) void run("recovery", () => api.startSessionBootstrap(passphrase, destination)); }}><ImeTextField ref={destinationRef} aria-label={t("gate.destination")} syncKey="session-bootstrap-destination"/><SecureImeTextField ref={passphraseRef} aria-label={t("gate.passphrase")} autoComplete="new-password"/><button type="submit">{t("gate.bootstrap")}</button></ImeSafeForm>}
-    {session.kind === "awaitingBootstrapConfirmation" && flowId !== undefined && <button onClick={() => void run("recovery", () => api.confirmSessionBootstrapSaved(flowId))}>{t("gate.saved")}</button>}
+    {awaiting && methods.includes("bootstrap") && <>
+      <p>{t("gate.secureBackupSetupCopy")}</p>
+      <ImeSafeForm onSubmit={(event) => { event.preventDefault(); const passphrase = passphraseRef.current?.value || null; if (passphraseRef.current) passphraseRef.current.value = ""; void run("recovery", () => api.startSessionBootstrap(passphrase)); }}><SecureImeTextField ref={passphraseRef} aria-label={t("gate.passphrase")} autoComplete="new-password"/><button className="dialog-button is-primary" disabled={gateOperations.has("recovery")} type="submit">{t("gate.bootstrap")}</button></ImeSafeForm>
+    </>}
+    {revealedBootstrapKey && flowId !== undefined && <>
+      <p>{t("gate.secureBackupDeliveryRequired")}</p>
+      {secureBackupOperationError && <p role="alert">{t("gate.secureBackupCommandFailed")}</p>}
+      <RecoveryKeyReveal
+        key={revealedBootstrapKey.request_id}
+        recoveryKey={revealedBootstrapKey.recovery_key}
+        delivery={revealedBootstrapKey.delivery}
+        confirmationFailed={revealedBootstrapKey.confirmation_failed}
+        copyRecoveryKey={operations.copyRecoveryKey}
+        onSaveToFile={
+          operations.saveSecureBackupRecoveryKey
+            ? () => saveSecureBackupRecoveryKey(flowId)
+            : undefined
+        }
+        onConfirmSaved={() => run("recovery", () => api.confirmSessionBootstrapSaved(flowId))}
+        disabled={gateOperations.has("recovery")}
+      />
+    </>}
     {sasVerifying && flowId !== undefined && <button onClick={() => void run("sas", () => api.cancelVerification(flowId))}>{t("action.cancel")}</button>}
     {cleanupSurfaceOwned && deviceCleanup.kind === "offered" && <button className="dialog-button danger" type="button" disabled={gateOperations.size > 0} onClick={() => setConfirmDeviceCleanup(true)}>{t("gate.cleanupOffer")}</button>}
     {cleanupSurfaceOwned && confirmDeviceCleanup && <ResetLocalDataConfirmationDialog

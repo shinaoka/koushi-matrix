@@ -4,7 +4,7 @@ import { guiScenario,repoRoot } from "./options.mjs";
 import { runLocalInvitesDmScenario,runLocalLoginScenario,runLocalLogoutReloginScenario,runSignedOutScenario } from "./scenarios/auth.mjs";
 import { runLocalImageCompressionScenario,runLocalMediaScenario,runLocalMessageTypesScenario } from "./scenarios/media.mjs";
 import { runLocalActivityScenario,runLocalAliasScenario,runLocalCjkScenario,runLocalComposerScenario,runLocalCreateRoomScenario,runLocalCreateSpaceScenario,runLocalExploreScenario,runLocalMessageActionsScenario,runLocalPinsScenario,runLocalReceiptReadersScenario,runLocalReplyScenario,runLocalRichFormattingScenario,runLocalRoomHistoryExportScenario,runLocalRoomManagementScenario,runLocalRoomTagsScenario,runLocalScheduledSendScenario,runLocalSendScenario,runLocalSpacesNavScenario,runLocalTimelineNavigationScenario } from "./scenarios/rooms-timeline.mjs";
-import { runLocalE2eeKeyManagementScenario,runLocalSettingsScenario } from "./scenarios/settings-security.mjs";
+import { runLocalE2eeKeyManagementScenario,runLocalSecureBackupScenario,runLocalSettingsScenario } from "./scenarios/settings-security.mjs";
 
 export const checks = [
   "scenario signed-out",
@@ -35,6 +35,7 @@ export const checks = [
   "scenario local-cjk",
   "scenario local-settings",
   "scenario local-e2ee-key-management",
+  "scenario local-secure-backup",
   "verify local-settings trust section",
   "verify local-e2ee-key-management tokens",
   "verify Xvfb virtual display",
@@ -159,6 +160,10 @@ export async function run() {
   }
   if (guiScenario === "local-e2ee-key-management") {
     await runLocalE2eeKeyManagementScenario();
+    return;
+  }
+  if (guiScenario === "local-secure-backup") {
+    await runLocalSecureBackupScenario();
     return;
   }
   throw new Error(`unsupported --scenario: ${guiScenario}`);

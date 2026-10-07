@@ -34,8 +34,10 @@ const GATED_ENV_LITERALS = [
   '"KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR"',
   // Redirects a user-chosen export destination without the native dialog.
   '"KOUSHI_QA_HISTORY_EXPORT_DIR"',
+  // Answers the room-key export/import file dialogs without a native dialog.
+  '"KOUSHI_QA_ROOM_KEY_FILE"',
 ];
-const GATE_ATTR = /#\[cfg\((any\()?(debug_assertions|test)/;
+const GATE_ATTR = /#\[cfg\((all\()?(any\()?(debug_assertions|test)/;
 
 const rsFiles = execFileSync("git", ["ls-files", "crates", "apps", "spikes"], {
   cwd: repoRoot,

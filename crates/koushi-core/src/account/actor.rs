@@ -2967,16 +2967,17 @@ impl AccountActor {
                 request_id,
                 flow_id,
                 auth,
-                request,
+                passphrase,
             } => {
-                self.handle_start_session_bootstrap(request_id, flow_id, auth, request)
+                self.handle_start_session_bootstrap(request_id, flow_id, auth, passphrase)
                     .await;
             }
             AccountCommand::ConfirmSessionBootstrapSaved {
-                request_id: _,
-                flow_id: _,
+                request_id,
+                flow_id,
             } => {
-                self.request_authoritative_trust_recheck();
+                self.handle_confirm_session_bootstrap_saved(request_id, flow_id)
+                    .await;
             }
             AccountCommand::BootstrapCrossSigning { request_id, auth } => {
                 self.handle_bootstrap_cross_signing(request_id, auth).await;

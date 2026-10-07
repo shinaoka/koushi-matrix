@@ -124,6 +124,11 @@ stateDiagram-v2
     Verifying --> AwaitingVerification: Cancelled / failed / timeout
     Verifying --> Ready: AuthoritativeDeviceTrustChanged(Verified)
     Verifying --> Rejecting: RejectSession
+    Verifying --> AwaitingBootstrapConfirmation: BootstrapRecoveryKeyReady(flow_id) / reveal key in reveal slot
+    Verifying --> AwaitingVerification: BootstrapRecoveryKeyDeliveryFailed(flow_id) / gate failure kind
+    AwaitingBootstrapConfirmation --> AwaitingBootstrapConfirmation: copy, save to file, or BootstrapRecoverySavedConfirmFailed(flow_id) / reveal stays
+    AwaitingBootstrapConfirmation --> Provisional: BootstrapRecoverySavedConfirmed(flow_id) [RecheckingTrust] / drop key
+    AwaitingBootstrapConfirmation --> Rejecting: RejectSession / drop key
     Rejecting --> SignedOut: ProvisionalSessionDiscarded
     Ready --> Provisional: CurrentDeviceTrustChanged(Unverified) / SessionLocked [DiscoveringMethods]
     Ready --> Provisional: CurrentDeviceTrustChanged(Unknown) [RecheckingTrust]
@@ -385,6 +390,26 @@ stateDiagram-v2
 - Recovery completion, SAS `Done`, cross-signing bootstrap, or save confirmation
   requests a fresh current-device trust probe; none directly transitions to
   `Ready`.
+- The new-identity bootstrap (#1049) needs no file destination.
+  `StartSessionBootstrap { passphrase }` bootstraps cross-signing, sets the
+  persisted recovery-key delivery-pending marker, and creates the Secure
+  Backup; if creation fails no key was revealed, so the marker is cleared
+  (best effort). `BootstrapRecoveryKeyReady { flow_id }` enters the coarse
+  `AwaitingBootstrapConfirmation { flow_id }` and puts the key only in the
+  #927 reveal slot `SecureBackupSetupState::RecoveryKeyReady { request_id:
+  flow_id }`; the session state never carries it. Copy and the optional
+  `SaveSecureBackupRecoveryKey { reveal_request_id: flow_id }` (admitted only
+  in this gate state) never leave the gate. `ConfirmSessionBootstrapSaved` is
+  not projected ahead of AccountActor: the actor clears the marker first, then
+  drops its copy and sends `BootstrapRecoverySavedConfirmed`, which drops the
+  key (`Enabled { request_id: flow_id }`) and enters
+  `Provisional { RecheckingTrust }`. If the marker cannot be cleared the actor
+  keeps its copy and `BootstrapRecoverySavedConfirmFailed` keeps the reveal
+  with `confirmation_failed: true`. A stale confirmation is a typed failed
+  no-op. Rejection, logout, and account switch drop the key. After an
+  interrupted reveal (restart) the device is already cross-signed, so it
+  promotes to `Ready` and the persisted marker re-enters the Secure Backup
+  gate's `RecoveryKeyDeliveryRequired` reset path below.
 - A verification failure is scoped to the completed attempt. It remains on
   `AwaitingVerification` for user feedback, and an accepted
   `VerificationMethodSubmitted` clears it while preserving the gate's methods
@@ -4039,7 +4064,8 @@ stateDiagram-v2
   only to derive UI metadata.
 - Secure-backup setup and passphrase-change state report recovery-key
   delivery status. Recovery-key material reaches reducer state and the live DTO
-  snapshot only in the reveal states (`RecoveryKeyReady`/`Changed`, #927);
+  snapshot only in the reveal states (`RecoveryKeyReady`/`Changed`, #927; the
+  identity bootstrap reuses `RecoveryKeyReady`, #1049);
   it never reaches React component state, logs, QA tokens, or issue comments.
 
 QR login:
