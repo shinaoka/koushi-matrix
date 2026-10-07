@@ -41,6 +41,18 @@ pub(crate) fn handle_room_access_updated(
     if !is_session_ready(state) {
         return Vec::new();
     }
+    // The snapshot arm of this batch already ran, so `state.rooms` is the
+    // accepted room set: a room filtered out there (local leave, unjoined) must
+    // not keep or regain an access condition through a stale payload.
+    let retained: std::collections::BTreeSet<&str> = state
+        .rooms
+        .iter()
+        .map(|room| room.room_id.as_str())
+        .collect();
+    let access = access
+        .into_iter()
+        .filter(|(room_id, _)| retained.contains(room_id.as_str()))
+        .collect::<std::collections::BTreeMap<_, _>>();
     if authoritative {
         if !room_list_authoritative_matches_current(&state.room_list.readiness, generation, source)
         {

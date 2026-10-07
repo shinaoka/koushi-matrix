@@ -1259,6 +1259,45 @@ fn room_access_projection_follows_its_room_list_snapshot() {
     );
     assert!(!state.room_access.contains_key("room-a"));
 
+    // A later provisional snapshot that still carries the left room must not
+    // resurrect its condition: the room is filtered out of the accepted list, so
+    // its access entry is filtered out with it.
+    state.room_list.readiness = koushi_state::RoomListReadiness::Loading {
+        source: koushi_state::RoomListSource::Live,
+        generation: 3,
+    };
+    reduce(
+        &mut state,
+        AppAction::RoomListSnapshotProvisional {
+            generation: 3,
+            source: koushi_state::RoomListSource::Live,
+            spaces: Vec::new(),
+            rooms: rooms(),
+            invites: Vec::new(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomAccessUpdated {
+            generation: 3,
+            source: koushi_state::RoomListSource::Live,
+            authoritative: false,
+            access: BTreeMap::from([
+                ("room-a".to_owned(), koushi_state::RoomJoinRule::Public),
+                ("global-room".to_owned(), koushi_state::RoomJoinRule::Invite),
+            ]),
+        },
+    );
+    assert!(
+        !state.room_access.contains_key("room-a"),
+        "a stale provisional payload must not resurrect a left room's condition"
+    );
+    assert_eq!(
+        state.room_access.get("global-room"),
+        Some(&koushi_state::RoomJoinRule::Invite),
+        "a retained room still gains its projected condition"
+    );
+
     // Retiring the session withdraws the whole slice.
     reduce(&mut state, AppAction::LogoutRequested);
     assert!(state.room_access.is_empty());

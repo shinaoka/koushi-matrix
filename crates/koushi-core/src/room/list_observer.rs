@@ -1528,9 +1528,10 @@ async fn normalize_and_project_entries(
     }
     let joined_count = joined_rooms.len();
     let invited_count = invited_rooms.len();
-    // #1166: each joined room's own access condition, projected with the same
-    // snapshot so an action always describes a room the list also carries.
-    let room_access = joined_rooms
+    // #1166: each joined room's own access condition. Collected from the SDK
+    // rooms, then restricted to the rooms the completed snapshot actually
+    // projects, so an action never describes a room normalization dropped.
+    let joined_access = joined_rooms
         .iter()
         .map(|room| {
             (
@@ -1546,6 +1547,15 @@ async fn normalize_and_project_entries(
         direct_targets_by_room,
     )
     .await;
+    let room_access = snapshot
+        .rooms
+        .iter()
+        .filter_map(|room| {
+            joined_access
+                .get(&room.room_id)
+                .map(|rule| (room.room_id.clone(), *rule))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
     snapshot.invites = koushi_sdk::matrix_invite_previews_from_rooms(invited_rooms).await;
     if let (Some(direct_state), Some(diagnostics)) = (direct_state, sliding_sync_diagnostics) {
         let projected_dms = snapshot.rooms.iter().filter(|room| room.is_dm).count();
