@@ -194,10 +194,11 @@ pub use directory::{
 
 // ── Re-exports: room_management ─────────────────────────────────────────────
 pub use room_management::{
-    RoomHistoryVisibility, RoomJoinRule, RoomManagementOperationKind, RoomManagementOperationState,
-    RoomManagementState, RoomMemberMembership, RoomMemberRole, RoomMemberRoleOption,
-    RoomMemberSummary, RoomModerationAction, RoomPermissionFacts, RoomSettingChange,
-    RoomSettingsSnapshot, UserTrustState,
+    RestrictedConditions, RoomAccessCondition, RoomHistoryVisibility, RoomJoinRule,
+    RoomManagementOperationKind, RoomManagementOperationState, RoomManagementState,
+    RoomMemberMembership, RoomMemberRole, RoomMemberRoleOption, RoomMemberSummary,
+    RoomModerationAction, RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot,
+    UserTrustState,
 };
 
 // ── Re-exports: e2ee ────────────────────────────────────────────────────────
@@ -360,6 +361,12 @@ pub struct AppState {
     #[serde(skip)]
     pub room_notification_awaiting_echo: HashMap<String, (u64, RoomNotificationMode)>,
     pub room_interactions: BTreeMap<String, RoomInteractionState>,
+    /// Each joined room's authoritative access condition, from its own
+    /// `m.room.join_rules` (#1166). Empty until a room-list update has projected
+    /// it; an absent room is "not yet known", never a guessed rule. Never derived
+    /// from encryption, DM status, the viewer's membership or `can_join`.
+    #[serde(default)]
+    pub room_access: BTreeMap<String, RoomAccessCondition>,
     #[serde(skip)]
     pub composer_drafts: ComposerDraftStore,
     #[serde(skip)]
@@ -439,6 +446,7 @@ impl Default for AppState {
             room_notification_settings: HashMap::new(),
             room_notification_awaiting_echo: HashMap::new(),
             room_interactions: BTreeMap::new(),
+            room_access: BTreeMap::new(),
             composer_drafts: ComposerDraftStore::default(),
             scheduled_sends: ScheduledSendStore::default(),
             upload_staging: UploadStagingStore::default(),
