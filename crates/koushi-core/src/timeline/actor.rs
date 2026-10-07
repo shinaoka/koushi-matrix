@@ -1166,7 +1166,10 @@ impl TimelineActor {
             .send_completion
             .lock()
             .expect("send completion coordinator lock must not be poisoned")
-            .settled_transaction_ids(self.key.room_id());
+            .settled_transaction_ids(
+                self.key.room_id(),
+                &super::outbound_send::canonical_event_ids(&self.navigation_items),
+            );
         self.pending_send_projections = projections;
         let mut pending_items = self
             .pending_send_projections
@@ -1578,7 +1581,10 @@ impl TimelineActor {
                 .expect("send completion coordinator lock must not be poisoned");
             (
                 coordinator.projections_for_key(&key),
-                coordinator.settled_transaction_ids(key.room_id()),
+                coordinator.settled_transaction_ids(
+                    key.room_id(),
+                    &super::outbound_send::canonical_event_ids(&initial_items),
+                ),
             )
         };
         let pending_items = pending_send_projections
