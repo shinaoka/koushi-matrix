@@ -2081,11 +2081,16 @@ stateDiagram-v2
   newest request id; unsubscribe, demand retirement (supersession, Home, room
   change, navigation deadline), shutdown, and the 10 s build timeout release
   the lease and activation, and a late completion can never install an actor.
-  The SDK future is detached, not aborted: the SDK registers event-focused
-  cache state before its `/context` load and never unregisters it, so an
-  aborted build would fail every later build of that target. A focused-build
-  failure or timeout settles the owning event navigation as `Failed`
-  immediately instead of at the AppActor deadline.
+  SDK event-focused initialization is transactional: initial `/context`
+  loading succeeds before cache state and the reusable handle are published,
+  so cancelling or failing construction leaves no orphaned state that poisons
+  retry. Core retains each preparation task; timeout drops its SDK future,
+  and cancellation aborts and awaits the task before releasing its lease or
+  acknowledging cleanup. Ordered shutdown aborts all preparation tasks and
+  awaits their settlement; unexpected Drop aborts as a fallback, not as an
+  orderly-shutdown acknowledgement. A focused-build failure or timeout settles
+  the owning event navigation as `Failed` immediately instead of at the
+  AppActor deadline.
 - `EnsureSubscribed` may reproject actor-owned InitialItems after transport loss,
   but the internal focused-projection commit is independently reliable. There is
   no sleep, fixed retry count, visibility heuristic, renderer acknowledgement,

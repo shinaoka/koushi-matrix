@@ -9,20 +9,11 @@
 //! Each pending build is fenced by its actor-generation activation, which is
 //! process-unique. Unsubscribe, navigation-demand retirement (supersession,
 //! Home, room change, navigation deadline), the build timeout, and manager
-//! shutdown (logout, account replacement) stop the manager's wait and roll
-//! back its lease/activation; a late completion whose activation is no longer
-//! pending is discarded and can never install an actor or publish a
-//! projection.
-//!
-//! The SDK future itself is detached rather than aborted. Event-focused cache
-//! creation (`EventCache` `event_focused` -> `EventFocusedCache::new` ->
-//! `StateLock::try_insert_once_with`) registers its cache state before the
-//! initial `/context` load and never unregisters it, so dropping the build
-//! mid-load would make every later build of the same target fail with
-//! `CacheStateAlreadyExists` for the rest of the session. A detached build
-//! instead completes into the SDK focused cache, where a retry of the same
-//! target queues behind it on the SDK's per-room focused-cache lock and then
-//! reuses it.
+//! shutdown (logout, account replacement) cancel and settle the owned build
+//! before rolling back its lease/activation; stale completions cannot install
+//! an actor or publish a projection. SDK focused-cache initialization is
+//! transactional, so dropping its initial `/context` future cannot leave an
+//! orphaned cache state that poisons retry.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,6 +24,7 @@ use futures_util::stream::FuturesUnordered;
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
 use matrix_sdk::ruma::OwnedRoomId;
 use matrix_sdk_ui::timeline::Timeline;
+use tokio::sync::oneshot;
 
 use crate::executor;
 use koushi_protocol::failure::TimelineFailureKind;
@@ -101,11 +93,20 @@ pub(super) struct PendingFocusedBuild {
     pub(super) lease_added: bool,
     pub(super) reconcile_trigger: SubscriptionReconcileTrigger,
     pub(super) started: executor::Instant,
+    task: executor::AbortOnDrop<()>,
 }
 
 impl PendingFocusedBuild {
     pub(super) fn elapsed_ms(&self) -> u128 {
         self.started.elapsed().as_millis()
+    }
+
+    fn abort(&self) {
+        self.task.abort();
+    }
+
+    async fn settle(&mut self) {
+        self.task.settle().await;
     }
 }
 
@@ -124,8 +125,7 @@ pub(super) struct FocusedBuildSupervisor {
 
 impl FocusedBuildSupervisor {
     /// Spawn one preparation task and register it as the pending build for
-    /// `key`. The manager waits at most `FOCUSED_TIMELINE_BUILD_TIMEOUT`; the
-    /// SDK task is detached, never aborted (see the module docs). The caller
+    /// `key`. The owned task drops the SDK future on timeout. The caller
     /// must not already have a pending build for this key.
     #[expect(
         clippy::too_many_arguments,
@@ -144,14 +144,19 @@ impl FocusedBuildSupervisor {
     ) {
         debug_assert!(!self.pending.contains_key(&key));
         let actor_generation = activation.generation;
-        let task = executor::spawn(build);
-        let completion_key = key.clone();
-        self.tasks.push(Box::pin(async move {
-            // On timeout the JoinHandle is dropped, which detaches the task.
-            let result = match executor::timeout(FOCUSED_TIMELINE_BUILD_TIMEOUT, task).await {
-                Ok(joined) => joined.unwrap_or(Err(FocusedBuildFailure::Interrupted)),
+        let (sender, receiver) = oneshot::channel();
+        let task = executor::spawn(async move {
+            let result = match executor::timeout(FOCUSED_TIMELINE_BUILD_TIMEOUT, build).await {
+                Ok(result) => result,
                 Err(_) => Err(FocusedBuildFailure::TimedOut),
             };
+            let _ = sender.send(result);
+        });
+        let completion_key = key.clone();
+        self.tasks.push(Box::pin(async move {
+            let result = receiver
+                .await
+                .unwrap_or(Err(FocusedBuildFailure::Interrupted));
             FocusedBuildCompletion {
                 key: completion_key,
                 actor_generation,
@@ -169,6 +174,7 @@ impl FocusedBuildSupervisor {
                 lease_added,
                 reconcile_trigger,
                 started: executor::Instant::now(),
+                task: executor::AbortOnDrop::new(task),
             },
         );
     }
@@ -195,7 +201,7 @@ impl FocusedBuildSupervisor {
 
     /// Remove the pending build that produced `completion`, or `None` when the
     /// completion is stale (cancelled, superseded, or already settled).
-    pub(super) fn take_current(
+    pub(super) async fn take_current(
         &mut self,
         completion: &FocusedBuildCompletion,
     ) -> Option<PendingFocusedBuild> {
@@ -207,13 +213,16 @@ impl FocusedBuildSupervisor {
             record_focused_build("stale_discarded", completion.actor_generation, None);
             return None;
         }
-        self.pending.remove(&completion.key)
+        let mut pending = self.pending.remove(&completion.key)?;
+        pending.settle().await;
+        Some(pending)
     }
 
-    /// Stop waiting for the pending build for `key`; its eventual completion
-    /// is stale. The caller rolls back the returned lease/activation.
-    pub(super) fn cancel(&mut self, key: &TimelineKey) -> Option<PendingFocusedBuild> {
-        let pending = self.pending.remove(key)?;
+    /// Fence and stop the underlying build before rolling back its ownership.
+    pub(super) async fn cancel(&mut self, key: &TimelineKey) -> Option<PendingFocusedBuild> {
+        let mut pending = self.pending.remove(key)?;
+        pending.abort();
+        pending.settle().await;
         record_focused_build(
             "cancelled",
             pending.activation.generation,
@@ -226,9 +235,18 @@ impl FocusedBuildSupervisor {
         self.pending.keys()
     }
 
-    /// Manager shutdown: forget every pending build and its completion.
-    pub(super) fn cancel_all(&mut self) {
-        for (_, pending) in self.pending.drain() {
+    /// Unexpected manager Drop cannot await; abort without claiming orderly shutdown.
+    pub(super) fn abort_all(&self) {
+        for pending in self.pending.values() {
+            pending.abort();
+        }
+    }
+
+    /// Ordered shutdown: abort every build first, then await all settlement.
+    pub(super) async fn cancel_all(&mut self) {
+        self.abort_all();
+        for (_, mut pending) in self.pending.drain() {
+            pending.settle().await;
             record_focused_build(
                 "cancelled",
                 pending.activation.generation,

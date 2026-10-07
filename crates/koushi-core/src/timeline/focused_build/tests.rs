@@ -213,11 +213,10 @@ async fn focused_build_in_flight_does_not_block_control_or_newer_navigation() {
     assert_eq!(probe.actor_generation, None);
     assert!(harness.probe(&home_room_key()).await.installed);
 
-    // The obsolete SDK build is detached, not aborted. Completing it late is
-    // consumed by the manager without installing or announcing anything.
-    release
-        .send(Ok(()))
-        .expect("the detached SDK build is still running");
+    assert!(
+        release.is_closed(),
+        "Home must settle the underlying SDK build"
+    );
     harness.wait_for_in_flight(&key, 0).await;
     let probe = harness.probe(&key).await;
     assert!(!probe.installed);
@@ -246,8 +245,10 @@ async fn superseded_focused_build_cannot_install_under_the_newer_owner() {
     );
     assert_eq!(probe_a.room_leases, 1, "only B's lease remains");
 
-    // A completes late, while B is still pending under the newer owner.
-    release_a.send(Ok(())).expect("A's SDK build is detached");
+    assert!(
+        release_a.is_closed(),
+        "supersession must settle A's SDK build"
+    );
     harness.wait_for_in_flight(&a, 1).await;
     assert!(!harness.probe(&a).await.installed);
     assert_eq!(
@@ -323,12 +324,12 @@ async fn blocked_focused_build_times_out_releases_ownership_and_retry_succeeds()
         harness.next_action().await,
         AppAction::FocusedContextSubscriptionFailed { .. }
     ));
-    // The manager stopped waiting; the detached SDK build completing later
-    // installs nothing.
-    stuck
-        .send(Ok(()))
-        .expect("the timed-out SDK build is detached");
-    executor::sleep(Duration::from_millis(10)).await;
+    // Failure is published only after the underlying build has stopped;
+    // merely detaching it leaves SDK cache guards held and can block retry.
+    assert!(
+        stuck.is_closed(),
+        "timeout must drop the underlying SDK build"
+    );
     let probe = harness.probe(&key).await;
     assert_eq!(probe.in_flight, 0);
     assert_eq!(probe.pending_request_id, None);
@@ -380,6 +381,7 @@ async fn late_completion_of_a_cancelled_build_cannot_install_under_a_newer_same_
     subscribe_directly(&mut manager, fake_rid(30), &key).await;
     let stale_generation = manager.focused_builds.pending[&key].activation.generation;
     manager.unsubscribe_timeline(&key).await;
+    manager.focused_builds.test_gate = None;
     subscribe_directly(&mut manager, fake_rid(31), &key).await;
     let current_generation = manager.focused_builds.pending[&key].activation.generation;
     assert_ne!(stale_generation, current_generation);
@@ -421,7 +423,9 @@ async fn failed_focused_build_rolls_back_and_reports_once() {
     manager.action_tx = action_tx;
     let (event_tx, mut event_rx) = broadcast::channel(8);
     manager.event_tx = event_tx;
-    manager.focused_builds.test_gate = Some(Arc::new(|| Box::pin(futures_util::future::pending())));
+    manager.focused_builds.test_gate = Some(Arc::new(|| {
+        Box::pin(async { Err(TimelineFailureKind::Sdk) })
+    }));
     let key = focused_key();
     subscribe_directly(&mut manager, fake_rid(40), &key).await;
     let generation = manager.focused_builds.pending[&key].activation.generation;
@@ -458,7 +462,94 @@ async fn failed_focused_build_rolls_back_and_reports_once() {
 }
 
 #[tokio::test]
-async fn sdk_focused_build_waiting_on_context_keeps_manager_responsive_and_retry_reuses_it() {
+async fn shutdown_settles_underlying_focused_build_before_acknowledgement() {
+    let mut harness = spawn_harness();
+    harness.subscribe(fake_rid(49), focused_key()).await;
+    let release = harness.build_started().await;
+    let (acknowledged, acknowledgement) = oneshot::channel();
+    harness
+        .control_tx
+        .send(TimelineManagerControl::Shutdown { acknowledged })
+        .await
+        .expect("shutdown admission");
+    executor::timeout(Duration::from_secs(1), acknowledgement)
+        .await
+        .expect("shutdown must settle")
+        .expect("shutdown acknowledgement");
+    assert!(
+        release.is_closed(),
+        "shutdown acknowledgement must follow SDK future destruction"
+    );
+    harness._task.await.expect("manager task settled");
+}
+
+#[tokio::test]
+async fn sdk_focused_cache_context_error_does_not_poison_retry() {
+    use matrix_sdk::event_cache::EventFocusThreadMode;
+    use matrix_sdk::ruma::{event_id, room_id};
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    use matrix_sdk_test::{ALICE, event_factory::EventFactory};
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    client
+        .event_cache()
+        .subscribe()
+        .expect("event cache subscription");
+    let room = room_id!("!focused-error:example.org");
+    let target = event_id!("$focused-error:example.org");
+    server.sync_joined_room(&client, room).await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/context/"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(
+            serde_json::json!({ "errcode": "M_NOT_FOUND", "error": "synthetic missing event" }),
+        ))
+        .mount(server.server())
+        .await;
+    let mode = EventFocusThreadMode::Automatic {
+        hide_threaded_events: false,
+    };
+    assert!(
+        client
+            .event_cache()
+            .event_focused(room, target, mode, 20)
+            .await
+            .is_err()
+    );
+
+    let event = EventFactory::new()
+        .room(room)
+        .sender(&ALICE)
+        .text_msg("target")
+        .event_id(target)
+        .into_event();
+    Mock::given(method("GET"))
+        .and(path_regex(r"/context/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "event": event.into_raw().json(), "events_before": [], "events_after": [], "state": []
+        })))
+        .with_priority(1)
+        .mount(server.server())
+        .await;
+    let (cache, _handles) = client
+        .event_cache()
+        .event_focused(room, target, mode, 20)
+        .await
+        .expect("context failure must not strand registered cache state");
+    assert!(
+        cache
+            .events()
+            .await
+            .expect("focused events")
+            .iter()
+            .any(|event| event.event_id() == Some(target))
+    );
+}
+
+#[tokio::test]
+async fn sdk_focused_build_waiting_on_context_is_cancelled_and_retry_starts_fresh() {
     // Production build path: the real SDK `TimelineFocus::Event` build waits
     // on a delayed `/context` response while the manager stays responsive;
     // retiring it releases the SDK focused-cache work so a retry completes.
@@ -481,17 +572,18 @@ async fn sdk_focused_build_waiting_on_context_keeps_manager_responsive_and_retry
     // `/context` is slow while sync stays healthy.
     let factory = EventFactory::new().room(sdk_room_id).sender(&ALICE);
     let target_event = factory.text_msg("target").event_id(target).into_event();
+    let context = serde_json::json!({
+        "event": target_event.into_raw().json(),
+        "events_before": [],
+        "events_after": [],
+        "state": [],
+    });
     Mock::given(method("GET"))
         .and(path_regex(r"/context/"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!({
-                    "event": target_event.into_raw().json(),
-                    "events_before": [],
-                    "events_after": [],
-                    "state": [],
-                }))
-                .set_delay(Duration::from_secs(3)),
+                .set_body_json(context.clone())
+                .set_delay(Duration::from_secs(60)),
         )
         .mount(server.server())
         .await;
@@ -568,8 +660,14 @@ async fn sdk_focused_build_waiting_on_context_keeps_manager_responsive_and_retry
     assert_eq!(probe.room_leases, 0);
     assert_eq!(probe.actor_generation, None);
 
-    // A retry completes without restarting: it reuses the focused cache the
-    // detached build populates instead of tripping over half-created state.
+    // Do not release the original delayed response. A fresh request must
+    // succeed before it, proving cancellation left no orphaned SDK state.
+    Mock::given(method("GET"))
+        .and(path_regex(r"/context/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(context))
+        .with_priority(1)
+        .mount(server.server())
+        .await;
     harness.ingress.admit_focused(Some(key.clone()));
     harness.subscribe(fake_rid(51), key.clone()).await;
     let retry_generation = harness
@@ -596,8 +694,8 @@ async fn sdk_focused_build_waiting_on_context_keeps_manager_responsive_and_retry
         .filter(|request| request.url.path().contains("/context/"))
         .count();
     assert_eq!(
-        context_requests, 1,
-        "the retry reuses the SDK focused cache"
+        context_requests, 2,
+        "the retry starts fresh instead of waiting for cancelled SDK work"
     );
     harness.no_pending_action();
 }
