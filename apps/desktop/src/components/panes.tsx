@@ -47,6 +47,7 @@ import {
 import {
   ICON_SIZE,
   avatarInitial,
+  roomAccessTooltipLabel,
   operationFailureLabel,
   type ComposerModeProp,
   type OpenContextMenu
@@ -1001,7 +1002,12 @@ export function TimelinePane({
             fallback={avatarInitial(activeRoomName)}
           />
           {headerAccess?.icon ? (
-            <Tooltip label={t(headerAccess.descriptionMessageId)}>
+            <Tooltip
+              label={roomAccessTooltipLabel(
+                headerAccess.descriptionMessageId,
+                headerRoomAccess?.allowedRoomNames
+              )}
+            >
               {(triggerProps) => (
                 <span
                   className="channel-access-icon"
@@ -1021,7 +1027,17 @@ export function TimelinePane({
           <span className="channel-name" dir="auto">{activeRoomName}</span>
           {headerAccess
             ? roomAccessHeaderBadges(headerAccess).map((badge) => (
-                <Tooltip key={badge.labelMessageId} label={t(badge.descriptionMessageId)}>
+                <Tooltip
+                  key={badge.labelMessageId}
+                  label={
+                    badge.labelMessageId === "access.conditionsApply"
+                      ? roomAccessTooltipLabel(
+                          badge.descriptionMessageId,
+                          headerRoomAccess?.allowedRoomNames
+                        )
+                      : t(badge.descriptionMessageId)
+                  }
+                >
                   {(triggerProps) => (
                     <span className="channel-access-badge" tabIndex={0} {...triggerProps}>
                       {t(badge.labelMessageId)}

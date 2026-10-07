@@ -1542,6 +1542,7 @@ async fn normalize_and_project_entries(
                     ),
                     restricted: koushi_sdk::matrix_room_restricted_conditions(room)
                         .map(super::management::restricted_conditions_from_sdk),
+                    allowed_room_ids: koushi_sdk::matrix_room_restricted_allow_room_ids(room),
                 },
             )
         })
@@ -1561,7 +1562,7 @@ async fn normalize_and_project_entries(
         .filter_map(|room_id| {
             joined_access
                 .get(room_id)
-                .map(|condition| (room_id.to_owned(), *condition))
+                .map(|condition| (room_id.to_owned(), condition.clone()))
         })
         .collect::<std::collections::BTreeMap<_, _>>();
     snapshot.invites = koushi_sdk::matrix_invite_previews_from_rooms(invited_rooms).await;

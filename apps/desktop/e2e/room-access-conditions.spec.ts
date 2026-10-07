@@ -40,7 +40,9 @@ const PUBLIC_ROOM = row("!open:example.invalid", "Open Room", "public");
 const INVITE_ROOM = row("!invite:example.invalid", "Invite Room", "invite");
 const RESTRICTED_ROOM = {
   ...row("!conditional:example.invalid", "Conditional Room", "restricted"),
-  access_restricted_conditions: "usable" as const
+  access_restricted_conditions: "usable" as const,
+  // Rust resolves the rule's named routes to labels; the renderer lists them.
+  access_allowed_room_names: ["Allowed Room"]
 };
 const NO_USABLE_ROOM = {
   ...row("!no-usable:example.invalid", "No Usable Room", "restricted"),
@@ -261,7 +263,8 @@ function spaceRailItem(
   item: SpaceSummary,
   is_active: boolean,
   unread_count = 0,
-  restricted?: "usable" | "noneUsable" | "unknownAllowRule"
+  restricted?: "usable" | "noneUsable" | "unknownAllowRule",
+  allowedRoomNames?: string[]
 ) {
   return {
     space_id: item.space_id,
@@ -273,6 +276,7 @@ function spaceRailItem(
     is_active,
     access_join_rule: item.join_rule,
     ...(restricted ? { access_restricted_conditions: restricted } : {}),
+    ...(allowedRoomNames ? { access_allowed_room_names: allowedRoomNames } : {}),
     leave_candidates: []
   };
 }
@@ -288,7 +292,10 @@ async function pushSpaces(page: Page, activeSpaceId: string | null): Promise<voi
           item,
           item.space_id === activeSpaceId,
           item.space_id === "!invite-space:example.invalid" ? 3 : 0,
-          item.space_id === "!conditional-space:example.invalid" ? "noneUsable" : undefined
+          item.space_id === "!conditional-space:example.invalid" ? "noneUsable" : undefined,
+          item.space_id === "!conditional-space:example.invalid"
+            ? ["Conditional Room"]
+            : undefined
         )
       ),
       account_home: { ...base.sidebar.account_home, is_active: activeSpaceId === null }
@@ -437,14 +444,19 @@ test("a restricted room explains a confirmed missing membership route (#1166)", 
       .filter({ hasText: t("access.restrictedNoUsableConditionsDescription") })
   ).toHaveCount(0);
 
-  // An explicitly usable condition keeps the membership explanation, and never
-  // claims an invitation is required.
+  // An explicitly usable condition keeps the membership explanation, names the
+  // route Rust resolved, and never claims an invitation is required.
   const conditionalRow = rooms.getByRole("button", { name: "Conditional Room", exact: true });
   await conditionalRow.locator(".room-access-badge").first().hover();
   await expect(
     page
       .locator("body > .tooltip-bubble.is-open")
       .filter({ hasText: t("access.conditionsDescription") })
+  ).toHaveCount(1);
+  await expect(
+    page
+      .locator("body > .tooltip-bubble.is-open")
+      .filter({ hasText: t("access.allowedRooms", { rooms: "Allowed Room" }) })
   ).toHaveCount(1);
   await expect(
     page
@@ -484,5 +496,11 @@ test("a restricted Space with no usable condition explains the invitation requir
           "access.restrictedNoUsableConditionsDescription"
         )}`
       })
+  ).toHaveCount(1);
+  // The rail also names the route Rust resolved for this Space.
+  await expect(
+    page
+      .locator("body > .tooltip-bubble.is-open")
+      .filter({ hasText: t("access.allowedRooms", { rooms: "Conditional Room" }) })
   ).toHaveCount(1);
 });

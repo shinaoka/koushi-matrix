@@ -1952,6 +1952,34 @@ pub fn matrix_room_restricted_conditions(
     })
 }
 
+/// The rooms and Spaces a `restricted`/`knock_restricted` rule names as
+/// membership routes (#1166), in the order the event lists them and without
+/// duplicates. Empty when the rule is not restricted or names none.
+///
+/// Ids stay inside Rust state: the sidebar resolves them to display labels and
+/// only resolved names reach the renderer, so an inaccessible or unknown entry
+/// is never guessed at or exposed.
+pub fn matrix_room_restricted_allow_room_ids(room: &matrix_sdk::Room) -> Vec<String> {
+    use matrix_sdk::ruma::events::room::join_rules::{AllowRule, JoinRule};
+    let rule = room.join_rule();
+    let restricted = match rule.as_ref() {
+        Some(JoinRule::Restricted(restricted) | JoinRule::KnockRestricted(restricted)) => {
+            restricted
+        }
+        _ => return Vec::new(),
+    };
+    let mut ids: Vec<String> = Vec::new();
+    for allow in &restricted.allow {
+        if let AllowRule::RoomMembership(membership) = allow {
+            let id = membership.room_id.to_string();
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    ids
+}
+
 pub(super) fn matrix_room_join_rule(
     join_rule: &matrix_sdk::ruma::events::room::join_rules::JoinRule,
 ) -> MatrixRoomJoinRule {

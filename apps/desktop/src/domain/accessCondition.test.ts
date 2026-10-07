@@ -187,11 +187,13 @@ describe("restricted allow-condition facts (#1166)", () => {
     };
     expect(sidebarRoomAccess(sidebar, "!room:example.invalid")).toEqual({
       joinRule: "restricted",
-      restricted: "noneUsable"
+      restricted: "noneUsable",
+      allowedRoomNames: []
     });
     expect(sidebarRoomAccess(sidebar, "!missing:example.invalid")).toEqual({
       joinRule: null,
-      restricted: null
+      restricted: null,
+      allowedRoomNames: []
     });
   });
 });

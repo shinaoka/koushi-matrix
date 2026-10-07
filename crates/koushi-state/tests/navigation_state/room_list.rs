@@ -1149,6 +1149,7 @@ fn room_access_projection_follows_its_room_list_snapshot() {
         RoomAccessCondition {
             join_rule,
             restricted,
+            allowed_room_ids: Vec::new(),
         }
     }
 
@@ -1381,6 +1382,7 @@ fn room_access_projection_is_ignored_without_a_ready_session() {
                 koushi_state::RoomAccessCondition {
                     join_rule: koushi_state::RoomJoinRule::Public,
                     restricted: None,
+                    allowed_room_ids: Vec::new(),
                 },
             )]),
         },

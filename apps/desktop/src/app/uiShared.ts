@@ -18,7 +18,7 @@ import type {
   TimelineMessage
 } from "../domain/types";
 import type { ContextMenuItem } from "../domain/contextMenus";
-import { getActiveLocale, t } from "../i18n/messages";
+import { getActiveLocale, t, type MessageId } from "../i18n/messages";
 import { roomDisplayLabel } from "../domain/roomDisplayLabel";
 
 export { roomDisplayLabel, roomListItemLabel } from "../domain/roomDisplayLabel";
@@ -315,6 +315,27 @@ export function operationFailureLabel(kind: OperationFailureKind): string {
     case "sdk":
       return t("directory.failureSdk");
   }
+}
+
+/**
+ * The tooltip text for an access condition (#1166): its explanation, plus the
+ * membership routes a restricted rule names when Rust resolved their labels.
+ *
+ * Only resolved names are listed, so an unknown or invisible entry adds nothing
+ * rather than a guessed label or a raw id.
+ */
+export function roomAccessTooltipLabel(
+  descriptionMessageId: MessageId,
+  allowedRoomNames?: readonly string[] | null
+): string {
+  const explanation = t(descriptionMessageId);
+  const names = (allowedRoomNames ?? []).filter((name) => name.trim().length > 0);
+  if (names.length === 0) {
+    return explanation;
+  }
+  return `${explanation} ${t("access.allowedRooms", {
+    rooms: names.join(t("access.labelSeparator"))
+  })}`;
 }
 
 export function serverNameFromRoomId(roomId: string): string | null {

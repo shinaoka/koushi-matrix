@@ -265,11 +265,15 @@ pub enum RestrictedConditions {
 /// when the rule is `restricted`/`knock_restricted`, so a tooltip can explain
 /// that an invitation is required when no usable condition exists without
 /// claiming that about rules it never inspected.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RoomAccessCondition {
     pub join_rule: RoomJoinRule,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restricted: Option<RestrictedConditions>,
+    /// Rooms and Spaces a restricted rule names as membership routes (#1166).
+    /// Rust resolves these to display labels before the renderer sees anything.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_room_ids: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -169,26 +169,25 @@ export function roomAccessHeaderBadges(
  * The projected access condition of a room in the sidebar model, across every
  * list a room can appear in. `null` means it was not projected.
  */
+interface SidebarAccessRow {
+  room_id: string;
+  access_join_rule?: RoomJoinRule | null;
+  access_restricted_conditions?: RestrictedConditions | null;
+  access_allowed_room_names?: string[];
+}
+
 export function sidebarRoomAccess(
   sidebar: {
-    space_rooms: readonly {
-      room_id: string;
-      access_join_rule?: RoomJoinRule | null;
-      access_restricted_conditions?: RestrictedConditions | null;
-    }[];
-    global_dms: readonly {
-      room_id: string;
-      access_join_rule?: RoomJoinRule | null;
-      access_restricted_conditions?: RestrictedConditions | null;
-    }[];
-    not_joined_space_rooms: readonly {
-      room_id: string;
-      access_join_rule?: RoomJoinRule | null;
-      access_restricted_conditions?: RestrictedConditions | null;
-    }[];
+    space_rooms: readonly SidebarAccessRow[];
+    global_dms: readonly SidebarAccessRow[];
+    not_joined_space_rooms: readonly SidebarAccessRow[];
   },
   roomId: string
-): { joinRule: RoomJoinRule | null; restricted: RestrictedConditions | null } {
+): {
+  joinRule: RoomJoinRule | null;
+  restricted: RestrictedConditions | null;
+  allowedRoomNames: readonly string[];
+} {
   const row = [
     ...sidebar.space_rooms,
     ...sidebar.global_dms,
@@ -196,7 +195,8 @@ export function sidebarRoomAccess(
   ].find((item) => item.room_id === roomId);
   return {
     joinRule: row?.access_join_rule ?? null,
-    restricted: row?.access_restricted_conditions ?? null
+    restricted: row?.access_restricted_conditions ?? null,
+    allowedRoomNames: row?.access_allowed_room_names ?? []
   };
 }
 

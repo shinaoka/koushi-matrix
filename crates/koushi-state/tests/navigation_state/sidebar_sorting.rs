@@ -1263,6 +1263,7 @@ fn sidebar_room_rows_carry_the_projected_access_condition() {
             koushi_state::RoomAccessCondition {
                 join_rule: koushi_state::RoomJoinRule::Public,
                 restricted: None,
+                allowed_room_ids: Vec::new(),
             },
         ),
         (
@@ -1270,6 +1271,11 @@ fn sidebar_room_rows_carry_the_projected_access_condition() {
             koushi_state::RoomAccessCondition {
                 join_rule: koushi_state::RoomJoinRule::KnockRestricted,
                 restricted: Some(koushi_state::RestrictedConditions::NoneUsable),
+                // One resolvable route and one this projection cannot name.
+                allowed_room_ids: vec![
+                    "room-a".to_owned(),
+                    "!invisible:example.invalid".to_owned(),
+                ],
             },
         ),
     ]);
@@ -1303,6 +1309,12 @@ fn sidebar_room_rows_carry_the_projected_access_condition() {
         public_room.access_restricted_conditions, None,
         "a non-restricted rule carries no allow-condition claim"
     );
+    assert_eq!(
+        direct_message.access_allowed_room_names,
+        vec!["Room A".to_owned()],
+        "a named route becomes a label this projection already carries, and an          entry it cannot name is omitted rather than exposed by id"
+    );
+    assert!(public_room.access_allowed_room_names.is_empty());
     // A room with no projected condition is unknown, never a guessed rule.
     let unknown = sidebar
         .space_rooms

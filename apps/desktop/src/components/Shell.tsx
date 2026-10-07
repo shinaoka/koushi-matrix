@@ -57,6 +57,7 @@ import { ImeTextField } from "./ImeTextControl";
 import { useRecoverableImageSource } from "./avatarImage";
 import {
   ICON_SIZE,
+  roomAccessTooltipLabel,
   type OpenContextMenu,
   type PrimaryView,
   avatarInitial,
@@ -482,8 +483,9 @@ export function WorkspaceRail({
             const railSummary = roomAccessRailSummary(spaceRule);
             return (
             <Tooltip
-              label={`${fallbackName}${t("access.conditionSummarySeparator")}${t(
-                spaceAccess.descriptionMessageId
+              label={`${fallbackName}${t("access.conditionSummarySeparator")}${roomAccessTooltipLabel(
+                spaceAccess.descriptionMessageId,
+                space.access_allowed_room_names
               )}`}
               key={space.space_id}
             >
@@ -684,7 +686,12 @@ export function Sidebar({
       <div className="workspace-header">
         <div className="workspace-header-title">
           {activeSpaceAccess?.icon ? (
-            <Tooltip label={t(activeSpaceAccess.descriptionMessageId)}>
+            <Tooltip
+              label={roomAccessTooltipLabel(
+                activeSpaceAccess.descriptionMessageId,
+                activeSpace?.access_allowed_room_names
+              )}
+            >
               {(triggerProps) => (
                 <span
                   className="workspace-access-icon"
@@ -706,7 +713,17 @@ export function Sidebar({
           </div>
           {activeSpaceAccess
             ? roomAccessHeaderBadges(activeSpaceAccess).map((badge) => (
-                <Tooltip key={badge.labelMessageId} label={t(badge.descriptionMessageId)}>
+                <Tooltip
+                  key={badge.labelMessageId}
+                  label={
+                    badge.labelMessageId === "access.conditionsApply"
+                      ? roomAccessTooltipLabel(
+                          badge.descriptionMessageId,
+                          activeSpace?.access_allowed_room_names
+                        )
+                      : t(badge.descriptionMessageId)
+                  }
+                >
                   {(triggerProps) => (
                     <span className="workspace-access-badge" tabIndex={0} {...triggerProps}>
                       {t(badge.labelMessageId)}
@@ -1353,7 +1370,12 @@ function RoomButton({
           the avatar and the trailing unread area keep their columns. */}
       <span className="room-name-shell">
         {access?.icon ? (
-          <Tooltip label={t(access.descriptionMessageId)}>
+          <Tooltip
+            label={roomAccessTooltipLabel(
+              access.descriptionMessageId,
+              room.access_allowed_room_names
+            )}
+          >
             {(triggerProps) => (
               <span
                 className="room-access-icon"
@@ -1372,7 +1394,17 @@ function RoomButton({
         <span className="room-name" dir="auto">{roomLabel}</span>
         {access
           ? access.badges.map((badge) => (
-              <Tooltip key={badge.labelMessageId} label={t(badge.descriptionMessageId)}>
+              <Tooltip
+                key={badge.labelMessageId}
+                label={
+                  badge.labelMessageId === "access.conditionsApply"
+                    ? roomAccessTooltipLabel(
+                        badge.descriptionMessageId,
+                        room.access_allowed_room_names
+                      )
+                    : t(badge.descriptionMessageId)
+                }
+              >
                 {(triggerProps) => (
                   <span className="room-access-badge" {...triggerProps}>
                     {t(badge.labelMessageId)}

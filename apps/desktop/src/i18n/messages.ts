@@ -20,6 +20,7 @@ export type MessageId =
   | "access.checkingDescription"
   | "access.labelSeparator"
   | "access.conditionSummarySeparator"
+  | "access.allowedRooms"
   | "access.restrictedNoUsableConditionsDescription"
   | "access.restrictedNoUsableConditionsCanRequestDescription"
   | "help.title"
@@ -1798,6 +1799,7 @@ const en: Catalog = {
   "access.checkingDescription": "Join conditions are not available yet.",
   "access.labelSeparator": ", ",
   "access.conditionSummarySeparator": " — ",
+  "access.allowedRooms": "Allowed: {rooms}",
   "access.restrictedNoUsableConditionsDescription":
     "No usable conditions allow joining without an invitation. An invitation is required to join.",
   "access.restrictedNoUsableConditionsCanRequestDescription":
@@ -3510,6 +3512,7 @@ const ja: Catalog = {
   "access.checkingDescription": "参加条件をまだ確認できません。",
   "access.labelSeparator": "、",
   "access.conditionSummarySeparator": " — ",
+  "access.allowedRooms": "指定: {rooms}",
   "access.restrictedNoUsableConditionsDescription":
     "招待なしで参加できる条件がないため、参加には招待が必要です。",
   "access.restrictedNoUsableConditionsCanRequestDescription":

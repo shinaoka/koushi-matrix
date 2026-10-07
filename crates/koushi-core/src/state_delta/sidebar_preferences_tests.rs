@@ -409,6 +409,7 @@ fn access_condition_change_alone_publishes_the_sidebar() {
         koushi_state::RoomAccessCondition {
             join_rule: koushi_state::RoomJoinRule::Public,
             restricted: None,
+            allowed_room_ids: Vec::new(),
         },
     );
 
