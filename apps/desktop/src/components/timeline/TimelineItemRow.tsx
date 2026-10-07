@@ -137,6 +137,46 @@ export interface TimelineRowActionHandlers {
   onOpenSenderProfile?: (roomId: string, userId: string) => void;
 }
 
+/// The visible message text the user selected inside this row (#1155).
+///
+/// Returns the exact selection text, or `null` when there is nothing to act on:
+/// a collapsed or whitespace-only selection, a selection that leaves the
+/// right-clicked row (another row, another account, a previous room, or a
+/// selection crossing rows), or a selection inside an editable surface such as
+/// the row's own inline edit composer.
+function messageSelectionWithin(element: HTMLElement): string | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return undefined;
+  }
+  const text = selection.toString();
+  if (!text.trim()) {
+    return undefined;
+  }
+  for (let index = 0; index < selection.rangeCount; index += 1) {
+    const range = selection.getRangeAt(index);
+    if (!element.contains(range.commonAncestorContainer)) {
+      return undefined;
+    }
+    const container = range.commonAncestorContainer;
+    const containerElement =
+      container.nodeType === Node.ELEMENT_NODE
+        ? (container as Element)
+        : container.parentElement;
+    if (
+      containerElement?.closest(
+        "input, textarea, [contenteditable='true'], [contenteditable='']"
+      )
+    ) {
+      return undefined;
+    }
+  }
+  return text;
+}
+
 function reactionPickerBoundaryElement(anchor: Element): Element | null {
   return anchor.closest(".timeline-view") ?? anchor.closest(".main-pane");
 }
@@ -872,20 +912,24 @@ export function TimelineItemRow({
       />
     ) : null;
   function handleContextMenu(event: MouseEvent<HTMLElement>) {
-    if (!onOpenContextMenu || !eventId || !item.sender) {
+    if (!onOpenContextMenu) {
       return;
     }
+    // #1155: capture the selection synchronously, before the menu takes focus,
+    // and only when it is text this row actually renders.
+    const selectedText = messageSelectionWithin(event.currentTarget);
     const items = contextMenuItems({
       kind: "message",
       canManage: currentUserId === item.sender,
       canEdit: item.can_edit,
       canReply: canShowReply,
       hasThread: item.thread_summary != null && canComposeReply,
-      senderUserId: item.sender,
+      senderUserId: item.sender ?? "",
       currentUserId: currentUserId ?? "",
       roomId,
-      eventId,
-      isIgnored: ignoredUserIds.includes(item.sender)
+      eventId: eventId ?? "",
+      isIgnored: item.sender ? ignoredUserIds.includes(item.sender) : false,
+      selectedText
     });
     if (items.length === 0) {
       return;
@@ -895,13 +939,14 @@ export function TimelineItemRow({
     onOpenContextMenu(event, {
       kind: "message",
       message: {
-        sender: item.sender,
+        sender: item.sender ?? "",
         room_id: roomId,
-        event_id: eventId,
+        event_id: eventId ?? "",
         body: item.body ?? "",
         reply_count: item.thread_summary?.reply_count ?? 0
       },
-      onOpenEdit: openEditForm
+      onOpenEdit: openEditForm,
+      selectedText
     }, items);
   }
 
@@ -947,6 +992,15 @@ export function TimelineItemRow({
       data-reply={item.in_reply_to_event_id ? "true" : undefined}
       data-message-kind={messageKind}
       onContextMenu={handleContextMenu}
+      onMouseDown={(event) => {
+        // #1155: a right-button mousedown collapses the DOM selection before
+        // `contextmenu` reaches us, so the selected-text actions would lose the
+        // text the user aimed at. Suppress the default only for that case, and
+        // only when the selection is this row's own message text.
+        if (event.button === 2 && messageSelectionWithin(event.currentTarget)) {
+          event.preventDefault();
+        }
+      }}
     >
       {avatarElement}
       <div className="message-main">

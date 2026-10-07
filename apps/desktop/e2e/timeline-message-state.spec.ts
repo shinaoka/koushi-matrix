@@ -467,6 +467,67 @@ test("overflow count is shown when overflow_count > 0", async ({ page }) => {
 // 7. Edited marker and re-edit capability
 // ---------------------------------------------------------------------------
 
+async function installClipboardStub(page: import("@playwright/test").Page): Promise<void> {
+  await page.addInitScript(() => {
+    let clipboardText = "";
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          clipboardText = value;
+        },
+        readText: async () => clipboardText
+      }
+    });
+  });
+}
+
+/**
+ * External URLs opened through the platform port. The Playwright harness runs
+ * the Tauri runtime path (`__TAURI_INTERNALS__` is installed), so the opener
+ * plugin call is what the mock IPC records — the browser adapter's `window.open`
+ * branch is not exercised by this harness.
+ */
+async function openedExternalUrls(page: import("@playwright/test").Page): Promise<string[]> {
+  return page.evaluate(() =>
+    window.__harness
+      .invocations()
+      .filter((call) => call.command === "plugin:opener|open_url")
+      .map((call) => String((call.args as { url?: string }).url))
+  );
+}
+
+async function selectMessageSubstring(
+  page: import("@playwright/test").Page,
+  eventId: string,
+  phrase: string
+): Promise<void> {
+  await page.evaluate(
+    ({ eventId: id, phrase: selected }) => {
+      const article = document.querySelector(`[data-event-id="${id}"]`);
+      if (!article) throw new Error("message article missing");
+      const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT);
+      let node: Text | null = null;
+      while (walker.nextNode()) {
+        const candidate = walker.currentNode as Text;
+        if (candidate.data.includes(selected)) {
+          node = candidate;
+          break;
+        }
+      }
+      if (!node) throw new Error("message body text node missing");
+      const start = node.data.indexOf(selected);
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, start + selected.length);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    },
+    { eventId, phrase }
+  );
+}
+
 test("message context menu Edit opens the row's inline editor (#1100)", async ({ page }) => {
   await gotoReadyShell(page);
   const eventId = "$context-edit-item:example.invalid";
@@ -486,6 +547,106 @@ test("message context menu Edit opens the row's inline editor (#1100)", async ({
   await expect(editTextarea).toBeVisible();
   await expect(editTextarea).toHaveText("Context menu edit body");
   await expect(article.getByRole("button", { name: t("timeline.saveEdit") })).toBeVisible();
+});
+
+test("selected message text offers exact Copy of the selection (#1155)", async ({ page }) => {
+  await installClipboardStub(page);
+  await gotoReadyShell(page);
+  const eventId = "$selection-copy:example.invalid";
+  await seedTimelineItems(page, [
+    makeEventItem(eventId, { body: "First phrase. Second phrase." })
+  ]);
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  await expect(article).toBeVisible();
+
+  await selectMessageSubstring(page, eventId, "Second phrase.");
+  await article.click({ button: "right" });
+
+  const copyItem = page.getByRole("menuitem", { name: t("context.copySelectedText") });
+  await expect(copyItem).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: t("context.searchWebForSelectedText") })
+  ).toBeVisible();
+  // Opening the menu transmits nothing.
+  expect(await openedExternalUrls(page)).toEqual([]);
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("");
+
+  await copyItem.click();
+  // Exactly the selected substring — never the whole message body.
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(
+    "Second phrase."
+  );
+  expect(await openedExternalUrls(page)).toEqual([]);
+});
+
+test("selected message text searches DuckDuckGo through the external URL port (#1155)", async ({
+  page
+}) => {
+  await installClipboardStub(page);
+  await gotoReadyShell(page);
+  const eventId = "$selection-search:example.invalid";
+  await seedTimelineItems(page, [
+    makeEventItem(eventId, { body: "First phrase. Second phrase." })
+  ]);
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  await expect(article).toBeVisible();
+
+  await selectMessageSubstring(page, eventId, "Second phrase.");
+  await article.click({ button: "right" });
+  await page
+    .getByRole("menuitem", { name: t("context.searchWebForSelectedText") })
+    .click();
+
+  await expect
+    .poll(() => openedExternalUrls(page))
+    .toEqual(["https://duckduckgo.com/?q=Second%20phrase."]);
+});
+
+test("a selection outside the message text offers no selection actions (#1155)", async ({
+  page
+}) => {
+  await installClipboardStub(page);
+  await gotoReadyShell(page);
+  const eventId = "$selection-scope:example.invalid";
+  await seedTimelineItems(page, [
+    makeEventItem(eventId, { body: "Editable body text", can_edit: true })
+  ]);
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  await expect(article).toBeVisible();
+
+  // No selection at all: the message menu keeps its existing actions only.
+  await article.click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: t("context.redactMessage") })).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: t("context.copySelectedText") })
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("menuitem", { name: t("context.searchWebForSelectedText") })
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  // A selection inside the row's own inline edit composer is draft text, not
+  // message text, so it must not offer the selection actions either.
+  await article.getByRole("button", { name: t("timeline.editMessage") }).click();
+  const editTextarea = article.getByRole("textbox", { name: t("timeline.editBody") });
+  await expect(editTextarea).toBeVisible();
+  await editTextarea.evaluate((element) => {
+    const text = element.querySelector("[data-composer-text]")?.firstChild;
+    if (!text) throw new Error("edit text node missing");
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await article.click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: t("context.redactMessage") })).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: t("context.copySelectedText") })
+  ).toHaveCount(0);
 });
 
 test("message context menu omits Edit when Rust reports can_edit=false (#1100)", async ({
