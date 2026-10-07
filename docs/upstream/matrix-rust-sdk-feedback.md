@@ -50,6 +50,24 @@ or SDK boundary without logging private Matrix payloads.
 
 ## Upstreamable Patch Material
 
+- Cancellation-safe event-focused initialization (#1146, 2026-10-07, fork
+  topic `8c861d4` on `fix/1146-transactional-focused-cache`) changes only `event_cache/caches/event_focused/mod.rs` and its constructor caller in
+  `event_cache/caches/mod.rs`. Initial context loading now completes on local,
+  unpublished state inside `StateLock::try_insert_once_with`; only success
+  registers the state and publishes the reusable handle, without another await
+  between those steps. Previously an HTTP error or cancelled `/context` left
+  registered state without a handle, so retry failed with
+  `CacheStateAlreadyExists`. No public API can remove that orphaned selector,
+  and dropping the whole room cache is not a targeted cancellation substitute.
+  The existing lock ordering and context errors are preserved. Core's
+  `sdk_focused_cache_context_error_does_not_poison_retry` reproduces the orphan
+  against the old SDK and passes with this patch; the real-SDK
+  `sdk_focused_build_waiting_on_context_is_cancelled_and_retry_starts_fresh`
+  proves a second request succeeds without releasing the original delayed
+  response. Upstream intent: submit this transactional-construction correction
+  with standalone SDK regressions; remove the fork topic once incorporated.
+  No upstream PR has been submitted by this session.
+
 The [2026-09-14 thread unread evidence packet](2026-09-14-thread-unread-regressions.md) records exact historical revisions, separate reproduction cases, sanitized RED/GREEN results, and patch export instructions. It distinguishes fork test evidence from still-pending clean upstream verification.
 
 - Thread-related edit notification ownership (2026-09-14, local SDK topic

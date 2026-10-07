@@ -361,10 +361,17 @@ impl<T> AbortOnDrop<T> {
             .expect("abort-on-drop task handle must be taken once")
     }
 
-    fn abort(&self) {
+    pub(crate) fn abort(&self) {
         if let Some(handle) = &self.handle {
             handle.abort();
         }
+    }
+
+    pub(crate) async fn settle(&mut self) {
+        if let Some(handle) = &mut self.handle {
+            let _ = handle.await;
+        }
+        self.handle.take();
     }
 }
 
