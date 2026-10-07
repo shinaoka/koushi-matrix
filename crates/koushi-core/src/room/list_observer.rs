@@ -469,6 +469,9 @@ async fn project_room_list_snapshot(
                 profiles: user_profiles,
             },
             AppAction::RoomAccessUpdated {
+                generation,
+                source,
+                authoritative,
                 access: room_access,
             },
         ])

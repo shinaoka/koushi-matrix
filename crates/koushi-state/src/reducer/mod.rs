@@ -945,7 +945,12 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             source,
             kind,
         } => room::handle_room_list_bootstrap_failed(state, generation, source, kind),
-        AppAction::RoomAccessUpdated { access } => room::handle_room_access_updated(state, access),
+        AppAction::RoomAccessUpdated {
+            generation,
+            source,
+            authoritative,
+            access,
+        } => room::handle_room_access_updated(state, generation, source, authoritative, access),
         AppAction::RoomListFilterSelected { filter } => {
             room::handle_room_list_filter_selected(state, filter)
         }

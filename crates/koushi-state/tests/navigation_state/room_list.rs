@@ -1134,72 +1134,132 @@ fn room_list_update_keeps_active_dm_global_with_selected_space() {
     );
 }
 
-/// #1166: the projected access conditions are their own slice, replaced
-/// wholesale with the room list and cleared when the session is retired.
+/// #1166: the access slice rides its room-list snapshot's generation/source
+/// decision: an authoritative projection replaces it, a provisional one merges,
+/// a stale one is ignored, and a local leave prunes the room.
 #[test]
-fn room_access_projection_replaces_and_clears_with_the_room_list() {
+fn room_access_projection_follows_its_room_list_snapshot() {
     let mut state = ready_state();
     assert!(state.room_access.is_empty());
 
+    // The room-list service must be loading this generation/source before an
+    // authoritative snapshot for it is accepted.
+    state.room_list.readiness = koushi_state::RoomListReadiness::Loading {
+        source: koushi_state::RoomListSource::Live,
+        generation: 1,
+    };
+    reduce(
+        &mut state,
+        AppAction::RoomListSnapshotAuthoritative {
+            generation: 1,
+            source: koushi_state::RoomListSource::Live,
+            spaces: Vec::new(),
+            rooms: rooms(),
+            invites: Vec::new(),
+        },
+    );
     let effects = reduce(
         &mut state,
         AppAction::RoomAccessUpdated {
+            generation: 1,
+            source: koushi_state::RoomListSource::Live,
+            authoritative: true,
             access: BTreeMap::from([
-                (
-                    "!room-a:example.invalid".to_owned(),
-                    koushi_state::RoomJoinRule::Public,
-                ),
-                (
-                    "!room-b:example.invalid".to_owned(),
-                    koushi_state::RoomJoinRule::Knock,
-                ),
+                ("room-a".to_owned(), koushi_state::RoomJoinRule::Public),
+                ("global-room".to_owned(), koushi_state::RoomJoinRule::Knock),
             ]),
         },
-    );
-    assert_eq!(state.room_access.len(), 2);
-    assert_eq!(
-        state.room_access.get("!room-a:example.invalid"),
-        Some(&koushi_state::RoomJoinRule::Public)
     );
     assert_eq!(
         effects,
         vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
     );
+    assert_eq!(
+        state.room_access.get("room-a"),
+        Some(&koushi_state::RoomJoinRule::Public)
+    );
 
-    // An identical projection is not an event.
+    // The same slice is not an event.
+    let unchanged = state.room_access.clone();
     assert!(
         reduce(
             &mut state,
             AppAction::RoomAccessUpdated {
-                access: BTreeMap::from([
-                    (
-                        "!room-a:example.invalid".to_owned(),
-                        koushi_state::RoomJoinRule::Public
-                    ),
-                    (
-                        "!room-b:example.invalid".to_owned(),
-                        koushi_state::RoomJoinRule::Knock
-                    ),
-                ]),
+                generation: 1,
+                source: koushi_state::RoomListSource::Live,
+                authoritative: true,
+                access: unchanged,
             },
         )
         .is_empty()
     );
 
-    // The next projection replaces the slice, so a room that left the list
-    // disappears with it.
+    // A stale snapshot (different generation) cannot overwrite it.
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::RoomAccessUpdated {
+                generation: 0,
+                source: koushi_state::RoomListSource::Live,
+                authoritative: true,
+                access: BTreeMap::from([
+                    ("room-a".to_owned(), koushi_state::RoomJoinRule::Invite,)
+                ]),
+            },
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        state.room_access.get("room-a"),
+        Some(&koushi_state::RoomJoinRule::Public)
+    );
+
+    // A provisional projection merges instead of erasing the rest. The service
+    // starts loading that generation before its provisional snapshot arrives.
+    state.room_list.readiness = koushi_state::RoomListReadiness::Loading {
+        source: koushi_state::RoomListSource::Live,
+        generation: 2,
+    };
+    reduce(
+        &mut state,
+        AppAction::RoomListSnapshotProvisional {
+            generation: 2,
+            source: koushi_state::RoomListSource::Live,
+            spaces: Vec::new(),
+            rooms: rooms(),
+            invites: Vec::new(),
+        },
+    );
     reduce(
         &mut state,
         AppAction::RoomAccessUpdated {
-            access: BTreeMap::from([(
-                "!room-b:example.invalid".to_owned(),
-                koushi_state::RoomJoinRule::Invite,
-            )]),
+            generation: 2,
+            source: koushi_state::RoomListSource::Live,
+            authoritative: false,
+            access: BTreeMap::from([("room-a".to_owned(), koushi_state::RoomJoinRule::Restricted)]),
         },
     );
-    assert_eq!(state.room_access.len(), 1);
+    assert_eq!(
+        state.room_access.get("room-a"),
+        Some(&koushi_state::RoomJoinRule::Restricted),
+        "a provisional projection updates the room it carries"
+    );
+    assert_eq!(
+        state.room_access.get("global-room"),
+        Some(&koushi_state::RoomJoinRule::Knock),
+        "a provisional projection keeps the rooms it does not carry"
+    );
 
-    // Retiring the session withdraws the projection with the room list.
+    // A local leave removes the room's condition with the room.
+    reduce(
+        &mut state,
+        AppAction::RoomLeftLocally {
+            room_id: "room-a".to_owned(),
+        },
+    );
+    assert!(!state.room_access.contains_key("room-a"));
+
+    // Retiring the session withdraws the whole slice.
     reduce(&mut state, AppAction::LogoutRequested);
     assert!(state.room_access.is_empty());
 }
@@ -1210,10 +1270,10 @@ fn room_access_projection_is_ignored_without_a_ready_session() {
     let effects = reduce(
         &mut state,
         AppAction::RoomAccessUpdated {
-            access: BTreeMap::from([(
-                "!room-a:example.invalid".to_owned(),
-                koushi_state::RoomJoinRule::Public,
-            )]),
+            generation: 0,
+            source: koushi_state::RoomListSource::Cache,
+            authoritative: false,
+            access: BTreeMap::from([("room-a".to_owned(), koushi_state::RoomJoinRule::Public)]),
         },
     );
     assert!(effects.is_empty());

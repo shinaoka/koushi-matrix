@@ -397,3 +397,32 @@ fn a_low_priority_tag_change_republishes_sections_and_native_attention() {
     assert_eq!(sidebar.account_home.unread_count, 1, "the DM still counts");
     assert!(next.native_attention.summary.candidate.is_none());
 }
+
+/// #1166: a room's projected access condition is visible on its sidebar row, so
+/// changing only that slice must publish a sidebar delta.
+#[test]
+fn access_condition_change_alone_publishes_the_sidebar() {
+    let previous = fixture(None);
+    let mut next = previous.clone();
+    next.room_access.insert(
+        "!A-false:example.invalid".to_owned(),
+        koushi_state::RoomJoinRule::Public,
+    );
+
+    let sidebar = build_state_delta(1, &previous, &next)
+        .expect("an access-condition change is a delta")
+        .changed
+        .sidebar
+        .expect("the sidebar carries the row's access condition");
+
+    assert_eq!(sidebar, compose_sidebar_for_state(&next));
+    let row = sidebar
+        .space_rooms
+        .iter()
+        .find(|room| room.room_id == "!A-false:example.invalid")
+        .expect("the room is in the sidebar");
+    assert_eq!(
+        row.access_join_rule,
+        Some(koushi_state::RoomJoinRule::Public)
+    );
+}

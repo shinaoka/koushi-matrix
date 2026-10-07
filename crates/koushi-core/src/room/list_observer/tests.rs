@@ -1264,7 +1264,7 @@ async fn live_room_list_projects_each_rooms_own_access_condition() {
         loop {
             let actions = harness.action_rx.recv().await.expect("observer running");
             let access = actions.iter().find_map(|action| match action {
-                AppAction::RoomAccessUpdated { access } => Some(access.clone()),
+                AppAction::RoomAccessUpdated { access, .. } => Some(access.clone()),
                 _ => None,
             });
             if let Some(access) = access
