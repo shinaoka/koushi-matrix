@@ -1731,6 +1731,17 @@ tokens, paths, or raw errors.
   `ScheduledSendCancelled` and `ScheduledSendDispatched` remove the item. Room
   pruning, logout, lock, and account switch clear or retain the backing store by
   joined-room account context.
+- Acceptance is not durability (#1159). A failed local store write dispatches
+  `ScheduledSendPersistenceFailed`, which publishes exactly one coarse,
+  identifier-free `scheduled_send_persistence_failed` error and never appends a
+  second copy for a repeated failure; a later successful write dispatches
+  `ScheduledSendPersisted`, which clears that code only and emits nothing when
+  there was nothing to clear. Both actions require a `Ready` session and never
+  change the queue. The composer renders the notice from `ui.errors` alongside
+  the main and thread composers' other notices. The notice belongs to the
+  session that produced it: every path that retires or replaces that `Ready`
+  session withdraws it (`clear_session_views`, logout, sync failure, and
+  sliding-sync capability retirement).
 - `AppActor` owns the local fallback timer. When an item is due, it dispatches
   only `ScheduledSendHandle::Local` items through the account actor with the
   captured room/thread target and deterministic transaction id. Server
@@ -1761,6 +1772,10 @@ stateDiagram-v2
     Queued --> Empty: ScheduledSendDispatched [known Local handle] / route SendText
     Queued --> Empty: RoomListUpdated [room pruned] / retain joined rooms
     Queued --> Empty: LogoutRequested/SessionCleared
+    Empty --> Empty: ScheduledSendPersistenceFailed [Ready] / publish local-save failure
+    Queued --> Queued: ScheduledSendPersistenceFailed [Ready] / publish local-save failure
+    Empty --> Empty: ScheduledSendPersisted [Ready] / clear local-save failure
+    Queued --> Queued: ScheduledSendPersisted [Ready] / clear local-save failure
 ```
 
 - **Issue #450 guards**: `ScheduleSend` and `RescheduleScheduledSend` validate
