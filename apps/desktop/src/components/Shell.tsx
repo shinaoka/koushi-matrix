@@ -692,6 +692,7 @@ export function Sidebar({
                 <span
                   className="workspace-access-icon"
                   data-space-access={activeSpaceAccess.icon}
+                  tabIndex={0}
                   {...triggerProps}
                 >
                   {activeSpaceAccess.icon === "globe" ? (
@@ -710,7 +711,7 @@ export function Sidebar({
             ? roomAccessHeaderBadges(activeSpaceAccess).map((badge) => (
                 <Tooltip key={badge.labelMessageId} label={t(badge.descriptionMessageId)}>
                   {(triggerProps) => (
-                    <span className="workspace-access-badge" {...triggerProps}>
+                    <span className="workspace-access-badge" tabIndex={0} {...triggerProps}>
                       {t(badge.labelMessageId)}
                     </span>
                   )}

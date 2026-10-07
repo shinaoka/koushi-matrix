@@ -998,6 +998,7 @@ export function TimelinePane({
                 <span
                   className="channel-access-icon"
                   data-room-access={headerAccess.icon}
+                  tabIndex={0}
                   {...triggerProps}
                 >
                   {headerAccess.icon === "globe" ? (
@@ -1014,7 +1015,7 @@ export function TimelinePane({
             ? roomAccessHeaderBadges(headerAccess).map((badge) => (
                 <Tooltip key={badge.labelMessageId} label={t(badge.descriptionMessageId)}>
                   {(triggerProps) => (
-                    <span className="channel-access-badge" {...triggerProps}>
+                    <span className="channel-access-badge" tabIndex={0} {...triggerProps}>
                       {t(badge.labelMessageId)}
                     </span>
                   )}

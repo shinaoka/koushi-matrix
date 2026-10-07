@@ -294,6 +294,19 @@ test("the Space rail summarises each access condition and keeps the unread badge
   await expect(rail.locator('[data-space-access="question"]')).toHaveCount(1);
   await expect(rail.locator('[data-space-access="loading"]')).toHaveCount(1);
 
+  // Each glyph belongs to its own Space, not merely to the rail as a whole.
+  await expect(
+    rail.getByRole("button", { name: "Open Space", exact: true }).locator('[data-space-access="globe"]')
+  ).toHaveCount(1);
+  await expect(
+    rail
+      .getByRole("button", { name: "Conditional Space", exact: true })
+      .locator('[data-space-access="info"]')
+  ).toHaveCount(1);
+  await expect(
+    rail.getByRole("button", { name: "Quiet Space", exact: true }).locator('[data-space-access="loading"]')
+  ).toHaveCount(1);
+
   // The rail item keeps the Space name and explains access, and the bubble is
   // not clipped by the rail.
   const inviteItem = rail.getByRole("button", { name: "Invite Space", exact: true });
@@ -303,6 +316,15 @@ test("the Space rail summarises each access condition and keeps the unread badge
     .filter({ hasText: `Invite Space${t("access.conditionSummarySeparator")}${t("access.inviteOnlyDescription")}` });
   await expect(bubble).toHaveCount(1);
   await expect(bubble).toBeInViewport({ ratio: 1 });
+
+  // Keyboard focus on the rail item reaches the same explanation, through the
+  // button's own description.
+  await inviteItem.focus();
+  const describedBy = await inviteItem.getAttribute("aria-describedby");
+  expect(describedBy).toBeTruthy();
+  await expect(page.locator(`[id="${describedBy}"]`)).toHaveText(
+    `Invite Space${t("access.conditionSummarySeparator")}${t("access.inviteOnlyDescription")}`
+  );
 
   // The unread badge keeps the lower trailing corner; the access overlay stays
   // in the upper half so it cannot obscure it.
@@ -338,7 +360,13 @@ test("the Space header shows the active Space's access condition", async ({ page
   ]);
   await expect(header.locator('[data-space-access]')).toHaveCount(0);
 
-  // The header badge explains the condition on hover.
+  // Both routes keep their own full labels in the header.
+  await pushSpaces(page, "!conditional-space:example.invalid");
+  await expect(header.locator(".workspace-access-badge")).toHaveText([
+    t("access.conditionsApply")
+  ]);
+
+  // The header badge explains the condition on hover and on keyboard focus.
   await pushSpaces(page, "!invite-space:example.invalid");
   await expect(header.locator('[data-space-access="padlock"]')).toHaveCount(1);
   await header.locator(".workspace-access-badge").first().hover();
@@ -347,4 +375,10 @@ test("the Space header shows the active Space's access condition", async ({ page
     .filter({ hasText: t("access.inviteOnlyDescription") });
   await expect(bubble).toHaveCount(1);
   await expect(bubble).toBeInViewport({ ratio: 1 });
+
+  // A header trigger is reachable by keyboard, since the header itself has no
+  // focusable container.
+  await header.locator(".workspace-access-badge").first().focus();
+  await expect(bubble).toHaveCount(1);
+  await expect(bubble).toBeVisible();
 });
