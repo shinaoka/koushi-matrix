@@ -3673,3 +3673,57 @@ fn same_room_thread_media_progress_does_not_borrow_room_request_correlation() {
         "same-room thread presentation must not borrow room request correlation"
     );
 }
+
+/// A manager-owned worker that must be polled for the inline await to finish,
+/// like a worker holding an SDK lock permit the inline await waits on. It never
+/// completes on its own.
+async fn parked_worker<T>(polled: oneshot::Sender<()>) -> T {
+    let _ = polled.send(());
+    std::future::pending::<T>().await
+}
+
+#[tokio::test]
+async fn inline_manager_await_drives_every_manager_polled_worker_set() {
+    for set in [
+        "send_enqueue",
+        "focused_build",
+        "read_worker",
+        "read_retry",
+        "global_observer",
+    ] {
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let (polled_tx, polled_rx) = oneshot::channel();
+        match set {
+            "send_enqueue" => manager
+                .send_enqueue_workers
+                .tasks
+                .push(Box::pin(parked_worker(polled_tx))),
+            "focused_build" => manager
+                .focused_builds
+                .tasks
+                .push(Box::pin(parked_worker(polled_tx))),
+            "read_worker" => manager
+                .read_workers
+                .tasks
+                .push(Box::pin(parked_worker(polled_tx))),
+            "read_retry" => manager
+                .read_workers
+                .retry_tasks
+                .push(Box::pin(parked_worker(polled_tx))),
+            _ => {
+                manager.global_send_completion_observer_future =
+                    Some(Box::pin(parked_worker(polled_tx)));
+            }
+        }
+        // Liveness bound: without driving the set, the inline await never ends.
+        let driven = tokio::time::timeout(
+            Duration::from_secs(60),
+            manager.await_driving_manager_workers(polled_rx),
+        )
+        .await;
+        assert!(
+            matches!(driven, Ok(Ok(()))),
+            "{set}: an inline manager await must keep polling this worker set"
+        );
+    }
+}
