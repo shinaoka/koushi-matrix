@@ -1429,6 +1429,10 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         | AppAction::ScheduledSendDispatched { scheduled_id } => {
             timeline::handle_scheduled_send_cancelled_or_dispatched(state, scheduled_id)
         }
+        AppAction::ScheduledSendPersistenceFailed { message } => {
+            timeline::handle_scheduled_send_persistence_failed(state, message)
+        }
+        AppAction::ScheduledSendPersisted => timeline::handle_scheduled_send_persisted(state),
         AppAction::UploadStagingChanged { target, items } => {
             timeline::handle_upload_staging_changed(state, target, items)
         }
@@ -2081,7 +2085,16 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let had_room_notification_settings = !state.room_notification_settings.is_empty();
     let had_search_crawler = state.search_crawler != Default::default();
     let had_space_members = state.space_members != Default::default();
+    // #1159: a local scheduled-send save failure belongs to the session that
+    // produced it, so retiring that session must withdraw the notice.
+    let had_scheduled_send_persistence_failure = state
+        .errors
+        .iter()
+        .any(|error| error.code == timeline::SCHEDULED_SEND_PERSISTENCE_FAILED);
 
+    state
+        .errors
+        .retain(|error| error.code != timeline::SCHEDULED_SEND_PERSISTENCE_FAILED);
     state.navigation = NavigationState::default();
     state.link_preview_settings = Default::default();
     state.room_preferences = Default::default();
@@ -2220,6 +2233,9 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     }
     if had_space_members {
         effects.push(AppEffect::EmitUiEvent(UiEvent::SpaceMembersChanged));
+    }
+    if had_scheduled_send_persistence_failure {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ErrorChanged));
     }
     effects
 }

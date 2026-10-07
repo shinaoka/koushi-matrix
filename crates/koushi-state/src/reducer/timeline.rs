@@ -15,6 +15,50 @@ use super::{
 
 const TIMELINE_SUBSCRIPTION_FAILED_MESSAGE: &str = "Matrix timeline subscription failed";
 
+/// Error code for a failed local scheduled-send save (#1159). The desktop
+/// composer matches this code to show its localized notice; the Rust message
+/// stays a coarse, identifier-free fallback.
+pub(crate) const SCHEDULED_SEND_PERSISTENCE_FAILED: &str = "scheduled_send_persistence_failed";
+
+pub(crate) fn handle_scheduled_send_persistence_failed(
+    state: &mut AppState,
+    message: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    // One notice per failure class: repeated failed writes must not grow the list.
+    if state
+        .errors
+        .iter()
+        .any(|error| error.code == SCHEDULED_SEND_PERSISTENCE_FAILED)
+    {
+        return Vec::new();
+    }
+    state.errors.push(AppError {
+        code: SCHEDULED_SEND_PERSISTENCE_FAILED.to_owned(),
+        message,
+        recoverable: true,
+    });
+    vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
+}
+
+pub(crate) fn handle_scheduled_send_persisted(state: &mut AppState) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    // A successful write saves the whole store, so the earlier failure is
+    // resolved. Other codes are untouched (#1159).
+    let previous_len = state.errors.len();
+    state
+        .errors
+        .retain(|error| error.code != SCHEDULED_SEND_PERSISTENCE_FAILED);
+    if state.errors.len() == previous_len {
+        return Vec::new();
+    }
+    vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
+}
+
 pub(crate) fn handle_timeline_subscribed(state: &mut AppState, room_id: String) -> Vec<AppEffect> {
     if !is_session_ready(state) || state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
         return Vec::new();

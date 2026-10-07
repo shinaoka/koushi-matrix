@@ -887,3 +887,125 @@ async fn rescheduling_to_a_recognized_unavailable_command_is_rejected_and_preser
         Some(("valid scheduled body", Some("$thread-root:example.test")))
     );
 }
+
+/// Finds the encrypted scheduled-send store written under an isolated data dir.
+fn scheduled_send_store_file(data_dir: &std::path::Path) -> std::path::PathBuf {
+    let mut pending = vec![data_dir.to_owned()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.file_name().is_some_and(|name| name == "scheduled.v1.enc") {
+                return path;
+            }
+        }
+    }
+    panic!("scheduled-send store was not written under {data_dir:?}");
+}
+
+/// #1159: acceptance is not durability. A save that cannot reach the disk must
+/// surface as an error, and a later successful save must clear it.
+#[tokio::test]
+async fn a_failed_local_scheduled_send_save_is_reported_and_cleared_by_a_later_save() {
+    let (runtime, data_dir, _credential_dir) = runtime_with_file_credentials();
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(restore_ready_actions![
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("!room:example.test")],
+            },
+            AppAction::SelectRoom {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::TimelineSubscribed {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::ScheduledSendCapabilityChanged {
+                capability: ScheduledSendCapability::LocalFallback,
+            },
+            AppAction::ComposerDraftChanged {
+                room_id: "!room:example.test".to_owned(),
+                document: "scheduled body".into(),
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        state.timeline.composer.draft == "scheduled body"
+    })
+    .await;
+
+    submit_composer_command(
+        &conn,
+        CoreCommand::App(AppCommand::ScheduleSend {
+            request_id: conn.next_request_id(),
+            expected_account: session_key(),
+            room_id: "!room:example.test".to_owned(),
+            thread_root_event_id: None,
+            body: "scheduled body".to_owned(),
+            send_at_ms: future_epoch_ms(Duration::from_secs(60)),
+            draft_revision: 1.into(),
+        }),
+    )
+    .await
+    .expect("schedule send");
+    let scheduled = wait_for_state(&mut conn, |state| state.timeline.scheduled_sends.len() == 1).await;
+    assert!(!scheduled
+        .errors
+        .iter()
+        .any(|error| error.code == "scheduled_send_persistence_failed"));
+    let scheduled_id = scheduled.timeline.scheduled_sends[0].scheduled_id.clone();
+
+    // Replace the store directory with a regular file: `create_dir_all` then
+    // fails for every later save, regardless of process privileges.
+    let store_file = scheduled_send_store_file(data_dir.path());
+    let store_dir = store_file.parent().expect("store directory").to_owned();
+    std::fs::remove_dir_all(&store_dir).expect("remove store directory");
+    std::fs::write(&store_dir, b"not a directory").expect("clobber store directory");
+
+    conn.command(CoreCommand::App(AppCommand::RescheduleScheduledSend {
+        request_id: conn.next_request_id(),
+        scheduled_id: scheduled_id.clone(),
+        body: "unsaved edit".to_owned(),
+        send_at_ms: future_epoch_ms(Duration::from_secs(120)),
+    }))
+    .await
+    .expect("reschedule without a writable store");
+
+    let failed = wait_for_state(&mut conn, |state| {
+        state
+            .errors
+            .iter()
+            .any(|error| error.code == "scheduled_send_persistence_failed")
+    })
+    .await;
+    // The reservation is accepted and visible; only its durability is in doubt.
+    assert_eq!(failed.timeline.scheduled_sends.len(), 1);
+    assert_eq!(
+        failed.timeline.scheduled_sends[0].body,
+        "unsaved edit".to_owned()
+    );
+
+    // Restoring the path lets the next whole-store write clear the notice.
+    std::fs::remove_file(&store_dir).expect("remove clobbering file");
+    conn.command(CoreCommand::App(AppCommand::RescheduleScheduledSend {
+        request_id: conn.next_request_id(),
+        scheduled_id,
+        body: "saved edit".to_owned(),
+        send_at_ms: future_epoch_ms(Duration::from_secs(180)),
+    }))
+    .await
+    .expect("reschedule with a writable store");
+
+    wait_for_state(&mut conn, |state| {
+        !state
+            .errors
+            .iter()
+            .any(|error| error.code == "scheduled_send_persistence_failed")
+    })
+    .await;
+}

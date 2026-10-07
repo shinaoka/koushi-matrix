@@ -962,6 +962,7 @@ export type MessageId =
   | "scheduled.edit"
   | "scheduled.localFallback"
   | "scheduled.localFallbackNotice"
+  | "scheduled.persistenceFailed"
   | "scheduled.save"
   | "scheduled.schedule"
   | "scheduled.sendLater"
@@ -2740,6 +2741,8 @@ const en: Catalog = {
   "scheduled.bodyInput": "Scheduled message",
   "scheduled.edit": "Edit scheduled send",
   "scheduled.localFallback": "Local fallback",
+  "scheduled.persistenceFailed":
+    "Local scheduled-send changes could not be saved; they may not survive restarting the app.",
   "scheduled.localFallbackNotice": "Will send only while this app is running.",
   "scheduled.save": "Save scheduled send",
   "scheduled.schedule": "Schedule send",
@@ -4421,6 +4424,8 @@ const ja: Catalog = {
   "scheduled.edit": "予約送信を編集",
   "scheduled.localFallback": "ローカルフォールバック",
   "scheduled.localFallbackNotice": "このアプリが起動中のときだけ送信されます。",
+  "scheduled.persistenceFailed":
+    "予約送信の変更をこの端末に保存できませんでした。アプリを再起動すると失われる可能性があります。",
   "scheduled.save": "予約送信を保存",
   "scheduled.schedule": "予約送信",
   "scheduled.sendLater": "あとで送信",

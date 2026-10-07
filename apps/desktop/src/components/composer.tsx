@@ -122,7 +122,8 @@ export const Composer = memo(function Composer({
   onTabToSend,
   preferSendOnForwardTab = false,
   onDiagnosticLogEntry,
-  notice = null
+  notice = null,
+  scheduledSendPersistenceFailed = false
 }: {
   surface?: ComposerSurface;
   editorOnly?: boolean;
@@ -161,6 +162,12 @@ export const Composer = memo(function Composer({
   onDiagnosticLogEntry?: (entry: DiagnosticLogEntry) => void;
   /** Localized transient notice rendered above the composer (issue #450). */
   notice?: string | null;
+  /**
+   * Core reported that local scheduled-send changes could not be saved
+   * (#1159). Rendered as its own notice, so transient slash-command feedback
+   * can never hide a failure that is still true.
+   */
+  scheduledSendPersistenceFailed?: boolean;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const emojiButtonRef = useRef<HTMLButtonElement>(null);
@@ -832,6 +839,11 @@ export const Composer = memo(function Composer({
           {notice}
         </p>
       ) : null}
+      {scheduledSendPersistenceFailed ? (
+        <p className="composer-notice composer-notice-warning" role="status">
+          {t("scheduled.persistenceFailed")}
+        </p>
+      ) : null}
       {!editorOnly && composerMode.kind === "reply" ? (
         <div className="composer-reply-banner">
           <span className="composer-reply-label">{t("composer.replying")}</span>
@@ -1149,6 +1161,7 @@ const ThreadComposer = memo(function ThreadComposer({
   mentionCandidates = [],
   mentionCandidatesLoading = false,
   notice = null,
+  scheduledSendPersistenceFailed = false,
   roomName = t("panel.thread"),
   resolveComposerKeyAction,
   onAttachFiles,
@@ -1173,6 +1186,8 @@ const ThreadComposer = memo(function ThreadComposer({
   mentionCandidates?: MentionCandidate[];
   mentionCandidatesLoading?: boolean;
   notice?: string | null;
+  /** Core-owned local scheduled-send save failure (#1159); see the main composer. */
+  scheduledSendPersistenceFailed?: boolean;
   roomName?: string;
   resolveComposerKeyAction: ResolveComposerKeyAction;
   onAttachFiles?: (files: File[]) => void | Promise<void>;
@@ -1202,6 +1217,7 @@ const ThreadComposer = memo(function ThreadComposer({
       mentionCandidates={mentionCandidates}
       mentionCandidatesLoading={mentionCandidatesLoading}
       notice={notice}
+      scheduledSendPersistenceFailed={scheduledSendPersistenceFailed}
       resolveComposerKeyAction={resolveComposerKeyAction}
       draftKey={draftKey}
       ariaLabel={t("timeline.threadComposer")}

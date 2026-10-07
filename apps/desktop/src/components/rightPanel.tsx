@@ -35,6 +35,7 @@ import {
 import {
   currentSavedSession,
   forwardDestinationsFromSnapshot,
+  hasScheduledSendPersistenceFailure,
   ICON_SIZE,
   ignoreComposerKeyAction,
   pinnedEventIdsForRoom,
@@ -1157,6 +1158,9 @@ export function ContextualRightPanel({
         stagedUploadsReady={uploadStagingItemsAreSendable(threadStagedUploads)}
         onSendStagedUploads={threadSendStagedUploadsStable}
         notice={threadComposerNotice}
+        scheduledSendPersistenceFailed={hasScheduledSendPersistenceFailure(
+          snapshot.state.ui.errors
+        )}
         document={threadDocument}
         draftKey={
           threadComposerDraftImeKey ??

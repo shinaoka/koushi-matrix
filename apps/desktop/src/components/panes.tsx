@@ -38,6 +38,7 @@ import { invitePreviewLabel } from "../domain/roomDisplayLabel";
 import {
   ICON_SIZE,
   avatarInitial,
+  hasScheduledSendPersistenceFailure,
   operationFailureLabel,
   type ComposerModeProp,
   type OpenContextMenu
@@ -1191,6 +1192,9 @@ export function TimelinePane({
         resolveComposerKeyAction={resolveComposerKeyActionStable}
         document={composerDocument}
         notice={composerNotice}
+        scheduledSendPersistenceFailed={hasScheduledSendPersistenceFailure(
+          snapshot.state.ui.errors
+        )}
         draftKey={composerDraftKey ?? timelineRoomId ?? "no-room"}
         roomName={activeRoomName}
         onCancelReply={onCancelReplyStable}

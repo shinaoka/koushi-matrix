@@ -380,6 +380,28 @@ export function shiftScheduledSendValue(value: string, deltaMinutes: number): st
   return datetimeLocalValueFromTimestamp(timestampMs + deltaMinutes * 60_000);
 }
 
+/**
+ * Error code Core publishes when a local scheduled-send save failed (#1159).
+ * Mirrors `SCHEDULED_SEND_PERSISTENCE_FAILED` in
+ * `crates/koushi-state/src/reducer/timeline.rs`.
+ */
+export const SCHEDULED_SEND_PERSISTENCE_FAILED_CODE = "scheduled_send_persistence_failed";
+
+/**
+ * Whether the composer must warn that scheduled-send changes are not durable.
+ * Acceptance is not durability: the reservation exists in this session's memory
+ * but not on disk, so it may not survive a restart.
+ */
+export function hasScheduledSendPersistenceFailure(
+  errors: readonly { code: string }[] | undefined
+): boolean {
+  // A snapshot without the list (older/hand-built fixtures) simply has no
+  // recorded failure; reading it must not throw during render.
+  return (
+    errors?.some((error) => error.code === SCHEDULED_SEND_PERSISTENCE_FAILED_CODE) ?? false
+  );
+}
+
 export function scheduledSendTimestampFromInput(value: string): number | null {
   if (!value.trim()) {
     return null;

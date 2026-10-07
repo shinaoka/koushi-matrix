@@ -398,3 +398,100 @@ fn timeline_pane_snapshot_contains_only_selected_room_scheduled_sends() {
     };
     assert_eq!(timeline.scheduled_sends.len(), 1);
 }
+
+/// #1159: acceptance is not durability. A failed local save must be visible as
+/// its own error, reported once, and cleared by a later successful save.
+#[test]
+fn scheduled_send_persistence_failure_is_reported_once_and_cleared_on_success() {
+    let mut state = selected_room_state("room-a");
+
+    let effects = reduce(
+        &mut state,
+        AppAction::ScheduledSendPersistenceFailed {
+            message: "scheduled sends could not be saved on this device".to_owned(),
+        },
+    );
+    assert_eq!(
+        effects,
+        vec![koushi_state::AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
+    );
+    assert_eq!(state.errors.len(), 1);
+    assert_eq!(state.errors[0].code, "scheduled_send_persistence_failed");
+    assert!(state.errors[0].recoverable);
+
+    // Repeated failures must not grow the notice list.
+    let repeated = reduce(
+        &mut state,
+        AppAction::ScheduledSendPersistenceFailed {
+            message: "again".to_owned(),
+        },
+    );
+    assert!(repeated.is_empty());
+    assert_eq!(state.errors.len(), 1);
+
+    // Unrelated failures are untouched by the recovery.
+    state.errors.push(koushi_state::AppError {
+        code: "other".to_owned(),
+        message: "other".to_owned(),
+        recoverable: true,
+    });
+
+    let cleared = reduce(&mut state, AppAction::ScheduledSendPersisted);
+    assert_eq!(
+        cleared,
+        vec![koushi_state::AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
+    );
+    assert_eq!(state.errors.len(), 1);
+    assert_eq!(state.errors[0].code, "other");
+
+    // Nothing to clear is not an event.
+    assert!(reduce(&mut state, AppAction::ScheduledSendPersisted).is_empty());
+}
+
+#[test]
+fn scheduled_send_persistence_outcome_is_ignored_without_a_ready_session() {
+    let mut state = AppState {
+        session: SessionState::SignedOut,
+        ..AppState::default()
+    };
+
+    let failed = reduce(
+        &mut state,
+        AppAction::ScheduledSendPersistenceFailed {
+            message: "x".to_owned(),
+        },
+    );
+    assert!(failed.is_empty());
+    assert!(state.errors.is_empty());
+    assert!(reduce(&mut state, AppAction::ScheduledSendPersisted).is_empty());
+}
+
+/// #1159: the notice belongs to the session that produced it, so retiring that
+/// session (sign-out) must withdraw it rather than leak it into the next one.
+#[test]
+fn signing_out_withdraws_a_scheduled_send_persistence_notice() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendPersistenceFailed {
+            message: "not saved".to_owned(),
+        },
+    );
+    assert!(
+        state
+            .errors
+            .iter()
+            .any(|error| error.code == "scheduled_send_persistence_failed")
+    );
+
+    let effects = reduce(&mut state, AppAction::LogoutRequested);
+
+    assert!(
+        !state
+            .errors
+            .iter()
+            .any(|error| error.code == "scheduled_send_persistence_failed"),
+        "a retired session must not keep its persistence notice"
+    );
+    assert!(effects.contains(&koushi_state::AppEffect::EmitUiEvent(UiEvent::ErrorChanged)));
+}

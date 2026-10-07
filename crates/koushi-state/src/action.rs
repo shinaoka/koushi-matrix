@@ -1288,6 +1288,16 @@ pub enum AppAction {
     ScheduledSendDispatched {
         scheduled_id: String,
     },
+    /// The account's scheduled-send store could not be written locally (#1159).
+    /// Acceptance and durable local persistence are different facts, so the
+    /// reservation must not look saved on this device until a later save
+    /// succeeds. `message` is a coarse, identifier-free description.
+    ScheduledSendPersistenceFailed {
+        message: String,
+    },
+    /// A scheduled-send store write succeeded, so an earlier local-persistence
+    /// failure is no longer true (#1159).
+    ScheduledSendPersisted,
     UploadStagingChanged {
         target: crate::ComposerTarget,
         items: Vec<StagedUploadItem>,
