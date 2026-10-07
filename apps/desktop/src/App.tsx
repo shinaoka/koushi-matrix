@@ -1305,8 +1305,11 @@ function AccountContent({
         .catch(() => undefined);
     }
   }, [snapshot]);
-  const [loginUsername, setLoginUsername] = useState("");
-  const [loginServerOverride, setLoginServerOverride] = useState<string | null>(null);
+  const loginAccount = accountTabs?.tabs.find((tab) => tab.id === accountTabId);
+  const [loginUsername, setLoginUsername] = useState(() => loginAccount?.accountKey ?? "");
+  const [loginServerOverride, setLoginServerOverride] = useState<string | null>(
+    () => loginAccount?.accountKey ? loginAccount.homeserver : null
+  );
   const loginServer = effectiveLoginServer(loginUsername, loginServerOverride);
   const loginSessionKind = snapshot?.state.domain.session.kind;
   const loginAuth = snapshot?.state.domain.auth;
