@@ -112,4 +112,15 @@ test("failure stage is the first clause of the last core QA failure line", () =>
   );
   assert.equal(failureStage("Headless core QA failed: no-proof rejection timed out\n"), "no-proof rejection timed out");
   assert.equal(failureStage("no failure line\n"), "unknown");
+  // Measured counters must not change the dedupe signature between runs.
+  assert.equal(
+    failureStage(
+      "Headless core QA failed: avatar connection wait timed out held=1 closed=0 media_http_requests=33\n"
+    ),
+    "avatar connection wait timed out"
+  );
+  assert.equal(
+    failureStage("Headless core QA failed: avatar model timed out observed_total=1 media_http_requests=0\n"),
+    "avatar model timed out"
+  );
 });
