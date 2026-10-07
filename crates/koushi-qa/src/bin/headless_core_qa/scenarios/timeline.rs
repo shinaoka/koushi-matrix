@@ -1157,6 +1157,17 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
             }
         }
 
+        // The continuity inspection follows the open timeline, so make this the
+        // selected room before warming it (#1167).
+        let select_id = conn.next_request_id();
+        conn.command(CoreCommand::Room(RoomCommand::SelectRoom {
+            request_id: select_id,
+            room_id: room_id.clone(),
+        }))
+        .await
+        .map_err(|e| format!("cache_restore: submit room select failed: {e}"))?;
+        wait_for_selected_room(&mut conn, &room_id, "cache_restore selected room").await?;
+
         // Paginate backward to EndReached so the full history is warmed into the
         // event cache before the restart below.
         paginate_backward_to_end_reached(
@@ -1168,6 +1179,16 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
             &mut |_diffs| {},
         )
         .await?;
+
+        // #1167: record the coarse continuity of the warmed room before the
+        // restart. A gap-ridden live timeline here means the deep anchor was
+        // never contiguously cached, which is what the restore below observes;
+        // a healthy one points at the restore path instead. Numbers and tokens
+        // only, never identifiers or content.
+        let continuity =
+            wait_for_continuity_token(&mut conn, &key, "cache_restore continuity").await?;
+        println!("cache_restore_continuity=reported");
+        println!("cache_restore_continuity_detail={continuity}");
 
         let anchor_event_id = deep_anchor_id.ok_or_else(|| {
             format!("cache_restore: no fixture message sent (room_idx={room_idx})")
@@ -5783,3 +5804,52 @@ pub(super) async fn wait_for_redact_diff(
 #[cfg(test)]
 #[path = "timeline_tests.rs"]
 mod tests;
+
+/// Coarse, identifier-free continuity token for the QA log (#1167).
+fn timeline_continuity_token(conn: &CoreConnection) -> String {
+    use koushi_state::TimelineContinuityState;
+    match conn.snapshot().timeline.continuity {
+        TimelineContinuityState::Unknown => "unknown".to_owned(),
+        TimelineContinuityState::Inspecting { .. } => "inspecting".to_owned(),
+        TimelineContinuityState::Healthy {
+            authoritative_start,
+            ..
+        } => {
+            if authoritative_start {
+                "healthy_start".to_owned()
+            } else {
+                "healthy".to_owned()
+            }
+        }
+        TimelineContinuityState::Incomplete { gap_count, .. } => {
+            format!("incomplete_gaps_{gap_count}")
+        }
+        TimelineContinuityState::Repairing { gap_count, .. } => {
+            format!("repairing_gaps_{gap_count}")
+        }
+        TimelineContinuityState::FailedIncomplete { gap_count, .. } => {
+            format!("failed_incomplete_gaps_{gap_count}")
+        }
+    }
+}
+
+/// Wait for the inspected timeline to settle, then report its continuity.
+async fn wait_for_continuity_token(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    label: &str,
+) -> Result<String, String> {
+    if conn.snapshot().timeline.room_id.as_deref() != Some(key.room_id()) {
+        return Err(format!(
+            "{label}: the inspected room is not the open timeline"
+        ));
+    }
+    for _ in 0..200 {
+        let token = timeline_continuity_token(conn);
+        if token != "unknown" && token != "inspecting" {
+            return Ok(token);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    Err(format!("{label}: continuity never settled"))
+}

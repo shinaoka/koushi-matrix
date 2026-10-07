@@ -748,7 +748,7 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "link_preview_e2ee_default=ok",
             "link_preview_hide=ok",
         ],
-        QaStage::CacheRestore => &["cache_restore=ok"],
+        QaStage::CacheRestore => &["cache_restore=ok", "cache_restore_continuity=reported"],
         QaStage::ReadStateConvergence => &["read_state_convergence=ok"],
         QaStage::HiddenStateAcl => &["hidden_state_acl=ok"],
         QaStage::ThreadLateJoiner => &[
