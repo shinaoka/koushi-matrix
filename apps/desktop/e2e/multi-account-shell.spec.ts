@@ -267,6 +267,7 @@ test("a restored account's signed-out form prefills its identity without overwri
   await form.locator('input[name="username"]').fill("@edited:example.invalid");
   await page.evaluate(() => {
     window.__harness.setSnapshot({ ...window.__harness.currentSnapshot() });
+    window.__harness.pushStateUpdate();
   });
   await expect(form.locator('input[name="username"]')).toHaveValue("@edited:example.invalid");
   await expect(page.getByRole("button", { name: "Harness: Ready", exact: true })).toBeVisible();

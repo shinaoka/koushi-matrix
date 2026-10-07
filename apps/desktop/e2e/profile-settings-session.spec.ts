@@ -12,10 +12,13 @@ import {
 
 async function gotoSignedOutAuth(page: Page): Promise<void> {
   await gotoReadyShell(page);
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     const snapshot = window.__harness.currentSnapshot();
+    // These tests exercise fresh authentication, not a restored account's re-login.
+    const accountTabId = "fresh-auth-account";
     window.__harness.setSnapshot({
       ...snapshot,
+      account_tab_id: accountTabId,
       state: {
         ...snapshot.state,
         domain: {
@@ -77,6 +80,19 @@ async function gotoSignedOutAuth(page: Page): Promise<void> {
         dm_highlight_count: 0
       },
       timeline: []
+    });
+    await window.__harness.pushAccountTabs({
+      selectedTabId: accountTabId,
+      tabs: [{
+        id: accountTabId,
+        accountKey: null,
+        homeserver: null,
+        displayName: null,
+        avatarSourceRef: null,
+        status: "signedOut",
+        unreadCount: 0
+      }],
+      badgeCount: 0
     });
     window.__harness.pushStateUpdate();
     window.__harness.clearInvocations();
