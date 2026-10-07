@@ -2352,13 +2352,6 @@ fn gate_sas_and_bootstrap_commands_project_only_opaque_flow_state() {
             flow_id: 31,
         })
     );
-    assert_eq!(
-        account_command_projected_action(&AccountCommand::ConfirmSessionBootstrapSaved {
-            request_id,
-            flow_id: 32,
-        }),
-        Some(AppAction::BootstrapRecoverySavedConfirmed { flow_id: 32 })
-    );
     let debug = format!(
         "{:?}",
         AccountCommand::StartOwnUserSas {
@@ -2374,11 +2367,7 @@ fn gate_sas_and_bootstrap_commands_project_only_opaque_flow_state() {
             request_id,
             flow_id: 32,
             auth: Some(koushi_state::AuthSecret::new("private-auth")),
-            request: koushi_protocol::command::SecureBackupSetupRequest {
-                passphrase: Some(koushi_state::AuthSecret::new("private-passphrase")),
-                recovery_key_destination_requested: true,
-                intent: koushi_state::SecureBackupSetupIntent::InitialSetup,
-            },
+            passphrase: Some(koushi_state::AuthSecret::new("private-passphrase")),
         }
     );
     for forbidden in ["private-auth", "private-passphrase", "/private/"] {

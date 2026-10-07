@@ -335,7 +335,7 @@ fn existing_identity_without_proof_waits_for_explicit_rejection_then_discards() 
 }
 
 #[test]
-fn new_identity_bootstrap_requires_written_destination_and_matching_confirmation() {
+fn new_identity_bootstrap_reveals_the_key_and_requires_matching_confirmation() {
     let info = session_info();
     let gate = VerificationGateState {
         methods: vec![VerificationMethodCapability::Bootstrap],
@@ -354,7 +354,10 @@ fn new_identity_bootstrap_requires_written_destination_and_matching_confirmation
     };
     let effects = reduce(
         &mut state,
-        AppAction::BootstrapRecoveryKeyDelivered { flow_id: 41 },
+        AppAction::BootstrapRecoveryKeyReady {
+            flow_id: 41,
+            recovery_key: koushi_state::RecoveryKeyMaterial::new("synthetic-gate-recovery-key"),
+        },
     );
     assert_eq!(
         state.session,
@@ -362,12 +365,15 @@ fn new_identity_bootstrap_requires_written_destination_and_matching_confirmation
             info: info.clone(),
             gate: gate.clone(),
             flow_id: 41,
-            destination_written: true,
         }
     );
     assert_eq!(
         effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+            AppEffect::EmitUiEvent(UiEvent::E2eeKeyManagementChanged),
+        ]
     );
 
     let before = state.clone();
@@ -395,6 +401,8 @@ fn new_identity_bootstrap_requires_written_destination_and_matching_confirmation
         vec![
             AppEffect::CheckCurrentDeviceTrust,
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+            AppEffect::EmitUiEvent(UiEvent::E2eeKeyManagementChanged),
         ]
     );
 }
@@ -845,7 +853,6 @@ fn normal_room_commands_are_rejected_in_every_verification_gate_state() {
                 failure: None,
             },
             flow_id: 18,
-            destination_written: true,
         },
         SessionState::Rejecting {
             info,

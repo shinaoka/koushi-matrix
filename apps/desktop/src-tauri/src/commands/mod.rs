@@ -102,6 +102,7 @@ pub(crate) mod native_attention;
 pub(crate) mod navigation;
 pub(crate) mod profile;
 pub(crate) mod room;
+pub(crate) mod room_key_files;
 pub(crate) mod search;
 pub(crate) mod session;
 pub(crate) mod settings;

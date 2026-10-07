@@ -2058,8 +2058,7 @@ pub(super) async fn run_timeline_reconnect_scenario_impl(config: &QaConfig) -> R
         .await
         .map_err(|e| format!("timeline_reconnect: submit login A failed: {e}"))?;
 
-    complete_new_identity_gate_for_qa(&mut conn_a, &config.password_a, "timeline-reconnect-gate-a")
-        .await?;
+    complete_new_identity_gate_for_qa(&mut conn_a, &config.password_a).await?;
 
     let account_key_a =
         wait_for_logged_in(&mut conn_a, login_a_id, "timeline_reconnect login A").await?;
@@ -2095,8 +2094,7 @@ pub(super) async fn run_timeline_reconnect_scenario_impl(config: &QaConfig) -> R
         .await
         .map_err(|e| format!("timeline_reconnect: submit login B failed: {e}"))?;
 
-    complete_new_identity_gate_for_qa(&mut conn_b, &config.password_b, "timeline-reconnect-gate-b")
-        .await?;
+    complete_new_identity_gate_for_qa(&mut conn_b, &config.password_b).await?;
 
     let account_key_b =
         wait_for_logged_in(&mut conn_b, login_b_id, "timeline_reconnect login B").await?;

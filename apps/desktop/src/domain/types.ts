@@ -819,7 +819,6 @@ interface SessionStateFields {
   method?: VerificationMethod;
   flow_id?: number;
   sas_emojis?: SasEmoji[];
-  destination_written?: boolean;
   reason?: "existingIdentityWithoutProof" | "userRejected";
   recovery_methods?: RecoveryMethod[];
   failure?: "unsupported" | "unreachable" | "invalidResponse";
@@ -865,7 +864,7 @@ export type SessionState =
     >
   | ExactSessionState<
       "awaitingBootstrapConfirmation",
-      "homeserver" | "user_id" | "device_id" | "gate" | "flow_id" | "destination_written"
+      "homeserver" | "user_id" | "device_id" | "gate" | "flow_id"
     >
   | ExactSessionState<"rejecting", "homeserver" | "user_id" | "device_id" | "reason">
   | SessionAccountState<"ready">

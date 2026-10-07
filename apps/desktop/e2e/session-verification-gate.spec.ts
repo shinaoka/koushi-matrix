@@ -38,9 +38,7 @@ test("verification states replace the complete desktop shell", async ({ page }) 
                 account_kind: "existingIdentity",
                 failureKind: null
               },
-              ...(nextKind === "awaitingBootstrapConfirmation"
-                ? { destination_written: true }
-                : {})
+              ...(nextKind === "awaitingBootstrapConfirmation" ? { flow_id: 7 } : {})
             }
           }
         }
@@ -95,16 +93,17 @@ test("gate controls follow the Core admission matrix", async ({ page }) => {
     { session: { kind: "awaitingVerification", gate: { methods: ["existingDeviceSas", "recoveryKey", "bootstrap"], account_kind: "existingIdentity", failureKind: null } }, present: ["Verify with another device", "Verify with recovery key", "Create secure backup"] },
     { session: { kind: "verifying", method: "existingDeviceSas", flow_id: 5, sas_emojis: Array.from({ length: 7 }, (_, i) => ({ symbol: `e${i}`, description: `d${i}` })), gate: { methods: ["existingDeviceSas"], account_kind: "existingIdentity", failureKind: null } }, present: ["They match", "They do not match", "Cancel"] },
     { session: { kind: "verifying", method: "recoveryKey", flow_id: 6, gate: { methods: ["recoveryKey"], account_kind: "existingIdentity", failureKind: null } }, present: [] },
-    { session: { kind: "awaitingBootstrapConfirmation", flow_id: 7, destination_written: true, gate: { methods: ["bootstrap"], account_kind: "newIdentity", failureKind: null } }, present: ["I saved the recovery key"] },
+    { session: { kind: "awaitingBootstrapConfirmation", flow_id: 7, gate: { methods: ["bootstrap"], account_kind: "newIdentity", failureKind: null } }, setup: { kind: "recoveryKeyReady", request_id: 7, recovery_key: "synthetic-matrix-recovery-key", delivery: { kind: "notWritten" }, confirmation_failed: false }, present: ["I saved the recovery key"] },
     { session: { kind: "provisional", phase: { recheckingTrust: {} } }, present: ["Retry"] },
     { session: { kind: "locked" }, present: [] }
   ];
   for (const entry of cases) {
-    await page.evaluate((session) => {
+    await page.evaluate(({ session, setup }) => {
       const snapshot = window.__harness.currentSnapshot();
-      window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { homeserver: "https://example.invalid", user_id: "@gate:example.invalid", device_id: "DEVICE", ...session } as any } } });
+      const keyManagement = snapshot.state.domain.e2ee_trust.key_management;
+      window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { homeserver: "https://example.invalid", user_id: "@gate:example.invalid", device_id: "DEVICE", ...session } as any, e2ee_trust: { ...snapshot.state.domain.e2ee_trust, key_management: { ...keyManagement, secure_backup_setup: (setup ?? { kind: "idle" }) as any } } } } });
       window.__harness.pushStateUpdate();
-    }, entry.session);
+    }, { session: entry.session, setup: "setup" in entry ? entry.setup : undefined });
     for (const label of controls) {
       await expect(
         page.getByRole("button", { name: label, exact: true }),
@@ -138,19 +137,22 @@ test("recovery and bootstrap actions preserve secrets outside observable state",
     window.__harness.clearInvocations();
   });
   const passphrase = "SYNTHETIC_PASSPHRASE_9911";
-  const destination = "/synthetic/private/recovery-9911.txt";
-  await page.getByLabel("Recovery key destination").fill(destination);
+  // #1049: the bootstrap needs no file destination.
+  await expect(page.getByLabel("Recovery key destination")).toHaveCount(0);
   await page.getByLabel("Backup passphrase").fill(passphrase);
   await page.getByRole("button", { name: "Create secure backup" }).click();
-  await expect(page.getByLabel("Recovery key destination")).toHaveCount(0);
   await expect(page.getByLabel("Backup passphrase")).toHaveCount(0);
   const bootstrapArgs = await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("start_session_bootstrap")[0]?.args)).toBeTruthy().then(() => page.evaluate(() => window.__harness.invocationsOf("start_session_bootstrap")[0]!.args));
-  expect(bootstrapArgs).toMatchObject({ passphrase: "[REDACTED]", recoveryKeyDestinationPath: "[REDACTED]" });
-  expect(bootstrapArgs.flowId).toBeUndefined();
+  expect(bootstrapArgs).toEqual({ passphrase: "[REDACTED]" });
+  // The revealed key is rendered from the Rust snapshot and never echoed
+  // back through a command.
+  const reveal = page.getByRole("region", { name: "Your recovery key" });
+  await expect(reveal.locator("code.recovery-key-value")).toHaveText("synthetic-harness-recovery-key");
   await expect(page.getByRole("button", { name: "I saved the recovery key" })).toBeVisible();
   const observable = await page.evaluate(() => `${JSON.stringify(window.__harness.currentSnapshot())}\n${document.body.textContent ?? ""}`);
   expect(observable).not.toContain(passphrase);
-  expect(observable).not.toContain(destination);
+  const recorded = await page.evaluate(() => JSON.stringify(window.__harness.invocationsOf("start_session_bootstrap")));
+  expect(recorded).not.toContain("synthetic-harness-recovery-key");
 });
 
 test("secure backup gate actions retain the selected account API receiver", async ({ page }) => {
@@ -613,7 +615,8 @@ test("completed verification failures disappear when a new attempt starts", asyn
     });
     window.__harness.pushStateUpdate();
   });
-  await page.getByLabel("Recovery key destination").fill("/tmp/synthetic-recovery-key.txt");
+  // #1049: retrying the bootstrap needs no file destination.
+  await expect(page.getByLabel("Recovery key destination")).toHaveCount(0);
   await page.getByRole("button", { name: "Create secure backup" }).click();
   await expect(page.getByText("Timeout")).toHaveCount(0);
   await expect.poll(() => page.evaluate(
@@ -625,13 +628,14 @@ test("saved confirmation and sign out use matching gate commands", async ({ page
   await page.goto("/appHarness.html");
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
-    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { kind: "awaitingBootstrapConfirmation", homeserver: "https://example.invalid", user_id: "@gate:example.invalid", device_id: "DEVICE", flow_id: 91, destination_written: true, gate: { methods: ["bootstrap"], account_kind: "newIdentity", failureKind: null } } } } });
+    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { kind: "awaitingBootstrapConfirmation", homeserver: "https://example.invalid", user_id: "@gate:example.invalid", device_id: "DEVICE", flow_id: 91, gate: { methods: ["bootstrap"], account_kind: "newIdentity", failureKind: null } }, e2ee_trust: { ...snapshot.state.domain.e2ee_trust, key_management: { ...snapshot.state.domain.e2ee_trust.key_management, secure_backup_setup: { kind: "recoveryKeyReady", request_id: 91, recovery_key: "synthetic-confirm-recovery-key", delivery: { kind: "notWritten" }, confirmation_failed: false } } } } } });
     window.__harness.pushStateUpdate();
     window.__harness.clearInvocations();
   });
   await page.getByRole("button", { name: "I saved the recovery key" }).click();
   await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("confirm_session_bootstrap_saved")[0]?.args)).toEqual({ flowId: 91 });
   await expect(page.getByRole("heading", { name: "Finishing sign-in…" })).toBeVisible();
+  await expect(page.getByText("synthetic-confirm-recovery-key")).toHaveCount(0);
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("logout").length)).toBe(1);
   await expect(page.getByTestId("auth-screen")).toBeVisible();

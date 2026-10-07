@@ -231,3 +231,28 @@ async fn reset_completes_secret_storage_after_an_interrupted_enable() {
         .await
         .expect("the reset key unlocks the new secret storage");
 }
+
+/// #1049: the identity bootstrap sets the delivery-pending marker before
+/// `enable()`. When `enable()` then fails no key was revealed, so the marker
+/// must not survive to force a later recovery-key reset.
+#[tokio::test]
+async fn a_failed_identity_bootstrap_enable_clears_the_delivery_marker() {
+    let (server, session) = session_with_account_data().await;
+    server.mock_room_keys_version().none().mount().await;
+    server.mock_add_room_keys_version().error500().mount().await;
+
+    assert!(
+        session
+            .bootstrap_identity_secure_backup(None)
+            .await
+            .is_err(),
+        "the injected backup-creation failure must fail the bootstrap"
+    );
+    assert!(
+        !session
+            .recovery_key_delivery_pending()
+            .await
+            .expect("marker read"),
+        "a failed bootstrap must not leave the delivery marker set"
+    );
+}

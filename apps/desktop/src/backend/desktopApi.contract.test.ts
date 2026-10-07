@@ -62,6 +62,8 @@ describe("DesktopApi command contract", () => {
         "loadSpaceChildren",
         "dismissEventNavigationFailure",
         "historyExportTimeZone",
+        "chooseRoomKeyExportDestination",
+        "chooseRoomKeyImportSource",
         "exportHistory",
         "stopHistoryExport",
         "retryHistoryExport",

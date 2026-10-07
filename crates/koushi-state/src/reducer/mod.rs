@@ -204,14 +204,18 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::VerificationSessionRejected { reason } => {
             session::handle_verification_session_rejected(state, reason)
         }
-        AppAction::BootstrapRecoveryKeyDelivered { flow_id } => {
-            session::handle_bootstrap_recovery_key_delivered(state, flow_id)
-        }
+        AppAction::BootstrapRecoveryKeyReady {
+            flow_id,
+            recovery_key,
+        } => session::handle_bootstrap_recovery_key_ready(state, flow_id, recovery_key),
         AppAction::BootstrapRecoveryKeyDeliveryFailed { flow_id, kind } => {
             session::handle_bootstrap_recovery_key_delivery_failed(state, flow_id, kind)
         }
         AppAction::BootstrapRecoverySavedConfirmed { flow_id } => {
             session::handle_bootstrap_recovery_saved_confirmed(state, flow_id)
+        }
+        AppAction::BootstrapRecoverySavedConfirmFailed { flow_id } => {
+            session::handle_bootstrap_recovery_saved_confirm_failed(state, flow_id)
         }
         AppAction::ProvisionalSessionDiscarded => {
             session_status::reset(state);
