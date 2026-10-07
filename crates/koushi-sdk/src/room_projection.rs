@@ -915,6 +915,46 @@ pub async fn room_list_snapshot(
     Ok(snapshot)
 }
 
+/// Room unread counters as the room list should project them (#1176).
+///
+/// The SDK's client-side counters are computed over the room's cached events
+/// only. On a cold start that window can be a single event, so while no own read
+/// receipt is anchored in the loaded timeline (and no receipt is left unmatched)
+/// the client values are a lower bound: a never-read room reports `1` whatever
+/// its real unread total is. The homeserver's own `unread_notification_counts`
+/// still describes the room, so in exactly that case the per-counter maximum of
+/// the two snapshots is used instead. An anchored client receipt keeps the
+/// client values authoritative, because they account for encrypted events and
+/// mentions the server cannot classify. Ordering with the read-marker
+/// suppression in [`matrix_room_list_room_from_counts`] is deliberate: the
+/// maximum is taken here, suppression runs afterwards.
+///
+/// Deliberately not the SDK's internal recount condition: a stored receipt can
+/// be recorded as active without its target being present in the loaded chunk,
+/// which this projection cannot observe. Nonempty `pending` means receipts were
+/// received but not matched to loaded events (in the past beyond the loaded
+/// history, or ahead of it because of federation), so those counters are not
+/// treated as authoritative either. On homeservers that report dummy zero server
+/// counts (Synapse Simplified Sliding Sync) this is a no-op.
+fn effective_room_unread_counts(room: &matrix_sdk::Room) -> (u64, u64, u64) {
+    let receipts = room.read_receipts();
+    let client = (
+        receipts.num_unread,
+        receipts.num_notifications,
+        receipts.num_mentions,
+    );
+    let accounting_incomplete = receipts.latest_active.is_none() || !receipts.pending.is_empty();
+    if !accounting_incomplete {
+        return client;
+    }
+    let server = room.unread_notification_counts();
+    (
+        client.0.max(server.notification_count),
+        client.1.max(server.notification_count),
+        client.2.max(server.highlight_count),
+    )
+}
+
 pub fn room_attention_summary_from_counts(
     room_display_name: Option<String>,
     is_dm: bool,
@@ -2224,10 +2264,9 @@ async fn matrix_room_list_snapshot_from_rooms(
 
         // Sliding Sync server counts may be dummy zeros; the SDK evaluates
         // notifications and mentions locally, including encrypted events.
-        let notification_count = room.num_unread_notifications();
-        let highlight_count = room.num_unread_mentions();
         let is_marked_unread = room.is_marked_unread();
-        let unread_messages = room.num_unread_messages();
+        let (unread_messages, notification_count, highlight_count) =
+            effective_room_unread_counts(&room);
         // Keep raw unread messages separate from notification and manual-unread
         // projections. The state layer derives activity from all four fields;
         // a manual mark must not fabricate a Dock badge count.
