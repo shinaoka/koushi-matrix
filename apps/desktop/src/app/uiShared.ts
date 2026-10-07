@@ -52,6 +52,12 @@ export type ContextMenuTarget =
        * instead of the shell synthesizing an edit from the menu.
        */
       onOpenEdit?: () => void;
+      /**
+       * Visible message-text selection captured by the row before the menu took
+       * focus (#1155). Renderer-local and ephemeral: it never enters Rust state,
+       * a log, or persisted storage.
+       */
+      selectedText?: string;
     }
   | { kind: "room"; roomId: string; dmUserId?: string | null }
   | { kind: "space"; spaceId: string }

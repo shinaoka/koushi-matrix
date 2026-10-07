@@ -242,6 +242,7 @@ export type MessageId =
   | "space.leaveRoomInOtherSpace"
   | "space.leaveConfirmAction"
   | "space.leaveConfirmActionWithRooms"
+  | "context.copySelectedText"
   | "context.openKeyboardSettings"
   | "context.openRoomInfo"
   | "context.openSpaceInfo"
@@ -252,6 +253,7 @@ export type MessageId =
   | "context.removeFromFavourites"
   | "context.removeFromLowPriority"
   | "context.searchInRoom"
+  | "context.searchWebForSelectedText"
   | "context.reportContent"
   | "context.reportRoom"
   | "context.reportUser"
@@ -2035,6 +2037,8 @@ const en: Catalog = {
   "context.openRoomInfo": "Room info",
   "context.openSpaceInfo": "Space info",
   "context.openThread": "Reply in thread",
+  "context.copySelectedText": "Copy selected text",
+  "context.searchWebForSelectedText": "Search selected text on DuckDuckGo",
   "context.openUserInfo": "User info",
   "context.openUserSettings": "Account Settings",
   "context.redactMessage": "Redact",
@@ -3746,6 +3750,8 @@ const ja: Catalog = {
   "context.openRoomInfo": "ルーム情報",
   "context.openSpaceInfo": "スペース情報",
   "context.openThread": "スレッドで返信",
+  "context.copySelectedText": "選択したテキストをコピー",
+  "context.searchWebForSelectedText": "選択したテキストをDuckDuckGoで検索",
   "context.openUserInfo": "ユーザー情報",
   "context.openUserSettings": "アカウント設定",
   "context.redactMessage": "削除",

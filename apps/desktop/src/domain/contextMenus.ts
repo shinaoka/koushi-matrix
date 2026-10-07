@@ -4,6 +4,8 @@ import type { RoomTags } from "./types";
 export type ContextMenuKind = "message" | "room" | "space" | "spaceMember" | "account";
 
 export type ContextMenuActionId =
+  | "copySelectedText"
+  | "searchWebForSelectedText"
   | "replyToMessage"
   | "openThread"
   | "editMessage"
@@ -51,6 +53,12 @@ export type ContextMenuRequest =
       roomId: string;
       eventId: string;
       isIgnored: boolean;
+      /**
+       * The visible message-text selection captured by the requesting row before
+       * the menu took focus (#1155). Empty/absent means the selection actions are
+       * not offered. It stays in renderer-local menu state for that menu only.
+       */
+      selectedText?: string;
     }
   | {
       kind: "room";
@@ -78,6 +86,19 @@ export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[]
   switch (request.kind) {
     case "message": {
       const items: ContextMenuItem[] = [];
+      if (request.selectedText) {
+        // Text the user aimed at is offered first, and these two actions need no
+        // message ownership or server event id: only selectable visible text.
+        items.push({ id: "copySelectedText", labelMessageId: "context.copySelectedText" });
+        items.push({
+          id: "searchWebForSelectedText",
+          labelMessageId: "context.searchWebForSelectedText"
+        });
+      }
+      if (!request.eventId || !request.senderUserId) {
+        // A local echo with no server identity can still offer text selection.
+        return items;
+      }
       if (request.canReply) {
         items.push({ id: "replyToMessage", labelMessageId: "timeline.replyToMessage" });
       }
