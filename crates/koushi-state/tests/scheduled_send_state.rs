@@ -495,3 +495,47 @@ fn signing_out_withdraws_a_scheduled_send_persistence_notice() {
     );
     assert!(effects.contains(&koushi_state::AppEffect::EmitUiEvent(UiEvent::ErrorChanged)));
 }
+
+/// #1159: the auth-failure transition retires the ready session without going
+/// through `clear_session_views`, so it must withdraw the notice as well.
+#[test]
+fn an_auth_sync_failure_withdraws_the_scheduled_send_persistence_notice() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendPersistenceFailed {
+            message: "not saved".to_owned(),
+        },
+    );
+    assert!(
+        state
+            .errors
+            .iter()
+            .any(|error| error.code == "scheduled_send_persistence_failed")
+    );
+
+    state.sync = koushi_state::SyncState::Running;
+    let effects = reduce(
+        &mut state,
+        AppAction::SyncFailed {
+            reason: "sync_failed_auth".to_owned(),
+        },
+    );
+
+    assert_eq!(state.session, SessionState::Locked(session_info()));
+    assert!(
+        !state
+            .errors
+            .iter()
+            .any(|error| error.code == "scheduled_send_persistence_failed"),
+        "the retired session must not keep its persistence notice"
+    );
+    // The auth failure keeps its own explanation.
+    assert!(
+        state
+            .errors
+            .iter()
+            .any(|error| error.code == "sync_auth_required")
+    );
+    assert!(effects.contains(&koushi_state::AppEffect::EmitUiEvent(UiEvent::ErrorChanged)));
+}
