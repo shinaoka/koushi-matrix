@@ -1354,7 +1354,9 @@ pub(super) async fn run_gate_negative_stage(
 }
 
 pub(super) async fn run_provisional_device_cleanup_qa(config: &QaConfig) -> Result<(), String> {
-    let runtime = CoreRuntime::start_with_data_dir(qa_data_dir("gate-device-cleanup"));
+    // The primary A session is still saved in the process-wide QA credential
+    // store; a same-user device fixture must not share its local store binding.
+    let runtime = start_isolated_qa_runtime("gate-device-cleanup")?;
     let mut conn = runtime.attach();
     let result = async {
         let removed_session =

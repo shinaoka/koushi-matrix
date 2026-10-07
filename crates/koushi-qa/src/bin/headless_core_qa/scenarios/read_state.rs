@@ -1,9 +1,9 @@
 use super::cleanup::cleanup_logged_in_runtime;
 use super::diagnostics::QaTcpProxy;
 use super::event_wait::{
-    stop_sync_for_qa, subscribe_timeline_for_qa, wait_for_item_with_body, wait_for_ready_snapshot,
-    wait_for_send_flow_completion, wait_for_session_restored,
-    wait_for_sync_running_after_reconnect, wait_for_sync_started,
+    stop_sync_for_qa, subscribe_timeline_for_qa, wait_for_invite_in_snapshot,
+    wait_for_item_with_body, wait_for_ready_snapshot, wait_for_send_flow_completion,
+    wait_for_session_restored, wait_for_sync_running_after_reconnect, wait_for_sync_started,
 };
 use super::fixtures::{accept_invite_for_qa, create_room_for_qa, invite_user_for_qa};
 use super::participants::{QaParticipantLoginGate, login_synced_participant_for_qa, qa_data_dir};
@@ -208,6 +208,13 @@ async fn run_read_state_convergence_flow(
         &room_id,
         sender_user_id,
         "read-state convergence invite sender",
+    )
+    .await?;
+    wait_for_invite_in_snapshot(
+        sender_conn,
+        &room_id,
+        None,
+        "read-state convergence sender invite",
     )
     .await?;
     accept_invite_for_qa(

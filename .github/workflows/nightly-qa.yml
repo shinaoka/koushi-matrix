@@ -6,6 +6,12 @@ name: Nightly aggregate QA
 # signature labelled `nightly-qa`; a repeated failure comments on that open
 # issue instead of creating a duplicate. Different servers cannot collide on a
 # signature, and the workflow concurrency group serialises runs.
+#
+# The `focused` job runs the scenarios that `all` does not cover (the nightly
+# list in scripts/lib/headless-qa-lanes.mjs), each in its own homeserver. Every
+# failing scenario files or updates its own issue titled
+# `nightly-qa: <scenario> failed (<server>/<stage>)`; one failure does not stop
+# the remaining scenarios.
 on:
   schedule:
     - cron: "0 18 * * *"
@@ -132,3 +138,117 @@ jobs:
           )
           gh label create nightly-qa --description "Nightly aggregate headless QA lane failure" --color 1D76DB 2>/dev/null || true
           gh issue create --title "$title" --label nightly-qa --body "$body"
+
+  focused:
+    name: Focused scenarios outside all (${{ matrix.server }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        server: [tuwunel, synapse]
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target-ci
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@191af2e1955bbe165f9bbacff2d2438002dff4d4 # 1.96.0
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          workspaces: . -> target-ci
+          shared-key: nightly-focused-qa
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev
+      - name: Submodule sync guard
+        run: node scripts/check-sdk-submodule.mjs
+      - name: Cache Tuwunel v1.7.1 download
+        if: matrix.server == 'tuwunel'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/koushi/tuwunel/v1.7.1
+          key: tuwunel-v1.7.1-x86_64-v1-linux-gnu-64d6b60a781e2dad74e840ed6e211eced8c4206ce2d307fe62bbc62e3ffcc983
+      - name: Install Tuwunel v1.7.1
+        if: matrix.server == 'tuwunel'
+        env:
+          TUWUNEL_URL: https://github.com/matrix-construct/tuwunel/releases/download/v1.7.1/v1.7.1-release-all-x86_64-v1-linux-gnu-tuwunel.zst
+          TUWUNEL_SHA256: 64d6b60a781e2dad74e840ed6e211eced8c4206ce2d307fe62bbc62e3ffcc983
+        run: |
+          sudo apt-get install -y --no-install-recommends zstd
+          mkdir -p "$HOME/.cache/koushi/tuwunel/v1.7.1" "$HOME/.local/bin"
+          archive="$HOME/.cache/koushi/tuwunel/v1.7.1/tuwunel.zst"
+          if [[ ! -s "$archive" ]]; then
+            curl --proto '=https' --tlsv1.2 -fsSLo "$archive" "$TUWUNEL_URL"
+          fi
+          printf '%s  %s\n' "$TUWUNEL_SHA256" "$archive" | sha256sum --check --strict
+          unzstd -f -o "$HOME/.local/bin/tuwunel" "$archive"
+          chmod 0755 "$HOME/.local/bin/tuwunel"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Verify Tuwunel is runnable
+        if: matrix.server == 'tuwunel'
+        run: tuwunel --version
+      - name: Verify Docker is available for Synapse
+        if: matrix.server == 'synapse'
+        run: docker version
+      - name: Focused nightly scenarios (continue past failures)
+        run: |
+          node scripts/headless-qa-lane.mjs --lane=nightly \
+            --server=${{ matrix.server }} --cargo-profile=ci \
+            --failures-out="$RUNNER_TEMP/nightly-failures.json"
+      - name: Upload QA logs on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-focused-qa-${{ matrix.server }}-logs
+          # Only the runner's private-data-validated outputs; raw homeserver
+          # logs can contain Matrix request metadata.
+          path: |
+            .local-secrets/headless-local-qa/**/core-*.log
+            .local-secrets/headless-local-qa/**/sdk-*.log
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: File or update one issue per failing scenario
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SERVER: ${{ matrix.server }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          failures="$RUNNER_TEMP/nightly-failures.json"
+          if [ ! -s "$failures" ] || [ "$(jq length "$failures")" = "0" ]; then
+            # The lane runner itself failed before recording scenarios.
+            printf '[{"scenario":"focused-lane","stage":"runner"}]' > "$failures"
+          fi
+          gh label create nightly-qa --description "Nightly aggregate headless QA lane failure" --color 1D76DB 2>/dev/null || true
+          jq -r '.[] | "\(.scenario)\t\(.stage)"' "$failures" | while IFS=$'\t' read -r scenario stage; do
+            title="nightly-qa: ${scenario} failed (${SERVER}/${stage})"
+            # One issue per scenario/server/stage signature. The two matrix
+            # jobs cannot produce the same signature, so this cannot race.
+            number=$(gh issue list --label nightly-qa --state open --limit 100 </dev/null \
+              --json number,title --jq '.[] | "\(.number)\t\(.title)"' \
+              | awk -F '\t' -v title="$title" '$2 == title { print $1; exit }')
+            if [ -n "$number" ]; then
+              gh issue comment "$number" </dev/null --body \
+                "The nightly \`${scenario}\` scenario failed again on \`${SERVER}\` (stage \`${stage}\`): ${RUN_URL}"
+              continue
+            fi
+            body=$(printf '%s\n' \
+              "The nightly focused headless scenario \`${scenario}\` failed on \`${SERVER}\`." \
+              "" \
+              "- Failing stage: \`${stage}\`" \
+              "- Run: ${RUN_URL}" \
+              "- Command: \`node scripts/desktop-headless-local-qa.mjs --run --server=${SERVER} --core --scenario=${scenario} --cargo-profile=ci --timeout-ms=600000\`" \
+              "- Validated QA logs are attached to the run as \`nightly-focused-qa-${SERVER}-logs\`." \
+              "" \
+              "Filed automatically by \`.github/workflows/nightly-qa.yml\`.")
+            gh issue create --title "$title" --label nightly-qa --body "$body" </dev/null
+          done
