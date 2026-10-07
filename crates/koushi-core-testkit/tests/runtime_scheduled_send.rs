@@ -899,7 +899,10 @@ fn scheduled_send_store_file(data_dir: &std::path::Path) -> std::path::PathBuf {
             let path = entry.path();
             if path.is_dir() {
                 pending.push(path);
-            } else if path.file_name().is_some_and(|name| name == "scheduled.v1.enc") {
+            } else if path
+                .file_name()
+                .is_some_and(|name| name == "scheduled.v1.enc")
+            {
                 return path;
             }
         }
@@ -953,11 +956,14 @@ async fn a_failed_local_scheduled_send_save_is_reported_and_cleared_by_a_later_s
     )
     .await
     .expect("schedule send");
-    let scheduled = wait_for_state(&mut conn, |state| state.timeline.scheduled_sends.len() == 1).await;
-    assert!(!scheduled
-        .errors
-        .iter()
-        .any(|error| error.code == "scheduled_send_persistence_failed"));
+    let scheduled =
+        wait_for_state(&mut conn, |state| state.timeline.scheduled_sends.len() == 1).await;
+    assert!(
+        !scheduled
+            .errors
+            .iter()
+            .any(|error| error.code == "scheduled_send_persistence_failed")
+    );
     let scheduled_id = scheduled.timeline.scheduled_sends[0].scheduled_id.clone();
 
     // Replace the store directory with a regular file: `create_dir_all` then
