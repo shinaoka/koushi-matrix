@@ -302,35 +302,42 @@ pub(crate) fn handle_scheduled_send_created_at_revision(
         {
             return Vec::new();
         }
-    } else {
-        if state
-            .composer_drafts
-            .advance_room_revision(&room_id, draft_revision)
-            .is_err()
-        {
-            return Vec::new();
-        }
-    }
-    if thread_root_event_id.is_none() && state.timeline.room_id.as_deref() == Some(room_id.as_str())
-    {
-        state.timeline.composer = state.composer_drafts.composer_for_room(&room_id);
-        refresh_timeline_scheduled_sends(state);
-        return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
-    }
-    if let Some(root_event_id) = thread_root_event_id
-        && let crate::state::ThreadPaneState::Open {
+        let mut effects = Vec::new();
+        if let crate::state::ThreadPaneState::Open {
             room_id: open_room_id,
             root_event_id: open_root_event_id,
             composer,
             ..
         } = &mut state.thread
-        && open_room_id == &room_id
-        && open_root_event_id == &root_event_id
+            && open_room_id == &room_id
+            && open_root_event_id.as_str() == root_event_id
+        {
+            *composer = state
+                .composer_drafts
+                .composer_for_thread(&room_id, root_event_id);
+            effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
+        }
+        // #1159: the reservation belongs to this room's scheduled-send list
+        // even though the thread composer, not the room composer, was cleared.
+        // Refresh that projection here so an accepted reply is visible without
+        // reselecting the room; the open thread stays open.
+        if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+            refresh_timeline_scheduled_sends(state);
+            effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }));
+        }
+        return effects;
+    }
+    if state
+        .composer_drafts
+        .advance_room_revision(&room_id, draft_revision)
+        .is_err()
     {
-        *composer = state
-            .composer_drafts
-            .composer_for_thread(&room_id, &root_event_id);
-        return vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)];
+        return Vec::new();
+    }
+    if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+        state.timeline.composer = state.composer_drafts.composer_for_room(&room_id);
+        refresh_timeline_scheduled_sends(state);
+        return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
     }
     Vec::new()
 }

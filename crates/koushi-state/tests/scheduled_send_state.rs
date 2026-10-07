@@ -90,6 +90,59 @@ fn scheduled_thread_send_clears_only_the_captured_thread_draft() {
     );
 }
 
+/// #1159: an accepted thread reservation must appear in the selected room's
+/// scheduled-send projection immediately, without leaving the thread or
+/// reselecting the room, exactly like a plain room reservation does.
+#[test]
+fn scheduled_thread_reply_projects_into_its_open_room_list() {
+    let mut state = selected_room_state("room-a");
+    let mut item = scheduled_item("sched-thread", "room-a", 1_900_000_000_000);
+    item.thread_root_event_id = Some("$root-a".to_owned());
+
+    let effects = reduce(&mut state, AppAction::ScheduledSendCreated { item });
+
+    assert_eq!(state.timeline.scheduled_sends.len(), 1);
+    assert_eq!(
+        state.timeline.scheduled_sends[0].scheduled_id,
+        "sched-thread"
+    );
+    assert_eq!(
+        state.timeline.scheduled_sends[0]
+            .thread_root_event_id
+            .as_deref(),
+        Some("$root-a")
+    );
+    assert!(
+        effects.contains(&koushi_state::AppEffect::EmitUiEvent(
+            UiEvent::TimelineChanged {
+                room_id: "room-a".to_owned(),
+            }
+        )),
+        "the open room's projection must be refreshed: {effects:?}"
+    );
+}
+
+/// A thread reservation for another room must not touch the selected room's
+/// projection.
+#[test]
+fn scheduled_thread_reply_for_another_room_leaves_the_open_room_alone() {
+    let mut state = selected_room_state("room-a");
+    let mut item = scheduled_item("sched-other", "room-b", 1_900_000_000_000);
+    item.thread_root_event_id = Some("$root-b".to_owned());
+
+    let effects = reduce(&mut state, AppAction::ScheduledSendCreated { item });
+
+    assert!(state.timeline.scheduled_sends.is_empty());
+    assert!(
+        !effects.contains(&koushi_state::AppEffect::EmitUiEvent(
+            UiEvent::TimelineChanged {
+                room_id: "room-b".to_owned(),
+            }
+        )),
+        "another room's thread reservation must not refresh the open room: {effects:?}"
+    );
+}
+
 #[test]
 fn scheduled_send_acceptance_fences_delayed_draft_persistence() {
     let mut state = selected_room_state("room-a");
