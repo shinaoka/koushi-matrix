@@ -1133,3 +1133,89 @@ fn room_list_update_keeps_active_dm_global_with_selected_space() {
         ]
     );
 }
+
+/// #1166: the projected access conditions are their own slice, replaced
+/// wholesale with the room list and cleared when the session is retired.
+#[test]
+fn room_access_projection_replaces_and_clears_with_the_room_list() {
+    let mut state = ready_state();
+    assert!(state.room_access.is_empty());
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomAccessUpdated {
+            access: BTreeMap::from([
+                (
+                    "!room-a:example.invalid".to_owned(),
+                    koushi_state::RoomJoinRule::Public,
+                ),
+                (
+                    "!room-b:example.invalid".to_owned(),
+                    koushi_state::RoomJoinRule::Knock,
+                ),
+            ]),
+        },
+    );
+    assert_eq!(state.room_access.len(), 2);
+    assert_eq!(
+        state.room_access.get("!room-a:example.invalid"),
+        Some(&koushi_state::RoomJoinRule::Public)
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    );
+
+    // An identical projection is not an event.
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::RoomAccessUpdated {
+                access: BTreeMap::from([
+                    (
+                        "!room-a:example.invalid".to_owned(),
+                        koushi_state::RoomJoinRule::Public
+                    ),
+                    (
+                        "!room-b:example.invalid".to_owned(),
+                        koushi_state::RoomJoinRule::Knock
+                    ),
+                ]),
+            },
+        )
+        .is_empty()
+    );
+
+    // The next projection replaces the slice, so a room that left the list
+    // disappears with it.
+    reduce(
+        &mut state,
+        AppAction::RoomAccessUpdated {
+            access: BTreeMap::from([(
+                "!room-b:example.invalid".to_owned(),
+                koushi_state::RoomJoinRule::Invite,
+            )]),
+        },
+    );
+    assert_eq!(state.room_access.len(), 1);
+
+    // Retiring the session withdraws the projection with the room list.
+    reduce(&mut state, AppAction::LogoutRequested);
+    assert!(state.room_access.is_empty());
+}
+
+#[test]
+fn room_access_projection_is_ignored_without_a_ready_session() {
+    let mut state = AppState::default();
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomAccessUpdated {
+            access: BTreeMap::from([(
+                "!room-a:example.invalid".to_owned(),
+                koushi_state::RoomJoinRule::Public,
+            )]),
+        },
+    );
+    assert!(effects.is_empty());
+    assert!(state.room_access.is_empty());
+}

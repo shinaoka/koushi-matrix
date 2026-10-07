@@ -570,6 +570,7 @@ fn audit_app_state_delta_slices(state: &AppState) {
         room_notification_awaiting_echo: _,
         room_notification_settings: _,
         room_interactions: _,
+        room_access: _,
         composer_drafts: _,
         scheduled_sends: _,
         upload_staging: _,

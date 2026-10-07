@@ -285,6 +285,7 @@ async fn project_room_list_snapshot_updates_user_profiles() {
         1,
         RoomListSource::Live,
         true,
+        std::collections::BTreeMap::new(),
     )
     .await;
 
@@ -296,6 +297,7 @@ async fn project_room_list_snapshot_updates_user_profiles() {
                 AppAction::RoomNotificationModesObserved { .. },
                 AppAction::RoomListSnapshotAuthoritative { .. },
                 AppAction::UserProfilesUpdated { profiles },
+                AppAction::RoomAccessUpdated { .. },
             ] if *profiles == vec![UserProfile {
                 user_id: "@alice:example.test".to_owned(),
                 display_name: Some("Alice".to_owned()),
@@ -331,6 +333,7 @@ async fn project_room_list_snapshot_holds_unproven_empty_and_preserves_known_roo
         1,
         RoomListSource::Live,
         false,
+        std::collections::BTreeMap::new(),
     )
     .await;
 
@@ -339,7 +342,8 @@ async fn project_room_list_snapshot_holds_unproven_empty_and_preserves_known_roo
         actions.as_slice(),
         [AppAction::RoomNotificationModesObserved { .. },
             AppAction::RoomListSnapshotProvisional { rooms, invites, .. },
-            AppAction::UserProfilesUpdated { .. }]
+            AppAction::UserProfilesUpdated { .. },
+            AppAction::RoomAccessUpdated { .. }]
             if rooms.is_empty() && invites.is_empty()
     ));
     assert_eq!(
@@ -563,7 +567,8 @@ async fn live_room_list_observer_reclassifies_dm_from_direct_event_without_timel
             AppAction::RoomNotificationModesObserved { .. },
             AppAction::RoomListSnapshotProvisional { .. }
                 | AppAction::RoomListSnapshotAuthoritative { .. },
-            AppAction::UserProfilesUpdated { .. }
+            AppAction::UserProfilesUpdated { .. },
+            AppAction::RoomAccessUpdated { .. }
         ]
     ));
     harness
@@ -664,7 +669,8 @@ async fn live_room_list_observer_defers_direct_event_projection_until_first_serv
             AppAction::RoomNotificationModesObserved { .. },
             AppAction::RoomListSnapshotProvisional { rooms, .. }
                 | AppAction::RoomListSnapshotAuthoritative { rooms, .. },
-            AppAction::UserProfilesUpdated { .. }
+            AppAction::UserProfilesUpdated { .. },
+            AppAction::RoomAccessUpdated { .. }
         ]
             if rooms.iter().any(|room| room.room_id == dm_room_id.as_str() && room.is_dm)
     ));
@@ -804,7 +810,8 @@ async fn normalize_and_project_entries_uses_cached_direct_map_before_timeline_up
         actions.as_slice(),
         [AppAction::RoomNotificationModesObserved { .. },
          AppAction::RoomListSnapshotProvisional { rooms, .. },
-         AppAction::UserProfilesUpdated { .. }]
+         AppAction::UserProfilesUpdated { .. },
+         AppAction::RoomAccessUpdated { .. }]
             if rooms.first().is_some_and(|room| room.is_dm)
     ));
 }
@@ -1107,6 +1114,7 @@ async fn project_room_list_snapshot_updates_known_rooms_before_action_delivery()
         1,
         RoomListSource::Live,
         true,
+        std::collections::BTreeMap::new(),
     )
     .await;
 
@@ -1211,4 +1219,74 @@ fn missing_space_child_links_includes_domainless_room_ids() {
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].space_id, "!space:example.test");
     assert_eq!(links[0].child_room_id, child_room_id);
+}
+
+/// #1166: each joined room's own `m.room.join_rules` reaches the access
+/// projection, including the spec default for a room without the event.
+#[tokio::test]
+async fn live_room_list_projects_each_rooms_own_access_condition() {
+    use matrix_sdk::{
+        ruma::{events::room::join_rules::JoinRule, room_id},
+        test_utils::mocks::MatrixMockServer,
+    };
+    use matrix_sdk_test::{JoinedRoomBuilder, event_factory::EventFactory};
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let own = client.user_id().expect("own user").to_owned();
+    let public_room = room_id!("!public-access:example.invalid");
+    let default_room = room_id!("!default-access:example.invalid");
+    let factory = EventFactory::new();
+    server
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(public_room)
+                .add_state_event(factory.room_join_rules(JoinRule::Public).sender(&own)),
+        )
+        .await;
+    // No `m.room.join_rules` event: invite-only by spec and Element's default.
+    server
+        .sync_room(&client, JoinedRoomBuilder::new(default_room))
+        .await;
+
+    let updates = client.subscribe_to_all_room_updates();
+    let mut harness = spawn_live_observer_test_harness(
+        client.clone(),
+        server.uri(),
+        3,
+        updates,
+        LiveDirectEventTestSource::SdkAndInjected,
+        None,
+    )
+    .await;
+
+    let projected = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let actions = harness.action_rx.recv().await.expect("observer running");
+            let access = actions.iter().find_map(|action| match action {
+                AppAction::RoomAccessUpdated { access } => Some(access.clone()),
+                _ => None,
+            });
+            if let Some(access) = access
+                && access.contains_key(public_room.as_str())
+                && access.contains_key(default_room.as_str())
+            {
+                break access;
+            }
+        }
+    })
+    .await
+    .expect("access projection arrives with the room list");
+
+    assert_eq!(
+        projected.get(public_room.as_str()),
+        Some(&koushi_state::RoomJoinRule::Public),
+        "a public room keeps its own rule"
+    );
+    assert_eq!(
+        projected.get(default_room.as_str()),
+        Some(&koushi_state::RoomJoinRule::Invite),
+        "a room without m.room.join_rules is invite-only, not unknown"
+    );
+    harness.stop().await;
 }

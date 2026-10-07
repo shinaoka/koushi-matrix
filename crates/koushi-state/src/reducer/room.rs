@@ -24,6 +24,22 @@ use super::{
 const PIN_EVENT_FAILED_MESSAGE: &str = "Pinning the event failed";
 const UNPIN_EVENT_FAILED_MESSAGE: &str = "Unpinning the event failed";
 
+/// Replace the projected access conditions (#1166). Sent with the room-list
+/// projection it describes, so a room that left the list disappears with it.
+pub(crate) fn handle_room_access_updated(
+    state: &mut AppState,
+    access: std::collections::BTreeMap<String, crate::state::RoomJoinRule>,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    if state.room_access == access {
+        return Vec::new();
+    }
+    state.room_access = access;
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
 pub(crate) fn handle_room_list_updated(
     state: &mut AppState,
     spaces: Vec<crate::state::SpaceSummary>,

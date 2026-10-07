@@ -945,6 +945,7 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             source,
             kind,
         } => room::handle_room_list_bootstrap_failed(state, generation, source, kind),
+        AppAction::RoomAccessUpdated { access } => room::handle_room_access_updated(state, access),
         AppAction::RoomListFilterSelected { filter } => {
             room::handle_room_list_filter_selected(state, filter)
         }
@@ -2087,6 +2088,7 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.room_preferences = Default::default();
     state.spaces.clear();
     state.rooms.clear();
+    state.room_access.clear();
     state.invites.clear();
     state.room_list = Default::default();
     state.room_interactions.clear();

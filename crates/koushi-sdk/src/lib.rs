@@ -164,9 +164,10 @@ pub use room_projection::{
     MatrixRoomTagKind, MatrixRoomTags, MatrixSpaceMemberEntry, MatrixSpaceMemberRoleOption,
     MatrixSpaceMembersProjection, MatrixUserProfile, cached_direct_account_data_targets_by_room,
     direct_account_data_targets_by_room, matrix_invite_previews_from_rooms, matrix_room_is_dm,
-    matrix_space_members_projection, room_attention_summary_from_counts,
-    room_attention_summary_from_room, room_list_snapshot, room_list_snapshot_blocking,
-    room_list_snapshot_from_sdk_rooms, room_list_snapshot_from_sdk_rooms_with_direct_targets,
+    matrix_room_join_rule_or_default, matrix_space_members_projection,
+    room_attention_summary_from_counts, room_attention_summary_from_room, room_list_snapshot,
+    room_list_snapshot_blocking, room_list_snapshot_from_sdk_rooms,
+    room_list_snapshot_from_sdk_rooms_with_direct_targets,
     room_list_snapshot_from_sdk_rooms_with_invites,
 };
 

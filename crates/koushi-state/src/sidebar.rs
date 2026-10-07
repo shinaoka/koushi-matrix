@@ -1,9 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::state::{
-    AppState, AvatarImage, InvitePreview, RoomListSort, RoomNotificationMode,
+    AppState, AvatarImage, InvitePreview, RoomJoinRule, RoomListSort, RoomNotificationMode,
     RoomNotificationSettings, RoomSummary, RoomTags, SidebarScopeSettings, SpaceChildMembership,
     SpaceChildSummary, SpaceChildrenState, SpaceLocalPresentations, SpaceSummary,
     compare_conversation_activity, room_activity_unread_count, room_attention_projection,
@@ -104,6 +104,12 @@ pub struct RoomListItem {
     /// not-joined lane is the only producer of a true.
     #[serde(default)]
     pub can_join: bool,
+    /// The room's authoritative access condition (#1166), from its own
+    /// `m.room.join_rules`. `None` means it has not been projected yet, never a
+    /// guessed rule; it is independent of encryption, DM status, the viewer's
+    /// membership and `can_join`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_join_rule: Option<RoomJoinRule>,
     pub display_name: String,
     /// Mirrors `RoomSummary.display_label_placeholder` for `display_name`
     /// (#1050): the GUI renders it through the message catalog.
@@ -159,6 +165,8 @@ pub fn compose_sidebar_with_account_facts(
         &SpaceLocalPresentations::default(),
         &SpaceChildrenState::default(),
         &[],
+        // No projected access conditions without room-list state (#1166).
+        &BTreeMap::new(),
     )
 }
 
@@ -179,6 +187,7 @@ pub fn compose_sidebar_for_state(state: &AppState) -> SidebarModel {
         &state.navigation.space_local_presentations,
         &state.space_children,
         &state.invites,
+        &state.room_access,
     );
     let preferred_positions: HashMap<&str, usize> = state
         .navigation
@@ -214,6 +223,8 @@ fn compose_sidebar_with_preferences(
     local_presentations: &SpaceLocalPresentations,
     space_children: &SpaceChildrenState,
     invites: &[InvitePreview],
+    // #1166: the projected per-room access conditions; empty means not yet known.
+    room_access: &BTreeMap<String, RoomJoinRule>,
 ) -> SidebarModel {
     let rooms_by_id: HashMap<&str, &RoomSummary> = rooms
         .iter()
@@ -284,7 +295,7 @@ fn compose_sidebar_with_preferences(
     );
     let space_rooms: Vec<_> = space_room_summaries
         .iter()
-        .map(|room| room_list_item(room, room_notification_settings))
+        .map(|room| room_list_item(room, room_notification_settings, room_access))
         .collect();
 
     // Issue #961: the Space's advertised children the account is not in. The
@@ -342,7 +353,7 @@ fn compose_sidebar_with_preferences(
     );
     let global_dms: Vec<_> = global_dm_summaries
         .iter()
-        .map(|room| room_list_item(room, room_notification_settings))
+        .map(|room| room_list_item(room, room_notification_settings, room_access))
         .collect();
     // Low priority spans both scope lists and is shown once, in the Rooms
     // order, so a low-priority DM and room interleave by the same comparator.
@@ -376,7 +387,7 @@ fn compose_sidebar_with_preferences(
             .collect(),
         low_priority: low_priority_summaries
             .into_iter()
-            .map(|room| room_list_item(room, room_notification_settings))
+            .map(|room| room_list_item(room, room_notification_settings, room_access))
             .collect(),
         not_joined: not_joined_space_rooms.clone(),
     };
@@ -482,6 +493,8 @@ fn not_joined_room_list_item(
         // Accepting an invitation this account holds is always available; for
         // everything else the server's join rule decides.
         can_join: invited || child.can_join,
+        // #1166: the not-joined lane projects no access condition yet.
+        access_join_rule: None,
         display_name: child.display_name.clone(),
         avatar: child.avatar.clone(),
         tags: RoomTags::default(),
@@ -523,6 +536,7 @@ fn space_child_is_visible(child: &SpaceChildSummary, invited_room_ids: &HashSet<
 fn room_list_item(
     room: &RoomSummary,
     room_notification_settings: &HashMap<String, RoomNotificationSettings>,
+    room_access: &BTreeMap<String, RoomJoinRule>,
 ) -> RoomListItem {
     let mode = room_notification_settings
         .get(&room.room_id)
@@ -533,6 +547,7 @@ fn room_list_item(
         room_id: room.room_id.clone(),
         membership: SpaceChildMembership::Joined,
         can_join: false,
+        access_join_rule: room_access.get(&room.room_id).copied(),
         display_name: room.display_label.clone(),
         avatar: room.avatar.clone(),
         tags: room.tags.clone(),

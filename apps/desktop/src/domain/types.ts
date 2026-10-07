@@ -2827,6 +2827,12 @@ export interface RoomListItem {
   membership?: SpaceChildMembership;
   /** Whether this row offers a join. Always false for a joined room. */
   can_join?: boolean;
+  /**
+   * The room's own authoritative access condition (#1166), from its
+   * `m.room.join_rules`. Absent means not yet projected, never a guessed rule;
+   * independent of encryption, DM status, membership and `can_join`.
+   */
+  access_join_rule?: RoomJoinRule | null;
   display_name: string;
   /** Mirrors `RoomSummary.display_label_placeholder`; render via `roomListItemLabel`. */
   display_name_placeholder?: RoomNamePlaceholder | null;

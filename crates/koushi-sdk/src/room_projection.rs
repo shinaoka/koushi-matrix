@@ -1887,10 +1887,15 @@ pub(super) fn room_settings_snapshot_with_change(
     snapshot
 }
 
-/// A room without an `m.room.join_rules` event is invite-only (Matrix spec,
-/// and Element's own default). The event is in the room list's
-/// `required_state`, so a synced room without it has none.
-pub(super) fn matrix_room_join_rule_or_default(room: &matrix_sdk::Room) -> MatrixRoomJoinRule {
+/// A room's own authoritative access condition: its `m.room.join_rules` rule
+/// (#1166).
+///
+/// A room without an `m.room.join_rules` event is invite-only (Matrix spec, and
+/// Element's own default). The event is in the room list's `required_state`, so
+/// a synced room without it has none. The condition is never derived from
+/// encryption, directory visibility, history visibility, parent Space privacy,
+/// `is_dm`, the viewer's membership or `can_join`.
+pub fn matrix_room_join_rule_or_default(room: &matrix_sdk::Room) -> MatrixRoomJoinRule {
     room.join_rule()
         .as_ref()
         .map(matrix_room_join_rule)

@@ -398,6 +398,7 @@ async fn project_room_list_snapshot(
     generation: u64,
     source: RoomListSource,
     authoritative: bool,
+    room_access: std::collections::BTreeMap<String, koushi_state::RoomJoinRule>,
 ) -> bool {
     let spaces = normalize_spaces(snapshot);
     let previous_dm_rooms = known_dm_rooms
@@ -466,6 +467,9 @@ async fn project_room_list_snapshot(
             snapshot_action,
             AppAction::UserProfilesUpdated {
                 profiles: user_profiles,
+            },
+            AppAction::RoomAccessUpdated {
+                access: room_access,
             },
         ])
         .await
@@ -1521,6 +1525,19 @@ async fn normalize_and_project_entries(
     }
     let joined_count = joined_rooms.len();
     let invited_count = invited_rooms.len();
+    // #1166: each joined room's own access condition, projected with the same
+    // snapshot so an action always describes a room the list also carries.
+    let room_access = joined_rooms
+        .iter()
+        .map(|room| {
+            (
+                room.room_id().to_string(),
+                super::management::room_join_rule_from_sdk(
+                    koushi_sdk::matrix_room_join_rule_or_default(room),
+                ),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
     let mut snapshot = koushi_sdk::room_list_snapshot_from_sdk_rooms_with_direct_targets(
         joined_rooms,
         direct_targets_by_room,
@@ -1610,6 +1627,7 @@ async fn normalize_and_project_entries(
         generation,
         source,
         authoritative.load(Ordering::Acquire),
+        room_access,
     )
     .await
 }

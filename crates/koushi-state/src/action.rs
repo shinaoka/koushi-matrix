@@ -19,18 +19,18 @@ use crate::state::{
     MentionCandidatesCompleteness, MentionCandidatesFailureKind, MentionSurface,
     NativeAttentionDispatchId, NativeAttentionSoundOutcome, NativeAttentionState,
     NavigationPreferenceUpdate, NavigationState, OperationFailureKind, OwnProfile, PinnedEvent,
-    PresenceKind, ProfileUpdateRequest, RecoveryMethod, RoomListFailureKind, RoomListFilter,
-    RoomListProjection, RoomListSource, RoomMentionPermission, RoomModerationAction,
-    RoomPreferencesState, RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo,
-    RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability, ScheduledSendHandle,
-    ScheduledSendItem, SearchResult, SearchScope, SessionInfo, SessionStatusRefreshTrigger,
-    SettingsPatch, SettingsValues, SpaceChildLinkOutcome, SpaceChildSummary,
-    SpaceMemberInviteOutcome, SpaceMemberRoleUpdateOutcome, SpaceMembersProjection, SpaceSummary,
-    StagedUploadCompressionChoice, StagedUploadItem, StagedUploadOutputSelection,
-    SyncLifecycleStatus, TimelineContinuityInspection, TimelineGapRepairFailureKind,
-    TimelineMediaDownloadState, TimelineMediaGalleryItem, TimelineScrollAnchor,
-    TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationGateFailureKind,
-    VerificationGateState, VerificationMethod, VerificationTarget,
+    PresenceKind, ProfileUpdateRequest, RecoveryMethod, RoomJoinRule, RoomListFailureKind,
+    RoomListFilter, RoomListProjection, RoomListSource, RoomMentionPermission,
+    RoomModerationAction, RoomPreferencesState, RoomSettingChange, RoomSettingsSnapshot,
+    RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability,
+    ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope, SessionInfo,
+    SessionStatusRefreshTrigger, SettingsPatch, SettingsValues, SpaceChildLinkOutcome,
+    SpaceChildSummary, SpaceMemberInviteOutcome, SpaceMemberRoleUpdateOutcome,
+    SpaceMembersProjection, SpaceSummary, StagedUploadCompressionChoice, StagedUploadItem,
+    StagedUploadOutputSelection, SyncLifecycleStatus, TimelineContinuityInspection,
+    TimelineGapRepairFailureKind, TimelineMediaDownloadState, TimelineMediaGalleryItem,
+    TimelineScrollAnchor, TrustOperationFailureKind, UserProfile, VerificationCancelReason,
+    VerificationGateFailureKind, VerificationGateState, VerificationMethod, VerificationTarget,
 };
 use crate::state::{
     HistoryExportFailureKind, HistoryExportRange, HistoryExportRoom, HistoryExportRoomCounts,
@@ -1258,6 +1258,11 @@ pub enum AppAction {
     },
     ScheduledSendCapabilityChanged {
         capability: ScheduledSendCapability,
+    },
+    /// Each joined room's authoritative access condition (#1166). Sent with the
+    /// room-list projection it describes; an absent room means "not yet known".
+    RoomAccessUpdated {
+        access: std::collections::BTreeMap<String, RoomJoinRule>,
     },
     ScheduledSendsLoaded {
         scheduled_sends: crate::state::ScheduledSendStore,
