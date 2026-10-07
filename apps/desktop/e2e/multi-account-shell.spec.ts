@@ -268,6 +268,20 @@ test("notification activation navigates and settles in the target account contex
   const invocations = await page.evaluate(() => window.__harness.invocations());
   expect(invocations.find((call) => call.command === "open_notification_event")?.args.accountTabId)
     .toBe(bobId);
-  expect(invocations.find((call) => call.command === "settlement_snapshot")?.args.accountTabId)
-    .toBe(bobId);
+  // Every settlement that follows the activation must reconcile in the target
+  // account's context. Asserting only the first `settlement_snapshot`
+  // invocation was order-dependent: settling the preceding `select_account_tab`
+  // command legitimately uses the previously selected tab, so whether it landed
+  // before or after the activation decided the outcome (#119 flake).
+  const activationIndex = invocations.findIndex(
+    (call) => call.command === "open_notification_event"
+  );
+  expect(activationIndex).toBeGreaterThanOrEqual(0);
+  const settlementsAfterActivation = invocations
+    .slice(activationIndex)
+    .filter((call) => call.command === "settlement_snapshot");
+  expect(settlementsAfterActivation.length).toBeGreaterThan(0);
+  expect(
+    settlementsAfterActivation.every((call) => call.args.accountTabId === bobId)
+  ).toBe(true);
 });
