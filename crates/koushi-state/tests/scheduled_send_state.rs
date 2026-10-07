@@ -90,6 +90,59 @@ fn scheduled_thread_send_clears_only_the_captured_thread_draft() {
     );
 }
 
+/// #1159: an accepted thread reservation must appear in the selected room's
+/// scheduled-send projection immediately, without leaving the thread or
+/// reselecting the room, exactly like a plain room reservation does.
+#[test]
+fn scheduled_thread_reply_projects_into_its_open_room_list() {
+    let mut state = selected_room_state("room-a");
+    let mut item = scheduled_item("sched-thread", "room-a", 1_900_000_000_000);
+    item.thread_root_event_id = Some("$root-a".to_owned());
+
+    let effects = reduce(&mut state, AppAction::ScheduledSendCreated { item });
+
+    assert_eq!(state.timeline.scheduled_sends.len(), 1);
+    assert_eq!(
+        state.timeline.scheduled_sends[0].scheduled_id,
+        "sched-thread"
+    );
+    assert_eq!(
+        state.timeline.scheduled_sends[0]
+            .thread_root_event_id
+            .as_deref(),
+        Some("$root-a")
+    );
+    assert!(
+        effects.contains(&koushi_state::AppEffect::EmitUiEvent(
+            UiEvent::TimelineChanged {
+                room_id: "room-a".to_owned(),
+            }
+        )),
+        "the open room's projection must be refreshed: {effects:?}"
+    );
+}
+
+/// A thread reservation for another room must not touch the selected room's
+/// projection.
+#[test]
+fn scheduled_thread_reply_for_another_room_leaves_the_open_room_alone() {
+    let mut state = selected_room_state("room-a");
+    let mut item = scheduled_item("sched-other", "room-b", 1_900_000_000_000);
+    item.thread_root_event_id = Some("$root-b".to_owned());
+
+    let effects = reduce(&mut state, AppAction::ScheduledSendCreated { item });
+
+    assert!(state.timeline.scheduled_sends.is_empty());
+    assert!(
+        !effects.contains(&koushi_state::AppEffect::EmitUiEvent(
+            UiEvent::TimelineChanged {
+                room_id: "room-b".to_owned(),
+            }
+        )),
+        "another room's thread reservation must not refresh the open room: {effects:?}"
+    );
+}
+
 #[test]
 fn scheduled_send_acceptance_fences_delayed_draft_persistence() {
     let mut state = selected_room_state("room-a");
@@ -397,4 +450,145 @@ fn timeline_pane_snapshot_contains_only_selected_room_scheduled_sends() {
         continuity: Default::default(),
     };
     assert_eq!(timeline.scheduled_sends.len(), 1);
+}
+
+/// #1159: acceptance is not durability. A failed local save must be visible as
+/// its own error, reported once, and cleared by a later successful save.
+#[test]
+fn scheduled_send_persistence_failure_is_reported_once_and_cleared_on_success() {
+    let mut state = selected_room_state("room-a");
+
+    let effects = reduce(
+        &mut state,
+        AppAction::ScheduledSendPersistenceFailed {
+            message: "scheduled sends could not be saved on this device".to_owned(),
+        },
+    );
+    assert_eq!(
+        effects,
+        vec![koushi_state::AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
+    );
+    assert_eq!(state.errors.len(), 1);
+    assert_eq!(state.errors[0].code, "scheduled_send_persistence_failed");
+    assert!(state.errors[0].recoverable);
+
+    // Repeated failures must not grow the notice list.
+    let repeated = reduce(
+        &mut state,
+        AppAction::ScheduledSendPersistenceFailed {
+            message: "again".to_owned(),
+        },
+    );
+    assert!(repeated.is_empty());
+    assert_eq!(state.errors.len(), 1);
+
+    // Unrelated failures are untouched by the recovery.
+    state.errors.push(koushi_state::AppError {
+        code: "other".to_owned(),
+        message: "other".to_owned(),
+        recoverable: true,
+    });
+
+    let cleared = reduce(&mut state, AppAction::ScheduledSendPersisted);
+    assert_eq!(
+        cleared,
+        vec![koushi_state::AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
+    );
+    assert_eq!(state.errors.len(), 1);
+    assert_eq!(state.errors[0].code, "other");
+
+    // Nothing to clear is not an event.
+    assert!(reduce(&mut state, AppAction::ScheduledSendPersisted).is_empty());
+}
+
+#[test]
+fn scheduled_send_persistence_outcome_is_ignored_without_a_ready_session() {
+    let mut state = AppState {
+        session: SessionState::SignedOut,
+        ..AppState::default()
+    };
+
+    let failed = reduce(
+        &mut state,
+        AppAction::ScheduledSendPersistenceFailed {
+            message: "x".to_owned(),
+        },
+    );
+    assert!(failed.is_empty());
+    assert!(state.errors.is_empty());
+    assert!(reduce(&mut state, AppAction::ScheduledSendPersisted).is_empty());
+}
+
+/// #1159: the notice belongs to the session that produced it, so retiring that
+/// session (sign-out) must withdraw it rather than leak it into the next one.
+#[test]
+fn signing_out_withdraws_a_scheduled_send_persistence_notice() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendPersistenceFailed {
+            message: "not saved".to_owned(),
+        },
+    );
+    assert!(
+        state
+            .errors
+            .iter()
+            .any(|error| error.code == "scheduled_send_persistence_failed")
+    );
+
+    let effects = reduce(&mut state, AppAction::LogoutRequested);
+
+    assert!(
+        !state
+            .errors
+            .iter()
+            .any(|error| error.code == "scheduled_send_persistence_failed"),
+        "a retired session must not keep its persistence notice"
+    );
+    assert!(effects.contains(&koushi_state::AppEffect::EmitUiEvent(UiEvent::ErrorChanged)));
+}
+
+/// #1159: the auth-failure transition retires the ready session without going
+/// through `clear_session_views`, so it must withdraw the notice as well.
+#[test]
+fn an_auth_sync_failure_withdraws_the_scheduled_send_persistence_notice() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendPersistenceFailed {
+            message: "not saved".to_owned(),
+        },
+    );
+    assert!(
+        state
+            .errors
+            .iter()
+            .any(|error| error.code == "scheduled_send_persistence_failed")
+    );
+
+    state.sync = koushi_state::SyncState::Running;
+    let effects = reduce(
+        &mut state,
+        AppAction::SyncFailed {
+            reason: "sync_failed_auth".to_owned(),
+        },
+    );
+
+    assert_eq!(state.session, SessionState::Locked(session_info()));
+    assert!(
+        !state
+            .errors
+            .iter()
+            .any(|error| error.code == "scheduled_send_persistence_failed"),
+        "the retired session must not keep its persistence notice"
+    );
+    // The auth failure keeps its own explanation.
+    assert!(
+        state
+            .errors
+            .iter()
+            .any(|error| error.code == "sync_auth_required")
+    );
+    assert!(effects.contains(&koushi_state::AppEffect::EmitUiEvent(UiEvent::ErrorChanged)));
 }

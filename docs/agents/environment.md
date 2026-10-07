@@ -22,6 +22,11 @@ dependencies. If it rejects submodule status, update the checkout to the
 recorded gitlink; do not work around the failure by adding a remote SDK
 revision.
 
+`.github/workflows/sdk-upstream-release-check.yml` compares the pinned fork base
+with upstream's latest `matrix-sdk` release once a day. When the base is behind,
+it opens one issue carrying the `sdk-update` label; close that issue only after
+the gitlink moves to a base that includes the newer release.
+
 ## Local homeserver binaries
 
 Local homeserver QA runners resolve `tuwunel` from the child process `PATH`;

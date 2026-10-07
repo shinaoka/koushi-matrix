@@ -329,14 +329,20 @@ pub(crate) fn handle_revalidation_completed(
                 failure: SlidingSyncCapabilityFailureKind::Unsupported,
                 positive_evidence: Some(prior_evidence),
             };
-            vec![
+            let mut effects = vec![
                 AppEffect::SettleSlidingSyncCapabilityRevalidation {
                     account_epoch,
                     request_id,
                     result: SlidingSyncCapabilityResult::Unsupported,
                 },
                 AppEffect::EmitUiEvent(UiEvent::SessionChanged),
-            ]
+            ];
+            // #1159: a blocked capability retirement also leaves the ready
+            // session, so withdraw the scheduled-send durability notice.
+            if let Some(effect) = super::withdraw_scheduled_send_persistence_failure(state) {
+                effects.push(effect);
+            }
+            effects
         }
         SlidingSyncCapabilityResult::Unreachable | SlidingSyncCapabilityResult::InvalidResponse => {
             let failure = failure_for_result(&result).expect("retryable result has a failure");

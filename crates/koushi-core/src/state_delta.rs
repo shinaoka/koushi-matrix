@@ -425,6 +425,9 @@ pub fn build_state_delta(
         || previous.rooms != next.rooms
         || previous.invites != next.invites
         || previous.room_notification_settings != next.room_notification_settings
+        // #1166: a room's access condition is visible on its sidebar row, so a
+        // change to it alone must publish a sidebar delta.
+        || previous.room_access != next.room_access
         || previous.space_children != next.space_children
         || previous.basic_operation != next.basic_operation
         || previous.space_child_links != next.space_child_links
@@ -570,6 +573,7 @@ fn audit_app_state_delta_slices(state: &AppState) {
         room_notification_awaiting_echo: _,
         room_notification_settings: _,
         room_interactions: _,
+        room_access: _,
         composer_drafts: _,
         scheduled_sends: _,
         upload_staging: _,

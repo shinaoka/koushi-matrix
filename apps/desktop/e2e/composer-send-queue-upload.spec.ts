@@ -116,6 +116,39 @@ test("main composer Tab focuses Send before auxiliary controls", async ({ page }
   await expect.poll(() => invocationCount(page, "send_text")).toBe(1);
 });
 
+test("a failed local scheduled-send save warns above the composer (#1159)", async ({ page }) => {
+  await gotoReadyShell(page);
+  const composer = page.getByRole("textbox", { name: t("composer.messageComposer") });
+  const warning = page.getByText(t("scheduled.persistenceFailed"));
+  await expect(warning).toHaveCount(0);
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        ui: {
+          ...snapshot.state.ui,
+          errors: [
+            {
+              code: "scheduled_send_persistence_failed",
+              message: "scheduled sends could not be saved on this device",
+              recoverable: true
+            }
+          ]
+        }
+      }
+    });
+    window.__harness.pushStateUpdate();
+  });
+
+  // Core-owned state drives the notice; the composer stays usable.
+  await expect(warning).toBeVisible();
+  await composer.fill("still composable");
+  await expect(composer).toHaveText("still composable");
+});
+
 test("main composer focused Send activates once with Space", async ({ page }) => {
   await gotoReadyShell(page);
   await page.evaluate(() => window.__harness.clearInvocations());

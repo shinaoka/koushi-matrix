@@ -467,6 +467,92 @@ test("overflow count is shown when overflow_count > 0", async ({ page }) => {
 // 7. Edited marker and re-edit capability
 // ---------------------------------------------------------------------------
 
+async function installClipboardStub(page: import("@playwright/test").Page): Promise<void> {
+  await page.addInitScript(() => {
+    let clipboardText = "";
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          clipboardText = value;
+        },
+        readText: async () => clipboardText
+      }
+    });
+  });
+}
+
+/**
+ * External URLs opened through the platform port. The Playwright harness runs
+ * the Tauri runtime path (`__TAURI_INTERNALS__` is installed), so the opener
+ * plugin call is what the mock IPC records — the browser adapter's `window.open`
+ * branch is not exercised by this harness.
+ */
+async function openedExternalUrls(page: import("@playwright/test").Page): Promise<string[]> {
+  return page.evaluate(() =>
+    window.__harness
+      .invocations()
+      .filter((call) => call.command === "plugin:opener|open_url")
+      .map((call) => String((call.args as { url?: string }).url))
+  );
+}
+
+async function selectMessageSubstringIn(
+  scope: import("@playwright/test").Locator,
+  phrase: string
+): Promise<void> {
+  await scope.evaluate((element, selected) => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let node: Text | null = null;
+    while (walker.nextNode()) {
+      const candidate = walker.currentNode as Text;
+      if (candidate.data.includes(selected)) {
+        node = candidate;
+        break;
+      }
+    }
+    if (!node) throw new Error("body text node missing");
+    const start = node.data.indexOf(selected);
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, start + selected.length);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, phrase);
+}
+
+async function selectMessageSubstring(
+  page: import("@playwright/test").Page,
+  eventId: string,
+  phrase: string
+): Promise<void> {
+  await page.evaluate(
+    ({ eventId: id, phrase: selected }) => {
+      const article = document.querySelector(`[data-event-id="${id}"]`);
+      if (!article) throw new Error("message article missing");
+      const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT);
+      let node: Text | null = null;
+      while (walker.nextNode()) {
+        const candidate = walker.currentNode as Text;
+        if (candidate.data.includes(selected)) {
+          node = candidate;
+          break;
+        }
+      }
+      if (!node) throw new Error("message body text node missing");
+      const start = node.data.indexOf(selected);
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, start + selected.length);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    },
+    { eventId, phrase }
+  );
+}
+
 test("message context menu Edit opens the row's inline editor (#1100)", async ({ page }) => {
   await gotoReadyShell(page);
   const eventId = "$context-edit-item:example.invalid";
@@ -486,6 +572,282 @@ test("message context menu Edit opens the row's inline editor (#1100)", async ({
   await expect(editTextarea).toBeVisible();
   await expect(editTextarea).toHaveText("Context menu edit body");
   await expect(article.getByRole("button", { name: t("timeline.saveEdit") })).toBeVisible();
+});
+
+test("selected message text offers exact Copy of the selection (#1155)", async ({ page }) => {
+  await installClipboardStub(page);
+  await gotoReadyShell(page);
+  const eventId = "$selection-copy:example.invalid";
+  await seedTimelineItems(page, [
+    makeEventItem(eventId, { body: "First phrase. Second phrase." })
+  ]);
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  await expect(article).toBeVisible();
+
+  await selectMessageSubstring(page, eventId, "Second phrase.");
+  await article.click({ button: "right" });
+
+  const copyItem = page.getByRole("menuitem", { name: t("context.copySelectedText") });
+  await expect(copyItem).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: t("context.searchWebForSelectedText") })
+  ).toBeVisible();
+  // Opening the menu transmits nothing.
+  expect(await openedExternalUrls(page)).toEqual([]);
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("");
+
+  await copyItem.click();
+  // Exactly the selected substring — never the whole message body.
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(
+    "Second phrase."
+  );
+  expect(await openedExternalUrls(page)).toEqual([]);
+});
+
+test("selected message text searches DuckDuckGo through the external URL port (#1155)", async ({
+  page
+}) => {
+  await installClipboardStub(page);
+  await gotoReadyShell(page);
+  const eventId = "$selection-search:example.invalid";
+  await seedTimelineItems(page, [
+    makeEventItem(eventId, { body: "First phrase. Second phrase." })
+  ]);
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  await expect(article).toBeVisible();
+
+  await selectMessageSubstring(page, eventId, "Second phrase.");
+  await article.click({ button: "right" });
+  await page
+    .getByRole("menuitem", { name: t("context.searchWebForSelectedText") })
+    .click();
+
+  await expect
+    .poll(() => openedExternalUrls(page))
+    .toEqual(["https://duckduckgo.com/?q=Second%20phrase."]);
+});
+
+test("selected text copies multi-line text exactly, whitespace included (#1155)", async ({
+  page
+}) => {
+  await installClipboardStub(page);
+  await gotoReadyShell(page);
+  const eventId = "$selection-exact:example.invalid";
+  await seedTimelineItems(page, [
+    makeEventItem(eventId, { body: "First\n  indented  \nLast" })
+  ]);
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  await expect(article).toBeVisible();
+
+  // Spans a rendered line break and keeps the indentation on both sides.
+  await page.evaluate((id) => {
+    const article = document.querySelector(`[data-event-id="${id}"]`);
+    const body = article?.querySelector(".message-body");
+    const spans = body?.querySelectorAll("span");
+    if (!spans || spans.length < 3) throw new Error("multi-line body spans missing");
+    const indented = spans[1].lastChild;
+    const last = spans[2].lastChild;
+    if (!indented || !last) throw new Error("multi-line body text missing");
+    const range = document.createRange();
+    range.setStart(indented, 0);
+    range.setEnd(last, last.textContent?.length ?? 0);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, eventId);
+  await article.click({ button: "right" });
+  await page.getByRole("menuitem", { name: t("context.copySelectedText") }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(
+    "  indented  \nLast"
+  );
+});
+
+test("formatted paragraphs copy with their line boundary (#1155)", async ({ page }) => {
+  await installClipboardStub(page);
+  await gotoReadyShell(page);
+  const eventId = "$selection-formatted:example.invalid";
+  await seedTimelineItems(page, [
+    makeEventItem(eventId, {
+      body: "First paraSecond para",
+      can_edit: false,
+      formatted: {
+        html: "<p>First para</p><p>Second para</p>",
+        plain_text: "First para\n\nSecond para",
+        code_blocks: []
+      }
+    })
+  ]);
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  await expect(article).toBeVisible();
+  await expect(article.getByText("First para", { exact: true })).toBeVisible();
+
+  await page.evaluate((id) => {
+    const scope = document.querySelector(`[data-event-id="${id}"]`);
+    const body = scope?.querySelector(".message-body");
+    const paragraphs = body?.querySelectorAll("p");
+    const first = paragraphs?.[0]?.firstChild;
+    const second = paragraphs?.[1]?.firstChild;
+    if (!first || !second) throw new Error("formatted paragraphs missing");
+    const range = document.createRange();
+    range.setStart(first, 0);
+    range.setEnd(second, second.textContent?.length ?? 0);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, eventId);
+
+  await article.click({ button: "right" });
+  await page.getByRole("menuitem", { name: t("context.copySelectedText") }).click();
+
+  // Without a block boundary this would copy "First paraSecond para".
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(
+    "First para\nSecond para"
+  );
+});
+
+test("a whitespace-only selection offers no selection actions (#1155)", async ({ page }) => {
+  await installClipboardStub(page);
+  await gotoReadyShell(page);
+  const eventId = "$selection-blank:example.invalid";
+  await seedTimelineItems(page, [
+    makeEventItem(eventId, { body: "alpha   beta", can_edit: false })
+  ]);
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  await expect(article).toBeVisible();
+
+  await selectMessageSubstring(page, eventId, "   ");
+  await article.click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: t("context.redactMessage") })).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: t("context.copySelectedText") })
+  ).toHaveCount(0);
+});
+
+test("a selection crossing two messages offers no selection actions (#1155)", async ({ page }) => {
+  await installClipboardStub(page);
+  await gotoReadyShell(page);
+  const firstId = "$selection-cross-a:example.invalid";
+  const secondId = "$selection-cross-b:example.invalid";
+  await seedTimelineItems(page, [
+    makeEventItem(firstId, { body: "Alpha body", can_edit: false }),
+    makeEventItem(secondId, { body: "Bravo body", can_edit: false })
+  ]);
+
+  await expect(page.locator(`[data-event-id="${firstId}"]`)).toBeVisible();
+  await page.evaluate(
+    ({ firstId: first, secondId: second }) => {
+      const firstRow = document.querySelector(`[data-event-id="${first}"]`);
+      const secondRow = document.querySelector(`[data-event-id="${second}"]`);
+      if (!firstRow || !secondRow) throw new Error("rows missing");
+      const firstBody = firstRow.querySelector(".message-body");
+      const firstSpans = firstBody?.querySelectorAll("span");
+      const firstText = firstSpans?.[0]?.lastChild;
+      const secondBody = secondRow.querySelector(".message-body");
+      const secondSpans = secondBody?.querySelectorAll("span");
+      const secondText = secondSpans?.[secondSpans.length - 1]?.lastChild;
+      if (!firstText || !secondText) throw new Error("body text missing");
+      const range = document.createRange();
+      range.setStart(firstText, 0);
+      range.setEnd(secondText, secondText.textContent?.length ?? 0);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    },
+    { firstId, secondId }
+  );
+
+  await page.locator(`[data-event-id="${secondId}"]`).click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: t("context.redactMessage") })).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: t("context.copySelectedText") })
+  ).toHaveCount(0);
+});
+
+test("a row with no server event id still offers the selected-text actions (#1155)", async ({
+  page
+}) => {
+  await installClipboardStub(page);
+  await gotoReadyShell(page);
+  await seedTimelineItems(page, [
+    makeTransactionItem("txn-selection", { kind: "sending" }, { body: "Outbound selection text" })
+  ]);
+
+  const article = page.locator('[data-item-id="txn:txn-selection"]');
+  await expect(article).toBeVisible();
+
+  await selectMessageSubstringIn(article, "Outbound selection");
+  await article.click({ button: "right" });
+
+  await expect(
+    page.getByRole("menuitem", { name: t("context.copySelectedText") })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: t("context.searchWebForSelectedText") })
+  ).toBeVisible();
+});
+
+test("a selection outside the message text offers no selection actions (#1155)", async ({
+  page
+}) => {
+  await installClipboardStub(page);
+  await gotoReadyShell(page);
+  const eventId = "$selection-scope:example.invalid";
+  await seedTimelineItems(page, [
+    makeEventItem(eventId, { body: "Editable body text", can_edit: true })
+  ]);
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  await expect(article).toBeVisible();
+
+  // No selection at all: the message menu keeps its existing actions only.
+  await article.click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: t("context.redactMessage") })).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: t("context.copySelectedText") })
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("menuitem", { name: t("context.searchWebForSelectedText") })
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  // A selection inside the row's own inline edit composer is draft text, not
+  // message text, so it must not offer the selection actions either.
+  await article.getByRole("button", { name: t("timeline.editMessage") }).click();
+  const editTextarea = article.getByRole("textbox", { name: t("timeline.editBody") });
+  await expect(editTextarea).toBeVisible();
+  await editTextarea.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await article.click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: t("context.redactMessage") })).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: t("context.copySelectedText") })
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  // A range that *encloses* the editor (its common ancestor is the row, outside
+  // the editor) must be rejected too: it still carries draft text.
+  await article.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await article.click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: t("context.redactMessage") })).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: t("context.copySelectedText") })
+  ).toHaveCount(0);
 });
 
 test("message context menu omits Edit when Rust reports can_edit=false (#1100)", async ({

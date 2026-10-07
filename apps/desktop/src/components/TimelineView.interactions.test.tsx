@@ -67,9 +67,13 @@ function changeInlineEditorText(editor: HTMLDivElement, text: string) {
 
 function expectLocalizedTooltip(button: HTMLButtonElement, label: string): void {
   fireEvent.focus(button);
-  const tooltip = button.parentElement?.querySelector<HTMLElement>('[role="tooltip"]') ?? null;
+  // The bubble renders in the body-level floating layer so pane scrollports
+  // cannot clip it (#1166), so it is looked up by the trigger's description id.
+  const describedBy = button.getAttribute("aria-describedby");
+  expect(describedBy).toBeTruthy();
+  const tooltip = document.querySelector<HTMLElement>(`[id="${describedBy}"]`);
   expect(tooltip?.textContent).toBe(label);
-  expect(button.getAttribute("aria-describedby")).toBe(tooltip?.id);
+  expect(tooltip?.getAttribute("role")).toBe("tooltip");
   fireEvent.blur(button);
 }
 

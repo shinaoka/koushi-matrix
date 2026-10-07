@@ -438,6 +438,32 @@ describe("Composer", () => {
     expect(onValueChange).toHaveBeenLastCalledWith("**world**");
   });
 
+  it("keeps the scheduled-send persistence warning alongside a transient notice (#1159)", () => {
+    render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Direct room"
+        document={documentFromText("")}
+        onCancelReply={() => undefined}
+        onSend={textSend(() => undefined)}
+        onDocumentChange={textChange(() => undefined)}
+        notice="This command is not available in this composer."
+        scheduledSendPersistenceFailed
+      />
+    );
+
+    // A transient notice must never hide a failure that is still true.
+    expect(
+      screen.getByText("This command is not available in this composer.")
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Local scheduled-send changes could not be saved; they may not survive restarting the app."
+      )
+    ).toBeTruthy();
+  });
+
   it("renders a localized notice for rejected slash commands and hides it without one", () => {
     // Issue #450: recognized-but-unavailable commands (/join, /invite) show a
     // clear localized explanation near the composer instead of appearing inert.

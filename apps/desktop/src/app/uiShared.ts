@@ -18,7 +18,7 @@ import type {
   TimelineMessage
 } from "../domain/types";
 import type { ContextMenuItem } from "../domain/contextMenus";
-import { getActiveLocale, t } from "../i18n/messages";
+import { getActiveLocale, t, type MessageId } from "../i18n/messages";
 import { roomDisplayLabel } from "../domain/roomDisplayLabel";
 
 export { roomDisplayLabel, roomListItemLabel } from "../domain/roomDisplayLabel";
@@ -52,6 +52,12 @@ export type ContextMenuTarget =
        * instead of the shell synthesizing an edit from the menu.
        */
       onOpenEdit?: () => void;
+      /**
+       * Visible message-text selection captured by the row before the menu took
+       * focus (#1155). Renderer-local and ephemeral: it never enters Rust state,
+       * a log, or persisted storage.
+       */
+      selectedText?: string;
     }
   | { kind: "room"; roomId: string; dmUserId?: string | null }
   | { kind: "space"; spaceId: string }
@@ -317,6 +323,27 @@ export function operationFailureLabel(kind: OperationFailureKind): string {
   }
 }
 
+/**
+ * The tooltip text for an access condition (#1166): its explanation, plus the
+ * membership routes a restricted rule names when Rust resolved their labels.
+ *
+ * Only resolved names are listed, so an unknown or invisible entry adds nothing
+ * rather than a guessed label or a raw id.
+ */
+export function roomAccessTooltipLabel(
+  descriptionMessageId: MessageId,
+  allowedRoomNames?: readonly string[] | null
+): string {
+  const explanation = t(descriptionMessageId);
+  const names = (allowedRoomNames ?? []).filter((name) => name.trim().length > 0);
+  if (names.length === 0) {
+    return explanation;
+  }
+  return `${explanation} ${t("access.allowedRooms", {
+    rooms: names.join(t("access.labelSeparator"))
+  })}`;
+}
+
 export function serverNameFromRoomId(roomId: string): string | null {
   if (!roomId.startsWith("!")) {
     return null;
@@ -378,6 +405,28 @@ export function shiftScheduledSendValue(value: string, deltaMinutes: number): st
     return value;
   }
   return datetimeLocalValueFromTimestamp(timestampMs + deltaMinutes * 60_000);
+}
+
+/**
+ * Error code Core publishes when a local scheduled-send save failed (#1159).
+ * Mirrors `SCHEDULED_SEND_PERSISTENCE_FAILED` in
+ * `crates/koushi-state/src/reducer/timeline.rs`.
+ */
+export const SCHEDULED_SEND_PERSISTENCE_FAILED_CODE = "scheduled_send_persistence_failed";
+
+/**
+ * Whether the composer must warn that scheduled-send changes are not durable.
+ * Acceptance is not durability: the reservation exists in this session's memory
+ * but not on disk, so it may not survive a restart.
+ */
+export function hasScheduledSendPersistenceFailure(
+  errors: readonly { code: string }[] | undefined
+): boolean {
+  // Harness and hand-built snapshots can omit the list entirely; reading it must
+  // not throw during render (a component test renders a partial snapshot).
+  return (
+    errors?.some((error) => error.code === SCHEDULED_SEND_PERSISTENCE_FAILED_CODE) ?? false
+  );
 }
 
 export function scheduledSendTimestampFromInput(value: string): number | null {
