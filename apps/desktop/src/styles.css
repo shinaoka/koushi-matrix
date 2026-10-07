@@ -1313,6 +1313,11 @@ button:disabled {
   visibility: hidden;
 }
 
+.tooltip-bubble.is-floating {
+  inset-block-start: auto;
+  inset-inline-start: auto;
+}
+
 .tooltip-bubble.is-open {
   opacity: 1;
   visibility: visible;
@@ -2193,12 +2198,19 @@ button:disabled {
 }
 
 .channel-title h1,
-.channel-title span:last-child {
+.channel-title .channel-name {
   margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font: inherit;
+}
+
+/* #1166: an access badge and its tooltip host are not the truncated room name. */
+.channel-title .channel-access-badge,
+.channel-title .tooltip-host {
+  overflow: visible;
+  white-space: nowrap;
 }
 
 .channel-actions {

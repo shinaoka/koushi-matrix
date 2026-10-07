@@ -85,6 +85,27 @@ async function pushRoomList(page: Page): Promise<void> {
   });
 }
 
+/** Re-push the room list with a new access rule on the active harness room. */
+async function pushRoomRule(page: Page, rule?: RoomJoinRule): Promise<void> {
+  const base = await openHarness(page);
+  const rows = [...ROOMS, row(HARNESS_ROOM_ID, "Harness Room", rule)];
+  await pushSnapshot(page, {
+    ...base,
+    sidebar: {
+      ...base.sidebar,
+      space_rooms: rows,
+      global_dms: [],
+      sections: {
+        favourites: [],
+        not_joined: [],
+        rooms: rows,
+        people: [],
+        low_priority: []
+      }
+    }
+  });
+}
+
 test("room rows render the projected access condition with its tooltip", async ({ page }) => {
   await pushRoomList(page);
   const rooms = page.getByRole("region", { name: t("roomList.categoryRooms"), exact: true });
@@ -120,16 +141,30 @@ test("room rows render the projected access condition with its tooltip", async (
   );
 
   // Hovering the icon or a badge explains it.
+  // The bubble renders in the body-level floating layer, so it is not clipped by
+  // the sidebar's scrollport.
   await rooms.locator('[data-room-access="padlock"]').hover();
-  await expect(
-    rooms.locator(".tooltip-bubble.is-open").filter({ hasText: t("access.inviteOnlyDescription") })
-  ).toHaveCount(1);
+  const iconBubble = page
+    .locator("body > .tooltip-bubble.is-open")
+    .filter({ hasText: t("access.inviteOnlyDescription") });
+  await expect(iconBubble).toHaveCount(1);
+  await expect(iconBubble).toBeInViewport();
+
   await bothRow.locator(".room-access-badge").first().hover();
-  await expect(
-    rooms
-      .locator(".tooltip-bubble.is-open")
-      .filter({ hasText: t("access.conditionsRouteDescription") })
-  ).toHaveCount(1);
+  const routeBubble = page
+    .locator("body > .tooltip-bubble.is-open")
+    .filter({ hasText: t("access.conditionsRouteDescription") });
+  await expect(routeBubble).toHaveCount(1);
+  await expect(routeBubble).toBeInViewport();
+
+  // The trailing badge's tooltip — the one the old in-row bubble clipped — is
+  // fully inside the viewport too.
+  await bothRow.locator(".room-access-badge").last().hover();
+  const requestBubble = page
+    .locator("body > .tooltip-bubble.is-open")
+    .filter({ hasText: t("access.requestRouteDescription") });
+  await expect(requestBubble).toHaveCount(1);
+  await expect(requestBubble).toBeInViewport();
 });
 
 test("the room header shows the active room's access condition", async ({ page }) => {
@@ -145,9 +180,31 @@ test("the room header shows the active room's access condition", async ({ page }
 
   // The combined explanation is available from the header badge.
   await header.locator(".channel-access-badge").first().hover();
-  await expect(
-    header
-      .locator(".tooltip-bubble.is-open")
-      .filter({ hasText: t("access.conditionsRouteDescription") })
-  ).toHaveCount(1);
+  const headerBubble = page
+    .locator("body > .tooltip-bubble.is-open")
+    .filter({ hasText: t("access.conditionsRouteDescription") });
+  await expect(headerBubble).toHaveCount(1);
+  await expect(headerBubble).toBeInViewport();
+});
+
+test("the header uses the full unknown and checking labels", async ({ page }) => {
+  await pushRoomList(page);
+  const header = page.locator(".channel-header");
+  await expect(header.locator(".channel-access-badge")).toHaveText([
+    t("access.conditionsApply"),
+    t("access.canRequest")
+  ]);
+
+  // An unrecognised rule reads as the full unknown label, not the compact one.
+  await pushRoomRule(page, "unknown");
+  await expect(header.locator(".channel-access-badge")).toHaveText([
+    t("access.unknownFull")
+  ]);
+
+  // A rule that has not been projected yet reads as the full checking label.
+  await pushRoomRule(page, undefined);
+  await expect(header.locator(".channel-access-badge")).toHaveText([
+    t("access.checkingFull")
+  ]);
+  await expect(header.locator(".channel-access-badge")).toBeVisible();
 });

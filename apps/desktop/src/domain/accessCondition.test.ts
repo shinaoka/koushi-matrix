@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { ROOM_ACCESS_CHECKING, roomAccessIndicator } from "./accessCondition";
+import {
+  ROOM_ACCESS_CHECKING,
+  roomAccessHeaderBadges,
+  roomAccessIndicator
+} from "./accessCondition";
 
 describe("room access indicator (#1166)", () => {
   it("maps the documented join rules to their icons, badges and explanations", () => {
@@ -69,6 +73,43 @@ describe("room access indicator (#1166)", () => {
     expect(ROOM_ACCESS_CHECKING.badges).toEqual([
       {
         labelMessageId: "access.checking",
+        descriptionMessageId: "access.checkingDescription"
+      }
+    ]);
+  });
+});
+
+describe("room access header badges", () => {
+  it("uses the full label in a header and keeps each route's explanation", () => {
+    // Public and invite-only have no compact badge; the header shows the label.
+    expect(roomAccessHeaderBadges(roomAccessIndicator("public")!)).toEqual([
+      {
+        labelMessageId: "access.public",
+        descriptionMessageId: "access.publicDescription"
+      }
+    ]);
+    expect(roomAccessHeaderBadges(roomAccessIndicator("knockRestricted")!)).toEqual([
+      {
+        labelMessageId: "access.conditionsApply",
+        descriptionMessageId: "access.conditionsRouteDescription"
+      },
+      {
+        labelMessageId: "access.canRequest",
+        descriptionMessageId: "access.requestRouteDescription"
+      }
+    ]);
+  });
+
+  it("uses the full unknown and checking labels rather than their compact form", () => {
+    expect(roomAccessHeaderBadges(roomAccessIndicator("unknown")!)).toEqual([
+      {
+        labelMessageId: "access.unknownFull",
+        descriptionMessageId: "access.unknownDescription"
+      }
+    ]);
+    expect(roomAccessHeaderBadges(ROOM_ACCESS_CHECKING)).toEqual([
+      {
+        labelMessageId: "access.checkingFull",
         descriptionMessageId: "access.checkingDescription"
       }
     ]);

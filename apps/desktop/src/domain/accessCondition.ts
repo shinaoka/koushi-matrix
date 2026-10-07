@@ -137,13 +137,18 @@ export const ROOM_ACCESS_CHECKING: RoomAccessIndicator = {
 export function roomAccessHeaderBadges(
   indicator: RoomAccessIndicator
 ): RoomAccessBadge[] {
-  if (indicator.badges.length > 0) {
-    return indicator.badges;
-  }
-  return indicator.labelMessageIds.map((labelMessageId) => ({
-    labelMessageId,
-    descriptionMessageId: indicator.descriptionMessageId
-  }));
+  // The header always uses the *full* label (参加条件不明 / 参加条件確認中 for
+  // unknown and checking), while each label keeps its own route explanation when
+  // the compact badge carries one.
+  return indicator.labelMessageIds.map((labelMessageId) => {
+    const badge = indicator.badges.find(
+      (candidate) => candidate.labelMessageId === labelMessageId
+    );
+    return {
+      labelMessageId,
+      descriptionMessageId: badge?.descriptionMessageId ?? indicator.descriptionMessageId
+    };
+  });
 }
 
 /**
