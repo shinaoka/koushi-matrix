@@ -414,10 +414,10 @@ pub(crate) fn event_json_to_index_message(
                 let body = replacement_content.get("body")?.as_str()?;
                 let (text_body, attachment_filename, attachment) =
                     project_message_content(msgtype, body, replacement_content, settings)?;
-                if text_body.is_none() && attachment_filename.is_none() {
-                    return None;
-                }
+                // Even an opted-out text replacement can remove an existing
+                // Files attachment. Only identity/provenance is forwarded then.
                 return Some(SearchIndexMessage::Edit {
+                    room_id: room_id.to_owned(),
                     edit_event_id: event_id,
                     target_event_id,
                     sender,

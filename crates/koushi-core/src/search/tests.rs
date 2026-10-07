@@ -629,6 +629,7 @@ fn attachment_document(filename: &str) -> koushi_search::AttachmentDocument {
 
 fn make_attachment_edit(target: &str, filename: &str) -> SearchEdit {
     SearchEdit {
+        room_id: "!room-a:example.invalid".into(),
         edit_event_id: format!("{target}_edit"),
         target_event_id: target.to_owned(),
         sender: "@alice:test".to_owned(),
@@ -647,6 +648,7 @@ fn make_edit_at(
     filename: &str,
 ) -> SearchEdit {
     SearchEdit {
+        room_id: "!room-a:example.invalid".into(),
         edit_event_id: edit_event_id.to_owned(),
         target_event_id: target.to_owned(),
         sender: "@alice:test".to_owned(),
@@ -676,6 +678,7 @@ fn attachment_rows(store: &SearchDocumentStore) -> Vec<koushi_state::AttachmentR
 
 fn make_edit(target: &str, new_body: &str) -> SearchEdit {
     SearchEdit {
+        room_id: "!room-a:example.invalid".into(),
         edit_event_id: format!("{target}_edit"),
         target_event_id: target.to_owned(),
         sender: "@alice:test".to_owned(),
@@ -748,7 +751,11 @@ fn caption_only_edit_still_marks_the_row_edited() {
         true,
         None,
     );
-    store.upsert_edit(make_edit("$e1", "a new caption"), true);
+    let mut caption_edit = make_edit("$e1", "a new caption");
+    // A caption replacement retains its media msgtype; both SDK producers
+    // carry that attachment, unlike a replacement with a text msgtype.
+    caption_edit.attachment = make_attachment_event("!r:test", "$e1", "agenda.pdf").attachment;
+    store.upsert_edit(caption_edit, true);
 
     let rows = attachment_rows(&store);
 
@@ -891,6 +898,7 @@ fn search_index_message_upsert_redacts_body_in_debug() {
 #[test]
 fn search_index_message_edit_redacts_body_in_debug() {
     let msg = super::SearchIndexMessage::Edit {
+        room_id: "!r:test".to_owned(),
         edit_event_id: "$edit:test".to_owned(),
         target_event_id: "$orig:test".to_owned(),
         sender: "@a:test".to_owned(),

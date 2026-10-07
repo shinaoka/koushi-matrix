@@ -1497,39 +1497,3 @@ fn malformed_encryption_is_not_a_success_notice() {
     assert_ne!(projection.body.as_deref(), Some("enabled room encryption"));
     assert!(projection.notice_i18n.is_some());
 }
-
-#[cfg(test)]
-mod reported_search_edits {
-    use super::super::reported_search_edit_retirements;
-    use crate::search::SearchIndexMessage;
-    use std::collections::HashMap;
-
-    fn retired(messages: &[SearchIndexMessage]) -> Option<&str> {
-        messages.iter().find_map(|message| match message {
-            SearchIndexMessage::Redact { event_id } => Some(event_id.as_str()),
-            _ => None,
-        })
-    }
-
-    #[test]
-    fn only_a_backward_report_retires_the_previous_edit() {
-        let mut reported = HashMap::new();
-
-        assert!(
-            reported_search_edit_retirements(&mut reported, "$e", Some("$a"), 1_000).is_empty()
-        );
-        assert!(
-            reported_search_edit_retirements(&mut reported, "$e", Some("$b"), 2_000).is_empty()
-        );
-        assert!(
-            reported_search_edit_retirements(&mut reported, "$e", Some("$b"), 2_000).is_empty()
-        );
-
-        let messages = reported_search_edit_retirements(&mut reported, "$e", Some("$a"), 1_000);
-        assert_eq!(retired(&messages), Some("$b"));
-
-        let messages = reported_search_edit_retirements(&mut reported, "$e", None, 0);
-        assert_eq!(retired(&messages), Some("$a"));
-        assert!(reported_search_edit_retirements(&mut reported, "$e", None, 0).is_empty());
-    }
-}

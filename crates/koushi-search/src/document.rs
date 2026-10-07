@@ -101,8 +101,8 @@ pub struct SearchDocumentStore {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct AppliedEdit {
     timestamp_ms: u64,
-    canonical: bool,
     edit_event_id: String,
+    canonical: bool,
 }
 
 /// Identity of the edit whose content a message carries.
@@ -131,8 +131,9 @@ impl AppliedEdit {
     }
 }
 
-/// How many redacted edit ids one row remembers. A crawl replays a bounded
-/// number of versions, so the newest handful is enough to refuse a replay.
+/// Bounded synchronous replay defense. Core also checks the SDK's encrypted
+/// redaction evidence at mutation and Files-read admission, including older IDs
+/// no longer present in this small cache.
 const RETIRED_EDITS_PER_ROW: usize = 8;
 
 /// An edit waiting for its original message.
@@ -159,6 +160,40 @@ impl SearchDocumentStore {
     /// Whether an event id is currently resident in the store.
     pub fn contains(&self, event_id: &str) -> bool {
         self.documents.contains_key(event_id)
+    }
+
+    /// IDs whose redaction state can affect a target, including pending edits.
+    pub fn mutation_event_ids(&self, target: &str) -> Vec<String> {
+        let mut ids = vec![target.to_owned()];
+        if let Some(applied) = self.applied_edits.get(target) {
+            ids.push(applied.edit_event_id.clone());
+        }
+        if let Some(pending) = self.pending_edits.get(target) {
+            ids.extend(pending.iter().map(|p| p.edit.edit_event_id.clone()));
+        }
+        ids
+    }
+
+    /// Files candidates and pending-only targets, with their owning room.
+    pub fn mutation_targets(&self) -> Vec<(String, String)> {
+        let mut targets: Vec<_> = self
+            .documents
+            .values()
+            .map(|event| (event.room_id.clone(), event.event_id.clone()))
+            .collect();
+        targets.extend(
+            self.pending_edits
+                .iter()
+                .filter(|(id, _)| !self.documents.contains_key(*id))
+                .filter_map(|(id, edits)| {
+                    edits.first().map(|p| (p.edit.room_id.clone(), id.clone()))
+                }),
+        );
+        targets
+    }
+
+    pub fn affects_attachment(&self, target: &str) -> bool {
+        self.documents.contains_key(target) || self.pending_edits.contains_key(target)
     }
 
     pub fn pending_edit_count(&self) -> usize {
@@ -196,9 +231,9 @@ impl SearchDocumentStore {
         canonical: bool,
         edit: Option<SearchEditKey>,
     ) {
-        if event.attachment.is_none() {
-            // Nothing to show in the Files view, and search does not read this
-            // store, so retaining the message would only cost memory.
+        if event.attachment.is_none() && !self.affects_attachment(&event.event_id) {
+            // Ordinary text history is never resident. A former attachment keeps
+            // only identity/edit provenance so stale media cannot resurrect it.
             return;
         }
         let applied = self.applied_edits.get(&event.event_id).cloned();
@@ -257,7 +292,10 @@ impl SearchDocumentStore {
 
         if self.documents.contains_key(&edit.target_event_id) {
             self.apply_edit_if_newer(&edit, canonical);
-        } else if edit.attachment.is_some() || edit.attachment_filename.is_some() {
+        } else if edit.attachment.is_some()
+            || edit.attachment_filename.is_some()
+            || self.pending_edits.contains_key(&edit.target_event_id)
+        {
             // A pending edit is only useful for a row that will carry an
             // attachment; a body-only edit cannot change one, and holding it
             // would grow with message history the store otherwise never keeps.
@@ -295,14 +333,31 @@ impl SearchDocumentStore {
             .is_some_and(|retired| retired.iter().any(|id| id == edit_event_id))
     }
 
-    fn retire_edit(&mut self, target_event_id: &str, edit_event_id: &str) {
+    /// Retire one explicitly redacted edit, preserving other surviving versions.
+    pub fn retire_edit(&mut self, target_event_id: &str, edit_event_id: &str) {
         let retired = self
             .retired_edits
             .entry(target_event_id.to_owned())
             .or_default();
-        retired.push(edit_event_id.to_owned());
-        if retired.len() > RETIRED_EDITS_PER_ROW {
-            retired.remove(0);
+        if !retired.iter().any(|id| id == edit_event_id) {
+            retired.push(edit_event_id.to_owned());
+            if retired.len() > RETIRED_EDITS_PER_ROW {
+                retired.remove(0);
+            }
+        }
+        if self
+            .applied_edits
+            .get(target_event_id)
+            .is_some_and(|applied| applied.edit_event_id == edit_event_id)
+        {
+            self.documents.remove(target_event_id);
+            self.applied_edits.remove(target_event_id);
+        }
+        if let Some(pending) = self.pending_edits.get_mut(target_event_id) {
+            pending.retain(|p| p.edit.edit_event_id != edit_event_id);
+            if pending.is_empty() {
+                self.pending_edits.remove(target_event_id);
+            }
         }
     }
 
@@ -337,9 +392,6 @@ impl SearchDocumentStore {
         );
         for target in affected {
             self.retire_edit(&target, event_id);
-            self.documents.remove(&target);
-            self.applied_edits.remove(&target);
-            self.pending_edits.remove(&target);
         }
 
         self.retired_edits.remove(event_id);
@@ -459,17 +511,19 @@ fn retain_attachment_metadata(event: &mut SearchableEvent) {
 /// An edit may rename the file, replace the attachment, or only change the
 /// caption; every case marks the row as edited, as the timeline does.
 fn apply_edit(event: &mut SearchableEvent, edit: &SearchEdit) {
-    let Some(attachment) = event.attachment.as_mut() else {
-        return;
-    };
-
-    if let Some(filename) = &edit.attachment_filename {
-        attachment.filename = filename.clone();
-    }
     if let Some(replacement) = &edit.attachment {
-        *attachment = replacement.clone();
+        event.attachment = Some(replacement.clone());
+    } else if edit.attachment_filename.is_none() {
+        // A text replacement no longer carries media. Keep only the target's
+        // identity and edit ordering, never the replacement's text.
+        event.attachment = None;
     }
-    attachment.is_edited = true;
+    if let Some(attachment) = event.attachment.as_mut() {
+        if let Some(filename) = &edit.attachment_filename {
+            attachment.filename = filename.clone();
+        }
+        attachment.is_edited = true;
+    }
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -513,6 +567,7 @@ pub struct SearchCandidate {
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SearchEdit {
+    pub room_id: String,
     pub edit_event_id: String,
     pub target_event_id: String,
     pub sender: String,

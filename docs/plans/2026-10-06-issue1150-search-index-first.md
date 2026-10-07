@@ -1,361 +1,124 @@
-# #1150 search: index-first candidates and bounded memory (M2)
+# #1150: index-first search (M2)
 
-Status: in progress on `feat/1150-index-first-search` (app) and
-`feat/1150-literal-bounded-search` (SDK fork, PR #19).
+Status: implementation and final review on PR #1157. SDK changes are in fork
+PR #19; that PR must not be merged without a separate maintainer decision.
 
-## Goal
+## Scope and acceptance
 
-Make the persistent, encrypted ngram index the only search candidate source and
-stop retaining every message body and edit in RAM, while keeping
-`koushi-search`'s matcher synchronous and pure and keeping verified-result
-semantics (UTF-16 highlights, bidirectional width folding, voiced kana, case
-folding, filename-field attribution, false-positive rejection).
+The encrypted persistent ngram index is the only search candidate source.
+Verification reads current visible content from the encrypted SDK event cache;
+ngram false positives, redacted content and content excluded by the account's
+policy are never search results. Existing UTF-16 highlight and normalization
+semantics remain in the synchronous, pure `koushi-search` verifier.
 
-## Landed
+First-party search residency must not grow with historical message bodies or
+edit text. Files metadata remains resident; SDK/cache residency and index/disk
+size are separate quantities, not covered by a zero-body-byte assertion.
 
-- SDK fork (`matrix-rust-sdk-work`, PR #19): literal, offset-free,
-  newest-first paging (`Room::search_literal_page`, `SearchCursor`), a
-  normalized body field with per-grapheme folding, and a cache-only resolved
-  reader that resolves edits/redactions and splits a media caption from its
-  filename. `MatrixLiteralSearchPager` pages a whole scope in `koushi-sdk`.
-- `koushi-core`: candidates come only from the pager; each candidate is
-  verified by resolving its current content from the encrypted event cache
-  (`koushi_sdk::resolve_cached_message` -> `SearchableEvent` ->
-  `koushi_search::verify_candidate`). The document-store scan and store-based
-  candidate verification are no longer called; the verify diagnostic now
-  reports `candidates_in_scope`, `cache_resolved`, `verified`.
-- `SearchDocumentStore` retains attachment metadata only: messages without an
-  attachment are not stored, edit text is never retained, a filename edit lands
-  on the attachment (which is what the Files view reads) and marks the row
-  edited, and redaction removes the row. The store-level matching tests moved to
-  the pure verifier (`koushi-search/tests/`), and the actor's store maintenance
-  tests now assert the attachment contract.
-- Bounded filtered refill: the SDK task verifies each index page and keeps paging
-  until it has enough verified results or the candidate scan budget (`500`) is
-  spent, with `50` candidates per page. The pre-SDK local emission is gone, so a
-  query emits exactly one `Results`; an SDK failure emits
-  `AppAction::SearchFailed` plus `CoreEvent::OperationFailed`.
-- **M3 durable crawl commitments**: an encrypted per-account record
-  (`store/search_crawl.rs`) holds, per crawled room, the boundary event id and
-  the counters the room row reports. Startup seeds the completed-room set from
-  it, so a restart no longer re-crawls committed history; a completed or removed
-  room updates it. The record is generation-tagged
-  (`SEARCH_CRAWL_BACKEND_VERSION`): commitments from another version are ignored
-  and dropped, making an index or extraction change a migration. Only
-  identifiers and counters are stored; a missing file is an empty commit set and
-  an unreadable one is a typed `StoreUnavailable` that means "crawl again".
+The maintainer explicitly removed **M3** (durable crawl commitments and their
+compensating Files reconstruction) and **M4** (startup search warm set). Restart
+crawls history again. There is no warm-target persistence, startup warmer, or
+startup-latency claim in this PR. The version-tagged index directory remains:
+an extraction/tokenization change needs a fresh index because existing IDs are
+not automatically rewritten.
 
-## Remaining
+## Implemented search boundary
 
-1. **Typed failure on an SDK query failure** (done here): the actor previously
-   relied on the pre-SDK local emission to settle the UI, so an SDK failure
-   would have left it waiting. It now emits `AppAction::SearchFailed` and
-   `CoreEvent::OperationFailed { CoreFailure::SearchFailed }`.
-2. **QA false-green** is addressed by removing the pre-SDK emission: each
-   accepted query now emits exactly one `Results`, so the QA helper that accepts
-   the first `Results` can no longer read an empty placeholder as settled.
-3. **M4** warm set on the existing encrypted navigation persistence bringing the
-   SDK display window up before timeline construction, with a startup-latency
-   RED gate (see the implementation pointers in Remaining).
-> Superseded: M4 was later removed from this PR (see "M4 removed" below). The
-> two entries that follow record what was attempted, not a shipped capability.
+- Literal, offset-free SDK paging, newest first by index `(timestamp, event_id)`.
+  Verification refills filtered pages within 50-candidate pages and a
+  500-candidate scan budget per query variant.
+- Candidates resolve from the SDK encrypted cache, including replacement aliases
+  and sticker text. Deduplicate resolved identity before the 50-result quota;
+  select by the index paging key before sorting by displayed timestamp.
+- Queries carry authoritative account content policy. Policy changes clear Files
+  residency, close Search/Files state, and invalidate in-flight actor results.
+- Full request identity includes connection and sequence. AppActor publishes
+  successful search results only after reducer admission; superseded and failed
+  requests settle through correlated outcomes.
+- Crawler pages explicitly await persistent index commit before reporting
+  success. Completed-room checkpoints are in-session only, not durable M3 data.
+- `SearchDocumentStore` keeps attachment metadata, pending attachment relations,
+  and body-free provenance for formerly attached messages replaced by text.
+  Ordinary text messages and all edit bodies are discarded.
 
-4. **M4 warm set.** Landed: `NavigationState` now persists a bounded, deduplicated
-   most-recent-first list of opened search results (identifiers only) via
-   `AppAction::SearchResultOpened`, and the account actor loads each target's
-   disk chunks cache-only (2 chunks / 200 events per target) once the session is
-   up, so the first navigation reuses a warm display window. **Remaining: the
-   startup-latency RED gate** proving the improvement, which the documented lane
-   cannot supply without maintainer GO and real-homeserver credentials; the
-   alternatives are a behavioural headless gate (network-blocked navigation to a
-   warm target succeeds from the cache, and fails without the warm set) or an
-   instrumented headless measurement of the primed phase at 1 thread with the
-   effective thread count recorded.
+## Files redaction correction
 
-The app already has the cache-only primitive: the SDK fork's
-   patch surface exposes `RoomPagination::run_backwards_cache_only`
-   (`CacheOnlyBackOutcome { anchor_present, .. }`), and
-   `crates/koushi-core/src/timeline/navigation.rs` uses `anchor_present` to load
-   backwards until an anchor is resident without network. The warm set is the
-   persisted active room/anchor plus recent search room/event pairs run through
-   that same load before timeline construction, so the first navigation does not
-   wait on `/context` or `/messages`. Work needed: (a) persist a bounded,
-   deduped recent search-target list (identifiers only) alongside the existing
-   `NavigationState` fields (`active_room_id`, `main_timeline_anchor`,
-   `room_scroll_anchors`), (b) prime at startup before the timeline is built
-   (`timeline/actor.rs` subscribes the event cache and traces `cache` vs
-   `network` origin; `timeline/focused_build.rs` owns the focused build that can
-   wait on a remote `/context`), (c) a RED startup-latency gate. The documented
-   startup-latency lane needs maintainer GO and real-homeserver credentials, so
-   the local gate should be an instrumented headless measurement of the primed
-   phase at 1 thread, recorded with the effective thread count.
-5. **Evidence still outstanding**: a synthetic history-scale measurement showing
-   zero retained body/edit bytes as indexed history grows (with index/disk size
-   reported separately), the real-homeserver QA lane, and the SDK PR merge
-   decision (its red checks are fork-wide pre-existing failures).
+Canon consulted: `REPOSITORY_RULES.md`, overview Search/async ownership,
+state-machine Files View, engineering rules Search Index And Room-Key Export,
+and verification discipline. SDK source is the checked-out vendor submodule.
 
-## Measured memory budget
+Timestamp changes cannot prove an edit was redacted. Both the observation-counter
+attempt and producer-local `reported_search_edits` ledger were removed: a stale
+actor can report an older edit, a surviving superseded edit can later be promoted,
+and actor replacement loses local history. Sharing that ledger would not make
+its inference authoritative.
 
-`crates/koushi-search/tests/search_memory.rs` is the #1150 memory probe:
-50,000 synthetic indexed messages carrying ~220-byte bodies leave
-`resident_body_bytes() == 0` and `document_count() == 0` (before this change the
-store retained one `SearchableEvent` per message, i.e. roughly 11 MB of bodies
-plus per-event map overhead), and 5,000 attachment messages retain 5,000 Files
-rows with `resident_body_bytes() == 0`. Index/disk residency and process RSS are
-reported by the QA lanes, not by this probe.
+SearchActor instead checks actual SDK redaction evidence for attachment-affecting
+mutations and before Files reads. A small fork cache API reads requested IDs
+under one room-cache guard, including the SDK's existing pending-redaction map.
+Live ingestion now remembers a committed redaction before returning for an absent
+target; the same map is reconstructed from encrypted SDK storage. Missing events
+are not redaction evidence: focused-only, bundled-edit and edit-before-root
+payloads remain admissible through the ordinary edit-order guards.
 
-## Open review findings (PR #1157, blocking merge)
+Pending edits are rechecked before consumption. Retirement removes only the
+specified version, preserving other pending survivors. The bounded synchronous
+store tombstone cache is not the arbitrary-replay guarantee: SDK evidence also
+rejects already-superseded redactions and older IDs evicted from that cache.
+Ordering is `(edit timestamp, edit ID, canonical tie-break)`, not canonical status
+before edit ID. Text replacements remove the attachment while retaining no body;
+the existing cache resolver recovers body-free text-replacement provenance when
+a previous crawl page preceded the attachment target.
 
-An independent post-implementation review of the finished diff found twelve issues; two are
-verified against source (content-policy bypass, `SearchResultOpened` bypassing the navigation
-persistence diff) and the rest are on the PR for triage. The full list and severities are in the
-PR #1157 comment. Fix order: content policy and index-commit acknowledgement first (both
-blocking), then the durable-record invalidation/attachment-rebuild pairing, the edit-order and
-sticker regressions, the supersede/settlement gap, and finally the warm-task ownership and
-window-priming corrections.
+A lookup error/timeout never means redaction. Body-free mutations await retry in
+a bounded queue; input backpressure preserves distinct versions rather than
+unsafe coalescing. One completed crawl page may wait separately, and no next
+page starts while either queue is pending. The crawl work permit is released
+before Files admission. A Files query drains retries and reconciles redactions
+under one total deadline; failure preserves resident/retry state and settles the
+existing Files failure transition rather than publishing unchecked rows.
+A redaction committed after the read proof is handled by a subsequent SDK
+projection/query, not an atomic SDK-to-renderer transaction.
 
-### Fix round 1 (in review)
+This is not an M3 rebuild: the SDK projection still supplies promoted content.
+No full-history metadata reconstruction, first-party plaintext store, actor edit
+ledger, or network fallback is introduced.
 
-A second independent pre-implementation review (GPT-6.1 Sol) of the fix plan confirmed all twelve
-root causes against the source and changed several of the planned fixes. Its verdicts:
+## Verification evidence
 
-- **#1, #2 (blocking)** - the planned fixes hold. #2 is implemented as "index the page, then report
-  it": the crawler writes the page through the index guard (which commits synchronously) and a page
-  whose write fails is reported as failed, so `Success` always carries an acknowledgement. No new
-  result field; the existing failure outcome is reused.
-- **#3** - remove-then-add rewriting is not a general migration and does not repair schema or
-  tokenizer changes. Implemented instead by naming the index directory after the index contract
-  version (`search-index.v{N}`), so a bump opens a fresh index before the client is built. The same
-  version keys the durable crawl commitments, so an extraction change re-crawls and re-extracts
-  together.
-- **#4** - implemented, plus two corrections the review added: the durable record now also carries
-  the content policy it was produced under (so a settings change that could not be saved is still
-  detected on the next start), and membership pruning happens before the paused-crawler early
-  return. An unreadable record no longer disables persistence for the session.
-- **#5** - the planned cache-only attachment refresh is rejected as tail-only: `event_cache.events()`
-  returns the loaded linked chunk, not the persisted history. The fix must rebuild attachment rows
-  from persisted SDK events (identifier-only record plus SDK resolution) instead.
-- **#6** - the planned timestamp watermark would break a real producer: the canonical timeline path
-  records the original item timestamp for both Upsert and Edit (`timeline/item_projection.rs`),
-  while the crawler records the edit event's timestamp. Version information must be normalised
-  across both producers first.
-- **#7** - fix sticker resolution; do **not** extend the resolver to polls while the index ignores
-  poll replacements (stale poll text would pass verification as canonical). Removing unsupported
-  poll indexing is the alternative.
-- **#8** - carry both the pager timestamp and the indexed primary event id, and dedupe by resolved
-  identity before counting toward the 50-result quota.
-- **#9** - settle supersession where the search state actually changes (AppActor), not in
-  `SearchActor`, because a new query is not the only invalidator (edit, too-short, close).
-- **#10-#12** - the review recommends deleting the M4 warm set rather than tuning it: search-result
-  navigation goes through the SDK's event-focused `/context` build (`EventFocusedCache` is in-memory
-  and network-backed), which warming the room's live cache cannot accelerate, and a larger cache-only
-  budget would spend itself before discovering that the target is out of reach. Pending a decision.
+- Headless RED→GREEN checks reproduce selective pending-edit retirement,
+  equal-time stale canonical ordering, and media-to-text replacement in the pure
+  Files store. Core regressions cover cross-producer rollback, root redaction,
+  already-superseded/evicted-tombstone replay, pending consumption, missing cache
+  coverage, recovery without payload resubmission, page ordering and Files-read
+  redaction reconciliation.
+- The actual SDK live-ingestion test reproduces redaction-before-target without
+  reopening (RED before maintaining the existing pending-redaction map). A
+  separate store-reconstruction test covers absent targets after reopening.
+- `crates/koushi-search/tests/search_memory.rs`: 50,000 synthetic text messages
+  leave zero resident body bytes and zero message rows; 5,000 attachment messages
+  keep metadata but no message bodies. This is not a process-RSS or SDK-residency
+  measurement.
+- Explicit encrypted-index history probe (`TOKIO_WORKER_THREADS=1`, a verified
+  current-thread async runtime, test harness `--test-threads=1`):
 
-### Fix round 2 (post-implementation review of round 1)
+  | Indexed messages | Encrypted index bytes | SDK cache disk bytes | First-party body bytes |
+  | ---: | ---: | ---: | ---: |
+  | 1,000 | 157,161 | 5,308,168 | 0 |
+  | 10,000 | 952,160 | 15,273,928 | 0 |
+  | 50,000 | 4,524,622 | 58,998,752 | 0 |
 
-The round-1 fixes were reviewed on the diff. Every fix was present; the review
-found one privacy blocker and nine further defects. Fixed in `5cba5be7`:
+  The latest 50 literal candidates are checked at every stage. SDK resident RAM,
+  index-worker overhead, and process RSS are not measured; this is disk/residency
+  evidence, not a 1T latency baseline or a total-process memory bound. The probe
+  is `search::history_scale::encrypted_history_index_grows_without_resident_first_party_bodies`
+  and is explicitly invoked with `--ignored --nocapture --test-threads=1`.
+- Final local gate results and the completed independent-review verdict are
+  recorded in the PR. Final-head required hosted CI must pass before merge.
 
-- a content-policy change while a query runs now invalidates that query's result
-  (re-verified under the current policy) instead of publishing an opted-out snippet;
-- the index contract moves to version 2, because version 1 named a different index
-  directory and had no content policy in the record, so a version-1 commitment
-  describes an index this build never opens;
-- attachment edits order by the edit's own time with `canonical` only as the
-  tiebreak, so a newer crawl edit is not pinned by an older canonical observation;
-  an edit rollback arrives as the redaction of the applied edit, which retires it
-  (and any pending copy);
-- the Files rebuild marks a room done only after a successful store read, clears
-  its markers when the document store is cleared, bounds its projection to the
-  newest events, and refuses a replacement from a different sender;
-- the room-list notification (content policy + commitment pruning) is emitted at
-  every speed and for an empty room list, so a restart with crawling paused no
-  longer keeps the restrictive placeholder forever;
-- a completed search request is no longer reported as superseded.
+## Remaining before merge
 
-Still open from round 2: the once-per-session Files marker can hold rows a room's
-later sync mutation should change until a catch-up crawl or timeline message
-arrives (finding: currentness), and the whole-store read holds the event-cache
-store lock for its duration (bounded per room, not per page). The M4 decision is
-still pending.
-
-### Fix round 3 (post-implementation review of round 2)
-
-Round 3 accepted the round-2 fixes and found three merge blockers plus four
-important defects. Fixed in `7db251eb`:
-
-- the canonical upsert now carries the identity of the edit that produced its
-  content, so the content and edit halves of one observation are a single guarded
-  update (an upsert without an edit means the row is not edited, i.e. a rollback);
-- redacting an edit retires it (per row) and drops the metadata it produced, a
-  replay of that edit is refused, and the room's Files rows are rebuilt from the
-  store again (the once-per-session marker is invalidated);
-- the Files rebuild validates a replacement with the SDK's own replacement rules
-  instead of a sender-only approximation;
-- a content-policy change closes the search view, so results verified under the
-  old policy can no longer be displayed.
-
-Still open from round 3 (both need a design round, not a patch):
-
-- the policy fence is only actor-local for the *transport* `SearchEvent::Results`:
-  a notification deferred behind a saturated mailbox can leave the actor on the
-  previous policy while the state has moved on. The UI is state-driven (the
-  desktop renders `searchResults` from the snapshot), and the state closes the
-  view, so no opted-out text reaches the UI; the residual exposure is a
-  harness-level event in that window.
-- the Files rebuild still reads a whole room's persisted events in one SDK store
-  call while holding the event-cache store lock, then sorts and truncates. The
-  bounded fix is paged chunk reads that release the guard between pages.
-- the Files rebuild is still once per session per room: a mutation that does not
-  change the room's latest event (an edit or redaction of a non-latest event) is
-  not picked up until a catch-up crawl or timeline message arrives.
-
-### Fix round 4 (post-implementation review of round 3)
-
-Round 4 confirmed fixes 5, 6, 7, 8, 9, 10 and found five new defects, all in the
-round-3 additions. Fixed in `559cb72e` and `b34b8f7a`:
-
-- a redacted edit is retired for both halves of its upsert/edit pair, and a row
-  remembers several retired ids, so retiring a newer edit does not forget an
-  older one;
-- a keyless observation no longer replaces a row that holds an edit (it can be a
-  queued observation from before the edit), so a crawl rename cannot be erased;
-- the Files rebuild projects its bounded collection as one set, so a rename whose
-  original sits in an older page is not discarded, and a partial rebuild no
-  longer deletes rows outside the range it read;
-- the search actor no longer publishes `SearchEvent::Results` itself: the state
-  admits a result and the AppActor publishes it, so publication is fenced by the
-  authoritative policy and accepted query identity. An admitted result is the
-  query's single settlement (a later result no longer replaces the answer);
-- the retired local-first supplement wording is gone from the canon.
-
-Round-4 item closed in the same round: a submitted query now carries the
-account's content policy (`AppEffect::SearchMessages { content_policy }` ->
-`AccountMessage::SearchQuery` -> `SearchActorMessage::Query`), and the actor
-adopts it before capturing the generation its result is checked against. Query
-verification therefore uses the same policy the state accepted the query under,
-whether or not the crawler notification has been delivered yet.
-
-### Fix round 5/6 and the remaining decision
-
-Round 5 found that round 4's publication move had broken search settlement, plus
-five further defects; round 6 confirmed those fixes and left three items:
-
-- full request correlation: search ownership and admission compare only the
-  connection-local request sequence, so two connections whose first sequences
-  collide can lose a terminal outcome and a queued result from one connection can
-  settle the other's query. Fixed by retiring the replaced owner at dispatch and
-  by carrying the connection id with the search actions (still to do);
-- rows admitted between an invalidation and the policy being adopted (fixed in
-  `f0bb5045`: the store is cleared when the policy actually changes);
-- a canonical rollback (an edit removed, leaving an unedited snapshot) reaches the
-  store as a keyless upsert, which the store refuses while an edit is applied, so
-  the original attachment is restored by the next complete Files rebuild rather
-  than by that snapshot; a truncated rebuild may never converge. The smallest
-  correct fix is for the producer to forward the removed edit's `Redact` id
-  explicitly, which needs the timeline projection to remember the edit id it last
-  reported for an item.
-
-**Update: M3 was dropped from this PR** (`search_crawl.rs`, the durable record,
-its seeding/pruning and the per-query Files rebuild that existed only to
-compensate for the skipped crawl are removed; the crawler runs on every startup
-as before). #3/#4/#5/#6, the Files-rebuild findings and the rollback-convergence
-blocker go with it. The index-contract version stays as a directory tag so an
-extraction change still opens a fresh index.
-
-Rounds 4-6 also concluded that the Files-rebuild work (which exists only because
-M3's durable crawl commitments skip the crawl after a restart) is the source of
-most of the remaining review findings, and that M4's warmer is unproven on the
-path it was meant to speed up. Both are scope decisions for the maintainer: drop
-M3 and M4 (the PR becomes M2: index-first search and bounded memory) or keep them
-and finish the two items above.
-
-### Known contract gap (not M3-related)
-
-The user help promised that "Rebuild search database" clears the persistent
-index. It clears the first-party search metadata and re-queues a crawl, and the
-crawl does not re-extract events the index already holds (`RoomIndex::add` skips
-them). The help text now says what the action does; rebuilding the persistent
-index needs an index generation the settings store owns, which is follow-up work.
-
-### Fix round 7 (review of the trimmed M2 diff)
-
-Round 7 confirmed the M3 removal left no dangling Rust references and that the
-content-policy story is coherent for message search. Fixed in `ff2fc3ee`: the
-Files view is a policy surface too and now closes on a content-policy change
-(its pending results cannot match a closed view), a body-only pending edit is
-dropped by the store instead of accumulating with history, a too-short
-submission records its connection before the early return, the request-outcome
-tracker matches the submitting connection, the connection field is cleared
-wherever the search view closes, and the user help no longer promises that
-"Rebuild search database" clears the persistent index.
-
-Remaining from round 7:
-
-- **in-session convergence after a redacted edit** (IMPORTANT): fixed by a
-  producer-side retirement, not by the observation sequence first attempted. The
-  observation approach (stamp each projection, let a newer stamp override the
-  edit-time rules) was reverted after round 8 showed it cannot separate a stale
-  re-projection from a rollback and let a queued observation erase a newer crawl
-  rename. The timeline projection now remembers the edit id it last reported per
-  message (`reported_search_edits`) and emits `Redact { event_id: <previous> }`
-  before the message when it changes, so the store retires the superseded edit
-  (deletes its metadata, records the tombstone) and the promoted older edit -- or
-  the unedited message -- applies through the ordinary guards. A replay of the
-  redacted edit is then refused by the tombstone.
-
-### M4 removed (decision: delete the warm set)
-
-The maintainer chose deletion. Removed: `spawn_search_warm_prime`,
-`warm_cached_display_window` and their chunk/event budgets, `AccountActor`'s
-warm-task handle and its shutdown step, `NavigationState::search_warm_targets`
-and its bound, `AppAction::SearchResultOpened` with its reducer handler, the
-durable navigation write it scheduled, and the tests that covered them. The
-plan's startup-latency gate is therefore not required; M4 is deferred to a
-follow-up that must first show a benefit on the path it claims to speed up.
-
-### Fix round 8/9 (producer retirement)
-
-Round 8 showed the observation-sequence attempt could not separate a stale
-re-projection from a rollback; it was reverted and replaced by a producer-side
-retirement (round 9 refined it after the first version retired every superseded
-edit):
-
-- the timeline projection remembers the edit it last reported per message that
-  can produce a Files row, and emits `Redact { event_id }` for it only when the
-  report moves back (an older surviving edit is promoted) or disappears (the
-  message is unedited). Normal advancement to a newer edit keeps the previous one,
-  because the SDK can promote it again;
-- the store retires that edit (deletes the metadata it produced, records the
-  tombstone), so the promoted edit passes the ordinary guards and a replay of the
-  removed edit is refused.
-
-Remaining round-9 items (IMPORTANT, not blocking): the bookkeeping is per actor,
-so a replacement, focused, or thread projection that first observes a promoted
-older edit retires nothing; retiring an edit that is no longer applied records
-no tombstone (the message would need to carry the target); and the bookkeeping
-is not pruned on a reset or a removed item.
-
-Also raised: migrate commitments already written without an acknowledgement, make the "rebuild
-search database" action actually rebuild the persistent index (the user help promises it), cover
-attachment edit rollback and mixed producers, measure pending-edit residency in the memory probe,
-and update the stale canon in `docs/architecture/state-machine.md`.
-
-## Required evidence
-
-RED-then-GREEN for literal completeness (operators/fields inert, raw+normalized,
-one-scalar normalization), Japanese short/substring/normalized queries,
-attachment filename search, edits/redaction/rollback/restart, bounded filtered
-refill, paginated filtered results, old indexed messages findable after
-eviction, restart, network-blocked startup and navigation to the result,
-clear/account isolation and empty-store behavior; a synthetic history-scale
-measurement showing zero retained body/edit bytes with index/disk size reported
-separately; and the repository-local gates plus
-`node scripts/check-sdk-submodule.mjs`.
-
-## Review
-
-Pre-implementation design review (independent model) returned "A with changes":
-delete the unused search surface rather than bound it, keep the pure verifier
-and its matching semantics, migrate the listed scenarios, and treat the refill
-gap and the QA false-green as blockers to close before pushing M2.
+Complete the independent GPT-6.1 Sol post-review of the integrated correction,
+resolve verified findings, run the affected repository gates and inspect all
+required checks for the exact submitted head. Do not merge SDK fork PR #19 as
+part of this operation.

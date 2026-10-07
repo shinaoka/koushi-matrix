@@ -47,6 +47,76 @@ fn event(
     }
 }
 
+fn replacement(id: &str, time: u64, media: bool) -> SearchEdit {
+    SearchEdit {
+        room_id: "!room-a:example.invalid".into(),
+        edit_event_id: id.into(),
+        target_event_id: "$original".into(),
+        sender: "@user-a:example.invalid".into(),
+        timestamp_ms: time,
+        body: None,
+        attachment_filename: None,
+        attachment: media.then(|| attachment(AttachmentKind::File, id)),
+    }
+}
+
+fn original() -> SearchableEvent {
+    event(
+        "!room-a:example.invalid",
+        "$original",
+        "@user-a:example.invalid",
+        1,
+        attachment(AttachmentKind::File, "original.pdf"),
+    )
+}
+
+fn files(store: &SearchDocumentStore) -> Vec<koushi_state::AttachmentResult> {
+    store.attachments(
+        &AttachmentScope::Account,
+        &AttachmentFilter::default(),
+        AttachmentSort::NewestFirst,
+    )
+}
+
+#[test]
+fn retiring_one_pending_edit_preserves_the_survivor() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_edit(replacement("$a", 2, true), false);
+    store.upsert_edit(replacement("$b", 3, true), false);
+    store.redact("$b");
+    store.upsert_message(original(), false, None);
+    assert_eq!(files(&store)[0].filename, "$a");
+}
+
+#[test]
+fn equal_time_stale_canonical_edit_does_not_erase_newer_id() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(original(), false, None);
+    store.upsert_edit(replacement("$z", 3, true), false);
+    store.upsert_edit(replacement("$a", 3, true), true);
+    assert_eq!(files(&store)[0].filename, "$z");
+}
+
+#[test]
+fn text_replacement_hides_a_file_and_blocks_older_media() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(original(), false, None);
+    store.upsert_edit(replacement("$text", 4, false), false);
+    store.upsert_edit(replacement("$media", 3, true), true);
+    assert!(files(&store).is_empty());
+    assert_eq!(store.resident_body_bytes(), 0);
+}
+
+#[test]
+fn pending_text_replacement_hides_older_pending_media() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_edit(replacement("$media", 3, true), false);
+    store.upsert_edit(replacement("$text", 4, false), false);
+    store.upsert_message(original(), false, None);
+    assert!(files(&store).is_empty());
+    assert_eq!(store.resident_body_bytes(), 0);
+}
+
 #[test]
 fn room_scope_filters_attachments_to_single_room() {
     let mut store = SearchDocumentStore::default();
@@ -453,6 +523,7 @@ fn edit_updates_attachment_for_query() {
 
     store.upsert_edit(
         SearchEdit {
+            room_id: "!room-a:example.invalid".into(),
             edit_event_id: "$edit".into(),
             target_event_id: "$original".into(),
             sender: "@user-a:example.invalid".into(),

@@ -46,6 +46,10 @@
 //! (they can appear in `SearchEvent::Results` payloads — those are visible UI
 //! state). `SearchActorMessage::Query` redacts the query in Debug.
 
+mod attachment_admission;
+#[cfg(test)]
+mod history_scale;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -195,6 +199,7 @@ pub enum SearchIndexMessage {
     },
     /// A message was edited. Update the document store.
     Edit {
+        room_id: String,
         edit_event_id: String,
         target_event_id: String,
         sender: String,
@@ -585,6 +590,10 @@ impl Drop for SearchActorHandle {
 pub(crate) struct SearchActor {
     session: Arc<MatrixClientSession>,
     document_store: SearchDocumentStore,
+    // Body-free retries are bounded by the mutation queue. A single completed
+    // crawl page waits separately; no next page starts while either is pending.
+    attachment_retries: VecDeque<SearchIndexMessage>,
+    queued_crawl_index: VecDeque<SearchIndexMessage>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_rx: mpsc::Receiver<SearchActorMessage>,
@@ -679,20 +688,18 @@ struct VerifiedCandidate {
 }
 
 impl SearchActor {
-    /// Spawn the actor and return its handle.
-    pub fn spawn(
+    fn new(
         session: Arc<MatrixClientSession>,
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
+        msg_rx: mpsc::Receiver<SearchActorMessage>,
         account_work: AccountWorkScheduler,
-    ) -> SearchActorHandle {
-        let (tx, msg_rx) = mpsc::channel(64);
-        let (index_tx, index_rx) = mpsc::channel(SEARCH_INDEX_MUTATION_QUEUE);
-
-        let completed_rooms: HashMap<String, CompletedHistoryCrawl> = HashMap::new();
-        let actor = SearchActor {
+    ) -> Self {
+        Self {
             session,
             document_store: SearchDocumentStore::default(),
+            attachment_retries: VecDeque::new(),
+            queued_crawl_index: VecDeque::new(),
             action_tx,
             event_tx,
             msg_rx,
@@ -705,14 +712,27 @@ impl SearchActor {
             available_crawl_rooms: HashSet::new(),
             active_crawl_page: None,
             active_crawl_checkpoint: None,
-            completed_rooms,
+            completed_rooms: HashMap::new(),
             latest_event_ids: std::collections::BTreeMap::new(),
             crawl_settings_generation: 0,
             crawl_delay_elapsed: false,
             crawl_delay_timer: None,
             content_policy_generation: 0,
             crawler_settings: restricted_crawler_settings(),
-        };
+        }
+    }
+
+    /// Spawn the actor and return its handle.
+    pub fn spawn(
+        session: Arc<MatrixClientSession>,
+        action_tx: mpsc::Sender<Vec<AppAction>>,
+        event_tx: broadcast::Sender<CoreEvent>,
+        account_work: AccountWorkScheduler,
+    ) -> SearchActorHandle {
+        let (tx, msg_rx) = mpsc::channel(64);
+        let (index_tx, index_rx) = mpsc::channel(SEARCH_INDEX_MUTATION_QUEUE);
+
+        let actor = Self::new(session, action_tx, event_tx, msg_rx, account_work);
 
         // Spawn the actor task.
         let task = executor::spawn(actor.run(index_rx));
@@ -766,12 +786,18 @@ impl SearchActor {
                         self.handle_sdk_query_result(result).await;
                     }
                 }
-                index_msg = index_rx.recv() => {
+                _ = std::future::ready(()), if !self.queued_crawl_index.is_empty()
+                    && self.attachment_retries.len() < SEARCH_INDEX_MUTATION_QUEUE => {
+                    let message = self.queued_crawl_index.pop_front().unwrap();
+                    self.handle_index(message).await;
+                    self.start_next_history_crawl_page();
+                }
+                index_msg = index_rx.recv(), if self.attachment_retries.len() < SEARCH_INDEX_MUTATION_QUEUE => {
                     let Some(index_msg) = index_msg else {
                         // Timeline sender dropped — that's fine (e.g. on shutdown).
                         continue;
                     };
-                    self.handle_index(index_msg);
+                    self.handle_index(index_msg).await;
                 }
             }
         }
@@ -1065,12 +1091,27 @@ impl SearchActor {
     }
 
     async fn handle_attachments(
-        &self,
+        &mut self,
         request_id: RequestId,
         scope: AttachmentScope,
         filter: AttachmentFilter,
         sort: AttachmentSort,
     ) {
+        if !self.reconcile_attachment_redactions().await {
+            let _ = self
+                .action_tx
+                .send(vec![AppAction::FilesViewQueryFailed {
+                    request_id: request_id.sequence,
+                    message: SEARCH_UNAVAILABLE_MESSAGE.to_owned(),
+                }])
+                .await;
+            self.emit(CoreEvent::Search(SearchEvent::AttachmentsFailed {
+                request_id,
+                message: SEARCH_UNAVAILABLE_MESSAGE.to_owned(),
+            }));
+            return;
+        }
+        self.start_next_history_crawl_page();
         let results = self.document_store.attachments(&scope, &filter, sort);
 
         let _ = self
@@ -1146,15 +1187,6 @@ impl SearchActor {
             && (attachment.is_some() || attachment_filename.is_some())
     }
 
-    fn handle_index(&mut self, msg: SearchIndexMessage) {
-        if let Some((room_id, event_id)) = self.apply_index_message(msg) {
-            self.emit(CoreEvent::Search(SearchEvent::IndexUpdated {
-                room_id,
-                event_id,
-            }));
-        }
-    }
-
     /// Apply one index message to the document store.
     ///
     /// Returns the row it changed, for the `IndexUpdated` wake-up, when there is
@@ -1194,6 +1226,7 @@ impl SearchActor {
                 Some((indexed_room_id, indexed_event_id))
             }
             SearchIndexMessage::Edit {
+                room_id,
                 edit_event_id,
                 target_event_id,
                 sender,
@@ -1216,6 +1249,7 @@ impl SearchActor {
                     .map(str::to_owned);
                 let edited_event_id = target_event_id.clone();
                 let edit = SearchEdit {
+                    room_id,
                     edit_event_id,
                     target_event_id,
                     sender,
@@ -1401,7 +1435,10 @@ impl SearchActor {
     }
 
     fn start_next_history_crawl_page(&mut self) {
-        if self.active_crawl_page.is_some() {
+        if self.active_crawl_page.is_some()
+            || !self.queued_crawl_index.is_empty()
+            || !self.attachment_retries.is_empty()
+        {
             return;
         }
         // Startup delay: hold AUTOMATIC crawls until the delay elapses; manual
@@ -1461,10 +1498,9 @@ impl SearchActor {
                 if !checkpoint.manual && !self.available_crawl_rooms.contains(&checkpoint.room_id) {
                     return;
                 }
-                for message in messages {
-                    self.handle_index(message);
-                }
+                // The permit covers page/index work, not Files cache admission.
                 drop(work_permit);
+                self.queue_crawl_messages(messages);
                 let _ = self
                     .action_tx
                     .send(vec![AppAction::HistoryCrawlProgress {
@@ -1553,6 +1589,8 @@ impl SearchActor {
             // through the Files view until some later message happens to replace
             // it. The next Files query rebuilds them under the new policy.
             self.document_store.clear();
+            self.attachment_retries.clear();
+            self.queued_crawl_index.clear();
         }
         self.crawler_settings = settings;
     }
@@ -1642,10 +1680,9 @@ impl SearchActor {
         // Attachment rows were built under the old content policy, and the
         // Files view must rebuild them under the new one.
         self.document_store.clear();
-        // The durable record must be cleared with the in-memory set, or a
-        // restart would re-seed these rooms as committed and skip exactly the
-        // re-crawl this invalidation exists to force. The record also carries the
-        // content policy it was produced under, so a settings change that could
+        self.attachment_retries.clear();
+        self.queued_crawl_index.clear();
+        // A settings change that could
         // not be saved is still detected on the next start.
         self.stop_all_history_crawls().await;
     }

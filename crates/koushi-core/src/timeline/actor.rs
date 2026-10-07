@@ -894,17 +894,8 @@ pub(super) struct TimelineActor {
     pub(super) media_downloads_in_progress: HashSet<String>,
     /// In-flight media download workers keyed by event id; aborted on actor drop.
     pub(super) media_download_tasks: HashMap<String, executor::JoinHandle<()>>,
-    /// Search index mutation sender (Phase 6). `None` when no search index is
-    /// configured (pre-session or pre-Phase-6 builds). Fire-and-forget: if the
-    /// channel is full, we drop the mutation rather than block the diff relay.
+    /// Reliable Files metadata mutation sender; absent before a search session.
     pub(super) search_index_tx: Option<mpsc::Sender<crate::search::SearchIndexMessage>>,
-    /// event_id -> the edit id this projection last reported for that message.
-    ///
-    /// The search document store cannot tell a stale observation from a rollback
-    /// by timestamps alone, so a projection that stops showing an edit retires it
-    /// explicitly. Bounded by the messages this actor has projected that are
-    /// currently edited; an entry is dropped when the edit disappears.
-    pub(super) reported_search_edits: Arc<Mutex<HashMap<String, (String, u64)>>>,
     /// Rust-owned pane-level thread attention read-state tracker. Only thread
     /// timelines update it, and React reads its projection through
     /// `AppState.thread_attention`.
@@ -1917,7 +1908,6 @@ impl TimelineActor {
             media_downloads_in_progress: HashSet::new(),
             media_download_tasks: HashMap::new(),
             search_index_tx,
-            reported_search_edits: Arc::new(Mutex::new(HashMap::new())),
             thread_attention,
             navigation_items,
             receipt_endpoints,

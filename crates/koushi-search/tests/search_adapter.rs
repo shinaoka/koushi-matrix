@@ -97,6 +97,7 @@ fn filename_edit_updates_the_files_row_name() {
     store.upsert_message(attachment_message("$file", "draft.pdf"), true, None);
     store.upsert_edit(
         SearchEdit {
+            room_id: "!room-a:example.invalid".into(),
             edit_event_id: "$edit".into(),
             target_event_id: "$file".into(),
             sender: "@user-a:example.invalid".into(),
@@ -128,6 +129,7 @@ fn rename_before_the_attachment_arrives_is_applied_when_it_does() {
     let mut store = SearchDocumentStore::default();
     store.upsert_edit(
         SearchEdit {
+            room_id: "!room-a:example.invalid".into(),
             edit_event_id: "$edit".into(),
             target_event_id: "$file".into(),
             sender: "@user-a:example.invalid".into(),

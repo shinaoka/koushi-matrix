@@ -986,7 +986,6 @@ impl TimelineActor {
 
         // Redacted items: forward Redact so the document is removed.
         if event_item.content().is_redacted() {
-            self.forget_reported_search_edit(&event_id);
             return vec![SearchIndexMessage::Redact { event_id }];
         }
 
@@ -1044,54 +1043,41 @@ impl TimelineActor {
             return Vec::new();
         }
 
-        // Only a message that can produce a Files row needs its edit reported;
-        // tracking every edited text message would grow with history the store
-        // otherwise never keeps.
-        let tracks_edits = attachment.is_some() || attachment_filename.is_some();
-        let retirements = self.reported_search_edit_retirements(
-            &event_id,
-            edit.0.as_deref(),
-            edit.1.unwrap_or(timestamp_ms),
-            tracks_edits,
-        );
-
         if let (Some(edit_event_id), edit_timestamp_ms) = edit {
-            // Edited message: Upsert original with new canonical body, AND
-            // forward Edit so the document store registers the alias
-            // (edit_event_id → original_event_id) used by verify_candidate.
-            let mut messages = retirements;
-            messages.push(SearchIndexMessage::Upsert {
-                room_id: room_id.to_owned(),
-                event_id: event_id.clone(),
-                sender: sender.clone(),
-                timestamp_ms,
-                body: body.clone(),
-                attachment_filename: attachment_filename.clone(),
-                attachment: attachment.clone(),
-                // The timeline projection carries the current visible state.
-                canonical: true,
-                edit: Some(koushi_search::SearchEditKey {
-                    edit_event_id: edit_event_id.to_string(),
+            // Carry the visible attachment and its edit identity as one guarded pair.
+            vec![
+                SearchIndexMessage::Upsert {
+                    room_id: room_id.to_owned(),
+                    event_id: event_id.clone(),
+                    sender: sender.clone(),
+                    timestamp_ms,
+                    body: body.clone(),
+                    attachment_filename: attachment_filename.clone(),
+                    attachment: attachment.clone(),
+                    // The timeline projection carries the current visible state.
+                    canonical: true,
+                    edit: Some(koushi_search::SearchEditKey {
+                        edit_event_id: edit_event_id.to_string(),
+                        timestamp_ms: edit_timestamp_ms.unwrap_or(timestamp_ms),
+                    }),
+                },
+                SearchIndexMessage::Edit {
+                    room_id: room_id.to_owned(),
+                    edit_event_id,
+                    target_event_id: event_id,
+                    sender,
+                    // Both producers key an edit by the edit event's own time,
+                    // so a history replay cannot outrank the current content.
                     timestamp_ms: edit_timestamp_ms.unwrap_or(timestamp_ms),
-                }),
-            });
-            messages.push(SearchIndexMessage::Edit {
-                edit_event_id,
-                target_event_id: event_id,
-                sender,
-                // Both producers key an edit by the edit event's own time,
-                // so a history replay cannot outrank the current content.
-                timestamp_ms: edit_timestamp_ms.unwrap_or(timestamp_ms),
-                body,
-                attachment_filename,
-                attachment,
-                canonical: true,
-            });
-            messages
+                    body,
+                    attachment_filename,
+                    attachment,
+                    canonical: true,
+                },
+            ]
         } else {
             // New (unedited) message: Upsert into document store.
-            let mut messages = retirements;
-            messages.push(SearchIndexMessage::Upsert {
+            vec![SearchIndexMessage::Upsert {
                 room_id: room_id.to_owned(),
                 event_id,
                 sender,
@@ -1101,43 +1087,10 @@ impl TimelineActor {
                 attachment,
                 canonical: true,
                 edit: None,
-            });
-            messages
+            }]
         }
     }
 
-    /// Retirement messages for the edit this projection used to report.
-    ///
-    /// The document store refuses content that an applied edit produced, so a
-    /// rollback (the SDK promoting an older surviving edit, or the message
-    /// becoming unedited) must say which edit is no longer visible.
-    fn reported_search_edit_retirements(
-        &self,
-        event_id: &str,
-        reported: Option<&str>,
-        reported_timestamp_ms: u64,
-        tracks_edits: bool,
-    ) -> Vec<SearchIndexMessage> {
-        if !tracks_edits {
-            return Vec::new();
-        }
-        reported_search_edit_retirements(
-            &mut self
-                .reported_search_edits
-                .lock()
-                .expect("reported search edits lock is never poisoned"),
-            event_id,
-            reported,
-            reported_timestamp_ms,
-        )
-    }
-
-    fn forget_reported_search_edit(&self, event_id: &str) {
-        self.reported_search_edits
-            .lock()
-            .expect("reported search edits lock is never poisoned")
-            .remove(event_id);
-    }
     pub(super) async fn forward_initial_items_to_search(
         &self,
         items: impl IntoIterator<Item = Arc<SdkTimelineItem>>,
@@ -4409,42 +4362,3 @@ mod tests;
 
 #[cfg(test)]
 mod content_policy_tests;
-
-/// Record the edit a projection reports for one message and return the
-/// retirement for the edit that is no longer part of the message.
-///
-/// A newer edit supersedes the previous one but keeps it: the SDK can promote it
-/// again if the newer one is redacted, and the document store must be able to
-/// apply it then. Only a report that moves *back* (an older edit, or no edit at
-/// all) means the previous edit is gone, so only that retires it.
-fn reported_search_edit_retirements(
-    reported_edits: &mut HashMap<String, (String, u64)>,
-    event_id: &str,
-    reported: Option<&str>,
-    reported_timestamp_ms: u64,
-) -> Vec<SearchIndexMessage> {
-    let previous = reported_edits.get(event_id).cloned();
-    match reported {
-        Some(reported) => {
-            reported_edits.insert(
-                event_id.to_owned(),
-                (reported.to_owned(), reported_timestamp_ms),
-            );
-        }
-        None => {
-            reported_edits.remove(event_id);
-        }
-    }
-
-    let Some((previous_edit, previous_timestamp_ms)) = previous else {
-        return Vec::new();
-    };
-    let unchanged = matches!(reported, Some(reported) if reported == previous_edit);
-    let moved_back = reported.is_some() && reported_timestamp_ms < previous_timestamp_ms;
-    if unchanged || (reported.is_some() && !moved_back) {
-        return Vec::new();
-    }
-    vec![SearchIndexMessage::Redact {
-        event_id: previous_edit,
-    }]
-}

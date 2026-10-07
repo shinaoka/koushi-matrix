@@ -1831,6 +1831,13 @@ architectural invariants:
   canonical visible text and indexing the replacement text, a redaction removes
   only the redacted document from the searchable corpus, and an unresolved
   replacement event is not indexed as a standalone message.
+  Files metadata retains no historical message bodies or edit text. Its sole
+  mutation owner, SearchActor, admits attachment-affecting updates and Files
+  reads against explicit SDK cache redactions, including redactions whose
+  targets are not loaded. An older timeline observation is not redaction proof.
+  Missing focused/bundled events remain eligible through ordinary edit ordering;
+  lookup errors preserve body-free retry state and fail the Files request rather
+  than deleting rows or publishing unchecked content.
 - **Device verification, cross-signing, key backup, and identity reset** are
   release-blocking E2EE trust work. Issue #13 Phase A establishes the
   Rust-owned reducer state and typed `CoreCommand`/`CoreEvent` surface.

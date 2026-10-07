@@ -2,7 +2,7 @@ use crate::MatrixClientSession;
 use futures_util::{StreamExt as _, pin_mut};
 use matrix_sdk_search::error::IndexError;
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fmt,
     path::{Path, PathBuf},
 };
@@ -436,6 +436,39 @@ fn newest_buffered_room(rooms: &[MatrixLiteralRoomStream]) -> Option<usize> {
                 .then_with(|| left.event_id.cmp(&right.event_id))
         })
         .map(|(index, _)| index)
+}
+
+/// Inspect explicit cached redactions, including those whose targets are absent.
+/// Missing events are not redaction evidence. The batch uses one SDK cache guard
+/// and makes no network request.
+///
+/// # Errors
+/// Returns `Query` for invalid identifiers or an unknown room, and `Internal`
+/// when the SDK cannot read or decode its encrypted event cache.
+pub async fn cached_redacted_event_ids(
+    session: &MatrixClientSession,
+    room_id: &str,
+    event_ids: &[String],
+) -> Result<HashSet<String>, MatrixSearchError> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| MatrixSearchError::Query)?;
+    let event_ids = event_ids
+        .iter()
+        .map(matrix_sdk::ruma::EventId::parse)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| MatrixSearchError::Query)?;
+    let room = session
+        .client()
+        .get_room(&room_id)
+        .ok_or(MatrixSearchError::Query)?;
+    let (cache, _handles) = room
+        .event_cache()
+        .await
+        .map_err(|_| MatrixSearchError::Internal)?;
+    let redacted = cache
+        .redacted_event_ids(&event_ids)
+        .await
+        .map_err(|_| MatrixSearchError::Internal)?;
+    Ok(redacted.into_iter().map(|id| id.to_string()).collect())
 }
 
 /// Resolve a message to its current visible content, reading only the local
