@@ -294,18 +294,9 @@ struct MatrixLiteralRoomStream {
     /// Exclusive upper bound for this room's next page.
     cursor: Option<MatrixSearchCursor>,
     /// Candidates already fetched for this room, newest first.
-    buffered: VecDeque<MatrixLiteralHit>,
+    buffered: VecDeque<MatrixLiteralCandidate>,
     /// Set once the room returned a page shorter than the page size.
     exhausted: bool,
-}
-
-/// A buffered literal candidate, carrying the `(timestamp, event_id)` key the
-/// index pages by.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct MatrixLiteralHit {
-    room_id: String,
-    event_id: String,
-    timestamp_millis: i64,
 }
 
 /// Pages literal index matches across a search scope, newest first, without
@@ -381,7 +372,7 @@ impl MatrixLiteralSearchPager {
                 room.cursor = fetched.last().cloned();
                 room.buffered = fetched
                     .into_iter()
-                    .map(|cursor| MatrixLiteralHit {
+                    .map(|cursor| MatrixLiteralCandidate {
                         room_id: room.room_id.clone(),
                         event_id: cursor.event_id().to_owned(),
                         timestamp_millis: cursor.timestamp_millis(),
@@ -396,11 +387,7 @@ impl MatrixLiteralSearchPager {
                 .buffered
                 .pop_front()
                 .expect("the chosen room has a buffered candidate");
-            page.push(MatrixLiteralCandidate {
-                room_id: hit.room_id,
-                event_id: hit.event_id,
-                timestamp_millis: hit.timestamp_millis,
-            });
+            page.push(hit);
         }
 
         Ok(page)
@@ -504,8 +491,8 @@ pub async fn resolve_cached_message(
 ///
 /// The SDK's own indexing runs in a background subscriber task that consumes
 /// linked-chunk updates and can lag (`RecvError::Lagged`) or fail silently, so a
-/// caller that needs an acknowledgement -- a durable crawl checkpoint -- must
-/// write through here instead: the fork's index guard commits synchronously, so
+/// caller that needs an acknowledgement before reporting a successful crawl page
+/// must write through here instead: the fork's index guard commits synchronously, so
 /// an `Ok` return means the events are persisted. Indexing an event that is
 /// already present is a no-op, and the guard's mutex serialises this with the
 /// subscriber, so either way `Ok` is a real acknowledgement.
@@ -539,7 +526,7 @@ pub async fn index_room_events_now(
 #[cfg(test)]
 mod tests {
     use super::{
-        MatrixLiteralHit, MatrixLiteralRoomStream, MatrixSearchIndexKey,
+        MatrixLiteralCandidate, MatrixLiteralRoomStream, MatrixSearchIndexKey,
         MatrixSearchIndexStoreConfig, newest_buffered_room,
     };
 
@@ -569,7 +556,7 @@ mod tests {
             exhausted: false,
             buffered: hits
                 .iter()
-                .map(|(timestamp_millis, event_id)| MatrixLiteralHit {
+                .map(|(timestamp_millis, event_id)| MatrixLiteralCandidate {
                     room_id: room_id.to_owned(),
                     event_id: event_id.to_string(),
                     timestamp_millis: *timestamp_millis,

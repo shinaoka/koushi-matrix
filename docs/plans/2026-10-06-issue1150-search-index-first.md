@@ -30,7 +30,8 @@ not automatically rewritten.
 - Candidates resolve from the SDK encrypted cache, including replacement aliases
   and sticker text. Deduplicate resolved identity before the 50-result quota;
   select by the index paging key before sorting by displayed timestamp.
-- Queries carry authoritative account content policy. Policy changes clear Files
+- Search and Files queries carry authoritative account content policy, bypassing
+  deferred crawler notifications. Policy changes clear Files
   residency, close Search/Files state, and invalidate in-flight actor results.
 - Full request identity includes connection and sequence. AppActor publishes
   successful search results only after reducer admission; superseded and failed
@@ -61,7 +62,9 @@ target; the same map is reconstructed from encrypted SDK storage. Missing events
 are not redaction evidence: focused-only, bundled-edit and edit-before-root
 payloads remain admissible through the ordinary edit-order guards.
 
-Pending edits are rechecked before consumption. Retirement removes only the
+Pending edits are rechecked before consumption, including root sender/room/type
+validity: another user's replacement cannot mutate an attachment or poison its
+edit ordering, even if it arrived before the root. Retirement removes only the
 specified version, preserving other pending survivors. The bounded synchronous
 store tombstone cache is not the arbitrary-replay guarantee: SDK evidence also
 rejects already-superseded redactions and older IDs evicted from that cache.
@@ -69,6 +72,13 @@ Ordering is `(edit timestamp, edit ID, canonical tie-break)`, not canonical stat
 before edit ID. Text replacements remove the attachment while retaining no body;
 the existing cache resolver recovers body-free text-replacement provenance when
 a previous crawl page preceded the attachment target.
+
+Content/relations reads propagate backend errors rather than treating them as
+missing content. An encrypted SQLite regression holds the store lease while
+closing the backend: the loaded root and positive-redaction lookup remain
+readable, the relations lookup and resolver fail, and resolution recovers after
+reopen. Redaction deletes both index primary-key and deletion-key terms, including
+an edit whose own ID differs from its root ID (committed and same-batch tests).
 
 A lookup error/timeout never means redaction. Body-free mutations await retry in
 a bounded queue; input backpressure preserves distinct versions rather than
@@ -113,8 +123,16 @@ ledger, or network fallback is introduced.
   evidence, not a 1T latency baseline or a total-process memory bound. The probe
   is `search::history_scale::encrypted_history_index_grows_without_resident_first_party_bodies`
   and is explicitly invoked with `--ignored --nocapture --test-threads=1`.
-- Final local gate results and the completed independent-review verdict are
-  recorded in the PR. Final-head required hosted CI must pass before merge.
+- Workspace tests (CI exclusions), the three Rust clippy lanes, frontend tests
+  (1,726 passed), frontend typecheck/lint, and SDK search/cache focused suites
+  passed after the corrections. Request-outcome coverage includes trimmed input
+  and foreign-connection rejection. The targeted `search_crawler` headless lane
+  passed on both Tuwunel and Synapse. An earlier aggregate Tuwunel core run hit
+  its 240-second overall limit after the search/redaction stage; it is not a pass.
+- Final aggregate local QA, the completed corrected-diff independent review,
+  reachable SDK/app heads and required exact-head hosted CI are still merge
+  gates. npm audit also reports an unrelated existing high `source-map-js`
+  advisory: no frontend packaging/build is claimed while that gate is red.
 
 ## Remaining before merge
 

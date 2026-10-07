@@ -4601,7 +4601,7 @@ impl AppActor {
                     }
                     let _ = self
                         .account_actor
-                        .send(crate::account::AccountMessage::SearchQuery {
+                        .send(crate::account::AccountMessage::SearchWithPolicy {
                             command: SearchCommand::Query {
                                 request_id,
                                 query,
@@ -4623,14 +4623,15 @@ impl AppActor {
                     }
                     let _ = self
                         .account_actor
-                        .send(crate::account::AccountMessage::SearchCommand(
-                            SearchCommand::Attachments {
+                        .send(crate::account::AccountMessage::SearchWithPolicy {
+                            command: SearchCommand::Attachments {
                                 request_id,
                                 scope,
                                 filter,
                                 sort,
                             },
-                        ))
+                            content_policy: self.state.settings.values.search_crawler.clone(),
+                        })
                         .await;
                 }
                 AppEffect::SubscribeThreadsList {

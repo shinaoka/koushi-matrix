@@ -293,6 +293,7 @@ pub(crate) enum SearchActorMessage {
         scope: AttachmentScope,
         filter: AttachmentFilter,
         sort: AttachmentSort,
+        content_policy: Option<SearchCrawlerSettings>,
     },
     StartHistoryCrawl {
         request_id: RequestId,
@@ -379,6 +380,7 @@ impl std::fmt::Debug for SearchActorMessage {
                 scope,
                 filter,
                 sort,
+                ..
             } => f
                 .debug_struct("SearchActorMessage::Attachments")
                 .field("request_id", request_id)
@@ -474,6 +476,7 @@ impl SearchActorHandle {
                 scope,
                 filter,
                 sort,
+                content_policy,
             },
             SearchCommand::StartHistoryCrawl {
                 request_id,
@@ -876,7 +879,11 @@ impl SearchActor {
                 scope,
                 filter,
                 sort,
+                content_policy,
             } => {
+                if let Some(settings) = content_policy {
+                    self.set_crawler_settings(settings);
+                }
                 self.handle_attachments(request_id, scope, filter, sort)
                     .await;
                 true
@@ -1587,7 +1594,7 @@ impl SearchActor {
             // Rows admitted under the previous policy are no longer admissible: a
             // filename the account has just opted out of must not stay readable
             // through the Files view until some later message happens to replace
-            // it. The next Files query rebuilds them under the new policy.
+            // it. Subsequent admitted projections/crawls repopulate the metadata.
             self.document_store.clear();
             self.attachment_retries.clear();
             self.queued_crawl_index.clear();

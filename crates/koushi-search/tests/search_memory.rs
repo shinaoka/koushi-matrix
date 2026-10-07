@@ -5,11 +5,9 @@
 //! content from the encrypted event cache on demand, so the first-party store
 //! retains no message text no matter how deep the history is.
 //!
-//! Scope: this measures the koushi-owned store. The encrypted Tantivy index and
-//! the SDK event cache keep their own residency on disk and are reported
-//! separately (index/disk size) by the QA lanes; allocator ownership is measured
-//! here as retained body bytes rather than process RSS, which the QA lanes
-//! report.
+//! Scope: this measures only koushi-owned retained body bytes. The explicit
+//! encrypted history-scale probe records index and SDK-cache disk bytes
+//! separately; neither this check nor that probe measures SDK RAM or process RSS.
 
 use koushi_search::{AttachmentDocument, SearchDocumentStore, SearchableEvent, SensitiveString};
 use koushi_state::AttachmentKind;

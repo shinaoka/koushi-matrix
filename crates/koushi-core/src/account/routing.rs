@@ -302,58 +302,17 @@ impl AccountActor {
         }
     }
 
-    /// Route a search query together with the account's content policy.
-    pub(super) async fn route_search_query(
-        &self,
-        command: SearchCommand,
-        content_policy: koushi_state::SearchCrawlerSettings,
-    ) {
-        let query_context = match &command {
-            SearchCommand::Query {
-                request_id,
-                query,
-                scope,
-                ..
-            } => Some((*request_id, query.clone(), scope.clone())),
-            _ => None,
-        };
-        match &self.search_actor {
-            Some(handle) => {
-                if !handle
-                    .send_query_command(command, Some(content_policy))
-                    .await
-                    && let Some((request_id, query, scope)) = query_context.as_ref()
-                {
-                    self.emit_search_failed(*request_id, query, scope, SEARCH_UNAVAILABLE_MESSAGE)
-                        .await;
-                    // A correlated terminal event, so a caller waiting on the
-                    // request settles instead of timing out.
-                    self.emit_failure(
-                        *request_id,
-                        CoreFailure::SearchFailed {
-                            kind: koushi_protocol::failure::SearchFailureKind::IndexUnavailable,
-                        },
-                    );
-                }
-            }
-            None => {
-                if let Some((request_id, query, scope)) = query_context.as_ref() {
-                    self.emit_search_failed(*request_id, query, scope, SEARCH_UNAVAILABLE_MESSAGE)
-                        .await;
-                    self.emit_failure(
-                        *request_id,
-                        CoreFailure::SearchFailed {
-                            kind: koushi_protocol::failure::SearchFailureKind::IndexUnavailable,
-                        },
-                    );
-                }
-            }
-        }
+    /// Route a SearchCommand and settle an unavailable actor with the original
+    /// query failure kind (or SessionRequired for the other commands).
+    pub(super) async fn route_search_command(&self, command: SearchCommand) {
+        self.route_search_command_with_policy(command, None).await;
     }
 
-    /// Route a SearchCommand to the SearchActor. Emit SessionRequired if no
-    /// search actor is active.
-    pub(super) async fn route_search_command(&self, command: SearchCommand) {
+    pub(super) async fn route_search_command_with_policy(
+        &self,
+        command: SearchCommand,
+        content_policy: Option<koushi_state::SearchCrawlerSettings>,
+    ) {
         let request_id = match &command {
             SearchCommand::Query { request_id, .. }
             | SearchCommand::Attachments { request_id, .. }
@@ -369,9 +328,16 @@ impl AccountActor {
             } => Some((*request_id, query.clone(), scope.clone())),
             _ => None,
         };
+        let failure = if query_context.is_some() {
+            CoreFailure::SearchFailed {
+                kind: koushi_protocol::failure::SearchFailureKind::IndexUnavailable,
+            }
+        } else {
+            CoreFailure::SessionRequired
+        };
         match &self.search_actor {
             Some(handle) => {
-                if !handle.send_command(command).await {
+                if !handle.send_query_command(command, content_policy).await {
                     if let Some((request_id, query, scope)) = query_context.as_ref() {
                         self.emit_search_failed(
                             *request_id,
@@ -381,7 +347,7 @@ impl AccountActor {
                         )
                         .await;
                     }
-                    self.emit_failure(request_id, CoreFailure::SessionRequired);
+                    self.emit_failure(request_id, failure);
                 }
             }
             None => {
@@ -389,7 +355,7 @@ impl AccountActor {
                     self.emit_search_failed(*request_id, query, scope, SEARCH_UNAVAILABLE_MESSAGE)
                         .await;
                 }
-                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                self.emit_failure(request_id, failure);
             }
         }
     }

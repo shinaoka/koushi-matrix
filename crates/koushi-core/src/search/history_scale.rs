@@ -126,7 +126,7 @@ async fn encrypted_history_index_grows_without_resident_first_party_bodies() {
         assert_eq!(page.len(), 50);
         assert_eq!(page[0].event_id.as_str(), format!("$scale{}", stage - 1));
         let sdk_disk = disk_bytes(sdk_cache.path());
-        eprintln!(
+        println!(
             "history_scale indexed={stage} index_disk_bytes={bytes} sdk_cache_disk_bytes={sdk_disk} first_party_rows=0 first_party_body_bytes=0 async_runtime_workers=1; SDK residency and process RSS not measured; no latency claim"
         );
     }

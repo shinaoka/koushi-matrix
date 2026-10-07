@@ -1118,8 +1118,14 @@ provide that (and suppresses some storage errors). The minimal fork accessor
 `RoomEventCache::redacted_event_ids` checks requested IDs under one room-state
 guard, using a single pending-registry snapshot and fallible cached-event reads.
 Missing events are not proof; malformed cached events and storage errors remain
-errors. Core/adapters, not the SDK, own Files policy, retry bounds and failure
-settlement. SDK resident registry/index allocations are distinct from the
+errors. Existing `find_event`/`find_event_with_relations` and cached-content
+resolution now propagate backend read errors instead of reporting absence. The
+regression closes an encrypted SQLite backend while holding the store lease:
+the loaded root and its redaction proof still succeed, but the relation read and
+content resolver fail, then recover after reopen. Index deletion now removes
+both primary and deletion-key terms, including a committed edit redacted by its
+own ID; committed and same-batch regressions cover it. Core/adapters, not the
+SDK, own Files policy, retry bounds and failure settlement. SDK resident registry/index allocations are distinct from the
 first-party zero-history-body budget; entries remain necessary for later thread
 copies as explained above.
 

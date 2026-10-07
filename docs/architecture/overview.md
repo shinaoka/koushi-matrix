@@ -1836,8 +1836,11 @@ architectural invariants:
   reads against explicit SDK cache redactions, including redactions whose
   targets are not loaded. An older timeline observation is not redaction proof.
   Missing focused/bundled events remain eligible through ordinary edit ordering;
-  lookup errors preserve body-free retry state and fail the Files request rather
-  than deleting rows or publishing unchecked content.
+  replacements must match the root's sender, room and event type, including at
+  pending-edit consumption. Search and Files requests carry the account's
+  submission policy rather than waiting for deferred crawler notifications.
+  Content and relation lookup errors preserve body-free retry state and fail the
+  Files request rather than deleting rows or publishing unchecked content.
 - **Device verification, cross-signing, key backup, and identity reset** are
   release-blocking E2EE trust work. Issue #13 Phase A establishes the
   Rust-owned reducer state and typed `CoreCommand`/`CoreEvent` surface.

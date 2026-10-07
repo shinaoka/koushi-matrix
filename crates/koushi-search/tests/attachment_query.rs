@@ -79,6 +79,43 @@ fn files(store: &SearchDocumentStore) -> Vec<koushi_state::AttachmentResult> {
 }
 
 #[test]
+fn foreign_replacements_cannot_change_attachment_metadata() {
+    for pending_first in [false, true] {
+        for canonical in [false, true] {
+            for wrong_room in [false, true] {
+                let mut store = SearchDocumentStore::default();
+                let mut edit = replacement("$foreign", 10, true);
+                if wrong_room {
+                    edit.room_id = "!other:example.invalid".into();
+                } else {
+                    edit.sender = "@other:example.invalid".into();
+                }
+                if !pending_first {
+                    store.upsert_message(original(), false, None);
+                }
+                store.upsert_edit(edit, canonical);
+                if pending_first {
+                    store.upsert_message(original(), false, None);
+                }
+                assert_eq!(files(&store)[0].filename, "original.pdf");
+                store.upsert_edit(replacement("$valid", 2, true), false);
+                assert_eq!(files(&store)[0].filename, "$valid");
+            }
+        }
+    }
+}
+
+#[test]
+fn room_message_edit_does_not_replace_sticker_root() {
+    let mut store = SearchDocumentStore::default();
+    let mut root = original();
+    root.attachment = Some(attachment(AttachmentKind::Sticker, "original.pdf"));
+    store.upsert_message(root, false, None);
+    store.upsert_edit(replacement("$message-edit", 2, true), false);
+    assert_eq!(files(&store)[0].filename, "original.pdf");
+}
+
+#[test]
 fn retiring_one_pending_edit_preserves_the_survivor() {
     let mut store = SearchDocumentStore::default();
     store.upsert_edit(replacement("$a", 2, true), false);

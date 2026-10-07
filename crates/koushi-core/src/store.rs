@@ -1092,9 +1092,8 @@ pub(crate) const SEARCH_INDEX_CONTRACT_VERSION: u32 = 2;
 /// Carries the index contract version, so a version bump opens a fresh empty
 /// index instead of reusing documents extracted under the old behavior:
 /// `RoomIndex::add` skips an event that is already present, so re-crawling alone
-/// would never rewrite them. Both the durable crawl commitments and this
-/// directory are keyed by the same version, so a bump re-crawls and re-extracts
-/// together. The previous version's directory is left on disk rather than
+/// would never rewrite them. Crawling restarts in each session and fills the new
+/// extraction generation. The previous version's directory is left on disk rather than
 /// deleted here (it goes away with the account store root on logout), because
 /// deleting files under a possibly still-open encrypted index is not safe.
 fn search_index_dir_name() -> String {

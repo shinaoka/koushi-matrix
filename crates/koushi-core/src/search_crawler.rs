@@ -1,9 +1,9 @@
 //! Search history crawler: pages older room events through `/rooms/{roomId}/messages`,
-//! decrypts them locally, and feeds searchable text into the document store.
+//! decrypts them locally, indexes them in the encrypted ngram index, and forwards
+//! Files metadata to the body-free document store.
 //!
-//! Each page is also committed to the persistent ngram index before it is
-//! reported as successful, so a durable crawl checkpoint always has an
-//! index-commit acknowledgement behind it.
+//! Each page awaits its index commit before being reported successful. Crawl
+//! checkpoints are in-session only; no durable crawl commitments are retained.
 //!
 //! Media file bytes are never fetched; only MXC URIs, filenames, captions and
 //! metadata are indexed. This keeps the crawler a text-only backfill worker.
@@ -314,7 +314,7 @@ async fn run_history_crawl_page(
         chunk_len,
     );
 
-    // A completed crawl may only advance the durable checkpoint once the index
+    // A completed crawl may only advance its in-session checkpoint once the index
     // has committed this page. The SDK's own indexing runs in a background
     // subscriber that can lag or drop failures, so a room marked done without
     // this acknowledgement can lose its history for search permanently.
@@ -339,7 +339,7 @@ async fn run_history_crawl_page(
 
 /// Commit one crawled page's events to the persistent index, or say why not.
 ///
-/// The caller must not advance the durable crawl checkpoint unless this returns
+/// The caller must not advance its in-session crawl checkpoint unless this returns
 /// `Ok`.
 async fn index_page_events(
     session: &Arc<koushi_sdk::MatrixClientSession>,

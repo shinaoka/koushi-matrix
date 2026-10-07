@@ -36,6 +36,51 @@ async fn fixture(joined: bool) -> (MatrixMockServer, SearchActor) {
     (server, actor)
 }
 
+#[tokio::test]
+async fn files_submission_adopts_policy_before_deferred_crawler_notification() {
+    let (_, mut actor) = fixture(true).await;
+    actor.handle_index(upsert(None)).await;
+    assert_eq!(actor.document_store.document_count(), 1);
+    let mut events = actor.event_tx.subscribe();
+    let (tx, mut rx) = mpsc::channel(1);
+    let (index_tx, _) = mpsc::channel(1);
+    let handle = SearchActorHandle {
+        tx,
+        index_tx,
+        task: None,
+    };
+    let mut policy = actor.crawler_settings.clone();
+    policy.include_filenames = false;
+    let request_id = RequestId {
+        connection_id: koushi_protocol::ids::RuntimeConnectionId(9),
+        sequence: 1,
+    };
+    assert!(
+        handle
+            .send_query_command(
+                SearchCommand::Attachments {
+                    request_id,
+                    scope: AttachmentScope::Account,
+                    filter: AttachmentFilter::default(),
+                    sort: AttachmentSort::NewestFirst,
+                },
+                Some(policy)
+            )
+            .await
+    );
+    actor.handle_actor_message(rx.recv().await.unwrap()).await;
+    let CoreEvent::Search(SearchEvent::AttachmentsResults { results, .. }) =
+        events.recv().await.unwrap()
+    else {
+        panic!("expected Files result")
+    };
+    assert!(
+        results.is_empty(),
+        "old-policy filenames must not be published"
+    );
+    assert!(!actor.crawler_settings.include_filenames);
+}
+
 async fn join(server: &MatrixMockServer, client: &matrix_sdk::Client) {
     server
         .mock_sync()
@@ -269,6 +314,88 @@ async fn an_earlier_crawl_page_text_edit_cannot_expose_the_original_file() {
     actor.handle_index(upsert(None)).await; // older page later carries the file
     assert!(names(&actor).is_empty());
     assert_eq!(actor.document_store.resident_body_bytes(), 0);
+}
+
+#[tokio::test]
+async fn crawled_foreign_sender_edit_is_rejected_before_or_after_root_admission() {
+    for pending_first in [false, true] {
+        let (server, mut actor) = fixture(true).await;
+        let client = actor.session.client();
+        let room = client
+            .get_room(matrix_sdk::ruma::room_id!("!admission:example.invalid"))
+            .unwrap();
+        let (cache, _handles) = room.event_cache().await.unwrap();
+        let (_, mut updates) = cache.subscribe().await.unwrap();
+        let root_json = serde_json::json!({
+            "event_id": TARGET, "sender": "@member:example.invalid", "origin_server_ts": 1,
+            "type": "m.room.message", "content": {"msgtype": "m.file", "body": "original.pdf", "url": "mxc://example.invalid/file"}
+        });
+        let edit_json = serde_json::json!({
+            "event_id": "$foreign", "sender": "@other:example.invalid", "origin_server_ts": 10,
+            "type": "m.room.message", "content": {"msgtype": "m.file", "body": "* forged.bin", "url": "mxc://example.invalid/forged",
+                "m.new_content": {"msgtype": "m.file", "body": "forged.bin", "url": "mxc://example.invalid/forged"},
+                "m.relates_to": {"rel_type": "m.replace", "event_id": TARGET}}
+        });
+        let raw = |json: serde_json::Value| -> matrix_sdk::ruma::serde::Raw<
+            matrix_sdk::ruma::events::AnySyncTimelineEvent,
+        > { serde_json::from_value(json).unwrap() };
+        server
+            .mock_sync()
+            .ok_and_run(&client, |b| {
+                b.add_joined_room(
+                    JoinedRoomBuilder::new(room.room_id())
+                        .add_timeline_event(raw(root_json.clone()))
+                        .add_timeline_event(raw(edit_json.clone())),
+                );
+            })
+            .await;
+        executor::timeout(Duration::from_secs(2), async {
+            while cache
+                .find_event(matrix_sdk::ruma::event_id!("$foreign"))
+                .await
+                .unwrap()
+                .is_none()
+            {
+                updates.recv().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            koushi_sdk::resolve_cached_message(&actor.session, ROOM, TARGET)
+                .await
+                .unwrap()
+                .unwrap()
+                .attachment_filename
+                .as_deref(),
+            Some("original.pdf")
+        );
+        let mut pending_redactions = HashSet::new();
+        let root = crate::search_crawler::event_json_to_index_message(
+            ROOM,
+            &root_json.to_string(),
+            &actor.crawler_settings,
+            &mut pending_redactions,
+        )
+        .unwrap();
+        let edit = crate::search_crawler::event_json_to_index_message(
+            ROOM,
+            &edit_json.to_string(),
+            &actor.crawler_settings,
+            &mut pending_redactions,
+        )
+        .unwrap();
+        let messages = if pending_first {
+            [edit, root]
+        } else {
+            [root, edit]
+        };
+        for message in messages {
+            actor.handle_index(message).await;
+        }
+        assert!(actor.reconcile_attachment_redactions().await);
+        assert_eq!(names(&actor), ["original.pdf"]);
+    }
 }
 
 #[tokio::test]

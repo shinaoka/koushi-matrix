@@ -629,7 +629,7 @@ fn attachment_document(filename: &str) -> koushi_search::AttachmentDocument {
 
 fn make_attachment_edit(target: &str, filename: &str) -> SearchEdit {
     SearchEdit {
-        room_id: "!room-a:example.invalid".into(),
+        room_id: "!r:test".into(),
         edit_event_id: format!("{target}_edit"),
         target_event_id: target.to_owned(),
         sender: "@alice:test".to_owned(),
@@ -648,7 +648,7 @@ fn make_edit_at(
     filename: &str,
 ) -> SearchEdit {
     SearchEdit {
-        room_id: "!room-a:example.invalid".into(),
+        room_id: "!r:test".into(),
         edit_event_id: edit_event_id.to_owned(),
         target_event_id: target.to_owned(),
         sender: "@alice:test".to_owned(),
@@ -678,7 +678,7 @@ fn attachment_rows(store: &SearchDocumentStore) -> Vec<koushi_state::AttachmentR
 
 fn make_edit(target: &str, new_body: &str) -> SearchEdit {
     SearchEdit {
-        room_id: "!room-a:example.invalid".into(),
+        room_id: "!r:test".into(),
         edit_event_id: format!("{target}_edit"),
         target_event_id: target.to_owned(),
         sender: "@alice:test".to_owned(),

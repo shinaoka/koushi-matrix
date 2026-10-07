@@ -308,6 +308,21 @@ impl SearchDocumentStore {
 
     /// Apply one edit unless the row already holds the same or a newer one.
     fn apply_edit_if_newer(&mut self, edit: &SearchEdit, canonical: bool) -> bool {
+        let Some(event) = self.documents.get(&edit.target_event_id) else {
+            return false;
+        };
+        // Pending crawl edits are untrusted until their root arrives. Matrix
+        // replacements must preserve sender, room and root event type; stickers
+        // are not room-message roots and cannot be replaced by m.room.message.
+        if event.sender != edit.sender
+            || event.room_id != edit.room_id
+            || event
+                .attachment
+                .as_ref()
+                .is_some_and(|a| a.kind == AttachmentKind::Sticker)
+        {
+            return false;
+        }
         let incoming = AppliedEdit {
             timestamp_ms: edit.timestamp_ms,
             canonical,

@@ -291,7 +291,7 @@ async fn search_close_requires_the_correlated_commit_and_exact_account_snapshot(
 }
 
 #[tokio::test]
-async fn search_start_keeps_exact_account_scope_and_query() {
+async fn search_start_keeps_exact_account_scope_and_normalized_query() {
     let (mut connection, control) = CoreConnection::new_for_testing(4);
     let request_id = request(7);
     let scope = SearchScope::CurrentRoom {
@@ -302,7 +302,7 @@ async fn search_start_keeps_exact_account_scope_and_query() {
         RequestOutcomeExpectation::SearchStarted {
             request_id,
             account_key: Some(AccountKey("@alice:example.invalid".to_owned())),
-            query: "synthetic query".to_owned(),
+            query: "  synthetic query  ".to_owned(),
             scope: scope.clone(),
         },
         0,

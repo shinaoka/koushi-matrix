@@ -271,12 +271,9 @@ pub(crate) enum AccountMessage {
         room_id: String,
     },
     SearchCommand(SearchCommand),
-    /// A search query together with the account's content policy at submission.
-    ///
-    /// The policy travels with the query so the actor verifies with the same
-    /// policy the state accepted the query under, instead of waiting for a
-    /// crawler notification that can be deferred behind a busy mailbox.
-    SearchQuery {
+    /// A Search or Files request with the account's content policy at submission,
+    /// instead of waiting for a crawler notification behind a busy mailbox.
+    SearchWithPolicy {
         command: SearchCommand,
         content_policy: koushi_state::SearchCrawlerSettings,
     },
@@ -1903,11 +1900,12 @@ impl AccountActor {
                     })
                     .await;
                 }
-                AccountMessage::SearchQuery {
+                AccountMessage::SearchWithPolicy {
                     command,
                     content_policy,
                 } => {
-                    self.route_search_query(command, content_policy).await;
+                    self.route_search_command_with_policy(command, Some(content_policy))
+                        .await;
                 }
                 AccountMessage::SearchCommand(search_command) => {
                     self.route_search_command(search_command).await;
