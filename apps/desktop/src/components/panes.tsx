@@ -47,6 +47,7 @@ import {
 import {
   ICON_SIZE,
   avatarInitial,
+  hasScheduledSendPersistenceFailure,
   roomAccessTooltipLabel,
   operationFailureLabel,
   type ComposerModeProp,
@@ -1254,6 +1255,9 @@ export function TimelinePane({
         resolveComposerKeyAction={resolveComposerKeyActionStable}
         document={composerDocument}
         notice={composerNotice}
+        scheduledSendPersistenceFailed={hasScheduledSendPersistenceFailure(
+          snapshot.state.ui.errors
+        )}
         draftKey={composerDraftKey ?? timelineRoomId ?? "no-room"}
         roomName={activeRoomName}
         onCancelReply={onCancelReplyStable}

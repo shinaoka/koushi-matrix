@@ -851,6 +851,13 @@ fn cached_restore_revalidation_blocks_only_explicit_unsupported() {
     );
     state.session = SessionState::Locked(session_info());
     state.session_lock_reason = Some(SessionLockReason::UnknownToken { soft_logout: false });
+    // #1159: a capability-blocked retirement leaves the ready session, so a
+    // scheduled-send durability notice from that session must be withdrawn.
+    state.errors.push(koushi_state::AppError {
+        code: "scheduled_send_persistence_failed".to_owned(),
+        message: "not saved".to_owned(),
+        recoverable: true,
+    });
     let blocked = reduce(
         &mut state,
         AppAction::SlidingSyncCapabilityRevalidationCompleted {
@@ -874,4 +881,12 @@ fn cached_restore_revalidation_blocks_only_explicit_unsupported() {
             result: SlidingSyncCapabilityResult::Unsupported,
         })
     );
+    assert!(
+        !state
+            .errors
+            .iter()
+            .any(|error| error.code == "scheduled_send_persistence_failed"),
+        "a capability-blocked session must not keep the previous session's notice"
+    );
+    assert!(blocked.contains(&AppEffect::EmitUiEvent(koushi_state::UiEvent::ErrorChanged)));
 }
