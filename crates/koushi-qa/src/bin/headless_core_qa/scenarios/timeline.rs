@@ -4,12 +4,12 @@ use super::diagnostics::{
 };
 use super::event_wait::{
     QaEventDeadline, SendQueueLocalEcho, cancel_send_queue_item, find_timeline_item_with_body,
-    paginate_backward_to_end_reached, retry_send_queue_item, send_text_expect_local_echo,
-    start_sync_for_qa, stop_sync_for_qa, timeline_item_body_matches, timeline_item_event_id,
-    timeline_item_is_decryption_failure, timeline_item_transaction_id, visit_timeline_diff_items,
-    wait_for_dm_room_in_room_list, wait_for_encrypted_room_projection_for_qa,
-    wait_for_event_item_with_body, wait_for_event_item_with_body_or_retry_not_sent,
-    wait_for_initial_items, wait_for_invite_in_snapshot, wait_for_item_with_body,
+    retry_send_queue_item, send_text_expect_local_echo, start_sync_for_qa, stop_sync_for_qa,
+    timeline_item_body_matches, timeline_item_event_id, timeline_item_is_decryption_failure,
+    timeline_item_transaction_id, visit_timeline_diff_items, wait_for_dm_room_in_room_list,
+    wait_for_encrypted_room_projection_for_qa, wait_for_event_item_with_body,
+    wait_for_event_item_with_body_or_retry_not_sent, wait_for_initial_items,
+    wait_for_invite_in_snapshot, wait_for_item_with_body,
     wait_for_item_with_body_or_decryption_failure, wait_for_link_preview_item_projection,
     wait_for_logged_in, wait_for_logged_out, wait_for_media_download_completed,
     wait_for_media_item, wait_for_media_send_flow_completion, wait_for_ready_snapshot,
@@ -24,6 +24,7 @@ use super::fixtures::{
     native_attention_room, select_space_and_wait_for_room_scope, set_space_child_for_qa,
     start_direct_message_for_qa,
 };
+use super::pagination_waiter;
 use super::participants::{
     QaParticipantLoginGate, QaParticipantLoginOutcome, authenticated_session_info,
     complete_new_identity_gate_for_qa, login_synced_participant_for_qa, qa_data_dir,
@@ -1169,14 +1170,24 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
         wait_for_selected_room(&mut conn, &room_id, "cache_restore selected room").await?;
 
         // Paginate backward to EndReached so the full history is warmed into the
-        // event cache before the restart below.
-        paginate_backward_to_end_reached(
+        // event cache before the restart below. The shared waiter correlates each
+        // request id and bounds the whole walk with one absolute deadline.
+        let populate_id = conn.next_request_id();
+        conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
+            request_id: populate_id,
+            key: key.clone(),
+            direction: PaginationDirection::Backward,
+            event_count: CACHE_RESTORE_PAGINATE_BATCH,
+        }))
+        .await
+        .map_err(|e| format!("cache_restore populate: submit failed: {e}"))?;
+        pagination_waiter::wait_for_end_reached(
             &mut conn,
             &key,
-            CACHE_RESTORE_PAGINATE_BATCH,
+            populate_id,
             "cache_restore populate",
-            Duration::from_secs(120),
-            &mut |_diffs| {},
+            CACHE_RESTORE_PAGINATE_BATCH,
+            tokio::time::Instant::now() + Duration::from_secs(120),
         )
         .await?;
 
@@ -1290,13 +1301,22 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
     // Paginate backward to EndReached to warm the event cache so that
     // live_restore_from_cache can serve the anchor from the stored chunk on
     // restart (without a network call).
-    paginate_backward_to_end_reached(
+    let shallow_populate_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
+        request_id: shallow_populate_id,
+        key: shallow_key.clone(),
+        direction: PaginationDirection::Backward,
+        event_count: CACHE_RESTORE_PAGINATE_BATCH,
+    }))
+    .await
+    .map_err(|e| format!("cache_restore shallow: submit failed: {e}"))?;
+    pagination_waiter::wait_for_end_reached(
         &mut conn,
         &shallow_key,
-        CACHE_RESTORE_PAGINATE_BATCH,
+        shallow_populate_id,
         "cache_restore shallow",
-        Duration::from_secs(60),
-        &mut |_diffs| {},
+        CACHE_RESTORE_PAGINATE_BATCH,
+        tokio::time::Instant::now() + Duration::from_secs(60),
     )
     .await?;
 
@@ -1345,7 +1365,7 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
     proxy.disable();
 
     let aggregate_start = std::time::Instant::now();
-    let mut all_deep_restores_terminated_cleanly = true;
+    let mut all_deep_anchors_restored = true;
     let mut total_cycles: u32 = 0;
     // Per-room cycle counts for the room-entry speed gate.
     let mut room_cycle_counts: Vec<u16> = Vec::new();
@@ -1436,23 +1456,22 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
             "cache_restore room={room_idx} cycles={cycle_count} ms={room_ms} status={status_label}"
         );
 
-        // PRIMARY CORRECTNESS GATE:
-        // The normal room-entry path is intentionally budgeted. Deep anchors may
-        // end as BudgetExhausted or EndReached; the UI then falls back to the
-        // live edge. The gate here is clean, bounded termination rather than
-        // forcing a deep-history restore during room selection.
-        let room_terminated_cleanly = match &status {
-            TimelineAnchorRestoreStatus::Found => true,
-            TimelineAnchorRestoreStatus::EndReached
-            | TimelineAnchorRestoreStatus::BudgetExhausted => true,
-            TimelineAnchorRestoreStatus::Failed { .. }
-            | TimelineAnchorRestoreStatus::Superseded => {
-                eprintln!("cache_restore room={room_idx}: restore status={status_label} offline");
-                false
-            }
-        };
-        if !room_terminated_cleanly {
-            all_deep_restores_terminated_cleanly = false;
+        // PRIMARY CORRECTNESS GATE (#1170/#1167):
+        // A warmed deep room must serve its anchor from the on-disk cache while
+        // the network is blocked. `Found` is the only status that proves it: Core
+        // publishes `Found` only once the anchor is present in the timeline items,
+        // whereas `EndReached`/`BudgetExhausted` also cover "the cache did not hold
+        // the warmed history and there was nothing left to page" — the exact
+        // failure this lane exists to catch. The fixture warms 200 events per
+        // room, inside the production budget (6 batches x 100 events), so the
+        // anchor is reachable and is not expected to exhaust the budget.
+        let room_restored_anchor = matches!(&status, TimelineAnchorRestoreStatus::Found);
+        if !room_restored_anchor {
+            eprintln!(
+                "cache_restore room={room_idx}: offline restore status={status_label} \
+                 (warmed deep anchor was not served from cache)"
+            );
+            all_deep_anchors_restored = false;
         }
 
         let unsub_id = conn2.next_request_id();
@@ -1580,9 +1599,9 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
         .map_err(|e| format!("cache_restore shallow: offline unsubscribe failed: {e}"))?;
 
     // SECONDARY GATE (room-entry speed regression gate):
-    // Each deep-anchor restore must terminate in ≤ CACHE_RESTORE_MAX_CYCLES
-    // backward-paginate cycles. It may be Found, EndReached, or BudgetExhausted;
-    // what matters here is that a stale/deep anchor cannot stall room selection.
+    // Each deep-anchor restore must also terminate in ≤ CACHE_RESTORE_MAX_CYCLES
+    // backward-paginate cycles, so a stale/deep anchor cannot stall room
+    // selection even when the primary gate above is the one that fails.
     let slow_rooms: Vec<usize> = room_cycle_counts
         .iter()
         .enumerate()
@@ -1592,9 +1611,9 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
 
     cleanup_logged_in_runtime(conn2, runtime2, account_key, "cache_restore cleanup").await?;
 
-    if !all_deep_restores_terminated_cleanly {
+    if !all_deep_anchors_restored {
         return Err(
-            "cache_restore: deep anchor restore did not terminate cleanly within room-entry path"
+            "cache_restore: a warmed deep anchor was not restored from cache while offline"
                 .to_owned(),
         );
     }
@@ -5833,7 +5852,12 @@ fn timeline_continuity_token(conn: &CoreConnection) -> String {
     }
 }
 
-/// Wait for the inspected timeline to settle, then report its continuity.
+/// Wait for the first non-transient continuity observation, then report it.
+///
+/// The token is a raw observation, not a post-`settled` claim: `healthy` and
+/// `incomplete_gaps_N` / `failed_incomplete_gaps_N` are settled states, while
+/// `repairing_gaps_N` means repair was still active when it was read. Callers
+/// must read the token they get rather than assume the timeline stopped moving.
 async fn wait_for_continuity_token(
     conn: &mut CoreConnection,
     key: &TimelineKey,
@@ -5851,5 +5875,7 @@ async fn wait_for_continuity_token(
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    Err(format!("{label}: continuity never settled"))
+    Err(format!(
+        "{label}: continuity was still transient (unknown/inspecting)"
+    ))
 }

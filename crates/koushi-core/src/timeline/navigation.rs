@@ -1433,6 +1433,23 @@ impl TimelineActor {
             }
             // Backstop: relay genuinely stuck. EndReached is the safest
             // fallback (anchor not confirmed in items; the caller can retry).
+            //
+            // #1170/#1167: this is the one path where the cache load DID report
+            // `anchor_present == true` and Core still never received the anchor,
+            // so `EndReached` here would otherwise look like a quiet fallback.
+            // Mirror it to stderr, identifier-free; the cache_load record above
+            // already holds the load facts for this request.
+            koushi_diagnostics::record_and_stderr(
+                koushi_diagnostics::DiagnosticEvent::new(
+                    koushi_diagnostics::DiagnosticLevel::Debug,
+                    "core.timeline_anchor_restore",
+                    "relay_backstop",
+                )
+                .field(koushi_diagnostics::DiagnosticField::count(
+                    "ticks",
+                    u64::from(RESTORE_ANCHOR_RELAY_WAIT_TICKS),
+                )),
+            );
             self.finish_anchor_restore(restore.request_id, TimelineAnchorRestoreStatus::EndReached);
             return;
         }
