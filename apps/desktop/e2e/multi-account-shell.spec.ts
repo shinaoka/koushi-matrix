@@ -258,6 +258,10 @@ test("a restored account's signed-out form prefills its identity without overwri
       selectedTabId: "bob-account-tab",
       tabs: nextTabs.tabs.map((tab) => tab.id === "bob-account-tab" ? { ...tab, status: "signedOut" } : tab)
     });
+    // Publish the stored snapshot too: the real backend sends the signed-out
+    // session as a state update, and the app only clears its snapshot when the
+    // selected tab id changes (#119).
+    harness.pushStateUpdate();
   }, tabs);
 
   const form = page.getByTestId("auth-screen");
