@@ -1381,9 +1381,20 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
             }))
             .await
             .map_err(|e| format!("cache_restore: offline subscribe failed: {e}"))?;
-        let _initial_offline =
+        let initial_offline =
             wait_for_initial_items(&mut conn2, &key, sub_id, "cache_restore offline subscribe")
                 .await?;
+
+        // #1167 probe: is the warmed deep anchor already inside the window the
+        // offline subscribe restored, before any RestoreTimelineAnchor request?
+        // Counts and booleans only; the anchor id is never printed.
+        let anchor_preloaded = initial_offline
+            .iter()
+            .any(|item| timeline_item_event_id(item).as_deref() == Some(anchor.as_str()));
+        eprintln!(
+            "cache_restore room={room_idx} restored_items={} anchor_preloaded={anchor_preloaded}",
+            initial_offline.len()
+        );
 
         let room_start = std::time::Instant::now();
         let restore_req = conn2.next_request_id();
@@ -1473,6 +1484,53 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
             );
             all_deep_anchors_restored = false;
         }
+
+        // #1167 probe: a failed offline restore may only have raced the SDK's
+        // asynchronous store restore. Keep watching the still-blocked timeline for
+        // a bounded window and record whether the anchor arrives late anyway;
+        // counts and booleans only, never the anchor id or any content.
+        let mut late_anchor_ms: Option<u128> = None;
+        if !room_restored_anchor {
+            let watch_start = std::time::Instant::now();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let Ok(Ok(event)) = tokio::time::timeout(remaining, conn2.recv_event()).await
+                else {
+                    break;
+                };
+                let CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                    key: ref ev_key,
+                    ref diffs,
+                    ..
+                }) = event
+                else {
+                    continue;
+                };
+                if ev_key != &key {
+                    continue;
+                }
+                let mut found = false;
+                let _ = visit_timeline_diff_items(diffs, |item| {
+                    if timeline_item_event_id(item).as_deref() == Some(anchor.as_str()) {
+                        found = true;
+                    }
+                    Ok(())
+                });
+                if found {
+                    late_anchor_ms = Some(watch_start.elapsed().as_millis());
+                    break;
+                }
+            }
+        }
+        eprintln!(
+            "cache_restore room={room_idx} late_anchor={} late_anchor_ms={}",
+            late_anchor_ms.is_some(),
+            late_anchor_ms.map_or_else(|| "none".to_owned(), |ms| ms.to_string())
+        );
 
         let unsub_id = conn2.next_request_id();
         conn2
