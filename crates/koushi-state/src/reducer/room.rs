@@ -24,6 +24,64 @@ use super::{
 const PIN_EVENT_FAILED_MESSAGE: &str = "Pinning the event failed";
 const UNPIN_EVENT_FAILED_MESSAGE: &str = "Unpinning the event failed";
 
+/// Project each joined room's own access condition (#1166).
+///
+/// The payload rides the same generation/source decision as its room-list
+/// snapshot: an authoritative snapshot replaces the slice, a provisional one
+/// merges it (mirroring how provisional snapshots merge rooms, and leaving the
+/// slice alone when the provisional payload is empty), and a stale or rejected
+/// snapshot changes nothing. Rooms removed by a local leave are pruned there.
+pub(crate) fn handle_room_access_updated(
+    state: &mut AppState,
+    generation: u64,
+    source: RoomListSource,
+    authoritative: bool,
+    access: std::collections::BTreeMap<String, crate::state::RoomAccessCondition>,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    // The snapshot arm of this batch already ran, so the accepted room list is
+    // in state: a room or Space filtered out there (local leave, unjoined) must
+    // not keep or regain an access condition through a stale payload. Spaces
+    // carry their own condition on the rail, so they are retained too.
+    let retained: std::collections::BTreeSet<&str> = state
+        .rooms
+        .iter()
+        .map(|room| room.room_id.as_str())
+        .chain(state.spaces.iter().map(|space| space.space_id.as_str()))
+        .collect();
+    let access = access
+        .into_iter()
+        .filter(|(room_id, _)| retained.contains(room_id.as_str()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    if authoritative {
+        if !room_list_authoritative_matches_current(&state.room_list.readiness, generation, source)
+        {
+            return Vec::new();
+        }
+        if state.room_access == access {
+            return Vec::new();
+        }
+        state.room_access = access;
+    } else {
+        if !room_list_provisional_matches_current(&state.room_list.readiness, generation, source)
+            || access.is_empty()
+        {
+            return Vec::new();
+        }
+        let mut merged = state.room_access.clone();
+        for (room_id, rule) in access {
+            merged.insert(room_id, rule);
+        }
+        if merged == state.room_access {
+            return Vec::new();
+        }
+        state.room_access = merged;
+    }
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
 pub(crate) fn handle_room_list_updated(
     state: &mut AppState,
     spaces: Vec<crate::state::SpaceSummary>,
@@ -52,6 +110,8 @@ pub(crate) fn handle_room_left_locally(state: &mut AppState, room_id: String) ->
         .room_list
         .locally_left_room_ids
         .insert(room_id.clone());
+    // #1166: the room left the list, so its projected access condition goes with it.
+    state.room_access.remove(&room_id);
     let joined_members_before_leave = state
         .rooms
         .iter()

@@ -1313,6 +1313,14 @@ button:disabled {
   visibility: hidden;
 }
 
+.tooltip-bubble.is-floating {
+  inset-block-start: auto;
+  inset-inline-start: auto;
+  /* The floating layer positions the bubble from measured coordinates, so the
+     inline variant's vertical centering transform must not apply. */
+  transform: none;
+}
+
 .tooltip-bubble.is-open {
   opacity: 1;
   visibility: visible;
@@ -1527,7 +1535,10 @@ button:disabled {
 }
 
 .workspace-header-title {
+  display: flex;
   min-width: 0;
+  align-items: center;
+  gap: 6px;
   align-self: end;
 }
 
@@ -1544,6 +1555,7 @@ button:disabled {
 }
 
 .workspace-name {
+  min-width: 0;
   overflow: hidden;
   font-size: 20px;
   font-weight: 850;
@@ -2193,12 +2205,19 @@ button:disabled {
 }
 
 .channel-title h1,
-.channel-title span:last-child {
+.channel-title .channel-name {
   margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font: inherit;
+}
+
+/* #1166: an access badge and its tooltip host are not the truncated room name. */
+.channel-title .channel-access-badge,
+.channel-title .tooltip-host {
+  overflow: visible;
+  white-space: nowrap;
 }
 
 .channel-actions {
@@ -9652,3 +9671,93 @@ kbd {
 .export-progress-phase,
 .export-progress-note { font-size: 0.85em; color: var(--text-muted); }
 .export-progress-list li[data-phase="failed"] .export-progress-phase { color: var(--danger); }
+
+/* #1166: access conditions. The globe means public, the closed padlock means an
+   invitation is required, and the compact badges carry the other rules; none of
+   them is an encryption indicator. */
+.room-name-shell {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.room-access-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--text-muted);
+}
+
+.room-access-badge,
+.channel-access-badge {
+  flex: 0 0 auto;
+  padding-inline: var(--room-count-padding-inline);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  color: var(--text-muted);
+  font-size: var(--room-count-font-size);
+  line-height: var(--room-count-block-size);
+  white-space: nowrap;
+}
+
+.channel-access-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--text-muted);
+}
+
+.channel-title .channel-name {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* #1166: the narrow Space rail summarises access at the avatar's upper trailing
+   corner so the unread/notification count keeps the lower one, and the Space
+   header carries the full label. */
+.workspace-access-overlay {
+  position: absolute;
+  inset-block-start: 1px;
+  inset-inline-end: 1px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--rail);
+  border-radius: 50%;
+  color: var(--text-muted);
+  background: var(--surface);
+}
+
+.workspace-access-overlay[data-space-access="globe"],
+.workspace-access-overlay[data-space-access="padlock"] {
+  color: var(--text);
+}
+
+.workspace-header-icon,
+.workspace-header-badge,
+.workspace-access-icon,
+.workspace-access-badge {
+  flex: 0 0 auto;
+}
+
+.workspace-access-icon,
+.workspace-header-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+}
+
+.workspace-access-badge,
+.workspace-header-badge {
+  padding-inline: var(--room-count-padding-inline);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  color: var(--text-muted);
+  font-size: var(--room-count-font-size);
+  line-height: var(--room-count-block-size);
+  white-space: nowrap;
+}
