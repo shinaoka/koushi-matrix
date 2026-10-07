@@ -9,9 +9,9 @@ use koushi_sdk::{
     MatrixRoomSettingsSnapshot, MatrixUserTrustState,
 };
 use koushi_state::{
-    AppAction, RoomHistoryVisibility, RoomJoinRule, RoomMemberRole, RoomMemberRoleOption,
-    RoomMemberSummary, RoomModerationAction, RoomPermissionFacts, RoomSettingChange,
-    RoomSettingsSnapshot, UserTrustState,
+    AppAction, RestrictedConditions, RoomHistoryVisibility, RoomJoinRule, RoomMemberRole,
+    RoomMemberRoleOption, RoomMemberSummary, RoomModerationAction, RoomPermissionFacts,
+    RoomSettingChange, RoomSettingsSnapshot, UserTrustState,
 };
 
 fn room_settings_snapshot_from_sdk(settings: MatrixRoomSettingsSnapshot) -> RoomSettingsSnapshot {
@@ -90,6 +90,19 @@ pub(super) fn room_join_rule_from_sdk(join_rule: MatrixRoomJoinRule) -> RoomJoin
         MatrixRoomJoinRule::KnockRestricted => RoomJoinRule::KnockRestricted,
         MatrixRoomJoinRule::Private => RoomJoinRule::Private,
         MatrixRoomJoinRule::Unknown => RoomJoinRule::Unknown,
+    }
+}
+
+/// Mirror of the SDK's restricted-allow-condition classification (#1166).
+pub(super) fn restricted_conditions_from_sdk(
+    conditions: koushi_sdk::MatrixRestrictedConditions,
+) -> RestrictedConditions {
+    match conditions {
+        koushi_sdk::MatrixRestrictedConditions::Usable => RestrictedConditions::Usable,
+        koushi_sdk::MatrixRestrictedConditions::NoneUsable => RestrictedConditions::NoneUsable,
+        koushi_sdk::MatrixRestrictedConditions::UnknownAllowRule => {
+            RestrictedConditions::UnknownAllowRule
+        }
     }
 }
 

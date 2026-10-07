@@ -4,7 +4,8 @@ import {
   ROOM_ACCESS_CHECKING,
   roomAccessHeaderBadges,
   roomAccessIndicator,
-  roomAccessRailSummary
+  roomAccessRailSummary,
+  sidebarRoomAccess
 } from "./accessCondition";
 
 describe("room access indicator (#1166)", () => {
@@ -129,5 +130,68 @@ describe("room access rail summary", () => {
     }
     expect(roomAccessRailSummary(null)).toBe("loading");
     expect(roomAccessRailSummary(undefined)).toBe("loading");
+  });
+});
+
+describe("restricted allow-condition facts (#1166)", () => {
+  it("says an invitation is required only when no usable condition is confirmed", () => {
+    const noUsable = roomAccessIndicator("restricted", "noneUsable");
+    expect(noUsable?.descriptionMessageId).toBe(
+      "access.restrictedNoUsableConditionsDescription"
+    );
+    expect(noUsable?.badges).toEqual([
+      {
+        labelMessageId: "access.conditionsApply",
+        descriptionMessageId: "access.restrictedNoUsableConditionsDescription"
+      }
+    ]);
+
+    // An allow-rule type the client does not model keeps the generic wording:
+    // the absence of a usable condition is not confirmed.
+    const unknown = roomAccessIndicator("restricted", "unknownAllowRule");
+    expect(unknown?.descriptionMessageId).toBe("access.conditionsDescription");
+
+    // A usable condition keeps the membership explanation.
+    const usable = roomAccessIndicator("restricted", "usable");
+    expect(usable?.descriptionMessageId).toBe("access.conditionsDescription");
+  });
+
+  it("keeps the request route when a knock_restricted rule has no usable condition", () => {
+    const indicator = roomAccessIndicator("knockRestricted", "noneUsable");
+    expect(indicator?.badges).toEqual([
+      {
+        labelMessageId: "access.conditionsApply",
+        descriptionMessageId: "access.restrictedNoUsableConditionsDescription"
+      },
+      {
+        labelMessageId: "access.canRequest",
+        descriptionMessageId: "access.requestRouteDescription"
+      }
+    ]);
+    expect(indicator?.descriptionMessageId).toBe(
+      "access.restrictedNoUsableConditionsCanRequestDescription"
+    );
+  });
+
+  it("reads both access facts from a sidebar row", () => {
+    const sidebar = {
+      space_rooms: [
+        {
+          room_id: "!room:example.invalid",
+          access_join_rule: "restricted" as const,
+          access_restricted_conditions: "noneUsable" as const
+        }
+      ],
+      global_dms: [],
+      not_joined_space_rooms: []
+    };
+    expect(sidebarRoomAccess(sidebar, "!room:example.invalid")).toEqual({
+      joinRule: "restricted",
+      restricted: "noneUsable"
+    });
+    expect(sidebarRoomAccess(sidebar, "!missing:example.invalid")).toEqual({
+      joinRule: null,
+      restricted: null
+    });
   });
 });

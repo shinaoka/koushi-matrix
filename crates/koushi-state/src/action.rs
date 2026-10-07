@@ -19,7 +19,7 @@ use crate::state::{
     MentionCandidatesCompleteness, MentionCandidatesFailureKind, MentionSurface,
     NativeAttentionDispatchId, NativeAttentionSoundOutcome, NativeAttentionState,
     NavigationPreferenceUpdate, NavigationState, OperationFailureKind, OwnProfile, PinnedEvent,
-    PresenceKind, ProfileUpdateRequest, RecoveryMethod, RoomJoinRule, RoomListFailureKind,
+    PresenceKind, ProfileUpdateRequest, RecoveryMethod, RoomListFailureKind,
     RoomListFilter, RoomListProjection, RoomListSource, RoomMentionPermission,
     RoomModerationAction, RoomPreferencesState, RoomSettingChange, RoomSettingsSnapshot,
     RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability,
@@ -1267,7 +1267,7 @@ pub enum AppAction {
         generation: u64,
         source: RoomListSource,
         authoritative: bool,
-        access: std::collections::BTreeMap<String, RoomJoinRule>,
+        access: std::collections::BTreeMap<String, crate::state::RoomAccessCondition>,
     },
     ScheduledSendsLoaded {
         scheduled_sends: crate::state::ScheduledSendStore,

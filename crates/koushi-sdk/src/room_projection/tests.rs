@@ -767,3 +767,68 @@ fn room_name_placeholder_maps_only_the_sdk_empty_room_names() {
         assert_eq!(super::matrix_room_name_placeholder(&name), None);
     }
 }
+
+/// #1166: a restricted rule's allow list is classified without guessing.
+#[tokio::test]
+async fn restricted_rule_conditions_separate_usable_from_unknown_allow_rules() {
+    use matrix_sdk::ruma::{
+        events::room::join_rules::{AllowRule, JoinRule, Restricted},
+        room_id,
+    };
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    use matrix_sdk_test::{JoinedRoomBuilder, event_factory::EventFactory};
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let own = client.user_id().expect("own user").to_owned();
+    let factory = EventFactory::new();
+    let synced = |rule: JoinRule| {
+        let server = &server;
+        let client = &client;
+        let factory = &factory;
+        let own = &own;
+        async move {
+            let room_id = room_id!("!restricted-conditions:example.invalid");
+            server
+                .sync_room(
+                    client,
+                    JoinedRoomBuilder::new(room_id)
+                        .add_state_event(factory.room_join_rules(rule).sender(own)),
+                )
+                .await;
+            client.get_room(room_id).expect("joined room")
+        }
+    };
+
+    // A room-membership allow rule is a route this client can evaluate.
+    let usable = synced(JoinRule::Restricted(Restricted::new(vec![
+        AllowRule::room_membership(room_id!("!allowed:example.invalid").to_owned()),
+    ])))
+    .await;
+    assert_eq!(
+        super::matrix_room_restricted_conditions(&usable),
+        Some(super::MatrixRestrictedConditions::Usable)
+    );
+
+    // An empty allow list is a confirmed absence of a usable condition.
+    let none_usable = synced(JoinRule::Restricted(Restricted::new(Vec::new()))).await;
+    assert_eq!(
+        super::matrix_room_restricted_conditions(&none_usable),
+        Some(super::MatrixRestrictedConditions::NoneUsable)
+    );
+
+    // An allow-rule type this client does not model must not be reported as a
+    // confirmed empty set.
+    let custom: AllowRule =
+        serde_json::from_value(serde_json::json!({ "type": "m.custom_allow_rule" }))
+            .expect("custom allow rule deserializes");
+    let unknown = synced(JoinRule::Restricted(Restricted::new(vec![custom]))).await;
+    assert_eq!(
+        super::matrix_room_restricted_conditions(&unknown),
+        Some(super::MatrixRestrictedConditions::UnknownAllowRule)
+    );
+
+    // A non-restricted rule claims nothing about allow lists.
+    let public = synced(JoinRule::Public).await;
+    assert_eq!(super::matrix_room_restricted_conditions(&public), None);
+}

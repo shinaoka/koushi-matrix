@@ -36,7 +36,7 @@ pub(crate) fn handle_room_access_updated(
     generation: u64,
     source: RoomListSource,
     authoritative: bool,
-    access: std::collections::BTreeMap<String, crate::state::RoomJoinRule>,
+    access: std::collections::BTreeMap<String, crate::state::RoomAccessCondition>,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();

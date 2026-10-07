@@ -1136,9 +1136,22 @@ fn room_list_update_keeps_active_dm_global_with_selected_space() {
 
 /// #1166: the access slice rides its room-list snapshot's generation/source
 /// decision: an authoritative projection replaces it, a provisional one merges,
-/// a stale one is ignored, and a local leave prunes the room.
+/// a stale one is ignored, a local leave prunes the room, and the restricted
+/// allow-condition facts travel with the join rule.
 #[test]
 fn room_access_projection_follows_its_room_list_snapshot() {
+    use koushi_state::{RestrictedConditions, RoomAccessCondition};
+
+    fn condition(
+        join_rule: koushi_state::RoomJoinRule,
+        restricted: Option<RestrictedConditions>,
+    ) -> RoomAccessCondition {
+        RoomAccessCondition {
+            join_rule,
+            restricted,
+        }
+    }
+
     let mut state = ready_state();
     assert!(state.room_access.is_empty());
 
@@ -1165,8 +1178,17 @@ fn room_access_projection_follows_its_room_list_snapshot() {
             source: koushi_state::RoomListSource::Live,
             authoritative: true,
             access: BTreeMap::from([
-                ("room-a".to_owned(), koushi_state::RoomJoinRule::Public),
-                ("global-room".to_owned(), koushi_state::RoomJoinRule::Knock),
+                (
+                    "room-a".to_owned(),
+                    condition(
+                        koushi_state::RoomJoinRule::Restricted,
+                        Some(RestrictedConditions::NoneUsable),
+                    ),
+                ),
+                (
+                    "global-room".to_owned(),
+                    condition(koushi_state::RoomJoinRule::Knock, None),
+                ),
             ]),
         },
     );
@@ -1175,8 +1197,26 @@ fn room_access_projection_follows_its_room_list_snapshot() {
         vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
     );
     assert_eq!(
-        state.room_access.get("room-a"),
-        Some(&koushi_state::RoomJoinRule::Public)
+        state
+            .room_access
+            .get("room-a")
+            .map(|access| access.join_rule),
+        Some(koushi_state::RoomJoinRule::Restricted)
+    );
+    assert_eq!(
+        state
+            .room_access
+            .get("room-a")
+            .and_then(|access| access.restricted),
+        Some(RestrictedConditions::NoneUsable)
+    );
+    assert_eq!(
+        state
+            .room_access
+            .get("global-room")
+            .and_then(|access| access.restricted),
+        None,
+        "a non-restricted rule carries no allow-condition claim"
     );
 
     // The same slice is not an event.
@@ -1202,20 +1242,23 @@ fn room_access_projection_follows_its_room_list_snapshot() {
                 generation: 0,
                 source: koushi_state::RoomListSource::Live,
                 authoritative: true,
-                access: BTreeMap::from([
-                    ("room-a".to_owned(), koushi_state::RoomJoinRule::Invite,)
-                ]),
+                access: BTreeMap::from([(
+                    "room-a".to_owned(),
+                    condition(koushi_state::RoomJoinRule::Invite, None),
+                )]),
             },
         )
         .is_empty()
     );
     assert_eq!(
-        state.room_access.get("room-a"),
-        Some(&koushi_state::RoomJoinRule::Public)
+        state
+            .room_access
+            .get("room-a")
+            .map(|access| access.join_rule),
+        Some(koushi_state::RoomJoinRule::Restricted)
     );
 
-    // A provisional projection merges instead of erasing the rest. The service
-    // starts loading that generation before its provisional snapshot arrives.
+    // A provisional projection merges instead of erasing the rest.
     state.room_list.readiness = koushi_state::RoomListReadiness::Loading {
         source: koushi_state::RoomListSource::Live,
         generation: 2,
@@ -1236,17 +1279,29 @@ fn room_access_projection_follows_its_room_list_snapshot() {
             generation: 2,
             source: koushi_state::RoomListSource::Live,
             authoritative: false,
-            access: BTreeMap::from([("room-a".to_owned(), koushi_state::RoomJoinRule::Restricted)]),
+            access: BTreeMap::from([(
+                "room-a".to_owned(),
+                condition(
+                    koushi_state::RoomJoinRule::Restricted,
+                    Some(RestrictedConditions::Usable),
+                ),
+            )]),
         },
     );
     assert_eq!(
-        state.room_access.get("room-a"),
-        Some(&koushi_state::RoomJoinRule::Restricted),
+        state
+            .room_access
+            .get("room-a")
+            .and_then(|access| access.restricted),
+        Some(RestrictedConditions::Usable),
         "a provisional projection updates the room it carries"
     );
     assert_eq!(
-        state.room_access.get("global-room"),
-        Some(&koushi_state::RoomJoinRule::Knock),
+        state
+            .room_access
+            .get("global-room")
+            .map(|access| access.join_rule),
+        Some(koushi_state::RoomJoinRule::Knock),
         "a provisional projection keeps the rooms it does not carry"
     );
 
@@ -1283,8 +1338,14 @@ fn room_access_projection_follows_its_room_list_snapshot() {
             source: koushi_state::RoomListSource::Live,
             authoritative: false,
             access: BTreeMap::from([
-                ("room-a".to_owned(), koushi_state::RoomJoinRule::Public),
-                ("global-room".to_owned(), koushi_state::RoomJoinRule::Invite),
+                (
+                    "room-a".to_owned(),
+                    condition(koushi_state::RoomJoinRule::Public, None),
+                ),
+                (
+                    "global-room".to_owned(),
+                    condition(koushi_state::RoomJoinRule::Invite, None),
+                ),
             ]),
         },
     );
@@ -1293,8 +1354,11 @@ fn room_access_projection_follows_its_room_list_snapshot() {
         "a stale provisional payload must not resurrect a left room's condition"
     );
     assert_eq!(
-        state.room_access.get("global-room"),
-        Some(&koushi_state::RoomJoinRule::Invite),
+        state
+            .room_access
+            .get("global-room")
+            .map(|access| access.join_rule),
+        Some(koushi_state::RoomJoinRule::Invite),
         "a retained room still gains its projected condition"
     );
 
@@ -1312,7 +1376,13 @@ fn room_access_projection_is_ignored_without_a_ready_session() {
             generation: 0,
             source: koushi_state::RoomListSource::Cache,
             authoritative: false,
-            access: BTreeMap::from([("room-a".to_owned(), koushi_state::RoomJoinRule::Public)]),
+            access: BTreeMap::from([(
+                "room-a".to_owned(),
+                koushi_state::RoomAccessCondition {
+                    join_rule: koushi_state::RoomJoinRule::Public,
+                    restricted: None,
+                },
+            )]),
         },
     );
     assert!(effects.is_empty());

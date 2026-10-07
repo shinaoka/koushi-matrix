@@ -1902,6 +1902,56 @@ pub fn matrix_room_join_rule_or_default(room: &matrix_sdk::Room) -> MatrixRoomJo
         .unwrap_or(MatrixRoomJoinRule::Invite)
 }
 
+/// Whether a `restricted`/`knock_restricted` rule's allow list contains a
+/// condition this client can actually evaluate (#1166).
+///
+/// A `restricted` rule with no usable allow condition still classifies as
+/// `Restricted`, but the product must not imply that a membership route works:
+/// the tooltip then says an invitation is required. An allow-rule type this
+/// client does not model must never be reported as a confirmed empty set, which
+/// is what separates [`MatrixRestrictedConditions::UnknownAllowRule`] from
+/// [`MatrixRestrictedConditions::NoneUsable`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixRestrictedConditions {
+    /// At least one allow entry is a room-membership rule: a real route exists.
+    Usable,
+    /// Every allow entry is a rule type this client models, and none of them
+    /// admits joining without an invitation.
+    NoneUsable,
+    /// At least one entry uses a rule type this client does not model, so the
+    /// absence of a usable condition is not confirmed.
+    UnknownAllowRule,
+}
+
+/// The restricted-rule condition facts for a room (#1166). `None` when the
+/// room's rule is not restricted, so nothing is claimed about allow lists.
+pub fn matrix_room_restricted_conditions(
+    room: &matrix_sdk::Room,
+) -> Option<MatrixRestrictedConditions> {
+    use matrix_sdk::ruma::events::room::join_rules::{AllowRule, JoinRule};
+    let rule = room.join_rule();
+    let restricted = match rule.as_ref()? {
+        JoinRule::Restricted(restricted) | JoinRule::KnockRestricted(restricted) => restricted,
+        _ => return None,
+    };
+    let usable = restricted
+        .allow
+        .iter()
+        .any(|allow| matches!(allow, AllowRule::RoomMembership(_)));
+    if usable {
+        return Some(MatrixRestrictedConditions::Usable);
+    }
+    let unknown = restricted
+        .allow
+        .iter()
+        .any(|allow| !matches!(allow, AllowRule::RoomMembership(_)));
+    Some(if unknown {
+        MatrixRestrictedConditions::UnknownAllowRule
+    } else {
+        MatrixRestrictedConditions::NoneUsable
+    })
+}
+
 pub(super) fn matrix_room_join_rule(
     join_rule: &matrix_sdk::ruma::events::room::join_rules::JoinRule,
 ) -> MatrixRoomJoinRule {

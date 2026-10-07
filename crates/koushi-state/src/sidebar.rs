@@ -3,10 +3,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::state::{
-    AppState, AvatarImage, InvitePreview, RoomJoinRule, RoomListSort, RoomNotificationMode,
-    RoomNotificationSettings, RoomSummary, RoomTags, SidebarScopeSettings, SpaceChildMembership,
-    SpaceChildSummary, SpaceChildrenState, SpaceLocalPresentations, SpaceSummary,
-    compare_conversation_activity, room_activity_unread_count, room_attention_projection,
+    AppState, AvatarImage, InvitePreview, RestrictedConditions, RoomAccessCondition, RoomJoinRule,
+    RoomListSort, RoomNotificationMode, RoomNotificationSettings, RoomSummary, RoomTags,
+    SidebarScopeSettings, SpaceChildMembership, SpaceChildSummary, SpaceChildrenState,
+    SpaceLocalPresentations, SpaceSummary, compare_conversation_activity,
+    room_activity_unread_count, room_attention_projection,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -110,6 +111,11 @@ pub struct RoomListItem {
     /// membership and `can_join`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_join_rule: Option<RoomJoinRule>,
+    /// Whether a restricted rule has a usable allow condition (#1166). `None`
+    /// when the room's rule is not restricted or has not been projected, so a
+    /// reader never claims anything it did not inspect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_restricted_conditions: Option<RestrictedConditions>,
     pub display_name: String,
     /// Mirrors `RoomSummary.display_label_placeholder` for `display_name`
     /// (#1050): the GUI renders it through the message catalog.
@@ -224,7 +230,7 @@ fn compose_sidebar_with_preferences(
     space_children: &SpaceChildrenState,
     invites: &[InvitePreview],
     // #1166: the projected per-room access conditions; empty means not yet known.
-    room_access: &BTreeMap<String, RoomJoinRule>,
+    room_access: &BTreeMap<String, RoomAccessCondition>,
 ) -> SidebarModel {
     let rooms_by_id: HashMap<&str, &RoomSummary> = rooms
         .iter()
@@ -495,6 +501,7 @@ fn not_joined_room_list_item(
         can_join: invited || child.can_join,
         // #1166: the not-joined lane projects no access condition yet.
         access_join_rule: None,
+        access_restricted_conditions: None,
         display_name: child.display_name.clone(),
         avatar: child.avatar.clone(),
         tags: RoomTags::default(),
@@ -536,7 +543,7 @@ fn space_child_is_visible(child: &SpaceChildSummary, invited_room_ids: &HashSet<
 fn room_list_item(
     room: &RoomSummary,
     room_notification_settings: &HashMap<String, RoomNotificationSettings>,
-    room_access: &BTreeMap<String, RoomJoinRule>,
+    room_access: &BTreeMap<String, RoomAccessCondition>,
 ) -> RoomListItem {
     let mode = room_notification_settings
         .get(&room.room_id)
@@ -547,7 +554,12 @@ fn room_list_item(
         room_id: room.room_id.clone(),
         membership: SpaceChildMembership::Joined,
         can_join: false,
-        access_join_rule: room_access.get(&room.room_id).copied(),
+        access_join_rule: room_access
+            .get(&room.room_id)
+            .map(|condition| condition.join_rule),
+        access_restricted_conditions: room_access
+            .get(&room.room_id)
+            .and_then(|condition| condition.restricted),
         display_name: room.display_label.clone(),
         avatar: room.avatar.clone(),
         tags: room.tags.clone(),

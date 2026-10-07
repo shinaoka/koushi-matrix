@@ -406,7 +406,10 @@ fn access_condition_change_alone_publishes_the_sidebar() {
     let mut next = previous.clone();
     next.room_access.insert(
         "!A-false:example.invalid".to_owned(),
-        koushi_state::RoomJoinRule::Public,
+        koushi_state::RoomAccessCondition {
+            join_rule: koushi_state::RoomJoinRule::Public,
+            restricted: None,
+        },
     );
 
     let sidebar = build_state_delta(1, &previous, &next)

@@ -398,7 +398,7 @@ async fn project_room_list_snapshot(
     generation: u64,
     source: RoomListSource,
     authoritative: bool,
-    room_access: std::collections::BTreeMap<String, koushi_state::RoomJoinRule>,
+    room_access: std::collections::BTreeMap<String, koushi_state::RoomAccessCondition>,
 ) -> bool {
     let spaces = normalize_spaces(snapshot);
     let previous_dm_rooms = known_dm_rooms
@@ -1536,9 +1536,13 @@ async fn normalize_and_project_entries(
         .map(|room| {
             (
                 room.room_id().to_string(),
-                super::management::room_join_rule_from_sdk(
-                    koushi_sdk::matrix_room_join_rule_or_default(room),
-                ),
+                koushi_state::RoomAccessCondition {
+                    join_rule: super::management::room_join_rule_from_sdk(
+                        koushi_sdk::matrix_room_join_rule_or_default(room),
+                    ),
+                    restricted: koushi_sdk::matrix_room_restricted_conditions(room)
+                        .map(super::management::restricted_conditions_from_sdk),
+                },
             )
         })
         .collect::<std::collections::BTreeMap<_, _>>();

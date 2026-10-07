@@ -1258,10 +1258,19 @@ fn sidebar_room_rows_carry_the_projected_access_condition() {
     state.rooms = rooms();
     state.spaces = spaces();
     state.room_access = BTreeMap::from([
-        ("room-a".to_owned(), koushi_state::RoomJoinRule::Public),
+        (
+            "room-a".to_owned(),
+            koushi_state::RoomAccessCondition {
+                join_rule: koushi_state::RoomJoinRule::Public,
+                restricted: None,
+            },
+        ),
         (
             "dm-a".to_owned(),
-            koushi_state::RoomJoinRule::KnockRestricted,
+            koushi_state::RoomAccessCondition {
+                join_rule: koushi_state::RoomJoinRule::KnockRestricted,
+                restricted: Some(koushi_state::RestrictedConditions::NoneUsable),
+            },
         ),
     ]);
 
@@ -1284,6 +1293,15 @@ fn sidebar_room_rows_carry_the_projected_access_condition() {
     assert_eq!(
         direct_message.access_join_rule,
         Some(koushi_state::RoomJoinRule::KnockRestricted)
+    );
+    assert_eq!(
+        direct_message.access_restricted_conditions,
+        Some(koushi_state::RestrictedConditions::NoneUsable),
+        "the restricted-rule facts travel to the row"
+    );
+    assert_eq!(
+        public_room.access_restricted_conditions, None,
+        "a non-restricted rule carries no allow-condition claim"
     );
     // A room with no projected condition is unknown, never a guessed rule.
     let unknown = sidebar

@@ -1279,14 +1279,25 @@ async fn live_room_list_projects_each_rooms_own_access_condition() {
     .expect("access projection arrives with the room list");
 
     assert_eq!(
-        projected.get(public_room.as_str()),
-        Some(&koushi_state::RoomJoinRule::Public),
+        projected
+            .get(public_room.as_str())
+            .map(|access| access.join_rule),
+        Some(koushi_state::RoomJoinRule::Public),
         "a public room keeps its own rule"
     );
     assert_eq!(
-        projected.get(default_room.as_str()),
-        Some(&koushi_state::RoomJoinRule::Invite),
+        projected
+            .get(default_room.as_str())
+            .map(|access| access.join_rule),
+        Some(koushi_state::RoomJoinRule::Invite),
         "a room without m.room.join_rules is invite-only, not unknown"
+    );
+    assert_eq!(
+        projected
+            .get(public_room.as_str())
+            .and_then(|access| access.restricted),
+        None,
+        "a non-restricted rule carries no allow-condition claim"
     );
     harness.stop().await;
 }

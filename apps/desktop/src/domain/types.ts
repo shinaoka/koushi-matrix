@@ -2817,6 +2817,14 @@ export interface SpaceLeaveCandidate {
   in_other_space: boolean;
 }
 
+/**
+ * Whether a `restricted`/`knock_restricted` rule has an allow condition this
+ * client can evaluate (#1166). Mirrors the Rust `RestrictedConditions`: an
+ * allow-rule type the client does not model is never reported as a confirmed
+ * empty set.
+ */
+export type RestrictedConditions = "usable" | "noneUsable" | "unknownAllowRule";
+
 export interface RoomListItem {
   room_id: string;
   /**
@@ -2833,6 +2841,11 @@ export interface RoomListItem {
    * independent of encryption, DM status, membership and `can_join`.
    */
   access_join_rule?: RoomJoinRule | null;
+  /**
+   * Restricted-rule allow-condition facts; absent when the rule is not
+   * restricted or has not been projected. Never inferred here.
+   */
+  access_restricted_conditions?: RestrictedConditions | null;
   display_name: string;
   /** Mirrors `RoomSummary.display_label_placeholder`; render via `roomListItemLabel`. */
   display_name_placeholder?: RoomNamePlaceholder | null;

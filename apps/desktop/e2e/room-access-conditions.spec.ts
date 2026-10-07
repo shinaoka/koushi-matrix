@@ -39,6 +39,14 @@ const PLAIN_ROOM = row("!plain:example.invalid", "Plain Room");
 const PUBLIC_ROOM = row("!open:example.invalid", "Open Room", "public");
 const INVITE_ROOM = row("!invite:example.invalid", "Invite Room", "invite");
 const RESTRICTED_ROOM = row("!conditional:example.invalid", "Conditional Room", "restricted");
+const NO_USABLE_ROOM = {
+  ...row("!no-usable:example.invalid", "No Usable Room", "restricted"),
+  access_restricted_conditions: "noneUsable" as const
+};
+const UNKNOWN_ALLOW_ROOM = {
+  ...row("!unknown-allow:example.invalid", "Unknown Allow Room", "restricted"),
+  access_restricted_conditions: "unknownAllowRule" as const
+};
 const KNOCK_ROOM = row("!request:example.invalid", "Request Room", "knock");
 const BOTH_ROOM = row("!both:example.invalid", "Both Room", "knockRestricted");
 const UNKNOWN_ROOM = row("!unknown:example.invalid", "Unknown Room", "unknown");
@@ -48,6 +56,8 @@ const ROOMS = [
   PUBLIC_ROOM,
   INVITE_ROOM,
   RESTRICTED_ROOM,
+  NO_USABLE_ROOM,
+  UNKNOWN_ALLOW_ROOM,
   KNOCK_ROOM,
   BOTH_ROOM,
   UNKNOWN_ROOM
@@ -381,4 +391,43 @@ test("the Space header shows the active Space's access condition", async ({ page
   await header.locator(".workspace-access-badge").first().focus();
   await expect(bubble).toHaveCount(1);
   await expect(bubble).toBeVisible();
+});
+
+test("a restricted room explains a confirmed missing membership route (#1166)", async ({
+  page
+}) => {
+  await pushRoomList(page);
+  const rooms = page.getByRole("region", { name: t("roomList.categoryRooms"), exact: true });
+
+  // No usable allow condition: the badge says an invitation is required.
+  const noUsableRow = rooms.getByRole("button", { name: "No Usable Room", exact: true });
+  await noUsableRow.locator(".room-access-badge").first().hover();
+  await expect(
+    page
+      .locator("body > .tooltip-bubble.is-open")
+      .filter({ hasText: t("access.restrictedNoUsableConditionsDescription") })
+  ).toHaveCount(1);
+
+  // An allow-rule type the app does not model keeps the generic explanation.
+  const unknownRow = rooms.getByRole("button", { name: "Unknown Allow Room", exact: true });
+  await unknownRow.locator(".room-access-badge").first().hover();
+  await expect(
+    page
+      .locator("body > .tooltip-bubble.is-open")
+      .filter({ hasText: t("access.conditionsDescription") })
+  ).toHaveCount(1);
+  await expect(
+    page
+      .locator("body > .tooltip-bubble.is-open")
+      .filter({ hasText: t("access.restrictedNoUsableConditionsDescription") })
+  ).toHaveCount(0);
+
+  // The ordinary restricted room keeps the membership explanation.
+  const conditionalRow = rooms.getByRole("button", { name: "Conditional Room", exact: true });
+  await conditionalRow.locator(".room-access-badge").first().hover();
+  await expect(
+    page
+      .locator("body > .tooltip-bubble.is-open")
+      .filter({ hasText: t("access.conditionsDescription") })
+  ).toHaveCount(1);
 });

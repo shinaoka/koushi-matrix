@@ -38,7 +38,12 @@ import type {
 } from "../domain/types";
 import { focusedTimelineKey, roomTimelineKey } from "../domain/coreEvents";
 import { invitePreviewLabel } from "../domain/roomDisplayLabel";
-import { roomAccessHeaderBadges, roomAccessIndicator, ROOM_ACCESS_CHECKING, sidebarRoomJoinRule } from "../domain/accessCondition";
+import {
+  ROOM_ACCESS_CHECKING,
+  roomAccessHeaderBadges,
+  roomAccessIndicator,
+  sidebarRoomAccess
+} from "../domain/accessCondition";
 import {
   ICON_SIZE,
   avatarInitial,
@@ -829,8 +834,11 @@ export function TimelinePane({
     : null;
   // #1166: the header shows the active room's own access condition, from the
   // same Rust projection the room list uses.
-  const headerAccess = timelineRoomId
-    ? roomAccessIndicator(sidebarRoomJoinRule(snapshot.sidebar, timelineRoomId)) ??
+  const headerRoomAccess = timelineRoomId
+    ? sidebarRoomAccess(snapshot.sidebar, timelineRoomId)
+    : null;
+  const headerAccess = headerRoomAccess
+    ? roomAccessIndicator(headerRoomAccess.joinRule, headerRoomAccess.restricted) ??
       ROOM_ACCESS_CHECKING
     : null;
   const liveLatestEventId = roomLatestDisplayEventId(activeRoom?.latest_event);

@@ -1281,7 +1281,7 @@ function RoomButton({
   // projected the row says so instead of guessing. Lanes that have no joined
   // condition (invitations, not-joined) render none.
   const access =
-    roomAccessIndicator(room.access_join_rule) ??
+    roomAccessIndicator(room.access_join_rule, room.access_restricted_conditions) ??
     (kind === "room" || kind === "dm" ? ROOM_ACCESS_CHECKING : null);
   const roomLabel = roomListItemLabel(room);
   // #1166: the condition is announced as the row's *description*, so the row's

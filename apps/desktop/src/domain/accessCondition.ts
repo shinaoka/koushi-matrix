@@ -1,5 +1,5 @@
 import type { MessageId } from "../i18n/messages";
-import type { RoomJoinRule } from "./types";
+import type { RestrictedConditions, RoomJoinRule } from "./types";
 
 /**
  * #1166: the access-condition vocabulary shared by the room list, the room
@@ -39,8 +39,14 @@ export type RoomAccessIndicator = {
  * a recognized condition.
  */
 export function roomAccessIndicator(
-  rule: RoomJoinRule | null | undefined
+  rule: RoomJoinRule | null | undefined,
+  restricted?: RestrictedConditions | null
 ): RoomAccessIndicator | null {
+  // #1166: a restricted rule with no usable allow condition still classifies as
+  // restricted, but its explanation must say an invitation is required. An
+  // allow-rule type the client does not model keeps the generic explanation:
+  // the absence of a usable condition is not confirmed.
+  const noUsableConditions = restricted === "noneUsable";
   switch (rule) {
     case "public":
       return {
@@ -63,10 +69,14 @@ export function roomAccessIndicator(
         badges: [
           {
             labelMessageId: "access.conditionsApply",
-            descriptionMessageId: "access.conditionsDescription"
+            descriptionMessageId: noUsableConditions
+              ? "access.restrictedNoUsableConditionsDescription"
+              : "access.conditionsDescription"
           }
         ],
-        descriptionMessageId: "access.conditionsDescription"
+        descriptionMessageId: noUsableConditions
+          ? "access.restrictedNoUsableConditionsDescription"
+          : "access.conditionsDescription"
       };
     case "knock":
       return {
@@ -89,14 +99,18 @@ export function roomAccessIndicator(
         badges: [
           {
             labelMessageId: "access.conditionsApply",
-            descriptionMessageId: "access.conditionsRouteDescription"
+            descriptionMessageId: noUsableConditions
+              ? "access.restrictedNoUsableConditionsDescription"
+              : "access.conditionsRouteDescription"
           },
           {
             labelMessageId: "access.canRequest",
             descriptionMessageId: "access.requestRouteDescription"
           }
         ],
-        descriptionMessageId: "access.knockRestrictedDescription"
+        descriptionMessageId: noUsableConditions
+          ? "access.restrictedNoUsableConditionsCanRequestDescription"
+          : "access.knockRestrictedDescription"
       };
     case "private":
     case "unknown":
@@ -155,23 +169,35 @@ export function roomAccessHeaderBadges(
  * The projected access condition of a room in the sidebar model, across every
  * list a room can appear in. `null` means it was not projected.
  */
-export function sidebarRoomJoinRule(
+export function sidebarRoomAccess(
   sidebar: {
-    space_rooms: readonly { room_id: string; access_join_rule?: RoomJoinRule | null }[];
-    global_dms: readonly { room_id: string; access_join_rule?: RoomJoinRule | null }[];
+    space_rooms: readonly {
+      room_id: string;
+      access_join_rule?: RoomJoinRule | null;
+      access_restricted_conditions?: RestrictedConditions | null;
+    }[];
+    global_dms: readonly {
+      room_id: string;
+      access_join_rule?: RoomJoinRule | null;
+      access_restricted_conditions?: RestrictedConditions | null;
+    }[];
     not_joined_space_rooms: readonly {
       room_id: string;
       access_join_rule?: RoomJoinRule | null;
+      access_restricted_conditions?: RestrictedConditions | null;
     }[];
   },
   roomId: string
-): RoomJoinRule | null {
+): { joinRule: RoomJoinRule | null; restricted: RestrictedConditions | null } {
   const row = [
     ...sidebar.space_rooms,
     ...sidebar.global_dms,
     ...sidebar.not_joined_space_rooms
   ].find((item) => item.room_id === roomId);
-  return row?.access_join_rule ?? null;
+  return {
+    joinRule: row?.access_join_rule ?? null,
+    restricted: row?.access_restricted_conditions ?? null
+  };
 }
 
 /**

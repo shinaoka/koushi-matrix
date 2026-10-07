@@ -20,6 +20,8 @@ export type MessageId =
   | "access.checkingDescription"
   | "access.labelSeparator"
   | "access.conditionSummarySeparator"
+  | "access.restrictedNoUsableConditionsDescription"
+  | "access.restrictedNoUsableConditionsCanRequestDescription"
   | "help.title"
   | "help.askAi"
   | "help.copyRepositoryUrl"
@@ -1796,6 +1798,10 @@ const en: Catalog = {
   "access.checkingDescription": "Join conditions are not available yet.",
   "access.labelSeparator": ", ",
   "access.conditionSummarySeparator": " — ",
+  "access.restrictedNoUsableConditionsDescription":
+    "No usable conditions allow joining without an invitation. An invitation is required to join.",
+  "access.restrictedNoUsableConditionsCanRequestDescription":
+    "No usable conditions allow joining without an invitation. Others can request an invitation or accept one.",
   "help.title": "Koushi Help",
   "help.askAi": "Copy this GitHub URL and ask ChatGPT or another AI assistant how to use Koushi. Include your Koushi version, operating system, and question.",
   "help.copyRepositoryUrl": "Copy GitHub URL",
@@ -3504,6 +3510,10 @@ const ja: Catalog = {
   "access.checkingDescription": "参加条件をまだ確認できません。",
   "access.labelSeparator": "、",
   "access.conditionSummarySeparator": " — ",
+  "access.restrictedNoUsableConditionsDescription":
+    "招待なしで参加できる条件がないため、参加には招待が必要です。",
+  "access.restrictedNoUsableConditionsCanRequestDescription":
+    "招待なしで参加できる条件がないため、それ以外は参加を申請するか、招待を受ける必要があります。",
   "help.title": "Koushiのヘルプ",
   "help.askAi": "このGitHub URLをコピーして、ChatGPTなどのAIにKoushiの使い方を質問してください。利用バージョン、OS、知りたいことを添えてください。",
   "help.copyRepositoryUrl": "GitHub URLをコピー",
