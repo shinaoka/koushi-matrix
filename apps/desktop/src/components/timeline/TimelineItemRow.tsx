@@ -179,10 +179,12 @@ function messageSelectionWithin(element: HTMLElement): string | undefined {
 
 /// The rendered plain text of a selection, with the message body's line breaks.
 ///
-/// The body renders a newline as a `<br>`; `Range.toString()` concatenates text
-/// nodes only, so it would drop every line break and Copy would not reproduce
-/// what the user sees. Block-level markup (lists, code fences) keeps its own
-/// text without an added separator.
+/// The body renders a newline as a `<br>` and formatted messages render
+/// paragraphs and list items as block elements; `Range.toString()` concatenates
+/// text nodes only, so it would drop every line break and Copy would not
+/// reproduce what the user sees. Both boundaries become "\n" on a detached
+/// clone, the live DOM is never touched, and no trailing newline is invented:
+/// a boundary is inserted only before a block that has something preceding it.
 function selectedRangeText(selection: Selection): string {
   const parts: string[] = [];
   for (let index = 0; index < selection.rangeCount; index += 1) {
@@ -190,6 +192,13 @@ function selectedRangeText(selection: Selection): string {
     fragment.querySelectorAll("br").forEach((lineBreak) => {
       lineBreak.replaceWith(document.createTextNode("\n"));
     });
+    fragment
+      .querySelectorAll("p, li, pre, blockquote, h1, h2, h3, h4, h5, h6, tr")
+      .forEach((block) => {
+        if (block.previousSibling) {
+          block.before(document.createTextNode("\n"));
+        }
+      });
     parts.push(fragment.textContent ?? "");
   }
   return parts.join("\n");

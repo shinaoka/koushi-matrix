@@ -665,6 +665,50 @@ test("selected text copies multi-line text exactly, whitespace included (#1155)"
   );
 });
 
+test("formatted paragraphs copy with their line boundary (#1155)", async ({ page }) => {
+  await installClipboardStub(page);
+  await gotoReadyShell(page);
+  const eventId = "$selection-formatted:example.invalid";
+  await seedTimelineItems(page, [
+    makeEventItem(eventId, {
+      body: "First paraSecond para",
+      can_edit: false,
+      formatted: {
+        html: "<p>First para</p><p>Second para</p>",
+        plain_text: "First para\n\nSecond para",
+        code_blocks: []
+      }
+    })
+  ]);
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  await expect(article).toBeVisible();
+  await expect(article.getByText("First para", { exact: true })).toBeVisible();
+
+  await page.evaluate((id) => {
+    const scope = document.querySelector(`[data-event-id="${id}"]`);
+    const body = scope?.querySelector(".message-body");
+    const paragraphs = body?.querySelectorAll("p");
+    const first = paragraphs?.[0]?.firstChild;
+    const second = paragraphs?.[1]?.firstChild;
+    if (!first || !second) throw new Error("formatted paragraphs missing");
+    const range = document.createRange();
+    range.setStart(first, 0);
+    range.setEnd(second, second.textContent?.length ?? 0);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, eventId);
+
+  await article.click({ button: "right" });
+  await page.getByRole("menuitem", { name: t("context.copySelectedText") }).click();
+
+  // Without a block boundary this would copy "First paraSecond para".
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(
+    "First para\nSecond para"
+  );
+});
+
 test("a whitespace-only selection offers no selection actions (#1155)", async ({ page }) => {
   await installClipboardStub(page);
   await gotoReadyShell(page);
