@@ -908,7 +908,12 @@ impl StoreActor {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
             Err(_) => false,
         };
-        if credential_deleted && directory_deleted {
+        // A sign-in that never reached promotion (device cleanup or reset from
+        // the verification gate) still has its bound pending-login record.
+        // Its root is gone now, and a live record without a root fails every
+        // later journal validation, blocking all further sign-ins.
+        let journal_released = self.pending_login_owner().complete_bound(key_id).is_ok();
+        if credential_deleted && directory_deleted && journal_released {
             Ok(())
         } else {
             Err(AccountCleanupIncomplete)

@@ -2222,7 +2222,9 @@ impl TimelineManagerActor {
 
         trace("build_begin");
         let build_started = Some(startup_trace::now());
-        let timeline_result = koushi_timeline_builder(&room, focus).build().await;
+        let timeline_result = self
+            .await_driving_send_enqueue_workers(koushi_timeline_builder(&room, focus).build())
+            .await;
         startup_trace::trace_phase(StartupPhase::TimelineBuild, build_started);
         trace("build_done");
 
@@ -2247,7 +2249,15 @@ impl TimelineManagerActor {
                 };
                 let root_event_id = matrix_sdk::ruma::EventId::parse(root_event_id)
                     .map_err(|_| TimelineFailureKind::Sdk)?;
-                if !hydrate_initial_thread(&timeline, &client, &room_id, &root_event_id).await? {
+                if !self
+                    .await_driving_send_enqueue_workers(hydrate_initial_thread(
+                        &timeline,
+                        &client,
+                        &room_id,
+                        &root_event_id,
+                    ))
+                    .await?
+                {
                     return Err(TimelineFailureKind::Sdk);
                 }
             }

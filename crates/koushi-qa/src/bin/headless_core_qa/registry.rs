@@ -602,11 +602,12 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "gate_recovery_retry_ready=ok",
             "gate_recovery_cancel_retryable=ok",
             "gate_recovery_cancel_retry_ready=ok",
-            "gate_trust_loss_locked=ok",
+            "gate_trust_loss_regated=ok",
             "gate_trust_loss_commands_blocked=ok",
         ],
         QaStage::GateNoProof => &[
-            "gate_no_proof_rejected=ok",
+            "gate_no_proof_cleanup_offered=ok",
+            "gate_no_proof_commands_blocked=ok",
             "gate_no_proof_restart_signed_out=ok",
         ],
         QaStage::UserVerification => &[
