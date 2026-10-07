@@ -1087,7 +1087,7 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
     .await
     .map_err(|e| format!("cache_restore: submit login failed: {e}"))?;
 
-    complete_new_identity_gate_for_qa(&mut conn, &config.password_a, "cache-restore-gate").await?;
+    complete_new_identity_gate_for_qa(&mut conn, &config.password_a).await?;
 
     let account_key = wait_for_logged_in(&mut conn, login_id, "cache_restore login").await?;
     wait_for_ready_snapshot(&mut conn, "cache_restore Ready").await?;
