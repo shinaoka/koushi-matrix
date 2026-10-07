@@ -466,7 +466,7 @@ impl TimelineActor {
         // coordinator: known SDK ids atomically replace their client fallback;
         // while a registration is still unbound, hide the overtaking SDK row
         // for this batch and keep the already-visible client fallback.
-        let incoming_transaction_ids = core_diffs
+        let incoming_items = core_diffs
             .iter()
             .flat_map(|diff| match diff {
                 TimelineDiff::PushFront { item }
@@ -476,6 +476,9 @@ impl TimelineActor {
                 TimelineDiff::Reset { items } => items.iter().collect(),
                 _ => Vec::new(),
             })
+            .collect::<Vec<_>>();
+        let incoming_transaction_ids = incoming_items
+            .iter()
             .filter_map(|item| match &item.id {
                 koushi_protocol::event::TimelineItemId::Transaction { transaction_id } => {
                     Some(transaction_id.clone())
@@ -493,7 +496,14 @@ impl TimelineActor {
                 pending_display_inputs_for_incoming_transactions(
                     &projections,
                     &incoming_transaction_ids,
-                    coordinator.settled_transaction_ids(self.key.room_id()),
+                    coordinator.settled_transaction_ids(
+                        self.key.room_id(),
+                        &super::outbound_send::canonical_event_ids(
+                            self.navigation_items
+                                .iter()
+                                .chain(incoming_items.iter().copied()),
+                        ),
+                    ),
                 )
             };
             self.overlay_reply_quotes_on_pending(&mut pending_items, &batch.originals);
@@ -693,7 +703,10 @@ impl TimelineActor {
                 self.send_completion
                     .lock()
                     .expect("send completion coordinator lock must not be poisoned")
-                    .settled_transaction_ids(self.key.room_id()),
+                    .settled_transaction_ids(
+                        self.key.room_id(),
+                        &super::outbound_send::canonical_event_ids(&self.navigation_items),
+                    ),
             );
             self.display_projection
                 .set_pending_inputs(pending_items, suppressed);

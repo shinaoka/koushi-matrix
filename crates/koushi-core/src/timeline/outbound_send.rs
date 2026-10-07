@@ -463,6 +463,19 @@ pub(super) fn pending_send_item(
     }
 }
 
+/// Remote event ids that have a canonical row among `items`.
+pub(super) fn canonical_event_ids<'a>(
+    items: impl IntoIterator<Item = &'a TimelineItem>,
+) -> HashSet<String> {
+    items
+        .into_iter()
+        .filter_map(|item| match &item.id {
+            TimelineItemId::Event { event_id } => Some(event_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 type SendEnqueueWorkerFuture =
     Pin<Box<dyn Future<Output = SendEnqueueWorkerCompletion> + Send + 'static>>;
 
@@ -2013,10 +2026,9 @@ impl TimelineActor {
                         .send_completion
                         .lock()
                         .expect("send completion coordinator lock must not be poisoned");
-                    // The send queue's local-echo update is not a Timeline slot. The direct
-                    // route publishes its manager-owned projection and waits for the actor ACK
-                    // before starting the SDK send, so it is now safe to retire that fallback;
-                    // a canonical transaction is reconciled in relay.rs after its batch commits.
+                    // The send queue's local-echo update is not a Timeline slot, so it does not
+                    // retire the manager-owned fallback. A canonical transaction is reconciled
+                    // in relay.rs after its batch commits.
                     coordinator.observe_local_echo(self.key.room_id(), &sdk_transaction_id);
                 }
                 remember_local_echo(&mut self.send_statuses, &mut self.send_handles, &echo);
@@ -2398,8 +2410,9 @@ pub(super) struct SendCompletionCoordinator {
     retained_projections: HashMap<SendCorrelationKey, RetainedPendingProjection>,
     hydrated_projection_order: VecDeque<SendCorrelationKey>,
     unmatched_terminals: HashMap<SendCorrelationKey, VecDeque<ObservedSendTerminal>>,
-    unmatched_local_echoes: HashSet<SendCorrelationKey>,
     settled_send_tombstones: HashSet<SendCorrelationKey>,
+    /// Remote event id of each tombstoned send that was delivered.
+    settled_send_event_ids: HashMap<SendCorrelationKey, String>,
     settled_send_order: VecDeque<SendCorrelationKey>,
 }
 
@@ -3028,14 +3041,31 @@ impl SendCompletionCoordinator {
         if let Some(mut retained) = self.retained_projections.remove(&correlation) {
             retained.lifecycle_trace.stage_once("remote_echo_converged");
         }
-        self.remember_settled(correlation);
+        self.remember_settled(correlation.clone());
+        self.settled_send_event_ids
+            .insert(correlation, event_id.to_owned());
         Some(key)
     }
 
-    pub(super) fn settled_transaction_ids(&self, room_id: &str) -> HashSet<String> {
+    /// SDK transaction rows of settled sends that the display must hide.
+    ///
+    /// A delivered send's SDK row is hidden only once its remote event has a
+    /// canonical row (`canonical_event_ids`): until the SDK re-identifies its
+    /// local echo, that transaction row is the only row showing the message.
+    /// A send that settled without delivery (cancelled) is always hidden.
+    pub(super) fn settled_transaction_ids(
+        &self,
+        room_id: &str,
+        canonical_event_ids: &HashSet<String>,
+    ) -> HashSet<String> {
         self.settled_send_tombstones
             .iter()
             .filter(|correlation| correlation.room_id == room_id)
+            .filter(|correlation| {
+                self.settled_send_event_ids
+                    .get(*correlation)
+                    .is_none_or(|event_id| canonical_event_ids.contains(event_id))
+            })
             .map(|correlation| correlation.sdk_transaction_id.clone())
             .collect()
     }
@@ -3080,15 +3110,12 @@ impl SendCompletionCoordinator {
         if self.settled_send_tombstones.contains(&correlation) {
             return None;
         }
+        // The send queue reports its echo on a stream separate from the
+        // Timeline diff that renders it, so this is not proof that the message
+        // is on screen. Only `reconcile_canonical_local_echo` may let a Sent
+        // terminal retire the fallback row.
         if let Some(pending) = self.pending_sends.get_mut(&correlation) {
-            pending.local_echo_observed = true;
-            pending.lifecycle_trace.stage("local_echo_observed");
-            return None;
-        }
-        if self.room_has_active_registration(room_id)
-            && self.unmatched_local_echoes.len() < MAX_PENDING_SEND_PROJECTIONS
-        {
-            self.unmatched_local_echoes.insert(correlation);
+            pending.lifecycle_trace.stage("send_queue_echo_observed");
         }
         None
     }
@@ -3223,8 +3250,6 @@ impl SendCompletionCoordinator {
         }
         self.unmatched_terminals
             .retain(|correlation, _| correlation.room_id != room_id);
-        self.unmatched_local_echoes
-            .retain(|correlation| correlation.room_id != room_id);
     }
 
     fn remember_settled(&mut self, correlation: SendCorrelationKey) {
@@ -3235,6 +3260,7 @@ impl SendCompletionCoordinator {
         while self.settled_send_order.len() > MAX_SETTLED_SEND_TOMBSTONES {
             if let Some(expired) = self.settled_send_order.pop_front() {
                 self.settled_send_tombstones.remove(&expired);
+                self.settled_send_event_ids.remove(&expired);
             }
         }
     }
@@ -3262,7 +3288,6 @@ impl SendCompletionCoordinator {
             room_id: registration.key.room_id().to_owned(),
             sdk_transaction_id,
         };
-        let local_echo_observed_before_binding = self.unmatched_local_echoes.remove(&correlation);
         if self.settled_send_tombstones.contains(&correlation)
             || self.pending_sends.contains_key(&correlation)
         {
@@ -3279,12 +3304,6 @@ impl SendCompletionCoordinator {
                 transaction_id: correlation.sdk_transaction_id.clone(),
             };
             projection.handle = handle;
-        }
-        if local_echo_observed_before_binding {
-            registration.local_echo_observed = true;
-            registration
-                .lifecycle_trace
-                .stage_once("local_echo_observed");
         }
         self.pending_sends.insert(correlation.clone(), registration);
         let observed = self
@@ -3459,6 +3478,8 @@ impl SendCompletionCoordinator {
                     );
                 }
                 self.remember_settled(correlation.clone());
+                self.settled_send_event_ids
+                    .insert(correlation.clone(), event_id.clone());
                 self.purge_unmatched_for_inactive_room(&correlation.room_id);
                 let mut handoff = timeline_send_terminal_handoff(
                     &pending.key,

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use std::sync::{Arc, Mutex, atomic::Ordering};
 use std::task::Poll;
@@ -1765,12 +1765,184 @@ fn local_echo_before_sdk_bind_preserves_fallback_until_terminal() {
             event_id: "$event-prebind:test".to_owned(),
         },
     );
+    // A send-queue echo is not a rendered row: the fallback stays, now as the
+    // sent event, until a canonical row converges it.
+    let mut owner = coordinator.lock().expect("coordinator");
+    assert!(matches!(
+        owner.projections_for_key(&key).as_slice(),
+        [projection] if matches!(
+            &projection.item.id,
+            koushi_protocol::event::TimelineItemId::Event { event_id }
+                if event_id == "$event-prebind:test"
+        )
+    ));
+    assert_eq!(
+        owner.reconcile_remote_event(key.room_id(), "$event-prebind:test"),
+        Some(key.clone())
+    );
+    assert!(owner.projections_for_key(&key).is_empty());
+}
+
+#[test]
+fn send_queue_local_echo_alone_keeps_the_fallback_row_through_sent() {
+    // The send queue reports its local echo on a different stream than the
+    // Timeline diff that renders it. Only a canonical row may retire the
+    // manager-owned fallback; otherwise a Sent terminal that lands before the
+    // canonical echo leaves no row for the message on screen.
+    let coordinator = SharedSendCompletionCoordinator::default();
+    let (ingress, _terminal_rx) = TimelineSendTerminalIngress::channel();
+    let key = room_key();
+    let fallback = |client_txn_id: &str| PendingSendProjection {
+        key: key.clone(),
+        sequence: 0,
+        client_txn_id: client_txn_id.to_owned(),
+        item: pending_send_item(client_txn_id, "body", None, None, None),
+        sdk_transaction_id: None,
+        handle: None,
+        terminal_event_id: None,
+        phase: PendingSendPhase::Pending,
+    };
+    let sent = |sdk_transaction_id: &str, event_id: &str| SendCompletionObservation::Sent {
+        sdk_transaction_id: sdk_transaction_id.to_owned(),
+        event_id: event_id.to_owned(),
+    };
+
+    let mut queue_echo_only = SendCompletionRegistration::begin_with_projection(
+        Arc::clone(&coordinator),
+        ingress.clone(),
+        key.clone(),
+        "client-queue-echo".to_owned(),
+        None,
+        fake_rid(7411),
+        true,
+        Some(fallback("client-queue-echo")),
+    );
+    queue_echo_only.activate();
+    queue_echo_only.bind("sdk-queue-echo".to_owned());
+    assert_eq!(
+        coordinator
+            .lock()
+            .expect("coordinator")
+            .observe_local_echo(key.room_id(), "sdk-queue-echo"),
+        None
+    );
+    apply_send_completion_observation_and_handoff(
+        &coordinator,
+        &ingress,
+        key.room_id(),
+        sent("sdk-queue-echo", "$queue-echo:test"),
+    );
+    {
+        let mut owner = coordinator.lock().expect("coordinator");
+        let visible = owner.projections_for_key(&key);
+        assert!(
+            matches!(visible.as_slice(), [projection] if matches!(
+                &projection.item.id,
+                koushi_protocol::event::TimelineItemId::Event { event_id }
+                    if event_id == "$queue-echo:test"
+            )),
+            "the fallback must stay visible until a canonical row exists"
+        );
+        assert_eq!(
+            owner.reconcile_remote_event(key.room_id(), "$queue-echo:test"),
+            Some(key.clone())
+        );
+        assert!(owner.projections_for_key(&key).is_empty());
+    }
+
+    let mut canonical_echo = SendCompletionRegistration::begin_with_projection(
+        Arc::clone(&coordinator),
+        ingress.clone(),
+        key.clone(),
+        "client-canonical-echo".to_owned(),
+        None,
+        fake_rid(7412),
+        true,
+        Some(fallback("client-canonical-echo")),
+    );
+    canonical_echo.activate();
+    canonical_echo.bind("sdk-canonical-echo".to_owned());
+    assert_eq!(
+        coordinator
+            .lock()
+            .expect("coordinator")
+            .reconcile_canonical_local_echo(key.room_id(), "sdk-canonical-echo"),
+        Some(key.clone())
+    );
+    apply_send_completion_observation_and_handoff(
+        &coordinator,
+        &ingress,
+        key.room_id(),
+        sent("sdk-canonical-echo", "$canonical-echo:test"),
+    );
     assert!(
         coordinator
             .lock()
             .expect("coordinator")
             .projections_for_key(&key)
-            .is_empty()
+            .is_empty(),
+        "a canonical echo already renders the message, so the fallback retires"
+    );
+}
+
+#[test]
+fn settled_sdk_row_stays_visible_until_its_remote_event_is_canonical() {
+    // After Sent, the SDK local-echo row is still a transaction row until the
+    // Timeline re-identifies it. Hiding it at Sent left the message with no row
+    // when the fallback had already been retired by that canonical echo.
+    let coordinator = SharedSendCompletionCoordinator::default();
+    let (ingress, _terminal_rx) = TimelineSendTerminalIngress::channel();
+    let key = room_key();
+    let mut registration = SendCompletionRegistration::begin_with_projection(
+        Arc::clone(&coordinator),
+        ingress.clone(),
+        key.clone(),
+        "client-settled".to_owned(),
+        None,
+        fake_rid(7413),
+        true,
+        Some(PendingSendProjection {
+            key: key.clone(),
+            sequence: 0,
+            client_txn_id: "client-settled".to_owned(),
+            item: pending_send_item("client-settled", "body", None, None, None),
+            sdk_transaction_id: None,
+            handle: None,
+            terminal_event_id: None,
+            phase: PendingSendPhase::Pending,
+        }),
+    );
+    registration.activate();
+    registration.bind("sdk-settled".to_owned());
+    assert_eq!(
+        coordinator
+            .lock()
+            .expect("coordinator")
+            .reconcile_canonical_local_echo(key.room_id(), "sdk-settled"),
+        Some(key.clone())
+    );
+    apply_send_completion_observation_and_handoff(
+        &coordinator,
+        &ingress,
+        key.room_id(),
+        SendCompletionObservation::Sent {
+            sdk_transaction_id: "sdk-settled".to_owned(),
+            event_id: "$settled:test".to_owned(),
+        },
+    );
+    let owner = coordinator.lock().expect("coordinator");
+    assert!(owner.projections_for_key(&key).is_empty());
+    assert!(
+        owner
+            .settled_transaction_ids(key.room_id(), &HashSet::new())
+            .is_empty(),
+        "the SDK transaction row is the only row for the message"
+    );
+    let canonical = HashSet::from(["$settled:test".to_owned()]);
+    assert_eq!(
+        owner.settled_transaction_ids(key.room_id(), &canonical),
+        HashSet::from(["sdk-settled".to_owned()]),
+        "a stale transaction row is hidden once the remote event is canonical"
     );
 }
 
