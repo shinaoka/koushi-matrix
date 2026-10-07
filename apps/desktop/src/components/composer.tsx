@@ -840,7 +840,7 @@ export const Composer = memo(function Composer({
         </p>
       ) : null}
       {scheduledSendPersistenceFailed ? (
-        <p className="composer-notice composer-notice-warning" role="status">
+        <p className="composer-notice" role="status">
           {t("scheduled.persistenceFailed")}
         </p>
       ) : null}

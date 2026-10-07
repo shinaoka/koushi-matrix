@@ -393,13 +393,9 @@ export const SCHEDULED_SEND_PERSISTENCE_FAILED_CODE = "scheduled_send_persistenc
  * but not on disk, so it may not survive a restart.
  */
 export function hasScheduledSendPersistenceFailure(
-  errors: readonly { code: string }[] | undefined
+  errors: readonly { code: string }[]
 ): boolean {
-  // A snapshot without the list (older/hand-built fixtures) simply has no
-  // recorded failure; reading it must not throw during render.
-  return (
-    errors?.some((error) => error.code === SCHEDULED_SEND_PERSISTENCE_FAILED_CODE) ?? false
-  );
+  return errors.some((error) => error.code === SCHEDULED_SEND_PERSISTENCE_FAILED_CODE);
 }
 
 export function scheduledSendTimestampFromInput(value: string): number | null {

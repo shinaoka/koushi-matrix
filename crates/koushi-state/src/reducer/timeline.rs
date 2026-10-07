@@ -10,7 +10,7 @@ use crate::{
 
 use super::{
     is_session_ready, refresh_timeline_media_gallery, refresh_timeline_scheduled_sends,
-    refresh_timeline_upload_staging, room_exists,
+    refresh_timeline_upload_staging, room_exists, withdraw_scheduled_send_persistence_failure,
 };
 
 const TIMELINE_SUBSCRIPTION_FAILED_MESSAGE: &str = "Matrix timeline subscription failed";
@@ -49,14 +49,9 @@ pub(crate) fn handle_scheduled_send_persisted(state: &mut AppState) -> Vec<AppEf
     }
     // A successful write saves the whole store, so the earlier failure is
     // resolved. Other codes are untouched (#1159).
-    let previous_len = state.errors.len();
-    state
-        .errors
-        .retain(|error| error.code != SCHEDULED_SEND_PERSISTENCE_FAILED);
-    if state.errors.len() == previous_len {
-        return Vec::new();
-    }
-    vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
+    withdraw_scheduled_send_persistence_failure(state)
+        .into_iter()
+        .collect()
 }
 
 pub(crate) fn handle_timeline_subscribed(state: &mut AppState, room_id: String) -> Vec<AppEffect> {
