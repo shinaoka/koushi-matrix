@@ -1786,8 +1786,10 @@ tokens, paths, or raw errors.
   longer `Ready` — which covers `sync_failed_auth` and unsupported sliding-sync
   revalidation — or when the captured Space no longer exists or is no longer the
   active scope, before membership is derived. Room selection/clearing, Home/Space
-  selection, and a successful directory join close it explicitly. The renderer
-  keeps no copy and the backing queue itself is still never serialized.
+  selection, a successful directory join, and an automatic room clear — including
+  the active room losing its last child edge in the captured Space with no
+  replacement room — close it explicitly. The renderer keeps no copy and the
+  backing queue itself is still never serialized.
 - Each scheduled item carries its room plus an optional thread root. A room
   item clears only the captured room draft; a thread item clears only the
   captured `(room_id, root_event_id)` draft and open thread composer. Both the

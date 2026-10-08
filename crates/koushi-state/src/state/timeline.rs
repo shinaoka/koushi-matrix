@@ -843,11 +843,23 @@ impl ScheduledSendStore {
             .filter(|item| item.room_id == room_id)
             .cloned()
             .collect::<Vec<_>>();
-        items.sort_by(|left, right| {
-            left.send_at_ms
-                .cmp(&right.send_at_ms)
-                .then_with(|| left.scheduled_id.cmp(&right.scheduled_id))
-        });
+        items.sort_by(scheduled_send_order);
+        items
+    }
+
+    /// The #1160 scoped-panel projection: every item when `room_ids` is `None`
+    /// (Home), otherwise the items whose room is in the derived membership set.
+    pub(crate) fn items_for_rooms(
+        &self,
+        room_ids: Option<&BTreeSet<String>>,
+    ) -> Vec<ScheduledSendItem> {
+        let mut items = self
+            .items
+            .values()
+            .filter(|item| room_ids.is_none_or(|ids| ids.contains(item.room_id.as_str())))
+            .cloned()
+            .collect::<Vec<_>>();
+        items.sort_by(scheduled_send_order);
         items
     }
 
@@ -955,6 +967,13 @@ impl fmt::Debug for ScheduledSendStore {
     }
 }
 
+/// The shared scheduled-send ordering: `send_at_ms`, then `scheduled_id`.
+fn scheduled_send_order(left: &ScheduledSendItem, right: &ScheduledSendItem) -> std::cmp::Ordering {
+    left.send_at_ms
+        .cmp(&right.send_at_ms)
+        .then_with(|| left.scheduled_id.cmp(&right.scheduled_id))
+}
+
 /// The account (Home) or Space scope the scheduled-sends panel captured when it
 /// opened (#1160). Narrower than [`crate::ThreadsListScope`]:
 /// no `Room` variant and no scope-key encoding, because the projection is
@@ -997,39 +1016,6 @@ pub enum ScheduledSendsListState {
         capability: ScheduledSendCapability,
         items: Vec<ScheduledSendItem>,
     },
-}
-
-impl ScheduledSendsListState {
-    pub fn items(&self) -> &[ScheduledSendItem] {
-        match self {
-            Self::Open { items, .. } => items,
-            Self::Closed => &[],
-        }
-    }
-}
-
-/// Project the account store into the scope's room set, ordered by `send_at_ms`
-/// then `scheduled_id` exactly like [`ScheduledSendStore::items_for_room`].
-///
-/// `room_ids` is `None` for the Home scope (every item) and the sidebar's
-/// membership set for a Space scope. Filtering the backing map's values already
-/// yields each reservation once, so no deduplication pass is needed.
-pub fn sorted_scheduled_sends_for_rooms(
-    store: &ScheduledSendStore,
-    room_ids: Option<&BTreeSet<String>>,
-) -> Vec<ScheduledSendItem> {
-    let mut items = store
-        .items
-        .values()
-        .filter(|item| room_ids.is_none_or(|ids| ids.contains(item.room_id.as_str())))
-        .cloned()
-        .collect::<Vec<_>>();
-    items.sort_by(|left, right| {
-        left.send_at_ms
-            .cmp(&right.send_at_ms)
-            .then_with(|| left.scheduled_id.cmp(&right.scheduled_id))
-    });
-    items
 }
 
 #[derive(Clone, Eq, PartialEq)]

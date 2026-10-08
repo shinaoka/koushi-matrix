@@ -109,10 +109,9 @@ fn scheduled_sends_list_forwarded_delta_covers_open_closed_and_omission() {
     );
 
     // Unchanged slice stays out of the delta even when another UI field changes.
-    let previous = {
-        let mut state = AppState::default();
-        state.scheduled_sends_list = open.clone();
-        state
+    let previous = AppState {
+        scheduled_sends_list: open.clone(),
+        ..AppState::default()
     };
     let mut next = previous.clone();
     next.navigation.active_room_id = Some("!other:example.invalid".to_owned());

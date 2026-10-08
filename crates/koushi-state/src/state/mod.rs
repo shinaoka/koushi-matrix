@@ -243,8 +243,8 @@ pub use timeline::{
     TimelineContinuityInspection, TimelineContinuityState, TimelineGapRepairFailureKind,
     TimelineMediaGalleryItem, TimelineMediaGalleryMedia, TimelineMediaGallerySource,
     TimelineMediaGalleryThumbnail, TimelineMediaKind, TimelinePaneState, UploadStagingStore,
-    sorted_scheduled_sends_for_rooms, staged_upload_item_with_completed_output,
-    staged_upload_send_consumes_composer_draft, staged_uploads_are_sendable,
+    staged_upload_item_with_completed_output, staged_upload_send_consumes_composer_draft,
+    staged_uploads_are_sendable,
 };
 
 // ── Re-exports: thread ──────────────────────────────────────────────────────

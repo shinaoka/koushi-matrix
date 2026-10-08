@@ -5,9 +5,9 @@ use crate::{
         AccountManagementCapabilities, AccountManagementState, ActivityState, AppState,
         DirectoryState, E2eeKeyManagementState, E2eeTrustState, FilesViewState,
         FocusedContextState, InviteWorkflowState, LocalEncryptionState, NavigationState,
-        QrLoginState, SearchState, SessionState, SoftLogoutReauthState, SpaceConversationSurface,
-        SpaceNavigationSelection, ThreadAttentionState, ThreadPaneState, ThreadsListState,
-        TimelinePaneState, VerificationFlowState, compute_room_list_projection,
+        QrLoginState, ScheduledSendsListState, SearchState, SessionState, SoftLogoutReauthState,
+        SpaceConversationSurface, SpaceNavigationSelection, ThreadAttentionState, ThreadPaneState,
+        ThreadsListState, TimelinePaneState, VerificationFlowState, compute_room_list_projection,
     },
 };
 
@@ -2471,6 +2471,12 @@ pub(crate) fn retarget_active_room_for_selected_space(
             state.thread = ThreadPaneState::Closed;
             state.thread_attention = ThreadAttentionState::Closed;
             state.timeline = Default::default();
+            // #1160: the active room left the selected Space and no replacement
+            // room exists, so an automatic room clear is retiring the room
+            // context. Close the scoped scheduled-sends panel like the
+            // room-disappeared path in room.rs rather than keeping its
+            // body-bearing items open.
+            state.scheduled_sends_list = ScheduledSendsListState::Closed;
             effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
                 room_id: previous_room_id,
             }));

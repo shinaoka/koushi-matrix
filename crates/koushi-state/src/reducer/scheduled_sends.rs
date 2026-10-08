@@ -10,9 +10,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     effect::AppEffect,
-    state::{
-        AppState, ScheduledSendsListState, ScheduledSendsScope, sorted_scheduled_sends_for_rooms,
-    },
+    state::{AppState, ScheduledSendsListState, ScheduledSendsScope},
 };
 
 use super::is_session_ready;
@@ -96,7 +94,7 @@ fn refresh_scheduled_sends_list(state: &mut AppState) {
             Some(scoped_membership_room_ids(state, space_id))
         }
     };
-    let items = sorted_scheduled_sends_for_rooms(&state.scheduled_sends, room_ids.as_ref());
+    let items = state.scheduled_sends.items_for_rooms(room_ids.as_ref());
     let capability = state.scheduled_sends.capability.clone();
     let next = ScheduledSendsListState::Open {
         scope: scope.clone(),

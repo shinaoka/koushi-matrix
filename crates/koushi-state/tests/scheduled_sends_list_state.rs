@@ -251,8 +251,11 @@ fn open_list_reflects_create_reschedule_cancel_and_dispatch_without_reopen() {
         },
     );
     assert_eq!(listed_ids(&state), vec!["sched-1"]);
-    assert_eq!(open_list(&state).items()[0].send_at_ms, 100);
-    assert_eq!(open_list(&state).items()[0].body, "rescheduled");
+    let ScheduledSendsListState::Open { items, .. } = open_list(&state) else {
+        panic!("expected an open list");
+    };
+    assert_eq!(items[0].send_at_ms, 100);
+    assert_eq!(items[0].body, "rescheduled");
 
     reduce(
         &mut state,
@@ -341,7 +344,10 @@ fn opening_outside_a_ready_session_is_rejected() {
 
 #[test]
 fn an_invalid_or_unknown_space_scope_is_rejected() {
-    let spaces = vec![space("!space:example.invalid", &["!room:example.invalid"])];
+    let spaces = vec![
+        space("!space:example.invalid", &["!room:example.invalid"]),
+        space("!other:example.invalid", &[]),
+    ];
     let rooms = vec![room("!room:example.invalid")];
     let mut state = ready_state(spaces, rooms);
     state.navigation.active_space_id = Some("!space:example.invalid".to_owned());
@@ -397,8 +403,10 @@ fn an_invalid_or_unknown_space_scope_is_rejected() {
     // A duplicate close is a no-op.
     let closed = reduce(&mut state, AppAction::CloseScheduledSendsList);
     assert!(closed.is_empty());
+    assert_eq!(state.scheduled_sends_list, ScheduledSendsListState::Closed);
     let closed_again = reduce(&mut state, AppAction::CloseScheduledSendsList);
     assert!(closed_again.is_empty());
+    assert_eq!(state.scheduled_sends_list, ScheduledSendsListState::Closed);
 }
 
 #[test]
@@ -578,6 +586,60 @@ fn an_automatic_removed_active_room_closes_the_projection() {
 }
 
 #[test]
+fn a_removed_child_edge_without_a_replacement_room_closes_the_projection() {
+    // Space S has room R as its only non-DM child, and DM D is assigned to S
+    // through the DM-space relation and carries a reservation. With R active
+    // and the S-scoped panel open, removing R's child edge from S leaves no
+    // replacement room, so the navigation retarget clears the active room.
+    // The projection must close with it instead of keeping D's body open.
+    let spaces = vec![space("!space:example.invalid", &["!room:example.invalid"])];
+    let rooms = vec![
+        room("!room:example.invalid"),
+        dm("!dm:example.invalid", &["!space:example.invalid"]),
+    ];
+    let mut state = ready_state(spaces, rooms);
+    state.navigation.active_space_id = Some("!space:example.invalid".to_owned());
+    state.navigation.active_room_id = Some("!room:example.invalid".to_owned());
+    state.timeline.room_id = Some("!room:example.invalid".to_owned());
+    state.scheduled_sends = ScheduledSendStore {
+        capability: ScheduledSendCapability::LocalFallback,
+        items: [
+            item("room-reservation", "!room:example.invalid", 100),
+            item("dm-reservation", "!dm:example.invalid", 100),
+        ]
+        .into_iter()
+        .map(|item| (item.scheduled_id.clone(), item))
+        .collect(),
+    };
+    open(
+        &mut state,
+        ScheduledSendsScope::Space {
+            space_id: "!space:example.invalid".to_owned(),
+        },
+    );
+    assert_eq!(
+        listed_ids(&state),
+        vec!["dm-reservation", "room-reservation"]
+    );
+
+    // R loses its child edge from S while R and D stay joined. S still exists
+    // and is still active, so the scope guard alone keeps the projection open.
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: vec![space("!space:example.invalid", &[])],
+            rooms: vec![
+                room("!room:example.invalid"),
+                dm("!dm:example.invalid", &["!space:example.invalid"]),
+            ],
+        },
+    );
+
+    assert_eq!(state.navigation.active_room_id, None);
+    assert_eq!(state.scheduled_sends_list, ScheduledSendsListState::Closed);
+}
+
+#[test]
 fn a_thread_root_marks_a_thread_reply() {
     let rooms = vec![room("!room-a:example.invalid")];
     let mut state = ready_state(Vec::new(), rooms);
@@ -674,11 +736,10 @@ fn a_room_removed_from_the_queue_closes_or_updates_without_stale_bodies() {
 }
 
 #[test]
-fn a_lock_reason_change_without_ready_session_closes_the_projection() {
+fn a_ready_preserving_status_change_keeps_the_projection_open() {
     let rooms = vec![room("!room-a:example.invalid")];
     let mut state = ready_state(Vec::new(), rooms);
     open(&mut state, ScheduledSendsScope::Home);
-    state.session = SessionState::Ready(session_info());
     // A plain status action that leaves the session Ready keeps the panel open.
     reduce(
         &mut state,
@@ -687,8 +748,172 @@ fn a_lock_reason_change_without_ready_session_closes_the_projection() {
             status: SyncLifecycleStatus::Running,
         },
     );
+    assert!(matches!(state.session, SessionState::Ready(_)));
     assert!(matches!(
         state.scheduled_sends_list,
         ScheduledSendsListState::Open { .. }
     ));
+}
+
+#[test]
+fn a_dm_reassignment_while_open_removes_it_without_closing() {
+    let spaces = vec![
+        space("!space:example.invalid", &["!room:example.invalid"]),
+        space("!other-space:example.invalid", &[]),
+    ];
+    let rooms = vec![
+        room("!room:example.invalid"),
+        dm("!dm:example.invalid", &["!space:example.invalid"]),
+    ];
+    let mut state = ready_state(spaces, rooms);
+    state.navigation.active_space_id = Some("!space:example.invalid".to_owned());
+    state.scheduled_sends = ScheduledSendStore {
+        capability: ScheduledSendCapability::LocalFallback,
+        items: [
+            item("dm-reservation", "!dm:example.invalid", 100),
+            item("room-reservation", "!room:example.invalid", 100),
+        ]
+        .into_iter()
+        .map(|item| (item.scheduled_id.clone(), item))
+        .collect(),
+    };
+    open(
+        &mut state,
+        ScheduledSendsScope::Space {
+            space_id: "!space:example.invalid".to_owned(),
+        },
+    );
+    assert_eq!(
+        listed_ids(&state),
+        vec!["dm-reservation", "room-reservation"]
+    );
+
+    // The DM stays joined but is reassigned to another Space, so it leaves this
+    // Space's membership. The list must drop its body while staying open.
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: vec![
+                space("!space:example.invalid", &["!room:example.invalid"]),
+                space("!other-space:example.invalid", &[]),
+            ],
+            rooms: vec![
+                room("!room:example.invalid"),
+                dm("!dm:example.invalid", &["!other-space:example.invalid"]),
+            ],
+        },
+    );
+
+    assert_eq!(listed_ids(&state), vec!["room-reservation"]);
+    assert!(matches!(
+        state.scheduled_sends_list,
+        ScheduledSendsListState::Open { .. }
+    ));
+}
+
+#[test]
+fn selecting_another_space_with_an_unchanged_room_closes_the_projection() {
+    let spaces = vec![
+        space("!space-a:example.invalid", &["!room:example.invalid"]),
+        space("!space-b:example.invalid", &["!room:example.invalid"]),
+    ];
+    let rooms = vec![
+        room("!room:example.invalid"),
+        dm("!dm:example.invalid", &["!space-a:example.invalid"]),
+    ];
+    let mut state = ready_state(spaces, rooms);
+    state.navigation.active_space_id = Some("!space-a:example.invalid".to_owned());
+    state.navigation.active_room_id = Some("!room:example.invalid".to_owned());
+    state.timeline.room_id = Some("!room:example.invalid".to_owned());
+    state
+        .scheduled_sends
+        .insert(item("dm-reservation", "!dm:example.invalid", 100));
+    open(
+        &mut state,
+        ScheduledSendsScope::Space {
+            space_id: "!space-a:example.invalid".to_owned(),
+        },
+    );
+    assert!(matches!(
+        state.scheduled_sends_list,
+        ScheduledSendsListState::Open { .. }
+    ));
+
+    // Both Spaces select the same room, so the room-selection helper is skipped
+    // (the active room does not change). The explicit Space-selection close must
+    // still fire.
+    reduce(
+        &mut state,
+        AppAction::SelectSpace {
+            space_id: Some("!space-b:example.invalid".to_owned()),
+        },
+    );
+
+    assert_eq!(
+        state.navigation.active_space_id.as_deref(),
+        Some("!space-b:example.invalid")
+    );
+    assert_eq!(
+        state.navigation.active_room_id.as_deref(),
+        Some("!room:example.invalid")
+    );
+    assert_eq!(state.scheduled_sends_list, ScheduledSendsListState::Closed);
+}
+
+#[test]
+fn a_successful_directory_join_closes_the_projection() {
+    let spaces = vec![space("!space:example.invalid", &["!room:example.invalid"])];
+    let rooms = vec![room("!room:example.invalid")];
+    let mut state = ready_state(spaces, rooms);
+    state.navigation.active_space_id = Some("!space:example.invalid".to_owned());
+    state
+        .scheduled_sends
+        .insert(item("sched", "!room:example.invalid", 100));
+    open(
+        &mut state,
+        ScheduledSendsScope::Space {
+            space_id: "!space:example.invalid".to_owned(),
+        },
+    );
+    assert!(matches!(
+        state.scheduled_sends_list,
+        ScheduledSendsListState::Open { .. }
+    ));
+
+    reduce(
+        &mut state,
+        AppAction::DirectoryJoinRequested {
+            request_id: 1,
+            room_id_or_alias: "#joined:example.invalid".to_owned(),
+            via_servers: Vec::new(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::DirectoryJoinSucceeded {
+            request_id: 1,
+            room_id: "!joined:example.invalid".to_owned(),
+        },
+    );
+
+    assert_eq!(state.scheduled_sends_list, ScheduledSendsListState::Closed);
+}
+
+#[test]
+fn central_logout_closes_the_open_projection() {
+    let rooms = vec![room("!room-a:example.invalid")];
+    let mut state = ready_state(Vec::new(), rooms);
+    state
+        .scheduled_sends
+        .insert(item("sched", "!room-a:example.invalid", 100));
+    open(&mut state, ScheduledSendsScope::Home);
+    assert!(matches!(
+        state.scheduled_sends_list,
+        ScheduledSendsListState::Open { .. }
+    ));
+
+    reduce(&mut state, AppAction::LogoutRequested);
+
+    assert!(matches!(state.session, SessionState::LoggingOut));
+    assert_eq!(state.scheduled_sends_list, ScheduledSendsListState::Closed);
 }
