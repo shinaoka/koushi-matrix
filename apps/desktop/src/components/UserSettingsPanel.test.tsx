@@ -5,7 +5,12 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { UserSettingsPanel } from "./UserSettingsPanel";
-import type { E2eeTrustState, ProfileState, RoomSummary } from "../domain/types";
+import type {
+  E2eeTrustState,
+  ProfileState,
+  RoomSummary,
+  SecureBackupGateState
+} from "../domain/types";
 import { t } from "../i18n/messages";
 
 describe("UserSettingsPanel", () => {
@@ -1380,6 +1385,43 @@ describe("UserSettingsPanel", () => {
 
     rerender(renderPanel(idleE2eeTrust.key_management));
     expect(screen.queryByText("synthetic-settings-changed-key")).toBeNull();
+  });
+
+  test("secure backup row follows the account gate, not this session's setup request (#1201)", () => {
+    const renderWithGate = (gate: SecureBackupGateState) =>
+      renderToStaticMarkup(
+        <UserSettingsPanel
+          currentSession={{
+            homeserver: "https://matrix.org",
+            user_id: "@demo-user:example.invalid",
+            device_id: "FAKEDEVICE"
+          }}
+          e2eeTrust={idleE2eeTrust}
+          secureBackupGate={gate}
+          localEncryption={{ kind: "healthy" }}
+          platform="linux"
+          accountManagement={idleAccountManagement}
+          accountManagementCapabilities={idleAccountManagementCapabilities}
+          savedSessions={[]}
+          profile={profile}
+          settings={settings}
+          {...handlers}
+        />
+      );
+
+    // The account already has secure backup; this session never ran a setup.
+    const ready = renderWithGate({ kind: "ready" });
+    expect(ready).toContain(
+      `<small data-testid="secure-backup-state">${t("settings.secureBackupEnabled")}</small>`
+    );
+    expect(ready).not.toContain(t("settings.setupSecureBackup"));
+
+    // A sign-in on an account without backup still offers the setup form.
+    const setup = renderWithGate({ kind: "setupRequired" });
+    expect(setup).toContain(
+      `<small data-testid="secure-backup-state">${t("settings.secureBackupIdle")}</small>`
+    );
+    expect(setup).toContain(t("settings.setupSecureBackup"));
   });
 
   test("does not render Koushi-owned remote device management", () => {

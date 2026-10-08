@@ -587,6 +587,7 @@ export function ContextualRightPanel({
           currentSessionStatus={snapshot.state.domain.current_session_status}
           displayDensity={displayDensity}
           e2eeTrust={snapshot.state.domain.e2ee_trust}
+          secureBackupGate={snapshot.state.domain.secure_backup_gate}
           localEncryption={snapshot.state.domain.local_encryption}
           keyboardLabelProfile={shortcutLabelProfileFromLocaleProfile(snapshot.state.domain.locale_profile)}
           platform={snapshot.state.domain.locale_profile.platform}

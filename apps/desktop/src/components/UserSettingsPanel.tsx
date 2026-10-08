@@ -54,6 +54,7 @@ import type {
   SettingsPatch,
   SettingsState,
   SessionStatusRefreshCommandTrigger,
+  SecureBackupGateState,
   SecureBackupSetupIntent,
   ProfileState,
   TimelineSettings,
@@ -71,6 +72,7 @@ export function UserSettingsPanel({
   searchCrawlerState,
   profile,
   e2eeTrust,
+  secureBackupGate,
   localEncryption,
   platform,
   accountManagement,
@@ -133,6 +135,8 @@ export function UserSettingsPanel({
   searchCrawlerState?: SearchCrawlerState;
   profile: ProfileState;
   e2eeTrust: E2eeTrustState;
+  /** Account-level secure-backup gate for the row's account truth (#1201). */
+  secureBackupGate?: SecureBackupGateState;
   localEncryption: LocalEncryptionState;
   platform: DisplayPlatform;
   accountManagement: AccountManagementState;
@@ -737,6 +741,7 @@ export function UserSettingsPanel({
             <h3>{t("settings.security")}</h3>
             <SecuritySection
               keyManagement={e2eeTrust.key_management}
+              secureBackupGate={secureBackupGate}
               localEncryption={localEncryption}
               platform={platform}
               onBootstrapSecureBackup={onBootstrapSecureBackup}
@@ -814,6 +819,7 @@ export function AppSettingsDialog({
         })}
         profile={domain.profile}
         e2eeTrust={domain.e2ee_trust}
+        secureBackupGate={domain.secure_backup_gate}
         localEncryption={domain.local_encryption}
         platform={domain.locale_profile.platform}
         accountManagement={domain.account_management}
