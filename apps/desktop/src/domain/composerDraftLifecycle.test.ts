@@ -228,6 +228,151 @@ describe("composer draft lifecycle registry", () => {
     });
   });
 
+  it("releases a rejected reservation so an unchanged retry submits the same revision", async () => {
+    const owner = account("release-rejected");
+    const scope = main(owner, "release-room");
+    const registry = createComposerDraftLifecycleRegistry(backendAt("1"));
+    const lease = await registry.activate(scope);
+    const capture = registry.beginOperation(scope);
+    expect(registry.reserveAcceptedRevision(capture, revision(1))).toBe("2");
+
+    // Core never accepted, so the operation settles as rejected. Without the
+    // release the local revision stays "2" and the unchanged retry is fenced
+    // off by Core, which still stores "1".
+    expect(
+      registry.settleOperation(capture, { releaseAcceptedRevision: true })
+    ).toBe(true);
+    expect(registry.snapshot(scope)).toMatchObject({ revision: "1" });
+
+    const retry = registry.beginOperation(scope);
+    expect(registry.reserveAcceptedRevision(retry, revision(1))).toBe("2");
+    expect(
+      registry.settleOperationCompletion(retry, lease.leaseId, revision(1))
+    ).toBe(true);
+    expect(registry.snapshot(scope)).toMatchObject({ revision: "2" });
+  });
+
+  it("keeps a rejected reservation that a newer local edit depends on", async () => {
+    const owner = account("release-newer");
+    const scope = main(owner, "release-newer-room");
+    const registry = createComposerDraftLifecycleRegistry(backendAt("1"));
+    await registry.activate(scope);
+    const capture = registry.beginOperation(scope);
+    expect(registry.reserveAcceptedRevision(capture, revision(1))).toBe("2");
+    expect(registry.nextDraft(scope)).toBe("3");
+
+    expect(
+      registry.settleOperation(capture, { releaseAcceptedRevision: true })
+    ).toBe(true);
+    expect(registry.snapshot(scope)).toMatchObject({ revision: "3" });
+  });
+
+  it.each(["first-first", "last-first"] as const)(
+    "releases stacked failed reservations back to the stored revision (%s)",
+    async (order) => {
+      const owner = account(`stacked-${order}`);
+      const scope = main(owner, "stacked-room");
+      const registry = createComposerDraftLifecycleRegistry(backendAt("1"));
+      await registry.activate(scope);
+      const first = registry.beginOperation(scope);
+      expect(registry.reserveAcceptedRevision(first, revision(1))).toBe("2");
+      const second = registry.beginOperation(scope);
+      expect(registry.reserveAcceptedRevision(second, revision(2))).toBe("3");
+
+      if (order === "first-first") {
+        expect(
+          registry.settleOperation(first, { releaseAcceptedRevision: true })
+        ).toBe(true);
+        expect(registry.snapshot(scope)).toMatchObject({ revision: "3" });
+        expect(
+          registry.settleOperation(second, { releaseAcceptedRevision: true })
+        ).toBe(true);
+      } else {
+        expect(
+          registry.settleOperation(second, { releaseAcceptedRevision: true })
+        ).toBe(true);
+        expect(registry.snapshot(scope)).toMatchObject({ revision: "2" });
+        expect(
+          registry.settleOperation(first, { releaseAcceptedRevision: true })
+        ).toBe(true);
+      }
+      expect(registry.snapshot(scope)).toMatchObject({ revision: "1" });
+    }
+  );
+
+  it("a retired generation's failed reservation cannot roll back a replacement edit", async () => {
+    const owner = account("retired-release");
+    const scope = main(owner, "retired-release-room");
+    let generation = 0;
+    const registry = createComposerDraftLifecycleRegistry({
+      begin: async () => String(++generation),
+      acquire: async (_scope, rendererGeneration) => ({
+        rendererGeneration,
+        leaseId: `lease-${rendererGeneration}`,
+        revision: revision(1),
+        lastAcceptedClearRevision: revision(0),
+        hasAuthoritativeContent: true
+      }),
+      release: async () => {}
+    });
+    await registry.activate(scope);
+    const capture = registry.beginOperation(scope);
+    expect(registry.reserveAcceptedRevision(capture, revision(1))).toBe("2");
+
+    registry.revokeRendererGeneration();
+    await registry.activate(scope);
+    expect(registry.snapshot(scope)).toMatchObject({ revision: "1" });
+    expect(registry.nextDraft(scope)).toBe("2");
+
+    // The retired operation settles, but the replacement generation's edit stays.
+    expect(
+      registry.settleOperation(capture, { releaseAcceptedRevision: true })
+    ).toBe(false);
+    expect(registry.snapshot(scope)).toMatchObject({ revision: "2" });
+  });
+
+  it("keeps an edit made between two reservations when both fail", async () => {
+    const owner = account("release-between");
+    const scope = main(owner, "release-between-room");
+    const registry = createComposerDraftLifecycleRegistry(backendAt("1"));
+    await registry.activate(scope);
+    const first = registry.beginOperation(scope);
+    expect(registry.reserveAcceptedRevision(first, revision(1))).toBe("2");
+    // The user edits while the first send is in flight.
+    expect(registry.nextDraft(scope)).toBe("3");
+    const second = registry.beginOperation(scope);
+    expect(registry.reserveAcceptedRevision(second, revision(3))).toBe("4");
+
+    expect(
+      registry.settleOperation(second, { releaseAcceptedRevision: true })
+    ).toBe(true);
+    expect(registry.snapshot(scope)).toMatchObject({ revision: "3" });
+    expect(
+      registry.settleOperation(first, { releaseAcceptedRevision: true })
+    ).toBe(true);
+    expect(registry.snapshot(scope)).toMatchObject({ revision: "3" });
+  });
+
+  it("does not release a revision an authoritative snapshot already confirmed", async () => {
+    const owner = account("release-authoritative");
+    const scope = main(owner, "release-authoritative-room");
+    const registry = createComposerDraftLifecycleRegistry(backendAt("1"));
+    await registry.activate(scope);
+    const capture = registry.beginOperation(scope);
+    expect(registry.reserveAcceptedRevision(capture, revision(1))).toBe("2");
+
+    // Core accepted and the snapshot arrived, then the invocation failed as
+    // unknown. The observed advance must not be handed back.
+    registry.observe(scope, revision(2), revision(2), false);
+    expect(
+      registry.settleOperation(capture, { releaseAcceptedRevision: true })
+    ).toBe(true);
+    expect(registry.snapshot(scope)).toMatchObject({
+      revision: "2",
+      lastAcceptedClearRevision: "2"
+    });
+  });
+
   it("clears only an overlay older than the Rust accepted-clear token", async () => {
     const owner = account("overlay-clear");
     const scope = main(owner, "overlay-room");
