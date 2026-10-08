@@ -79,6 +79,109 @@ fn available_candidate_does_not_block_manual_or_periodic_feed_checks() {
 }
 
 #[test]
+fn failed_refresh_retains_the_previous_offer_and_reports_the_failure() {
+    // Regression (#1205): a transient feed/network error during a refresh must
+    // not silently destroy an undownloaded offer. It stays offered (and
+    // downloadable) under the refreshed generation so the reminder continues.
+    let mut lifecycle = lifecycle();
+    let original = available(&mut lifecycle, "2.0.0");
+    assert!(lifecycle.begin_check());
+    let (operation, _) = lifecycle.claim_work().unwrap();
+    assert_ne!(operation.generation, original);
+    assert!(!lifecycle.complete(operation, Completion::Check(Err(())), "1.0.0"));
+    assert!(matches!(
+        lifecycle.state,
+        DesktopUpdateState::Available {
+            ref version,
+            generation,
+            ignored: false,
+            check_failed: true
+        } if version == "2.0.0" && generation == operation.generation
+    ));
+    assert_eq!(
+        lifecycle
+            .pending
+            .as_ref()
+            .map(|pending| pending.version.as_str()),
+        Some("2.0.0")
+    );
+    // The stale click (original generation) is still fenced off; the retained
+    // offer is downloadable under the refreshed generation.
+    assert!(lifecycle.begin_download(original).is_err());
+    assert!(lifecycle.begin_download(operation.generation).is_ok());
+}
+
+#[test]
+fn empty_eligible_refresh_withdraws_the_previous_offer() {
+    // `Ok(None)` is a legitimate withdrawal, distinct from a transient error.
+    let mut lifecycle = lifecycle();
+    let _ = available(&mut lifecycle, "2.0.0");
+    assert!(lifecycle.begin_check());
+    let (operation, _) = lifecycle.claim_work().unwrap();
+    assert!(!lifecycle.complete(operation, Completion::Check(Ok(None)), "1.0.0"));
+    assert_eq!(lifecycle.state, no_update_state("1.0.0".into()));
+    assert!(lifecycle.pending.is_none());
+    assert!(lifecycle.begin_download(operation.generation).is_err());
+}
+
+#[test]
+fn stale_ignore_cannot_overwrite_the_current_offers_decision() {
+    // Regression (#1205): a stale `ignore` request for a version that is no
+    // longer offered must not overwrite the live marker, which would make the
+    // stored decision and the published projection diverge.
+    let mut lifecycle = lifecycle();
+    let _ = available(&mut lifecycle, "2.0.0");
+    assert!(lifecycle.ignore("2.0.0"));
+    assert_eq!(lifecycle.ignored_version.as_deref(), Some("2.0.0"));
+    assert!(!lifecycle.ignore("1.5.0"));
+    assert_eq!(lifecycle.ignored_version.as_deref(), Some("2.0.0"));
+    // A refresh that returns the ignored version keeps reminders suppressed.
+    assert!(lifecycle.begin_check());
+    let (operation, _) = lifecycle.claim_work().unwrap();
+    lifecycle.complete(
+        operation,
+        Completion::Check(Ok(Some(candidate("2.0.0")))),
+        "1.0.0",
+    );
+    assert!(matches!(
+        lifecycle.state,
+        DesktopUpdateState::Available {
+            ignored: true,
+            ref version,
+            ..
+        } if version == "2.0.0"
+    ));
+}
+
+#[test]
+fn ignore_click_racing_a_refresh_is_not_lost() {
+    // The UI dispatches the exact offered version; a scheduled refresh may start
+    // before the click lands. The matching retained offer must still accept it.
+    let mut lifecycle = lifecycle();
+    let _ = available(&mut lifecycle, "2.0.0");
+    assert!(lifecycle.begin_check());
+    assert!(lifecycle.ignore("2.0.0"));
+    let (operation, _) = lifecycle.claim_work().unwrap();
+    lifecycle.complete(
+        operation,
+        Completion::Check(Ok(Some(candidate("2.0.0")))),
+        "1.0.0",
+    );
+    assert!(matches!(
+        lifecycle.state,
+        DesktopUpdateState::Available { ignored: true, .. }
+    ));
+}
+
+#[test]
+fn ignore_is_rejected_when_no_offer_is_presented() {
+    let mut lifecycle = lifecycle();
+    assert!(!lifecycle.ignore("2.0.0"));
+    assert_eq!(lifecycle.ignored_version, None);
+    assert!(matches!(lifecycle.state, DesktopUpdateState::Idle));
+}
+
+#[test]
 fn ignored_version_stops_automatic_reminders_but_never_a_newer_release() {
     let mut lifecycle = lifecycle();
     let _ = available(&mut lifecycle, "2.0.0");
@@ -466,10 +569,11 @@ fn wire_state_includes_only_available_candidate_generation() {
         serde_json::to_value(DesktopUpdateState::Available {
             version: "2.0.0".into(),
             generation: 7,
-            ignored: false
+            ignored: false,
+            check_failed: false
         })
         .unwrap(),
-        serde_json::json!({"kind": "available", "version": "2.0.0", "generation": 7, "ignored": false})
+        serde_json::json!({"kind": "available", "version": "2.0.0", "generation": 7, "ignored": false, "check_failed": false})
     );
     for (state, kind) in [
         (
@@ -733,6 +837,7 @@ async fn shutdown_cancels_check_and_download_and_joins_owner() {
                     version: "2.0.0".into(),
                     generation,
                     ignored: false,
+                    check_failed: false,
                 })
                 .await;
             harness
@@ -766,6 +871,7 @@ async fn shutdown_joins_installer_even_if_first_shutdown_waiter_is_cancelled() {
             version: "2.0.0".into(),
             generation,
             ignored: false,
+            check_failed: false,
         })
         .await;
     harness
@@ -844,6 +950,7 @@ async fn successful_install_requests_restart_once_and_owner_can_be_joined() {
             version: "2.0.0".into(),
             generation,
             ignored: false,
+            check_failed: false,
         })
         .await;
     harness

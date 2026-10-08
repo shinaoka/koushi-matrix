@@ -181,7 +181,13 @@ export function DesktopUpdateControls({
         </span>
       </button>
       <div className="settings-update-status" aria-live="polite">
+          {state.kind === "available" && state.check_failed ? (
+            <p role="alert">{t("settings.updateCheckFailed")}</p>
+          ) : null}
           <p className="settings-status-text">{desktopUpdateStatusText(state)}</p>
+          {state.kind === "available" && state.ignored ? (
+            <p className="settings-status-note">{t("settings.updateIgnored")}</p>
+          ) : null}
           {state.kind === "idle" || state.kind === "up_to_date" || state.kind === "failed" ? (
             <button className="profile-settings-action" type="button" onClick={onCheck}>
               <RefreshCcw size={14} aria-hidden="true" />
@@ -194,9 +200,11 @@ export function DesktopUpdateControls({
                 <RefreshCcw size={14} aria-hidden="true" />
                 {t("settings.updateDownload")}
               </button>
-              <button className="profile-settings-action" type="button" onClick={onIgnore}>
-                {t("settings.updateIgnore")}
-              </button>
+              {state.ignored ? null : (
+                <button className="profile-settings-action" type="button" onClick={onIgnore}>
+                  {t("settings.updateIgnore")}
+                </button>
+              )}
             </>
           ) : null}
           {state.kind === "ready" ? (

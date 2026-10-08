@@ -5648,9 +5648,9 @@ stateDiagram-v2
     Checking --> Idle: update channel changes
     Available --> Idle: update channel changes before download approval
     Available --> Checking: manual/scheduled check refreshes candidate
-    Checking --> Available: newer release found
+    Checking --> Available: newer release found or refresh failed (previous offer retained)
     Available --> Downloading: DownloadUpdate confirmed
-    Checking --> Failed: check failed
+    Checking --> Failed: check failed with no retained offer
     Downloading --> Ready: download and signature verification succeeded
     Downloading --> Failed: download or verification failed
     Ready --> Installing: RestartToInstall
@@ -5676,9 +5676,11 @@ stateDiagram-v2
 - Closing the dialog, pressing Escape, deferring, or leaving the offer
   unanswered is temporary: the next fresh offer generation (a scheduled or
   manual check) presents it again. **Ignore this version** stores the exact
-  version for the rest of the process and suppresses its automatic reminders
-  while background checks continue; a newer eligible release is still
-  announced, and a manual check still reports the ignored version.
+  version until Koushi exits and suppresses its automatic reminders while
+  background checks continue; a newer eligible release is still announced, and
+  a manual check still reports the ignored version. Ignore is honored only for
+  the version currently offered, so a stale request for a replaced version is
+  rejected and cannot desynchronize the stored decision from the projection.
 - Changing the release channel invalidates unapproved candidates and in-flight
   results. When automatic checks are disabled this performs no network request;
   otherwise the new channel is checked. Explicitly approved downloads and
@@ -5689,7 +5691,10 @@ stateDiagram-v2
   coalesced. A startup, 24-hour, or manual check while an undownloaded
   `available` candidate is presented instead refreshes the feeds, replaces the
   offer with the newest eligible release, and invalidates the previous
-  candidate generation. There is one verified pending artifact slot. Admission, lifecycle,
+  candidate generation. A transient refresh failure retains the previous offer
+  under the refreshed generation (still downloadable) and reports
+  `check_failed`; an eligible response with no release withdraws it. There is
+  one verified pending artifact slot. Admission, lifecycle,
   artifact ownership, policies, and operation generation share one serialized
   transition boundary. Stale settings revisions and late operation completions
   cannot replace newer state. Events preserve transition order; network,
@@ -5697,8 +5702,9 @@ stateDiagram-v2
 - Download approval identifies the displayed candidate generation; stale clicks
   cannot approve a replacement candidate. Updater-owned work is canceled and
   joined on owner shutdown rather than detached.
-- `available` exposes the release version, an opaque candidate generation, and
-  the `ignored` flag; `ready` exposes the release version. `failed` exposes only a coarse
+- `available` exposes the release version, an opaque candidate generation, the
+  `ignored` flag, and the `check_failed` flag; `ready` exposes the release
+  version. `failed` exposes only a coarse
   stage/kind and is recoverable; it never blocks startup or login.
 - Installation and relaunch require explicit user intent. macOS is the only
   enabled platform in this phase; Windows and Linux remain `unsupported`.

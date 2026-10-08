@@ -1286,7 +1286,8 @@ installer builds must not require the macOS updater signing secret.
 
 When automatic checks are enabled, the adapter checks after startup and at most
 once per 24-hour interval, and checks once when the setting changes from off to
-on. A manual check is available directly from **Koushi → Check for Updates…**
+on, unless an undownloaded candidate is already presented, which it preserves
+rather than discarding. A manual check is available directly from **Koushi → Check for Updates…**
 regardless of `auto_check`, including before sign-in. It opens one application-level
 update dialog, separate from account settings and contextual panes. That same
 dialog shows automatic discoveries, update policy controls, and explicit download
@@ -1307,14 +1308,20 @@ An existing, undownloaded `available` candidate never freezes discovery: the
 next manual or scheduled check queries the feeds again and replaces the offer
 with the newest eligible release. Replacing an offer advances the candidate
 generation and clears its pending artifact, so a stale dialog cannot authorize
-the replacement. Closing the dialog, pressing Escape, choosing deferral, or
+the replacement. A refresh that fails with a transient feed/network error
+instead retains the previous offer, keeps it downloadable under the refreshed
+generation, and reports the failure through the candidate's `check_failed`
+flag; an eligible feed response that legitimately carries no release withdraws
+the retained offer. Closing the dialog, pressing Escape, choosing deferral, or
 leaving the offer unanswered is temporary dismissal, not a decision: the next
 fresh offer generation presents it again. The only explicit opt-out is
 **Ignore this version**, which records that exact version for the rest of the
 process and suppresses its automatic reminders while background checks
 continue; a newer eligible release is still announced, and a manual check
-still reports the ignored version. The `available` projection carries this
-`ignored` flag for the renderer.
+still reports the ignored version. An ignore request is honored only for the
+version currently offered, so a stale request cannot overwrite the live
+decision. The `available` projection carries the `ignored` and `check_failed`
+flags for the renderer.
 
 The updater separates a platform-neutral engine from install backends. The
 engine (`app_updates.rs`: projection, policy watermarks, lifecycle transitions,

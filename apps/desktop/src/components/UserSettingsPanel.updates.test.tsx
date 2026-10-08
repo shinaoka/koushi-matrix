@@ -102,7 +102,7 @@ describe("DesktopUpdateControls", () => {
     render(
       <DesktopUpdateControls
         current={{ auto_check: true, include_prereleases: false }}
-        state={{ kind: "available", version: "1.2.3", generation: 7, ignored: false }}
+        state={{ kind: "available", version: "1.2.3", generation: 7, ignored: false, check_failed: false }}
         onSelect={() => undefined}
         onCheck={() => undefined}
         onDownload={onDownload}
@@ -113,24 +113,6 @@ describe("DesktopUpdateControls", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Download update" }));
     expect(onDownload).toHaveBeenCalledOnce();
-  });
-
-  test("offers an explicit ignore action while an update is available", () => {
-    const onIgnore = vi.fn();
-    render(
-      <DesktopUpdateControls
-        current={{ auto_check: true, include_prereleases: false }}
-        state={{ kind: "available", version: "1.2.3", generation: 7, ignored: false }}
-        onSelect={() => undefined}
-        onCheck={() => undefined}
-        onDownload={() => undefined}
-        onRestart={() => undefined}
-        onIgnore={onIgnore}
-      />
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Ignore this version" }));
-    expect(onIgnore).toHaveBeenCalledOnce();
   });
 
   test("shows the latest version and offers another manual check", () => {

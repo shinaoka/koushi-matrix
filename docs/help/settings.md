@@ -69,10 +69,14 @@ found, the result says that the current version is up to date. An automatic
 discovery opens the same screen. Closing the dialog, pressing Escape, or
 leaving it unanswered is temporary: the next scheduled or manual check presents
 the offer again without reopening immediately. **Ignore this version** stops
-automatic reminders for that exact version for the rest of the session;
-background checks continue, a newer
+automatic reminders for that exact version until Koushi exits; there is no
+in-app way to undo it, and signing out or switching accounts does not reset it.
+While a version is ignored, the Software update dialog says so and
+**Download update** remains available. Background checks continue, a newer
 eligible release is still announced, and a manual check still reports the
-ignored version. Downloading and restarting are separate,
+ignored version. If a later check cannot reach the feed, the existing offer
+stays available and the dialog reports the failed check. Downloading and
+restarting are separate,
 explicit actions; automatic checks do not automatically install or restart.
 Unsupported builds show that in-app updates are unavailable. When Koushi was
 installed by a distribution package that manages its files (for example an AUR

@@ -43,7 +43,7 @@ test("manual checks keep the settings page underneath and never download or rest
   const dialog = page.getByRole("dialog", { name: "Software update", exact: true });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("switch", { name: "Automatically check for updates" })).toHaveAttribute("aria-checked", "false");
-  await page.evaluate(() => window.__harness.pushDesktopUpdate({ kind: "available", version: "1.2.4", generation: 7, ignored: false }));
+  await page.evaluate(() => window.__harness.pushDesktopUpdate({ kind: "available", version: "1.2.4", generation: 7, ignored: false, check_failed: false }));
   await expect(dialog.getByRole("button", { name: "Download update" })).toBeVisible();
   expect(await page.evaluate(() => window.__harness.invocationsOf("download_desktop_update").length)).toBe(0);
   await dialog.getByRole("button", { name: "Download update" }).click();
@@ -59,13 +59,26 @@ test("manual checks keep the settings page underneath and never download or rest
   await expect(settings.getByRole("tabpanel", { name: "Preferences", exact: true })).toBeVisible();
 });
 
+test("an ignored offer stays distinct and keeps Download available", async ({ page }) => {
+  await gotoReadyShell(page);
+  // An ignored offer does not auto-open; revisiting it via the menu shows why
+  // reminders are off while Download stays available.
+  await page.evaluate(() => window.__harness.pushDesktopUpdate({ kind: "available", version: "1.2.4", generation: 7, ignored: true, check_failed: false }));
+  await page.evaluate(() => window.__harness.pushDesktopMenu("checkForUpdates"));
+  const dialog = page.getByRole("dialog", { name: "Software update", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText(/Automatic reminders are off for this version/)).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Download update" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Ignore this version" })).toHaveCount(0);
+});
+
 test("automatic availability and unsupported builds use the same nonempty update screen", async ({ page }) => {
   await gotoReadyShell(page);
-  await page.evaluate(() => window.__harness.pushDesktopUpdate({ kind: "available", version: "1.2.4", generation: 7, ignored: false }));
+  await page.evaluate(() => window.__harness.pushDesktopUpdate({ kind: "available", version: "1.2.4", generation: 7, ignored: false, check_failed: false }));
   const dialog = page.getByRole("dialog", { name: "Software update", exact: true });
   await expect(dialog.getByRole("button", { name: "Download update" })).toBeVisible();
   await page.keyboard.press("Escape");
-  await page.evaluate(() => window.__harness.pushDesktopUpdate({ kind: "available", version: "1.2.4", generation: 7, ignored: false }));
+  await page.evaluate(() => window.__harness.pushDesktopUpdate({ kind: "available", version: "1.2.4", generation: 7, ignored: false, check_failed: false }));
   await expect(dialog).toHaveCount(0);
   await page.evaluate(() => window.__harness.pushDesktopMenu("checkForUpdates"));
   await expect(dialog).toBeVisible();
