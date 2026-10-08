@@ -66,7 +66,13 @@ Software update dialog. **Include pre-release versions** also considers
 SemVer versions such as `1.2.0-alpha.1`, `1.2.0-beta.1`, and `1.2.0-rc.1`.
 Use **Check for updates** for an immediate result; when no newer version is
 found, the result says that the current version is up to date. An automatic
-discovery opens the same screen. Downloading and restarting are separate,
+discovery opens the same screen. Closing the dialog, pressing Escape, or
+leaving it unanswered is temporary: the next scheduled or manual check presents
+the offer again without reopening immediately. **Ignore this version** stops
+automatic reminders for that exact version for the rest of the session;
+background checks continue, a newer
+eligible release is still announced, and a manual check still reports the
+ignored version. Downloading and restarting are separate,
 explicit actions; automatic checks do not automatically install or restart.
 Unsupported builds show that in-app updates are unavailable. When Koushi was
 installed by a distribution package that manages its files (for example an AUR
@@ -76,7 +82,9 @@ Changing the pre-release setting discards an unapproved candidate and checks the
 new channel when automatic checks are enabled. Once you choose Download update,
 that release stays selected; the pre-release switch is disabled until the
 download/install flow ends. Turning automatic checks off does not remove an
-already offered release or stop a manually requested check.
+already offered release or stop a manually requested check. An undownloaded
+offer does not block later checks: when a newer eligible release exists, the
+next check replaces the old offer with the newest one.
 
 On macOS, dialogs and viewers leave space above their contents for the standard
 window buttons. Small windows scroll within the dialog. Escape closes the

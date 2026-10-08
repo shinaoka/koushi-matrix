@@ -1303,6 +1303,19 @@ action so in-progress composer work is not discarded. Public failure state is co
 bodies, release URLs, local paths, signatures, key material, or raw library
 errors.
 
+An existing, undownloaded `available` candidate never freezes discovery: the
+next manual or scheduled check queries the feeds again and replaces the offer
+with the newest eligible release. Replacing an offer advances the candidate
+generation and clears its pending artifact, so a stale dialog cannot authorize
+the replacement. Closing the dialog, pressing Escape, choosing deferral, or
+leaving the offer unanswered is temporary dismissal, not a decision: the next
+fresh offer generation presents it again. The only explicit opt-out is
+**Ignore this version**, which records that exact version for the rest of the
+process and suppresses its automatic reminders while background checks
+continue; a newer eligible release is still announced, and a manual check
+still reports the ignored version. The `available` projection carries this
+`ignored` flag for the renderer.
+
 The updater separates a platform-neutral engine from install backends. The
 engine (`app_updates.rs`: projection, policy watermarks, lifecycle transitions,
 operation generations, the owner loop and 24-hour scheduling, shutdown and

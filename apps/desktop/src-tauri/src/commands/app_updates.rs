@@ -32,3 +32,9 @@ pub async fn download_desktop_update(
 pub fn restart_to_install_desktop_update(app: AppHandle) {
     let _ = crate::app_updates::install_and_restart(&app);
 }
+
+/// Stops automatic reminders for one exact version at the user's request.
+#[tauri::command]
+pub fn ignore_desktop_update(app: AppHandle, version: String) {
+    crate::app_updates::ignore_update(&app, version);
+}

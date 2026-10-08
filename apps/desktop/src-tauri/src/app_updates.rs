@@ -40,6 +40,9 @@ pub enum DesktopUpdateState {
     Available {
         version: String,
         generation: u64,
+        /// The user explicitly chose to ignore this exact version, so automatic
+        /// reminders stay suppressed while the offer remains available.
+        ignored: bool,
     },
     Downloading {
         version: String,
@@ -110,6 +113,12 @@ struct Lifecycle<C> {
     state: DesktopUpdateState,
     pending: Option<PendingUpdate<C>>,
     generation: u64,
+    /// Exact version the user asked to stop automatic reminders for. It does
+    /// not stop feed checks and never hides a newer eligible release.
+    ///
+    /// ponytail: adapter-local, so it lasts one process lifetime; persist it (for
+    /// example in `UpdatesSettings`) when restart-durable ignore is required.
+    ignored_version: Option<String>,
     settings_generation: Option<u64>,
     settings: UpdatesSettings,
     claimed: bool,
@@ -124,6 +133,7 @@ impl<C> Lifecycle<C> {
             state,
             pending: None,
             generation: 0,
+            ignored_version: None,
             settings_generation: None,
             settings: UpdatesSettings {
                 auto_check: false,
@@ -164,6 +174,7 @@ impl<C> Lifecycle<C> {
                 DesktopUpdateState::Idle
                     | DesktopUpdateState::UpToDate { .. }
                     | DesktopUpdateState::Failed { .. }
+                    | DesktopUpdateState::Available { .. }
             )
         {
             return false;
@@ -171,6 +182,27 @@ impl<C> Lifecycle<C> {
         self.advance();
         self.pending = None;
         self.state = DesktopUpdateState::Checking;
+        true
+    }
+
+    /// Records the user's explicit decision to stop automatic reminders for one
+    /// exact version. The feed keeps running, an already-offered candidate stays
+    /// downloadable, and any newer eligible release is announced normally.
+    fn ignore(&mut self, version: &str) -> bool {
+        if self.stopping {
+            return false;
+        }
+        self.ignored_version = Some(version.to_owned());
+        if let DesktopUpdateState::Available {
+            version: offered,
+            ignored,
+            ..
+        } = &mut self.state
+        {
+            if offered.as_str() == version {
+                *ignored = true;
+            }
+        }
         true
     }
 
@@ -207,7 +239,9 @@ impl<C> Lifecycle<C> {
             if self.settings.auto_check {
                 self.begin_check();
             }
-        } else if enable_check {
+        } else if enable_check && !matches!(self.state, DesktopUpdateState::Available { .. }) {
+            // Enabling the setting must not discard an offer the user can still
+            // download; a scheduled or manual check refreshes it instead (#1205).
             self.begin_check();
         }
         true
@@ -236,6 +270,7 @@ impl<C> Lifecycle<C> {
         let DesktopUpdateState::Available {
             version,
             generation,
+            ..
         } = &self.state
         else {
             return Err(());
@@ -304,9 +339,11 @@ impl<C> Lifecycle<C> {
         self.claimed = false;
         match (operation.phase, completion) {
             (Phase::Check, Completion::Check(Ok(Some(pending)))) => {
+                let ignored = self.ignored_version.as_deref() == Some(pending.version.as_str());
                 self.state = DesktopUpdateState::Available {
                     version: pending.version.clone(),
                     generation: operation.generation,
+                    ignored,
                 };
                 self.pending = Some(pending);
             }
@@ -704,6 +741,20 @@ pub async fn check_for_update(
                 generation: snapshot.generation,
                 settings: snapshot.state.settings.values.updates,
             });
+        },
+    );
+}
+
+/// Records an explicit user decision to stop automatic reminders for one exact
+/// version. Feed checks continue and a newer eligible release is still
+/// announced; the decision is scoped to that exact version.
+pub fn ignore_update(app: &AppHandle, version: String) {
+    app.state::<DesktopUpdateManager>().shared.transition(
+        |state| {
+            let _ = app.emit(DESKTOP_UPDATE_EVENT_NAME, state);
+        },
+        |lifecycle| {
+            lifecycle.ignore(&version);
         },
     );
 }

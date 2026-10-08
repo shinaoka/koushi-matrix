@@ -41,6 +41,104 @@ fn available(lifecycle: &mut Lifecycle<String>, version: &str) -> u64 {
 }
 
 #[test]
+fn available_candidate_does_not_block_manual_or_periodic_feed_checks() {
+    // Regression (#1205): an undownloaded candidate must not freeze the feed.
+    // A manual "Check for updates" refreshes it instead of being rejected.
+    let mut manual = lifecycle();
+    let _ = available(&mut manual, "2.0.0");
+    assert!(
+        manual.request_check(policy(1, false, false)),
+        "manual check was rejected while a candidate was available"
+    );
+
+    // The periodic owner-loop tick shares the same admission and must query the
+    // feed again, replacing the offer with the newest eligible release.
+    let mut periodic = lifecycle();
+    let stale = available(&mut periodic, "2.0.0");
+    assert!(
+        periodic.begin_check(),
+        "scheduled check was rejected while a candidate was available"
+    );
+    let (operation, _) = periodic.claim_work().unwrap();
+    periodic.complete(
+        operation,
+        Completion::Check(Ok(Some(candidate("3.0.0")))),
+        "1.0.0",
+    );
+    assert!(
+        matches!(
+            periodic.state,
+            DesktopUpdateState::Available { ref version, .. } if version == "3.0.0"
+        ),
+        "a newer release must replace the frozen candidate"
+    );
+    assert!(
+        periodic.begin_download(stale).is_err(),
+        "a refreshed offer must invalidate stale download consent"
+    );
+}
+
+#[test]
+fn ignored_version_stops_automatic_reminders_but_never_a_newer_release() {
+    let mut lifecycle = lifecycle();
+    let _ = available(&mut lifecycle, "2.0.0");
+    assert!(matches!(
+        lifecycle.state,
+        DesktopUpdateState::Available { ignored: false, .. }
+    ));
+    assert!(lifecycle.ignore("2.0.0"));
+    assert!(matches!(
+        lifecycle.state,
+        DesktopUpdateState::Available { ignored: true, ref version, .. } if version == "2.0.0"
+    ));
+
+    // A scheduled refresh of the same ignored version keeps reminders off.
+    assert!(lifecycle.begin_check());
+    let (operation, _) = lifecycle.claim_work().unwrap();
+    lifecycle.complete(
+        operation,
+        Completion::Check(Ok(Some(candidate("2.0.0")))),
+        "1.0.0",
+    );
+    assert!(matches!(
+        lifecycle.state,
+        DesktopUpdateState::Available { ignored: true, .. }
+    ));
+
+    // A newer eligible release is still announced.
+    assert!(lifecycle.begin_check());
+    let (operation, _) = lifecycle.claim_work().unwrap();
+    lifecycle.complete(
+        operation,
+        Completion::Check(Ok(Some(candidate("3.0.0")))),
+        "1.0.0",
+    );
+    assert!(matches!(
+        lifecycle.state,
+        DesktopUpdateState::Available { ignored: false, ref version, .. } if version == "3.0.0"
+    ));
+}
+
+#[test]
+fn manual_check_reports_an_ignored_version_without_clearing_the_decision() {
+    let mut lifecycle = lifecycle();
+    let _ = available(&mut lifecycle, "2.0.0");
+    assert!(lifecycle.ignore("2.0.0"));
+    assert!(lifecycle.request_check(policy(1, false, false)));
+    let (operation, _) = lifecycle.claim_work().unwrap();
+    lifecycle.complete(
+        operation,
+        Completion::Check(Ok(Some(candidate("2.0.0")))),
+        "1.0.0",
+    );
+    assert!(matches!(
+        lifecycle.state,
+        DesktopUpdateState::Available { ignored: true, ref version, .. } if version == "2.0.0"
+    ));
+    assert!(lifecycle.pending.is_some());
+}
+
+#[test]
 fn concurrent_check_admission_has_one_winner() {
     let shared = Arc::new(Shared::<String>::new(DesktopUpdateState::Idle));
     let barrier = Arc::new(Barrier::new(8));
@@ -367,10 +465,11 @@ fn wire_state_includes_only_available_candidate_generation() {
     assert_eq!(
         serde_json::to_value(DesktopUpdateState::Available {
             version: "2.0.0".into(),
-            generation: 7
+            generation: 7,
+            ignored: false
         })
         .unwrap(),
-        serde_json::json!({"kind": "available", "version": "2.0.0", "generation": 7})
+        serde_json::json!({"kind": "available", "version": "2.0.0", "generation": 7, "ignored": false})
     );
     for (state, kind) in [
         (
@@ -633,6 +732,7 @@ async fn shutdown_cancels_check_and_download_and_joins_owner() {
                 .state(DesktopUpdateState::Available {
                     version: "2.0.0".into(),
                     generation,
+                    ignored: false,
                 })
                 .await;
             harness
@@ -665,6 +765,7 @@ async fn shutdown_joins_installer_even_if_first_shutdown_waiter_is_cancelled() {
         .state(DesktopUpdateState::Available {
             version: "2.0.0".into(),
             generation,
+            ignored: false,
         })
         .await;
     harness
@@ -742,6 +843,7 @@ async fn successful_install_requests_restart_once_and_owner_can_be_joined() {
         .state(DesktopUpdateState::Available {
             version: "2.0.0".into(),
             generation,
+            ignored: false,
         })
         .await;
     harness
