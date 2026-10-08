@@ -1,7 +1,9 @@
 # #1150: index-first search (M2)
 
-Status: implementation and final review on PR #1157. SDK changes are in fork
-PR #19; that PR must not be merged without a separate maintainer decision.
+Status: merged (PR #1157, app `main` from `063992a0`). The SDK changes it
+builds on are in fork PR #19; the maintainer approved landing that revision on
+the fork's `main`, which is recorded in
+[the resident-retention plan](2026-10-09-issue1150-resident-retention.md).
 
 ## Scope and acceptance
 
@@ -147,9 +149,15 @@ ledger, or network fallback is introduced.
   gates. npm audit also reports an unrelated existing high `source-map-js`
   advisory: no frontend packaging/build is claimed while that gate is red.
 
-## Remaining before merge
+## Verification at merge
 
-Complete the independent GPT-6.1 Sol post-review of the integrated correction,
-resolve verified findings, run the affected repository gates and inspect all
-required checks for the exact submitted head. Do not merge SDK fork PR #19 as
-part of this operation.
+The independent post-review of the integrated correction completed, its
+verified findings were resolved, and the affected repository gates plus all
+required checks were inspected for the submitted head (PR #1157).
+
+## Remaining #1150 work
+
+This plan covered only M2 (index-first search). The residual event-delivery and
+inactive-cache retention work is scoped in
+[#1150 resident retention](2026-10-09-issue1150-resident-retention.md), which
+also records the SDK fork pin landing.

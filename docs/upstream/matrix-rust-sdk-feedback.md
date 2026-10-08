@@ -13,7 +13,7 @@ previous pin `a04792c7a` plus the retained Koushi customizations. The
 2026-07-27 snapshot below described the state before that upgrade. The fork is expected to be managed and
 maintained for a while; local SDK patches should therefore stay as small topic
 commits with clear upstream intent instead of being squashed into an opaque
-vendor snapshot.
+vendor snapshot. The gitlink has moved since; see the 2026-10-09 section.
 
 The current Koushi-required SDK topic stack is:
 
@@ -1144,6 +1144,39 @@ mentions behind. A wrapper cannot correct SDK-owned aggregate counts without
 duplicating cache ownership. This minimal fork fix is intended for upstream
 submission with its production-redaction and cache-restoration regression.
 See [reproduction and historical limits](2026-09-15-redacted-notifications.md).
+
+## 2026-10-09: the #1150 search/index revision lands on the fork's `main`
+
+Fork PR #19 (`feat/1150-literal-bounded-search`) was the SDK half of #1150 and
+#1157: literal bounded-cursor search over raw and normalized text, and the
+cache-only resolved reader. It had never been merged to the fork's `main`; the
+client pinned it through the throwaway integration branch
+`integration/1157-burndown` at `55e51ffe8`, which also carried the clippy
+follow-up that #19's own head (`7ad7ee4e8`) lacked plus the #1146 and #1176
+topic branches.
+
+Fork PR #20 merged `integration/1157-burndown` into `main`. Fork `main`'s tree
+equalled the merge base (`669834a55`), so the merge was purely additive:
+
+| revision | tree |
+| --- | --- |
+| fork `main` before (`be17c637`) | `f64897ea` |
+| merge base (`669834a55`) | `f64897ea` |
+| previous client pin (`55e51ffe8`) | `f91ad0b6` |
+| fork `main` after (`f5d8028e0`) | `f91ad0b6` |
+
+Local verification of the merged revision, in a `/tmp` target directory:
+`matrix-sdk-search --lib` 41 passed; `matrix-sdk --lib --features
+experimental-search search_index::tests` 20 passed; `matrix-sdk-ui --lib` 391
+passed; `clippy -p matrix-sdk-search -p matrix-sdk -p matrix-sdk-ui --features
+experimental-search --all-targets` exit 0 with warnings only. Fork CI is not a
+usable gate: `main` before the merge already failed the same check names
+(`cargo-deny`, `Lint`, `msrv`, `All crates`, several benchmarks, coverage), and
+the merge introduced no new failing check name.
+
+The client's `vendor/matrix-rust-sdk` gitlink and `THIRD_PARTY_NOTICES.md` now
+name `f5d8028e0`, so the vendored revision is once more a commit on the fork's
+maintained `main` rather than a scratch integration branch.
 
 ## 2026-10-07: Explicit redaction proof for Files metadata (#1150)
 
