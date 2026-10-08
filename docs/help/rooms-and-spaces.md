@@ -142,6 +142,29 @@ badges, mentions included. The conversation's own row still shows its real
 unread count, nothing is marked as read, and removing the tag restores its
 contribution without replaying old notifications.
 
+## See who can join a room or Space
+
+Every conversation row, the room header, the Space rail, and the Space header
+show who may join: a **globe** when anyone can join, a closed **padlock** when an
+invitation is required, or a **Conditions apply** or **Can request** badge when
+membership depends on other rooms or Spaces. The same indicator appears in
+**Room info** and **Space info**.
+
+- **Public** (globe): anyone can join without an invitation.
+- **Invite only** (closed padlock): an invitation is required to join.
+- **Conditions apply**: members of the listed Spaces or rooms can join without
+  an invitation, and everyone else needs one. When Koushi has read their names,
+  the indicator's tooltip lists the Spaces or rooms.
+- **Can request**: you can ask for an invitation, but joining still requires one.
+- **Checking** or **Unknown** (question mark): Koushi has not read the join
+  conditions yet, or it does not recognize the rule the server reports.
+
+These indicators describe **who may join**, and nothing else. They are not an
+encryption, confidentiality, or history-visibility signal: an invite-only room
+can still hold unencrypted messages, and a public room can be encrypted. History
+visibility and the other properties are shown and changed in **Change room
+details, access, and history** and in **Space names and access** below.
+
 ## Room information and notifications
 
 Open **Room info** to find members, files, room notification options, and settings
