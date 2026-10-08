@@ -146,8 +146,7 @@ describe("Rust-projected workspace shell", () => {
       .toBeTruthy();
   });
 
-  // Issue #1217: a Space with an explicit local name keeps the whole name in
-  // its generated tile instead of collapsing to the first grapheme.
+  // #1217: an explicit local name is user text and renders in full.
   it("renders multiple graphemes of a local Space name without an icon or image", () => {
     const snapshot = readyDesktopSnapshotFixture();
     snapshot.sidebar.space_rail = [railSpace("!lab:example.invalid", "研究室", false)];
@@ -163,8 +162,7 @@ describe("Rust-projected workspace shell", () => {
     expect(fallback.classList.contains("element-space")).toBe(false);
   });
 
-  // Issue #1217: the Element/Compound single-grapheme generated fallback from
-  // #414 stays for a Space that has no explicit local name.
+  // #1217: a Matrix-only name keeps the #414 Element single-grapheme fallback.
   it("keeps the single-grapheme Element fallback for a Space without a local name (#414)", () => {
     const snapshot = readyDesktopSnapshotFixture();
 
@@ -176,8 +174,7 @@ describe("Rust-projected workspace shell", () => {
     expect(within(button).queryByText("Synthetic Workspace")).toBeNull();
   });
 
-  // Issue #1217: a longer local name shows more than its initial inside the
-  // fixed tile rather than only the first grapheme.
+  // #1217: a long local name scales the whole name instead of one grapheme.
   it("renders a longer local Space name within the tile instead of only its initial", () => {
     const snapshot = readyDesktopSnapshotFixture();
     const name = "Research Laboratory Annex";
@@ -192,8 +189,36 @@ describe("Rust-projected workspace shell", () => {
     expect(fallback.classList.contains("compact-label")).toBe(true);
   });
 
-  // Issue #1218: the Space context menu no longer offers a redundant Open
-  // Space action; the button click/keyboard activation selects the Space.
+  // #1217: the label length counts graphemes, so a decomposed name is not sized
+  // as twice as long; the stored name is never normalised.
+  it("sizes precomposed and decomposed local names to the same tile label length", () => {
+    const precomposed = render(
+      <EntityAvatar
+        avatar={null}
+        className="workspace-button-avatar is-space"
+        fallback={"é"}
+        fallbackMode="compactLabel"
+      />
+    );
+    const precomposedTile = precomposed.container.querySelector<HTMLElement>(".avatar-fallback");
+    precomposed.unmount();
+
+    const decomposed = render(
+      <EntityAvatar
+        avatar={null}
+        className="workspace-button-avatar is-space"
+        fallback={"e\u0301"}
+        fallbackMode="compactLabel"
+      />
+    );
+    const decomposedTile = decomposed.container.querySelector<HTMLElement>(".avatar-fallback");
+
+    expect(precomposedTile?.style.getPropertyValue("--avatar-label-length")).toBe("1");
+    expect(decomposedTile?.style.getPropertyValue("--avatar-label-length")).toBe("1");
+    expect(decomposedTile?.textContent).toBe("e\u0301");
+  });
+
+  // #1218: selection is the button itself, so the menu keeps only its own actions.
   it("offers only Space info and Leave Space in the Space context menu (#1218)", () => {
     const snapshot = readyDesktopSnapshotFixture();
     const onOpenContextMenu = vi.fn();
@@ -206,9 +231,8 @@ describe("Rust-projected workspace shell", () => {
     expect(items.map((item) => item.id)).toEqual(["openSpaceInfo", "leaveSpace"]);
   });
 
-  // Issue #1206: the active destination exposes its selection state distinctly
-  // from hover and keyboard focus. The visual prominence is CSS-only and needs
-  // the GUI confirmation lane.
+  // #1206: selection is exposed as `aria-current`; the browser tier in e2e/
+  // asserts the rendered light/dark indicator.
   it("exposes the active Space, and Home, as the current rail item (#1206)", () => {
     const snapshot = readyDesktopSnapshotFixture();
     snapshot.sidebar.account_home.is_active = false;

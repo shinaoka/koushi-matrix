@@ -286,6 +286,15 @@ function syncReasonLabel(reason: string | null | undefined): string | null {
 const avatarGraphemeSegmenter = new Intl.Segmenter();
 
 /**
+ * Counts user-visible characters (#1217): a decomposed name (base letter plus a
+ * combining mark) is one grapheme, so its generated tile is not sized as if it
+ * were twice as long. The stored name is never normalised or rewritten.
+ */
+export function graphemeCount(value: string): number {
+  return [...avatarGraphemeSegmenter.segment(value)].length;
+}
+
+/**
  * The one placeholder-avatar initial for people, rooms, and Spaces (#1055).
  *
  * Element/Compound's rule (#414): drop one leading Matrix sigil (`@`, `#`,

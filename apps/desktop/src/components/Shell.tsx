@@ -62,6 +62,7 @@ import {
   type PrimaryView,
   avatarInitial,
   elementAvatarColorIndex,
+  graphemeCount,
   roomListItemLabel,
   EMPTY_ROOM_TAGS
 } from "../app/uiShared";
@@ -1567,7 +1568,7 @@ export function EntityAvatar({
   const fallbackStyle =
     fallbackMode === "compactLabel"
       ? ({
-          "--avatar-label-length": Math.max(fallback.length, 1)
+          "--avatar-label-length": Math.max(graphemeCount(fallback), 1)
         } as CSSProperties)
       : undefined;
   const elementColor =

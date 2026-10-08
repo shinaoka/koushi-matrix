@@ -1404,6 +1404,17 @@ button:disabled {
     inset 0 0 0 4px var(--text);
 }
 
+/* #1206: forced-colors mode drops box-shadows, so the focus indicator must fall
+   back to an outline. A negative offset keeps it inside the button box, which
+   the rail's scrollport would otherwise clip. */
+@media (forced-colors: active) {
+  .workspace-button:focus-visible,
+  .workspace-button.is-active:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: -2px;
+  }
+}
+
 .workspace-button-avatar {
   display: grid;
   place-items: center;
