@@ -237,12 +237,13 @@ pub use timeline::{
     MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT, MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT,
     MediaGalleryStore, MediaPreparationFailureKind, PendingComposerSendKind, PreparedUploadFormat,
     PreparedUploadVariant, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem,
-    ScheduledSendStore, StagedUploadCompressionChoice, StagedUploadFormatChoice, StagedUploadItem,
-    StagedUploadKind, StagedUploadOutputSelection, StagedUploadPreparation,
-    StagedUploadResizeChoice, TimelineContinuityInspection, TimelineContinuityState,
-    TimelineGapRepairFailureKind, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
-    TimelineMediaGallerySource, TimelineMediaGalleryThumbnail, TimelineMediaKind,
-    TimelinePaneState, UploadStagingStore, staged_upload_item_with_completed_output,
+    ScheduledSendStore, ScheduledSendsListState, ScheduledSendsScope,
+    StagedUploadCompressionChoice, StagedUploadFormatChoice, StagedUploadItem, StagedUploadKind,
+    StagedUploadOutputSelection, StagedUploadPreparation, StagedUploadResizeChoice,
+    TimelineContinuityInspection, TimelineContinuityState, TimelineGapRepairFailureKind,
+    TimelineMediaGalleryItem, TimelineMediaGalleryMedia, TimelineMediaGallerySource,
+    TimelineMediaGalleryThumbnail, TimelineMediaKind, TimelinePaneState, UploadStagingStore,
+    sorted_scheduled_sends_for_rooms, staged_upload_item_with_completed_output,
     staged_upload_send_consumes_composer_draft, staged_uploads_are_sendable,
 };
 
@@ -384,6 +385,11 @@ pub struct AppState {
     pub thread: ThreadPaneState,
     pub thread_attention: ThreadAttentionState,
     pub threads_list: ThreadsListState,
+    /// #1160: the explicitly opened Home/Space scheduled-sends projection. Kept
+    /// out of [`scheduled_sends`](Self::scheduled_sends) because only this slice
+    /// is deliberately body-bearing for non-visible rooms while open.
+    #[serde(default)]
+    pub scheduled_sends_list: ScheduledSendsListState,
     #[serde(default)]
     pub thread_root_projections: ThreadRootProjectionState,
     pub focused_context: FocusedContextState,
@@ -463,6 +469,7 @@ impl Default for AppState {
             thread: ThreadPaneState::Closed,
             thread_attention: ThreadAttentionState::Closed,
             threads_list: ThreadsListState::Closed,
+            scheduled_sends_list: ScheduledSendsListState::Closed,
             thread_root_projections: ThreadRootProjectionState::default(),
             focused_context: FocusedContextState::Closed,
             search: SearchState::Closed,

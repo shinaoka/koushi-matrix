@@ -1614,6 +1614,14 @@ pub enum AppAction {
         room_id: String,
     },
     CloseThreadsList,
+    /// #1160: open the Home/Space scheduled-sends projection. The scope is
+    /// captured here and validated against the Ready session and the active
+    /// Home/Space; there is no request id because the projection is derived
+    /// synchronously and has no asynchronous completion to correlate.
+    OpenScheduledSendsList {
+        scope: crate::state::ScheduledSendsScope,
+    },
+    CloseScheduledSendsList,
     /// A Room timeline observed thread reply activity whose root is outside
     /// its canonical loaded items. This is not a pagination request.
     ThreadRootProjectionObserved {

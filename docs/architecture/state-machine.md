@@ -1753,6 +1753,20 @@ tokens, paths, or raw errors.
   rooms. `TimelinePaneState.scheduled_sends` is the selected-room projection
   only, and `TimelinePaneState.scheduled_send_capability` advertises whether
   server delayed events or the local fallback is active.
+- #1160 amends that boundary with exactly one explicit exception: the scheduled-
+  sends panel projection `AppState.scheduled_sends_list` (transport slice
+  `StateDeltaChangedSlices.scheduled_sends_list`, Tauri
+  `ui.scheduled_sends_list`). It deliberately carries the same future message
+  bodies, including for rooms the webview is not showing. It is admitted only in
+  a `Ready` session, and it is derived synchronously in the reducer from the
+  backing store for the Home account or for the Space captured when the panel
+  opened (the sidebar's `space_rooms ∪ global_dms` membership, immediate children
+  only). A narrow post-reducer invariant closes it whenever the session is no
+  longer `Ready` — which covers `sync_failed_auth` and unsupported sliding-sync
+  revalidation — or when the captured Space no longer exists or is no longer the
+  active scope, before membership is derived. Room selection/clearing, Home/Space
+  selection, and a successful directory join close it explicitly. The renderer
+  keeps no copy and the backing queue itself is still never serialized.
 - Each scheduled item carries its room plus an optional thread root. A room
   item clears only the captured room draft; a thread item clears only the
   captured `(room_id, root_event_id)` draft and open thread composer. Both the

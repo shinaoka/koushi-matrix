@@ -274,7 +274,7 @@ function readySnapshot(
   return {
     state_generation: 0,
     state: {
-        schema_version: 7,
+        schema_version: SNAPSHOT_SCHEMA_VERSION,
         domain: {
           session: { kind: "ready", homeserver: HOMESERVER, user_id: USER_ID, device_id: DEVICE_ID },
           session_lock_reason: null,
@@ -345,7 +345,7 @@ function readySnapshot(
             items: [{ room_id: ROOM_ID, kind: "room" }]
           },
           timeline: { room_id: ROOM_ID, is_subscribed: true, is_paginating_backwards: false, composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: COMPOSER_DRAFT_REVISION_ZERO, last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO, draft: "", document: { version: 2, inlines: [] }, mode: composerMode }, submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] }, scheduled_send_capability: "unknown", scheduled_sends: [], staged_uploads: [], media_gallery: [], media_downloads: {}, continuity: { kind: "unknown" } },
-          thread: { kind: "closed" }, threads_list: { kind: "closed" }, focused_context: { kind: "closed" },
+          thread: { kind: "closed" }, threads_list: { kind: "closed" }, scheduled_sends_list: { kind: "closed" }, focused_context: { kind: "closed" },
           files_view: { kind: "closed" }, history_export: { kind: "idle" }, errors: [], basic_operation: basicOperation,
           room_address_availability: { kind: "idle" }
         }
@@ -1612,6 +1612,7 @@ mock.setCommandResponse("select_room", ({ roomId }: { roomId: string }) => {
         },
         thread: { kind: "closed" },
         threads_list: { kind: "closed" },
+        scheduled_sends_list: { kind: "closed" },
         focused_context: { kind: "closed" }
       }
     },

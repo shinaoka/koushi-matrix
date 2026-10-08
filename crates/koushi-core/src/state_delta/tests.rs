@@ -945,3 +945,133 @@ fn room_policy_maps_use_scoped_deltas() {
         )]))
     );
 }
+
+/// #1160: the scoped scheduled-sends panel slice is what crosses the Core
+/// state-delta boundary. The backing `AppState::scheduled_sends` queue has no
+/// delta field at all, so an open list, a mutation in a room that is not the
+/// selected room, and the session-retirement close all have to arrive through
+/// `scheduled_sends_list` itself.
+#[test]
+fn scheduled_sends_panel_slice_reaches_the_delta_on_open_mutation_and_close() {
+    use koushi_state::{
+        AppAction, ScheduledSendHandle, ScheduledSendItem, ScheduledSendsListState,
+        ScheduledSendsScope, SessionInfo, SessionState, reduce,
+    };
+
+    let mut state = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://matrix.example.invalid".to_owned(),
+            user_id: "@user-a:example.invalid".to_owned(),
+            device_id: "DEVICE".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        rooms: vec![
+            room("!room:example.invalid"),
+            room("!other:example.invalid"),
+        ],
+        ..AppState::default()
+    };
+
+    // Opening produces a delta whose slice is present and empty.
+    let before = state.clone();
+    reduce(
+        &mut state,
+        AppAction::OpenScheduledSendsList {
+            scope: ScheduledSendsScope::Home,
+        },
+    );
+    let delta = build_state_delta(1, &before, &state).expect("open delta");
+    assert!(matches!(
+        delta.changed.scheduled_sends_list,
+        Some(ScheduledSendsListState::Open { ref items, .. }) if items.is_empty()
+    ));
+
+    // A mutation in a room that is not the selected room reaches the projection
+    // through the delta alone.
+    let before = state.clone();
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendCreated {
+            item: ScheduledSendItem {
+                scheduled_id: "sched-remote".to_owned(),
+                room_id: "!other:example.invalid".to_owned(),
+                thread_root_event_id: None,
+                body: "remote room body".to_owned(),
+                send_at_ms: 1_900_000_000_000,
+                handle: ScheduledSendHandle::Local,
+                is_dispatching: false,
+            },
+        },
+    );
+    let delta = build_state_delta(2, &before, &state).expect("create delta");
+    let Some(ScheduledSendsListState::Open { ref items, .. }) = delta.changed.scheduled_sends_list
+    else {
+        panic!("the created reservation must appear in the delta slice");
+    };
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.scheduled_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["sched-remote"]
+    );
+
+    // Loading the queue replaces the backing store and the scoped slice in the
+    // same delta (the slice carries the loaded capability too).
+    let before = state.clone();
+    let mut loaded = koushi_state::ScheduledSendStore {
+        capability: koushi_state::ScheduledSendCapability::LocalFallback,
+        items: Default::default(),
+    };
+    loaded.insert(ScheduledSendItem {
+        scheduled_id: "loaded".to_owned(),
+        room_id: "!room:example.invalid".to_owned(),
+        thread_root_event_id: None,
+        body: "loaded body".to_owned(),
+        send_at_ms: 1_800_000_000_000,
+        handle: ScheduledSendHandle::Local,
+        is_dispatching: false,
+    });
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendsLoaded {
+            scheduled_sends: loaded,
+        },
+    );
+    let delta = build_state_delta(3, &before, &state).expect("load delta");
+    let Some(ScheduledSendsListState::Open {
+        ref items,
+        ref capability,
+        ..
+    }) = delta.changed.scheduled_sends_list
+    else {
+        panic!("the loaded queue must reach the delta slice");
+    };
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.scheduled_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["loaded"]
+    );
+    assert_eq!(
+        capability,
+        &koushi_state::ScheduledSendCapability::LocalFallback
+    );
+
+    // Session retirement closes the projection and the explicit close is in the
+    // delta so the renderer can drop the bodies.
+    state.sync = koushi_state::SyncState::Running;
+    let before = state.clone();
+    reduce(
+        &mut state,
+        AppAction::SyncFailed {
+            reason: "sync_failed_auth".to_owned(),
+        },
+    );
+    let delta = build_state_delta(4, &before, &state).expect("close delta");
+    assert_eq!(
+        delta.changed.scheduled_sends_list,
+        Some(ScheduledSendsListState::Closed)
+    );
+}

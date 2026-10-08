@@ -1340,7 +1340,7 @@ describe("session-scoped optional delta merge", () => {
 function makeSnapshot(): DesktopSnapshot {
   return {
     state: {
-      schema_version: 7,
+      schema_version: 8,
       domain: {
         session: { kind: "ready", homeserver: "https://example.invalid", user_id: "@user:example.invalid", device_id: "DEVICE" },
         session_lock_reason: null,
@@ -1607,6 +1607,7 @@ function makeSnapshot(): DesktopSnapshot {
         focused_context: { kind: "closed" },
         files_view: { kind: "closed" }, history_export: { kind: "idle" },
         threads_list: { kind: "closed" },
+        scheduled_sends_list: { kind: "closed" },
         errors: [],
         basic_operation: { kind: "idle" },
         room_address_availability: { kind: "idle" }

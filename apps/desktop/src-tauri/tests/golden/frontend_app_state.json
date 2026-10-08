@@ -1127,7 +1127,7 @@
         "platform": "linux"
       }
     },
-    "schema_version": 7,
+    "schema_version": 8,
     "ui": {
       "basic_operation": {
         "kind": "creatingRoom",
@@ -1292,6 +1292,36 @@
         },
         "sort": {
           "kind": "activity"
+        }
+      },
+      "scheduled_sends_list": {
+        "capability": "serverDelayedEvents",
+        "items": [
+          {
+            "body": "Scheduled room body",
+            "handle": {
+              "kind": "local"
+            },
+            "room_id": "!low-priority-room:example.invalid",
+            "scheduled_id": "sched-contract-room",
+            "send_at_ms": 1800000000000
+          },
+          {
+            "body": "Scheduled thread reply body",
+            "handle": {
+              "delay_id": "delay-contract",
+              "kind": "server"
+            },
+            "room_id": "!room:example.invalid",
+            "scheduled_id": "sched-contract-thread",
+            "send_at_ms": 1900000000000,
+            "thread_root_event_id": "$scheduled-thread-root:example.invalid"
+          }
+        ],
+        "kind": "open",
+        "scope": {
+          "kind": "space",
+          "space_id": "!space:example.invalid"
         }
       },
       "thread": {

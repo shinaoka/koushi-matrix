@@ -224,6 +224,39 @@ pub async fn open_threads_list(
 }
 
 #[tauri::command]
+pub async fn open_scheduled_sends_list(
+    account_tab_id: Option<String>,
+    scope: koushi_state::ScheduledSendsScope,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let admission = submit_core_command_with_admission(
+        state.inner(),
+        build_open_scheduled_sends_list_command(request_id, scope),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    Ok(admission)
+}
+
+#[tauri::command]
+pub async fn close_scheduled_sends_list(
+    account_tab_id: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let admission = submit_core_command_with_admission(
+        state.inner(),
+        build_close_scheduled_sends_list_command(request_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    Ok(admission)
+}
+
+#[tauri::command]
 pub async fn close_threads_list(
     account_tab_id: Option<String>,
     app: AppHandle,
@@ -333,6 +366,19 @@ pub(super) fn build_open_threads_list_command(
     scope: ThreadsListScope,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::OpenThreadsList { request_id, scope })
+}
+
+pub(super) fn build_open_scheduled_sends_list_command(
+    request_id: koushi_protocol::RequestId,
+    scope: koushi_state::ScheduledSendsScope,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::OpenScheduledSendsList { request_id, scope })
+}
+
+pub(super) fn build_close_scheduled_sends_list_command(
+    request_id: koushi_protocol::RequestId,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::CloseScheduledSendsList { request_id })
 }
 
 pub(super) fn build_close_threads_list_command(

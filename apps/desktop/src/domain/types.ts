@@ -83,9 +83,9 @@ export type ComposerDraftAccountOwner = SavedSessionInfo;
 
 /**
  * IPC snapshot contract version. Must match `dto.rs`'s `SNAPSHOT_SCHEMA_VERSION`.
- * Version 7 adds the desktop update preference.
+ * Version 8 adds the explicitly opened Home/Space scheduled-sends panel projection.
  */
-export const SNAPSHOT_SCHEMA_VERSION = 7;
+export const SNAPSHOT_SCHEMA_VERSION = 8;
 
 /**
  * Snapshot state. #87 Phase 4 sectioned this into domain (Matrix/product, Rust-owned,
@@ -151,6 +151,8 @@ export interface AppUiState {
   files_view: FilesViewState;
   history_export: HistoryExportState;
   threads_list: ThreadsListState;
+  /** #1160: the explicitly opened Home/Space scheduled-sends projection. */
+  scheduled_sends_list: ScheduledSendsListState;
   basic_operation: BasicOperationState;
   /** Rust-owned advisory address check of the create-room dialog (#1006). */
   room_address_availability: RoomAddressAvailabilityState;
@@ -2470,6 +2472,19 @@ export type ThreadsListState =
       room_id: string;
       request_id: number;
       failure_kind: OperationFailureKind;
+    };
+
+export type ScheduledSendsScope =
+  | { kind: "home" }
+  | { kind: "space"; space_id: string };
+
+export type ScheduledSendsListState =
+  | { kind: "closed" }
+  | {
+      kind: "open";
+      scope: ScheduledSendsScope;
+      capability: ScheduledSendCapability;
+      items: ScheduledSendItem[];
     };
 
 export type FocusedContextState =

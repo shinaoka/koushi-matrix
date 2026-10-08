@@ -470,6 +470,7 @@ export function defaultSnapshotResponse() {
       thread: { kind: "closed" },
       thread_attention: { kind: "closed" },
       threads_list: { kind: "closed" },
+      scheduled_sends_list: { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
       files_view: { kind: "closed" }, history_export: { kind: "idle" },
@@ -543,7 +544,7 @@ export function defaultSnapshotResponse() {
     else ui[key] = value;
   }
   return {
-    state: { schema_version: 7, domain, ui },
+    state: { schema_version: 8, domain, ui },
     sidebar: {
       active_space_id: null,
       account_home: {

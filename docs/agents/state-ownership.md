@@ -1218,8 +1218,15 @@ normal QA-title mode and cannot change product title semantics.
 - Scheduled/send-later state follows the same boundary. The full queue and local
   fallback timer are Rust/core-owned; React may render only
   `snapshot.state.timeline.scheduled_sends` for the selected room and
-  `scheduled_send_capability`, then dispatch typed schedule/cancel/reschedule
-  commands. MSC4140 delayed-event capability detection and
+  `scheduled_send_capability` — plus, while the explicitly opened scheduled-sends
+  panel is `Open` (#1160), the Rust-projected
+  `snapshot.state.ui.scheduled_sends_list` — then dispatch typed
+  schedule/cancel/reschedule commands. That panel slice is the one deliberate
+  exception that carries future message bodies for non-visible rooms: it is
+  admitted only in a `Ready` session, closed by Rust when the session leaves
+  `Ready` or the captured Space is gone/inactive, and React must keep no copy of
+  its contents beyond rendering the slice. MSC4140 delayed-event capability
+  detection and
   create/cancel/reschedule requests live in `AccountActor` through SDK/Ruma APIs.
   The local fallback timer must consider only `ScheduledSendHandle::Local` items;
   server handles are owned by the homeserver and must not be fired by the local

@@ -1760,6 +1760,8 @@ pub fn run() {
             commands::views::open_threads_list,
             commands::views::close_threads_list,
             commands::views::paginate_threads_list,
+            commands::views::open_scheduled_sends_list,
+            commands::views::close_scheduled_sends_list,
             commands::views::open_thread,
             commands::views::close_thread,
             commands::views::subscribe_receipt_reader,

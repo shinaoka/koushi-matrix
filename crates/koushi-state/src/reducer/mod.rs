@@ -31,6 +31,7 @@ mod navigation;
 mod profile;
 mod room;
 mod room_management;
+mod scheduled_sends;
 mod search;
 mod session;
 mod session_status;
@@ -89,6 +90,7 @@ pub(crate) fn clear_stale_verification_flow(state: &mut AppState) -> bool {
 pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
     let mut effects = reduce_action(state, action);
     contact_security::sync_verification_busy(state, &mut effects);
+    scheduled_sends::reconcile_scheduled_sends_list(state);
     effects
 }
 
@@ -1876,6 +1878,12 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
         } => thread::handle_paginate_threads_list(state, request_id, room_id),
         AppAction::CloseThreadsList => thread::handle_close_threads_list(state),
+        AppAction::OpenScheduledSendsList { scope } => {
+            scheduled_sends::handle_open_scheduled_sends_list(state, scope)
+        }
+        AppAction::CloseScheduledSendsList => {
+            scheduled_sends::handle_close_scheduled_sends_list(state)
+        }
         AppAction::ThreadRootProjectionObserved {
             room_id,
             root_event_id,
