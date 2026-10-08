@@ -1182,6 +1182,10 @@ function AccountContent({
   // rooms are `SpaceRailItem.leave_candidates` and Rust re-admits the choice.
   const [pendingSpaceLeave, setPendingSpaceLeave] = useState<{ spaceId: string } | null>(null);
   const [spaceLeaveInFlight, setSpaceLeaveInFlight] = useState(false);
+  const liveComposerDocumentRef = useRef<{
+    scope: ComposerDraftScope;
+    document: ComposerDocument;
+  } | null>(null);
   const mainComposerOverlayRef = useRef<{
     scope: ComposerDraftScope;
     document: ComposerDocument;
@@ -4826,12 +4830,39 @@ function AccountContent({
     clearComposerDraftPersistTimer(scope);
   }
 
+  /**
+   * The document the mounted editor is showing for the active target.
+   *
+   * #1194: staging needs the text the user is looking at, and the composer draft is
+   * persisted on a 350 ms debounce, so the Rust snapshot can lag it. Every composer
+   * change already reports its document here before that debounce is queued; Rust
+   * still decides whether it becomes an attachment's caption.
+   */
+  function rememberLiveComposerDocument(scope: ComposerDraftScope, document: ComposerDocument) {
+    liveComposerDocumentRef.current = { scope, document };
+  }
+
+  function liveComposerDocumentFor(target: ComposerTarget): ComposerDocument | undefined {
+    const live = liveComposerDocumentRef.current;
+    if (!live || live.scope.target.kind !== target.kind) return undefined;
+    if (live.scope.target.room_id !== target.room_id) return undefined;
+    if (
+      target.kind === "thread" &&
+      (live.scope.target.kind !== "thread" ||
+        live.scope.target.root_event_id !== target.root_event_id)
+    ) {
+      return undefined;
+    }
+    return live.document;
+  }
+
   function queueComposerDraftPersist(
     scope: ComposerDraftScope,
     document: ComposerDocument,
     revision: ComposerDraftRevision
   ) {
     if (scope.target.kind !== "main") return;
+    rememberLiveComposerDocument(scope, document);
     cancelComposerDraftPersist(scope);
     const handle = window.setTimeout(() => {
       clearComposerDraftPersistTimer(scope);
@@ -4885,7 +4916,16 @@ function AccountContent({
       stagedUploads.length,
       createStagedUploadId,
       async (capturedTarget, items) => {
-        await settleCommand(api.stageUploadBytes(capturedTarget, items));
+        // #1194: the renderer holds the text the user is looking at; the snapshot
+        // can lag it by the composer's persist debounce. Rust owns the decision to
+        // use it as a single attachment's caption.
+        await settleCommand(
+          api.stageUploadBytes(
+            capturedTarget,
+            items,
+            liveComposerDocumentFor(capturedTarget) ?? composerDocument
+          )
+        );
       }
     );
   }
@@ -5235,7 +5275,13 @@ function AccountContent({
       thread.staged_uploads?.length ?? 0,
       createStagedUploadId,
       async (capturedTarget, items) => {
-        await settleCommand(api.stageUploadBytes(capturedTarget, items));
+        await settleCommand(
+          api.stageUploadBytes(
+            capturedTarget,
+            items,
+            liveComposerDocumentFor(capturedTarget) ?? thread.composer.document
+          )
+        );
       }
     );
   }
@@ -5574,6 +5620,7 @@ function AccountContent({
     revision: ComposerDraftRevision
   ) {
     if (scope.target.kind !== "thread") return;
+    rememberLiveComposerDocument(scope, document);
     const target = scope.target;
     cancelThreadComposerDraftPersist(scope);
     const handle = window.setTimeout(() => {

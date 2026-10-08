@@ -61,7 +61,7 @@ async fn ready_runtime() -> (CoreRuntime, koushi_core::CoreConnection, IsolatedS
 async fn prepared_preview_is_core_owned_and_target_fenced() {
     let (runtime, mut connection, _stores) = ready_runtime().await;
     let staged = connection
-        .stage_upload_bytes(target(), vec![image("preview")])
+        .stage_upload_bytes(target(), vec![image("preview")], None)
         .await
         .expect("image should stage");
     let staged_generation = staged;
@@ -96,7 +96,7 @@ async fn prepared_preview_is_core_owned_and_target_fenced() {
 async fn same_target_preparation_admission_is_serialized() {
     let (runtime, mut connection, _stores) = ready_runtime().await;
     connection
-        .stage_upload_bytes(target(), vec![image("race")])
+        .stage_upload_bytes(target(), vec![image("race")], None)
         .await
         .expect("image should stage");
     let mut barrier = runtime
@@ -203,6 +203,7 @@ async fn heif_original_preview_is_not_the_raw_heic_payload() {
                 mime_type: String::new(),
                 bytes: HEIF_FIXTURE.to_vec(),
             }],
+            None,
         )
         .await
         .expect("HEIC staging should settle");

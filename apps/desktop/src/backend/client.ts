@@ -632,9 +632,14 @@ export class TauriDesktopApi implements DesktopApi {
 
   async stageUploadBytes(
     target: ComposerTarget,
-    items: StageUploadBytesRequestItem[]
+    items: StageUploadBytesRequestItem[],
+    composerDocument?: ComposerDocument
   ): Promise<CommandSettlement> {
-    return this.invokeCommand<CommandSettlement>("stage_upload_bytes", { target, items });
+    return this.invokeCommand<CommandSettlement>("stage_upload_bytes", {
+      target,
+      items,
+      composerDocument
+    });
   }
 
   async selectStagedUploadOutput(

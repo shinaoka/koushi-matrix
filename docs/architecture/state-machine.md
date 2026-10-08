@@ -1663,7 +1663,10 @@ stateDiagram-v2
   encrypted tombstone. A prepared-upload (staged attachment) send settles the
   draft the same way — same revision successor, same accepted-send navigation —
   but keeps the content, because its payload is built from the staged items and
-  their own captions and never dispatched the typed text (#1130). A captured draft write may
+  their own captions and never dispatched the typed text (#1130). One exception
+  seeds instead of clearing: the single attachment staged into a target that had
+  none takes the renderer's captured draft document as its caption (#1194), and
+  the dialog owns that caption afterwards. A captured draft write may
   still persist after its room/thread is no longer visible, but it never
   mutates another active composer. Each write and draft-accepting operation also
   captures its complete account owner (homeserver, user, and device);

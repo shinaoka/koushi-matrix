@@ -3526,15 +3526,31 @@ mock.setCommandResponse("moderate_room_member", () => currentSnapshot);
 mock.setCommandResponse("update_room_member_role", () => currentSnapshot);
 mock.setCommandResponse("pin_event", () => currentSnapshot);
 mock.setCommandResponse("unpin_event", () => currentSnapshot);
-mock.setCommandResponse("stage_upload_bytes", ({ target, items }: {
+mock.setCommandResponse("stage_upload_bytes", ({ target, items, composerDocument }: {
   target: ComposerTarget;
   items: StageUploadBytesRequestItem[];
+  composerDocument?: ComposerDocument;
 }) => {
   const existing = stagedUploadsForTarget(currentSnapshot, target);
   if (existing === null) return currentSnapshot;
+  // #1194: mirrors Core — one new attachment staged into an empty target starts
+  // with the composer's captured document as its caption, and a document without
+  // meaningful text is not a caption. The composer itself keeps its text (#1130).
+  const seedCaption =
+    existing.length === 0 &&
+    items.length === 1 &&
+    composerDocument !== undefined &&
+    composerDocument.inlines.some(
+      (inline) => inline.kind === "text" && inline.text.trim().length > 0
+    )
+      ? composerDocument
+      : null;
   const next = replaceStagedUploadsForTarget(currentSnapshot, target, [
     ...existing,
-    ...items.map((item) => preparedHarnessItem(target, item))
+    ...items.map((item) => {
+      const prepared = preparedHarnessItem(target, item);
+      return seedCaption ? { ...prepared, caption: seedCaption } : prepared;
+    })
   ]);
   return setCurrentSnapshot(next);
 });

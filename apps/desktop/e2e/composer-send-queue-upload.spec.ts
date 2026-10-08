@@ -1706,6 +1706,39 @@ test("sending staged attachments never wipes the typed composer draft (#1130)", 
   await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0);
 });
 
+test("a single attachment takes the typed draft as its caption (#1194)", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await composer.fill("Here is the error:");
+  await attachFile(page, {
+    name: "caption-fixture.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("browser-headless caption fixture")
+  });
+
+  const dialog = page.getByRole("dialog", { name: "Upload attachments" });
+  await expect(dialog).toBeVisible();
+  // The renderer hands Core the document it is showing, so a draft younger than the
+  // composer's persist debounce still reaches the attachment.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("stage_upload_bytes").at(-1)?.args.composerDocument
+      )
+    )
+    .toMatchObject({ inlines: [{ kind: "text", text: "Here is the error:" }] });
+  await expect(
+    dialog.getByRole("textbox", { name: "Caption for caption-fixture.txt" })
+  ).toHaveText("Here is the error:");
+
+  // #1130 still holds: staging never moves or clears the typed text, and nothing
+  // is sent until the attachment send is triggered explicitly.
+  await expect(composer).toHaveText("Here is the error:");
+  expect(await invocationCount(page, "send_prepared_uploads")).toBe(0);
+});
+
 test("attach button stages the file and keeps the typed main draft (#1144)", async ({ page }) => {
   await gotoReadyShell(page);
   await page.evaluate(() => window.__harness.clearInvocations());

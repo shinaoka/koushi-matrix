@@ -39,8 +39,10 @@ from a sent message. Read the confirmation before removing anything.
 1. Choose **Attach file**, or drop a file onto the composer.
 2. Review the staged attachment. If an image compression choice appears, choose
    the desired image quality.
-3. Add a caption if needed, then send. Remove an unwanted staged file with
-   **Remove attachment** before sending.
+3. Add or edit a caption if needed, then send. A single attachment starts with
+   whatever the composer already held as its caption, so text and file can go out
+   as one message; the composer keeps that text either way. Remove an unwanted
+   staged file with **Remove attachment** before sending.
 
 An attachment appearing in the composer is not yet an uploaded message. Server
 upload limits and network failures can prevent a send. Open an attachment from
