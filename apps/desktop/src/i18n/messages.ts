@@ -259,7 +259,6 @@ export type MessageId =
   | "context.reportRoom"
   | "context.reportUser"
   | "context.selectRoom"
-  | "context.selectSpace"
   | "context.switchAccount"
   | "context.unignoreUser"
   | "dialog.cancel"
@@ -2047,7 +2046,6 @@ const en: Catalog = {
   "context.removeFromLowPriority": "Remove from Low priority",
   "context.searchInRoom": "Search in room",
   "context.selectRoom": "Open",
-  "context.selectSpace": "Open Space",
   "context.switchAccount": "Switch account",
   "context.reportContent": "Report content",
   "context.reportRoom": "Report room",
@@ -3760,7 +3758,6 @@ const ja: Catalog = {
   "context.removeFromLowPriority": "低優先度から削除",
   "context.searchInRoom": "ルーム内を検索",
   "context.selectRoom": "開く",
-  "context.selectSpace": "スペースを開く",
   "context.switchAccount": "アカウントを切り替え",
   "context.reportContent": "コンテンツを報告",
   "context.reportRoom": "ルームを報告",
