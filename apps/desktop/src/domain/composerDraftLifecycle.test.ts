@@ -267,6 +267,70 @@ describe("composer draft lifecycle registry", () => {
     expect(registry.snapshot(scope)).toMatchObject({ revision: "3" });
   });
 
+  it.each(["first-first", "last-first"] as const)(
+    "releases stacked failed reservations back to the stored revision (%s)",
+    async (order) => {
+      const owner = account(`stacked-${order}`);
+      const scope = main(owner, "stacked-room");
+      const registry = createComposerDraftLifecycleRegistry(backendAt("1"));
+      await registry.activate(scope);
+      const first = registry.beginOperation(scope);
+      expect(registry.reserveAcceptedRevision(first, revision(1))).toBe("2");
+      const second = registry.beginOperation(scope);
+      expect(registry.reserveAcceptedRevision(second, revision(2))).toBe("3");
+
+      if (order === "first-first") {
+        expect(
+          registry.settleOperation(first, { releaseAcceptedRevision: true })
+        ).toBe(true);
+        expect(registry.snapshot(scope)).toMatchObject({ revision: "3" });
+        expect(
+          registry.settleOperation(second, { releaseAcceptedRevision: true })
+        ).toBe(true);
+      } else {
+        expect(
+          registry.settleOperation(second, { releaseAcceptedRevision: true })
+        ).toBe(true);
+        expect(registry.snapshot(scope)).toMatchObject({ revision: "2" });
+        expect(
+          registry.settleOperation(first, { releaseAcceptedRevision: true })
+        ).toBe(true);
+      }
+      expect(registry.snapshot(scope)).toMatchObject({ revision: "1" });
+    }
+  );
+
+  it("a retired generation's failed reservation cannot roll back a replacement edit", async () => {
+    const owner = account("retired-release");
+    const scope = main(owner, "retired-release-room");
+    let generation = 0;
+    const registry = createComposerDraftLifecycleRegistry({
+      begin: async () => String(++generation),
+      acquire: async (_scope, rendererGeneration) => ({
+        rendererGeneration,
+        leaseId: `lease-${rendererGeneration}`,
+        revision: revision(1),
+        lastAcceptedClearRevision: revision(0),
+        hasAuthoritativeContent: true
+      }),
+      release: async () => {}
+    });
+    await registry.activate(scope);
+    const capture = registry.beginOperation(scope);
+    expect(registry.reserveAcceptedRevision(capture, revision(1))).toBe("2");
+
+    registry.revokeRendererGeneration();
+    await registry.activate(scope);
+    expect(registry.snapshot(scope)).toMatchObject({ revision: "1" });
+    expect(registry.nextDraft(scope)).toBe("2");
+
+    // The retired operation settles, but the replacement generation's edit stays.
+    expect(
+      registry.settleOperation(capture, { releaseAcceptedRevision: true })
+    ).toBe(false);
+    expect(registry.snapshot(scope)).toMatchObject({ revision: "2" });
+  });
+
   it("clears only an overlay older than the Rust accepted-clear token", async () => {
     const owner = account("overlay-clear");
     const scope = main(owner, "overlay-room");

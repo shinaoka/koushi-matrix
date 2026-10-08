@@ -4540,8 +4540,11 @@ function AccountContent({
         `caption:main:${roomId}:${item.staged_id}`
       );
     }
-    // #1208: only a consuming send keeps the accepted-revision reservation.
-    let consumedDraft = false;
+    // #1208: a prepared send that returns is accepted — Core advances the draft
+    // revision whether or not the send consumes the content — so only a thrown
+    // command releases the speculative reservation. A receipt-reconciliation
+    // failure is presentation, not rejection.
+    let accepted = false;
     try {
       const response = await api.sendPreparedUploads(
         account,
@@ -4551,8 +4554,8 @@ function AccountContent({
         draftRevision,
         capturedDraft
       );
+      accepted = true;
       await applyCommandReceipt(response);
-      consumedDraft = response.consumedDraft;
       // Only Core's answer clears anything, and only through the established clear
       // path: dropping the overlay reference here would make that path early-return
       // and leave both the registry overlay and the mounted editor showing the text.
@@ -4560,16 +4563,14 @@ function AccountContent({
       // and here has a different revision and keeps the text, and a command revision
       // that advanced on its own is not mistaken for a local edit.
       const overlay = mainComposerOverlayRef.current;
-      if (consumedDraft && overlay && overlay.revision === localRevisionAtSubmission) {
+      if (response.consumedDraft && overlay && overlay.revision === localRevisionAtSubmission) {
         cancelComposerDraftPersist(scope);
         clearLocalComposerDraft(scope);
       }
     } catch {
       // Command failures are surfaced through the Rust-owned error/event path.
     } finally {
-      // A send Core did not accept never consumed the draft, so give the reserved
-      // revision back and let an unchanged retry pass Core's revision fence.
-      settleComposerOperation(admitted, !consumedDraft);
+      settleComposerOperation(admitted, !accepted);
     }
   }
 
@@ -4659,6 +4660,7 @@ function AccountContent({
       submissionController.reject(submissionId);
       return;
     }
+    let accepted = false;
     try {
       appendComposerSubmitDiagnostic(
         "main",
@@ -4686,12 +4688,11 @@ function AccountContent({
               captured.document,
               captured.draftRevision
             );
+      accepted =
+        nextSnapshot.submissionId === submissionId && nextSnapshot.outcome === "accepted";
       await applyCommandReceipt(nextSnapshot.settlement);
       const settledSnapshot = getAppStoreSnapshot();
-      if (nextSnapshot.submissionId !== submissionId || nextSnapshot.outcome !== "accepted") {
-        // #1208: Core never consumed the draft, so release the reserved revision
-        // before the retry reads its submitted revision from the registry.
-        settleComposerOperation(admitted);
+      if (!accepted) {
         if (submissionAccountOwnerRef.current !== captured.accountOwner) {
           return;
         }
@@ -4723,7 +4724,6 @@ function AccountContent({
         setQaSendStatus(completionStatus);
       }
     } catch (error) {
-      settleComposerOperation(admitted);
       if (submissionAccountOwnerRef.current !== captured.accountOwner) {
         return;
       }
@@ -4741,6 +4741,10 @@ function AccountContent({
       qaSendPending.current = false;
       setQaSendStatus("failed");
       return;
+    } finally {
+      // #1208: release the reserved revision only when Core did not accept the
+      // submission, so an unchanged retry passes Core's revision fence.
+      settleComposerOperation(admitted, !accepted);
     }
   }
 
@@ -4769,6 +4773,7 @@ function AccountContent({
     const draftRevision = currentComposerDraftRevision(scope, admitted.lease);
     if (!reserveComposerAcceptedRevision(admitted, draftRevision)) return;
     const localRevisionAtSubmission = mainComposerOverlayRef.current?.revision ?? null;
+    let accepted = false;
     try {
       const response = await api.scheduleSend(
         account,
@@ -4779,13 +4784,9 @@ function AccountContent({
         sendAtMs,
         draftRevision
       );
+      accepted = compareComposerDraftRevisions(response.acceptedRevision, draftRevision) > 0;
       await applyCommandReceipt(response.settlement);
-      const accepted = compareComposerDraftRevisions(response.acceptedRevision, draftRevision) > 0;
-      if (!accepted) {
-        // #1208: a non-accepting schedule leaves Core's revision unchanged.
-        settleComposerOperation(admitted);
-        return;
-      }
+      if (!accepted) return;
       const canApply = composerOperationCanApply(admitted, draftRevision);
       if (!canApply || submissionAccountOwnerRef.current !== accountOwner) return;
       const hasNewerDraft = mainComposerOverlayRef.current?.revision !== localRevisionAtSubmission;
@@ -4795,8 +4796,11 @@ function AccountContent({
         updateComposerTypingSignal(roomId, "");
       }
     } catch {
-      settleComposerOperation(admitted);
       // Command failures are surfaced through the Rust-owned error/event path.
+    } finally {
+      // #1208: release the reserved revision only when Core did not accept the
+      // schedule, so an unchanged retry passes Core's revision fence.
+      settleComposerOperation(admitted, !accepted);
     }
   }
 
@@ -5368,8 +5372,8 @@ function AccountContent({
         `caption:thread:${roomId}:${rootEventId}:${item.staged_id}`
       );
     }
-    // #1208: only a consuming send keeps the accepted-revision reservation.
-    let consumedDraft = false;
+    // #1208: as above, for the thread composer.
+    let accepted = false;
     try {
       const response = await api.sendPreparedUploads(
         account,
@@ -5379,11 +5383,11 @@ function AccountContent({
         draftRevision,
         capturedDraft
       );
+      accepted = true;
       await applyCommandReceipt(response);
-      consumedDraft = response.consumedDraft;
       const threadOverlay = threadComposerOverlayRef.current;
       if (
-        consumedDraft &&
+        response.consumedDraft &&
         threadOverlay &&
         threadOverlay.revision === localRevisionAtSubmission
       ) {
@@ -5393,7 +5397,7 @@ function AccountContent({
     } catch {
       // Command failures are surfaced through the Rust-owned error/event path.
     } finally {
-      settleComposerOperation(admitted, !consumedDraft);
+      settleComposerOperation(admitted, !accepted);
     }
   }
 
@@ -5465,6 +5469,7 @@ function AccountContent({
       submissionController.reject(submissionId);
       return;
     }
+    let accepted = false;
     let response;
     try {
       appendComposerSubmitDiagnostic("thread", "dispatch", "mode=thread_reply");
@@ -5478,8 +5483,31 @@ function AccountContent({
         captured.document,
         captured.draftRevision
       );
+      accepted =
+        response.submissionId === submissionId && response.outcome === "accepted";
+      await applyCommandReceipt(response.settlement);
+      if (!accepted) {
+        if (submissionAccountOwnerRef.current !== captured.accountOwner) {
+          return;
+        }
+        appendComposerSubmitDiagnostic("thread", "settled", "outcome=rejected_by_backend");
+        submissionController.reject(submissionId);
+        return;
+      }
+      const canApply = composerOperationCanApply(admitted, captured.draftRevision);
+      if (!canApply || submissionAccountOwnerRef.current !== captured.accountOwner) {
+        appendComposerSubmitDiagnostic("thread", "settled", "outcome=stale_context_ignored");
+        return;
+      }
+      submissionController.accept(submissionId);
+      appendComposerSubmitDiagnostic("thread", "settled", "outcome=accepted");
+      const hasNewerDraft =
+        threadComposerOverlayRef.current?.revision !== captured.localRevisionAtSubmission;
+      if (!hasNewerDraft) {
+        cancelThreadComposerDraftPersist(captured.scope);
+        clearLocalThreadComposerDraft(captured.scope);
+      }
     } catch (error) {
-      settleComposerOperation(admitted);
       if (submissionAccountOwnerRef.current !== captured.accountOwner) {
         return;
       }
@@ -5495,31 +5523,10 @@ function AccountContent({
         submissionController.reject(submissionId);
       }
       return;
-    }
-    await applyCommandReceipt(response.settlement);
-    if (response.submissionId !== submissionId || response.outcome !== "accepted") {
-      // #1208: Core never consumed the draft, so release the reserved revision
-      // before the retry reads its submitted revision from the registry.
-      settleComposerOperation(admitted);
-      if (submissionAccountOwnerRef.current !== captured.accountOwner) {
-        return;
-      }
-      appendComposerSubmitDiagnostic("thread", "settled", "outcome=rejected_by_backend");
-      submissionController.reject(submissionId);
-      return;
-    }
-    const canApply = composerOperationCanApply(admitted, captured.draftRevision);
-    if (!canApply || submissionAccountOwnerRef.current !== captured.accountOwner) {
-      appendComposerSubmitDiagnostic("thread", "settled", "outcome=stale_context_ignored");
-      return;
-    }
-    submissionController.accept(submissionId);
-    appendComposerSubmitDiagnostic("thread", "settled", "outcome=accepted");
-    const hasNewerDraft =
-      threadComposerOverlayRef.current?.revision !== captured.localRevisionAtSubmission;
-    if (!hasNewerDraft) {
-      cancelThreadComposerDraftPersist(captured.scope);
-      clearLocalThreadComposerDraft(captured.scope);
+    } finally {
+      // #1208: release the reserved revision only when Core did not accept the
+      // submission, so an unchanged retry passes Core's revision fence.
+      settleComposerOperation(admitted, !accepted);
     }
   }
 
@@ -5649,6 +5656,7 @@ function AccountContent({
     const draftRevision = currentComposerDraftRevision(scope, admitted.lease);
     if (!reserveComposerAcceptedRevision(admitted, draftRevision)) return;
     const localRevisionAtSubmission = threadComposerOverlayRef.current?.revision ?? null;
+    let accepted = false;
     let response;
     try {
       response = await api.scheduleSend(
@@ -5660,24 +5668,23 @@ function AccountContent({
         sendAtMs,
         draftRevision
       );
+      accepted = compareComposerDraftRevisions(response.acceptedRevision, draftRevision) > 0;
+      await applyCommandReceipt(response.settlement);
+      if (!accepted) return;
+      const canApply = composerOperationCanApply(admitted, draftRevision);
+      if (!canApply || submissionAccountOwnerRef.current !== accountOwner) return;
+      const hasNewerDraft =
+        threadComposerOverlayRef.current?.revision !== localRevisionAtSubmission;
+      if (!hasNewerDraft) {
+        cancelThreadComposerDraftPersist(scope);
+        clearLocalThreadComposerDraft(scope);
+      }
     } catch {
-      settleComposerOperation(admitted);
-      return;
-    }
-    await applyCommandReceipt(response.settlement);
-    const accepted = compareComposerDraftRevisions(response.acceptedRevision, draftRevision) > 0;
-    if (!accepted) {
-      // #1208: a non-accepting schedule leaves Core's revision unchanged.
-      settleComposerOperation(admitted);
-      return;
-    }
-    const canApply = composerOperationCanApply(admitted, draftRevision);
-    if (!canApply || submissionAccountOwnerRef.current !== accountOwner) return;
-    const hasNewerDraft =
-      threadComposerOverlayRef.current?.revision !== localRevisionAtSubmission;
-    if (!hasNewerDraft) {
-      cancelThreadComposerDraftPersist(scope);
-      clearLocalThreadComposerDraft(scope);
+      // Command failures are surfaced through the Rust-owned error/event path.
+    } finally {
+      // #1208: release the reserved revision only when Core did not accept the
+      // schedule, so an unchanged retry passes Core's revision fence.
+      settleComposerOperation(admitted, !accepted);
     }
   }
 
