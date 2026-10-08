@@ -1346,6 +1346,13 @@ function AccountContent({
   useEffect(() => {
     setRightPanelMode(settingsScope === "account" ? "userSettings" : "closed");
   }, [settingsScope]);
+  // Opening Account Settings awaits focused-context cleanup before it sets the
+  // panel mode. A later scope choice must invalidate that in-flight open, or a
+  // settled cleanup would resurrect `userSettings` over the destination the
+  // user actually selected. Track the latest requested scope, not the prop
+  // captured when the open started.
+  const settingsScopeIntentRef = useRef(settingsScope);
+  settingsScopeIntentRef.current = settingsScope;
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [qaSendStatus, setQaSendStatus] = useState<QaSendSmokeStatus>("idle");
   // Issue #450: transient localized notice for recognized-but-unavailable
@@ -2099,14 +2106,32 @@ function AccountContent({
     [accountTimelineTransport, acquireAvatarDemand, releaseAvatarDemand]
   );
 
+  function requestSettingsScope(scope: "account" | "app" | null): void {
+    settingsScopeIntentRef.current = scope;
+    onSettingsScopeChange(scope);
+  }
+
+  // The account surface closes the focused context asynchronously; guard the
+  // late panel-mode write so it cannot override a newer App Settings request.
+  function openAccountSettings(): void {
+    settingsScopeIntentRef.current = "account";
+    onSettingsScopeChange("account");
+    runInBackground(setRightPanelModeClosingFocusedContext(
+      "userSettings",
+      () => settingsScopeIntentRef.current === "account"
+    ));
+  }
+
   function handleShortcutAction(shortcutId: string): boolean {
     switch (shortcutId) {
       case "showHelp":
         onShowHelp();
         return true;
-      case "openUserSettings":
-        onSettingsScopeChange("account");
-        runInBackground(setRightPanelModeClosingFocusedContext("userSettings"));
+      case "openAccountSettings":
+        openAccountSettings();
+        return true;
+      case "openAppSettings":
+        requestSettingsScope("app");
         return true;
       case "logout":
         runInBackground(requestLogout());
@@ -2868,7 +2893,7 @@ function AccountContent({
     try {
       await settleCommand(api.logout());
       if (!mountedRef.current) return;
-      onSettingsScopeChange(null);
+      requestSettingsScope(null);
       setRightPanelMode("thread");
     } finally {
       if (mountedRef.current) setIsBusy(false);
@@ -6755,7 +6780,7 @@ function AccountContent({
           searchInputRef={searchInputRef}
           searchQuery={searchQuery}
           searchScope={searchScope}
-          onOpenAppSettings={() => onSettingsScopeChange("app")}
+          onOpenAppSettings={() => requestSettingsScope("app")}
           onOpenDiagnostics={() => {
             runInBackground(openDiagnostics());
           }}
@@ -6794,8 +6819,7 @@ function AccountContent({
           onCreateSpace={() => openCreateDialog("space")}
           onOpenContextMenu={openContextMenu}
           onOpenUserSettings={() => {
-            onSettingsScopeChange("account");
-            runInBackground(setRightPanelModeClosingFocusedContext("userSettings"));
+            openAccountSettings();
           }}
           onReorderSpaces={(spaceIds) => {
             runInBackground(reorderSpaces(spaceIds));
@@ -7097,7 +7121,7 @@ function AccountContent({
           }}
           settingsScope={settingsScope ?? "account"}
           sendingAccount={sendingAccount}
-          onSettingsScopeChange={onSettingsScopeChange}
+          onSettingsScopeChange={requestSettingsScope}
           displayDensity={displayDensity}
           encryptedComposerBlocked={encryptedComposerBlocked}
           isRecoveryBusy={isBusy}
@@ -7120,7 +7144,7 @@ function AccountContent({
           }}
           onClosePanel={() => {
             if (effectiveRightPanelMode === "userSettings" || effectiveRightPanelMode === "keyboardSettings") {
-              onSettingsScopeChange(null);
+              requestSettingsScope(null);
             }
             runInBackground(closeFocusedContextPanel());
           }}

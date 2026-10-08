@@ -59,7 +59,7 @@ export interface ShortcutLabelProfile {
   modLabel: "Cmd" | "Ctrl";
 }
 
-const nativeMenuOnlyActionIds = new Set(["logout", "showHelp"]);
+const nativeMenuOnlyActionIds = new Set(["logout", "showHelp", "openAccountSettings"]);
 
 const shortcuts: KeyboardShortcut[] = [
   {
@@ -283,9 +283,9 @@ const shortcuts: KeyboardShortcut[] = [
     implemented: true
   },
   {
-    id: "openUserSettings",
+    id: "openAppSettings",
     category: "navigation",
-    labelMessageId: "shortcut.openUserSettings",
+    labelMessageId: "shortcut.openAppSettings",
     keys: ["Cmd", ","],
     platforms: ["macos"],
     parity: "same",
@@ -442,7 +442,7 @@ const categoryMessageIds: Record<ShortcutCategory, MessageId> = {
 };
 
 const globalKeyboardHandlerIds = [
-  "openUserSettings",
+  "openAppSettings",
   "searchInRoom",
   "filterRooms",
   "toggleRightPanel",
@@ -526,7 +526,7 @@ export function shortcutIdForKeyboardEvent(
   }
 
   if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && key === ",") {
-    return "openUserSettings";
+    return "openAppSettings";
   }
   if (event.metaKey && event.ctrlKey && !event.altKey && !event.shiftKey && key === "f") {
     return "toggleFullscreen";
