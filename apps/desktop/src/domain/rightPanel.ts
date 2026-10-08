@@ -54,8 +54,6 @@ export function rightPanelIntentForContextMenuAction(
 
   if (target.kind === "space") {
     switch (actionId) {
-      case "selectSpace":
-        return { selectSpaceId: target.spaceId };
       case "openSpaceInfo":
         return { mode: "spaceInfo", selectSpaceId: target.spaceId };
       default:

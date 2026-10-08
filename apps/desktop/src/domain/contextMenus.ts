@@ -26,7 +26,6 @@ export type ContextMenuActionId =
   | "markRoomAsRead"
   | "markRoomAsUnread"
   | "leaveRoom"
-  | "selectSpace"
   | "openSpaceInfo"
   | "leaveSpace"
   | "inviteUserToSpace"
@@ -172,8 +171,9 @@ export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[]
       ];
     }
     case "space":
+      // #1218: no separate Open Space entry; the Space button's click and
+      // keyboard activation already select it.
       return [
-        { id: "selectSpace", labelMessageId: "context.selectSpace" },
         { id: "openSpaceInfo", labelMessageId: "context.openSpaceInfo" },
         { id: "leaveSpace", labelMessageId: "context.leaveSpace", destructive: true }
       ];
