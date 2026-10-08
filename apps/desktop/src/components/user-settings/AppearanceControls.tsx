@@ -1,5 +1,6 @@
-import { getActiveLocale, t } from "../../i18n/messages";
+import { t } from "../../i18n/messages";
 import type {
+  CatalogLocale,
   DisplayDensity,
   EmojiPreference,
   FontPreference,
@@ -230,14 +231,16 @@ function EmojiButton({
   );
 }
 
-export function LanguageControls({ selectedLocale, onUpdateSettings }: {
+export function LanguageControls({ catalogLocale, selectedLocale, onUpdateSettings }: {
+  catalogLocale: CatalogLocale;
   selectedLocale: LocaleSettings;
   onUpdateSettings: (patch: SettingsPatch) => void;
 }) {
-  // The visible choice follows the Rust-resolved effective catalog locale; the
-  // component never parses raw tags. An unsupported stored tag resolves to the
-  // English catalog, and a supported explicit tag is sent on change.
-  const selectedLanguageTag = getActiveLocale() === "ja" ? "ja-JP" : "en";
+  // The visible choice follows the Rust-resolved effective catalog locale from
+  // the snapshot; the component never reads the global catalog or parses raw
+  // tags. An unsupported stored tag resolves to the English catalog, and a
+  // supported explicit tag is sent on change.
+  const selectedLanguageTag = catalogLocale === "ja" ? "ja-JP" : "en";
   return (
     <label className="profile-settings-field">
       <span>{t("settings.language")}</span>

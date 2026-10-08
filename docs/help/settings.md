@@ -9,8 +9,9 @@ Settings** for that account. Select the gear in the top bar to open **App
 Settings**, which apply across account tabs. On macOS, the **Koushi** menu has
 these as separate **Account Settings…** and **App Settings…** items; **Cmd+,**
 opens **App Settings**. Choosing either item while settings are already open
-switches directly to that scope. When an account is selected, use the button at
-the bottom of the category list to switch between settings scopes.
+switches directly to that scope. With **Account Settings** open, use the button
+at the bottom of the category list to switch to **App Settings**; to return,
+open **Account Settings** from the rail or the **Koushi** menu.
 
 Both scopes open in a foreground dialog. Choose a category on the left; its
 controls appear on the right. Each side scrolls when the window is small. Close
