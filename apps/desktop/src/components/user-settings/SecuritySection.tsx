@@ -29,6 +29,7 @@ import type {
   RecoveryKeyDeliveryState,
   RoomKeyExportState,
   RoomKeyImportState,
+  SecureBackupGateState,
   SecureBackupPassphraseChangeState,
   SecureBackupSetupIntent,
   SecureBackupSetupState
@@ -37,6 +38,7 @@ import type {
 export function SecuritySection({
   keyManagement,
   localEncryption,
+  secureBackupGate,
   platform,
   onExportRoomKeys,
   onImportRoomKeys,
@@ -52,6 +54,8 @@ export function SecuritySection({
 }: {
   keyManagement: E2eeTrustState["key_management"];
   localEncryption: LocalEncryptionState;
+  /** Account-level secure-backup gate; the row's account truth (#1201). */
+  secureBackupGate?: SecureBackupGateState;
   platform: DisplayPlatform;
   onExportRoomKeys: (destinationPath: string, passphrase: string) => void;
   onImportRoomKeys: (sourcePath: string, passphrase: string) => void;
@@ -170,6 +174,21 @@ export function SecuritySection({
     }
   }
 
+  const secureBackupStatus = (
+    <KeyManagementStatus
+      label={t("settings.secureBackup")}
+      value={secureBackupStatusLabel(secureBackupSetup, secureBackupGate)}
+      testId="secure-backup-state"
+    />
+  );
+  // #1201: Core admits the setup request only on a gate that asks for it, so the
+  // form appears only where it would be accepted, plus while one is in flight.
+  const showSecureBackupSetup =
+    secureBackupGate === undefined ||
+    secureBackupGate.kind === "setupRequired" ||
+    secureBackupSetup.kind === "settingUp" ||
+    secureBackupSetup.kind === "failed";
+
   return (
     <>
       <div className="settings-detail-list">
@@ -272,24 +291,16 @@ export function SecuritySection({
 
           {secureBackupSetup.kind === "recoveryKeyReady" ? (
             <div className="profile-settings-form">
-              <KeyManagementStatus
-                label={t("settings.secureBackup")}
-                value={secureBackupSetupStatusLabel(secureBackupSetup)}
-                testId="secure-backup-state"
-              />
+              {secureBackupStatus}
               {recoveryKeyReveal(secureBackupSetup)}
             </div>
-          ) : (
+          ) : showSecureBackupSetup ? (
           <ImeSafeForm
             aria-label={t("settings.secureBackup")}
             className="profile-settings-form"
             onSubmit={submitSecureBackupSetup}
           >
-            <KeyManagementStatus
-              label={t("settings.secureBackup")}
-              value={secureBackupSetupStatusLabel(keyManagement.secure_backup_setup)}
-              testId="secure-backup-state"
-            />
+            {secureBackupStatus}
             <label className="profile-settings-field">
               <span>{t("settings.secureBackupPassphrase")}</span>
               <SecureImeTextField
@@ -304,6 +315,8 @@ export function SecuritySection({
               </button>
             </div>
           </ImeSafeForm>
+          ) : (
+            <div className="profile-settings-form">{secureBackupStatus}</div>
           )}
 
           {passphraseChange.kind === "changed" ? (
@@ -511,20 +524,41 @@ function roomKeyImportStatusLabel(status: RoomKeyImportState): string {
   }
 }
 
-function secureBackupSetupStatusLabel(status: SecureBackupSetupState): string {
-  switch (status.kind) {
-    case "idle":
-      return t("settings.secureBackupIdle");
+function secureBackupStatusLabel(
+  setup: SecureBackupSetupState,
+  gate: SecureBackupGateState | undefined
+): string {
+  switch (setup.kind) {
     case "settingUp":
       return t("settings.secureBackupSettingUp");
     case "recoveryKeyReady":
-      return recoveryKeyDeliveryLabel(status.delivery);
+      return recoveryKeyDeliveryLabel(setup.delivery);
     case "enabled":
       return t("settings.secureBackupEnabled");
     case "failed":
       return t("settings.secureBackupFailed", {
-        reason: failureKindLabel(status.failureKind)
+        reason: failureKindLabel(setup.failureKind)
       });
+    case "idle":
+      // #1201: this session's setup request says nothing about an account that
+      // already has secure backup, so the account gate owns the idle label.
+      return gate === undefined
+        ? t("settings.secureBackupIdle")
+        : secureBackupGateStatusLabel(gate);
+  }
+}
+
+function secureBackupGateStatusLabel(gate: SecureBackupGateState): string {
+  switch (gate.kind) {
+    case "ready":
+    case "uploadingExistingKeys":
+    case "degradedRetrying":
+      return t("settings.secureBackupEnabled");
+    case "checking":
+    case "creatingBackup":
+      return t("settings.secureBackupSettingUp");
+    default:
+      return t("settings.secureBackupIdle");
   }
 }
 
