@@ -34,17 +34,26 @@ scalar (`SettingsPropertyCard.tsx`'s single choice draft) is not a licence to
 expand that into target selection. So the deliverable adds a serializable draft,
 not a React-owned one:
 
-- `RoomAccessDraft { scope, revision, rule, allow_targets, history, published_notes }`
-  where `scope` is the room being edited or the pending create session, and
-  `revision` increments on every accepted mutation.
+- `RoomAccessDraft { scope, revision, rule, allow_targets, history }` where `scope` is
+  the room being edited or the pending create session, and `revision` increments on
+  every accepted mutation. Outcome notes are **derived** for the current draft,
+  not stored in the draft; a persisted note field would be a second outcome
+  projection.
 - Typed commands set/clear the draft's rule, its allow target set and its history
   value; React keeps only DOM/focus state and raw text input drafts. All
   eligibility, conflict and comparison semantics live in Rust.
 - The canonical comparison of "changed" is the draft against the confirmed policy
   as a **full value with a canonical target set** (sorted, deduplicated, so a
   reordered or duplicated server list is not a change).
-- The preview is computed by Rust for the current draft revision, so an
-  out-of-order preview result is fenced by the revision it was requested for.
+- The preview is computed by Rust and fenced by the full resolver **identity**, not
+  the draft revision alone: the scope/session identity, the property/context (an
+  access-preview result must not land in the history panel or vice versa), every
+  effective resolver input (all draft fields, the effective encryption value, the
+  confirmed value of the counterpart property, and the publication state), and
+  cancellation/reset. A confirmed-property advance, an encryption toggle, or a
+  session reset therefore invalidates older results even when no draft field
+  changed. Reuse the existing generation/correlation mechanisms; no new preview
+  cache owner.
 
 This replaces the round-2 idea of React-owned selection and removes the need for
 a canon exception.
@@ -91,7 +100,7 @@ a canon exception.
 
 ## Upstream comparison (corrected, with inspected revisions)
 
-- **Element X Android** (`/tmp/exa`): `SecurityAndPrivacyView.kt` renders
+  - **Element X Android** (`/tmp/exa`): `SecurityAndPrivacyView.kt` renders
   Space-member and combined request/member choices; `SecurityAndPrivacyPresenter.kt`
   manages authorised Spaces, maps to `JoinRule.Restricted`/`KnockRestricted` with
   membership conditions, folds joined/invited history, and adjusts directory
@@ -102,6 +111,9 @@ a canon exception.
   selects authorised Spaces and writes restricted / knock-restricted shapes and
   folds history; `View/SecurityAndPrivacyScreen.swift` renders the visible choice
   rows.
+  The `/tmp/exa` and `/tmp/exi` trees are extracted sources, not Git checkouts, so
+  the exact upstream revisions are not recorded here; only their file paths and
+  content are. Anyone re-checking these claims must pin a revision then.
 - **Element Web** (`/home/shinaoka/projects/Matrix/reference-repos/element-web`,
   inspected revision `48e4bce28e46b0161dbc8ca6b9dd2a3c2867d0d6`):
   `src/components/views/settings/JoinRuleSettings.tsx` renders a
@@ -268,24 +280,32 @@ Frontend:
 11. The three access surfaces agree for one room in Home, a Space, People/DM,
     favourites and low-priority contexts; the tooltip names the Space on hover and
     keyboard focus; both `knockRestricted` badges survive.
-12. Cancellation, failed save and retry, and read-only states behave per the
-    property in both surfaces.
 
 Production path:
 
 13. The browser payload submitted from each surface is asserted, not only the
-    standalone component.
-14. `qa:headless-local` on both servers, extended in the existing `room_management`
+    standalone component, including **all four history values through both
+    production submissions** (Room Info's update command and creation).
+14. A held-echo sequence is asserted: hold the local echo, deliver an unchanged
+    old observation, save the other property, then deliver the echoes and external
+    changes, and assert no rollback in settings, badge facts or combined outcomes.
+    The existing QA helper deliberately waits for the echo before rereading, so this
+    needs its own sequence rather than the sequential second-client check alone.
+15. `qa:headless-local` on both servers, extended in the existing `room_management`
     scenario (its `space_access` check currently observes only scalar join rules):
     `npm --prefix apps/desktop run qa:headless-local -- --server=both --core --scenario=room_management --timeout-ms=240000`
     asserts create with the membership choice and reads back the synced allow
     content and history; restores a restricted rule through the real update
     command and reads back the synced allow content; observes a second-client
     allow-target and history change without refresh.
-15. Two parent attachments are produced by creating with one and adding the second
+16. Two parent attachments are produced by creating with one and adding the second
     through the existing link command, then asserting the allow content is exactly
     the selected target.
-16. Narrow **and short** viewports with Japanese, English, accented and bidi
+17. Cancellation, failed save and retry, and read-only states behave per the
+    property in both surfaces, and a preview result older than the current identity
+    (scope/session, property/context, effective encryption, confirmed counterpart
+    value, publication state) never replaces newer details.
+18. Narrow **and short** viewports with Japanese, English, accented and bidi
     pseudo-locales keep every choice and the actions reachable.
 
 Each behaviour records the RED check first (command, exit status, captured
