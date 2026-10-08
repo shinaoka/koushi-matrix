@@ -2055,6 +2055,10 @@ export const TimelineView = memo(function TimelineView({
   // moved root only changes presentation; it must not cause the root id to be
   // sent as the room's latest readable event.
   const latestReadableEventId = latestEventBackedItemId(items);
+  // Viewport observations name displayed activity identities. A moved thread
+  // root still has its original content id; comparing that id to the viewport
+  // would miss a visible live edge. Rust resolves the observation's read target.
+  const latestViewportEventId = visibleRows.at(-1)?.activity_event_id ?? null;
   useEffect(() => {
     const anchorEventId = focusedTimelineTargetEventId ?? initialTargetEventId ?? "anchored";
     const identityKey = [roomId, anchorEventId].join("\u0000");
@@ -2215,8 +2219,8 @@ export const TimelineView = memo(function TimelineView({
     }
     const atBottom = isScrolledToBottom(container);
     const latestVisible =
-      latestReadableEventId !== null &&
-      visible.lastVisibleEventId === latestReadableEventId;
+      latestViewportEventId !== null &&
+      visible.lastVisibleEventId === latestViewportEventId;
     const effectiveAtBottom = atBottom || latestVisible;
     setViewportAtBottom((current) =>
       current === effectiveAtBottom ? current : effectiveAtBottom
@@ -2255,7 +2259,7 @@ export const TimelineView = memo(function TimelineView({
   }, [
     focusedTimelineTargetEventId,
     isAnchored,
-    latestReadableEventId,
+    latestViewportEventId,
     onReturnToLive,
     roomId,
     transport,
@@ -3504,17 +3508,19 @@ export const TimelineView = memo(function TimelineView({
           const contentEventId = row.content_event_id;
           const activityEventId = row.activity_event_id;
           const isUnreadMarker = Boolean(
-            activityEventId && unreadMarkerEventId === activityEventId
+            unreadMarkerEventId &&
+              (unreadMarkerEventId === contentEventId || unreadMarkerEventId === activityEventId)
           );
           const isReadMarker = Boolean(
-            activityEventId &&
-              readMarkerDisplayEventId === activityEventId &&
+            readMarkerDisplayEventId &&
+              (readMarkerDisplayEventId === contentEventId || readMarkerDisplayEventId === activityEventId) &&
               !unreadMarkerEventId
           );
           const previousRow = visibleRows[visibleIndex - 1];
           const previousIsReadMarker = Boolean(
-            previousRow?.activity_event_id &&
-              readMarkerDisplayEventId === previousRow.activity_event_id &&
+            previousRow && readMarkerDisplayEventId &&
+              (readMarkerDisplayEventId === previousRow.content_event_id ||
+                readMarkerDisplayEventId === previousRow.activity_event_id) &&
               !unreadMarkerEventId
           );
           const isContinuation = Boolean(

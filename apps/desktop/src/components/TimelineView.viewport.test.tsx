@@ -65,6 +65,143 @@ function installResizeObserverMock() {
 }
 
 describe("TimelineView", () => {
+  it.each(["read", "unread"] as const)("places the %s divider on a moved thread root's content identity", async (state) => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(listener) {
+        emit = listener;
+        return () => undefined;
+      }
+    });
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+    const boundary = state === "read" ? "$root:example.invalid" : "$before:example.invalid";
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [{
+              ...message("$root:example.invalid", "Moved thread root"),
+              display_metadata: {
+                row_id: "thread-root:$root:example.invalid",
+                kind: { kind: "threadRoot" },
+                content_event_id: "$root:example.invalid",
+                activity_event_id: "$reply:example.invalid",
+                display_timestamp_ms: null
+              }
+            }]
+          }
+        }
+      });
+      emit({
+        kind: "Timeline",
+        event: {
+          NavigationUpdated: {
+            key: KEY,
+            snapshot: {
+              read_marker_event_id: boundary,
+              read_marker_display_event_id: boundary,
+              first_unread_event_id: state === "unread" ? "$root:example.invalid" : null,
+              unread_event_count: state === "unread" ? 1 : 0,
+              unread_position: state === "unread" ? "insideViewport" : "none",
+              newer_event_count: 0,
+              can_jump_to_bottom: false,
+              local_viewed_event_id: boundary,
+              server_confirmed_read_event_id: boundary,
+              read_state_sync: "synced"
+            }
+          }
+        }
+      });
+    });
+    const marker = await screen.findByRole("separator", {
+      name: state === "read" ? "Read up to here" : "Unread messages"
+    });
+    const row = state === "read" ? marker.previousElementSibling : marker.nextElementSibling;
+    expect(row?.getAttribute("data-content-event-id")).toBe("$root:example.invalid");
+    expect(row?.getAttribute("data-activity-event-id")).toBe("$reply:example.invalid");
+  });
+
+  it("reports the visible latest thread root as the live edge using its activity identity", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const observeViewport = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(listener) {
+        emit = listener;
+        return () => undefined;
+      },
+      observeViewport
+    });
+    const root = {
+      ...message("$root:example.invalid", "Thread root"),
+      display_metadata: {
+        row_id: "thread-root:$root:example.invalid",
+        kind: { kind: "threadRoot" as const },
+        content_event_id: "$root:example.invalid",
+        activity_event_id: "$reply:example.invalid",
+        display_timestamp_ms: null
+      }
+    };
+    const rects = { "$reply:example.invalid": { top: 900, height: 100 } };
+    const rectSpy = mockTimelineRects(
+      rects,
+      { top: 0, height: 500 }
+    );
+    try {
+      render(
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+        />
+      );
+      const timeline = await screen.findByTestId("timeline-view");
+      Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
+      Object.defineProperty(timeline, "scrollHeight", { value: 1000, configurable: true });
+      Object.defineProperty(timeline, "scrollTop", { value: 400, writable: true, configurable: true });
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            InitialItems: { request_id: null, key: KEY, generation: 1, items: [root] }
+          }
+        });
+      });
+      await screen.findByText("Thread root");
+      // All material content is visible even while trailing layout space is
+      // outside the viewport. Rust must receive the same bottom fact as for an
+      // ordinary message, then resolve the root without reading its hidden reply.
+      timeline.scrollTop = 400;
+      rects["$reply:example.invalid"].top = 300;
+      observeViewport.mockClear();
+      fireEvent.scroll(timeline);
+      await waitFor(() => {
+        expect(observeViewport).toHaveBeenCalledWith(
+          "!room:example.invalid",
+          "$reply:example.invalid",
+          "$reply:example.invalid",
+          [],
+          true,
+          expect.any(String),
+          null
+        );
+      });
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
   it("automatically returns an anchored timeline once its focused bottom matches the live edge", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const onReturnToLive = vi.fn();
