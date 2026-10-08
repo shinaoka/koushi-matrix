@@ -305,21 +305,14 @@ fn compose_sidebar_with_preferences(
         })
         .collect();
 
-    let home_unread_count: u64 = rooms
-        .iter()
-        .filter(|room| contributes_attention(room, room_notification_settings))
-        .map(room_activity_unread_count)
-        .sum();
+    let account_attention =
+        account_attention_summary(rooms, room_notification_settings, pending_invite_count);
     let account_home = AccountHomeItem {
         display_name: "Home".to_owned(),
-        unread_count: home_unread_count,
-        highlight_count: rooms
-            .iter()
-            .filter(|room| contributes_attention(room, room_notification_settings))
-            .map(|room| room.highlight_count)
-            .sum(),
-        invite_count: pending_invite_count,
-        attention_count: home_unread_count + pending_invite_count,
+        unread_count: account_attention.unread_count,
+        highlight_count: account_attention.highlight_count,
+        invite_count: account_attention.invite_count,
+        attention_count: account_attention.attention_count,
         is_active: active_space_id.is_none(),
     };
 
@@ -669,7 +662,7 @@ fn unread_count(
 ) -> u64 {
     rooms
         .iter()
-        .filter(|room| !room_is_muted(&room.room_id, room_notification_settings))
+        .filter(|room| room_list_item_contributes_attention(room, room_notification_settings))
         .map(|room| room.unread_count)
         .sum()
 }
@@ -680,21 +673,97 @@ fn highlight_count(
 ) -> u64 {
     rooms
         .iter()
-        .filter(|room| !room_is_muted(&room.room_id, room_notification_settings))
+        .filter(|room| room_list_item_contributes_attention(room, room_notification_settings))
         .map(|room| room.highlight_count)
         .sum()
+}
+
+fn room_list_item_contributes_attention(
+    room: &RoomListItem,
+    room_notification_settings: &HashMap<String, RoomNotificationSettings>,
+) -> bool {
+    !room_is_muted(&room.room_id, room_notification_settings)
+        && !mentions_only_without_highlight(
+            &room.room_id,
+            room.highlight_count,
+            room_notification_settings,
+        )
 }
 
 /// Whether a room feeds the Home/Space/Rooms/DMs attention aggregates.
 ///
 /// Muted and low-priority conversations keep their own raw counts but never
 /// contribute to an aggregate badge (state-machine.md, "Sidebar Sections And
-/// Low Priority").
+/// Low Priority"). A Mentions-only room without a highlight is not actionable
+/// attention either, matching the room's own visible badge and the transient
+/// candidate; its row and the Dock badge keep the raw count.
 fn contributes_attention(
     room: &RoomSummary,
     room_notification_settings: &HashMap<String, RoomNotificationSettings>,
 ) -> bool {
-    room.tags.low_priority.is_none() && !room_is_muted(&room.room_id, room_notification_settings)
+    room.tags.low_priority.is_none()
+        && !room_is_muted(&room.room_id, room_notification_settings)
+        && !mentions_only_without_highlight(
+            &room.room_id,
+            room.highlight_count,
+            room_notification_settings,
+        )
+}
+
+fn mentions_only_without_highlight(
+    room_id: &str,
+    highlight_count: u64,
+    room_notification_settings: &HashMap<String, RoomNotificationSettings>,
+) -> bool {
+    room_notification_settings
+        .get(room_id)
+        .is_some_and(|settings| settings.mode == RoomNotificationMode::Mentions)
+        && highlight_count == 0
+}
+
+/// One Rust-owned per-account attention policy (#1219).
+///
+/// The account tab badge and that account's Home aggregate read this same
+/// value, so a room or a pending invite can never show attention in one
+/// surface and not the other. `unread_count` is the sum of
+/// [`room_activity_unread_count`] over the rooms that
+/// [`contributes_attention`]; pending invites are counted separately and added
+/// into `attention_count`, which is the badge both surfaces render.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AccountAttentionSummary {
+    pub unread_count: u64,
+    pub highlight_count: u64,
+    pub invite_count: u64,
+    pub attention_count: u64,
+}
+
+pub fn account_attention_summary(
+    rooms: &[RoomSummary],
+    room_notification_settings: &HashMap<String, RoomNotificationSettings>,
+    pending_invite_count: u64,
+) -> AccountAttentionSummary {
+    let mut summary = AccountAttentionSummary {
+        invite_count: pending_invite_count,
+        ..AccountAttentionSummary::default()
+    };
+    for room in rooms {
+        if !contributes_attention(room, room_notification_settings) {
+            continue;
+        }
+        summary.unread_count += room_activity_unread_count(room);
+        summary.highlight_count += room.highlight_count;
+    }
+    summary.attention_count = summary.unread_count + summary.invite_count;
+    summary
+}
+
+/// Per-account attention for one runtime, as the account-tab snapshot reads it.
+pub fn account_attention_summary_for_state(state: &AppState) -> AccountAttentionSummary {
+    account_attention_summary(
+        &state.rooms,
+        &state.room_notification_settings,
+        state.invites.len() as u64,
+    )
 }
 
 fn room_is_muted(

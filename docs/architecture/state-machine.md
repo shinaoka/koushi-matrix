@@ -841,6 +841,17 @@ stateDiagram-v2
   outer owner aggregates native delivery and badges. Search crawling and media
   prefetch share one app-wide single-flight budget, with selected-account work
   preferred.
+- The account-tab badge and that account's Home rail badge render one Rust-owned
+  per-account attention policy (`AccountAttentionSummary`): the sum of the
+  per-room `room_activity_unread_count` over conversations that are not muted,
+  not low-priority, and (in a Mentions-only room) carry a highlight, plus pending
+  invites. `AccountHomeItem.attention_count` is that value, and the Tauri
+  account-tab snapshot reads the same function for every tab, selected or
+  background, so Home and the tab can never disagree and an invite-only account
+  still badges. The native Dock/taskbar `badge_count` and the transient
+  notification candidate remain separate policies: a Mentions-only room keeps its
+  raw Dock contribution while the account tab does not count it, and disabling
+  badges does not change the tab badge.
 
 ## Room List Filter
 
@@ -979,7 +990,10 @@ local flag:
   reports 1) until something paginates the room. While no own read receipt is
   anchored in the loaded timeline (`read_receipts().latest_active.is_none()`), the
   room-list projection therefore tops the notification and mention counters up
-  with the server's `unread_notification_counts` (per-counter maximum). A nonempty
+  with the server's `unread_notification_counts` (per-counter maximum). The
+  standalone attention summary (`room_attention_summary_from_room`) applies the
+  same rule, so a summary built outside the room list cannot disagree with the
+  badge. A nonempty
   `pending` is deliberately not part of that condition: an unmatched receipt does
   not make the client counters a lower bound, because they are counted from the
   newest boundary the SDK did find. The top-up must stay before the read-marker
@@ -1264,6 +1278,14 @@ Low priority is an attention-suppression tag, not a mute and not a read action:
   totals, or the Rooms/DMs section unread/highlight aggregates, including their
   mentions. The existing Activity recent/unread exclusion is unchanged. Pending
   invites are counted separately and stay unaffected.
+- The Home rail's `AccountHomeItem.attention_count` and the account-tab badge are
+  the shared per-account attention policy ("Account Tabs And Concurrent
+  Sessions"). A Mentions-only room without a highlight is not actionable
+  attention: it contributes to no aggregate badge (Home, Space rail, or the
+  Rooms/DMs section totals), matching the room's own visible badge and the
+  transient candidate. A plain room's raw unread does contribute, and the room's
+  own raw fields and its Dock contribution keep their existing semantics; a
+  Mentions-only room with a highlight counts normally.
 - The room's own raw `unread_count`, notification/highlight counts, and read
   receipts are preserved, so the low-priority row still shows real unread state.
   Setting the tag never marks the room read and never writes a server push-rule
@@ -4783,7 +4805,9 @@ stateDiagram-v2
   the persistent raw count and are excluded from candidates and attention totals
   only. Muted rooms are excluded from both persistent and transient native
   attention. Mention-only rooms retain their raw Dock contribution while
-  candidate eligibility still requires a highlight.
+  candidate eligibility still requires a highlight; the shared per-account
+  attention policy behind the account tab and Home ("Account Tabs And Concurrent
+  Sessions") does not count a Mentions-only room without a highlight.
   The projection prefers `mention` over `dm` over `message` candidates,
   suppresses initial sync/backfill/self/focused-room observations, suppresses
   duplicate candidates, and clears badge/candidate state when eligible unread

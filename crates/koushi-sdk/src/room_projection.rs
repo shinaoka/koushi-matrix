@@ -3204,11 +3204,15 @@ fn matrix_room_tag_info_from_sdk(
 
 pub fn room_attention_summary_from_room(room: &matrix_sdk::Room) -> Option<RoomAttentionSummary> {
     let room_display_name = room.cached_display_name().map(|name| name.to_string())?;
+    // #1176: use the same cold-start top-up as the room list, so the attention
+    // summary and the badge agree when the client-side counters are a lower
+    // bound and the server counts are already in hand.
+    let (notification_count, highlight_count) = effective_room_notification_counts(room);
     room_attention_summary_from_counts(
         Some(room_display_name),
         room.is_dm(),
-        room.num_unread_notifications(),
-        room.num_unread_mentions(),
+        notification_count,
+        highlight_count,
         room.num_unread_messages(),
         room.is_marked_unread(),
     )

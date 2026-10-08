@@ -512,6 +512,10 @@ fn account_tabs_snapshot_from_states(
                         }
                         _ => None,
                     });
+            // One per-account attention policy: the tab badge is the same value
+            // as this account's Home aggregate (#1219).
+            let unread_count =
+                koushi_state::account_attention_summary_for_state(&state).attention_count;
             AccountTabSummary {
                 id: tab.id.as_str().to_owned(),
                 account_key: tab.account_key.map(|key| key.0),
@@ -519,7 +523,7 @@ fn account_tabs_snapshot_from_states(
                 display_name: state.profile.own.display_name,
                 avatar_source_ref,
                 status,
-                unread_count: state.native_attention.summary.unread_count,
+                unread_count,
             }
         })
         .collect();

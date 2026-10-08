@@ -47,7 +47,8 @@ pub use room_address::{
     suggest_space_room_alias_localpart,
 };
 pub use sidebar::{
-    AccountHomeItem, RoomListItem, SidebarModel, SidebarSections, SpaceRailItem, compose_sidebar,
+    AccountAttentionSummary, AccountHomeItem, RoomListItem, SidebarModel, SidebarSections,
+    SpaceRailItem, account_attention_summary, account_attention_summary_for_state, compose_sidebar,
     compose_sidebar_for_state, compose_sidebar_with_account_facts,
 };
 pub use state::{
