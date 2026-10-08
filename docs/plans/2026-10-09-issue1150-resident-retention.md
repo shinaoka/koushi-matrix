@@ -1,11 +1,13 @@
 # #1150: resident retention (M2 follow-up)
 
 Status: **the SDK fork pin landed; the retention changes are NOT implemented.**
-Revision 3 of this record. Two independent pre-implementation reviews rejected
-the revision-2 retirement design (revision 1: gpt-6.1-sol, one BLOCKER + five
-IMPORTANT; revision 2: deepseek-v4-pro, one BLOCKER + three IMPORTANT). Every
-finding was re-verified against the source and is recorded below so a later
-attempt does not start from scratch. Parent issue:
+Revision 4. Two independent pre-implementation reviews rejected the revision-2
+retirement design (revision 1: gpt-6.1-sol, one BLOCKER + five IMPORTANT;
+revision 2: deepseek-v4-pro, one BLOCKER + three IMPORTANT). Every finding was
+re-verified against the source and is recorded below. Revision 4 adds the two
+facts that finally decide the shape of the work: the per-actor retention is real
+and structural, and preserving read intent while retiring an actor is not a
+bounded warm-set change but a read-state ownership change. Parent issue:
 [#1150](https://github.com/shinaoka/koushi-matrix/issues/1150). Predecessors:
 PR #1151 (compact `CoreEvent`), #1152 (drop the duplicated indexed room map),
 #1157 (M2 index-first search, plan
@@ -144,19 +146,70 @@ that needs its own design and review, not a bolt-on to this record.
   rather than the steady-state quantity the issue bounds. Reopen with its own
   measurement.
 
-## Open decisions for the maintainer
+## Revision 4: what the structural check settled
 
-1. **Policy owner.** overview item 7 makes keep-warm a UI decision while also
-   forbidding unbounded runtime retention, and the UI never unsubscribes. Should
-   Core own an enforced bound (a canon amendment to overview item 7 and to
-   `state-machine.md:3308-3318`), or should the frontend drive it through the
-   existing `Unsubscribe` command so the documented owner stays the UI?
-2. **Read intent.** Preserve a cold room's pending automatic-read intent (needs
-   the two-phase retirement or a manager-owned read-intent move), or explicitly
-   approve cancelling it (a behaviour change with its own test)?
-3. **Measurement before implementation.** Build the burst/retention
-   instrumentation first and implement only what it justifies, which is what the
-   previous plan's own stop rule required.
+**The per-actor retention is real, and it is not the SDK's alone.** A retained
+`TimelineActor` owns, per room, the full canonical item list and its derived
+copies, none of which is truncated:
+
+- `navigation_items: Vec<TimelineItem>` (`timeline/actor.rs:905`) is never
+truncated, drained or retained — only indexed into (`actor.rs:1280`,
+`item_projection.rs:645`, `navigation.rs:1757`).
+- `navigation_items` "deliberately has a wider lifetime than the UI's replay
+  window" (`thread_projection.rs:1157-1159`), while the bounded replay window is
+  only `ROOM_REPLAY_INITIAL_ITEMS_MAX = 120` (`navigation.rs:53`).
+- `media_gallery_items` and `media_sources` grow with the same window
+  (`actor.rs:891,911`, `media.rs:586-596`), and the SDK `Arc<Timeline>` holds its
+  own copy of the item vector (`actor.rs:849`).
+
+So a room that was scrolled deep keeps that depth for the session, per visited
+room: the canon violation in the section above has a real memory consequence,
+not just a bookkeeping one. That is why the fix is worth doing at all.
+
+**But it is not a warm-set change.** Read state is projected *into* the actor:
+`project_local_read_correlation` looks the key up in `timelines` and, when the
+handle is gone, removes the correlation outright
+(`timeline/read_state.rs:1637-1640`), and the projection itself is a
+`TimelineActorControl::ReadStateProjection` sent to that handle (`:1642-1646`).
+The pending target, the position evidence needed to validate it
+(`TimelinePositionIndex`, `read_state.rs:694-697`, one entry per event) and the
+projected boundary all live on the actor side. Retiring the actor therefore
+*drops* automatic read intent no matter how retirement is ordered; a guard only
+chooses which intents are dropped, and a mailbox drain only narrows the window.
+Preserving it means moving local-read ownership out of the actor — a read-state
+machine change with its own canon amendment (`docs/architecture/state-machine.md`
+read-receipt sections), its own tests, and its own review, which is a different
+deliverable from a bounded warm set.
+
+## Consequent decisions
+
+- **Policy owner: Core.** overview item 7's two sentences conflict, and the
+  normative prohibition on unbounded maps of owned live handles governs. When
+  the work is done, Core owns the enforced backstop and the UI keeps the option
+  to unsubscribe earlier. This still needs the canon amendment named below.
+- **Read intent: preserved, so actor retirement waits.** Because preservation
+  is an ownership move (above), it is the follow-up issue's subject rather than
+  part of a bounded warm set.
+- **Measurement: structural, not RSS.** The repository has no allocator or RSS
+  instrumentation, and adding one would be new infrastructure. The check that
+  decided this record is structural (what the actor owns and whether anything
+  truncates it), which is deterministic and reviewable; a byte measurement
+  remains unclaimed.
+
+## Sequencing
+
+The bounded warm set and the read-state ownership move are one deliverable, in
+that order: the ownership move first (so retirement cannot drop intent), then the
+warm set that uses it. Both need their own design record and independent review
+before implementation, because the second is a read-state machine change. That
+work is tracked in the follow-up issue
+["Move local read intent off the timeline actor so cold rooms can be retired"](https://github.com/shinaoka/koushi-matrix/issues/1230),
+which carries the same evidence and the acceptance criteria.
+
+What must not happen in either: claiming a byte bound a `tokio::broadcast` and an
+unbounded DTO list cannot enforce, inventing a threshold or latency gate the
+issue does not define, or shipping retirement with intent loss and calling it
+resource cleanup.
 
 ## SDK fork pin
 
