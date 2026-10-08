@@ -151,7 +151,6 @@ describe("context menu registry", () => {
       "leaveRoom"
     ]);
     expect(contextMenuItems({ kind: "space" }).map((item) => item.id)).toEqual([
-      "selectSpace",
       "openSpaceInfo",
       "leaveSpace"
     ]);
