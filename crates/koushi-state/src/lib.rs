@@ -48,8 +48,8 @@ pub use room_address::{
 };
 pub use sidebar::{
     AccountAttentionSummary, AccountHomeItem, RoomListItem, SidebarModel, SidebarSections,
-    SpaceRailItem, account_attention_summary, account_attention_summary_for_state, compose_sidebar,
-    compose_sidebar_for_state, compose_sidebar_with_account_facts,
+    SpaceRailItem, account_attention_summary_for_state, compose_sidebar, compose_sidebar_for_state,
+    compose_sidebar_with_account_facts,
 };
 pub use state::{
     AccountDisplaySettings, AccountManagementCapabilities, AccountManagementOperation,

@@ -507,6 +507,19 @@ fn pending_invite(room_id: &str) -> koushi_state::InvitePreview {
     }
 }
 
+/// Only Ready tabs are badged, so a badge fixture must be Ready.
+fn ready_app_state() -> koushi_state::AppState {
+    koushi_state::AppState {
+        session: koushi_state::SessionState::Ready(koushi_state::SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: "@tab:example.invalid".to_owned(),
+            device_id: "TAB".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        ..koushi_state::AppState::default()
+    }
+}
+
 #[test]
 fn account_tab_snapshot_projects_the_per_account_policy_from_every_runtime() {
     use koushi_core::account_runtime_manager::{AccountTabDescriptor, AccountTabId};
@@ -517,13 +530,13 @@ fn account_tab_snapshot_projects_the_per_account_policy_from_every_runtime() {
         account_key: Some(AccountKey(user_id.to_owned())),
         homeserver: Some("https://example.invalid".to_owned()),
     };
-    let mut alice = koushi_state::AppState::default();
+    let mut alice = ready_app_state();
     alice.native_attention.summary.badge_count = 2;
     // Raw unread content with zero notification/highlight counters (#1219).
     alice
         .rooms
         .push(attention_room("!alice-dm:example.invalid", true, 1));
-    let mut bob = koushi_state::AppState::default();
+    let mut bob = ready_app_state();
     bob.native_attention.summary.badge_count = 4;
     bob.invites
         .push(pending_invite("!bob-invite:example.invalid"));

@@ -3,14 +3,16 @@
 //!
 //! The tab badge is not the native OS-notification or Dock-badge policy: it is
 //! the account's actionable attention, so it must count the same rooms and
-//! pending invites the Home rail counts, including for background accounts.
+//! pending invites the Home rail counts, including for background accounts. The
+//! policy keeps only the existing muted and low-priority exclusions, so a
+//! Mentions-only room with unread content still contributes its raw unread.
 
 use std::collections::HashMap;
 
 use koushi_state::{
     AppState, InvitePreview, NativeAttentionCapabilities, NativeAttentionCapability,
     NativeAttentionObservationKind, NativeAttentionProjectionInput, RoomNotificationMode,
-    RoomNotificationSettings, RoomSummary, RoomTags, SessionInfo, SessionState,
+    RoomNotificationSettings, RoomSummary, RoomTags, SessionInfo, SessionState, SpaceSummary,
     compose_sidebar_for_state, native_attention_state_from_rooms,
 };
 
@@ -56,6 +58,18 @@ fn room(
         dm_space_ids: Vec::new(),
         is_encrypted: false,
         joined_members: 0,
+    }
+}
+
+fn space(space_id: &str, child_room_ids: Vec<String>) -> SpaceSummary {
+    SpaceSummary {
+        space_id: space_id.to_owned(),
+        raw_name: Some("Space".to_owned()),
+        display_name: "Space".to_owned(),
+        avatar: None,
+        join_rule: None,
+        child_room_ids,
+        parent_side_child_room_ids: Vec::new(),
     }
 }
 
@@ -112,8 +126,18 @@ fn dock_badge_count(state: &AppState) -> u64 {
     .badge_count
 }
 
+fn mentions_only(state: &mut AppState, room_id: &str) {
+    state.room_notification_settings.insert(
+        room_id.to_owned(),
+        RoomNotificationSettings {
+            mode: RoomNotificationMode::Mentions,
+            ..RoomNotificationSettings::default()
+        },
+    );
+}
+
 #[test]
-fn unread_dm_account_tab_matches_the_home_aggregate() {
+fn unread_dm_account_tab_matches_the_home_aggregate_and_dm_section() {
     // A non-muted DM with raw unread content but zero notification/highlight
     // counters: Home/DM count 1, the tab must too.
     let mut state = ready_state();
@@ -121,9 +145,12 @@ fn unread_dm_account_tab_matches_the_home_aggregate() {
         .rooms
         .push(room("!dm:example.invalid", "Direct", true, 1, 0, 0));
 
-    let home = compose_sidebar_for_state(&state).account_home;
+    let sidebar = compose_sidebar_for_state(&state);
+    let home = sidebar.account_home;
     assert_eq!(home.unread_count, 1);
+    assert_eq!(sidebar.dm_unread_count, 1);
     assert_eq!(account_tab_attention(&state), home.attention_count);
+    assert_eq!(account_tab_attention(&state), 1);
 }
 
 #[test]
@@ -135,6 +162,7 @@ fn invite_only_account_tab_matches_the_home_aggregate() {
     let home = compose_sidebar_for_state(&state).account_home;
     assert_eq!(home.attention_count, 1);
     assert_eq!(account_tab_attention(&state), home.attention_count);
+    assert_eq!(account_tab_attention(&state), 1);
 }
 
 #[test]
@@ -160,10 +188,14 @@ fn muted_and_low_priority_rooms_follow_the_home_aggregate() {
     let home = compose_sidebar_for_state(&state).account_home;
     assert_eq!(home.unread_count, 4, "only the counted room contributes");
     assert_eq!(account_tab_attention(&state), home.attention_count);
+    assert_eq!(account_tab_attention(&state), 4);
 }
 
 #[test]
-fn mentions_only_room_keeps_the_tab_exclusion_and_home_follows_it() {
+fn mentions_only_room_with_unread_content_contributes_to_home_and_its_sections() {
+    // The existing Home aggregate policy keeps only the muted and low-priority
+    // exclusions: a Mentions-only room's raw unread is still attention. Issue
+    // #1219 asked the account tab to follow that policy, not to change it.
     let mut state = ready_state();
     state.rooms.push(room(
         "!mentions:example.invalid",
@@ -173,21 +205,41 @@ fn mentions_only_room_keeps_the_tab_exclusion_and_home_follows_it() {
         3,
         0,
     ));
-    state.room_notification_settings.insert(
-        "!mentions:example.invalid".to_owned(),
-        RoomNotificationSettings {
-            mode: RoomNotificationMode::Mentions,
-            ..RoomNotificationSettings::default()
-        },
-    );
+    state.spaces.push(space(
+        "!space:example.invalid",
+        vec!["!mentions:example.invalid".to_owned()],
+    ));
+    mentions_only(&mut state, "!mentions:example.invalid");
 
     let sidebar = compose_sidebar_for_state(&state);
+    assert_eq!(sidebar.account_home.unread_count, 3);
+    assert_eq!(sidebar.space_unread_count, 3);
+    assert_eq!(sidebar.space_rail.len(), 1);
+    assert_eq!(sidebar.space_rail[0].unread_count, 3);
+    assert_eq!(account_tab_attention(&state), 3);
     assert_eq!(
-        sidebar.account_home.unread_count, 0,
-        "a mentions-only room without a highlight is not actionable attention"
+        account_tab_attention(&state),
+        sidebar.account_home.attention_count
     );
-    assert_eq!(sidebar.space_unread_count, 0);
-    assert_eq!(sidebar.dm_unread_count, 0);
+}
+
+#[test]
+fn mentions_only_dm_with_unread_content_contributes_to_the_dm_section() {
+    let mut state = ready_state();
+    state.rooms.push(room(
+        "!mention-dm:example.invalid",
+        "Mention DM",
+        true,
+        2,
+        2,
+        0,
+    ));
+    mentions_only(&mut state, "!mention-dm:example.invalid");
+
+    let sidebar = compose_sidebar_for_state(&state);
+    assert_eq!(sidebar.dm_unread_count, 2);
+    assert_eq!(sidebar.account_home.unread_count, 2);
+    assert_eq!(account_tab_attention(&state), 2);
     assert_eq!(
         account_tab_attention(&state),
         sidebar.account_home.attention_count
@@ -200,22 +252,17 @@ fn mentions_only_room_with_a_highlight_still_contributes() {
     state
         .rooms
         .push(room("!mention:example.invalid", "Mention", false, 3, 3, 1));
-    state.room_notification_settings.insert(
-        "!mention:example.invalid".to_owned(),
-        RoomNotificationSettings {
-            mode: RoomNotificationMode::Mentions,
-            ..RoomNotificationSettings::default()
-        },
-    );
+    mentions_only(&mut state, "!mention:example.invalid");
 
     let home = compose_sidebar_for_state(&state).account_home;
     assert_eq!(home.unread_count, 3);
     assert_eq!(home.highlight_count, 1);
     assert_eq!(account_tab_attention(&state), home.attention_count);
+    assert_eq!(account_tab_attention(&state), 3);
 }
 
 #[test]
-fn background_account_attention_never_leaks_into_another_tab() {
+fn account_policy_reads_only_its_own_state() {
     let mut alice = ready_state();
     alice
         .rooms
@@ -225,46 +272,25 @@ fn background_account_attention_never_leaks_into_another_tab() {
 
     let alice_home = compose_sidebar_for_state(&alice).account_home;
     let bob_home = compose_sidebar_for_state(&bob).account_home;
+    assert_eq!(account_tab_attention(&alice), 2);
     assert_eq!(account_tab_attention(&alice), alice_home.attention_count);
+    assert_eq!(account_tab_attention(&bob), 1);
     assert_eq!(account_tab_attention(&bob), bob_home.attention_count);
-    assert_ne!(alice_home.attention_count, 0);
-    assert_ne!(bob_home.attention_count, 0);
-    // Each tab reads only its own account's rooms and invites.
-    assert!(
-        alice
-            .rooms
-            .iter()
-            .all(|room| room.room_id != "!bob-invite:example.invalid")
-    );
-    assert!(
-        bob.invites
-            .iter()
-            .all(|invite| invite.room_id != "!alice:example.invalid")
-    );
 }
 
 #[test]
 fn dock_badge_policy_stays_separate_from_the_account_tab() {
-    // The Dock/taskbar badge keeps its own intended count: a mentions-only room
-    // still contributes its raw unread there, while the account tab treats it as
-    // non-actionable.
+    // The Dock/taskbar badge keeps its own intended count. A manual marked-unread
+    // with no raw unread is Home/tab attention (room_activity_unread_count
+    // fabricates 1) but never a Dock count, because the persistent badge sums raw
+    // unread messages only.
     let mut state = ready_state();
-    state.rooms.push(room(
-        "!mentions:example.invalid",
-        "Mentions",
-        false,
-        3,
-        0,
-        0,
-    ));
-    state.room_notification_settings.insert(
-        "!mentions:example.invalid".to_owned(),
-        RoomNotificationSettings {
-            mode: RoomNotificationMode::Mentions,
-            ..RoomNotificationSettings::default()
-        },
-    );
+    let mut marked = room("!marked:example.invalid", "Marked", false, 0, 0, 0);
+    marked.marked_unread = true;
+    state.rooms.push(marked);
 
-    assert_eq!(account_tab_attention(&state), 0);
-    assert_eq!(dock_badge_count(&state), 3);
+    let home = compose_sidebar_for_state(&state).account_home;
+    assert_eq!(home.unread_count, 1);
+    assert_eq!(account_tab_attention(&state), 1);
+    assert_eq!(dock_badge_count(&state), 0);
 }
