@@ -3670,13 +3670,42 @@ mock.setCommandResponse("send_prepared_uploads", ({
           }
         }
       : withoutUploads;
-  const next = setCurrentSnapshot(settled);
   // #1130/#1204: Core owns whether a send consumed the draft; this fake reports the
-  // switch below — never a policy of its own. The command response carries the flag,
-  // and the settled snapshot is published explicitly because this fake no longer
-  // returns a snapshot-shaped value that the harness normalizer would publish.
+  // switch below — never a policy of its own. A consuming send is modelled as the
+  // Rust-shaped settlement it is: the composer draft is empty and the accepted clear
+  // token has advanced, so the renderer's fallback agrees with the cleared overlay.
+  const settledSnapshot =
+    preparedSendConsumesDraftForTesting && target.kind === "main"
+      ? {
+          ...settled,
+          state: {
+            ...settled.state,
+            ui: {
+              ...settled.state.ui,
+              timeline: {
+                ...settled.state.ui.timeline,
+                composer: {
+                  ...settled.state.ui.timeline.composer,
+                  draft: "",
+                  document: { version: 2 as const, inlines: [] },
+                  last_accepted_clear_revision:
+                    settled.state.ui.timeline.composer.draft_revision
+                }
+              }
+            }
+          }
+        }
+      : settled;
+  setCurrentSnapshot(settledSnapshot);
+  // Publish the settled snapshot through the harness's own state update (which bumps
+  // the generation the receipt must carry), so the renderer applies it through the
+  // real receipt reconciliation path.
   harnessControl.pushStateUpdate();
-  return { consumedDraft: preparedSendConsumesDraftForTesting, settlement: next };
+  return {
+    protocolVersion: 1,
+    publishedGeneration: currentSnapshot.state_generation ?? 0,
+    consumedDraft: preparedSendConsumesDraftForTesting
+  };
 });
 mock.setCommandResponse("update_staged_upload_caption", ({ target, stagedId, document }: {
   target: ComposerTarget;

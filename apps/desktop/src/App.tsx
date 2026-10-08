@@ -4522,6 +4522,10 @@ function AccountContent({
     // captured before any await, and the acceptance is reserved so input typed right
     // after the send receives a newer revision instead of racing the clear.
     const capturedDraft = capturedComposerDocument(target);
+    // Captured before the send so a later, independently advanced command revision
+    // cannot masquerade as newer local input (the established text path does the
+    // same with `localRevisionAtSubmission`).
+    const localRevisionAtSubmission = mainComposerOverlayRef.current?.revision ?? null;
     const draftRevision = currentComposerDraftRevision(scope, admitted.lease);
     if (!reserveComposerAcceptedRevision(admitted, draftRevision)) {
       return;
@@ -4544,18 +4548,13 @@ function AccountContent({
       // Only Core's answer clears anything, and only through the established clear
       // path: dropping the overlay reference here would make that path early-return
       // and leave both the registry overlay and the mounted editor showing the text.
-      if (response.consumedDraft) {
-        const hasNewerDraft =
-          mainComposerOverlayRef.current?.revision !== null &&
-          mainComposerOverlayRef.current?.revision !== undefined &&
-          mainComposerOverlayRef.current.revision !== draftRevision;
-        if (!hasNewerDraft) {
-          cancelComposerDraftPersist(scope);
-          // Deferred by a turn so the send's own state settlement lands first: the
-          // clear re-renders the composer, and doing that between the command
-          // response and its state update left the staging projection unapplied.
-          window.setTimeout(() => clearLocalComposerDraft(scope), 0);
-        }
+      // Read the overlay at the clear point: input that arrived between the response
+      // and here has a different revision and keeps the text, and a command revision
+      // that advanced on its own is not mistaken for a local edit.
+      const overlay = mainComposerOverlayRef.current;
+      if (response.consumedDraft && overlay && overlay.revision === localRevisionAtSubmission) {
+        cancelComposerDraftPersist(scope);
+        clearLocalComposerDraft(scope);
       }
     } catch {
       // Command failures are surfaced through the Rust-owned error/event path.
@@ -5338,6 +5337,7 @@ function AccountContent({
     if (!admitted) return;
     // #1204: as above, for the thread composer.
     const capturedDraft = capturedComposerDocument(target);
+    const localRevisionAtSubmission = threadComposerOverlayRef.current?.revision ?? null;
     const draftRevision = currentComposerDraftRevision(scope, admitted.lease);
     if (!reserveComposerAcceptedRevision(admitted, draftRevision)) {
       return;
@@ -5357,15 +5357,14 @@ function AccountContent({
         capturedDraft
       );
       await applyCommandReceipt(response);
-      if (response.consumedDraft) {
-        const hasNewerDraft =
-          threadComposerOverlayRef.current?.revision !== null &&
-          threadComposerOverlayRef.current?.revision !== undefined &&
-          threadComposerOverlayRef.current.revision !== draftRevision;
-        if (!hasNewerDraft) {
-          cancelThreadComposerDraftPersist(scope);
-          window.setTimeout(() => clearLocalThreadComposerDraft(scope), 0);
-        }
+      const threadOverlay = threadComposerOverlayRef.current;
+      if (
+        response.consumedDraft &&
+        threadOverlay &&
+        threadOverlay.revision === localRevisionAtSubmission
+      ) {
+        cancelThreadComposerDraftPersist(scope);
+        clearLocalThreadComposerDraft(scope);
       }
     } catch {
       // Command failures are surfaced through the Rust-owned error/event path.
