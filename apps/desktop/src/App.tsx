@@ -111,6 +111,8 @@ import {
   type TimelineStoreState
 } from "./domain/timelineStore";
 import { TimelineStoreContext } from "./components/timelineStoreContext";
+import { writeClipboardText } from "./components/timeline/TimelineMessageBody";
+import { webSearchUrl } from "./domain/externalLinks";
 import {
   type ContextMenuActionId,
   type ContextMenuItem
@@ -6155,6 +6157,24 @@ function AccountContent({
           // a plain-text edit from the shell.
           target.onOpenEdit?.();
           return;
+        case "copySelectedText": {
+          // #1155: the exact captured selection, through the same clipboard
+          // helper every other copy action uses. Nothing is persisted.
+          const selected = target.selectedText;
+          if (selected) {
+            void writeClipboardText(selected).catch(() => undefined);
+          }
+          return;
+        }
+        case "searchWebForSelectedText": {
+          // #1155: transmitted only after the user picks this action, to the
+          // fixed provider named in the localized label.
+          const url = target.selectedText ? webSearchUrl(target.selectedText) : null;
+          if (url) {
+            runInBackground(openExternalHttpUrl(url));
+          }
+          return;
+        }
         case "redactMessage":
           runInBackground(redactMessage(target.message.room_id, target.message.event_id));
           return;

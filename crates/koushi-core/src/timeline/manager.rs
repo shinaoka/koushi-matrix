@@ -547,7 +547,7 @@ impl Drop for TimelineManagerActor {
         self.terminal_ingress.stop_accepting();
         self.read_workers.cancel_all();
         self.send_enqueue_workers.cancel_all();
-        self.focused_builds.cancel_all();
+        self.focused_builds.abort_all();
         self.global_send_completion_observer_future.take();
     }
 }
@@ -1075,7 +1075,7 @@ impl TimelineManagerActor {
         // Stop accepting commands, then join session-owned enqueue workers
         // while the sole global terminal observer remains live. A worker may
         // still bind a durably saved SDK transaction during this phase.
-        self.focused_builds.cancel_all();
+        self.focused_builds.cancel_all().await;
         self.read_workers.cancel_all();
         self.read_workers.publish_persistence();
         let abandoned_read_waiters = self
@@ -1720,10 +1720,9 @@ impl TimelineManagerActor {
     /// cleanup, and actor-resource lease release. Session residency is
     /// intentionally independent and is never removed here.
     pub(super) async fn unsubscribe_timeline(&mut self, key: &TimelineKey) {
-        // #1146: the manager stops waiting for an in-flight focused build and
-        // rolls it back like a failed build, without a terminal; its detached
-        // SDK work may finish later, but that result is discarded.
-        if let Some(pending) = self.focused_builds.cancel(key) {
+        // #1146: cancel and settle SDK construction before rolling back its
+        // lease/activation, without publishing a cancellation failure terminal.
+        if let Some(pending) = self.focused_builds.cancel(key).await {
             if pending.lease_added
                 && let Some(room_id) = &pending.lease_room_id
             {
@@ -2082,8 +2081,8 @@ impl TimelineManagerActor {
             let timeline_result = koushi_timeline_builder(&room, focus).build().await;
             startup_trace::trace_phase(StartupPhase::TimelineBuild, build_started);
             record_subscribe_stage("build_done", None);
-            // The actual SDK-internal wait, recorded even when the manager has
-            // already stopped waiting for this detached build.
+            // The actual SDK-internal wait for a completed build. Cancellation
+            // is recorded by the supervisor when the underlying future is dropped.
             record_focused_build(
                 if timeline_result.is_ok() {
                     "sdk_build_done"
@@ -2105,7 +2104,7 @@ impl TimelineManagerActor {
         &mut self,
         completion: FocusedBuildCompletion,
     ) {
-        let Some(pending) = self.focused_builds.take_current(&completion) else {
+        let Some(pending) = self.focused_builds.take_current(&completion).await else {
             return;
         };
         let key = completion.key;

@@ -1433,6 +1433,23 @@ impl TimelineActor {
             }
             // Backstop: relay genuinely stuck. EndReached is the safest
             // fallback (anchor not confirmed in items; the caller can retry).
+            //
+            // #1170/#1167: this is the one path where the cache load DID report
+            // `anchor_present == true` and Core still never received the anchor,
+            // so `EndReached` here would otherwise look like a quiet fallback.
+            // Mirror it to stderr, identifier-free; the cache_load record above
+            // already holds the load facts for this request.
+            koushi_diagnostics::record_and_stderr(
+                koushi_diagnostics::DiagnosticEvent::new(
+                    koushi_diagnostics::DiagnosticLevel::Debug,
+                    "core.timeline_anchor_restore",
+                    "relay_backstop",
+                )
+                .field(koushi_diagnostics::DiagnosticField::count(
+                    "ticks",
+                    u64::from(RESTORE_ANCHOR_RELAY_WAIT_TICKS),
+                )),
+            );
             self.finish_anchor_restore(restore.request_id, TimelineAnchorRestoreStatus::EndReached);
             return;
         }
@@ -1473,6 +1490,45 @@ impl TimelineActor {
 
         match cache_result {
             Ok(outcome) => {
+                // #1167: coarse, identifier-free record of what the cache load
+                // actually found. A homeserver-dependent restore failure can then
+                // be told apart from a missing persisted chunk: zero loaded chunks
+                // with no anchor means the warmed history never reached the store,
+                // while loaded chunks that report a gap point at chunk topology.
+                let cache_load_event = koushi_diagnostics::DiagnosticEvent::new(
+                    koushi_diagnostics::DiagnosticLevel::Debug,
+                    "core.timeline_anchor_restore",
+                    "cache_load",
+                )
+                .field(koushi_diagnostics::DiagnosticField::count(
+                    "chunks_loaded",
+                    outcome.chunks_loaded as u64,
+                ))
+                .field(koushi_diagnostics::DiagnosticField::count(
+                    "events_loaded",
+                    outcome.events_loaded as u64,
+                ))
+                .field(koushi_diagnostics::DiagnosticField::count(
+                    "lazy_reveal_batches",
+                    outcome.lazy_reveal_batches as u64,
+                ))
+                .field(koushi_diagnostics::DiagnosticField::boolean(
+                    "anchor_present",
+                    outcome.anchor_present,
+                ))
+                .field(koushi_diagnostics::DiagnosticField::boolean(
+                    "hit_gap",
+                    outcome.hit_gap,
+                ));
+                if outcome.anchor_present {
+                    koushi_diagnostics::record(cache_load_event);
+                } else {
+                    // Only the failure-adjacent case is mirrored to stderr: a load
+                    // that cannot serve the anchor is what the deep-anchor restore
+                    // then has to resolve over the network (#1167), and a
+                    // successful load must not add noise to every room entry.
+                    koushi_diagnostics::record_and_stderr(cache_load_event);
+                }
                 // The bulk load fired `RoomEventCacheUpdate::UpdateTimelineEvents`
                 // broadcasts for every disk chunk, which are ingested by the
                 // live Timeline's tasks loop and arrive as actor `DiffBatch`

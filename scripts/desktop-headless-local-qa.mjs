@@ -421,6 +421,8 @@ function runCoreHeadlessQa({
     env.KOUSHI_QA_AVATAR_FIXTURE = JSON.stringify(avatarFixture);
   }
   for (const name of [
+    "KOUSHI_QA_CACHE_RESTORE_ROOMS",
+    "KOUSHI_QA_CACHE_RESTORE_DEPTH",
     "KOUSHI_QA_STRESS_SPACES",
     "KOUSHI_QA_STRESS_ROOMS_PER_SPACE",
     "KOUSHI_QA_STRESS_MESSAGES_PER_ROOM",

@@ -11,6 +11,53 @@ use std::time::Duration;
 pub use tokio::task::JoinHandle;
 pub use tokio::time::Instant;
 
+/// A task handle that is aborted if its owner is dropped without an orderly
+/// shutdown. Explicit shutdown takes the handle and awaits it; error paths in
+/// headless QA and embedding callers therefore cannot leave detached runtime
+/// tasks keeping the process alive indefinitely.
+pub(crate) struct AbortOnDrop<T> {
+    handle: Option<JoinHandle<T>>,
+}
+
+impl<T> AbortOnDrop<T> {
+    pub(crate) fn new(handle: JoinHandle<T>) -> Self {
+        Self {
+            handle: Some(handle),
+        }
+    }
+
+    pub(crate) fn get(&self) -> &JoinHandle<T> {
+        self.handle
+            .as_ref()
+            .expect("abort-on-drop task handle must remain present")
+    }
+
+    pub(crate) fn take(&mut self) -> JoinHandle<T> {
+        self.handle
+            .take()
+            .expect("abort-on-drop task handle must be taken once")
+    }
+
+    pub(crate) fn abort(&self) {
+        if let Some(handle) = &self.handle {
+            handle.abort();
+        }
+    }
+
+    pub(crate) async fn settle(&mut self) {
+        if let Some(handle) = &mut self.handle {
+            let _ = handle.await;
+        }
+        self.handle.take();
+    }
+}
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.abort();
+    }
+}
+
 pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
 where
     F: Future + Send + 'static,

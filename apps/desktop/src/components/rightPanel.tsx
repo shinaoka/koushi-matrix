@@ -1048,6 +1048,9 @@ export function ContextualRightPanel({
             timelineKey={threadTimelineKeyValue}
             transport={timelineTransport}
             onReply={threadReplyStable}
+            onOpenContextMenu={onOpenContextMenu}
+            currentUserId={currentUserId ?? undefined}
+            ignoredUserIds={snapshot.state.domain.profile.ignored_user_ids}
             onOpenMatrixTarget={onOpenMatrixTarget ? threadOpenMatrixTargetStable : undefined}
             onOpenSenderProfile={onOpenSenderProfile ? threadOpenSenderProfileStable : undefined}
             onStartDirectMessage={threadStartDirectMessageStable}

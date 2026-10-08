@@ -260,8 +260,7 @@ fn assert_hide_redacted_projection() -> Result<(), String> {
     Ok(())
 }
 
-#[path = "../../common/pagination_waiter.rs"]
-mod pagination_waiter;
+use super::pagination_waiter;
 
 /// Paginate backward to `EndReached` with correlated admission and one deadline.
 pub(super) async fn wait_for_paginate_end_reached(
