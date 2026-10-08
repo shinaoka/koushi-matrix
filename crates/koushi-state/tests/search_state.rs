@@ -148,6 +148,7 @@ fn submitting_search_emits_search_effect() {
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 7,
+            connection_id: 0,
             query: "アンケート".to_owned(),
             scope: scope(),
         },
@@ -169,6 +170,7 @@ fn submitting_search_emits_search_effect() {
                 query: "アンケート".to_owned(),
                 scope: scope(),
                 room_filter: SearchRoomFilter::AllRooms,
+                content_policy: koushi_state::SearchCrawlerSettings::default(),
             },
             AppEffect::EmitUiEvent(UiEvent::SearchChanged),
         ]
@@ -183,6 +185,7 @@ fn submitting_short_ascii_search_stays_too_short_without_sdk_effect() {
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 7,
+            connection_id: 0,
             query: "GP".to_owned(),
             scope: scope(),
         },
@@ -211,6 +214,7 @@ fn submitting_short_cjk_search_uses_cjk_threshold_without_sdk_effect() {
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 8,
+            connection_id: 0,
             query: "通".to_owned(),
             scope: scope(),
         },
@@ -234,6 +238,7 @@ fn submitting_short_cjk_search_uses_cjk_threshold_without_sdk_effect() {
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 9,
+            connection_id: 0,
             query: "通院".to_owned(),
             scope: scope(),
         },
@@ -255,6 +260,7 @@ fn submitting_short_cjk_search_uses_cjk_threshold_without_sdk_effect() {
                 query: "通院".to_owned(),
                 scope: scope(),
                 room_filter: SearchRoomFilter::AllRooms,
+                content_policy: koushi_state::SearchCrawlerSettings::default(),
             },
             AppEffect::EmitUiEvent(UiEvent::SearchChanged),
         ]
@@ -279,6 +285,7 @@ fn submitting_scoped_search_carries_rust_resolved_room_filter() {
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 11,
+            connection_id: 0,
             query: "GPT".to_owned(),
             scope: space_scope.clone(),
         },
@@ -295,6 +302,7 @@ fn submitting_scoped_search_carries_rust_resolved_room_filter() {
                     "space-child".to_owned(),
                     "dm-child".to_owned(),
                 ]),
+                content_policy: koushi_state::SearchCrawlerSettings::default(),
             },
             AppEffect::EmitUiEvent(UiEvent::SearchChanged),
         ]
@@ -304,6 +312,7 @@ fn submitting_scoped_search_carries_rust_resolved_room_filter() {
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 12,
+            connection_id: 0,
             query: "GPT".to_owned(),
             scope: SearchScope::CurrentRoom {
                 room_id: "dm-child".to_owned(),
@@ -321,6 +330,7 @@ fn submitting_scoped_search_carries_rust_resolved_room_filter() {
                     room_id: "dm-child".to_owned(),
                 },
                 room_filter: SearchRoomFilter::OnlyRooms(vec!["dm-child".to_owned()]),
+                content_policy: koushi_state::SearchCrawlerSettings::default(),
             },
             AppEffect::EmitUiEvent(UiEvent::SearchChanged),
         ]
@@ -364,6 +374,7 @@ fn search_results_carry_rust_owned_space_context_label() {
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 13,
+            connection_id: 0,
             query: "GPT".to_owned(),
             scope: search_scope.clone(),
         },
@@ -372,6 +383,7 @@ fn search_results_carry_rust_owned_space_context_label() {
         &mut state,
         AppAction::SearchSucceeded {
             request_id: 13,
+            connection_id: 0,
             query: "GPT".to_owned(),
             scope: search_scope,
             results: vec![result("$event")],
@@ -438,6 +450,7 @@ fn dm_search_results_never_carry_a_space_context_label() {
             &mut state,
             AppAction::SearchSubmitted {
                 request_id: 21,
+                connection_id: 0,
                 query: "GPT".to_owned(),
                 scope: search_scope.clone(),
             },
@@ -446,6 +459,7 @@ fn dm_search_results_never_carry_a_space_context_label() {
             &mut state,
             AppAction::SearchSucceeded {
                 request_id: 21,
+                connection_id: 0,
                 query: "GPT".to_owned(),
                 scope: search_scope.clone(),
                 results: vec![dm_result],
@@ -482,6 +496,7 @@ fn search_actions_are_ignored_without_ready_session() {
             &mut state,
             AppAction::SearchSubmitted {
                 request_id: 7,
+                connection_id: 0,
                 query: "アンケート".to_owned(),
                 scope: scope(),
             },
@@ -493,6 +508,7 @@ fn search_actions_are_ignored_without_ready_session() {
             &mut state,
             AppAction::SearchSucceeded {
                 request_id: 7,
+                connection_id: 0,
                 query: "アンケート".to_owned(),
                 scope: scope(),
                 results: vec![result("$event")],
@@ -510,6 +526,7 @@ fn editing_search_after_submit_suppresses_previous_response() {
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 8,
+            connection_id: 0,
             query: "old".to_owned(),
             scope: scope(),
         },
@@ -526,6 +543,7 @@ fn editing_search_after_submit_suppresses_previous_response() {
         &mut state,
         AppAction::SearchSucceeded {
             request_id: 8,
+            connection_id: 0,
             query: "old".to_owned(),
             scope: scope(),
             results: vec![result("$old")],
@@ -549,6 +567,7 @@ fn stale_search_result_is_ignored() {
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 8,
+            connection_id: 0,
             query: "new".to_owned(),
             scope: scope(),
         },
@@ -558,6 +577,7 @@ fn stale_search_result_is_ignored() {
         &mut state,
         AppAction::SearchSucceeded {
             request_id: 7,
+            connection_id: 0,
             query: "old".to_owned(),
             scope: scope(),
             results: vec![result("$old")],
@@ -582,6 +602,7 @@ fn same_sequence_search_result_for_different_query_is_ignored() {
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 1,
+            connection_id: 0,
             query: "gpt".to_owned(),
             scope: scope(),
         },
@@ -591,6 +612,7 @@ fn same_sequence_search_result_for_different_query_is_ignored() {
         &mut state,
         AppAction::SearchSucceeded {
             request_id: 1,
+            connection_id: 0,
             query: "pt".to_owned(),
             scope: scope(),
             results: vec![result("$pt")],
@@ -618,6 +640,7 @@ fn same_sequence_search_failure_for_different_scope_is_ignored() {
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 1,
+            connection_id: 0,
             query: "gpt".to_owned(),
             scope: current_scope.clone(),
         },
@@ -627,6 +650,7 @@ fn same_sequence_search_failure_for_different_scope_is_ignored() {
         &mut state,
         AppAction::SearchFailed {
             request_id: 1,
+            connection_id: 0,
             query: "gpt".to_owned(),
             scope: SearchScope::AllRooms,
             message: "late failure".to_owned(),
@@ -645,12 +669,94 @@ fn same_sequence_search_failure_for_different_scope_is_ignored() {
 }
 
 #[test]
+fn a_submitted_query_carries_the_account_content_policy() {
+    let mut state = ready_state();
+    state.settings.values.search_crawler.include_filenames = false;
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SearchSubmitted {
+            request_id: 9,
+            connection_id: 0,
+            query: "アンケート".to_owned(),
+            scope: scope(),
+        },
+    );
+
+    // The actor verifies with the policy the state accepted the query under, so
+    // it does not depend on a crawler notification that can be delivered late.
+    let policy = effects
+        .iter()
+        .find_map(|effect| match effect {
+            AppEffect::SearchMessages { content_policy, .. } => Some(content_policy.clone()),
+            _ => None,
+        })
+        .expect("a submitted query is dispatched");
+    assert!(!policy.include_filenames);
+    assert!(policy.include_media_captions);
+}
+
+#[test]
+fn a_result_from_another_connection_with_the_same_sequence_is_refused() {
+    let mut state = ready_state();
+    reduce(
+        &mut state,
+        AppAction::SearchSubmitted {
+            request_id: 1,
+            connection_id: 7,
+            query: "アンケート".to_owned(),
+            scope: scope(),
+        },
+    );
+
+    // Every connection starts its sequence at one, so sequence alone cannot tell
+    // two callers' requests apart.
+    let effects = reduce(
+        &mut state,
+        AppAction::SearchSucceeded {
+            request_id: 1,
+            connection_id: 8,
+            query: "アンケート".to_owned(),
+            scope: scope(),
+            results: vec![result("$other-connection")],
+        },
+    );
+
+    assert!(
+        effects.is_empty(),
+        "another connection's result must not settle"
+    );
+    assert_eq!(
+        state.search,
+        SearchState::Searching {
+            request_id: 1,
+            query: "アンケート".to_owned(),
+            scope: scope(),
+        }
+    );
+
+    // The submitting connection's own result still settles.
+    let effects = reduce(
+        &mut state,
+        AppAction::SearchSucceeded {
+            request_id: 1,
+            connection_id: 7,
+            query: "アンケート".to_owned(),
+            scope: scope(),
+            results: vec![result("$own")],
+        },
+    );
+    assert!(!effects.is_empty());
+}
+
+#[test]
 fn matching_search_result_updates_results() {
     let mut state = ready_state();
     reduce(
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 9,
+            connection_id: 0,
             query: "アンケート".to_owned(),
             scope: scope(),
         },
@@ -660,6 +766,7 @@ fn matching_search_result_updates_results() {
         &mut state,
         AppAction::SearchSucceeded {
             request_id: 9,
+            connection_id: 0,
             query: "アンケート".to_owned(),
             scope: scope(),
             results: vec![result("$event")],
@@ -677,17 +784,24 @@ fn matching_search_result_updates_results() {
     );
     assert_eq!(
         effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::SearchChanged),
+            AppEffect::PublishSearchResults {
+                request_id: 9,
+                results: vec![result("$event")],
+            },
+        ]
     );
 }
 
 #[test]
-fn matching_search_result_can_refresh_existing_results_for_sdk_supplement() {
+fn a_settled_search_result_is_not_replaced_by_a_later_one() {
     let mut state = ready_state();
     reduce(
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 9,
+            connection_id: 0,
             query: "GPT".to_owned(),
             scope: scope(),
         },
@@ -696,16 +810,20 @@ fn matching_search_result_can_refresh_existing_results_for_sdk_supplement() {
         &mut state,
         AppAction::SearchSucceeded {
             request_id: 9,
+            connection_id: 0,
             query: "GPT".to_owned(),
             scope: scope(),
             results: vec![result("$local")],
         },
     );
 
+    // Search is index-first: a query settles once, so a second result for the
+    // same request is ignored rather than replacing what the user sees.
     let effects = reduce(
         &mut state,
         AppAction::SearchSucceeded {
             request_id: 9,
+            connection_id: 0,
             query: "GPT".to_owned(),
             scope: scope(),
             results: vec![result("$sdk"), result("$local")],
@@ -718,13 +836,10 @@ fn matching_search_result_can_refresh_existing_results_for_sdk_supplement() {
             request_id: 9,
             query: "GPT".to_owned(),
             scope: scope(),
-            results: vec![result("$sdk"), result("$local")],
+            results: vec![result("$local")],
         }
     );
-    assert_eq!(
-        effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
-    );
+    assert!(effects.is_empty());
 }
 
 #[test]
@@ -734,6 +849,7 @@ fn duplicate_search_response_after_results_is_ignored() {
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 13,
+            connection_id: 0,
             query: "アンケート".to_owned(),
             scope: scope(),
         },
@@ -742,6 +858,7 @@ fn duplicate_search_response_after_results_is_ignored() {
         &mut state,
         AppAction::SearchSucceeded {
             request_id: 13,
+            connection_id: 0,
             query: "アンケート".to_owned(),
             scope: scope(),
             results: vec![result("$event")],
@@ -752,6 +869,7 @@ fn duplicate_search_response_after_results_is_ignored() {
         &mut state,
         AppAction::SearchFailed {
             request_id: 13,
+            connection_id: 0,
             query: "アンケート".to_owned(),
             scope: scope(),
             message: "late failure".to_owned(),
@@ -777,6 +895,7 @@ fn matching_search_failure_updates_failed_state() {
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 10,
+            connection_id: 0,
             query: "アンケート".to_owned(),
             scope: scope(),
         },
@@ -786,6 +905,7 @@ fn matching_search_failure_updates_failed_state() {
         &mut state,
         AppAction::SearchFailed {
             request_id: 10,
+            connection_id: 0,
             query: "アンケート".to_owned(),
             scope: scope(),
             message: "search unavailable".to_owned(),
@@ -859,6 +979,7 @@ fn stale_search_failure_is_ignored() {
         &mut state,
         AppAction::SearchSubmitted {
             request_id: 12,
+            connection_id: 0,
             query: "new".to_owned(),
             scope: scope(),
         },
@@ -868,6 +989,7 @@ fn stale_search_failure_is_ignored() {
         &mut state,
         AppAction::SearchFailed {
             request_id: 11,
+            connection_id: 0,
             query: "new".to_owned(),
             scope: scope(),
             message: "late failure".to_owned(),

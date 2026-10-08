@@ -947,10 +947,10 @@ impl TimelineActor {
             VectorDiff::PushFront { value }
             | VectorDiff::PushBack { value }
             | VectorDiff::Insert { value, .. }
-            | VectorDiff::Set { value, .. } => self.search_index_messages_for_item(room_id, value),
+            | VectorDiff::Set { value, .. } => Self::search_index_messages_for_item(room_id, value),
             VectorDiff::Append { values } | VectorDiff::Reset { values } => values
                 .iter()
-                .flat_map(|item| self.search_index_messages_for_item(room_id, item))
+                .flat_map(|item| Self::search_index_messages_for_item(room_id, item))
                 .collect(),
             VectorDiff::Remove { .. }
             | VectorDiff::Truncate { .. }
@@ -965,7 +965,6 @@ impl TimelineActor {
         }
     }
     fn search_index_messages_for_item(
-        &self,
         room_id: &str,
         item: &Arc<SdkTimelineItem>,
     ) -> Vec<SearchIndexMessage> {
@@ -989,13 +988,13 @@ impl TimelineActor {
             return vec![SearchIndexMessage::Redact { event_id }];
         }
 
-        let (body, attachment_filename, attachment, edit_event_id) =
+        let (body, attachment_filename, attachment, edit) =
             if let Some(sticker) = event_item.content().as_sticker() {
                 (
                     None,
                     Some(sticker.content().body.clone()),
                     Some(Self::attachment_document_from_sticker(sticker)),
-                    None,
+                    (None, None),
                 )
             } else if let Some(message) = event_item.content().as_message() {
                 let projection = message_projection_from_msgtype(message.msgtype(), message.body());
@@ -1003,19 +1002,26 @@ impl TimelineActor {
                 // Detect edits: when is_edited() is true, the SDK ngram index will
                 // index the edit event under the edit event_id (not the original).
                 // We must register an alias so verify_candidate can resolve it back.
-                // Extract the edit event_id from latest_edit_json if available.
-                let edit_event_id = if message.is_edited() {
-                    event_item
-                        .latest_edit_json()
-                        .and_then(|raw| {
-                            raw.get_field::<matrix_sdk::ruma::OwnedEventId>("event_id")
-                                .ok()
-                                .flatten()
-                        })
-                        .map(|id| id.to_string())
-                } else {
-                    None
-                };
+                // Extract the edit event_id (and its own timestamp) from
+                // latest_edit_json if available. The edit's time orders it
+                // against a history crawl's edits of the same message, which
+                // report the edit event's time as well; the display timestamp
+                // stays the message's own.
+                let latest_edit = message
+                    .is_edited()
+                    .then(|| event_item.latest_edit_json())
+                    .flatten();
+                let edit_event_id = latest_edit
+                    .as_ref()
+                    .and_then(|raw| {
+                        raw.get_field::<matrix_sdk::ruma::OwnedEventId>("event_id")
+                            .ok()
+                            .flatten()
+                    })
+                    .map(|id| id.to_string());
+                let edit_timestamp_ms = latest_edit
+                    .as_ref()
+                    .and_then(|raw| raw.get_field::<u64>("origin_server_ts").ok().flatten());
 
                 (
                     projection.body,
@@ -1026,7 +1032,7 @@ impl TimelineActor {
                     projection.media.as_ref().and_then(|media| {
                         Self::attachment_document_from_timeline_media(media, event_item, message)
                     }),
-                    edit_event_id,
+                    (edit_event_id, edit_timestamp_ms),
                 )
             } else {
                 return Vec::new();
@@ -1036,10 +1042,8 @@ impl TimelineActor {
             return Vec::new();
         }
 
-        if let Some(edit_event_id) = edit_event_id {
-            // Edited message: Upsert original with new canonical body, AND
-            // forward Edit so the document store registers the alias
-            // (edit_event_id → original_event_id) used by verify_candidate.
+        if let (Some(edit_event_id), edit_timestamp_ms) = edit {
+            // Carry the visible attachment and its edit identity as one guarded pair.
             vec![
                 SearchIndexMessage::Upsert {
                     room_id: room_id.to_owned(),
@@ -1049,15 +1053,25 @@ impl TimelineActor {
                     body: body.clone(),
                     attachment_filename: attachment_filename.clone(),
                     attachment: attachment.clone(),
+                    // The timeline projection carries the current visible state.
+                    canonical: true,
+                    edit: Some(koushi_search::SearchEditKey {
+                        edit_event_id: edit_event_id.to_string(),
+                        timestamp_ms: edit_timestamp_ms.unwrap_or(timestamp_ms),
+                    }),
                 },
                 SearchIndexMessage::Edit {
+                    room_id: room_id.to_owned(),
                     edit_event_id,
                     target_event_id: event_id,
                     sender,
-                    timestamp_ms,
+                    // Both producers key an edit by the edit event's own time,
+                    // so a history replay cannot outrank the current content.
+                    timestamp_ms: edit_timestamp_ms.unwrap_or(timestamp_ms),
                     body,
                     attachment_filename,
                     attachment,
+                    canonical: true,
                 },
             ]
         } else {
@@ -1070,9 +1084,12 @@ impl TimelineActor {
                 body,
                 attachment_filename,
                 attachment,
+                canonical: true,
+                edit: None,
             }]
         }
     }
+
     pub(super) async fn forward_initial_items_to_search(
         &self,
         items: impl IntoIterator<Item = Arc<SdkTimelineItem>>,

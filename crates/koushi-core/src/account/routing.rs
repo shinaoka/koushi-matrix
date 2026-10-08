@@ -7,7 +7,8 @@ use koushi_protocol::SessionKeyId;
 use koushi_state::{AppAction, OperationFailureKind};
 
 use crate::command_policy::{
-    search_scope_to_state, space_member_forward_failure_action, timeline_composer_account_fence,
+    SEARCH_UNAVAILABLE_MESSAGE, search_scope_to_state, space_member_forward_failure_action,
+    timeline_composer_account_fence,
 };
 use crate::composer_draft_lifecycle::ForwardedComposerDraftPermit;
 use crate::room::RoomMessage;
@@ -25,7 +26,6 @@ use koushi_protocol::ids::{RequestId, TimelineKey, TimelineKind};
 use super::actor::{AccountActor, trace_restore};
 use super::scheduled_send::admit_secure_backup_user_content;
 
-const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
 const ROOM_EVENT_CACHE_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const ROOM_EVENT_CACHE_TEST_TIMEOUT: Duration = Duration::from_millis(25);
@@ -302,9 +302,17 @@ impl AccountActor {
         }
     }
 
-    /// Route a SearchCommand to the SearchActor. Emit SessionRequired if no
-    /// search actor is active.
+    /// Route a SearchCommand and settle an unavailable actor with the original
+    /// query failure kind (or SessionRequired for the other commands).
     pub(super) async fn route_search_command(&self, command: SearchCommand) {
+        self.route_search_command_with_policy(command, None).await;
+    }
+
+    pub(super) async fn route_search_command_with_policy(
+        &self,
+        command: SearchCommand,
+        content_policy: Option<koushi_state::SearchCrawlerSettings>,
+    ) {
         let request_id = match &command {
             SearchCommand::Query { request_id, .. }
             | SearchCommand::Attachments { request_id, .. }
@@ -320,9 +328,16 @@ impl AccountActor {
             } => Some((*request_id, query.clone(), scope.clone())),
             _ => None,
         };
+        let failure = if query_context.is_some() {
+            CoreFailure::SearchFailed {
+                kind: koushi_protocol::failure::SearchFailureKind::IndexUnavailable,
+            }
+        } else {
+            CoreFailure::SessionRequired
+        };
         match &self.search_actor {
             Some(handle) => {
-                if !handle.send_command(command).await {
+                if !handle.send_query_command(command, content_policy).await {
                     if let Some((request_id, query, scope)) = query_context.as_ref() {
                         self.emit_search_failed(
                             *request_id,
@@ -332,7 +347,7 @@ impl AccountActor {
                         )
                         .await;
                     }
-                    self.emit_failure(request_id, CoreFailure::SessionRequired);
+                    self.emit_failure(request_id, failure);
                 }
             }
             None => {
@@ -340,7 +355,7 @@ impl AccountActor {
                     self.emit_search_failed(*request_id, query, scope, SEARCH_UNAVAILABLE_MESSAGE)
                         .await;
                 }
-                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                self.emit_failure(request_id, failure);
             }
         }
     }
@@ -398,6 +413,7 @@ impl AccountActor {
             .action_tx
             .send(vec![AppAction::SearchFailed {
                 request_id: request_id.sequence,
+                connection_id: request_id.connection_id.0,
                 query: query.to_owned(),
                 scope: search_scope_to_state(scope),
                 message: message.to_owned(),

@@ -12,6 +12,24 @@ use super::{is_session_ready, recompute_room_list_projection};
 const SETTINGS_LOAD_FAILED_MESSAGE: &str = "Settings could not be loaded";
 const SETTINGS_PERSIST_FAILED_MESSAGE: &str = "Settings could not be saved";
 
+/// Close the search view when the account's content policy changes.
+///
+/// The results it shows were verified under the old policy, and an in-flight
+/// query may still be verifying under it. Closing the view means a later result
+/// for that request cannot match the state, and the user's next search runs
+/// under the new policy.
+fn close_search_for_content_policy_change(state: &mut AppState, effects: &mut Vec<AppEffect>) {
+    state.search_request_connection_id = None;
+    if state.search != crate::state::SearchState::Closed {
+        state.search = crate::state::SearchState::Closed;
+        effects.push(AppEffect::EmitUiEvent(UiEvent::SearchChanged));
+    }
+    // The Files view lists attachment filenames, so it is a policy surface too.
+    effects.extend(super::search::close_files_view_for_content_policy_change(
+        state,
+    ));
+}
+
 pub(crate) fn handle_settings_loaded(
     state: &mut AppState,
     values: crate::state::SettingsValues,
@@ -49,7 +67,7 @@ pub(crate) fn handle_account_settings_loaded(
         AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
         AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
     ];
-    let crawler = &state.settings.values.search_crawler;
+    let crawler = state.settings.values.search_crawler.clone();
     let content_changed = previous_crawler.include_media_captions != crawler.include_media_captions
         || previous_crawler.include_filenames != crawler.include_filenames;
     if content_changed {
@@ -61,6 +79,7 @@ pub(crate) fn handle_account_settings_loaded(
                 *room_state = crate::state::SearchCrawlerRoomState::Idle;
             }
         }
+        close_search_for_content_policy_change(state, &mut effects);
         effects.push(AppEffect::InvalidateSearchCrawlerCache);
         let (room_ids, latest_event_ids) = super::search::search_crawler_rooms(state);
         if !room_ids.is_empty() {
@@ -189,6 +208,7 @@ pub(crate) fn handle_settings_update_requested(
             }
         }
         emit_search_crawler_changed = true;
+        close_search_for_content_policy_change(state, &mut effects);
         // Tell the actor to drop its completed-room cache so the
         // following re-enqueue actually starts new crawls.
         effects.push(AppEffect::InvalidateSearchCrawlerCache);

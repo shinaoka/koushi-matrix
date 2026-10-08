@@ -265,12 +265,23 @@ pub(crate) enum AccountMessage {
     ConfigureEventCacheFetchForTesting {
         fetch: oneshot::Receiver<super::RoomEventLookupResult>,
     },
+    #[cfg(test)]
+    ConfigureSearchActorForTesting {
+        handle: Option<SearchActorHandle>,
+        acknowledged: oneshot::Sender<()>,
+    },
     RepairRoomTimeline {
         request_id: RequestId,
         account_key: AccountKey,
         room_id: String,
     },
     SearchCommand(SearchCommand),
+    /// A Search or Files request with the account's content policy at submission,
+    /// instead of waiting for a crawler notification behind a busy mailbox.
+    SearchWithPolicy {
+        command: SearchCommand,
+        content_policy: koushi_state::SearchCrawlerSettings,
+    },
     /// Record `AppEffect::NotifySearchCrawlerRoomsAvailable` as a latest-wins
     /// background crawler notification and try to flush it to SearchActor.
     NotifySearchCrawlerRoomsAvailable {
@@ -1869,6 +1880,16 @@ impl AccountActor {
                 AccountMessage::ConfigureEventCacheFetchForTesting { fetch } => {
                     self.event_cache_fetch_override = Some(fetch);
                 }
+                #[cfg(test)]
+                AccountMessage::ConfigureSearchActorForTesting {
+                    handle,
+                    acknowledged,
+                } => {
+                    if let Some(handle) = handle {
+                        self.search_actor = Some(handle);
+                    }
+                    let _ = acknowledged.send(());
+                }
                 AccountMessage::EnsureRoomEventCached {
                     request_id,
                     room_id,
@@ -1893,6 +1914,18 @@ impl AccountActor {
                         },
                     })
                     .await;
+                }
+                AccountMessage::SearchWithPolicy {
+                    command,
+                    content_policy,
+                } => {
+                    // A buffered roster must not restore an older policy after
+                    // this authoritative submission crosses mailbox pressure.
+                    if let Some(notification) = self.pending_crawler_notification.as_mut() {
+                        notification.settings = content_policy.clone();
+                    }
+                    self.route_search_command_with_policy(command, Some(content_policy))
+                        .await;
                 }
                 AccountMessage::SearchCommand(search_command) => {
                     self.route_search_command(search_command).await;

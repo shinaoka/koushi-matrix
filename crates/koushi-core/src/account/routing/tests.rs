@@ -16,6 +16,138 @@ use koushi_protocol::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineK
 
 use tempfile::tempdir;
 
+#[tokio::test]
+async fn authoritative_query_rebases_policy_buffered_by_mailbox_pressure() {
+    use crate::search::{SearchActorHandle, SearchActorMessage};
+    use koushi_protocol::command::SearchCommand;
+    use koushi_state::{AttachmentFilter, AttachmentScope, AttachmentSort, SearchCrawlerSettings};
+    let credentials = tempdir().unwrap();
+    let data = tempdir().unwrap();
+    let (account, _actions, _events) = spawn_actor_with_dirs(credentials.path(), data.path());
+    let (search, mut inbox) = SearchActorHandle::controlled_inbox_for_testing();
+    let id = RequestId {
+        connection_id: RuntimeConnectionId(11),
+        sequence: 1,
+    };
+    assert!(
+        search
+            .send_command(SearchCommand::StopHistoryCrawl {
+                request_id: id,
+                room_id: "!policy:example.invalid".into()
+            })
+            .await
+    );
+    let (ack, ready) = oneshot::channel();
+    assert!(
+        account
+            .send(AccountMessage::ConfigureSearchActorForTesting {
+                handle: Some(search),
+                acknowledged: ack
+            })
+            .await
+    );
+    ready.await.unwrap();
+    let permissive = SearchCrawlerSettings {
+        include_filenames: true,
+        ..Default::default()
+    };
+    assert!(
+        account
+            .send(AccountMessage::NotifySearchCrawlerRoomsAvailable {
+                room_ids: vec!["!policy:example.invalid".into()],
+                latest_event_ids: Default::default(),
+                settings: permissive,
+            })
+            .await
+    );
+    let (ack, ready) = oneshot::channel();
+    assert!(
+        account
+            .send(AccountMessage::ConfigureSearchActorForTesting {
+                handle: None,
+                acknowledged: ack
+            })
+            .await
+    );
+    ready.await.unwrap(); // the permissive notification really saw the full inbox
+    let restrictive = SearchCrawlerSettings {
+        include_filenames: false,
+        ..Default::default()
+    };
+    assert!(
+        account
+            .send(AccountMessage::SearchWithPolicy {
+                command: SearchCommand::Attachments {
+                    request_id: id,
+                    scope: AttachmentScope::Account,
+                    filter: AttachmentFilter::default(),
+                    sort: AttachmentSort::NewestFirst
+                },
+                content_policy: restrictive,
+            })
+            .await
+    );
+    assert!(matches!(
+        inbox.recv().await.unwrap(),
+        SearchActorMessage::StopHistoryCrawl { .. }
+    ));
+    let SearchActorMessage::Attachments {
+        content_policy: Some(policy),
+        ..
+    } = executor::timeout(Duration::from_secs(2), inbox.recv())
+        .await
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("expected query")
+    };
+    assert!(!policy.include_filenames);
+    // Observe the buffered roster flush after the authoritative query, using a
+    // fresh controlled inbox so this does not depend on a scheduling race.
+    let (replacement, mut flushed) = SearchActorHandle::controlled_inbox_for_testing();
+    let (ack, ready) = oneshot::channel();
+    assert!(
+        account
+            .send(AccountMessage::ConfigureSearchActorForTesting {
+                handle: Some(replacement),
+                acknowledged: ack
+            })
+            .await
+    );
+    ready.await.unwrap();
+    let notification = if let Ok(Some(SearchActorMessage::RoomsAvailable(n))) =
+        executor::timeout(Duration::from_millis(100), inbox.recv()).await
+    {
+        n
+    } else {
+        let SearchActorMessage::RoomsAvailable(n) =
+            executor::timeout(Duration::from_secs(2), flushed.recv())
+                .await
+                .unwrap()
+                .unwrap()
+        else {
+            panic!("expected buffered roster")
+        };
+        n
+    };
+    assert!(
+        !notification.settings.include_filenames,
+        "buffer must not undo opt-out"
+    );
+    assert_eq!(notification.room_ids, ["!policy:example.invalid"]);
+    let (ack, done) = oneshot::channel();
+    assert!(
+        account
+            .send(AccountMessage::ShutdownWithAck { acknowledged: ack })
+            .await
+    );
+    let _ = flushed.recv().await;
+    executor::timeout(Duration::from_secs(2), done)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
 #[test]
 fn composer_timeline_command_rechecks_full_session_owner_before_account_routing() {
     let active = SessionKeyId {

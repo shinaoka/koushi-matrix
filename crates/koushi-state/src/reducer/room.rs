@@ -264,18 +264,18 @@ fn handle_room_list_updated_with_crawler(
     // RoomListUpdate so it can idempotently start/resume any missing
     // crawls. The actor is responsible for deduplication.
     if admit_crawler {
-        use crate::state::SearchCrawlerSpeed;
+        // Emit for every authoritative room list, whatever the crawler speed and
+        // even when it is empty: the notification also carries the account's
+        // content policy (which governs queries while crawling is paused) and is
+        // what prunes commitments for rooms that are gone. A paused setting only
+        // means the actor starts no crawls.
         let crawler_settings = &state.settings.values.search_crawler;
-        if crawler_settings.speed != SearchCrawlerSpeed::Paused {
-            let (room_ids, latest_event_ids) = super::search::search_crawler_rooms(state);
-            if !room_ids.is_empty() {
-                effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
-                    room_ids,
-                    latest_event_ids,
-                    settings: crawler_settings.clone(),
-                });
-            }
-        }
+        let (room_ids, latest_event_ids) = super::search::search_crawler_rooms(state);
+        effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
+            room_ids,
+            latest_event_ids,
+            settings: crawler_settings.clone(),
+        });
     }
 
     if state

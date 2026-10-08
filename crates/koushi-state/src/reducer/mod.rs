@@ -1757,21 +1757,26 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         }
         AppAction::SearchSubmitted {
             request_id,
+            connection_id,
             query,
             scope,
-        } => search::handle_search_submitted(state, request_id, query, scope),
+        } => search::handle_search_submitted(state, request_id, connection_id, query, scope),
         AppAction::SearchSucceeded {
             request_id,
+            connection_id,
             query,
             scope,
             results,
-        } => search::handle_search_succeeded(state, request_id, query, scope, results),
+        } => {
+            search::handle_search_succeeded(state, request_id, connection_id, query, scope, results)
+        }
         AppAction::SearchFailed {
             request_id,
+            connection_id,
             query,
             scope,
             message,
-        } => search::handle_search_failed(state, request_id, query, scope, message),
+        } => search::handle_search_failed(state, request_id, connection_id, query, scope, message),
         AppAction::SearchClosed => search::handle_search_closed(state),
         AppAction::SearchIndexRebuildRequested { request_id: _ } => {
             search::handle_search_index_rebuild_requested(state)
@@ -2132,6 +2137,7 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.thread = ThreadPaneState::Closed;
     state.thread_attention = ThreadAttentionState::Closed;
     state.focused_context = FocusedContextState::Closed;
+    state.search_request_connection_id = None;
     state.search = SearchState::Closed;
     state.search_crawler = Default::default();
     state.files_view = FilesViewState::Closed;

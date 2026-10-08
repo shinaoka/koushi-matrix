@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
+use koushi_protocol::event::{CoreEvent, IntentNoOpReason, IntentOutcome};
 use koushi_state::{
-    ActivityState, AppAction, AppEffect, AppState, ComposerDraftStore, NavigationState, reduce,
+    ActivityState, AppAction, AppEffect, AppState, ComposerDraftStore, NavigationState,
+    SearchState, reduce,
 };
 
 use super::composer::{
@@ -71,6 +73,60 @@ fn live_room_profile_changes(
     Some((room_id.clone(), before))
 }
 
+/// What the search state says about a dispatched request.
+enum SearchRequestStatus {
+    /// The request is the state's own and has not produced a result yet.
+    Awaiting,
+    /// The request produced the terminal result the state now holds.
+    Settled,
+    /// Another search state replaced the request.
+    Superseded,
+}
+
+fn search_request_status(
+    search: &SearchState,
+    request_id: &koushi_protocol::ids::RequestId,
+    state_connection_id: Option<u64>,
+) -> SearchRequestStatus {
+    // A sequence is connection-local and every connection starts at one, so the
+    // connection that submitted the request is part of its identity.
+    let owns = |state_request_id: &u64| {
+        *state_request_id == request_id.sequence
+            && state_connection_id == Some(request_id.connection_id.0)
+    };
+    match search {
+        SearchState::TooShort {
+            request_id: state_request_id,
+            ..
+        }
+        | SearchState::Searching {
+            request_id: state_request_id,
+            ..
+        } => {
+            if owns(state_request_id) {
+                SearchRequestStatus::Awaiting
+            } else {
+                SearchRequestStatus::Superseded
+            }
+        }
+        SearchState::Results {
+            request_id: state_request_id,
+            ..
+        }
+        | SearchState::Failed {
+            request_id: state_request_id,
+            ..
+        } => {
+            if owns(state_request_id) {
+                SearchRequestStatus::Settled
+            } else {
+                SearchRequestStatus::Superseded
+            }
+        }
+        SearchState::Closed | SearchState::Editing { .. } => SearchRequestStatus::Superseded,
+    }
+}
+
 fn reduce_with_unread_diagnostics(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
     let room_list_trace = match &action {
         AppAction::RoomListUpdated { rooms, .. }
@@ -109,6 +165,9 @@ pub(super) struct DeferredReducerSideEffects {
     /// that `TimelineKind::Focused` actor and its room lease, so it releases
     /// them for every reducer transition, not only the explicit close command.
     release_focused_timeline: Option<koushi_protocol::ids::TimelineKey>,
+    /// A search request this transition left behind (a new query, an edited
+    /// query, too-short, close, room selection).
+    superseded_search_request: Option<koushi_protocol::ids::RequestId>,
 }
 
 impl DeferredReducerSideEffects {
@@ -311,6 +370,36 @@ impl super::AppActor {
             release_focused_timeline,
             ..DeferredReducerSideEffects::default()
         };
+        // A search request the state no longer tracks can never receive a
+        // terminal outcome: `SearchActor` aborts a superseded in-flight query
+        // without emitting one, and the reducer ignores a late action whose
+        // request identity no longer matches. Settle it at the transition that
+        // left it behind, so a caller awaiting the request stops waiting.
+        if let Some(active) = self.active_search_request {
+            match search_request_status(
+                &self.state.search,
+                &active.request_id,
+                self.state.search_request_connection_id,
+            ) {
+                // Still in flight: this transition did not touch it.
+                SearchRequestStatus::Awaiting => {}
+                // The request produced its own result. Nothing to settle, and a
+                // later transition must not report it as superseded; the identity
+                // is kept because publication of that result still needs it.
+                SearchRequestStatus::Settled => {
+                    self.active_search_request = Some(super::ActiveSearchRequest {
+                        settled: true,
+                        ..active
+                    });
+                }
+                SearchRequestStatus::Superseded => {
+                    self.active_search_request = None;
+                    if !active.settled {
+                        deferred.superseded_search_request = Some(active.request_id);
+                    }
+                }
+            }
+        }
         let previous_persisted_navigation = previous_navigation.persistence_view();
         let current_persisted_navigation = self.state.navigation.persistence_view();
         if previous_persisted_navigation != current_persisted_navigation {
@@ -381,6 +470,13 @@ impl super::AppActor {
         &mut self,
         deferred: DeferredReducerSideEffects,
     ) {
+        if let Some(request_id) = deferred.superseded_search_request {
+            self.emit(CoreEvent::IntentLifecycle {
+                request_id,
+                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                published_generation: self.state_generation,
+            });
+        }
         // Release before the event-navigation owner cleanup so a matching
         // pending focused navigation is unsubscribed exactly once here.
         if let Some(key) = deferred.release_focused_timeline {

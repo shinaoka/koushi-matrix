@@ -1,9 +1,8 @@
-use koushi_search::{SearchCandidate, SearchDocumentStore, SearchableEvent, SensitiveString};
+use koushi_search::{SearchCandidate, SearchableEvent, SensitiveString};
 use koushi_state::{SearchMatchField, TextRange, normalize_cjk_search_text};
 
 fn body_result(body: &str, query: &str) -> Option<koushi_state::SearchResult> {
-    let mut store = SearchDocumentStore::default();
-    store.upsert_message(SearchableEvent {
+    let event = SearchableEvent {
         room_id: "!room:example.invalid".into(),
         event_id: "$event".into(),
         sender: "@sender:example.invalid".into(),
@@ -11,13 +10,14 @@ fn body_result(body: &str, query: &str) -> Option<koushi_state::SearchResult> {
         body: Some(SensitiveString::new(body)),
         attachment_filename: None,
         attachment: None,
-    });
-    store.verify_candidate(
-        SearchCandidate {
+    };
+    koushi_search::verify_candidate(
+        &SearchCandidate {
             room_id: "!room:example.invalid".into(),
             event_id: "$event".into(),
             score_millis: 1,
         },
+        &event,
         query,
     )
 }

@@ -1301,6 +1301,7 @@ async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
         room_preferences_loaded_for: Some(session_key),
         account_settings_loaded_for: None,
         state_generation: 0,
+        active_search_request: None,
         pending_composer_draft_persist: None,
         pending_navigation_persist: None,
         composer_draft_leases,
@@ -1388,6 +1389,247 @@ async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
     assert!(
         saturated_account_rx.try_recv().is_ok(),
         "ordinary mailbox remained saturated throughout the selection"
+    );
+}
+
+#[tokio::test]
+async fn a_superseded_search_request_settles_as_a_benign_no_op() {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let session = SessionInfo {
+        homeserver: "https://example.invalid".to_owned(),
+        user_id: "@synthetic:example.invalid".to_owned(),
+        device_id: "SYNTHETIC".to_owned(),
+        authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+    };
+    let state = AppState {
+        session: SessionState::Ready(session),
+        ..AppState::default()
+    };
+    let (
+        mut actor,
+        _command_tx,
+        _action_tx,
+        _account_rx,
+        mut event_rx,
+        _snapshot_rx,
+        _navigation_projection_rx,
+        _event_navigation_prepared_tx,
+        _focused_projection_tx,
+    ) = app_actor_event_navigation_fixture(data_dir.path(), state);
+
+    let superseded = RequestId {
+        connection_id: RuntimeConnectionId(41),
+        sequence: 11,
+    };
+    let latest = RequestId {
+        connection_id: RuntimeConnectionId(41),
+        sequence: 12,
+    };
+    // The first query is the state's own: production sets this when the
+    // `SearchMessages` effect dispatches it.
+    actor.active_search_request = Some(ActiveSearchRequest::dispatched(superseded));
+
+    // A newer query replaces it. The reducer ignores any late outcome for the
+    // old request, and `SearchActor` aborts it without emitting one, so the
+    // transition itself must settle it.
+    actor
+        .reduce_app_action(AppAction::SearchSubmitted {
+            request_id: latest.sequence,
+            connection_id: latest.connection_id.0,
+            query: "second".to_owned(),
+            scope: koushi_state::SearchScope::AllRooms,
+        })
+        .await;
+
+    let settled = event_rx
+        .try_recv()
+        .expect("the superseded query must settle");
+    assert!(
+        matches!(
+            settled,
+            CoreEvent::IntentLifecycle {
+                request_id,
+                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                ..
+            } if request_id == superseded
+        ),
+        "unexpected settlement: {settled:?}"
+    );
+    assert!(
+        event_rx.try_recv().is_err(),
+        "a superseded request settles exactly once"
+    );
+
+    // A query that completed is no longer outstanding: its result settled the
+    // request, so a later transition must not report it as superseded.
+    actor.active_search_request = Some(ActiveSearchRequest::dispatched(latest));
+    actor
+        .reduce_app_action(AppAction::SearchSucceeded {
+            request_id: latest.sequence,
+            connection_id: latest.connection_id.0,
+            query: "second".to_owned(),
+            scope: koushi_state::SearchScope::AllRooms,
+            results: Vec::new(),
+        })
+        .await;
+    assert!(
+        event_rx.try_recv().is_err(),
+        "a completed query must not emit a supersession outcome"
+    );
+    actor.reduce_app_action(AppAction::SearchClosed).await;
+    assert!(
+        event_rx.try_recv().is_err(),
+        "closing search after a completed query settles nothing"
+    );
+
+    // Closing search supersedes whatever is still in flight.
+    actor.active_search_request = Some(ActiveSearchRequest::dispatched(latest));
+    actor.reduce_app_action(AppAction::SearchClosed).await;
+    let settled = event_rx
+        .try_recv()
+        .expect("closing search must settle the in-flight query");
+    assert!(
+        matches!(
+            settled,
+            CoreEvent::IntentLifecycle {
+                request_id,
+                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                ..
+            } if request_id == latest
+        ),
+        "unexpected settlement: {settled:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_second_connection_with_the_same_sequence_settles_the_first_request() {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let session = SessionInfo {
+        homeserver: "https://example.invalid".to_owned(),
+        user_id: "@synthetic:example.invalid".to_owned(),
+        device_id: "SYNTHETIC".to_owned(),
+        authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+    };
+    let state = AppState {
+        session: SessionState::Ready(session),
+        ..AppState::default()
+    };
+    let (mut actor, _command_tx, _action_tx, _account_rx, mut event_rx, ..) =
+        app_actor_event_navigation_fixture(data_dir.path(), state);
+    let first = RequestId {
+        connection_id: RuntimeConnectionId(1),
+        sequence: 1,
+    };
+    let second = RequestId {
+        connection_id: RuntimeConnectionId(2),
+        sequence: 1,
+    };
+
+    // Both connections start at sequence one. Dispatching the second replaces
+    // the owner of the first, which can then never settle through the reducer.
+    actor.active_search_request = Some(ActiveSearchRequest::dispatched(first));
+    actor
+        .handle_app_effects(
+            first,
+            vec![AppEffect::SearchMessages {
+                request_id: first.sequence,
+                query: "needle".to_owned(),
+                scope: koushi_state::SearchScope::AllRooms,
+                room_filter: koushi_state::SearchRoomFilter::AllRooms,
+                content_policy: koushi_state::SearchCrawlerSettings::default(),
+            }],
+        )
+        .await;
+    actor
+        .handle_app_effects(
+            second,
+            vec![AppEffect::SearchMessages {
+                request_id: second.sequence,
+                query: "needle".to_owned(),
+                scope: koushi_state::SearchScope::AllRooms,
+                room_filter: koushi_state::SearchRoomFilter::AllRooms,
+                content_policy: koushi_state::SearchCrawlerSettings::default(),
+            }],
+        )
+        .await;
+
+    // The first connection's request must have been settled when it was replaced.
+    let settled = event_rx
+        .try_recv()
+        .expect("the replaced request must settle");
+    assert!(
+        matches!(
+            settled,
+            CoreEvent::IntentLifecycle {
+                request_id,
+                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                ..
+            } if request_id == first
+        ),
+        "unexpected settlement: {settled:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_admitted_search_result_publishes_one_terminal_event() {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let session = SessionInfo {
+        homeserver: "https://example.invalid".to_owned(),
+        user_id: "@synthetic:example.invalid".to_owned(),
+        device_id: "SYNTHETIC".to_owned(),
+        authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+    };
+    let state = AppState {
+        session: SessionState::Ready(session),
+        ..AppState::default()
+    };
+    let (mut actor, _command_tx, _action_tx, _account_rx, mut event_rx, ..) =
+        app_actor_event_navigation_fixture(data_dir.path(), state);
+    let request = RequestId {
+        connection_id: RuntimeConnectionId(5),
+        sequence: 7,
+    };
+    actor.active_search_request = Some(ActiveSearchRequest::dispatched(request));
+    actor.reduce_app_action_state(AppAction::SearchSubmitted {
+        request_id: request.sequence,
+        connection_id: request.connection_id.0,
+        query: "needle".to_owned(),
+        scope: koushi_state::SearchScope::AllRooms,
+    });
+
+    // The state admits the result: the owner is marked settled but kept, because
+    // publication of that very result still needs the request identity.
+    let (effects, _) = actor.reduce_app_action_state(AppAction::SearchSucceeded {
+        request_id: request.sequence,
+        connection_id: request.connection_id.0,
+        query: "needle".to_owned(),
+        scope: koushi_state::SearchScope::AllRooms,
+        results: Vec::new(),
+    });
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::PublishSearchResults { .. })),
+        "an admitted result asks for publication"
+    );
+    actor.publish_admitted_search_results(request.sequence, &[]);
+
+    let published = event_rx
+        .try_recv()
+        .expect("an admitted result must publish");
+    assert!(
+        matches!(
+            published,
+            CoreEvent::Search(koushi_protocol::event::SearchEvent::Results {
+                request_id: published_request,
+                ..
+            }) if published_request == request
+        ),
+        "unexpected event: {published:?}"
+    );
+    assert!(
+        event_rx.try_recv().is_err(),
+        "an admitted result publishes exactly once"
     );
 }
 
@@ -1485,6 +1727,7 @@ async fn same_batch_select_room_settles_only_final_selection() {
         room_preferences_loaded_for: Some(session_key),
         account_settings_loaded_for: None,
         state_generation: 0,
+        active_search_request: None,
         pending_composer_draft_persist: None,
         pending_navigation_persist: None,
         composer_draft_leases,
@@ -3155,6 +3398,7 @@ fn app_actor_fixture_with_account_capacity(
         room_preferences_loaded_for: Some(session_key),
         account_settings_loaded_for: None,
         state_generation: 0,
+        active_search_request: None,
         pending_composer_draft_persist: None,
         pending_navigation_persist: None,
         composer_draft_leases,

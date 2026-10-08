@@ -2714,6 +2714,13 @@ stateDiagram-v2
   in-flight `request_id` while the state is `Loading`. Stale successes, stale
   failures, duplicate completions, and completions when no query is in flight
   are ignored.
+- Before a Files success, SearchActor obtains SDK redaction and target-scoped
+  replacement-validity proofs, then retries body-free attachment mutations under
+  one bounded deadline. Invalid versions are selectively refused; missing/UTD
+  events are unknown rather than invalid. Media roots are seeded before queued
+  text provenance is consumed. Cache errors or deadline expiry preserve
+  metadata/retry state and emit `FilesViewQueryFailed` plus the correlated
+  `AttachmentsFailed` event. No resident row is returned on proof failure.
 - `FilesViewSelectionChanged { event_id }` updates `selected_event_id` only when
   the view is `Open`. Equal updates are a no-op. Selection changes when the view
   is `Closed`, `Loading`, or `Failed` are ignored.
@@ -4987,11 +4994,14 @@ stateDiagram-v2
 - Responses whose `request_id`, `query`, or `scope` does not match the active
   searching/results state are ignored. This prevents results from a previous
   transient command connection from settling the current search if
-  connection-local sequence numbers collide, while allowing a matching SDK
-  supplement to replace the local-first result snapshot.
+  connection-local sequence numbers collide. A matching response replaces the
+  searching state exactly once; there is no local-first snapshot to supplement.
 - If the user edits the query while a search is in flight, the in-flight response
   is ignored because the state is no longer the matching `Searching`/`Results`
   state.
+- A change to the account's content-indexing policy closes the search view: the
+  results it showed were verified under the old policy, and an in-flight query
+  may still be verifying under it.
 - Submitting a valid search emits both the backend search request and
   `SearchChanged` so the UI can display the loading state immediately. The
   reducer resolves `SearchScope` into the authoritative room filter before the
@@ -5002,10 +5012,14 @@ stateDiagram-v2
 - Search result context labels are Rust-owned projections. They may include a
   space label plus room label for disambiguation, but the frontend only renders
   the DTO and must not recompute cross-space context.
-- The search actor returns local index results first and may later supplement
-  them with SDK search results for the same request/query/scope. New search
-  messages preempt older SDK supplement work: the actor aborts or drops stale SDK
-  completions and must not make a newer query wait for an older remote search.
+- Search is index-first: the persistent encrypted ngram index is the only
+  candidate source, and a query emits exactly one `Results` (or a typed failure).
+  A newer query preempts an older one: the actor aborts the in-flight SDK work and
+  the superseded request is settled with `IntentLifecycle` `BenignNoOp`/`Superseded`
+  at the transition that replaced it, so its caller stops waiting.
+- A query verifies candidates with the account's content policy captured when it
+  started. A policy change invalidates a result verified under the previous policy,
+  and the actor re-verifies the same query under the current one.
 
 The ngram index is a candidate generator, not the source of display truth. Before
 returning a result, the search adapter must run a second-pass verification over
@@ -5106,9 +5120,12 @@ stateDiagram-v2
   re-checks the newest known latest event id so an event that arrived during
   the catch-up is not missed.
 
-- **Auto-start (idempotent)**: `RoomListUpdated` emits
-  `AppEffect::NotifySearchCrawlerRoomsAvailable` with all current joined rooms
-  whenever `speed != Paused`. The `SearchActor` owns an Element-style
+- **Auto-start (idempotent)**: every authoritative room list emits
+  `AppEffect::NotifySearchCrawlerRoomsAvailable` with all current joined rooms and
+  the account's content policy, whatever `speed` is and even when the room list is
+  empty: the notification is also how the actor learns the content policy (which
+  governs queries while crawling is paused) and how commitments for rooms that are
+  gone are pruned. Paused settings only mean the actor starts no crawls. The `SearchActor` owns an Element-style
   checkpoint queue: it skips rooms already queued, actively paging, or
   completed (unless a catch-up is due, above), fetches one bounded `/messages` page at a time, and pushes an
   unfinished checkpoint to the back of the queue. This round-robin shape avoids

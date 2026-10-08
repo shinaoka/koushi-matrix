@@ -1065,6 +1065,20 @@ fn event_progress(
         }
         CoreEvent::IntentLifecycle {
             request_id: event_request_id,
+            outcome: IntentOutcome::BenignNoOp(reason),
+            ..
+        } if event_request_id == request_id
+            && matches!(reason, IntentNoOpReason::Superseded)
+            && matches!(expectation, RequestOutcomeExpectation::SearchStarted { .. }) =>
+        {
+            // A newer query (or an edit, close, or room switch) superseded this
+            // request before it produced a result. It is settled, and no state
+            // change belongs to it: report the typed no-op instead of waiting
+            // for a snapshot that can never match.
+            Err(RequestOutcomeError::FailedNoOp { reason })
+        }
+        CoreEvent::IntentLifecycle {
+            request_id: event_request_id,
             outcome: IntentOutcome::Committed,
             ..
         } if event_request_id == request_id => match expectation {
@@ -2623,7 +2637,46 @@ fn search_state_matches(
             scope: state_scope,
             ..
         } if *state_request_id == request_id.sequence
-            && state_query == query
+            && state.search_request_connection_id == Some(request_id.connection_id.0)
+            && state_query == query.trim()
             && state_scope == scope
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use koushi_protocol::ids::RuntimeConnectionId;
+
+    #[test]
+    fn a_superseded_search_request_settles_instead_of_waiting_for_a_matching_snapshot() {
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(3),
+            sequence: 9,
+        };
+        let expectation = RequestOutcomeExpectation::SearchStarted {
+            request_id,
+            account_key: None,
+            query: "needle".to_owned(),
+            scope: SearchScope::AllRooms,
+        };
+
+        // A superseded request can never satisfy the snapshot-match arm: the
+        // state has already moved to whatever replaced it.
+        let progress = event_progress(
+            CoreEvent::IntentLifecycle {
+                request_id,
+                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                published_generation: 4,
+            },
+            &expectation,
+        );
+
+        assert!(matches!(
+            progress,
+            Err(RequestOutcomeError::FailedNoOp {
+                reason: IntentNoOpReason::Superseded
+            })
+        ));
+    }
 }

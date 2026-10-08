@@ -1145,6 +1145,121 @@ duplicating cache ownership. This minimal fork fix is intended for upstream
 submission with its production-redaction and cache-restoration regression.
 See [reproduction and historical limits](2026-09-15-redacted-notifications.md).
 
+## 2026-10-07: Explicit redaction proof for Files metadata (#1150)
+
+This section and the ones that follow share one governing invariant: **what
+search verification reads must equal what the SDK timeline actually renders.**
+Every fork change below is retained only because it closes a concrete breach of
+that invariant (or because an undecryptable event must mean unknown rather than
+invalid); anything that does not serve it is not part of the patch.
+
+The existing shared pending-redaction registry (Stage 3 above) was reconstructed
+from storage but not updated by live room redaction processing. A redaction for
+an absent target was therefore forgotten until a reopen; a later cached replay
+could remain unredacted. The actual room `handle_sync` regression test reproduces
+this without a reopen. Live processing now remembers the committed redaction
+before the absent-target return, reusing the same encrypted-store-backed registry.
+A separate reconstruction test verifies proof after reopening with an absent
+target. No second registry or first-party body store is added.
+
+Files mutation admission needs positive redaction evidence even when an edit
+exists only in a focused timeline or bundled relation. Public `find_event` cannot
+provide that (and suppresses some storage errors). The minimal fork accessor
+`RoomEventCache::redacted_event_ids` checks requested IDs under one room-state
+guard, using a single pending-registry snapshot and fallible cached-event reads.
+Missing events are not proof; malformed cached events and storage errors remain
+errors. Existing `find_event`/`find_event_with_relations` and cached-content
+resolution now propagate backend read errors instead of reporting absence. The
+regression closes an encrypted SQLite backend while holding the store lease:
+the loaded root and its redaction proof still succeed, but the relation read and
+content resolver fail, then recover after reopen. Index deletion now removes
+both primary and deletion-key terms, including a committed edit redacted by its
+own ID; committed and same-batch regressions cover it. Core/adapters, not the
+SDK, own Files policy, retry bounds and failure settlement. SDK resident registry/index allocations are distinct from the
+first-party zero-history-body budget; entries remain necessary for later thread
+copies as explained above.
+
+Acknowledged indexing likewise propagates cache-preparation failures through
+`IndexError::EventPreparationFailed`, without copying raw cache errors into its
+public error. Bulk preparation collects every fallible result before executing
+any index operation, so a failed relation lookup cannot become a successful
+empty acknowledgement or a partially committed page. The encrypted SQLite
+regression exercises single and bulk acknowledgements, a separately preparable
+sticker in the failing batch, and recovery after reopening.
+
+SDK timeline edit selection also used arrival positions (or the bundled root's
+position), then validated only its chosen edit. The indispensable correction
+validates each remote candidate before choosing the greatest raw
+`(origin_server_ts, event_id)`, preserving local-echo priority and existing edit
+application. Display timestamp clamping remains unchanged; it must not collapse
+distinct future edit timestamps into an event-ID tie. Production timeline tests
+cover older bundles, both equal-timestamp arrival orders, and invalid newest
+sender/type/plain-over-encrypted edits queued before their target, checking both
+content and edit identity. Obsolete bundle-owner/position bookkeeping is removed.
+The thread-list selector still uses bounded timestamps; this inherited ordering
+defect is flagged for upstream follow-up, not silently fixed in this slice.
+
+Bundled-only replacements were also lost by ordinary sync persistence and could
+publish an unresolvable child-primary search candidate. The narrow correction
+retains only `unsigned.m.relations.m.replace` and its child-specific encryption
+metadata in the existing SDK root envelope, still discarding mutable thread and
+other relation summaries. A shared bundled-event constructor exposes that
+candidate without borrowing root encryption proof. The cached resolver compares
+it with ordinary replacements using full validity and raw timestamp ordering,
+excluding UTD and positively redacted children. It prefers the loaded root's
+latest envelope over the storage-only relation lookup's root.
+
+Index preparation uses child-primary identity only when the decoded cached child
+can route resolution to its canonical root; missing/UTD/redacted/malformed or
+wrong-target children use a root-primary document. Both preparation paths reuse
+`Edit(root, document)`, including ordinary root refreshes: `Add` would silently
+retain old terms when a root-primary edited document reverted after a positively
+redacted edit. Production regressions resolve the actual literal cursor ID,
+replace existing root documents, and cover same-ID UTD children, absent-child
+redaction and encrypted SQLite envelope save/reopen. Synthetic encryption
+metadata fixtures do not establish real key exchange or decryption. This does
+not add a schema, history store, child materialization or atomicity guarantee.
+
+Duplicate syncs are handled by the same invariant rather than by new storage. A
+same-ID re-delivery may not replace decodable content, nor a decodable bundled
+replacement, with something undecodable; a positively redacted root is never
+revived by its unredacted re-delivery; and only a strictly newer, valid bundled
+replacement is admitted. Refresh goes through the existing sanitizing,
+index-notifying update path, so it neither bypasses the relation narrowing nor
+leaves the search index unaware. Three production regressions (redacted root,
+bundleless mixed-batch duplicate, invalid newer replacement) fail without these
+guards.
+
+Known boundaries of this slice, stated rather than assumed:
+- When the last applicable edit is redacted, the cache resolver reverts to the
+  original content (the specification's outcome) while the timeline keeps the
+  edited item, which is an explicit upstream `TODO` in the un-edit path. Search
+  therefore follows the specification rather than the stale render; the two are
+  not equal in that one case and this fork does not implement the upstream TODO.
+  Approved for M2: reverting to the timeline's stale edited render would index
+  content the current edit resolution no longer selects, and the engineering
+  rules require redacted edits to stay out of the index.
+- Applying an edit overwrites the timeline item's encryption proof with the
+  edit's, so the selector's validity gate can reject a plaintext replacement
+  after a plaintext root already received an encrypted edit. The cache validator
+  uses the original root's proof and accepts it. This needs an original-root
+  encryption provenance tracked by the timeline item; it is left as an upstream
+  follow-up instead of widening this slice.
+  Approved for M2: search verification reads `resolve_cached_message`, i.e. the
+  SDK store's resolved content, which this cache validator resolves against the
+  original root's proof and with the specification's sender/type checks. The
+  mismatch therefore surfaces as an upstream timeline *rendering* defect (a valid
+  newer plaintext edit is not applied to the item), not as search publishing
+  unverified or redacted text. Adding original-root provenance to the timeline
+  item is a public-contract change in the vendored fork and stays out of this
+  slice.
+
+Upstreaming intent: submit the absent-target regression/fix, positive-evidence
+accessor, acknowledged-preparation failure propagation, bundled-candidate
+retention/addressability and timeline edit selection correction alongside the
+existing shared-redaction patch. The checked-out fork is
+pinned by the app gitlink; fork PR #19 remains a separate, unmerged decision.
+
 ## 2026-10-01: Reject partial `/keys/query` results for user identity
 
 A successful HTTP response may list the contact's homeserver under

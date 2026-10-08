@@ -794,6 +794,7 @@ impl CoreRuntime {
             room_preferences_loaded_for: None,
             account_settings_loaded_for: None,
             state_generation: 0,
+            active_search_request: None,
             pending_composer_draft_persist: None,
             pending_navigation_persist: None,
             composer_draft_leases: Arc::clone(&composer_draft_leases),
@@ -1112,6 +1113,24 @@ enum SettingsLoadStatus {
     Failed,
 }
 
+/// The search request the state owns.
+#[derive(Clone, Copy, Debug)]
+struct ActiveSearchRequest {
+    request_id: RequestId,
+    /// The state admitted this request's result, so a later transition must not
+    /// report it as superseded. Publication still needs the identity.
+    settled: bool,
+}
+
+impl ActiveSearchRequest {
+    fn dispatched(request_id: RequestId) -> Self {
+        Self {
+            request_id,
+            settled: false,
+        }
+    }
+}
+
 struct AppActor {
     view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry,
     command_tx: mpsc::WeakSender<CoreCommandEnvelope>,
@@ -1174,6 +1193,16 @@ struct AppActor {
     pending_focused_navigation: Option<PendingFocusedNavigation>,
     latest_focused_projection_generation: HashMap<TimelineKey, (u64, TimelineGeneration)>,
     pending_date_navigation_request_id: Option<RequestId>,
+    /// The search request currently owned by the search state, so a transition
+    /// that supersedes it can settle it with `IntentLifecycle` (the
+    /// `SearchActor` aborts its in-flight query without emitting an outcome).
+    /// The search request the state owns, with whether it already produced the
+    /// result the state holds.
+    ///
+    /// Publication needs the full request identity after admission, while the
+    /// supersede check needs to know that an admitted request must not later be
+    /// reported as superseded.
+    active_search_request: Option<ActiveSearchRequest>,
     /// #1037: a date jump superseded by an accepted main send while its
     /// server lookup was in flight. The account actor's late
     /// `OpenFocusedContext` + `EnterAnchoredTimeline` reply is dropped and its
@@ -4246,6 +4275,7 @@ impl AppActor {
                         let effects = self
                             .reduce_app_action(AppAction::SearchSubmitted {
                                 request_id: request_id.sequence,
+                                connection_id: request_id.connection_id.0,
                                 query: query.clone(),
                                 scope: search_scope_to_state(&scope),
                             })
@@ -4317,6 +4347,12 @@ impl AppActor {
     async fn handle_app_effects(&mut self, request_id: RequestId, effects: Vec<AppEffect>) {
         for effect in effects {
             match effect {
+                AppEffect::PublishSearchResults {
+                    request_id: effect_request_id,
+                    ref results,
+                } => {
+                    self.publish_admitted_search_results(effect_request_id, results);
+                }
                 AppEffect::ContinueSlidingSyncAdmission {
                     account_epoch,
                     request_id,
@@ -4503,20 +4539,39 @@ impl AppActor {
                     query,
                     scope,
                     room_filter,
+                    content_policy,
                 } => {
                     if effect_request_id != request_id.sequence {
                         continue;
                     }
+                    // The state now owns this query. Replacing the owner retires
+                    // the previous request: the state no longer names it, so it
+                    // can never settle through the reducer, and its caller must
+                    // be told here. This also covers two connections whose
+                    // connection-local sequences collide.
+                    if let Some(previous) = self
+                        .active_search_request
+                        .replace(ActiveSearchRequest::dispatched(request_id))
+                        && previous.request_id != request_id
+                        && !previous.settled
+                    {
+                        self.emit(CoreEvent::IntentLifecycle {
+                            request_id: previous.request_id,
+                            outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                            published_generation: self.state_generation,
+                        });
+                    }
                     let _ = self
                         .account_actor
-                        .send(crate::account::AccountMessage::SearchCommand(
-                            SearchCommand::Query {
+                        .send(crate::account::AccountMessage::SearchWithPolicy {
+                            command: SearchCommand::Query {
                                 request_id,
                                 query,
                                 scope: map_state_search_scope_to_core(scope),
                                 room_filter,
                             },
-                        ))
+                            content_policy,
+                        })
                         .await;
                 }
                 AppEffect::SearchAttachments {
@@ -4530,14 +4585,15 @@ impl AppActor {
                     }
                     let _ = self
                         .account_actor
-                        .send(crate::account::AccountMessage::SearchCommand(
-                            SearchCommand::Attachments {
+                        .send(crate::account::AccountMessage::SearchWithPolicy {
+                            command: SearchCommand::Attachments {
                                 request_id,
                                 scope,
                                 filter,
                                 sort,
                             },
-                        ))
+                            content_policy: self.state.settings.values.search_crawler.clone(),
+                        })
                         .await;
                 }
                 AppEffect::SubscribeThreadsList {
@@ -4761,6 +4817,17 @@ impl AppActor {
     ) {
         for effect in effects {
             match effect {
+                AppEffect::PublishSearchResults {
+                    request_id: effect_request_id,
+                    results,
+                } => {
+                    // The state admitted these results against the accepted query
+                    // and the account's current content policy, so this is the
+                    // authoritative publication point. This path owns the effects
+                    // of actor-originated (projection) actions, which is where a
+                    // search result arrives.
+                    self.publish_admitted_search_results(*effect_request_id, results);
+                }
                 AppEffect::ContinueSlidingSyncAdmission {
                     account_epoch,
                     request_id,
@@ -5192,6 +5259,31 @@ impl AppActor {
             self.current_thread_timeline_key(),
             replacement_key,
         )
+    }
+
+    /// Publish a result set the state admitted.
+    ///
+    /// Only the accepted query's own result reaches the event stream, and only
+    /// once: the state is the authority on both.
+    fn publish_admitted_search_results(
+        &mut self,
+        request_sequence: u64,
+        results: &[koushi_state::SearchResult],
+    ) {
+        let Some(active) = self
+            .active_search_request
+            .as_ref()
+            .filter(|active| active.request_id.sequence == request_sequence)
+        else {
+            return;
+        };
+        let request_id = active.request_id;
+        self.emit(CoreEvent::Search(
+            koushi_protocol::event::SearchEvent::Results {
+                request_id,
+                results: crate::search::compact_search_results(results),
+            },
+        ));
     }
 
     fn emit(&self, event: CoreEvent) {

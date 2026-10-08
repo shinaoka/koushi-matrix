@@ -475,7 +475,6 @@ impl AppActor {
             });
             return false;
         }
-
         let focused_key = self
             .pending_focused_navigation
             .take()

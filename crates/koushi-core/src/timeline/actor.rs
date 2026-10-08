@@ -894,9 +894,7 @@ pub(super) struct TimelineActor {
     pub(super) media_downloads_in_progress: HashSet<String>,
     /// In-flight media download workers keyed by event id; aborted on actor drop.
     pub(super) media_download_tasks: HashMap<String, executor::JoinHandle<()>>,
-    /// Search index mutation sender (Phase 6). `None` when no search index is
-    /// configured (pre-session or pre-Phase-6 builds). Fire-and-forget: if the
-    /// channel is full, we drop the mutation rather than block the diff relay.
+    /// Reliable Files metadata mutation sender; absent before a search session.
     pub(super) search_index_tx: Option<mpsc::Sender<crate::search::SearchIndexMessage>>,
     /// Rust-owned pane-level thread attention read-state tracker. Only thread
     /// timelines update it, and React reads its projection through

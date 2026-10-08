@@ -48,12 +48,22 @@ pub(crate) fn handle_search_edited(
 pub(crate) fn handle_search_submitted(
     state: &mut AppState,
     request_id: u64,
+    connection_id: u64,
     query: String,
     scope: SearchScope,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
     }
+
+    // Trim once, here: the search actor trims the query before answering with it,
+    // so an untrimmed identity could never match its own result and the request
+    // would never settle.
+    let query = query.trim().to_owned();
+    // Record the submitting connection before any early return: a later
+    // transition classifies ownership by it, so a too-short submission that
+    // replaced another request must not leave the previous connection behind.
+    state.search_request_connection_id = Some(connection_id);
 
     if let Some(min_chars) = search_query_too_short(&query) {
         state.search = SearchState::TooShort {
@@ -66,6 +76,7 @@ pub(crate) fn handle_search_submitted(
     }
 
     let room_filter = search_room_filter(state, &scope);
+    let content_policy = state.settings.values.search_crawler.clone();
     state.search = SearchState::Searching {
         request_id,
         query: query.clone(),
@@ -77,6 +88,7 @@ pub(crate) fn handle_search_submitted(
             query,
             scope,
             room_filter,
+            content_policy,
         },
         AppEffect::EmitUiEvent(UiEvent::SearchChanged),
     ]
@@ -85,6 +97,7 @@ pub(crate) fn handle_search_submitted(
 pub(crate) fn handle_search_succeeded(
     state: &mut AppState,
     request_id: u64,
+    connection_id: u64,
     response_query: String,
     response_scope: crate::state::SearchScope,
     results: Vec<crate::state::SearchResult>,
@@ -93,22 +106,20 @@ pub(crate) fn handle_search_succeeded(
         return Vec::new();
     }
 
+    // Only an in-flight query may settle. Search is index-first and a query
+    // emits exactly one result, so a later result for a request that already
+    // settled is ignored rather than replacing the answer the user saw.
     let (current_request_id, current_query, current_scope) = match &state.search {
         SearchState::Searching {
             request_id,
             query,
             scope,
-        }
-        | SearchState::Results {
-            request_id,
-            query,
-            scope,
-            ..
         } => (*request_id, query.clone(), scope.clone()),
         _ => return Vec::new(),
     };
 
     if current_request_id != request_id
+        || state.search_request_connection_id != Some(connection_id)
         || response_query != current_query
         || response_scope != current_scope
     {
@@ -120,14 +131,21 @@ pub(crate) fn handle_search_succeeded(
         request_id,
         query: current_query,
         scope: current_scope,
-        results,
+        results: results.clone(),
     };
-    vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
+    vec![
+        AppEffect::EmitUiEvent(UiEvent::SearchChanged),
+        AppEffect::PublishSearchResults {
+            request_id,
+            results,
+        },
+    ]
 }
 
 pub(crate) fn handle_search_failed(
     state: &mut AppState,
     request_id: u64,
+    connection_id: u64,
     response_query: String,
     response_scope: crate::state::SearchScope,
     message: String,
@@ -146,6 +164,7 @@ pub(crate) fn handle_search_failed(
     };
 
     if current_request_id != request_id
+        || state.search_request_connection_id != Some(connection_id)
         || response_query != current_query
         || response_scope != current_scope
     {
@@ -166,6 +185,7 @@ pub(crate) fn handle_search_closed(state: &mut AppState) -> Vec<AppEffect> {
         return Vec::new();
     }
 
+    state.search_request_connection_id = None;
     state.search = SearchState::Closed;
     vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
 }
@@ -175,6 +195,7 @@ pub(crate) fn handle_search_index_rebuild_requested(state: &mut AppState) -> Vec
         return Vec::new();
     }
 
+    state.search_request_connection_id = None;
     state.search = SearchState::Closed;
     state.search_crawler.rooms = state
         .rooms
@@ -477,6 +498,16 @@ pub(crate) fn handle_files_view_closed(state: &mut AppState) -> Vec<AppEffect> {
 
     state.files_view = FilesViewState::Closed;
     vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]
+}
+
+/// Close the Files view when the account's content policy changes.
+///
+/// The listing it holds was built under the previous policy, and a listing in
+/// flight may still be answering under it. Closing means a later result cannot
+/// match the state, and the filenames the account has just opted out of are not
+/// displayed.
+pub(crate) fn close_files_view_for_content_policy_change(state: &mut AppState) -> Vec<AppEffect> {
+    handle_files_view_closed(state)
 }
 
 pub(crate) fn handle_files_view_query_requested(

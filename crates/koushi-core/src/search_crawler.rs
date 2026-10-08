@@ -1,5 +1,9 @@
 //! Search history crawler: pages older room events through `/rooms/{roomId}/messages`,
-//! decrypts them locally, and feeds searchable text into the document store.
+//! decrypts them locally, indexes them in the encrypted ngram index, and forwards
+//! Files metadata to the body-free document store.
+//!
+//! Each page awaits its index commit before being reported successful. Crawl
+//! checkpoints are in-session only; no durable crawl commitments are retained.
 //!
 //! Media file bytes are never fetched; only MXC URIs, filenames, captions and
 //! metadata are indexed. This keeps the crawler a text-only backfill worker.
@@ -266,10 +270,14 @@ async fn run_history_crawl_page(
     checkpoint.processed += events.len() as u64;
 
     let mut index_messages = Vec::new();
+    let mut index_events = Vec::new();
     for timeline_event in events {
         if timeline_event.kind.is_utd() {
             continue;
         }
+        // The same page is written to the persistent index below; keep the
+        // owned events for that write.
+        index_events.push(timeline_event.clone());
 
         let raw = timeline_event.kind.raw();
         let json = raw.json().get();
@@ -306,12 +314,51 @@ async fn run_history_crawl_page(
         chunk_len,
     );
 
+    // A completed crawl may only advance its in-session checkpoint once the index
+    // has committed this page. The SDK's own indexing runs in a background
+    // subscriber that can lag or drop failures, so a room marked done without
+    // this acknowledgement can lose its history for search permanently.
+    if let Err(kind) = index_page_events(&session, &checkpoint.room_id, index_events).await {
+        trace_crawler_page(
+            DiagnosticLevel::Warn,
+            "index_failed",
+            checkpoint.processed,
+            checkpoint.indexed,
+            chunk_len,
+        );
+        return HistoryCrawlPageResult::Failed { checkpoint, kind };
+    }
+
     HistoryCrawlPageResult::Success {
         checkpoint,
         messages: index_messages,
         completed,
         work_permit: Some(work_permit),
     }
+}
+
+/// Commit one crawled page's events to the persistent index, or say why not.
+///
+/// The caller must not advance its in-session crawl checkpoint unless this returns
+/// `Ok`.
+async fn index_page_events(
+    session: &Arc<koushi_sdk::MatrixClientSession>,
+    room_id: &str,
+    events: Vec<matrix_sdk::deserialized_responses::TimelineEvent>,
+) -> Result<(), SearchCrawlerFailureKind> {
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    koushi_sdk::index_room_events_now(session, room_id, events)
+        .await
+        .map_err(|error| match error {
+            koushi_sdk::MatrixSearchError::IndexUnavailable => {
+                SearchCrawlerFailureKind::IndexUnavailable
+            }
+            koushi_sdk::MatrixSearchError::Query => SearchCrawlerFailureKind::RoomNotFound,
+            koushi_sdk::MatrixSearchError::Internal => SearchCrawlerFailureKind::Sdk,
+        })
 }
 
 /// The shared scheduler controls work rate; this controls one admitted page's
@@ -324,13 +371,16 @@ fn crawl_batch_size(speed: SearchCrawlerSpeed) -> u32 {
     }
 }
 
-fn event_json_to_index_message(
+pub(crate) fn event_json_to_index_message(
     room_id: &str,
     json: &str,
     settings: &SearchCrawlerSettings,
     pending_redactions: &mut HashSet<String>,
 ) -> Option<SearchIndexMessage> {
     let value: Value = serde_json::from_str(json).ok()?;
+    if value.get("state_key").is_some() {
+        return None; // State events are not room messages or replacements.
+    }
     let event_id = value.get("event_id")?.as_str()?.to_owned();
     let sender = value.get("sender")?.as_str()?.to_owned();
     let timestamp_ms = value.get("origin_server_ts")?.as_u64()?;
@@ -367,10 +417,10 @@ fn event_json_to_index_message(
                 let body = replacement_content.get("body")?.as_str()?;
                 let (text_body, attachment_filename, attachment) =
                     project_message_content(msgtype, body, replacement_content, settings)?;
-                if text_body.is_none() && attachment_filename.is_none() {
-                    return None;
-                }
+                // Even an opted-out text replacement can remove an existing
+                // Files attachment. Only identity/provenance is forwarded then.
                 return Some(SearchIndexMessage::Edit {
+                    room_id: room_id.to_owned(),
                     edit_event_id: event_id,
                     target_event_id,
                     sender,
@@ -378,6 +428,9 @@ fn event_json_to_index_message(
                     body: text_body,
                     attachment_filename,
                     attachment,
+                    // A crawl reports what history showed, not the current
+                    // visible content.
+                    canonical: false,
                 });
             }
             let msgtype = content.get("msgtype")?.as_str()?;
@@ -395,6 +448,8 @@ fn event_json_to_index_message(
                 body: text_body,
                 attachment_filename,
                 attachment,
+                canonical: false,
+                edit: None,
             })
         }
         "m.sticker" => {
@@ -417,13 +472,15 @@ fn event_json_to_index_message(
                 body: text_body,
                 attachment_filename,
                 attachment,
+                canonical: false,
+                edit: None,
             })
         }
         _ => None,
     }
 }
 
-fn is_edit_event(content: &Value) -> bool {
+pub(crate) fn is_edit_event(content: &Value) -> bool {
     content
         .get("m.relates_to")
         .or_else(|| content.get("relates_to"))
@@ -432,7 +489,7 @@ fn is_edit_event(content: &Value) -> bool {
         == Some("m.replace")
 }
 
-fn edit_target_event_id(content: &Value) -> Option<String> {
+pub(crate) fn edit_target_event_id(content: &Value) -> Option<String> {
     content
         .get("m.relates_to")
         .or_else(|| content.get("relates_to"))

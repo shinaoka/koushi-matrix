@@ -876,6 +876,7 @@ fn normal_room_commands_are_rejected_in_every_verification_gate_state() {
         },
         AppAction::SearchSubmitted {
             request_id: 1,
+            connection_id: 0,
             query: "query".to_owned(),
             scope: SearchScope::AllRooms,
         },

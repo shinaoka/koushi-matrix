@@ -30,6 +30,7 @@ import {
   checkCoreRoomCreateLinksBeforeCompletion,
   checkCoreStoreFileCredentialCfg,
   checkCoreSearchQueryFailureClassification,
+  checkCoreSearchEmptyQueryOwnership,
   checkCoreSearchPageCancellation,
   checkCoreSyncSingleAllRoomsOwner,
   checkCoreThreadsReliableRelays,
@@ -148,6 +149,7 @@ test("runs representative migrated core source-contract rules", () => {
   for (const check of [
     checkCoreRuntimePersistenceBlockingPort,
     checkCoreSearchQueryFailureClassification,
+    checkCoreSearchEmptyQueryOwnership,
     checkCoreSearchPageCancellation,
     checkCoreSyncSingleAllRoomsOwner,
     checkCoreThreadsReliableRelays

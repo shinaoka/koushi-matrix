@@ -1903,7 +1903,12 @@ export function checkCoreSearchEmptyQueryOwnership() {
   const search = coreSource("search.rs");
   const failures = [];
   for (const marker of ["is_empty_query", "results: Vec::new()"]) if (runtime.includes(marker)) failures.push(sourceContractFailure(rule, `runtime owns forbidden empty-query marker ${marker}`));
-  for (const marker of ["query.trim().is_empty()", "CoreEvent::Search(SearchEvent::Results"]) if (!search.includes(marker)) failures.push(sourceContractFailure(rule, `search actor lacks ${marker}`));
+  for (const marker of ["query.trim().is_empty()", "self.emit_search_succeeded", "AppAction::SearchSucceeded"]) if (!search.includes(marker)) failures.push(sourceContractFailure(rule, `search actor lacks ${marker}`));
+  if (/CoreEvent::Search\s*\(\s*(?:koushi_protocol::event::)?SearchEvent::Results/.test(search)) failures.push(sourceContractFailure(rule, "search actor bypasses reducer result admission"));
+  const reducer = readRustSource("crates/koushi-state/src/reducer/search.rs");
+  if (!reducer.includes("AppEffect::PublishSearchResults")) failures.push(sourceContractFailure(rule, "search reducer lacks admitted result publication"));
+  const publication = coreItemBody("runtime.rs", "fn publish_admitted_search_results");
+  for (const marker of ["CoreEvent::Search", "SearchEvent::Results"]) if (!publication?.includes(marker)) failures.push(sourceContractFailure(rule, `admitted result publisher lacks ${marker}`));
   return failures;
 }
 

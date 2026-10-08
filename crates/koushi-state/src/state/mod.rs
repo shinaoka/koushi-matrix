@@ -388,6 +388,10 @@ pub struct AppState {
     pub thread_root_projections: ThreadRootProjectionState,
     pub focused_context: FocusedContextState,
     pub search: SearchState,
+    /// Connection that submitted the current search request, so a result from
+    /// another connection with the same connection-local sequence is refused.
+    #[serde(default)]
+    pub search_request_connection_id: Option<u64>,
     #[serde(default)]
     pub search_crawler: SearchCrawlerState,
     pub files_view: FilesViewState,
@@ -462,6 +466,7 @@ impl Default for AppState {
             thread_root_projections: ThreadRootProjectionState::default(),
             focused_context: FocusedContextState::Closed,
             search: SearchState::Closed,
+            search_request_connection_id: None,
             search_crawler: SearchCrawlerState::default(),
             files_view: FilesViewState::Closed,
             history_export: HistoryExportState::Idle,

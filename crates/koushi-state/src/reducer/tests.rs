@@ -533,6 +533,65 @@ fn search_crawler_is_admitted_only_after_authoritative_room_list_readiness() {
     );
 }
 
+#[test]
+fn an_authoritative_room_list_reaches_the_crawler_while_paused_and_when_empty() {
+    use crate::state::SearchCrawlerSpeed;
+
+    // Crawling paused at startup: the notification still carries the account's
+    // content policy, which governs queries, and the room set to prune.
+    let mut state = ready_state();
+    state.settings.values.search_crawler.speed = SearchCrawlerSpeed::Paused;
+    reduce(
+        &mut state,
+        AppAction::RoomListBootstrapStarted {
+            generation: 22,
+            source: crate::state::RoomListSource::Live,
+        },
+    );
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomListSnapshotAuthoritative {
+            generation: 22,
+            source: crate::state::RoomListSource::Live,
+            spaces: Vec::new(),
+            rooms: vec![test_room("!paused:example.invalid", None)],
+            invites: Vec::new(),
+        },
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::NotifySearchCrawlerRoomsAvailable { .. })),
+        "a paused crawler still needs the account's content policy and room set"
+    );
+
+    // Leaving the last room must reach the crawler too, so its commitment is
+    // pruned instead of surviving into the next session.
+    reduce(
+        &mut state,
+        AppAction::RoomListBootstrapStarted {
+            generation: 23,
+            source: crate::state::RoomListSource::Live,
+        },
+    );
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomListSnapshotAuthoritative {
+            generation: 23,
+            source: crate::state::RoomListSource::Live,
+            spaces: Vec::new(),
+            rooms: Vec::new(),
+            invites: Vec::new(),
+        },
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::NotifySearchCrawlerRoomsAvailable { .. })),
+        "an empty authoritative room list must still reach the crawler"
+    );
+}
+
 fn latest_event(event_id: &str, timestamp_ms: u64) -> RoomLatestEventSummary {
     RoomLatestEventSummary {
         event_id: event_id.to_owned(),

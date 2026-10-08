@@ -1,9 +1,8 @@
 use std::collections::{BTreeMap, HashSet};
-use std::time::Instant;
 
 use koushi_state::{
     AttachmentFilter, AttachmentKind, AttachmentResult, AttachmentScope, AttachmentSort,
-    SearchResult, SearchRoomFilter, normalize_cjk_search_text,
+    normalize_cjk_search_text,
 };
 use serde::{Deserialize, Serialize};
 
@@ -67,47 +66,80 @@ impl std::fmt::Debug for AttachmentDocument {
     }
 }
 
+/// Attachment metadata for the messages koushi has observed.
+///
+/// Search no longer reads this store. Candidates come from the persistent ngram
+/// index and are verified against the encrypted event cache, so no message body
+/// and no edit text is retained here; the Files view is the only reader, and it
+/// needs attachment metadata only. Messages without an attachment are therefore
+/// not stored at all.
 #[derive(Default)]
 pub struct SearchDocumentStore {
+    /// event_id -> visible metadata of a message that carries an attachment.
     documents: BTreeMap<String, SearchableEvent>,
-    applied_edits: BTreeMap<String, SearchEdit>,
-    pending_edits: BTreeMap<String, Vec<SearchEdit>>,
-    /// Maps edit_event_id → original_event_id.
-    ///
-    /// The SDK's ngram index indexes edit events under the edit event_id (via
-    /// `RoomIndexOperation::Edit` which removes the original and adds the edit
-    /// event). This alias map lets `verify_candidate` resolve an edit_event_id
-    /// back to the original document so verification succeeds.
-    edit_aliases: BTreeMap<String, String>,
+    /// event_id -> the edit whose content the row currently holds.
+    applied_edits: BTreeMap<String, AppliedEdit>,
+    /// event_id -> the redacted edits of that row, so a replay of any of them
+    /// cannot come back. Bounded per row by [`RETIRED_EDITS_PER_ROW`].
+    retired_edits: BTreeMap<String, Vec<String>>,
+    /// Edits that arrived before their target.
+    pending_edits: BTreeMap<String, Vec<PendingEdit>>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct SearchScanStats {
-    pub documents_visited: usize,
-    pub documents_in_scope: usize,
-    pub matches_before_limit: usize,
-    pub returned: usize,
+/// The edit whose content a row currently holds.
+///
+/// Kept so a replayed or out-of-order message/edit cannot regress the row: the
+/// canonical timeline projection always carries the current visible state, while
+/// a history crawl can replay an older version of the same message.
+///
+/// The derived `Ord` is the ordering: the edit's own event time and id decide
+/// (the crawler pages newest first, so a later page can still carry an older
+/// edit), and `canonical` only breaks a tie, where the timeline projection's
+/// current visible state wins. A later history edit therefore still beats an
+/// older canonical one; an edit rollback reaches a row by redacting the applied
+/// edit, not by sending an older timestamp.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct AppliedEdit {
+    timestamp_ms: u64,
+    edit_event_id: String,
+    canonical: bool,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct SearchWithCandidatesStats {
-    pub sdk_candidates_in_scope: usize,
-    pub verified_sdk_count: usize,
-    pub scan_elapsed_ms: u128,
-    pub scan: SearchScanStats,
-    pub results_before_limit: usize,
-    pub returned: usize,
-}
-
+/// Identity of the edit whose content a message carries.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SearchWithCandidatesOutcome {
-    pub results: Vec<SearchResult>,
-    pub stats: SearchWithCandidatesStats,
+pub struct SearchEditKey {
+    pub edit_event_id: String,
+    pub timestamp_ms: u64,
 }
 
-struct SearchScanOutcome {
-    results: Vec<SearchResult>,
-    stats: SearchScanStats,
+impl SearchEditKey {
+    pub fn new(edit_event_id: impl Into<String>, timestamp_ms: u64) -> Self {
+        Self {
+            edit_event_id: edit_event_id.into(),
+            timestamp_ms,
+        }
+    }
+}
+
+impl AppliedEdit {
+    fn from_key(key: &SearchEditKey, canonical: bool) -> Self {
+        Self {
+            timestamp_ms: key.timestamp_ms,
+            canonical,
+            edit_event_id: key.edit_event_id.clone(),
+        }
+    }
+}
+
+/// Bounded synchronous replay defense. Core also checks the SDK's encrypted
+/// redaction evidence at mutation and Files-read admission, including older IDs
+/// no longer present in this small cache.
+const RETIRED_EDITS_PER_ROW: usize = 8;
+
+/// An edit waiting for its original message.
+struct PendingEdit {
+    edit: SearchEdit,
+    canonical: bool,
 }
 
 impl SearchDocumentStore {
@@ -130,245 +162,260 @@ impl SearchDocumentStore {
         self.documents.contains_key(event_id)
     }
 
+    /// IDs whose redaction state can affect a target, including pending edits.
+    pub fn mutation_event_ids(&self, target: &str) -> Vec<String> {
+        let mut ids = vec![target.to_owned()];
+        if let Some(applied) = self.applied_edits.get(target) {
+            ids.push(applied.edit_event_id.clone());
+        }
+        if let Some(pending) = self.pending_edits.get(target) {
+            ids.extend(pending.iter().map(|p| p.edit.edit_event_id.clone()));
+        }
+        ids
+    }
+
+    /// Files candidates and pending-only targets, with their owning room.
+    pub fn mutation_targets(&self) -> Vec<(String, String)> {
+        let mut targets: Vec<_> = self
+            .documents
+            .values()
+            .map(|event| (event.room_id.clone(), event.event_id.clone()))
+            .collect();
+        targets.extend(
+            self.pending_edits
+                .iter()
+                .filter(|(id, _)| !self.documents.contains_key(*id))
+                .filter_map(|(id, edits)| {
+                    edits.first().map(|p| (p.edit.room_id.clone(), id.clone()))
+                }),
+        );
+        targets
+    }
+
+    pub fn affects_attachment(&self, target: &str) -> bool {
+        self.documents.contains_key(target)
+            || self.pending_edits.contains_key(target)
+            || self.retired_edits.contains_key(target)
+    }
+
     pub fn pending_edit_count(&self) -> usize {
         self.pending_edits.values().map(Vec::len).sum()
+    }
+
+    /// Bytes of message text this store currently retains.
+    ///
+    /// Search reads bodies from the encrypted event cache on demand, so this is
+    /// a memory probe for the #1150 budget evidence rather than a feature; it
+    /// stays zero however deep the indexed history grows.
+    pub fn resident_body_bytes(&self) -> usize {
+        self.documents
+            .values()
+            .map(|event| event.body.as_ref().map_or(0, |body| body.as_str().len()))
+            .sum()
     }
 
     pub fn clear(&mut self) {
         self.documents.clear();
         self.applied_edits.clear();
+        self.retired_edits.clear();
         self.pending_edits.clear();
-        self.edit_aliases.clear();
     }
 
-    pub fn upsert_message(&mut self, event: SearchableEvent) {
+    /// Record a message's attachment metadata.
+    ///
+    /// `canonical` marks the timeline projection, which always carries the
+    /// message's current visible content; a history crawl reports what its crawl
+    /// saw, which may be an older version of the same message. `edit` names the
+    /// edit that produced the content when the message is edited.
+    pub fn upsert_message(
+        &mut self,
+        mut event: SearchableEvent,
+        canonical: bool,
+        edit: Option<SearchEditKey>,
+    ) {
+        if event.attachment.is_none() && !self.affects_attachment(&event.event_id) {
+            // Ordinary text history is never resident. A former attachment keeps
+            // only identity/edit provenance so stale media cannot resurrect it.
+            return;
+        }
+        let applied = self.applied_edits.get(&event.event_id).cloned();
+        match (&edit, &applied) {
+            // A keyless observation says nothing about the edit the row already
+            // holds: it can be a queued observation from before that edit existed,
+            // so it must not replace the attachment the edit produced. An edit
+            // rollback reaches the row as the redaction of the applied edit, which
+            // retires it.
+            (None, Some(_)) => return,
+            // The content half of an upsert-plus-edit pair is guarded exactly
+            // like the edit half, so an older observation of an edited message
+            // cannot undo a newer edit another producer applied.
+            (Some(key), Some(applied)) if *applied >= AppliedEdit::from_key(key, canonical) => {
+                return;
+            }
+            _ => {}
+        }
+        // A redacted edit must not come back through the content half of its
+        // pair either: the redaction dropped the metadata it produced, and this
+        // content is that same metadata.
+        if let Some(key) = &edit
+            && self.is_retired_edit(&event.event_id, &key.edit_event_id)
+        {
+            return;
+        }
+        retain_attachment_metadata(&mut event);
+
         let event_id = event.event_id.clone();
         self.documents.insert(event_id.clone(), event);
 
-        if let Some(edits) = self.pending_edits.remove(&event_id)
-            && let Some(latest_edit) = latest_edit(edits)
-        {
-            self.applied_edits.insert(event_id, latest_edit);
+        if let Some(key) = edit {
+            self.applied_edits
+                .insert(event_id.clone(), AppliedEdit::from_key(&key, canonical));
+        }
+        // A keyless upsert says nothing about an edit the row already holds: it
+        // can be a queued observation from before that edit existed, so only a
+        // redaction (which retires the edit) clears the row's edit.
+
+        if let Some(pending) = self.pending_edits.remove(&event_id) {
+            for pending in pending {
+                self.apply_edit_if_newer(&pending.edit, pending.canonical);
+            }
         }
     }
 
-    pub fn upsert_edit(&mut self, edit: SearchEdit) {
-        // Register the alias so that when the SDK ngram index returns the
-        // edit event_id as a candidate, verify_candidate can resolve it to
-        // the original document.
-        self.edit_aliases
-            .insert(edit.edit_event_id.clone(), edit.target_event_id.clone());
+    pub fn upsert_edit(&mut self, mut edit: SearchEdit, canonical: bool) {
+        // Edit text is never retained, here or while the edit is pending.
+        edit.body = None;
+        if self.is_retired_edit(&edit.target_event_id, &edit.edit_event_id) {
+            // The edit was redacted; it must not come back through a replay.
+            return;
+        }
+        // The edit body's own content is dropped, but the edit event id and
+        // timestamp still mark the attachment as edited.
 
         if self.documents.contains_key(&edit.target_event_id) {
-            self.apply_edit(edit);
-        } else {
+            self.apply_edit_if_newer(&edit, canonical);
+        } else if edit.attachment.is_some()
+            || edit.attachment_filename.is_some()
+            || self.pending_edits.contains_key(&edit.target_event_id)
+            || self.retired_edits.contains_key(&edit.target_event_id)
+        {
+            // A pending edit is only useful for a row that will carry an
+            // attachment; a body-only edit cannot change one, and holding it
+            // would grow with message history the store otherwise never keeps.
             self.pending_edits
                 .entry(edit.target_event_id.clone())
                 .or_default()
-                .push(edit);
+                .push(PendingEdit { edit, canonical });
         }
     }
 
+    /// Apply one edit unless the row already holds the same or a newer one.
+    fn apply_edit_if_newer(&mut self, edit: &SearchEdit, canonical: bool) -> bool {
+        let Some(event) = self.documents.get(&edit.target_event_id) else {
+            return false;
+        };
+        // Pending crawl edits are untrusted until their root arrives. Matrix
+        // replacements must preserve sender, room and root event type; stickers
+        // are not room-message roots and cannot be replaced by m.room.message.
+        if event.sender != edit.sender
+            || event.room_id != edit.room_id
+            || event
+                .attachment
+                .as_ref()
+                .is_some_and(|a| a.kind == AttachmentKind::Sticker)
+        {
+            return false;
+        }
+        let incoming = AppliedEdit {
+            timestamp_ms: edit.timestamp_ms,
+            canonical,
+            edit_event_id: edit.edit_event_id.clone(),
+        };
+        if let Some(applied) = self.applied_edits.get(&edit.target_event_id)
+            && *applied >= incoming
+        {
+            return false;
+        }
+        if let Some(event) = self.documents.get_mut(&edit.target_event_id) {
+            apply_edit(event, edit);
+        }
+        self.applied_edits
+            .insert(edit.target_event_id.clone(), incoming);
+        true
+    }
+
+    /// Whether this row already refused a replay of this redacted edit.
+    fn is_retired_edit(&self, target_event_id: &str, edit_event_id: &str) -> bool {
+        self.retired_edits
+            .get(target_event_id)
+            .is_some_and(|retired| retired.iter().any(|id| id == edit_event_id))
+    }
+
+    /// Retire one explicitly redacted edit, preserving other surviving versions.
+    pub fn retire_edit(&mut self, target_event_id: &str, edit_event_id: &str) {
+        let retired = self
+            .retired_edits
+            .entry(target_event_id.to_owned())
+            .or_default();
+        if !retired.iter().any(|id| id == edit_event_id) {
+            retired.push(edit_event_id.to_owned());
+            if retired.len() > RETIRED_EDITS_PER_ROW {
+                retired.remove(0);
+            }
+        }
+        if self
+            .applied_edits
+            .get(target_event_id)
+            .is_some_and(|applied| applied.edit_event_id == edit_event_id)
+        {
+            self.documents.remove(target_event_id);
+            self.applied_edits.remove(target_event_id);
+        }
+        if let Some(pending) = self.pending_edits.get_mut(target_event_id) {
+            pending.retain(|p| p.edit.edit_event_id != edit_event_id);
+            if pending.is_empty() {
+                self.pending_edits.remove(target_event_id);
+            }
+        }
+    }
+
+    /// Remove a message, or retire a redacted edit.
+    ///
+    /// A redacted edit is no longer visible, so a row that holds it stops
+    /// holding it (keyed by the edit event id, not the target id): the next
+    /// message for that target -- a history replay of the original, or the
+    /// canonical projection's current content -- can then set the row. Without
+    /// this, an applied rename would pin the row against every later message.
     pub fn redact(&mut self, event_id: &str) {
+        // A redacted edit is no longer visible, so it is retired and its content
+        // is dropped: the row's attachment metadata came from that edit, and
+        // nothing here can rebuild the version it replaced. The next message for
+        // the target -- a replay of the original, or the canonical projection's
+        // current content -- sets the row again.
+        let mut affected: Vec<String> = self
+            .applied_edits
+            .iter()
+            .filter(|(_, applied)| applied.edit_event_id == event_id)
+            .map(|(target, _)| target.clone())
+            .collect();
+        affected.extend(
+            self.pending_edits
+                .iter()
+                .filter(|(_, pending)| {
+                    pending
+                        .iter()
+                        .any(|pending| pending.edit.edit_event_id == event_id)
+                })
+                .map(|(target, _)| target.clone()),
+        );
+        for target in affected {
+            self.retire_edit(&target, event_id);
+        }
+
+        self.retired_edits.remove(event_id);
         self.documents.remove(event_id);
         self.applied_edits.remove(event_id);
         self.pending_edits.remove(event_id);
-        // Also remove any aliases pointing to this event.
-        self.edit_aliases.retain(|_, target| target != event_id);
-    }
-
-    pub fn verify_candidate(
-        &self,
-        candidate: SearchCandidate,
-        query: &str,
-    ) -> Option<SearchResult> {
-        // If the candidate event_id is an edit event alias, resolve to the
-        // original document (the SDK's ngram index uses edit event_ids after
-        // RoomIndexOperation::Edit removes the original and adds the edit).
-        let resolved_event_id = self
-            .edit_aliases
-            .get(&candidate.event_id)
-            .cloned()
-            .unwrap_or_else(|| candidate.event_id.clone());
-
-        let resolved_candidate = SearchCandidate {
-            room_id: candidate.room_id.clone(),
-            event_id: resolved_event_id.clone(),
-            score_millis: candidate.score_millis,
-        };
-
-        let event = self.resolved_event(&resolved_event_id)?;
-        crate::verify::verify_candidate(&resolved_candidate, &event, query)
-    }
-
-    /// Scan the in-process document store directly for exact matches, using the
-    /// same matcher as [`Self::verify_candidate`].
-    ///
-    /// This makes the document store a first-class search candidate source, so
-    /// messages koushi has indexed (crawled history, live, CJK, short queries)
-    /// are findable even when the SDK ngram index — an accelerator, not the
-    /// authority — does not surface them as candidates (issue #162). Results
-    /// are ordered most-recent-first (then by event id) and capped at `limit`.
-    pub fn scan_candidates(
-        &self,
-        query: &str,
-        room_filter: &SearchRoomFilter,
-        limit: usize,
-    ) -> Vec<SearchResult> {
-        self.scan_candidates_with_stats(query, room_filter, limit)
-            .results
-    }
-
-    fn scan_candidates_with_stats(
-        &self,
-        query: &str,
-        room_filter: &SearchRoomFilter,
-        limit: usize,
-    ) -> SearchScanOutcome {
-        let mut stats = SearchScanStats::default();
-        if query.trim().is_empty() || limit == 0 {
-            return SearchScanOutcome {
-                results: Vec::new(),
-                stats,
-            };
-        }
-
-        let mut results: Vec<SearchResult> = Vec::new();
-        for event in self.documents.values() {
-            stats.documents_visited += 1;
-            if !room_filter.contains(&event.room_id) {
-                continue;
-            }
-            stats.documents_in_scope += 1;
-
-            let Some(event) = self.resolved_event(&event.event_id) else {
-                continue;
-            };
-            let candidate = SearchCandidate {
-                room_id: event.room_id.clone(),
-                event_id: event.event_id.clone(),
-                score_millis: 0,
-            };
-            if let Some(result) = crate::verify::verify_candidate(&candidate, &event, query) {
-                results.push(result);
-            }
-        }
-
-        stats.matches_before_limit = results.len();
-        results.sort_by(|left, right| {
-            right
-                .timestamp_ms
-                .cmp(&left.timestamp_ms)
-                .then_with(|| left.event_id.cmp(&right.event_id))
-        });
-        results.truncate(limit);
-        stats.returned = results.len();
-
-        SearchScanOutcome { results, stats }
-    }
-
-    /// Resolve a query against SDK ngram-index candidates (an accelerator)
-    /// unioned with a direct store scan (the authority) — issue #162.
-    ///
-    /// Results are ordered newest-first, deduped by `(room_id, event_id)`, and
-    /// capped at `limit`. This is the single matching path shared by the core
-    /// `SearchActor` and the fake backend so both agree that any message the
-    /// store holds is findable, regardless of SDK index coverage.
-    pub fn search_with_candidates(
-        &self,
-        query: &str,
-        room_filter: &SearchRoomFilter,
-        sdk_candidates: &[SearchCandidate],
-        limit: usize,
-    ) -> Vec<SearchResult> {
-        self.search_with_candidates_with_stats(query, room_filter, sdk_candidates, limit)
-            .results
-    }
-
-    pub fn search_with_candidates_with_stats(
-        &self,
-        query: &str,
-        room_filter: &SearchRoomFilter,
-        sdk_candidates: &[SearchCandidate],
-        limit: usize,
-    ) -> SearchWithCandidatesOutcome {
-        let mut stats = SearchWithCandidatesStats::default();
-        if query.trim().is_empty() || limit == 0 {
-            return SearchWithCandidatesOutcome {
-                results: Vec::new(),
-                stats,
-            };
-        }
-
-        let mut seen: HashSet<(String, String)> = HashSet::new();
-        let mut results: Vec<SearchResult> = Vec::new();
-
-        for candidate in sdk_candidates {
-            if !room_filter.contains(&candidate.room_id) {
-                continue;
-            }
-            stats.sdk_candidates_in_scope += 1;
-            if let Some(result) = self.verify_candidate(candidate.clone(), query) {
-                stats.verified_sdk_count += 1;
-                if seen.insert((result.room_id.clone(), result.event_id.clone())) {
-                    results.push(result);
-                }
-            }
-        }
-
-        let scan_started = Instant::now();
-        let scan_outcome = self.scan_candidates_with_stats(query, room_filter, limit);
-        stats.scan_elapsed_ms = scan_started.elapsed().as_millis();
-        stats.scan = scan_outcome.stats;
-
-        for result in scan_outcome.results {
-            if seen.insert((result.room_id.clone(), result.event_id.clone())) {
-                results.push(result);
-            }
-        }
-
-        stats.results_before_limit = results.len();
-        results.sort_by(|left, right| {
-            right
-                .timestamp_ms
-                .cmp(&left.timestamp_ms)
-                .then_with(|| right.score_millis.cmp(&left.score_millis))
-                .then_with(|| left.event_id.cmp(&right.event_id))
-        });
-        results.truncate(limit);
-        stats.returned = results.len();
-
-        SearchWithCandidatesOutcome { results, stats }
-    }
-
-    fn apply_edit(&mut self, edit: SearchEdit) {
-        let target_event_id = edit.target_event_id.clone();
-        match self.applied_edits.get(&target_event_id) {
-            Some(current) if !edit_is_newer(&edit, current) => {}
-            _ => {
-                self.applied_edits.insert(target_event_id, edit);
-            }
-        }
-    }
-
-    fn resolved_event(&self, event_id: &str) -> Option<SearchableEvent> {
-        let mut event = self.documents.get(event_id)?.clone();
-
-        if let Some(edit) = self.applied_edits.get(event_id) {
-            if let Some(body) = &edit.body {
-                event.body = Some(body.clone());
-            }
-
-            if let Some(attachment_filename) = &edit.attachment_filename {
-                event.attachment_filename = Some(attachment_filename.clone());
-            }
-
-            if let Some(attachment) = &edit.attachment {
-                event.attachment = Some(attachment.clone());
-            }
-        }
-
-        Some(event)
     }
 
     pub fn attachments(
@@ -402,7 +449,6 @@ impl SearchDocumentStore {
                 }
                 true
             })
-            .filter_map(|event| self.resolved_event(&event.event_id))
             .filter_map(|event| {
                 let attachment = event.attachment.as_ref()?;
 
@@ -461,6 +507,43 @@ impl SearchDocumentStore {
     }
 }
 
+/// Drop everything the Files view does not need.
+///
+/// The filename lives on the attachment, which is what the Files view reads; a
+/// caller that only set the standalone `attachment_filename` still gets a usable
+/// one copied across.
+fn retain_attachment_metadata(event: &mut SearchableEvent) {
+    if let (Some(attachment), Some(filename)) =
+        (event.attachment.as_mut(), &event.attachment_filename)
+        && attachment.filename.as_str().is_empty()
+    {
+        attachment.filename = filename.clone();
+    }
+
+    event.body = None;
+    event.attachment_filename = None;
+}
+
+/// Apply an edit to the attachment metadata it can affect.
+///
+/// An edit may rename the file, replace the attachment, or only change the
+/// caption; every case marks the row as edited, as the timeline does.
+fn apply_edit(event: &mut SearchableEvent, edit: &SearchEdit) {
+    if let Some(replacement) = &edit.attachment {
+        event.attachment = Some(replacement.clone());
+    } else if edit.attachment_filename.is_none() {
+        // A text replacement no longer carries media. Keep only the target's
+        // identity and edit ordering, never the replacement's text.
+        event.attachment = None;
+    }
+    if let Some(attachment) = event.attachment.as_mut() {
+        if let Some(filename) = &edit.attachment_filename {
+            attachment.filename = filename.clone();
+        }
+        attachment.is_edited = true;
+    }
+}
+
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SearchableEvent {
     pub room_id: String,
@@ -502,6 +585,7 @@ pub struct SearchCandidate {
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SearchEdit {
+    pub room_id: String,
     pub edit_event_id: String,
     pub target_event_id: String,
     pub sender: String,
@@ -530,16 +614,4 @@ impl std::fmt::Debug for SearchEdit {
             .field("attachment", &self.attachment)
             .finish()
     }
-}
-
-fn latest_edit(edits: Vec<SearchEdit>) -> Option<SearchEdit> {
-    edits.into_iter().max_by(|left, right| {
-        (left.timestamp_ms, left.edit_event_id.as_str())
-            .cmp(&(right.timestamp_ms, right.edit_event_id.as_str()))
-    })
-}
-
-fn edit_is_newer(candidate: &SearchEdit, current: &SearchEdit) -> bool {
-    (candidate.timestamp_ms, candidate.edit_event_id.as_str())
-        > (current.timestamp_ms, current.edit_event_id.as_str())
 }

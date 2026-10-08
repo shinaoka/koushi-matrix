@@ -256,8 +256,9 @@ Crate responsibilities:
 - `koushi-key` — platform-neutral credential-store port, key derivation (HKDF
   from the local unlock secret), and zeroizing secret wrappers. The OS keyring
   backend lives in Tauri.
-- `koushi-search` — candidate verification, document store, index
-  maintenance queue.
+- `koushi-search` — pure candidate verification for the persistent ngram
+  index, attachment metadata for the Files view, and the index maintenance
+  queue.
 - `koushi-media` — pure image decode-limit, resize/format, encoding and byte-kind
   classification helpers. Core owns media/cache lifecycle and state projection;
   adapters own platform delivery.
@@ -696,9 +697,11 @@ Each account remains an in-process actor system in `koushi-core`:
   current `SyncService` builder in the vendored SDK has no direct presence
   setter. Do not move presence semantics into React while that SDK/API decision
   remains open.
-- `SearchActor` — ngram candidates, canonical-text verification,
-  document-level index mutations for edits/redactions/late decryptions, and
-  Element-style background history crawling. Historical `/messages` requests
+- `SearchActor` — literal, offset-free paging over the persistent ngram index,
+  cache-only resolution of each candidate's current content for
+  canonical-text verification, attachment-metadata maintenance for the Files
+  view, and Element-style background history crawling. Historical `/messages`
+  requests
   are account-wide backpressured: `TimelineActor` pagination and
   `SearchActor` crawler pages share one gate per account, and user-visible
   timeline pagination has priority over background crawler work.
@@ -1828,6 +1831,18 @@ architectural invariants:
   canonical visible text and indexing the replacement text, a redaction removes
   only the redacted document from the searchable corpus, and an unresolved
   replacement event is not indexed as a standalone message.
+  Files metadata retains no historical message bodies or edit text. Its sole
+  mutation owner, SearchActor, admits attachment-affecting updates and Files
+  reads against explicit SDK cache redactions, including redactions whose
+  targets are not loaded. An older timeline observation is not redaction proof.
+  Missing/UTD focused or bundled events are unknown, not invalid. Known cached
+  replacements use the SDK's complete validity rules (including encrypted-root
+  protection), scoped per target before pending-edit consumption. Ordinary
+  sender/room/type and edit-order guards still apply when cache coverage is absent.
+  Body-free text provenance survives media retirement and queued-root admission. Search and Files requests carry the account's
+  submission policy rather than waiting for deferred crawler notifications.
+  Content and relation lookup errors preserve body-free retry state and fail the
+  Files request rather than deleting rows or publishing unchecked content.
 - **Device verification, cross-signing, key backup, and identity reset** are
   release-blocking E2EE trust work. Issue #13 Phase A establishes the
   Rust-owned reducer state and typed `CoreCommand`/`CoreEvent` surface.

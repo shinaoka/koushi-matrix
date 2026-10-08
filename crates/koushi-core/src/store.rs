@@ -856,7 +856,7 @@ impl StoreActor {
         let mut store_config = MatrixClientStoreConfig::new(root.join("store"), store_key)
             .with_cache_path(root.join("cache"))
             .with_search_index_store(MatrixSearchIndexStoreConfig::new(
-                root.join("search-index"),
+                root.join(search_index_dir_name()),
                 MatrixSearchIndexKey::new(search_key.as_str()),
             ));
         if self.exclusive_store_root {
@@ -1080,8 +1080,29 @@ impl StoreActor {
     }
 
     fn account_search_index_dir(&self, key_id: &SessionKeyId) -> PathBuf {
-        self.account_root_dir(key_id).join("search-index")
+        self.account_root_dir(key_id).join(search_index_dir_name())
     }
+}
+
+/// Version of the persistent search-index contract.
+///
+/// Bump when an index or extraction change means documents written by the old
+/// behavior must not be reused. The version names the account's index directory,
+/// so a bump opens a fresh index: `RoomIndex::add` skips an event that is already
+/// present, so re-crawling alone would never rewrite it.
+pub(crate) const SEARCH_INDEX_CONTRACT_VERSION: u32 = 2;
+
+/// Directory name of the per-account persistent ngram index.
+///
+/// Carries the index contract version, so a version bump opens a fresh empty
+/// index instead of reusing documents extracted under the old behavior:
+/// `RoomIndex::add` skips an event that is already present, so re-crawling alone
+/// would never rewrite them. Crawling restarts in each session and fills the new
+/// extraction generation. The previous version's directory is left on disk rather than
+/// deleted here (it goes away with the account store root on logout), because
+/// deleting files under a possibly still-open encrypted index is not safe.
+fn search_index_dir_name() -> String {
+    format!("search-index.v{SEARCH_INDEX_CONTRACT_VERSION}")
 }
 
 /// Convert a `SessionInfo` (from koushi-state) into a `SessionKeyId`

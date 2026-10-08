@@ -11,14 +11,16 @@
 //! ngram index; configured by `StoreActor::account_search_index_config`).
 //! The SDK's sync loop feeds the ngram index automatically as events arrive.
 //!
-//! The `SearchDocumentStore` (from `koushi-search`) is our in-process
-//! verification layer: it mirrors the visible canonical text for every indexed
-//! event. Timeline diffs arrive via an `mpsc` channel (`SearchIndexMessage`)
+//! The `SearchDocumentStore` (from `koushi-search`) holds attachment metadata
+//! for the Files view only; it retains no message body and no edit text.
+//! Timeline diffs still arrive via an `mpsc` channel (`SearchIndexMessage`)
 //! forwarded from the `TimelineManagerActor`/`TimelineActor`.
 //!
 //! ## Query pipeline (overview.md Security Model — Search)
-//! `SearchCommand::Query` → SDK `client.search_messages()` → candidate list
-//! → verify each against `SearchDocumentStore::verify_candidate()` → emit
+//! `SearchCommand::Query` → `MatrixLiteralSearchPager` over the persistent
+//! ngram index (literal, newest-first, offset-free) → resolve each candidate's
+//! current content from the encrypted event cache (edits and redactions
+//! applied) → verify with `koushi_search::verify_candidate()` → emit
 //! `SearchEvent::Results`. Candidates that fail verification (false positives,
 //! stale index entries) are silently dropped — never surfaced as results.
 //!
@@ -29,20 +31,24 @@
 //! falls back to a plaintext index (Security Model).
 //!
 //! ## Document-level mutations (overview.md Async rule 4, Security Model Search)
-//! - **Upsert**: a new or updated visible message is indexed into the document
-//!   store. The SDK ngram index is fed by sync automatically.
-//! - **Edit**: `SearchDocumentStore::upsert_edit` updates only the affected
-//!   document. Old terms are no longer verified against the canonical text, so
-//!   they drop out of results naturally.
-//! - **Redact**: `SearchDocumentStore::redact` removes the document; candidates
-//!   for that event will no longer verify.
-//! - **Unresolved replacement** (edit before original): stored as a pending edit
-//!   in `SearchDocumentStore`; not indexed as a standalone message (canon).
+//! The SDK ngram index is fed by sync and crawl automatically; these paths only
+//! maintain the Files view's attachment metadata.
+//! - **Upsert**: a message carrying an attachment is recorded as a Files row;
+//!   messages without one are not stored.
+//! - **Edit**: `SearchDocumentStore::upsert_edit` updates the row's filename or
+//!   attachment and marks it edited. Edit text is never retained.
+//! - **Redact**: `SearchDocumentStore::redact` removes the row.
+//! - **Unresolved replacement** (edit before original): held as a pending edit
+//!   in `SearchDocumentStore` until the attachment row arrives.
 //!
 //! ## Debug redaction
 //! Search queries and snippets must not appear in Debug of internal messages
 //! (they can appear in `SearchEvent::Results` payloads — those are visible UI
 //! state). `SearchActorMessage::Query` redacts the query in Debug.
+
+mod attachment_admission;
+#[cfg(test)]
+mod history_scale;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -51,8 +57,8 @@ use std::time::{Duration, Instant};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_sdk::MatrixClientSession;
 use koushi_search::{
-    AttachmentDocument, SearchCandidate, SearchDocumentStore, SearchEdit, SearchRoomFilter,
-    SearchableEvent, SensitiveString, cjk_search_query_variants,
+    AttachmentDocument, SearchCandidate, SearchDocumentStore, SearchEdit, SearchEditKey,
+    SearchRoomFilter, SearchableEvent, SensitiveString, cjk_search_query_variants,
 };
 use koushi_state::{
     AppAction, AttachmentFilter, AttachmentScope, AttachmentSort, SearchCrawlerSettings,
@@ -61,17 +67,23 @@ use koushi_state::{
 use tokio::sync::{broadcast, mpsc};
 
 use crate::account_work::AccountWorkScheduler;
-use crate::command_policy::search_scope_to_state;
+use crate::command_policy::{SEARCH_UNAVAILABLE_MESSAGE, search_scope_to_state};
+
 use crate::executor;
 use crate::search_crawler::{HistoryCrawlCheckpoint, HistoryCrawlPageResult};
 use koushi_protocol::command::{SearchCommand, SearchScope};
 use koushi_protocol::event::{CoreEvent, SearchEvent, SearchResultItem};
-use koushi_protocol::failure::SearchFailureKind;
+use koushi_protocol::failure::{CoreFailure, SearchFailureKind};
 use koushi_protocol::ids::RequestId;
 
 /// Maximum number of candidates requested from the SDK ngram index.
 /// Verification filters this down; the final result set may be smaller.
 const SEARCH_CANDIDATE_LIMIT: usize = 50;
+/// Candidates requested per index page while verifying a query variant.
+const SEARCH_CANDIDATE_PAGE: usize = 50;
+/// Upper bound on candidates examined for one query variant, so a query whose
+/// matches mostly fail verification still terminates with bounded work.
+const SEARCH_CANDIDATE_SCAN_BUDGET: usize = 500;
 /// Search index mutation queue capacity (canon, overview.md: 512).
 pub const SEARCH_INDEX_MUTATION_QUEUE: usize = 512;
 const SEARCH_ACTOR_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_secs(1);
@@ -128,12 +140,9 @@ fn trace_search_start(
 
 fn search_verify_diagnostic_event(
     request_id: RequestId,
-    sdk_unique: usize,
-    sdk_rooms: usize,
-    store_docs: usize,
     sdk_total_ms: u128,
     project_ms: u128,
-    stats: &koushi_search::SearchWithCandidatesStats,
+    verification: &IndexCandidateVerification,
 ) -> DiagnosticEvent {
     DiagnosticEvent::new(DiagnosticLevel::Debug, "core.search", "verify")
         .field(DiagnosticField::request_id(
@@ -141,39 +150,24 @@ fn search_verify_diagnostic_event(
             request_id.connection_id.0,
             request_id.sequence,
         ))
-        .field(DiagnosticField::count("sdk_unique", sdk_unique as u64))
-        .field(DiagnosticField::count("sdk_rooms", sdk_rooms as u64))
         .field(DiagnosticField::count(
-            "sdk_in_scope",
-            stats.sdk_candidates_in_scope as u64,
+            "candidates_in_scope",
+            verification.in_scope as u64,
         ))
         .field(DiagnosticField::count(
-            "verified_sdk",
-            stats.verified_sdk_count as u64,
-        ))
-        .field(DiagnosticField::count("store_docs", store_docs as u64))
-        .field(DiagnosticField::count(
-            "scan_visited",
-            stats.scan.documents_visited as u64,
+            "rooms",
+            verification.rooms.len() as u64,
         ))
         .field(DiagnosticField::count(
-            "scan_in_scope",
-            stats.scan.documents_in_scope as u64,
+            "cache_resolved",
+            verification.resolved as u64,
         ))
         .field(DiagnosticField::count(
-            "scan_matches",
-            stats.scan.matches_before_limit as u64,
-        ))
-        .field(DiagnosticField::count(
-            "scan_returned",
-            stats.scan.returned as u64,
+            "verified",
+            verification.verified as u64,
         ))
         .field(DiagnosticField::milliseconds("sdk_total_ms", sdk_total_ms))
         .field(DiagnosticField::milliseconds("project_ms", project_ms))
-        .field(DiagnosticField::milliseconds(
-            "scan_ms",
-            stats.scan_elapsed_ms,
-        ))
 }
 
 // ---------------------------------------------------------------------------
@@ -195,9 +189,17 @@ pub enum SearchIndexMessage {
         body: Option<String>,
         attachment_filename: Option<String>,
         attachment: Option<AttachmentDocument>,
+        /// True when the timeline projection sends this: it always carries the
+        /// message's current visible content. A history crawl sends `false`, and
+        /// the store then keeps an attachment an edit already produced.
+        canonical: bool,
+        /// The edit that produced this content, when the message is edited, so
+        /// the content and the edit that follows are one guarded update.
+        edit: Option<SearchEditKey>,
     },
     /// A message was edited. Update the document store.
     Edit {
+        room_id: String,
         edit_event_id: String,
         target_event_id: String,
         sender: String,
@@ -205,6 +207,9 @@ pub enum SearchIndexMessage {
         body: Option<String>,
         attachment_filename: Option<String>,
         attachment: Option<AttachmentDocument>,
+        /// See [`SearchIndexMessage::Upsert::canonical`]. A canonical edit also
+        /// outranks a history edit, so an edit rollback applies.
+        canonical: bool,
     },
     /// A message was redacted. Remove it from the document store.
     Redact { event_id: String },
@@ -276,6 +281,10 @@ pub(crate) enum SearchActorMessage {
         query: String,
         scope: SearchScope,
         room_filter: SearchRoomFilter,
+        /// The account's content policy at submission. Adopting it here keeps
+        /// verification on the same policy the state accepted the query under,
+        /// even when the crawler notification that also carries it is deferred.
+        content_policy: Option<SearchCrawlerSettings>,
         enqueued_at: Instant,
     },
     /// A `SearchCommand::Attachments` from the command boundary.
@@ -284,6 +293,7 @@ pub(crate) enum SearchActorMessage {
         scope: AttachmentScope,
         filter: AttachmentFilter,
         sort: AttachmentSort,
+        content_policy: Option<SearchCrawlerSettings>,
     },
     StartHistoryCrawl {
         request_id: RequestId,
@@ -332,9 +342,21 @@ struct SearchSdkQueryResult {
     request_id: RequestId,
     query: String,
     scope: SearchScope,
+    /// The filter the query was scoped with, so a re-verification under a new
+    /// content policy can resume the same query.
     room_filter: SearchRoomFilter,
-    candidates: Result<Vec<SearchCandidate>, SearchFailureKind>,
+    /// The account's content policy generation when this query started.
+    content_policy_generation: u64,
+    projection: Result<SearchProjection, SearchFailureKind>,
     sdk_total_ms: u128,
+}
+
+/// Verified outcome of one SDK query task.
+struct SearchProjection {
+    results: Vec<koushi_state::SearchResult>,
+    verification: IndexCandidateVerification,
+    /// Milliseconds the task spent resolving and verifying candidates.
+    project_ms: u128,
 }
 
 // Redact query text in Debug (queries may contain message content).
@@ -358,6 +380,7 @@ impl std::fmt::Debug for SearchActorMessage {
                 scope,
                 filter,
                 sort,
+                ..
             } => f
                 .debug_struct("SearchActorMessage::Attachments")
                 .field("request_id", request_id)
@@ -399,6 +422,7 @@ impl std::fmt::Debug for SearchActorMessage {
 }
 
 /// What the actor remembers about a room whose crawl completed this session.
+#[derive(Clone)]
 struct CompletedHistoryCrawl {
     /// Latest event id when the completed crawl started; a catch-up crawl
     /// stops at this event (#996).
@@ -417,7 +441,31 @@ pub struct SearchActorHandle {
 }
 
 impl SearchActorHandle {
+    #[cfg(test)]
+    pub(crate) fn controlled_inbox_for_testing() -> (Self, mpsc::Receiver<SearchActorMessage>) {
+        let (tx, rx) = mpsc::channel(1);
+        let (index_tx, _) = mpsc::channel(1);
+        (
+            Self {
+                tx,
+                index_tx,
+                task: None,
+            },
+            rx,
+        )
+    }
+
     pub async fn send_command(&self, command: SearchCommand) -> bool {
+        self.send_query_command(command, None).await
+    }
+
+    /// Send a command, carrying the account's content policy when the caller has
+    /// the authoritative one.
+    pub async fn send_query_command(
+        &self,
+        command: SearchCommand,
+        content_policy: Option<SearchCrawlerSettings>,
+    ) -> bool {
         let msg = match command {
             SearchCommand::Query {
                 request_id,
@@ -429,6 +477,7 @@ impl SearchActorHandle {
                 query,
                 scope,
                 room_filter,
+                content_policy,
                 enqueued_at: Instant::now(),
             },
             SearchCommand::Attachments {
@@ -441,6 +490,7 @@ impl SearchActorHandle {
                 scope,
                 filter,
                 sort,
+                content_policy,
             },
             SearchCommand::StartHistoryCrawl {
                 request_id,
@@ -557,6 +607,10 @@ impl Drop for SearchActorHandle {
 pub(crate) struct SearchActor {
     session: Arc<MatrixClientSession>,
     document_store: SearchDocumentStore,
+    // Body-free retries are bounded by the mutation queue. A single completed
+    // crawl page waits separately; no next page starts while either is pending.
+    attachment_retries: VecDeque<SearchIndexMessage>,
+    queued_crawl_index: VecDeque<SearchIndexMessage>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_rx: mpsc::Receiver<SearchActorMessage>,
@@ -599,22 +653,70 @@ pub(crate) struct SearchActor {
     crawl_delay_elapsed: bool,
     /// One-shot startup-delay timer; its completion is awaited in `run`.
     crawl_delay_timer: Option<executor::JoinHandle<()>>,
+    /// Bumped whenever the account's content policy changes.
+    ///
+    /// A query verifies candidates with the policy captured when it started, so
+    /// its result is only publishable while this still matches: otherwise it
+    /// could surface a caption or filename the account has since opted out of.
+    content_policy_generation: u64,
+    /// Content-indexing settings the verifier must apply.
+    ///
+    /// The crawler honours these when it indexes, but the persistent index also
+    /// receives events from sync, so verification is the enforcement point: a
+    /// query must never match a caption or filename the account opted out of.
+    /// Seeded restrictively until the account's own settings arrive with the
+    /// first `RoomsAvailable` notification, so an opted-out value can never be
+    /// exposed in the window before that.
+    crawler_settings: SearchCrawlerSettings,
+}
+
+/// Outcome of verifying index candidates against the event cache.
+#[derive(Default)]
+struct IndexCandidateVerification {
+    /// Candidates inside the Rust-resolved scope filter.
+    in_scope: usize,
+    /// Rooms the examined candidates came from.
+    rooms: HashSet<String>,
+    /// Candidates whose current content was available in the cache.
+    resolved: usize,
+    /// Candidates that matched the query, in pager order and deduplicated by
+    /// resolved identity.
+    verified: usize,
+    results: Vec<VerifiedCandidate>,
+}
+
+/// The `(timestamp, event_id)` key the persistent index pages a room's matches
+/// by, descending.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct IndexOrderKey {
+    timestamp_millis: i64,
+    event_id: String,
+}
+
+/// A verified candidate together with the key its candidate scan was ordered by.
+///
+/// Verification filters candidates, so the newest results are the newest *by
+/// this key*: the scan can only have seen candidates at or below it. The
+/// resolved content's timestamp (an edit's, for example) need not agree with it,
+/// so selection must not re-order by that timestamp before capping the results.
+struct VerifiedCandidate {
+    index_key: IndexOrderKey,
+    result: koushi_state::SearchResult,
 }
 
 impl SearchActor {
-    /// Spawn the actor and return its handle.
-    pub fn spawn(
+    fn new(
         session: Arc<MatrixClientSession>,
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
+        msg_rx: mpsc::Receiver<SearchActorMessage>,
         account_work: AccountWorkScheduler,
-    ) -> SearchActorHandle {
-        let (tx, msg_rx) = mpsc::channel(64);
-        let (index_tx, index_rx) = mpsc::channel(SEARCH_INDEX_MUTATION_QUEUE);
-
-        let actor = SearchActor {
+    ) -> Self {
+        Self {
             session,
             document_store: SearchDocumentStore::default(),
+            attachment_retries: VecDeque::new(),
+            queued_crawl_index: VecDeque::new(),
             action_tx,
             event_tx,
             msg_rx,
@@ -632,7 +734,22 @@ impl SearchActor {
             crawl_settings_generation: 0,
             crawl_delay_elapsed: false,
             crawl_delay_timer: None,
-        };
+            content_policy_generation: 0,
+            crawler_settings: restricted_crawler_settings(),
+        }
+    }
+
+    /// Spawn the actor and return its handle.
+    pub fn spawn(
+        session: Arc<MatrixClientSession>,
+        action_tx: mpsc::Sender<Vec<AppAction>>,
+        event_tx: broadcast::Sender<CoreEvent>,
+        account_work: AccountWorkScheduler,
+    ) -> SearchActorHandle {
+        let (tx, msg_rx) = mpsc::channel(64);
+        let (index_tx, index_rx) = mpsc::channel(SEARCH_INDEX_MUTATION_QUEUE);
+
+        let actor = Self::new(session, action_tx, event_tx, msg_rx, account_work);
 
         // Spawn the actor task.
         let task = executor::spawn(actor.run(index_rx));
@@ -686,12 +803,18 @@ impl SearchActor {
                         self.handle_sdk_query_result(result).await;
                     }
                 }
-                index_msg = index_rx.recv() => {
+                _ = std::future::ready(()), if !self.queued_crawl_index.is_empty()
+                    && self.attachment_retries.len() < SEARCH_INDEX_MUTATION_QUEUE => {
+                    let message = self.queued_crawl_index.pop_front().unwrap();
+                    self.handle_index(message).await;
+                    self.start_next_history_crawl_page();
+                }
+                index_msg = index_rx.recv(), if self.attachment_retries.len() < SEARCH_INDEX_MUTATION_QUEUE => {
                     let Some(index_msg) = index_msg else {
                         // Timeline sender dropped — that's fine (e.g. on shutdown).
                         continue;
                     };
-                    self.handle_index(index_msg);
+                    self.handle_index(index_msg).await;
                 }
             }
         }
@@ -711,6 +834,7 @@ impl SearchActor {
                 query,
                 scope,
                 room_filter,
+                content_policy,
                 enqueued_at,
             } => {
                 self.drain_available_actor_messages();
@@ -720,6 +844,7 @@ impl SearchActor {
                         query,
                         scope,
                         room_filter,
+                        content_policy,
                         enqueued_at,
                     },
                     &mut self.deferred_messages,
@@ -729,6 +854,7 @@ impl SearchActor {
                     query,
                     scope,
                     room_filter,
+                    content_policy,
                     enqueued_at,
                 } = latest_query
                 {
@@ -750,8 +876,15 @@ impl SearchActor {
                                 )),
                         );
                     }
-                    self.handle_query(request_id, &query, scope, room_filter, enqueued_at)
-                        .await;
+                    self.handle_query(
+                        request_id,
+                        &query,
+                        scope,
+                        room_filter,
+                        content_policy,
+                        enqueued_at,
+                    )
+                    .await;
                 }
                 true
             }
@@ -760,7 +893,11 @@ impl SearchActor {
                 scope,
                 filter,
                 sort,
+                content_policy,
             } => {
+                if let Some(settings) = content_policy {
+                    self.set_crawler_settings(settings);
+                }
                 self.handle_attachments(request_id, scope, filter, sort)
                     .await;
                 true
@@ -812,8 +949,14 @@ impl SearchActor {
         query: &str,
         scope: SearchScope,
         room_filter: SearchRoomFilter,
+        content_policy: Option<SearchCrawlerSettings>,
         enqueued_at: Instant,
     ) {
+        // The submission's policy is authoritative for this query, so adopt it
+        // before capturing the generation the result will be checked against.
+        if let Some(settings) = content_policy {
+            self.set_crawler_settings(settings);
+        }
         self.active_query_generation = self.active_query_generation.wrapping_add(1);
         let generation = self.active_query_generation;
         if let Some(task) = self.active_sdk_search.take() {
@@ -828,16 +971,12 @@ impl SearchActor {
 
         let query = query.trim();
         if query.trim().is_empty() {
+            // The state admits and publishes the empty result set.
             self.emit_search_succeeded(request_id, query, &scope, Vec::new())
                 .await;
-            self.emit(CoreEvent::Search(SearchEvent::Results {
-                request_id,
-                results: Vec::new(),
-            }));
             return;
         }
 
-        let query_started = Instant::now();
         let queued_ms = enqueued_at.elapsed().as_millis();
         let variants = cjk_search_query_variants(query);
         trace_search_start(
@@ -850,29 +989,20 @@ impl SearchActor {
             variants.iter().any(|variant| variant != query),
         );
 
-        let projected_results =
-            self.project_search_results(request_id, query, &room_filter, &[], 0);
-        record_search_finish(
-            request_id,
-            "local_finish",
-            &projected_results,
-            query_started.elapsed().as_millis(),
-        );
-        let compact_results = compact_search_results(&projected_results);
-        self.emit_search_succeeded(request_id, query, &scope, projected_results)
-            .await;
-        self.emit(CoreEvent::Search(SearchEvent::Results {
-            request_id,
-            results: compact_results,
-        }));
-
+        // Search is index-first: there is no in-process history to scan, so the
+        // first emission is the verified SDK page. Emitting an empty placeholder
+        // first would look like a settled empty answer to callers.
         if matches!(&room_filter, SearchRoomFilter::OnlyRooms(room_ids) if room_ids.is_empty()) {
+            self.emit_search_succeeded(request_id, query, &scope, Vec::new())
+                .await;
             return;
         }
 
         let session = self.session.clone();
         let query = query.to_owned();
         let sdk_scope = matrix_sdk_search_scope(&scope, &room_filter);
+        let settings = self.crawler_settings.clone();
+        let content_policy_generation = self.content_policy_generation;
         self.active_sdk_search = Some(executor::spawn(run_sdk_query(
             session,
             generation,
@@ -881,6 +1011,8 @@ impl SearchActor {
             scope,
             room_filter,
             sdk_scope,
+            settings,
+            content_policy_generation,
             variants,
         )));
     }
@@ -896,28 +1028,80 @@ impl SearchActor {
             return;
         }
 
-        let sdk_candidates = match result.candidates {
-            Ok(candidates) => candidates,
+        if result.content_policy_generation != self.content_policy_generation {
+            // The account's content policy changed while this query ran, so its
+            // verification used a policy that is no longer current: publishing it
+            // could show a caption or filename the account has opted out of.
+            // Verify the same query again under the current policy.
+            record(
+                DiagnosticEvent::new(DiagnosticLevel::Debug, "core.search", "policy_changed")
+                    .field(DiagnosticField::request_id(
+                        "request_id",
+                        result.request_id.connection_id.0,
+                        result.request_id.sequence,
+                    ))
+                    .field(DiagnosticField::count(
+                        "captured_generation",
+                        result.content_policy_generation,
+                    ))
+                    .field(DiagnosticField::count(
+                        "current_generation",
+                        self.content_policy_generation,
+                    )),
+            );
+            let SearchSdkQueryResult {
+                generation,
+                request_id,
+                query,
+                scope,
+                room_filter,
+                ..
+            } = result;
+            let variants = cjk_search_query_variants(&query);
+            let sdk_scope = matrix_sdk_search_scope(&scope, &room_filter);
+            let settings = self.crawler_settings.clone();
+            let content_policy_generation = self.content_policy_generation;
+            self.active_sdk_search = Some(executor::spawn(run_sdk_query(
+                self.session.clone(),
+                generation,
+                request_id,
+                query,
+                scope,
+                room_filter,
+                sdk_scope,
+                settings,
+                content_policy_generation,
+                variants,
+            )));
+            return;
+        }
+
+        let projection = match result.projection {
+            Ok(projection) => projection,
             Err(kind) => {
                 record_search_sdk_failure(result.request_id, kind, result.sdk_total_ms);
+                self.emit_search_failed(result.request_id, &result.query, &result.scope, kind)
+                    .await;
                 return;
             }
         };
-        let projection_started = Instant::now();
-        let projected_results = self.project_search_results(
+        record(search_verify_diagnostic_event(
             result.request_id,
-            &result.query,
-            &result.room_filter,
-            &sdk_candidates,
             result.sdk_total_ms,
-        );
+            projection.project_ms,
+            &projection.verification,
+        ));
+        let projected_results = projection.results;
         record_search_finish(
             result.request_id,
             "finish",
             &projected_results,
-            projection_started.elapsed().as_millis() + result.sdk_total_ms,
+            result.sdk_total_ms,
         );
-        let compact_results = compact_search_results(&projected_results);
+
+        // The state publishes an admitted result set (it is the only owner of
+        // the account's content policy and of the accepted query identity), so
+        // the actor only asks for it here.
         self.emit_search_succeeded(
             result.request_id,
             &result.query,
@@ -925,59 +1109,30 @@ impl SearchActor {
             projected_results,
         )
         .await;
-        self.emit(CoreEvent::Search(SearchEvent::Results {
-            request_id: result.request_id,
-            results: compact_results,
-        }));
-    }
-
-    fn project_search_results(
-        &self,
-        request_id: RequestId,
-        query: &str,
-        room_filter: &SearchRoomFilter,
-        sdk_candidates: &[SearchCandidate],
-        sdk_total_ms: u128,
-    ) -> Vec<koushi_state::SearchResult> {
-        let sdk_room_count = {
-            sdk_candidates
-                .iter()
-                .map(|candidate| candidate.room_id.as_str())
-                .collect::<HashSet<_>>()
-                .len()
-        };
-
-        // #162/#341: the SDK ngram index is an accelerator, not the authority.
-        // The direct document-store scan runs first and with the same
-        // Rust-resolved scope filter, so indexed local results are visible even
-        // while an SDK supplement is still pending.
-        let projection_started = Instant::now();
-        let projection = self.document_store.search_with_candidates_with_stats(
-            query,
-            room_filter,
-            sdk_candidates,
-            SEARCH_CANDIDATE_LIMIT,
-        );
-        let projection_elapsed_ms = projection_started.elapsed().as_millis();
-        record(search_verify_diagnostic_event(
-            request_id,
-            sdk_candidates.len(),
-            sdk_room_count,
-            self.document_store.document_count(),
-            sdk_total_ms,
-            projection_elapsed_ms,
-            &projection.stats,
-        ));
-        projection.results
     }
 
     async fn handle_attachments(
-        &self,
+        &mut self,
         request_id: RequestId,
         scope: AttachmentScope,
         filter: AttachmentFilter,
         sort: AttachmentSort,
     ) {
+        if !self.reconcile_attachment_redactions().await {
+            let _ = self
+                .action_tx
+                .send(vec![AppAction::FilesViewQueryFailed {
+                    request_id: request_id.sequence,
+                    message: SEARCH_UNAVAILABLE_MESSAGE.to_owned(),
+                }])
+                .await;
+            self.emit(CoreEvent::Search(SearchEvent::AttachmentsFailed {
+                request_id,
+                message: SEARCH_UNAVAILABLE_MESSAGE.to_owned(),
+            }));
+            return;
+        }
+        self.start_next_history_crawl_page();
         let results = self.document_store.attachments(&scope, &filter, sort);
 
         let _ = self
@@ -994,6 +1149,7 @@ impl SearchActor {
         }));
     }
 
+    /// Ask the state to admit a result set and publish it.
     async fn emit_search_succeeded(
         &self,
         request_id: RequestId,
@@ -1005,6 +1161,7 @@ impl SearchActor {
             .action_tx
             .send(vec![AppAction::SearchSucceeded {
                 request_id: request_id.sequence,
+                connection_id: request_id.connection_id.0,
                 query: query.to_owned(),
                 scope: search_scope_to_state(scope),
                 results,
@@ -1012,7 +1169,51 @@ impl SearchActor {
             .await;
     }
 
-    fn handle_index(&mut self, msg: SearchIndexMessage) {
+    /// Settle a query that could not produce results, so the UI stops waiting.
+    async fn emit_search_failed(
+        &self,
+        request_id: RequestId,
+        query: &str,
+        scope: &SearchScope,
+        kind: SearchFailureKind,
+    ) {
+        let _ = self
+            .action_tx
+            .send(vec![AppAction::SearchFailed {
+                request_id: request_id.sequence,
+                connection_id: request_id.connection_id.0,
+                query: query.to_owned(),
+                scope: search_scope_to_state(scope),
+                message: SEARCH_UNAVAILABLE_MESSAGE.to_owned(),
+            }])
+            .await;
+        self.emit(CoreEvent::OperationFailed {
+            request_id,
+            failure: CoreFailure::SearchFailed { kind },
+        });
+    }
+
+    /// Whether the account's content policy excludes this attachment metadata.
+    ///
+    /// The Files view lists attachments by filename, which the account can opt
+    /// out of indexing. The timeline projection sends attachment metadata without
+    /// consulting the policy, so the policy is applied here, once, for every
+    /// producer.
+    fn attachment_policy_excludes(
+        &self,
+        attachment: &Option<AttachmentDocument>,
+        attachment_filename: Option<&str>,
+    ) -> bool {
+        !self.crawler_settings.include_filenames
+            && (attachment.is_some() || attachment_filename.is_some())
+    }
+
+    /// Apply one index message to the document store.
+    ///
+    /// Returns the row it changed, for the `IndexUpdated` wake-up, when there is
+    /// one. Callers that rebuild rows in bulk (the Files-view refresh) use this
+    /// directly so a bulk rebuild does not emit one event per message.
+    fn apply_index_message(&mut self, msg: SearchIndexMessage) -> Option<(String, String)> {
         match msg {
             SearchIndexMessage::Upsert {
                 room_id,
@@ -1022,7 +1223,12 @@ impl SearchActor {
                 body,
                 attachment_filename,
                 attachment,
+                canonical,
+                edit,
             } => {
+                if self.attachment_policy_excludes(&attachment, attachment_filename.as_deref()) {
+                    return None;
+                }
                 // Capture the visible-state identifiers before the payload is
                 // consumed by the document store, so `IndexUpdated` can wake
                 // pollers (room/event ids only — never the body).
@@ -1037,13 +1243,11 @@ impl SearchActor {
                     attachment_filename: attachment_filename.map(SensitiveString::new),
                     attachment,
                 };
-                self.document_store.upsert_message(event);
-                self.emit(CoreEvent::Search(SearchEvent::IndexUpdated {
-                    room_id: indexed_room_id,
-                    event_id: indexed_event_id,
-                }));
+                self.document_store.upsert_message(event, canonical, edit);
+                Some((indexed_room_id, indexed_event_id))
             }
             SearchIndexMessage::Edit {
+                room_id,
                 edit_event_id,
                 target_event_id,
                 sender,
@@ -1051,7 +1255,11 @@ impl SearchActor {
                 body,
                 attachment_filename,
                 attachment,
+                canonical,
             } => {
+                if self.attachment_policy_excludes(&attachment, attachment_filename.as_deref()) {
+                    return None;
+                }
                 // The Edit payload only names the target event id; resolve its
                 // room id from the document store so `IndexUpdated` stays honest
                 // (no fabricated room id). An edit whose original is not yet
@@ -1062,6 +1270,7 @@ impl SearchActor {
                     .map(str::to_owned);
                 let edited_event_id = target_event_id.clone();
                 let edit = SearchEdit {
+                    room_id,
                     edit_event_id,
                     target_event_id,
                     sender,
@@ -1070,16 +1279,12 @@ impl SearchActor {
                     attachment_filename: attachment_filename.map(SensitiveString::new),
                     attachment,
                 };
-                self.document_store.upsert_edit(edit);
-                if let Some(room_id) = edited_room_id {
-                    self.emit(CoreEvent::Search(SearchEvent::IndexUpdated {
-                        room_id,
-                        event_id: edited_event_id,
-                    }));
-                }
+                self.document_store.upsert_edit(edit, canonical);
+                edited_room_id.map(|room_id| (room_id, edited_event_id))
             }
             SearchIndexMessage::Redact { event_id } => {
                 self.document_store.redact(&event_id);
+                None
             }
         }
     }
@@ -1090,6 +1295,10 @@ impl SearchActor {
         room_id: String,
         settings: SearchCrawlerSettings,
     ) {
+        // The command's settings configure this crawl only. The verifier and the
+        // Files projection follow the account's policy, which arrives with a
+        // query and with the room-list notification, so a caller-supplied crawl
+        // policy cannot widen what a search may match.
         self.remove_history_crawl_room(&room_id).await;
         self.completed_rooms.remove(&room_id);
         if settings.speed == SearchCrawlerSpeed::Paused {
@@ -1130,18 +1339,24 @@ impl SearchActor {
         } = notification;
         self.available_crawl_rooms = room_ids.iter().cloned().collect();
         self.latest_event_ids = latest_event_ids;
+        // The account's content policy applies to queries even while the
+        // crawler is paused, so record it before the speed check.
+        self.set_crawler_settings(settings.clone());
 
-        if settings.speed == SearchCrawlerSpeed::Paused {
-            self.stop_all_history_crawls().await;
-            return;
-        }
-
-        let mut stopped_room_ids = self.retain_history_crawl_rooms();
+        // Membership changes prune the crawl set (and its durable record) even
+        // while the crawler is paused; otherwise a departed room stays
+        // committed and the restart after it rejoins skips its crawl.
+        let mut stopped_room_ids = self.retain_history_crawl_rooms().await;
         if let Some(room_id) = self.abort_active_history_crawl_if_retired().await {
             stopped_room_ids.push(room_id);
         }
         for room_id in stopped_room_ids {
             self.emit_history_crawl_stopped(room_id).await;
+        }
+
+        if settings.speed == SearchCrawlerSpeed::Paused {
+            self.stop_all_history_crawls().await;
+            return;
         }
 
         for room_id in room_ids {
@@ -1241,7 +1456,10 @@ impl SearchActor {
     }
 
     fn start_next_history_crawl_page(&mut self) {
-        if self.active_crawl_page.is_some() {
+        if self.active_crawl_page.is_some()
+            || !self.queued_crawl_index.is_empty()
+            || !self.attachment_retries.is_empty()
+        {
             return;
         }
         // Startup delay: hold AUTOMATIC crawls until the delay elapses; manual
@@ -1301,10 +1519,9 @@ impl SearchActor {
                 if !checkpoint.manual && !self.available_crawl_rooms.contains(&checkpoint.room_id) {
                     return;
                 }
-                for message in messages {
-                    self.handle_index(message);
-                }
+                // The permit covers page/index work, not Files cache admission.
                 drop(work_permit);
+                self.queue_crawl_messages(messages);
                 let _ = self
                     .action_tx
                     .send(vec![AppAction::HistoryCrawlProgress {
@@ -1315,14 +1532,13 @@ impl SearchActor {
                     }])
                     .await;
                 if completed {
-                    self.completed_rooms.insert(
-                        checkpoint.room_id.clone(),
-                        CompletedHistoryCrawl {
-                            latest_event_id: checkpoint.latest_event_id_at_start.clone(),
-                            processed: checkpoint.processed,
-                            indexed: checkpoint.indexed,
-                        },
-                    );
+                    let crawl = CompletedHistoryCrawl {
+                        latest_event_id: checkpoint.latest_event_id_at_start.clone(),
+                        processed: checkpoint.processed,
+                        indexed: checkpoint.indexed,
+                    };
+                    self.completed_rooms
+                        .insert(checkpoint.room_id.clone(), crawl);
                     let _ = self
                         .action_tx
                         .send(vec![AppAction::HistoryCrawlCompleted {
@@ -1382,7 +1598,25 @@ impl SearchActor {
         }
     }
 
-    fn retain_history_crawl_rooms(&mut self) -> Vec<String> {
+    /// Adopt the account's content-indexing settings.
+    ///
+    /// A content-policy change invalidates any query that is verifying under the
+    /// previous policy; a speed-only change does not.
+    fn set_crawler_settings(&mut self, settings: SearchCrawlerSettings) {
+        if content_policy_changed(&self.crawler_settings, &settings) {
+            self.content_policy_generation = self.content_policy_generation.wrapping_add(1);
+            // Rows admitted under the previous policy are no longer admissible: a
+            // filename the account has just opted out of must not stay readable
+            // through the Files view until some later message happens to replace
+            // it. Subsequent admitted projections/crawls repopulate the metadata.
+            self.document_store.clear();
+            self.attachment_retries.clear();
+            self.queued_crawl_index.clear();
+        }
+        self.crawler_settings = settings;
+    }
+
+    async fn retain_history_crawl_rooms(&mut self) -> Vec<String> {
         let mut stopped_room_ids = std::collections::BTreeSet::new();
         for room_id in self.completed_rooms.keys() {
             if !self.available_crawl_rooms.contains(room_id) {
@@ -1404,6 +1638,7 @@ impl SearchActor {
             .iter()
             .map(|checkpoint| checkpoint.room_id.clone())
             .collect();
+
         stopped_room_ids.into_iter().collect()
     }
 
@@ -1463,6 +1698,13 @@ impl SearchActor {
 
     async fn invalidate_history_crawler_cache(&mut self) {
         self.completed_rooms.clear();
+        // Attachment rows were built under the old content policy, and the
+        // Files view must rebuild them under the new one.
+        self.document_store.clear();
+        self.attachment_retries.clear();
+        self.queued_crawl_index.clear();
+        // A settings change that could
+        // not be saved is still detected on the next start.
         self.stop_all_history_crawls().await;
     }
 
@@ -1496,7 +1738,9 @@ async fn abort_and_await_task<T>(task: executor::JoinHandle<T>) {
     let _ = task.await;
 }
 
-fn compact_search_results(results: &[koushi_state::SearchResult]) -> Vec<SearchResultItem> {
+pub(crate) fn compact_search_results(
+    results: &[koushi_state::SearchResult],
+) -> Vec<SearchResultItem> {
     results
         .iter()
         .map(|result| SearchResultItem {
@@ -1612,31 +1856,35 @@ async fn run_sdk_query(
     scope: SearchScope,
     room_filter: SearchRoomFilter,
     sdk_scope: koushi_sdk::MatrixSearchScope,
+    settings: SearchCrawlerSettings,
+    content_policy_generation: u64,
     variants: Vec<String>,
 ) -> SearchSdkQueryResult {
     let sdk_started = Instant::now();
-    let mut candidates_by_key: HashMap<(String, String), koushi_sdk::MatrixSearchCandidate> =
-        HashMap::new();
+    let mut verification = IndexCandidateVerification::default();
+    let mut verified_by_identity: HashMap<(String, String), VerifiedCandidate> = HashMap::new();
+
     for (variant_index, query_variant) in variants.iter().enumerate() {
         let variant_started = Instant::now();
-        let candidates = koushi_sdk::search_message_candidates_scoped(
+        let outcome = match verify_literal_candidates(
             &session,
             query_variant,
-            sdk_scope.clone(),
-            SEARCH_CANDIDATE_LIMIT,
+            &sdk_scope,
+            &room_filter,
+            &settings,
         )
-        .await;
-
-        let candidates = match candidates {
-            Ok(candidates) => candidates,
-            Err(error) => {
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(kind) => {
                 return SearchSdkQueryResult {
                     generation,
                     request_id,
                     query,
                     scope,
                     room_filter,
-                    candidates: Err(classify_matrix_search_error(&error)),
+                    content_policy_generation,
+                    projection: Err(kind),
                     sdk_total_ms: sdk_started.elapsed().as_millis(),
                 };
             }
@@ -1656,40 +1904,228 @@ async fn run_sdk_query(
                 ))
                 .field(DiagnosticField::count(
                     "candidates",
-                    candidates.len() as u64,
+                    outcome.in_scope as u64,
                 ))
+                .field(DiagnosticField::count("verified", outcome.verified as u64))
                 .field(DiagnosticField::milliseconds("duration", elapsed_ms)),
         );
 
-        for candidate in candidates {
-            let key = (candidate.room_id.clone(), candidate.event_id.clone());
-            candidates_by_key
-                .entry(key)
-                .and_modify(|current| {
-                    if candidate.score_millis > current.score_millis {
-                        *current = candidate.clone();
+        verification.in_scope += outcome.in_scope;
+        verification.resolved += outcome.resolved;
+        verification.verified += outcome.verified;
+        verification.rooms.extend(outcome.rooms);
+        for candidate in outcome.results {
+            let identity = (
+                candidate.result.room_id.clone(),
+                candidate.result.event_id.clone(),
+            );
+            match verified_by_identity.entry(identity) {
+                // One message can match more than one query variant; keep the
+                // newer index position of the two.
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    if entry.get().index_key < candidate.index_key {
+                        entry.insert(candidate);
                     }
-                })
-                .or_insert(candidate);
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(candidate);
+                }
+            }
         }
     }
 
+    let total_ms = sdk_started.elapsed().as_millis();
     SearchSdkQueryResult {
         generation,
         request_id,
         query,
         scope,
         room_filter,
-        candidates: Ok(candidates_by_key
-            .into_values()
-            .map(|candidate| SearchCandidate {
-                room_id: candidate.room_id,
-                event_id: candidate.event_id,
-                score_millis: candidate.score_millis,
-            })
-            .collect()),
-        sdk_total_ms: sdk_started.elapsed().as_millis(),
+        content_policy_generation,
+        projection: Ok(SearchProjection {
+            results: select_newest(verified_by_identity.into_values().collect()),
+            verification,
+            project_ms: total_ms,
+        }),
+        sdk_total_ms: total_ms,
     }
+}
+
+/// Cap verified candidates at the result limit and order them for display.
+///
+/// The cap must be applied in the order the candidate scan used -- the index's
+/// `(timestamp, event_id)` key, descending -- because that is the only order in
+/// which "newest" is knowable: re-ordering by the displayed (resolved) timestamp
+/// first can drop a result the scan did see as newer. Callers deduplicate by
+/// resolved identity before this point.
+fn select_newest(mut candidates: Vec<VerifiedCandidate>) -> Vec<koushi_state::SearchResult> {
+    candidates.sort_by(|left, right| {
+        right
+            .index_key
+            .cmp(&left.index_key)
+            .then_with(|| right.result.event_id.cmp(&left.result.event_id))
+    });
+    candidates.truncate(SEARCH_CANDIDATE_LIMIT);
+    candidates.sort_by(|left, right| {
+        right
+            .result
+            .timestamp_ms
+            .cmp(&left.result.timestamp_ms)
+            .then_with(|| right.index_key.cmp(&left.index_key))
+    });
+    candidates
+        .into_iter()
+        .map(|candidate| candidate.result)
+        .collect()
+}
+
+/// Verify one query variant, paging the index until enough candidates match or
+/// the scan budget is spent.
+///
+/// Verification filters candidates, so a single page can under-report when most
+/// of it fails to match; refilling keeps the answer complete while the candidate
+/// scan stays bounded and no offset is ever used.
+async fn verify_literal_candidates(
+    session: &Arc<MatrixClientSession>,
+    query: &str,
+    sdk_scope: &koushi_sdk::MatrixSearchScope,
+    room_filter: &SearchRoomFilter,
+    settings: &SearchCrawlerSettings,
+) -> Result<IndexCandidateVerification, SearchFailureKind> {
+    let mut pager =
+        koushi_sdk::MatrixLiteralSearchPager::new(session, query, sdk_scope, SEARCH_CANDIDATE_PAGE);
+    let mut verification = IndexCandidateVerification::default();
+    let mut seen_identities: HashSet<(String, String)> = HashSet::new();
+
+    while verification.results.len() < SEARCH_CANDIDATE_LIMIT
+        && verification.in_scope < SEARCH_CANDIDATE_SCAN_BUDGET
+    {
+        let page = pager
+            .next_page(session, SEARCH_CANDIDATE_PAGE)
+            .await
+            .map_err(|error| classify_matrix_search_error(&error))?;
+        if page.is_empty() {
+            break;
+        }
+
+        for candidate in page {
+            if !room_filter.contains(&candidate.room_id) {
+                continue;
+            }
+            verification.in_scope += 1;
+            verification.rooms.insert(candidate.room_id.clone());
+            // A missing or redacted cached event simply drops out of the page.
+            let Some(resolved) = koushi_sdk::resolve_cached_message(
+                session,
+                &candidate.room_id,
+                &candidate.event_id,
+            )
+            .await
+            .map_err(|error| classify_matrix_search_error(&error))?
+            else {
+                continue;
+            };
+            verification.resolved += 1;
+
+            // The index may answer with an edit event id; the resolved reader
+            // reports the original identity plus current content. The content
+            // policy is applied here: the index also gets events from sync, so
+            // this is the only place an opted-out caption or filename can be
+            // kept out of results.
+            let Some((body, attachment_filename)) = visible_content(
+                settings,
+                resolved.body.as_deref(),
+                resolved.attachment_filename.as_deref(),
+            ) else {
+                continue;
+            };
+            let event = SearchableEvent {
+                room_id: candidate.room_id.clone(),
+                event_id: resolved.event_id.clone(),
+                sender: resolved.sender.clone(),
+                timestamp_ms: resolved.timestamp_ms.unwrap_or(0),
+                body: body.map(SensitiveString::new),
+                attachment_filename: attachment_filename.map(SensitiveString::new),
+                attachment: None,
+            };
+            let resolved_candidate = SearchCandidate {
+                room_id: candidate.room_id.clone(),
+                event_id: resolved.event_id,
+                score_millis: 0,
+            };
+            if let Some(result) =
+                koushi_search::verify_candidate(&resolved_candidate, &event, query)
+            {
+                // An edit event id and its root can both come back from the
+                // index. Deduplicate by the resolved identity before the result
+                // counts toward the quota, so a duplicate cannot consume a slot
+                // that a distinct message needs.
+                if !seen_identities.insert((
+                    candidate.room_id.clone(),
+                    resolved_candidate.event_id.clone(),
+                )) {
+                    continue;
+                }
+                verification.verified += 1;
+                verification.results.push(VerifiedCandidate {
+                    index_key: IndexOrderKey {
+                        timestamp_millis: candidate.timestamp_millis,
+                        event_id: candidate.event_id,
+                    },
+                    result,
+                });
+            }
+        }
+    }
+
+    Ok(verification)
+}
+
+/// Whether a settings change alters what the verifier may match.
+///
+/// A crawler speed change is not a content-policy change and must not invalidate
+/// an in-flight query.
+fn content_policy_changed(previous: &SearchCrawlerSettings, next: &SearchCrawlerSettings) -> bool {
+    previous.include_media_captions != next.include_media_captions
+        || previous.include_filenames != next.include_filenames
+}
+
+/// Content settings that expose nothing until the account's own arrive.
+///
+/// Media captions and filenames are opt-in content for search; before the first
+/// `RoomsAvailable` notification carries the account's settings, a query must
+/// miss them rather than reveal them.
+fn restricted_crawler_settings() -> SearchCrawlerSettings {
+    SearchCrawlerSettings {
+        include_media_captions: false,
+        include_filenames: false,
+        ..SearchCrawlerSettings::default()
+    }
+}
+
+/// Project a cache-resolved message onto the content the search policy allows.
+///
+/// `attachment_filename.is_some()` marks a media message: the SDK resolver fills
+/// it for image/video/audio/file and never for text-like messages
+/// (`resolved_text` in the fork's `search_index`). This mirrors the crawler's
+/// own projection (`search_crawler_project_message_content`) so a query can
+/// never match text the account opted out of indexing. Returns `None` when the
+/// policy leaves nothing to match.
+fn visible_content(
+    settings: &SearchCrawlerSettings,
+    body: Option<&str>,
+    attachment_filename: Option<&str>,
+) -> Option<(Option<String>, Option<String>)> {
+    let Some(filename) = attachment_filename else {
+        // A text-like message keeps its body; the policy governs media only.
+        return body.map(|body| (Some(body.to_owned()), None));
+    };
+    let caption = settings
+        .include_media_captions
+        .then(|| body.map(str::to_owned))
+        .flatten();
+    let filename = settings.include_filenames.then(|| filename.to_owned());
+    (caption.is_some() || filename.is_some()).then_some((caption, filename))
 }
 
 fn classify_matrix_search_error(error: &koushi_sdk::MatrixSearchError) -> SearchFailureKind {

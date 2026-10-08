@@ -1499,6 +1499,7 @@ pub enum AppAction {
         message: String,
     },
     CloseFocusedContext,
+    /// The user opened a search result at `(room_id, event_id)`.
     SearchClosed,
     SearchEdited {
         query: String,
@@ -1506,17 +1507,25 @@ pub enum AppAction {
     },
     SearchSubmitted {
         request_id: u64,
+        /// Connection that submitted the query. See `SearchSucceeded`.
+        connection_id: u64,
         query: String,
         scope: SearchScope,
     },
     SearchSucceeded {
         request_id: u64,
+        /// Connection that submitted the query.
+        ///
+        /// Sequences are connection-local and every connection starts at one, so
+        /// the sequence alone cannot tell two callers' requests apart.
+        connection_id: u64,
         query: String,
         scope: SearchScope,
         results: Vec<SearchResult>,
     },
     SearchFailed {
         request_id: u64,
+        connection_id: u64,
         query: String,
         scope: SearchScope,
         message: String,
