@@ -1536,9 +1536,13 @@ or `(room, thread-root)` target carries a monotonic causal draft revision.
 `ComposerDraftRevision` is a checked `u128` in Rust and an opaque canonical
 decimal string on every snapshot, Tauri, and IPC boundary. JavaScript
 `number` conversion, wrapping, and saturation are forbidden.
-Draft writes apply only above the stored revision. An accepted plain/reply
-send, scheduled send, or prepared-upload send advances and persists an
-empty-draft revision tombstone when the accepted submission is still current.
+Draft writes apply only above the stored revision. An accepted plain or reply
+send, or a scheduled send, advances and persists an empty-draft revision
+tombstone when the accepted submission is still current. A prepared-upload
+(staged-attachment) send settles the same revision, LRU, and tombstone accounting
+without consuming the store entry, so text typed before pasting an attachment
+survives the send (#1130; state-machine.md and state-ownership.md describe the
+same contract).
 If newer input was already persisted, acceptance preserves that content while
 rolling it forward to the advanced revision. Delayed pre-acceptance commands,
 responses, or projections therefore cannot restore sent content or erase the
