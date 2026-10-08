@@ -591,6 +591,7 @@ export function ContextualRightPanel({
           localEncryption={snapshot.state.domain.local_encryption}
           keyboardLabelProfile={shortcutLabelProfileFromLocaleProfile(snapshot.state.domain.locale_profile)}
           platform={snapshot.state.domain.locale_profile.platform}
+          catalogLocale={snapshot.state.domain.locale_profile.catalog_locale}
           profile={snapshot.state.domain.profile}
           searchCrawlerState={snapshot.state.domain.search_crawler}
           settings={snapshot.state.domain.settings}

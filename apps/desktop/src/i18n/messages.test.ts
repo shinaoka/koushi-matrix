@@ -432,6 +432,10 @@ const japaneseIdenticalMessageAllowlist = new Set<MessageId>([
   "space.directMessages",
   "settings.fontInter",
   "settings.twemojiColr",
+  // #1221: the language dropdown shows each language's self-name in every
+  // locale, so "English" and "日本語" read the same in both catalogs.
+  "settings.languageEnglish",
+  "settings.languageJapanese",
   "timeline.mediaUploadProgress",
   "workspace.people",
   // Templates combine a localized reply count with user-provided sender/body text.
