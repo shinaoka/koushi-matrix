@@ -17,6 +17,7 @@ describe("DesktopUpdateControls", () => {
         onSelect={onSelect}
         onCheck={() => undefined}
         onDownload={() => undefined}
+        onIgnore={() => undefined}
         onRestart={() => undefined}
       />
     );
@@ -35,6 +36,7 @@ describe("DesktopUpdateControls", () => {
         onSelect={onSelect}
         onCheck={() => undefined}
         onDownload={() => undefined}
+        onIgnore={() => undefined}
         onRestart={() => undefined}
       />
     );
@@ -54,6 +56,7 @@ describe("DesktopUpdateControls", () => {
         onSelect={() => undefined}
         onCheck={() => undefined}
         onDownload={() => undefined}
+        onIgnore={() => undefined}
         onRestart={onRestart}
       />
     );
@@ -66,6 +69,7 @@ describe("DesktopUpdateControls", () => {
         onSelect={() => undefined}
         onCheck={() => undefined}
         onDownload={() => undefined}
+        onIgnore={() => undefined}
         onRestart={onRestart}
       />
     );
@@ -82,6 +86,7 @@ describe("DesktopUpdateControls", () => {
         onSelect={onSelect}
         onCheck={() => undefined}
         onDownload={() => undefined}
+        onIgnore={() => undefined}
         onRestart={() => undefined}
       />
     );
@@ -97,10 +102,11 @@ describe("DesktopUpdateControls", () => {
     render(
       <DesktopUpdateControls
         current={{ auto_check: true, include_prereleases: false }}
-        state={{ kind: "available", version: "1.2.3", generation: 7 }}
+        state={{ kind: "available", version: "1.2.3", generation: 7, ignored: false, check_failed: false }}
         onSelect={() => undefined}
         onCheck={() => undefined}
         onDownload={onDownload}
+        onIgnore={() => undefined}
         onRestart={() => undefined}
       />
     );
@@ -118,6 +124,7 @@ describe("DesktopUpdateControls", () => {
         onSelect={() => undefined}
         onCheck={onCheck}
         onDownload={() => undefined}
+        onIgnore={() => undefined}
         onRestart={() => undefined}
       />
     );

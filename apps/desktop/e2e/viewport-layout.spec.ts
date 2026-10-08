@@ -194,3 +194,86 @@ test("density, browser resize, and right-panel resize preserve the root viewport
   await page.setViewportSize({ width: 1100, height: 720 });
   expectRootAligned(await layoutGeometry(page));
 });
+
+// #1206/#1217: at the compact rail width the selected Space's local-name tile
+// must stay inside its button, and the unread badge must remain visible above
+// the selection indicator.
+test("the compact rail keeps the local-name tile inside and the unread badge visible", async ({
+  page
+}) => {
+  await page.setViewportSize({ width: 760, height: 720 });
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const next = structuredClone(window.__harness.currentSnapshot());
+    const name = "Research Laboratory Annex";
+    next.sidebar.account_home.is_active = false;
+    next.state.ui.navigation.space_local_presentations = {
+      "!long:example.invalid": { name }
+    };
+    next.sidebar.space_rail = [
+      {
+        space_id: "!long:example.invalid",
+        display_name: name,
+        local_icon: null,
+        avatar: null,
+        unread_count: 7,
+        highlight_count: 0,
+        is_active: true,
+        leave_candidates: []
+      }
+    ];
+    window.__harness.setSnapshot(next);
+    window.__harness.pushStateUpdate();
+  });
+  await expect(
+    page.getByRole("button", { name: "Research Laboratory Annex" })
+  ).toBeVisible();
+
+  const probe = await page.evaluate(() => {
+    const button = document.querySelector<HTMLElement>(".workspace-space-button");
+    if (!button) {
+      throw new Error("space rail button is missing");
+    }
+    const tile = button.querySelector<HTMLElement>(".avatar-fallback");
+    if (!tile) {
+      throw new Error("space rail tile is missing");
+    }
+    const badge = getComputedStyle(button, "::after");
+    const ring = getComputedStyle(button).boxShadow;
+    const layers: string[] = [];
+    let depth = 0;
+    let current = "";
+    for (const character of ring) {
+      if (character === "(") depth += 1;
+      if (character === ")") depth -= 1;
+      if (character === "," && depth === 0) {
+        layers.push(current.trim());
+        current = "";
+      } else {
+        current += character;
+      }
+    }
+    if (current.trim()) {
+      layers.push(current.trim());
+    }
+    return {
+      button: button.getBoundingClientRect().toJSON(),
+      tile: tile.getBoundingClientRect().toJSON(),
+      badgeContent: badge.content,
+      badgePosition: badge.position,
+      ringLayers: layers
+    };
+  });
+
+  const tolerance = 1;
+  expect(probe.tile.left).toBeGreaterThanOrEqual(probe.button.left - tolerance);
+  expect(probe.tile.right).toBeLessThanOrEqual(probe.button.right + tolerance);
+  expect(probe.tile.top).toBeGreaterThanOrEqual(probe.button.top - tolerance);
+  expect(probe.tile.bottom).toBeLessThanOrEqual(probe.button.bottom + tolerance);
+  expect(probe.badgeContent).toBe('"7"');
+  expect(probe.badgePosition).toBe("absolute");
+  expect(probe.ringLayers.length).toBeGreaterThan(0);
+  // An inset ring paints inside the button, under content, so it is neither
+  // clipped by the rail scrollport nor able to cover the positioned badge.
+  expect(probe.ringLayers.every((layer) => layer.includes("inset"))).toBe(true);
+});

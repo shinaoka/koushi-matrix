@@ -841,6 +841,16 @@ stateDiagram-v2
   outer owner aggregates native delivery and badges. Search crawling and media
   prefetch share one app-wide single-flight budget, with selected-account work
   preferred.
+- The account-tab badge and that account's Home rail badge render one Rust-owned
+  per-account attention policy (`AccountAttentionSummary`): the sum of the
+  per-room `room_activity_unread_count` over conversations that are not muted and
+  not low-priority, plus pending invites. This is the existing Home aggregate
+  policy, including unread content from a Mentions-only room with no highlight.
+  `AccountHomeItem.attention_count` is that value, and the Tauri account-tab
+  snapshot reads the same function for every tab, selected or background, so Home
+  and the tab cannot disagree and an invite-only account still badges. The native
+  Dock/taskbar `badge_count` and the transient notification candidate remain
+  separate policies: disabling badges does not change the tab badge.
 
 ## Room List Filter
 
@@ -979,7 +989,11 @@ local flag:
   reports 1) until something paginates the room. While no own read receipt is
   anchored in the loaded timeline (`read_receipts().latest_active.is_none()`), the
   room-list projection therefore tops the notification and mention counters up
-  with the server's `unread_notification_counts` (per-counter maximum). A nonempty
+  with the server's `unread_notification_counts` (per-counter maximum). The
+  standalone attention summary (`room_attention_summary_from_room`) applies the
+  same counter top-up for the same room state, but not the room list's
+  read-marker suppression, so the room list can still report less when a read
+  marker covers the projected latest event. A nonempty
   `pending` is deliberately not part of that condition: an unmatched receipt does
   not make the client counters a lower bound, because they are counted from the
   newest boundary the SDK did find. The top-up must stay before the read-marker
@@ -1264,6 +1278,13 @@ Low priority is an attention-suppression tag, not a mute and not a read action:
   totals, or the Rooms/DMs section unread/highlight aggregates, including their
   mentions. The existing Activity recent/unread exclusion is unchanged. Pending
   invites are counted separately and stay unaffected.
+- The Home rail's `AccountHomeItem.attention_count` and the account-tab badge are
+  the shared per-account attention policy ("Account Tabs And Concurrent
+  Sessions"). It applies the same muted and low-priority exclusions as the Home
+  aggregate; a room's notification mode (Mentions-only or otherwise) is not an
+  aggregate exclusion, so a non-muted, non-low-priority Mentions-only room keeps
+  contributing its raw unread to Home, its Space rail and section totals, and the
+  account tab.
 - The room's own raw `unread_count`, notification/highlight counts, and read
   receipts are preserved, so the low-priority row still shows real unread state.
   Setting the tag never marks the room read and never writes a server push-rule
@@ -4797,7 +4818,9 @@ stateDiagram-v2
   the persistent raw count and are excluded from candidates and attention totals
   only. Muted rooms are excluded from both persistent and transient native
   attention. Mention-only rooms retain their raw Dock contribution while
-  candidate eligibility still requires a highlight.
+  candidate eligibility still requires a highlight; the shared per-account
+  attention policy behind the account tab and Home counts the same raw
+  contribution, subject to the muted and low-priority exclusions.
   The projection prefers `mention` over `dm` over `message` candidates,
   suppresses initial sync/backfill/self/focused-room observations, suppresses
   duplicate candidates, and clears badge/candidate state when eligible unread
@@ -5661,9 +5684,10 @@ stateDiagram-v2
     Checking --> UpToDate: check has no newer release
     Checking --> Idle: update channel changes
     Available --> Idle: update channel changes before download approval
-    Checking --> Available: newer release found
+    Available --> Checking: manual/scheduled check refreshes candidate
+    Checking --> Available: newer release found or refresh failed (previous offer retained)
     Available --> Downloading: DownloadUpdate confirmed
-    Checking --> Failed: check failed
+    Checking --> Failed: check failed with no retained offer
     Downloading --> Ready: download and signature verification succeeded
     Downloading --> Failed: download or verification failed
     Ready --> Installing: RestartToInstall
@@ -5674,7 +5698,9 @@ stateDiagram-v2
   manual checks. It does not automatically open the update dialog. A manual
   request joining an active automatic check observes that check's completion.
 - A disabled `auto_check` preference issues no network request. Turning it off
-  suppresses later scheduled checks; turning it on triggers one check.
+  suppresses later scheduled checks; turning it on triggers one check unless an
+  undownloaded candidate is already presented, which it preserves rather than
+  discarding.
 - `include_prereleases` is independent of `auto_check`. When enabled, stable
   and pre-release feeds are both checked and the greatest SemVer candidate is
   selected. A pre-release identifier such as `-alpha.1`, `-beta.1`, or `-rc.1`
@@ -5684,14 +5710,28 @@ stateDiagram-v2
   process-wide Software update dialog, containing status, preferences, explicit
   download, and explicit restart actions. Updates are not buried in account
   settings and do not open a second native confirmation dialog.
+- Closing the dialog, pressing Escape, deferring, or leaving the offer
+  unanswered is temporary: the next fresh offer generation (a scheduled or
+  manual check) presents it again. **Ignore this version** stores the exact
+  version until Koushi exits and suppresses its automatic reminders while
+  background checks continue; a newer eligible release is still announced, and
+  a manual check still reports the ignored version. Ignore is honored only for
+  the version currently offered, so a stale request for a replaced version is
+  rejected and cannot desynchronize the stored decision from the projection.
 - Changing the release channel invalidates unapproved candidates and in-flight
   results. When automatic checks are disabled this performs no network request;
   otherwise the new channel is checked. Explicitly approved downloads and
   verified artifacts remain fixed; the channel control is disabled while
   downloading, ready, or installing, and any external policy change applies to
   future checks only.
-- Duplicate triggers while checking, available, downloading, ready, or installing are
-  coalesced. There is one verified pending artifact slot. Admission, lifecycle,
+- Duplicate triggers while checking, downloading, ready, or installing are
+  coalesced. A startup, 24-hour, or manual check while an undownloaded
+  `available` candidate is presented instead refreshes the feeds, replaces the
+  offer with the newest eligible release, and invalidates the previous
+  candidate generation. A transient refresh failure retains the previous offer
+  under the refreshed generation (still downloadable) and reports
+  `check_failed`; an eligible response with no release withdraws it. There is
+  one verified pending artifact slot. Admission, lifecycle,
   artifact ownership, policies, and operation generation share one serialized
   transition boundary. Stale settings revisions and late operation completions
   cannot replace newer state. Events preserve transition order; network,
@@ -5699,8 +5739,9 @@ stateDiagram-v2
 - Download approval identifies the displayed candidate generation; stale clicks
   cannot approve a replacement candidate. Updater-owned work is canceled and
   joined on owner shutdown rather than detached.
-- `available` exposes the release version and an opaque candidate generation;
-  `ready` exposes the release version. `failed` exposes only a coarse
+- `available` exposes the release version, an opaque candidate generation, the
+  `ignored` flag, and the `check_failed` flag; `ready` exposes the release
+  version. `failed` exposes only a coarse
   stage/kind and is recoverable; it never blocks startup or login.
 - Installation and relaunch require explicit user intent. macOS is the only
   enabled platform in this phase; Windows and Linux remain `unsupported`.

@@ -91,8 +91,9 @@ export type MessageId =
   | "app.title"
   | "app.versionMismatch.title"
   | "app.versionMismatch.detail"
+  | "menu.accountSettings"
+  | "menu.appSettings"
   | "menu.aboutKoushi"
-  | "menu.settings"
   | "menu.signOut"
   | "menu.toggleRightPanel"
   | "menu.koushiHelp"
@@ -258,7 +259,6 @@ export type MessageId =
   | "context.reportRoom"
   | "context.reportUser"
   | "context.selectRoom"
-  | "context.selectSpace"
   | "context.switchAccount"
   | "context.unignoreUser"
   | "dialog.cancel"
@@ -754,7 +754,6 @@ export type MessageId =
   | "settings.accounts"
   | "settings.appearance"
   | "settings.language"
-  | "settings.languageDefault"
   | "settings.languageEnglish"
   | "settings.languageJapanese"
   | "settings.accountSwitcher"
@@ -802,6 +801,8 @@ export type MessageId =
   | "settings.updateAvailableTitle"
   | "settings.updateAvailableConfirm"
   | "settings.updateDownload"
+  | "settings.updateIgnore"
+  | "settings.updateIgnored"
   | "settings.updateDownloading"
   | "settings.updateReady"
   | "settings.updateRestart"
@@ -1262,7 +1263,7 @@ export type MessageId =
   | "shortcut.noteCallsDeferred"
   | "shortcut.noteGoHomeAdapted"
   | "shortcut.noteUploadUiDeferred"
-  | "shortcut.openUserSettings"
+  | "shortcut.openAppSettings"
   | "shortcut.parityAdapted"
   | "shortcut.parityDeferred"
   | "shortcut.parityNotApplicable"
@@ -1879,7 +1880,8 @@ const en: Catalog = {
   // Native menu bar. Title Case matches the platform menu convention, so these
   // are separate from the sentence-case shortcut sheet labels.
   "menu.aboutKoushi": "About Koushi",
-  "menu.settings": "Settings…",
+  "menu.accountSettings": "Account Settings…",
+  "menu.appSettings": "App Settings…",
   "menu.signOut": "Sign Out",
   "menu.toggleRightPanel": "Toggle Right Panel",
   "menu.koushiHelp": "Koushi Help",
@@ -2046,7 +2048,6 @@ const en: Catalog = {
   "context.removeFromLowPriority": "Remove from Low priority",
   "context.searchInRoom": "Search in room",
   "context.selectRoom": "Open",
-  "context.selectSpace": "Open Space",
   "context.switchAccount": "Switch account",
   "context.reportContent": "Report content",
   "context.reportRoom": "Report room",
@@ -2552,9 +2553,8 @@ const en: Catalog = {
   "settings.accounts": "Accounts",
   "settings.appearance": "Appearance",
   "settings.language": "Language",
-  "settings.languageDefault": "Default (English)",
   "settings.languageEnglish": "English",
-  "settings.languageJapanese": "Japanese",
+  "settings.languageJapanese": "日本語",
   "settings.accountSwitcher": "Account switcher",
   "settings.current": "Current",
   "settings.autoLoadOlderMessages": "Automatically load older messages",
@@ -2603,6 +2603,9 @@ const en: Catalog = {
   "settings.updateAvailableTitle": "Update available",
   "settings.updateAvailableConfirm": "Download and install Koushi {version}?",
   "settings.updateDownload": "Download update",
+  "settings.updateIgnore": "Ignore this version",
+  "settings.updateIgnored":
+    "Automatic reminders are off for this version until Koushi restarts. You can still download it.",
   "settings.updateDownloading": "Downloading and verifying Koushi {version}…",
   "settings.updateReady": "Koushi {version} is ready to install.",
   "settings.updateRestart": "Restart to install",
@@ -3081,7 +3084,7 @@ const en: Catalog = {
   "shortcut.noteCallsDeferred": "Calls are out of scope for this milestone.",
   "shortcut.noteGoHomeAdapted": "macOS uses Ctrl+Shift+H in some Matrix clients; this prototype keeps one cross-platform row.",
   "shortcut.noteUploadUiDeferred": "Upload UI is not implemented yet.",
-  "shortcut.openUserSettings": "Account Settings",
+  "shortcut.openAppSettings": "App Settings",
   "shortcut.parityAdapted": "adapted",
   "shortcut.parityDeferred": "deferred",
   "shortcut.parityNotApplicable": "not applicable",
@@ -3602,7 +3605,8 @@ const ja: Catalog = {
   "app.versionMismatch.detail":
     "コンポーネントの同期が取れていないため、このセッションを読み込めませんでした。Koushi を完全に終了してから、もう一度開いてください。",
   "menu.aboutKoushi": "Koushi について",
-  "menu.settings": "設定…",
+  "menu.accountSettings": "アカウント設定…",
+  "menu.appSettings": "アプリ設定…",
   "menu.signOut": "サインアウト",
   "menu.toggleRightPanel": "右パネルを切り替え",
   "menu.koushiHelp": "Koushi ヘルプ",
@@ -3759,7 +3763,6 @@ const ja: Catalog = {
   "context.removeFromLowPriority": "低優先度から削除",
   "context.searchInRoom": "ルーム内を検索",
   "context.selectRoom": "開く",
-  "context.selectSpace": "スペースを開く",
   "context.switchAccount": "アカウントを切り替え",
   "context.reportContent": "コンテンツを報告",
   "context.reportRoom": "ルームを報告",
@@ -4265,8 +4268,7 @@ const ja: Catalog = {
   "settings.accounts": "アカウント",
   "settings.appearance": "外観",
   "settings.language": "言語",
-  "settings.languageDefault": "標準（英語）",
-  "settings.languageEnglish": "英語",
+  "settings.languageEnglish": "English",
   "settings.languageJapanese": "日本語",
   "settings.accountSwitcher": "アカウント切り替え",
   "settings.current": "現在",
@@ -4315,6 +4317,9 @@ const ja: Catalog = {
   "settings.updateAvailableTitle": "アップデートがあります",
   "settings.updateAvailableConfirm": "Koushi {version}をダウンロードしてインストールしますか？",
   "settings.updateDownload": "アップデートをダウンロード",
+  "settings.updateIgnore": "このバージョンを無視",
+  "settings.updateIgnored":
+    "Koushiを再起動するまで、このバージョンの自動通知はオフになります。ダウンロードは引き続き可能です。",
   "settings.updateDownloading": "Koushi {version}をダウンロードして検証しています…",
   "settings.updateReady": "Koushi {version}をインストールできます。",
   "settings.updateRestart": "再起動してインストール",
@@ -4793,7 +4798,7 @@ const ja: Catalog = {
   "shortcut.noteCallsDeferred": "通話はこのマイルストーンの範囲外です。",
   "shortcut.noteGoHomeAdapted": "一部のMatrixクライアントのmacOS版ではCtrl+Shift+Hですが、この試作ではクロスプラットフォームの1行に統一しています。",
   "shortcut.noteUploadUiDeferred": "アップロードUIはまだ実装されていません。",
-  "shortcut.openUserSettings": "アカウント設定",
+  "shortcut.openAppSettings": "アプリ設定",
   "shortcut.parityAdapted": "調整済み",
   "shortcut.parityDeferred": "延期",
   "shortcut.parityNotApplicable": "対象外",

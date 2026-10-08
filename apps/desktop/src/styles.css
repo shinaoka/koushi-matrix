@@ -1370,13 +1370,49 @@ button:disabled {
   outline-offset: 2px;
 }
 
+/* #1206: the rail list is a narrow vertical scroll container that clips
+   anything painted outside a button, so hover, focus, and selection are drawn
+   inside the button box. Selection persists as a brand ring plus a distinct
+   background; keyboard focus adds an inner ring and stays visible on top of
+   the selection. */
+.workspace-button:hover {
+  background: var(--surface-hover);
+}
+
+.workspace-button:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--text);
+}
+
 .workspace-button.is-active {
+  --rail-selection-color: var(--brand);
   color: var(--text);
-  background: var(--selected);
+  background: var(--brand-weak);
+  box-shadow: inset 0 0 0 2px var(--rail-selection-color);
 }
 
 .workspace-home-button.is-active {
+  /* The solid accent fill is Home's distinct selected background, so its ring
+     uses the contrasting on-brand color instead of blending into the fill. */
+  --rail-selection-color: var(--brand-contrast);
   background: var(--home-accent);
+}
+
+.workspace-button.is-active:focus-visible {
+  box-shadow:
+    inset 0 0 0 2px var(--rail-selection-color),
+    inset 0 0 0 4px var(--text);
+}
+
+/* #1206: forced-colors mode drops box-shadows, so the focus indicator must fall
+   back to an outline. A negative offset keeps it inside the button box, which
+   the rail's scrollport would otherwise clip. */
+@media (forced-colors: active) {
+  .workspace-button:focus-visible,
+  .workspace-button.is-active:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: -2px;
+  }
 }
 
 .workspace-button-avatar {
@@ -1592,6 +1628,12 @@ button:disabled {
   margin-bottom: 8px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--line);
+}
+
+.room-item {
+  /* Keep absolute screen-reader descriptions inside the sidebar's clipping
+     boundary, so offscreen rooms cannot create scrollable shell overflow. */
+  position: relative;
 }
 
 .nav-item,
