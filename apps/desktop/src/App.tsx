@@ -1182,6 +1182,9 @@ function AccountContent({
   // rooms are `SpaceRailItem.leave_candidates` and Rust re-admits the choice.
   const [pendingSpaceLeave, setPendingSpaceLeave] = useState<{ spaceId: string } | null>(null);
   const [spaceLeaveInFlight, setSpaceLeaveInFlight] = useState(false);
+  /** Last accepted clear revision already reconciled into the composer overlays. */
+  const handledMainClearRevisionRef = useRef<string | null>(null);
+  const handledThreadClearRevisionRef = useRef<string | null>(null);
   const mainComposerOverlayRef = useRef<{
     scope: ComposerDraftScope;
     document: ComposerDocument;
@@ -2219,6 +2222,60 @@ function AccountContent({
     };
   }, [accountTabId, api, setSnapshot]);
 
+
+  useEffect(() => {
+    // #1204: an accepted send that consumed the draft moved the accepted clear
+    // revision past the overlay the mounted editor still renders. Reconcile after
+    // commit (never during render) and once per clear revision, so a composer that
+    // renders its own document cannot re-create the overlay in a loop.
+    const timeline = snapshot?.state.ui.timeline;
+    const account = readyComposerDraftAccountOwner(snapshot);
+    if (!timeline?.room_id || !account) {
+      return;
+    }
+    const mainScope = composerDraftScope(account, {
+      kind: "main",
+      room_id: timeline.room_id
+    });
+    const overlay = mainComposerOverlayRef.current;
+    if (
+      overlay &&
+      composerDraftScopesEqual(overlay.scope, mainScope) &&
+      compareComposerDraftRevisions(
+        timeline.composer.last_accepted_clear_revision,
+        overlay.revision ?? COMPOSER_DRAFT_REVISION_ZERO
+      ) > 0 &&
+      handledMainClearRevisionRef.current !== timeline.composer.last_accepted_clear_revision
+    ) {
+      handledMainClearRevisionRef.current = timeline.composer.last_accepted_clear_revision;
+      mainComposerOverlayRef.current = null;
+      renderAfterComposerOverlayReset();
+    }
+
+    const thread = snapshot?.state.ui.thread;
+    if (thread?.kind !== "open") {
+      return;
+    }
+    const threadScope = composerDraftScope(account, {
+      kind: "thread",
+      room_id: thread.room_id,
+      root_event_id: thread.root_event_id
+    });
+    const threadOverlay = threadComposerOverlayRef.current;
+    if (
+      threadOverlay &&
+      composerDraftScopesEqual(threadOverlay.scope, threadScope) &&
+      compareComposerDraftRevisions(
+        thread.composer.last_accepted_clear_revision,
+        threadOverlay.revision ?? COMPOSER_DRAFT_REVISION_ZERO
+      ) > 0 &&
+      handledThreadClearRevisionRef.current !== thread.composer.last_accepted_clear_revision
+    ) {
+      handledThreadClearRevisionRef.current = thread.composer.last_accepted_clear_revision;
+      threadComposerOverlayRef.current = null;
+      renderAfterComposerOverlayReset();
+    }
+  }, [snapshot]);
 
   useEffect(() => {
     const openDiagnostics = () => { void openDiagnosticsActionRef.current(); };
@@ -4517,9 +4574,15 @@ function AccountContent({
     const scope = composerDraftScope(account, target);
     const admitted = beginComposerOperation(scope);
     if (!admitted) return;
-    // #1130: the send settles this revision without consuming the draft text, and
-    // nothing here clears the local overlay, so the typed text stays visible.
+    // #1130/#1204: Core decides whether this send consumes the draft — a single
+    // attachment whose caption is the text the renderer is showing. The text is
+    // captured here, before any await, and the acceptance is reserved so input
+    // typed right after the send receives a newer revision instead of racing it.
+    const capturedDraft = capturedComposerDocument(target);
     const draftRevision = currentComposerDraftRevision(scope, admitted.lease);
+    if (!reserveComposerAcceptedRevision(admitted, draftRevision)) {
+      return;
+    }
     for (const item of uploads) {
       latestTextMutationQueueRef.current.invalidate(
         `caption:main:${roomId}:${item.staged_id}`
@@ -4531,7 +4594,8 @@ function AccountContent({
         admitted.lease.leaseId,
         admitted.lease.rendererGeneration,
         target,
-        draftRevision
+        draftRevision,
+        capturedDraft
       );
       await applyCommandReceipt(settlement);
     } catch {
@@ -5313,8 +5377,13 @@ function AccountContent({
     const scope = composerDraftScope(account, target);
     const admitted = beginComposerOperation(scope);
     if (!admitted) return;
-    // #1130: as above; the thread draft is settled, never consumed.
+    // #1204: as above; only a single attachment that carries this thread draft as
+    // its caption consumes it.
+    const capturedDraft = capturedComposerDocument(target);
     const draftRevision = currentComposerDraftRevision(scope, admitted.lease);
+    if (!reserveComposerAcceptedRevision(admitted, draftRevision)) {
+      return;
+    }
     for (const item of uploads) {
       latestTextMutationQueueRef.current.invalidate(
         `caption:thread:${roomId}:${rootEventId}:${item.staged_id}`
@@ -5326,7 +5395,8 @@ function AccountContent({
         admitted.lease.leaseId,
         admitted.lease.rendererGeneration,
         target,
-        draftRevision
+        draftRevision,
+        capturedDraft
       );
       await applyCommandReceipt(settlement);
     } catch {

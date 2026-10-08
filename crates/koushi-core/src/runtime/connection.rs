@@ -942,6 +942,7 @@ impl CoreConnection {
         lease: crate::composer_draft_lifecycle::ComposerDraftLeaseId,
         target: koushi_state::ComposerTarget,
         draft_revision: koushi_state::ComposerDraftRevision,
+        draft_document: Option<koushi_state::ComposerDocument>,
     ) -> Result<
         crate::media_staging::PreparedUploadSendResult,
         crate::media_staging::PreparedUploadSendError,
@@ -955,6 +956,7 @@ impl CoreConnection {
                 lease,
                 target,
                 draft_revision,
+                draft_document,
             )
             .await
     }

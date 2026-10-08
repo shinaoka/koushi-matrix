@@ -114,7 +114,8 @@ pub enum PreparedUploadSendError {
 }
 
 pub struct PreparedUploadSendResult {
-    /// Revision the composer draft settled to. The draft content is preserved.
+    /// Revision the composer draft settled to. The draft content is preserved
+    /// unless `consumed_draft` is set.
     pub settled_revision: ComposerDraftRevision,
     /// Published generation after the attachments were enqueued; state is
     /// inspected separately.
@@ -828,6 +829,10 @@ impl MediaStagingService {
     /// revision, the tombstones and the #1037 return-to-live transition stay
     /// exactly as an accepted send leaves them. The renderer lease still fences
     /// a stale renderer.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one Core-owned send boundary: account, renderer fence, target, revision and the submitted draft"
+    )]
     pub async fn send_prepared_uploads(
         &self,
         connection: &mut CoreConnection,
@@ -836,6 +841,7 @@ impl MediaStagingService {
         lease: crate::composer_draft_lifecycle::ComposerDraftLeaseId,
         target: ComposerTarget,
         draft_revision: ComposerDraftRevision,
+        draft_document: Option<ComposerDocument>,
     ) -> Result<PreparedUploadSendResult, PreparedUploadSendError> {
         let _admission = self.admit_target(&target).await;
         let initial = connection.snapshot();
@@ -845,10 +851,10 @@ impl MediaStagingService {
         if !target_is_active(&initial, &target) {
             return Err(PreparedUploadSendError::TargetInactive);
         }
-        let staged_ids = active_items(&initial, &target)
+        let sendable_items = active_items(&initial, &target)
             .filter(|items| !items.is_empty() && koushi_state::staged_uploads_are_sendable(items))
-            .map(ids)
             .ok_or(PreparedUploadSendError::NotSendable)?;
+        let staged_ids = ids(sendable_items);
         let expected_revision = next_acceptance_revision(&initial, &target, draft_revision)
             .ok_or(PreparedUploadSendError::DraftRevision)?;
         let _permit = connection
@@ -863,6 +869,15 @@ impl MediaStagingService {
             .map_err(|_| PreparedUploadSendError::ComposerPermit)?;
         let account_key = AccountKey(expected_account.user_id.clone());
         let key = timeline_key(account_key.clone(), &target);
+        // #1204: a single attachment whose caption *is* the submitted draft carries
+        // that text as the message caption, so the accepted send consumes the draft
+        // instead of leaving the same text in the composer. Everything else keeps
+        // #1130. Captured here because the staging projection is empty by the time
+        // the acceptance is dispatched below.
+        let consumes_draft = koushi_state::staged_upload_send_consumes_composer_draft(
+            sendable_items,
+            draft_document.as_ref(),
+        );
 
         for staged_id in staged_ids {
             let current = connection.snapshot();
@@ -978,7 +993,7 @@ impl MediaStagingService {
                     expected_account: expected_account.clone(),
                     target: target.clone(),
                     submitted_revision: draft_revision,
-                    consumes_draft: false,
+                    consumes_draft,
                 }),
             )
             .await

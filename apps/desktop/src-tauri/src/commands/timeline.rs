@@ -1216,6 +1216,7 @@ pub async fn send_prepared_uploads(
     renderer_generation: String,
     target: koushi_state::ComposerTarget,
     draft_revision: koushi_state::ComposerDraftRevision,
+    draft_document: Option<koushi_state::ComposerDocument>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
@@ -1227,13 +1228,20 @@ pub async fn send_prepared_uploads(
     let (generation, lease) = parse_composer_wire_tokens(&renderer_generation, &lease_id)?;
     let settled = account_connection(state.inner(), account_tab_id.as_deref())
         .await?
-        .send_prepared_uploads(expected_account, generation, lease, target, draft_revision)
+        .send_prepared_uploads(
+            expected_account,
+            generation,
+            lease,
+            target,
+            draft_revision,
+            draft_document,
+        )
         .await
         .map_err(|error| error.to_string())?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    // #1130: the send settles the composer draft without consuming it, so the
-    // renderer only needs the plain command settlement: it must not clear the
-    // draft text it still has to send.
+    // #1130/#1204: Core decides whether this send consumed the draft (a single
+    // attachment whose caption is the submitted text). The renderer reconciles its
+    // overlay from the accepted clear revision in the published state.
     Ok(command_settlement(settled.generation))
 }
 

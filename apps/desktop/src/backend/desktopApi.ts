@@ -296,7 +296,8 @@ export interface DesktopApi {
     leaseId: string,
     rendererGeneration: string,
     target: ComposerTarget,
-    draftRevision: ComposerDraftRevision
+    draftRevision: ComposerDraftRevision,
+    draftDocument?: ComposerDocument
   ): Promise<CommandSettlement>;
   updateStagedUploadCaption(
     target: ComposerTarget,

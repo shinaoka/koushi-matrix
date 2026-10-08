@@ -1545,7 +1545,9 @@ survives the send (#1130; state-machine.md and state-ownership.md describe the
 same contract). The matching seed goes the other way: a single attachment staged
 into a target that had none starts with the captured composer document as its
 caption (#1194), so text and file go out as one message without the user copying
-it by hand.
+it by hand. When that caption is still the submitted draft text and it is the only
+attachment, the accepted send consumes the draft with the ordinary clear (#1204);
+any other prepared send keeps the text.
 If newer input was already persisted, acceptance preserves that content while
 rolling it forward to the advanced revision. Delayed pre-acceptance commands,
 responses, or projections therefore cannot restore sent content or erase the

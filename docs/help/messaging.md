@@ -41,8 +41,10 @@ from a sent message. Read the confirmation before removing anything.
    the desired image quality.
 3. Add or edit a caption if needed, then send. When no attachment is staged yet,
    adding one file starts its caption with whatever the composer already held, so
-   text and file can go out as one message. The composer keeps that text either
-   way. Remove an unwanted staged file with **Remove attachment** before sending.
+   text and file can go out as one message. If that caption is still the composer's
+   text when you send the only attachment, the composer is cleared with it;
+   otherwise your text stays. Remove an unwanted staged file with **Remove
+   attachment** before sending.
 
 An attachment appearing in the composer is not yet an uploaded message. Server
 upload limits and network failures can prevent a send. Open an attachment from

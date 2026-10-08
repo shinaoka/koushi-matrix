@@ -3666,6 +3666,8 @@ mock.setCommandResponse("send_prepared_uploads", ({
           }
         }
       : withoutUploads;
+  // #1130/#1204: Core owns whether a send consumed the draft; this fake only
+  // settles the revision, so the browser lane never grows a caption policy.
   return setCurrentSnapshot(settled);
 });
 mock.setCommandResponse("update_staged_upload_caption", ({ target, stagedId, document }: {

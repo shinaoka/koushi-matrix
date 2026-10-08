@@ -1666,7 +1666,11 @@ stateDiagram-v2
   their own captions and never dispatched the typed text (#1130). One exception
   seeds instead of clearing: the single attachment staged into a target that had
   none takes the renderer's captured draft document as its caption (#1194), and
-  the dialog owns that caption afterwards. A captured draft write may
+  the dialog owns that caption afterwards. That caption is also the one case where
+  the send consumes instead of settles: when it is still the submitted draft text
+  and it is the only attachment, the acceptance clears the draft so the text is not
+  left in two places (#1204); every other prepared send keeps the content. A
+  captured draft write may
   still persist after its room/thread is no longer visible, but it never
   mutates another active composer. Each write and draft-accepting operation also
   captures its complete account owner (homeserver, user, and device);
