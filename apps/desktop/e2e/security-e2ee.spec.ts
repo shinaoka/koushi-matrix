@@ -238,7 +238,11 @@ test("E2EE trust controls dispatch Rust-owned commands and render snapshot updat
       page.evaluate(() => window.__harness.currentSnapshot().state.domain.e2ee_trust.key_backup.kind)
     )
     .toBe("enabled");
-  await expect(page.getByText("Enabled")).toBeVisible();
+  // Scope to the trust row; the key-management secure-backup row also reads
+  // "Enabled" for a ready gate (#1201).
+  await expect(
+    page.locator(".trust-status-row", { hasText: "Key backup" }).getByText("Enabled")
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Set up", exact: true }).click();
   await expect.poll(() => invocationCount(page, "bootstrap_cross_signing")).toBe(1);
@@ -298,6 +302,18 @@ test("security settings drive Rust-owned room-key transfer and secure backup sta
   await page.getByRole("button", { name: "Account Settings" }).click();
   await page.getByRole("tab", { name: "Encryption", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Key management" })).toBeVisible();
+  // #1201: with an account that already has secure backup, the row is account
+  // truth (the gate) and no setup is offered.
+  await expect(page.getByTestId("secure-backup-state")).toHaveText("Enabled");
+  await expect(page.getByRole("form", { name: "Secure backup", exact: true })).toHaveCount(0);
+  // The setup form is offered only where Core admits `initialSetup`.
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    snapshot.state.domain.secure_backup_gate = { kind: "setupRequired" };
+    window.__harness.setSnapshot(snapshot);
+    window.__harness.pushStateUpdate();
+  });
+  await expect(page.getByTestId("secure-backup-state")).toHaveText("Not set up");
   await page.evaluate(() => {
     window.__harness.setCommandResponse("plugin:dialog|save", "/tmp/koushi-export.txt");
     window.__harness.setCommandResponse(
