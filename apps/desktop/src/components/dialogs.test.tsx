@@ -1160,3 +1160,58 @@ describe("LeaveSpaceDialog", () => {
     expect(screen.getByRole("radio", { name: t("space.leaveSpaceOnly") })).toHaveProperty("disabled", true);
   });
 });
+
+describe("upload staging failure affordances (#1147)", () => {
+  function renderFailedItem(overrides: { canUseOriginal?: boolean } = {}) {
+    const onRetryPreparation = vi.fn();
+    const onUseOriginal = vi.fn();
+    const onSendAttachments = vi.fn();
+    render(
+      <UploadStagingDialog
+        items={[
+          stagedImage(
+            "holiday",
+            {
+              kind: "failed",
+              failure_kind: "decode",
+              can_use_original: overrides.canUseOriginal ?? true
+            },
+            "staged-failed",
+            "camera.HEIC"
+          )
+        ]}
+        onClear={vi.fn()}
+        onUpdateCaption={vi.fn()}
+        onSelectOutput={vi.fn()}
+        onRetryPreparation={onRetryPreparation}
+        onUseOriginal={onUseOriginal}
+        onSendAttachments={onSendAttachments}
+        loadPreview={vi.fn(async () => [])}
+        resolveComposerKeyAction={vi.fn(async () => "noop" as const)}
+        surface="main"
+      />
+    );
+    return { onRetryPreparation, onUseOriginal, onSendAttachments };
+  }
+
+  it("offers retry and original instead of the output toolbar", () => {
+    const { onRetryPreparation, onUseOriginal } = renderFailedItem();
+
+    expect(screen.getByText("Attachment preparation failed")).toBeTruthy();
+    // No resize/format controls and no preview for a failed preparation.
+    expect(screen.queryByRole("radiogroup", { name: "Resize" })).toBeNull();
+    expect(screen.queryByRole("radiogroup", { name: "Format" })).toBeNull();
+    expect(document.querySelector("img.upload-staging-preview")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry preparation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use original" }));
+    expect(onRetryPreparation).toHaveBeenCalledWith("staged-failed");
+    expect(onUseOriginal).toHaveBeenCalledWith("staged-failed");
+  });
+
+  it("hides the original fallback when there are no retained source bytes", () => {
+    renderFailedItem({ canUseOriginal: false });
+    expect(screen.getByRole("button", { name: "Retry preparation" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Use original" })).toBeNull();
+  });
+});

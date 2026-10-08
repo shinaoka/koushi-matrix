@@ -309,7 +309,7 @@ fn native_decode_failure_keeps_the_original_file_fallback() {
                 ImageUploadCompressionPolicy::default(),
                 registry.native_image_decoder(),
             )
-            .is_none()
+            .is_err()
         );
 
         let original = registry

@@ -16,8 +16,8 @@ use tokio::sync::oneshot;
 
 use koushi_state::{
     ComposerDocument, ComposerDraftRevision, ComposerTarget, ImageUploadCompressionPolicy,
-    StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, StagedUploadOutputSelection,
-    StagedUploadPreparation,
+    MediaPreparationFailureKind, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
+    StagedUploadOutputSelection, StagedUploadPreparation,
 };
 
 use koushi_protocol::{
@@ -408,9 +408,27 @@ impl MediaStagingService {
             )
         })
         .await
-        .map_err(|_| MediaStagingError::PreparationTask)?
-        .ok_or(MediaStagingError::PreparationFailed)?;
-        let (descriptor, bytes) = encoded;
+        .map_err(|_| MediaStagingError::PreparationTask)?;
+        let (descriptor, bytes) = match encoded {
+            Ok(encoded) => encoded,
+            Err(failure_kind) => {
+                // Settle the failed pair instead of leaving it pending: a pending
+                // selection has no prepared output, which makes the item
+                // unsendable and offers the user no retry or original fallback.
+                self.publish_lazy_preparation_failure(
+                    connection,
+                    account,
+                    policy,
+                    target,
+                    staged_id,
+                    generation,
+                    selection,
+                    failure_kind,
+                )
+                .await?;
+                return Err(MediaStagingError::PreparationFailed);
+            }
+        };
 
         let current = connection.snapshot();
         let item = staged_item(&current, &target, &staged_id).ok_or(MediaStagingError::Stale)?;
@@ -435,6 +453,60 @@ impl MediaStagingService {
             let mut transition = self.preparation.transition().await;
             transition.insert_prepared_output(&target, &staged_id, descriptor, bytes);
         }
+        self.replace_staged_upload_item(connection, account, target, staged_id, replacement)
+            .await
+    }
+
+    /// Settle a lazily selected pair whose encode failed.
+    ///
+    /// A cached re-selection clears `pending` without bumping the generation
+    /// (`staged_upload_item_with_output_selection`), so the generation check the
+    /// success path uses is not enough here: the requested pair must still be the
+    /// selected pending one, otherwise the state has already moved to a newer
+    /// sendable selection and this failure is stale.
+    ///
+    /// Together with the per-target admission this method holds for its whole
+    /// body, the check is what makes the settlement race-free: the only producer
+    /// of `AppCommand::SelectStagedUploadOutput` is this service under that same
+    /// admission, so no selection can be applied between the validation below and
+    /// the publication.
+    #[allow(clippy::too_many_arguments)]
+    async fn publish_lazy_preparation_failure(
+        &self,
+        connection: &mut CoreConnection,
+        account: AccountKey,
+        policy: ImageUploadCompressionPolicy,
+        target: ComposerTarget,
+        staged_id: String,
+        generation: u64,
+        selection: StagedUploadOutputSelection,
+        failure_kind: MediaPreparationFailureKind,
+    ) -> Result<u64, MediaStagingError> {
+        let current = connection.snapshot();
+        let item = staged_item(&current, &target, &staged_id).ok_or(MediaStagingError::Stale)?;
+        let still_pending = matches!(
+            &item.preparation,
+            StagedUploadPreparation::Ready { selected, pending, generation: current_generation, .. }
+                if *current_generation == generation
+                    && *selected == selection
+                    && pending.as_ref() == Some(&selection)
+        );
+        if account_key(&current) != account
+            || authoritative_policy(&current) != policy
+            || !target_is_active(&current, &target)
+            || !still_pending
+        {
+            return Err(MediaStagingError::Stale);
+        }
+        let can_use_original = {
+            let transition = self.preparation.transition().await;
+            transition.source_input(&target, &staged_id).is_some()
+        };
+        let mut replacement = item.clone();
+        replacement.preparation = StagedUploadPreparation::Failed {
+            failure_kind,
+            can_use_original,
+        };
         self.replace_staged_upload_item(connection, account, target, staged_id, replacement)
             .await
     }
@@ -523,12 +595,17 @@ impl MediaStagingService {
         if staged_item(&snapshot, &target, &staged_id).is_none() {
             return Err(MediaStagingError::MissingStagedItem);
         }
-        let replacement = {
+        let caption =
+            staged_item(&snapshot, &target, &staged_id).and_then(|item| item.caption.clone());
+        let mut replacement = {
             let mut transition = self.preparation.transition().await;
             transition
                 .use_original(&target, &staged_id)
                 .ok_or(MediaStagingError::PreparedBytesUnavailable)?
         };
+        // The registry rebuilds the item from the retained source and knows
+        // nothing about the caption the user already typed, so carry it over.
+        replacement.caption = caption;
         self.replace_staged_upload_item(connection, account, target, staged_id, replacement)
             .await
     }
@@ -686,7 +763,7 @@ impl MediaStagingService {
             .preparation
             .transition()
             .await
-            .variant_bytes(&target, &staged_id, &variant_id)
+            .variant_preview_bytes(&target, &staged_id, &variant_id)
             .ok_or(MediaStagingError::PreparedBytesUnavailable)?;
         let current = connection.snapshot();
         let current_item = staged_item(&current, &target, &staged_id);

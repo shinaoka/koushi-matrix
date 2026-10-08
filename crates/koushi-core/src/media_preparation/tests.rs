@@ -503,3 +503,76 @@ fn detached_batch_merge_preserves_an_overlapping_stage_result() {
         b"second"
     );
 }
+
+/// #1147: an Original+Keep HEIF selection uploads the exact source bytes while
+/// its preview renders the converted output the same item already caches, so the
+/// WebView never has to decode raw HEIC.
+#[test]
+fn heif_original_preview_renders_converted_bytes_while_upload_stays_exact() {
+    let target = target(None);
+    let mut registry = MediaPreparationRegistry::default();
+    let source = heif_input("heif-preview");
+    let original_bytes = source.bytes.clone();
+    let item = registry
+        .prepare_items(
+            &target,
+            vec![source],
+            ImageUploadCompressionPolicy::default(),
+        )
+        .pop()
+        .expect("one staged HEIF image");
+    let StagedUploadPreparation::Ready { variants, .. } = &item.preparation else {
+        panic!("HEIF should expose converted image choices");
+    };
+    let original_keep = variants
+        .iter()
+        .find(|variant| {
+            variant.resize == StagedUploadResizeChoice::Original
+                && variant.format_choice == StagedUploadFormatChoice::Keep
+        })
+        .expect("Original+Keep variant");
+    let converted_jpeg = variants
+        .iter()
+        .find(|variant| {
+            variant.resize == StagedUploadResizeChoice::Original
+                && variant.format_choice == StagedUploadFormatChoice::Jpeg
+        })
+        .expect("converted default variant");
+
+    // Upload keeps the exact HEIC payload.
+    assert_eq!(
+        registry.variant_bytes(&target, "heif-preview", &original_keep.variant_id),
+        Some(original_bytes.clone())
+    );
+    // The preview does not, and is a renderable image: the converted JPEG.
+    let preview = registry
+        .variant_preview_bytes(&target, "heif-preview", &original_keep.variant_id)
+        .expect("original preview bytes");
+    assert_ne!(preview, original_bytes);
+    assert_eq!(preview[..3], [0xFF, 0xD8, 0xFF]);
+    assert_eq!(
+        preview,
+        registry
+            .variant_bytes(&target, "heif-preview", &converted_jpeg.variant_id)
+            .expect("converted upload bytes")
+    );
+    // A decodable variant previews its own upload bytes.
+    assert_eq!(
+        registry.variant_preview_bytes(&target, "heif-preview", &converted_jpeg.variant_id),
+        registry.variant_bytes(&target, "heif-preview", &converted_jpeg.variant_id)
+    );
+
+    // The preview is a real image, not merely bytes that are not HEIC.
+    let decoded = image::load_from_memory(&preview).expect("preview decodes");
+    assert_eq!((decoded.width(), decoded.height()), (64, 64));
+
+    // And the selection the send path resolves still carries the exact source.
+    assert!(registry.select_variant(&target, "heif-preview", &original_keep.variant_id));
+    assert_eq!(
+        registry
+            .selected_upload(&target, "heif-preview")
+            .expect("Original+Keep is selected")
+            .bytes,
+        original_bytes
+    );
+}
