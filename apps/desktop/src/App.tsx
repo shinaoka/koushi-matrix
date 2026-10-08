@@ -2104,9 +2104,12 @@ function AccountContent({
       case "showHelp":
         onShowHelp();
         return true;
-      case "openUserSettings":
+      case "openAccountSettings":
         onSettingsScopeChange("account");
         runInBackground(setRightPanelModeClosingFocusedContext("userSettings"));
+        return true;
+      case "openAppSettings":
+        onSettingsScopeChange("app");
         return true;
       case "logout":
         runInBackground(requestLogout());

@@ -1,4 +1,4 @@
-import { t } from "../../i18n/messages";
+import { getActiveLocale, t } from "../../i18n/messages";
 import type {
   DisplayDensity,
   EmojiPreference,
@@ -113,35 +113,6 @@ export function AppearanceControls({
           </div>
         </div>
     </>
-  );
-}
-
-function LocaleButton({
-  label,
-  selected,
-  value,
-  current,
-  onSelect
-}: {
-  label: string;
-  selected: boolean;
-  value: LocaleSettings["language_tag"];
-  current: LocaleSettings;
-  onSelect: (patch: SettingsPatch) => void;
-}) {
-  return (
-    <button
-      className={`segmented-control-option ${selected ? "is-selected" : ""}`}
-      type="button"
-      aria-pressed={selected}
-      onClick={() => {
-        if (!selected) {
-          onSelect({ locale: { ...current, language_tag: value } });
-        }
-      }}
-    >
-      {label}
-    </button>
   );
 }
 
@@ -263,32 +234,27 @@ export function LanguageControls({ selectedLocale, onUpdateSettings }: {
   selectedLocale: LocaleSettings;
   onUpdateSettings: (patch: SettingsPatch) => void;
 }) {
+  // The visible choice follows the Rust-resolved effective catalog locale; the
+  // component never parses raw tags. An unsupported stored tag resolves to the
+  // English catalog, and a supported explicit tag is sent on change.
+  const selectedLanguageTag = getActiveLocale() === "ja" ? "ja-JP" : "en";
   return (
-        <div className="settings-control-row">
-          <span>{t("settings.language")}</span>
-          <div className="segmented-control" role="group" aria-label={t("settings.language")}>
-            <LocaleButton
-              label={t("settings.languageDefault")}
-              selected={selectedLocale.language_tag === null}
-              value={null}
-              current={selectedLocale}
-              onSelect={onUpdateSettings}
-            />
-            <LocaleButton
-              label={t("settings.languageEnglish")}
-              selected={selectedLocale.language_tag === "en"}
-              value="en"
-              current={selectedLocale}
-              onSelect={onUpdateSettings}
-            />
-            <LocaleButton
-              label={t("settings.languageJapanese")}
-              selected={selectedLocale.language_tag === "ja-JP"}
-              value="ja-JP"
-              current={selectedLocale}
-              onSelect={onUpdateSettings}
-            />
-          </div>
-        </div>
+    <label className="profile-settings-field">
+      <span>{t("settings.language")}</span>
+      <select
+        value={selectedLanguageTag}
+        onChange={(event) => {
+          onUpdateSettings({
+            locale: {
+              language_tag: event.currentTarget.value,
+              text_direction: selectedLocale.text_direction
+            }
+          });
+        }}
+      >
+        <option value="en">{t("settings.languageEnglish")}</option>
+        <option value="ja-JP">{t("settings.languageJapanese")}</option>
+      </select>
+    </label>
   );
 }

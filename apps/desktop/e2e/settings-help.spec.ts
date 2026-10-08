@@ -32,7 +32,7 @@ for (const viewport of [{ width: 1334, height: 852 }, { width: 700, height: 480 
     await appOpener.click();
     const appDialog = page.getByRole("dialog", { name: "App Settings" });
     await expect(appDialog).toBeVisible();
-    await expect(appDialog.getByRole("group", { name: "Language" })).toBeVisible();
+    await expect(appDialog.getByRole("combobox", { name: "Language" })).toBeVisible();
     await appDialog.getByRole("tab", { name: "Keyboard", exact: true }).click();
     await expect(appDialog.getByText("Composer send shortcut", { exact: true })).toBeVisible();
     await expect(appDialog.getByRole("tabpanel")).toHaveCount(1);
@@ -49,6 +49,23 @@ for (const viewport of [{ width: 1334, height: 852 }, { width: 700, height: 480 
     await expect(appOpener).toBeFocused();
   });
 }
+
+test("native Account Settings and App Settings menu items switch to the requested scope", async ({ page }) => {
+  await gotoReadyShell(page);
+
+  await page.evaluate(() => window.__harness.pushDesktopMenu("openAppSettings"));
+  await expect(page.getByRole("dialog", { name: "App Settings" })).toBeVisible();
+
+  // Choosing Account Settings while App Settings is open switches directly.
+  await page.evaluate(() => window.__harness.pushDesktopMenu("openAccountSettings"));
+  await expect(page.getByRole("dialog", { name: "Account Settings" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "App Settings" })).toHaveCount(0);
+
+  // And back again, without closing settings first.
+  await page.evaluate(() => window.__harness.pushDesktopMenu("openAppSettings"));
+  await expect(page.getByRole("dialog", { name: "App Settings" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Account Settings" })).toHaveCount(0);
+});
 
 test("native Help opens a URL-copy dialog before sign-in", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);

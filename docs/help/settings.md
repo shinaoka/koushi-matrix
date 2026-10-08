@@ -6,9 +6,11 @@
 
 Select the account icon at the bottom of the left rail to open **Account
 Settings** for that account. Select the gear in the top bar to open **App
-Settings**, which apply across account tabs. On macOS, **Koushi → Settings…**
-or **Cmd+,** opens Account Settings. When an account is selected, use the
-button at the bottom of the category list to switch between settings scopes.
+Settings**, which apply across account tabs. On macOS, the **Koushi** menu has
+these as separate **Account Settings…** and **App Settings…** items; **Cmd+,**
+opens **App Settings**. Choosing either item while settings are already open
+switches directly to that scope. When an account is selected, use the button at
+the bottom of the category list to switch between settings scopes.
 
 Both scopes open in a foreground dialog. Choose a category on the left; its
 controls appear on the right. Each side scrolls when the window is small. Close
@@ -28,7 +30,7 @@ translated app.
 
 | Scope and category | Settings and actions |
 | --- | --- |
-| App Settings → Appearance (外観) | Language (Default (English), English, Japanese); theme; display density; UI font and emoji style. |
+| App Settings → Appearance (外観) | Language (English or 日本語); theme; display density; UI font and emoji style. |
 | App Settings → Notifications (通知) | Notification sounds and badge counts. Operating-system permissions also apply. |
 | App Settings → Preferences (環境設定) | Code-block wrapping; hiding removed messages; close to tray where configurable; automatic loading of older messages; placement of threaded conversations at their latest reply. |
 | App Settings → Keyboard (キーボード) | Send-message shortcut (Enter or the platform modifier+Enter); reference list of keyboard shortcuts and their availability. |
