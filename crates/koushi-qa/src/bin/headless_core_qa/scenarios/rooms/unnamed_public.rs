@@ -72,9 +72,15 @@ pub(super) async fn verify(conn_a: &mut CoreConnection) -> Result<(), String> {
             !name.trim().is_empty() && name != unnamed_id
         })
         .await?;
-    if !space_child_row_named(conn_a, &unnamed_id, &calculated) {
-        return Err("unnamed: the Space room list does not show the calculated name".into());
-    }
+    // Link acknowledgement and the room name can precede the Space's synced
+    // child projection. Wait for the exact sidebar row, not a fixed delay.
+    wait_for_state(conn_a, "unnamed: Space calculated-name row", |state| {
+        compose_sidebar_for_state(state)
+            .space_rooms
+            .iter()
+            .any(|row| row.room_id == unnamed_id && row.display_name == calculated)
+    })
+    .await?;
     println!("room_unnamed_public_space=ok");
 
     // An entered address becomes the canonical alias, which names an unnamed
@@ -225,14 +231,6 @@ async fn wait_for_display_name(
     })
     .await?;
     found.ok_or_else(|| format!("{label}: display name missing"))
-}
-
-/// The active Space's sidebar lists the room under the same name.
-fn space_child_row_named(conn: &CoreConnection, room_id: &str, name: &str) -> bool {
-    compose_sidebar_for_state(&conn.snapshot())
-        .space_rooms
-        .iter()
-        .any(|row| row.room_id == room_id && row.display_name == name)
 }
 
 async fn wait_for_state(

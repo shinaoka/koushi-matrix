@@ -1435,6 +1435,16 @@ async fn real_bundled_projection_is_admitted_without_a_cached_edit() {
             .unwrap()
             .is_none()
     );
+    let current = room
+        .resolve_cached_message(event_id!("$bundled-root"))
+        .await
+        .unwrap()
+        .expect("rendered root must have verifiable current content");
+    assert_eq!(
+        current.attachment_filename.as_deref(),
+        Some("bundled.pdf"),
+        "search must verify the same replacement the real SDK timeline renders"
+    );
     let messages =
         super::super::actor::TimelineActor::search_index_messages_for_item(rid.as_str(), &item);
     assert_eq!(messages.len(), 2);

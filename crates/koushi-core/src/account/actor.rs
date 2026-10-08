@@ -265,6 +265,11 @@ pub(crate) enum AccountMessage {
     ConfigureEventCacheFetchForTesting {
         fetch: oneshot::Receiver<super::RoomEventLookupResult>,
     },
+    #[cfg(test)]
+    ConfigureSearchActorForTesting {
+        handle: Option<SearchActorHandle>,
+        acknowledged: oneshot::Sender<()>,
+    },
     RepairRoomTimeline {
         request_id: RequestId,
         account_key: AccountKey,
@@ -1875,6 +1880,16 @@ impl AccountActor {
                 AccountMessage::ConfigureEventCacheFetchForTesting { fetch } => {
                     self.event_cache_fetch_override = Some(fetch);
                 }
+                #[cfg(test)]
+                AccountMessage::ConfigureSearchActorForTesting {
+                    handle,
+                    acknowledged,
+                } => {
+                    if let Some(handle) = handle {
+                        self.search_actor = Some(handle);
+                    }
+                    let _ = acknowledged.send(());
+                }
                 AccountMessage::EnsureRoomEventCached {
                     request_id,
                     room_id,
@@ -1904,6 +1919,11 @@ impl AccountActor {
                     command,
                     content_policy,
                 } => {
+                    // A buffered roster must not restore an older policy after
+                    // this authoritative submission crosses mailbox pressure.
+                    if let Some(notification) = self.pending_crawler_notification.as_mut() {
+                        notification.settings = content_policy.clone();
+                    }
                     self.route_search_command_with_policy(command, Some(content_policy))
                         .await;
                 }

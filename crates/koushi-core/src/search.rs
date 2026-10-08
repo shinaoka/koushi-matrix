@@ -441,6 +441,20 @@ pub struct SearchActorHandle {
 }
 
 impl SearchActorHandle {
+    #[cfg(test)]
+    pub(crate) fn controlled_inbox_for_testing() -> (Self, mpsc::Receiver<SearchActorMessage>) {
+        let (tx, rx) = mpsc::channel(1);
+        let (index_tx, _) = mpsc::channel(1);
+        (
+            Self {
+                tx,
+                index_tx,
+                task: None,
+            },
+            rx,
+        )
+    }
+
     pub async fn send_command(&self, command: SearchCommand) -> bool {
         self.send_query_command(command, None).await
     }
@@ -2001,12 +2015,13 @@ async fn verify_literal_candidates(
             verification.in_scope += 1;
             verification.rooms.insert(candidate.room_id.clone());
             // A missing or redacted cached event simply drops out of the page.
-            let Ok(Some(resolved)) = koushi_sdk::resolve_cached_message(
+            let Some(resolved) = koushi_sdk::resolve_cached_message(
                 session,
                 &candidate.room_id,
                 &candidate.event_id,
             )
             .await
+            .map_err(|error| classify_matrix_search_error(&error))?
             else {
                 continue;
             };

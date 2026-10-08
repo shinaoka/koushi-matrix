@@ -263,7 +263,8 @@ fn matrix_search_error_from_index(error: &IndexError) -> MatrixSearchError {
         | IndexError::IndexSchemaError(_)
         | IndexError::IndexWriteError(_)
         | IndexError::MessageTypeNotSupported
-        | IndexError::CannotIndexRedactedMessage => MatrixSearchError::Internal,
+        | IndexError::CannotIndexRedactedMessage
+        | IndexError::EventPreparationFailed => MatrixSearchError::Internal,
     }
 }
 
@@ -560,9 +561,9 @@ pub async fn resolve_cached_message(
 /// linked-chunk updates and can lag (`RecvError::Lagged`) or fail silently, so a
 /// caller that needs an acknowledgement before reporting a successful crawl page
 /// must write through here instead: the fork's index guard commits synchronously, so
-/// an `Ok` return means the events are persisted. Indexing an event that is
-/// already present is a no-op, and the guard's mutex serialises this with the
-/// subscriber, so either way `Ok` is a real acknowledgement.
+/// an `Ok` return acknowledges the prepared operations. Room-message documents
+/// refresh their canonical root even when already indexed; the guard's mutex
+/// serialises this with the subscriber. Unindexable events may produce no operation.
 pub async fn index_room_events_now(
     session: &MatrixClientSession,
     room_id: &str,

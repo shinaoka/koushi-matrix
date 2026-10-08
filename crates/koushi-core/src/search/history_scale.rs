@@ -8,6 +8,103 @@ use matrix_sdk::{
 };
 use matrix_sdk_test::JoinedRoomBuilder;
 
+#[tokio::test]
+async fn production_query_reports_cached_resolution_failure_instead_of_success() {
+    let index = tempfile::tempdir().unwrap();
+    let sdk = tempfile::tempdir().unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let server = MatrixMockServer::new().await;
+    let client = server
+        .client_builder()
+        .on_builder(|b| {
+            b.sqlite_store_with_cache_path(
+                sdk.path(),
+                cache_dir.path(),
+                Some("synthetic-sdk-secret"),
+            )
+            .search_index_store(
+                matrix_sdk::search_index::SearchIndexStoreKind::encrypted_directory_ngram(
+                    index.path().to_owned(),
+                    "synthetic-index-secret".into(),
+                    1,
+                    2,
+                )
+                .unwrap(),
+            )
+        })
+        .build()
+        .await;
+    client.event_cache().subscribe().unwrap();
+    let rid = matrix_sdk::ruma::room_id!("!query-failure:example.invalid");
+    let room = server.sync_joined_room(&client, rid).await;
+    let f = matrix_sdk_test::event_factory::EventFactory::new()
+        .room(rid)
+        .sender(matrix_sdk::ruma::user_id!("@member:example.invalid"));
+    let event = f
+        .text_msg("synthetic visible needle")
+        .event_id(matrix_sdk::ruma::event_id!("$query-root"))
+        .into_event();
+    server
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(rid).add_timeline_event(event.raw().clone()),
+        )
+        .await;
+    let session = Arc::new(MatrixClientSession::from_client_for_testing(
+        client.clone(),
+        SessionInfo {
+            homeserver: server.server().uri(),
+            user_id: client.user_id().unwrap().to_string(),
+            device_id: client.device_id().unwrap().to_string(),
+            authentication_method: SessionAuthenticationMethod::Unknown,
+        },
+    ));
+    koushi_sdk::index_room_events_now(&session, rid.as_str(), vec![event])
+        .await
+        .unwrap();
+    assert_eq!(
+        room.search_literal_page("needle", 10, None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let request_id = RequestId {
+        connection_id: koushi_protocol::ids::RuntimeConnectionId(17),
+        sequence: 3,
+    };
+    let query = || {
+        run_sdk_query(
+            session.clone(),
+            4,
+            request_id,
+            "needle".into(),
+            SearchScope::CurrentRoom {
+                room_id: rid.to_string(),
+            },
+            SearchRoomFilter::OnlyRooms(vec![rid.to_string()]),
+            koushi_sdk::MatrixSearchScope::CurrentRoom {
+                room_id: rid.to_string(),
+            },
+            SearchCrawlerSettings::default(),
+            0,
+            vec!["needle".into()],
+        )
+    };
+    assert!(query().await.projection.is_ok());
+    let lease = client.event_cache_store().lock().await.unwrap();
+    client.event_cache_store().close().await.unwrap();
+    let result = query().await;
+    assert!(matches!(
+        result.projection,
+        Err(SearchFailureKind::Internal)
+    ));
+    assert_eq!(result.request_id, request_id);
+    client.event_cache_store().reopen().await.unwrap();
+    drop(lease);
+    assert!(query().await.projection.is_ok());
+}
+
 fn disk_bytes(path: &std::path::Path) -> u64 {
     std::fs::read_dir(path)
         .unwrap()
