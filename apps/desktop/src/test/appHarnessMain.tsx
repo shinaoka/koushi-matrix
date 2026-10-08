@@ -939,12 +939,22 @@ function replaceStagedUploadsForTarget(
   };
 }
 
+/// Stands in for the converted bytes the Rust pipeline produces for an
+/// Original+Keep HEIC selection: the selection still uploads the exact HEIC
+/// payload, but the preview must be an image the WebView can render (#1147).
+const HEIC_ORIGINAL_PREVIEW_BYTES = [
+  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0,
+  0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 31, 0,
+  5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130
+];
+
 function preparedHarnessItem(
   target: ComposerTarget,
   item: StageUploadBytesRequestItem
 ): StagedUploadItem {
   const originalMime = item.mimeType.trim() || "application/octet-stream";
   const image = originalMime.startsWith("image/");
+  const heicOriginal = image && (originalMime === "image/heic" || originalMime === "image/heif");
   const original = {
     variant_id: "original-keep",
     resize: "original" as const,
@@ -979,10 +989,14 @@ function preparedHarnessItem(
       ]
     : [original];
   for (const variant of variants) {
+    const originalKeep =
+      variant.resize === "original" && variant.format_choice === "keep";
     preparedUploadBytes.set(
       preparedUploadKey(target, item.stagedId, variant.variant_id),
-      variant.resize === "original" && variant.format_choice === "keep"
-        ? [...item.bytes]
+      originalKeep
+        ? heicOriginal
+          ? [...HEIC_ORIGINAL_PREVIEW_BYTES]
+          : [...item.bytes]
         : item.bytes.slice(0, variant.byte_count)
     );
   }

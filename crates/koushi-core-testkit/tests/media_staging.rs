@@ -877,3 +877,210 @@ async fn blocked_native_decode_is_fenced_by_clear_and_selection_generation() {
         "a fenced native decode must not publish its output"
     );
 }
+
+/// #1147: a lazily selected pair whose encode fails must settle to an actionable
+/// failure instead of leaving the item pending, which hides the failure and
+/// makes the item unsendable.
+#[tokio::test]
+async fn lazy_native_decode_failure_settles_the_pair_instead_of_leaving_it_pending() {
+    use std::sync::atomic::Ordering;
+
+    let decoder = FakeStillImageDecoder::new(false);
+    let (runtime, mut connection, _stores) = ready_runtime_with_decoder(&decoder).await;
+    runtime
+        .media_staging()
+        .stage_upload_bytes(&mut connection, target(), vec![heic_item("heic", 1)])
+        .await
+        .expect("HEIC staging should settle");
+    runtime
+        .media_staging()
+        .update_caption(
+            &mut connection,
+            target(),
+            "heic".to_owned(),
+            Some(ComposerDocument::from_plain_text("holiday".to_owned())),
+        )
+        .await
+        .expect("caption should settle");
+    let caption = connection.snapshot().timeline.staged_uploads[0]
+        .caption
+        .clone();
+    assert!(caption.is_some(), "fixture precondition: caption is set");
+
+    // The injected decoder succeeds for the initial preparation and fails for the
+    // lazily selected pair.
+    decoder.fail.store(true, Ordering::SeqCst);
+    let outcome = runtime
+        .media_staging()
+        .select_staged_upload_output(
+            &mut connection,
+            target(),
+            "heic".to_owned(),
+            koushi_state::StagedUploadOutputSelection {
+                resize: StagedUploadResizeChoice::Half,
+                format: StagedUploadFormatChoice::Png,
+            },
+        )
+        .await;
+    assert!(
+        matches!(outcome, Err(MediaStagingError::PreparationFailed)),
+        "a failed lazy encode must report the failure: {outcome:?}"
+    );
+
+    let failed = connection.snapshot().timeline.staged_uploads[0].clone();
+    assert_eq!(
+        failed.preparation,
+        StagedUploadPreparation::Failed {
+            failure_kind: koushi_state::MediaPreparationFailureKind::Unsupported,
+            can_use_original: true,
+        },
+        "the failed pair must settle with the original fallback, not stay pending"
+    );
+
+    // Both recovery affordances work from the settled failure.
+    decoder.fail.store(false, Ordering::SeqCst);
+    runtime
+        .media_staging()
+        .retry_staged_upload_preparation(&mut connection, target(), "heic".to_owned())
+        .await
+        .expect("retry should settle");
+    let retried = connection.snapshot().timeline.staged_uploads[0].clone();
+    assert!(matches!(
+        retried.preparation,
+        StagedUploadPreparation::Ready { .. }
+    ));
+    assert_eq!(retried.caption, caption, "retry keeps the caption");
+}
+
+/// #1147: the original fallback after a lazy failure must not drop a caption the
+/// user already typed.
+#[tokio::test]
+async fn original_fallback_after_a_lazy_failure_keeps_the_caption() {
+    use std::sync::atomic::Ordering;
+
+    let decoder = FakeStillImageDecoder::new(false);
+    let (runtime, mut connection, _stores) = ready_runtime_with_decoder(&decoder).await;
+    runtime
+        .media_staging()
+        .stage_upload_bytes(&mut connection, target(), vec![heic_item("heic", 1)])
+        .await
+        .expect("HEIC staging should settle");
+    runtime
+        .media_staging()
+        .update_caption(
+            &mut connection,
+            target(),
+            "heic".to_owned(),
+            Some(ComposerDocument::from_plain_text("holiday".to_owned())),
+        )
+        .await
+        .expect("caption should settle");
+    let caption = connection.snapshot().timeline.staged_uploads[0]
+        .caption
+        .clone();
+
+    decoder.fail.store(true, Ordering::SeqCst);
+    let outcome = runtime
+        .media_staging()
+        .select_staged_upload_output(
+            &mut connection,
+            target(),
+            "heic".to_owned(),
+            koushi_state::StagedUploadOutputSelection {
+                resize: StagedUploadResizeChoice::Quarter,
+                format: StagedUploadFormatChoice::Webp,
+            },
+        )
+        .await;
+    assert!(outcome.is_err(), "fixture precondition: the pair fails");
+
+    runtime
+        .media_staging()
+        .use_original(&mut connection, target(), "heic".to_owned())
+        .await
+        .expect("the original fallback should settle");
+    let original = connection.snapshot().timeline.staged_uploads[0].clone();
+    assert!(matches!(
+        original.preparation,
+        StagedUploadPreparation::Ready { .. }
+    ));
+    assert_eq!(original.caption, caption, "the fallback keeps the caption");
+}
+
+/// #1147: a failure that arrives after the user moved to a cached pair is stale
+/// — a cached re-selection clears `pending` without bumping the generation, so
+/// the generation check alone would let the old failure replace a sendable
+/// selection.
+#[tokio::test]
+async fn lazy_failure_superseded_by_a_cached_selection_is_not_published() {
+    use std::sync::atomic::Ordering;
+
+    let decoder = FakeStillImageDecoder::new(false);
+    let (runtime, mut connection, _stores) = ready_runtime_with_decoder(&decoder).await;
+    runtime
+        .media_staging()
+        .stage_upload_bytes(&mut connection, target(), vec![heic_item("heic", 1)])
+        .await
+        .expect("HEIC staging should settle");
+    decoder.fail.store(true, Ordering::SeqCst);
+
+    let mut barrier = runtime
+        .media_staging()
+        .install_preparation_barrier_for_testing();
+    let service = runtime.media_staging().clone();
+    let mut select_connection = runtime.attach();
+    let failing = tokio::spawn(async move {
+        service
+            .select_staged_upload_output(
+                &mut select_connection,
+                target(),
+                "heic".to_owned(),
+                koushi_state::StagedUploadOutputSelection {
+                    resize: StagedUploadResizeChoice::Half,
+                    format: StagedUploadFormatChoice::Webp,
+                },
+            )
+            .await
+    });
+    barrier.wait_started().await;
+    let cached = koushi_state::StagedUploadOutputSelection {
+        resize: StagedUploadResizeChoice::Original,
+        format: StagedUploadFormatChoice::Jpeg,
+    };
+    runtime
+        .inject_actions(vec![AppAction::UploadStagingOutputSelected {
+            target: target(),
+            staged_id: "heic".to_owned(),
+            selection: cached,
+        }])
+        .await;
+    support::wait_for_state_event(&mut connection, |state| {
+        matches!(
+            state.timeline.staged_uploads[0].preparation,
+            StagedUploadPreparation::Ready { pending: None, selected, .. } if selected == cached
+        )
+    })
+    .await;
+    barrier.release();
+    assert!(
+        matches!(failing.await.unwrap(), Err(MediaStagingError::Stale)),
+        "a superseded failure must be rejected as stale"
+    );
+    let settled = connection.snapshot().timeline.staged_uploads[0].clone();
+    assert_eq!(
+        settled.preparation,
+        StagedUploadPreparation::Ready {
+            variants: match &settled.preparation {
+                StagedUploadPreparation::Ready { variants, .. } => variants.clone(),
+                _ => panic!("fixture precondition: ready"),
+            },
+            selected: cached,
+            pending: None,
+            generation: match &settled.preparation {
+                StagedUploadPreparation::Ready { generation, .. } => *generation,
+                _ => panic!("fixture precondition: ready"),
+            },
+        },
+        "the cached selection must survive the stale failure"
+    );
+}

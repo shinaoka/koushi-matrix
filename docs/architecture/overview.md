@@ -375,6 +375,23 @@ inputs, convert opaque composer tokens, call these Core methods, and serialize
 the settled published generation or preview bytes; they contain no batch, MIME,
 preparation, selection-generation, registry-merge, replacement, or send policy.
 
+The preview byte lookup is deliberately separate from the upload payload (#1147).
+`MediaPreparationRegistry::variant_bytes` stays the exact bytes the send path
+uploads — for an Original+Keep HEIF selection that is the untouched source —
+while `variant_preview_bytes` returns what the WebView may render and resolves an
+Original+Keep HEIF selection to the converted variant the same item already
+caches. An Original+Keep selection therefore previews `image/jpeg`-class bytes
+while its descriptor keeps the original filename, byte count and dimensions.
+
+A lazily selected pair whose encode fails settles instead of staying pending
+(#1147): `encode_output` returns the typed `MediaPreparationFailureKind`, and
+`MediaStagingService` publishes `StagedUploadPreparation::Failed` with
+`can_use_original` taken from the retained source. Because a cached re-selection
+clears `pending` without advancing the generation, the failure is published only
+while the current item still has the captured generation, the same `selected`,
+and that pair as `pending`; any other state is `Stale`. The two recovery actions —
+retry, and use-original which carries the caption over — work from `Failed`.
+
 ### Core-owned composer transport identities (Phase D, issue #755)
 
 `ComposerDraftLeaseRegistry` is the sole authority for renderer generations,

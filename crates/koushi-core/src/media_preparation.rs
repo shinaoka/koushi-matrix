@@ -2,9 +2,9 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_media::{
-    ImageOutputFormat, ImageOutputRequest, ImagePreparationPolicy, ImageResizeScale,
-    PreparedImageFormat, PreparedImageVariant, heif_mime_type, prepare_decoded_image_output,
-    prepare_image_output,
+    ImageOutputFormat, ImageOutputRequest, ImagePreparationError, ImagePreparationPolicy,
+    ImageResizeScale, PreparedImageFormat, PreparedImageVariant, heif_mime_type,
+    prepare_decoded_image_output, prepare_image_output,
 };
 use koushi_state::{
     ComposerTarget, ImageUploadCompressionPolicy, MediaPreparationFailureKind,
@@ -120,6 +120,16 @@ impl MediaPreparationTransition<'_> {
         self.registry.variant_bytes(target, staged_id, variant_id)
     }
 
+    pub fn variant_preview_bytes(
+        &self,
+        target: &ComposerTarget,
+        staged_id: &str,
+        variant_id: &str,
+    ) -> Option<Vec<u8>> {
+        self.registry
+            .variant_preview_bytes(target, staged_id, variant_id)
+    }
+
     pub fn use_original(
         &mut self,
         target: &ComposerTarget,
@@ -167,6 +177,10 @@ impl fmt::Debug for StageUploadBytesInput {
 struct CachedVariant {
     descriptor: PreparedUploadVariant,
     storage: CachedVariantStorage,
+    /// Variant whose bytes the preview surface may render when the upload bytes
+    /// themselves are not WebView-renderable (Original+Keep of a HEIF source).
+    /// `None` means "serve this variant's own bytes".
+    preview_variant_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -428,7 +442,7 @@ impl MediaPreparationRegistry {
         selection: StagedUploadOutputSelection,
         policy: ImageUploadCompressionPolicy,
         native_image_decoder: Option<&dyn NativeStillImageDecoder>,
-    ) -> Option<(PreparedUploadVariant, Vec<u8>)> {
+    ) -> Result<(PreparedUploadVariant, Vec<u8>), MediaPreparationFailureKind> {
         let request = ImageOutputRequest {
             resize: image_resize_scale(selection.resize),
             format: image_output_format_for_source(&source.bytes, selection),
@@ -437,6 +451,8 @@ impl MediaPreparationRegistry {
             target_long_edge: u32::try_from(policy.target_long_edge).unwrap_or(u32::MAX),
             quality_percent: policy.quality_percent,
         };
+        // The typed failure is preserved so a lazily selected pair that cannot be
+        // encoded settles the item instead of leaving it pending forever.
         let variant = match heif_mime_type(&source.bytes) {
             Some(detected) => prepare_heif_output(
                 source,
@@ -444,13 +460,12 @@ impl MediaPreparationRegistry {
                 request,
                 &encode_policy,
                 native_image_decoder,
-            )
-            .ok()?,
+            )?,
             None => prepare_image_output(&source.bytes, &source.filename, request, &encode_policy)
-                .ok()?,
+                .map_err(image_preparation_failure_kind)?,
         };
         let descriptor = descriptor_from_image_variant(&variant, source.bytes.len(), selection);
-        Some((descriptor, variant.bytes))
+        Ok((descriptor, variant.bytes))
     }
 
     /// Cache a lazily encoded pair and select it, so the upload uses its exact
@@ -479,6 +494,7 @@ impl MediaPreparationRegistry {
             CachedVariant {
                 descriptor,
                 storage,
+                preview_variant_id: None,
             },
         );
         self.selected
@@ -518,6 +534,7 @@ impl MediaPreparationRegistry {
         })
     }
 
+    /// Bytes the upload sends for `variant_id`.
     pub fn variant_bytes(
         &self,
         target: &ComposerTarget,
@@ -528,6 +545,32 @@ impl MediaPreparationRegistry {
             self.variants
                 .get(&(target.clone(), staged_id.to_owned(), variant_id.to_owned()))?;
         self.cached_variant_bytes(target, staged_id, cached)
+    }
+
+    /// Bytes the preview surface may render for `variant_id`.
+    ///
+    /// Kept separate from [`Self::variant_bytes`]: Original+Keep must upload the
+    /// exact source bytes, while the WebView cannot render raw HEIF, so that
+    /// variant previews the converted output the item already caches. Every
+    /// other variant previews its own upload bytes.
+    pub fn variant_preview_bytes(
+        &self,
+        target: &ComposerTarget,
+        staged_id: &str,
+        variant_id: &str,
+    ) -> Option<Vec<u8>> {
+        let cached =
+            self.variants
+                .get(&(target.clone(), staged_id.to_owned(), variant_id.to_owned()))?;
+        let Some(preview_variant_id) = cached.preview_variant_id.as_deref() else {
+            return self.cached_variant_bytes(target, staged_id, cached);
+        };
+        let preview = self.variants.get(&(
+            target.clone(),
+            staged_id.to_owned(),
+            preview_variant_id.to_owned(),
+        ))?;
+        self.cached_variant_bytes(target, staged_id, preview)
     }
 
     fn cached_variant_bytes(
@@ -765,6 +808,7 @@ impl MediaPreparationRegistry {
             CachedVariant {
                 descriptor: descriptor.clone(),
                 storage: CachedVariantStorage::Source,
+                preview_variant_id: None,
             },
         );
         self.selected.insert(
@@ -825,6 +869,7 @@ impl MediaPreparationRegistry {
             CachedVariant {
                 descriptor: descriptor.clone(),
                 storage: CachedVariantStorage::Source,
+                preview_variant_id: None,
             },
         );
         self.selected.insert(
@@ -908,6 +953,10 @@ impl MediaPreparationRegistry {
             CachedVariant {
                 descriptor: original.clone(),
                 storage: CachedVariantStorage::Source,
+                // The exact HEIC bytes stay the upload payload, but a WebView
+                // cannot render them, so the preview renders the converted
+                // variant this same item already caches.
+                preview_variant_id: Some(converted_descriptor.variant_id.clone()),
             },
         );
         self.variants.insert(
@@ -919,6 +968,7 @@ impl MediaPreparationRegistry {
             CachedVariant {
                 descriptor: converted_descriptor.clone(),
                 storage: CachedVariantStorage::Owned(converted.bytes),
+                preview_variant_id: None,
             },
         );
         self.selected.insert(
@@ -946,6 +996,15 @@ impl MediaPreparationRegistry {
                 generation: 0,
             },
         }
+    }
+}
+
+/// Map a pure-encoder failure onto the state's failure kind.
+fn image_preparation_failure_kind(error: ImagePreparationError) -> MediaPreparationFailureKind {
+    match error {
+        ImagePreparationError::Empty => MediaPreparationFailureKind::Empty,
+        ImagePreparationError::Decode => MediaPreparationFailureKind::Decode,
+        ImagePreparationError::Encode => MediaPreparationFailureKind::Encode,
     }
 }
 

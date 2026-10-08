@@ -180,3 +180,80 @@ async fn prepared_send_rejects_before_upload_when_account_or_target_fence_fails(
     assert!(result.is_err());
     drop(runtime);
 }
+
+/// The repository's licensed opaque HEIC fixture.
+const HEIF_FIXTURE: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../koushi-media/tests/fixtures/heif/opaque.heic"
+));
+
+/// #1147: the preview surface must render an Original+Keep HEIF selection
+/// without WebView HEIC support, while the selection itself keeps the exact
+/// source bytes for the upload.
+#[tokio::test]
+async fn heif_original_preview_is_not_the_raw_heic_payload() {
+    let (runtime, mut connection, _stores) = ready_runtime().await;
+    connection
+        .stage_upload_bytes(
+            target(),
+            vec![StageUploadBytesInput {
+                staged_id: "heif-preview".to_owned(),
+                position: 1,
+                filename: "camera.HEIC".to_owned(),
+                mime_type: String::new(),
+                bytes: HEIF_FIXTURE.to_vec(),
+            }],
+        )
+        .await
+        .expect("HEIC staging should settle");
+    connection
+        .select_staged_upload_output(
+            target(),
+            "heif-preview".to_owned(),
+            StagedUploadOutputSelection {
+                resize: StagedUploadResizeChoice::Original,
+                format: StagedUploadFormatChoice::Keep,
+            },
+        )
+        .await
+        .expect("Original+Keep should be selectable");
+
+    let snapshot = connection.versioned_snapshot();
+    let item = snapshot
+        .state
+        .timeline
+        .staged_uploads
+        .iter()
+        .find(|item| item.staged_id == "heif-preview")
+        .expect("staged HEIC");
+    // The selection still describes the exact original payload.
+    assert_eq!(item.mime_type, "image/heic");
+    assert_eq!(item.byte_count, HEIF_FIXTURE.len() as u64);
+    let koushi_state::StagedUploadPreparation::Ready { variants, .. } = &item.preparation else {
+        panic!("HEIC should be ready");
+    };
+    let original_keep = variants
+        .iter()
+        .find(|variant| {
+            variant.resize == StagedUploadResizeChoice::Original
+                && variant.format_choice == StagedUploadFormatChoice::Keep
+        })
+        .expect("Original+Keep variant")
+        .variant_id
+        .clone();
+
+    let preview = connection
+        .prepared_upload_preview(target(), "heif-preview".to_owned(), original_keep)
+        .await
+        .expect("preview bytes should be available");
+    assert_ne!(
+        preview, HEIF_FIXTURE,
+        "the preview must not hand the raw HEIC payload to the WebView"
+    );
+    assert_eq!(
+        preview[..3],
+        [0xFF, 0xD8, 0xFF],
+        "the preview must be a renderable image"
+    );
+    drop(runtime);
+}
