@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EntityAvatar, Sidebar, WorkspaceRail, composerSendingAccount } from "./Shell";
 import { readyDesktopSnapshotFixture } from "../test/desktopApiFixture";
-import type { AccountTabSummary, RoomListItem } from "../domain/types";
+import type { AccountTabSummary, DesktopSnapshot, RoomListItem } from "../domain/types";
 import { setActiveLocaleProfile, t } from "../i18n/messages";
 
 function room(room_id: string, display_name: string): RoomListItem {
@@ -65,6 +65,34 @@ function sidebarProps() {
   };
 }
 
+function railProps(overrides: Partial<Parameters<typeof WorkspaceRail>[0]> = {}) {
+  return {
+    onCreateSpace: vi.fn(),
+    onOpenContextMenu: vi.fn(),
+    onOpenUserSettings: vi.fn(),
+    onReorderSpaces: vi.fn(),
+    onSelectSpace: vi.fn(),
+    ...overrides
+  };
+}
+
+function railSpace(
+  space_id: string,
+  display_name: string,
+  is_active: boolean
+): DesktopSnapshot["sidebar"]["space_rail"][number] {
+  return {
+    space_id,
+    display_name,
+    local_icon: null,
+    avatar: null,
+    unread_count: 0,
+    highlight_count: 0,
+    is_active,
+    leave_candidates: []
+  };
+}
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -116,6 +144,122 @@ describe("Rust-projected workspace shell", () => {
 
     expect(within(screen.getByRole("button", { name: "Local laboratory" })).getByText("LAB"))
       .toBeTruthy();
+  });
+
+  // #1217: an explicit local name is user text and renders in full.
+  it("renders multiple graphemes of a local Space name without an icon or image", () => {
+    const snapshot = readyDesktopSnapshotFixture();
+    snapshot.sidebar.space_rail = [railSpace("!lab:example.invalid", "研究室", false)];
+    snapshot.state.ui.navigation.space_local_presentations = {
+      "!lab:example.invalid": { name: "研究室" }
+    };
+
+    render(<WorkspaceRail snapshot={snapshot} {...railProps()} />);
+
+    const button = screen.getByRole("button", { name: "研究室" });
+    const fallback = within(button).getByText("研究室");
+    expect(fallback.classList.contains("compact-label")).toBe(true);
+    expect(fallback.classList.contains("element-space")).toBe(false);
+  });
+
+  // #1217: a Matrix-only name keeps the #414 Element single-grapheme fallback.
+  it("keeps the single-grapheme Element fallback for a Space without a local name (#414)", () => {
+    const snapshot = readyDesktopSnapshotFixture();
+
+    render(<WorkspaceRail snapshot={snapshot} {...railProps()} />);
+
+    const button = screen.getByRole("button", { name: "Synthetic Workspace" });
+    const fallback = within(button).getByText("S");
+    expect(fallback.classList.contains("element-space")).toBe(true);
+    expect(within(button).queryByText("Synthetic Workspace")).toBeNull();
+  });
+
+  // #1217: a long local name scales the whole name instead of one grapheme.
+  it("renders a longer local Space name within the tile instead of only its initial", () => {
+    const snapshot = readyDesktopSnapshotFixture();
+    const name = "Research Laboratory Annex";
+    snapshot.sidebar.space_rail = [railSpace("!lab:example.invalid", name, false)];
+    snapshot.state.ui.navigation.space_local_presentations = {
+      "!lab:example.invalid": { name }
+    };
+
+    render(<WorkspaceRail snapshot={snapshot} {...railProps()} />);
+
+    const fallback = within(screen.getByRole("button", { name })).getByText(name);
+    expect(fallback.classList.contains("compact-label")).toBe(true);
+  });
+
+  // #1217: the label length counts graphemes, so a decomposed name is not sized
+  // as twice as long; the stored name is never normalised.
+  it("sizes precomposed and decomposed local names to the same tile label length", () => {
+    const precomposed = render(
+      <EntityAvatar
+        avatar={null}
+        className="workspace-button-avatar is-space"
+        fallback={"é"}
+        fallbackMode="compactLabel"
+      />
+    );
+    const precomposedTile = precomposed.container.querySelector<HTMLElement>(".avatar-fallback");
+    precomposed.unmount();
+
+    const decomposed = render(
+      <EntityAvatar
+        avatar={null}
+        className="workspace-button-avatar is-space"
+        fallback={"e\u0301"}
+        fallbackMode="compactLabel"
+      />
+    );
+    const decomposedTile = decomposed.container.querySelector<HTMLElement>(".avatar-fallback");
+
+    expect(precomposedTile?.style.getPropertyValue("--avatar-label-length")).toBe("1");
+    expect(decomposedTile?.style.getPropertyValue("--avatar-label-length")).toBe("1");
+    expect(decomposedTile?.textContent).toBe("e\u0301");
+  });
+
+  // #1218: selection is the button itself, so the menu keeps only its own actions.
+  it("offers only Space info and Leave Space in the Space context menu (#1218)", () => {
+    const snapshot = readyDesktopSnapshotFixture();
+    const onOpenContextMenu = vi.fn();
+
+    render(<WorkspaceRail snapshot={snapshot} {...railProps({ onOpenContextMenu })} />);
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Synthetic Workspace" }));
+
+    expect(onOpenContextMenu).toHaveBeenCalledTimes(1);
+    const items = onOpenContextMenu.mock.calls[0]?.[2] as Array<{ id: string }>;
+    expect(items.map((item) => item.id)).toEqual(["openSpaceInfo", "leaveSpace"]);
+  });
+
+  // #1206: selection is exposed as `aria-current`; the browser tier in e2e/
+  // asserts the rendered light/dark indicator.
+  it("exposes the active Space, and Home, as the current rail item (#1206)", () => {
+    const snapshot = readyDesktopSnapshotFixture();
+    snapshot.sidebar.account_home.is_active = false;
+    snapshot.sidebar.space_rail = [
+      railSpace("!alpha:example.invalid", "Alpha Space", true),
+      railSpace("!beta:example.invalid", "Beta Space", false)
+    ];
+    const { unmount } = render(<WorkspaceRail snapshot={snapshot} {...railProps()} />);
+
+    const active = screen.getByRole("button", { name: "Alpha Space" });
+    const inactive = screen.getByRole("button", { name: "Beta Space" });
+    expect(active.classList.contains("is-active")).toBe(true);
+    expect(active.getAttribute("aria-current")).toBe("page");
+    expect(inactive.classList.contains("is-active")).toBe(false);
+    expect(inactive.getAttribute("aria-current")).toBeNull();
+    unmount();
+
+    snapshot.sidebar.account_home.is_active = true;
+    snapshot.sidebar.space_rail = snapshot.sidebar.space_rail.map((space) => ({
+      ...space,
+      is_active: false
+    }));
+    render(<WorkspaceRail snapshot={snapshot} {...railProps()} />);
+
+    const home = screen.getByRole("button", { name: "Home" });
+    expect(home.classList.contains("is-active")).toBe(true);
+    expect(home.getAttribute("aria-current")).toBe("page");
   });
 
   it("preserves Rust section order and performs only text filtering", () => {
