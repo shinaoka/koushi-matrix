@@ -331,6 +331,48 @@ describe("composer draft lifecycle registry", () => {
     expect(registry.snapshot(scope)).toMatchObject({ revision: "2" });
   });
 
+  it("keeps an edit made between two reservations when both fail", async () => {
+    const owner = account("release-between");
+    const scope = main(owner, "release-between-room");
+    const registry = createComposerDraftLifecycleRegistry(backendAt("1"));
+    await registry.activate(scope);
+    const first = registry.beginOperation(scope);
+    expect(registry.reserveAcceptedRevision(first, revision(1))).toBe("2");
+    // The user edits while the first send is in flight.
+    expect(registry.nextDraft(scope)).toBe("3");
+    const second = registry.beginOperation(scope);
+    expect(registry.reserveAcceptedRevision(second, revision(3))).toBe("4");
+
+    expect(
+      registry.settleOperation(second, { releaseAcceptedRevision: true })
+    ).toBe(true);
+    expect(registry.snapshot(scope)).toMatchObject({ revision: "3" });
+    expect(
+      registry.settleOperation(first, { releaseAcceptedRevision: true })
+    ).toBe(true);
+    expect(registry.snapshot(scope)).toMatchObject({ revision: "3" });
+  });
+
+  it("does not release a revision an authoritative snapshot already confirmed", async () => {
+    const owner = account("release-authoritative");
+    const scope = main(owner, "release-authoritative-room");
+    const registry = createComposerDraftLifecycleRegistry(backendAt("1"));
+    await registry.activate(scope);
+    const capture = registry.beginOperation(scope);
+    expect(registry.reserveAcceptedRevision(capture, revision(1))).toBe("2");
+
+    // Core accepted and the snapshot arrived, then the invocation failed as
+    // unknown. The observed advance must not be handed back.
+    registry.observe(scope, revision(2), revision(2), false);
+    expect(
+      registry.settleOperation(capture, { releaseAcceptedRevision: true })
+    ).toBe(true);
+    expect(registry.snapshot(scope)).toMatchObject({
+      revision: "2",
+      lastAcceptedClearRevision: "2"
+    });
+  });
+
   it("clears only an overlay older than the Rust accepted-clear token", async () => {
     const owner = account("overlay-clear");
     const scope = main(owner, "overlay-room");

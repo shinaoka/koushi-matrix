@@ -130,12 +130,12 @@ interface Entry {
    * Live speculative revisions, one per reserving operation (#1208). A settle
    * either commits its entry (Core accepted) or releases it.
    */
-  speculativeReservations: Map<
-    number,
-    { base: ComposerDraftRevision; reserved: ComposerDraftRevision }
-  >;
-  /** The revision to fall back to while a release cannot keep the advance. */
-  reservedRevisionFloor: ComposerDraftRevision | null;
+  speculativeReservations: Map<number, ComposerDraftRevision>;
+  /**
+   * The highest revision that is not a live speculative advance: Core's
+   * authoritative revision, a settled revision, or a local edit.
+   */
+  reservedRevisionFloor: ComposerDraftRevision;
   lease: ComposerDraftLeaseSnapshot | null;
   activation: Promise<ComposerDraftLeaseSnapshot> | null;
   releasePending: boolean;
@@ -233,7 +233,7 @@ export function createComposerDraftLifecycleRegistry(
       debounce: null,
       pendingOperations: new Map(),
       speculativeReservations: new Map(),
-      reservedRevisionFloor: null,
+      reservedRevisionFloor: COMPOSER_DRAFT_REVISION_ZERO,
       lease: null,
       activation: null,
       releasePending: false,
@@ -341,6 +341,7 @@ export function createComposerDraftLifecycleRegistry(
         throw new ComposerDraftRendererRetiredError();
       }
       entry.revision = lease.revision;
+      entry.reservedRevisionFloor = lease.revision;
       entry.lastAcceptedClearRevision = lease.lastAcceptedClearRevision;
       entry.hasAuthoritativeContent = lease.hasAuthoritativeContent;
       entry.lease = lease;
@@ -377,6 +378,11 @@ export function createComposerDraftLifecycleRegistry(
       entry.lastAcceptedClearRevision = lastAcceptedClearRevision;
     }
     entry.hasAuthoritativeContent = hasAuthoritativeContent;
+    if (
+      compareComposerDraftRevisions(revision, entry.reservedRevisionFloor) > 0
+    ) {
+      entry.reservedRevisionFloor = revision;
+    }
     const overlayCleared =
       entry.activeOverlay?.revision !== null &&
       entry.activeOverlay?.revision !== undefined &&
@@ -394,6 +400,7 @@ export function createComposerDraftLifecycleRegistry(
   function nextDraft(scope: ComposerDraftScope): ComposerDraftRevision {
     const entry = ensure(scope);
     entry.revision = nextComposerDraftRevision(entry.revision, entry.revision);
+    entry.reservedRevisionFloor = entry.revision;
     reconcile(entry);
     return entry.revision;
   }
@@ -413,18 +420,8 @@ export function createComposerDraftLifecycleRegistry(
     ) {
       throw new ComposerDraftRendererRetiredError();
     }
-    const base =
-      compareComposerDraftRevisions(entry.revision, submittedRevision) >= 0
-        ? entry.revision
-        : submittedRevision;
-    if (entry.speculativeReservations.size === 0) {
-      entry.reservedRevisionFloor = base;
-    }
     entry.revision = nextComposerDraftRevision(entry.revision, submittedRevision);
-    entry.speculativeReservations.set(capture.operationId, {
-      base,
-      reserved: entry.revision
-    });
+    entry.speculativeReservations.set(capture.operationId, entry.revision);
     reconcile(entry);
     return entry.revision;
   }
@@ -463,43 +460,26 @@ export function createComposerDraftLifecycleRegistry(
     pending.resolve();
     const current = capture.rendererGeneration === rendererGeneration;
     const reservation = entry.speculativeReservations.get(capture.operationId);
-    if (reservation) {
+    if (reservation !== undefined) {
       entry.speculativeReservations.delete(capture.operationId);
       // A retired generation settles its bookkeeping but never mutates the
       // replacement generation's revision.
       if (current) {
         if (options.releaseAcceptedRevision) {
-          if (entry.revision === reservation.reserved) {
-            // No newer local edit: fall back to the highest still-live reservation,
-            // or to the revision Core is known to store.
-            let fallback = entry.reservedRevisionFloor;
-            for (const live of entry.speculativeReservations.values()) {
-              if (
-                fallback === null ||
-                compareComposerDraftRevisions(live.reserved, fallback) > 0
-              ) {
-                fallback = live.reserved;
-              }
-            }
-            if (
-              fallback !== null &&
-              compareComposerDraftRevisions(fallback, reservation.reserved) < 0
-            ) {
-              entry.revision = fallback;
+          // Nothing newer than the surviving reservations advances the revision,
+          // so fall back to the highest of the floor and the live reservations.
+          let fallback = entry.reservedRevisionFloor;
+          for (const live of entry.speculativeReservations.values()) {
+            if (compareComposerDraftRevisions(live, fallback) > 0) {
+              fallback = live;
             }
           }
+          entry.revision = fallback;
         } else if (
-          entry.reservedRevisionFloor === null ||
-          compareComposerDraftRevisions(
-            reservation.reserved,
-            entry.reservedRevisionFloor
-          ) > 0
+          compareComposerDraftRevisions(reservation, entry.reservedRevisionFloor) > 0
         ) {
-          entry.reservedRevisionFloor = reservation.reserved;
+          entry.reservedRevisionFloor = reservation;
         }
-      }
-      if (entry.speculativeReservations.size === 0) {
-        entry.reservedRevisionFloor = null;
       }
     }
     reconcile(entry);
@@ -512,7 +492,7 @@ export function createComposerDraftLifecycleRegistry(
     capturedRevision: ComposerDraftRevision
   ): boolean {
     const entry = lookup(capture.scope);
-    const reserved = entry?.speculativeReservations.get(capture.operationId)?.reserved;
+    const reserved = entry?.speculativeReservations.get(capture.operationId);
     const revisionMatchesCompletion =
       entry?.revision === capturedRevision ||
       entry?.revision === reserved ||
@@ -599,7 +579,6 @@ export function createComposerDraftLifecycleRegistry(
     for (const entry of entries()) {
       entry.active = false;
       entry.speculativeReservations.clear();
-      entry.reservedRevisionFloor = null;
       const lease = entry.lease;
       entry.lease = null;
       if (lease) {

@@ -4727,6 +4727,13 @@ function AccountContent({
       if (submissionAccountOwnerRef.current !== captured.accountOwner) {
         return;
       }
+      if (accepted) {
+        // Core accepted; only the receipt projection failed. Do not offer an
+        // unknown-retry that would reserve a revision Core already advanced.
+        submissionController.accept(submissionId);
+        appendComposerSubmitDiagnostic("main", "settled", "outcome=accepted_receipt_unreconciled");
+        return;
+      }
       const disposition = classifySubmissionFailure(error);
       appendComposerSubmitDiagnostic(
         "main",
@@ -5470,10 +5477,9 @@ function AccountContent({
       return;
     }
     let accepted = false;
-    let response;
     try {
       appendComposerSubmitDiagnostic("thread", "dispatch", "mode=thread_reply");
-      response = await api.sendThreadReply(
+      const response = await api.sendThreadReply(
         captured.account,
         admitted.lease.leaseId,
         admitted.lease.rendererGeneration,
@@ -5509,6 +5515,13 @@ function AccountContent({
       }
     } catch (error) {
       if (submissionAccountOwnerRef.current !== captured.accountOwner) {
+        return;
+      }
+      if (accepted) {
+        // Core accepted; only the receipt projection failed. Do not offer an
+        // unknown-retry that would reserve a revision Core already advanced.
+        submissionController.accept(submissionId);
+        appendComposerSubmitDiagnostic("thread", "settled", "outcome=accepted_receipt_unreconciled");
         return;
       }
       const disposition = classifySubmissionFailure(error);
@@ -5657,9 +5670,8 @@ function AccountContent({
     if (!reserveComposerAcceptedRevision(admitted, draftRevision)) return;
     const localRevisionAtSubmission = threadComposerOverlayRef.current?.revision ?? null;
     let accepted = false;
-    let response;
     try {
-      response = await api.scheduleSend(
+      const response = await api.scheduleSend(
         account,
         admitted.lease.leaseId,
         admitted.lease.rendererGeneration,
