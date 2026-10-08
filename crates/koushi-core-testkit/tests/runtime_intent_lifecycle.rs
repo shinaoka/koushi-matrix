@@ -56,9 +56,9 @@ async fn recv_intent_lifecycle_within(
         if remaining.is_zero() {
             return None;
         }
-        match tokio::time::timeout(remaining.min(Duration::from_millis(20)), conn.recv_event())
-            .await
-        {
+        // A quiet event stream is not a terminal outcome. Only the caller's
+        // absolute deadline can expire this wait (#1229).
+        match tokio::time::timeout(remaining, conn.recv_event()).await {
             Ok(Ok(CoreEvent::IntentLifecycle {
                 request_id: rid,
                 outcome,
@@ -70,6 +70,44 @@ async fn recv_intent_lifecycle_within(
             Err(_) => return None,
         }
     }
+}
+
+#[tokio::test]
+async fn intent_lifecycle_waiter_keeps_waiting_across_a_quiet_stream_interval() {
+    use koushi_protocol::event::{IntentNoOpReason, IntentOutcome};
+
+    let (runtime, _stores) = CoreRuntime::start_isolated();
+    let mut command_conn = runtime.attach();
+    runtime.inject_actions(restore_ready_actions![]).await;
+    wait_for_state(&mut command_conn, |state| {
+        matches!(state.session, SessionState::Ready(_))
+    })
+    .await;
+    let mut observer = runtime.attach();
+    let request_id = command_conn.next_request_id();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let waiting = tokio::spawn(async move {
+        started_tx
+            .send(())
+            .expect("test should retain the start receiver");
+        recv_intent_lifecycle_within(&mut observer, request_id, Duration::from_secs(1)).await
+    });
+    started_rx.await.expect("observer should start");
+
+    // Exercise a quiet interval longer than the old 20ms polling slice, but
+    // well inside the unchanged one-second contract deadline.
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    command_conn
+        .command(CoreCommand::Room(RoomCommand::SelectRoom {
+            request_id,
+            room_id: "!waiter-missing-room:example.invalid".to_owned(),
+        }))
+        .await
+        .expect("command should submit");
+    assert_eq!(
+        waiting.await.expect("observer should complete"),
+        Some(IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState))
+    );
 }
 
 fn background_flood_batch(batch_index: usize, kept_room_ids: &[&str]) -> Vec<AppAction> {
