@@ -3969,13 +3969,40 @@ button:disabled {
   /* Flex exports the formula's baseline even when this box scrolls. */
   display: inline-flex;
   max-inline-size: 100%;
-  overflow-x: auto;
+  /* #1193: KaTeX's inline layout paints a couple of pixels outside its own box
+     (negative-margin vlist cells), and `overflow-x: auto` makes the vertical axis
+     compute to `auto` too, so a formula that fits grew miniature scrollbars on
+     both axes. A fitting formula paints that overflow instead; only a formula
+     that is genuinely wider than the message pane opts into `is-overwide` below,
+     which is where a scroll container belongs. */
+  overflow: visible;
   vertical-align: baseline;
+}
+
+.message-math.is-overwide {
+  /* Scroll container for a formula wider than the pane. The block padding gives
+     KaTeX's own overflow the room it measured (up to ~0.4em at 16px with inline
+     fractions); the matching negative margin keeps the line height unchanged, and
+     the vertical axis stays hidden so no second scrollbar appears. */
+  padding-block: 0.4em;
+  margin-block: -0.4em;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .message-math.is-block {
   display: block;
   margin-block: 6px;
+  /* Display math legitimately exceeds the pane, and this wrapper's height grows
+     with its content, so the horizontal axis scrolls without clipping vertically. */
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* One owner for block spacing: KaTeX's default display margin must not stack on
+   the wrapper's own margin. */
+.message-math.is-block > .katex-display {
+  margin: 0;
 }
 
 .message-body.message-formatted-body a {

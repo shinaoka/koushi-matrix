@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { Copy } from "lucide-react";
 import katex from "katex";
 
@@ -824,6 +824,80 @@ const KATEX_OPTIONS = {
   maxSize: 20
 } as const;
 
+/// One rendered formula.
+///
+/// #1193: KaTeX's inline layout paints a couple of pixels outside its own box, so
+/// an inline wrapper with `overflow-x: auto` collected miniature scrollbars on both
+/// axes even for a formula that fits (the vertical axis computes to `auto` as soon
+/// as the horizontal one does). A fitting formula now paints that overflow, and only
+/// a formula that is genuinely wider than the message pane opts into `is-overwide`,
+/// which owns the horizontal scroll container. The pane is measured after fonts load
+/// and whenever it resizes, and the comparison is against the pane width rather than
+/// the formula's own box.
+function MessageMathFormula({
+  latex,
+  renderedHtml,
+  displayMode,
+  children
+}: {
+  latex: string | undefined;
+  renderedHtml: string | null;
+  displayMode: boolean;
+  children: ReactNode;
+}): ReactNode {
+  const elementRef = useRef<HTMLElement | null>(null);
+  const [overwide, setOverwide] = useState(false);
+  const Tag = displayMode ? "div" : "span";
+
+  useEffect(() => {
+    if (displayMode || !renderedHtml) {
+      setOverwide(false);
+      return;
+    }
+    const element = elementRef.current;
+    const pane = element?.parentElement;
+    if (!element || !pane) {
+      return;
+    }
+    const measure = () => {
+      const rendered = element.querySelector<HTMLElement>(".katex");
+      const available = pane.clientWidth;
+      if (!rendered || available <= 0) {
+        setOverwide(false);
+        return;
+      }
+      setOverwide(rendered.scrollWidth > available);
+    };
+    measure();
+    void document.fonts?.ready.then(measure).catch(() => undefined);
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(pane);
+    return () => observer.disconnect();
+  }, [displayMode, renderedHtml]);
+
+  const className = `message-math${displayMode ? " is-block" : ""}${overwide ? " is-overwide" : ""}`;
+  if (!renderedHtml) {
+    return (
+      <Tag className={className} ref={(node) => { elementRef.current = node; }}>
+        {children}
+      </Tag>
+    );
+  }
+  return (
+    <Tag
+      className={className}
+      ref={(node) => {
+        elementRef.current = node;
+      }}
+      data-mx-maths={latex}
+      dangerouslySetInnerHTML={{ __html: renderedHtml }}
+    />
+  );
+}
+
 function renderMathFormula(
   key: string,
   latex: string | undefined,
@@ -831,34 +905,31 @@ function renderMathFormula(
   displayMode: boolean
 ): ReactNode {
   const source = latex?.trim() ?? "";
-  const Tag = displayMode ? "div" : "span";
   if (!source || source.length > MAX_MATH_SOURCE_LENGTH) {
     return (
-      <Tag key={key} className={`message-math${displayMode ? " is-block" : ""}`}>
+      <MessageMathFormula key={key} latex={latex} renderedHtml={null} displayMode={displayMode}>
         {children}
-      </Tag>
+      </MessageMathFormula>
     );
   }
+  let html: string;
   try {
-    const html = katex.renderToString(source, {
+    html = katex.renderToString(source, {
       displayMode,
       ...KATEX_OPTIONS
     });
-    return (
-      <Tag
-        key={key}
-        className={`message-math${displayMode ? " is-block" : ""}`}
-        data-mx-maths={source}
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
-    );
   } catch {
     return (
-      <Tag key={key} className={`message-math${displayMode ? " is-block" : ""}`}>
+      <MessageMathFormula key={key} latex={latex} renderedHtml={null} displayMode={displayMode}>
         {children}
-      </Tag>
+      </MessageMathFormula>
     );
   }
+  return (
+    <MessageMathFormula key={key} latex={source} renderedHtml={html} displayMode={displayMode}>
+      {children}
+    </MessageMathFormula>
+  );
 }
 
 type FormattedTagRenderer = (
