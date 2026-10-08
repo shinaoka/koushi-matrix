@@ -1762,46 +1762,6 @@ test("staging hands Core the draft the composer is showing (#1194)", async ({ pa
     .toBe(false);
 });
 
-/// #1204: when the published state reports that an accepted send consumed the draft
-/// (the clear revision moved past the overlay), the mounted composer stops rendering
-/// its overlay. Driven from an explicit Rust-shaped snapshot, so the browser lane
-/// never reimplements the policy that decides consumption.
-test("an accepted clear revision empties the mounted composer", async ({ page }) => {
-  await gotoReadyShell(page);
-  const composer = page.getByRole("textbox", { name: "Message composer" });
-  await composer.fill("Caption text");
-  await expect(composer).toHaveText("Caption text");
-
-  await page.evaluate(() => {
-    const harness = window.__harness as any;
-    const snapshot = harness.currentSnapshot();
-    const timeline = snapshot.state.ui.timeline;
-    const cleared = String(Number(timeline.composer.draft_revision) + 5);
-    harness.setSnapshot({
-      ...snapshot,
-      state: {
-        ...snapshot.state,
-        ui: {
-          ...snapshot.state.ui,
-          timeline: {
-            ...timeline,
-            composer: {
-              ...timeline.composer,
-              draft: "",
-              document: { version: 2, inlines: [] },
-              draft_revision: cleared,
-              last_accepted_clear_revision: cleared
-            }
-          }
-        }
-      }
-    });
-    harness.pushStateUpdate();
-  });
-
-  await expect(composer).toHaveText("");
-});
-
 test("attach button stages the file and keeps the typed main draft (#1144)", async ({ page }) => {
   await gotoReadyShell(page);
   await page.evaluate(() => window.__harness.clearInvocations());

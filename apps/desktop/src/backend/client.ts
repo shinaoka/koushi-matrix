@@ -681,8 +681,7 @@ export class TauriDesktopApi implements DesktopApi {
     leaseId: string,
     rendererGeneration: string,
     target: ComposerTarget,
-    draftRevision: ComposerDraftRevision,
-    draftDocument?: ComposerDocument
+    draftRevision: ComposerDraftRevision
   ): Promise<CommandSettlement> {
     return this.invokeCommand<CommandSettlement>("send_prepared_uploads", {
       accountHomeserver: account.homeserver,
@@ -690,7 +689,6 @@ export class TauriDesktopApi implements DesktopApi {
       accountDeviceId: account.deviceId,
       leaseId,
       rendererGeneration,
-      draftDocument,
       target,
       draftRevision
     });
