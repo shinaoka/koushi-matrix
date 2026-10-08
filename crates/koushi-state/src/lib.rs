@@ -163,7 +163,8 @@ pub use state::{
     resolve_user_display_name, room_activity_unread_count, room_attention_kind,
     room_attention_projection, room_attention_summary, search_query_too_short,
     session_status_failure_backoff_ms, sort_threads_list_items,
-    staged_upload_item_with_completed_output, staged_uploads_are_sendable,
+    staged_upload_item_with_completed_output, staged_upload_send_consumes_composer_draft,
+    staged_uploads_are_sendable,
 };
 
 pub fn encrypted_messaging_is_admitted(state: &AppState) -> bool {

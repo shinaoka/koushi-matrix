@@ -175,6 +175,7 @@ async fn prepared_send_rejects_before_upload_when_account_or_target_fence_fails(
             lease,
             target(),
             koushi_state::ComposerDraftRevision::default(),
+            None,
         )
         .await;
     assert!(result.is_err());

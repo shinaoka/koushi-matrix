@@ -1202,6 +1202,15 @@ pub async fn prepared_upload_preview(
         .map_err(|error| error.to_string())
 }
 
+/// Result of a prepared-upload send: `consumed_draft` reports whether Core moved the
+/// composer draft into the message caption (#1204).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PreparedUploadSendResponse {
+    pub consumed_draft: bool,
+    pub settlement: FrontendCommandSettlement,
+}
+
 #[tauri::command]
 #[expect(
     clippy::too_many_arguments,
@@ -1216,9 +1225,10 @@ pub async fn send_prepared_uploads(
     renderer_generation: String,
     target: koushi_state::ComposerTarget,
     draft_revision: koushi_state::ComposerDraftRevision,
+    draft_document: Option<koushi_state::ComposerDocument>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendCommandSettlement, String> {
+) -> Result<PreparedUploadSendResponse, String> {
     let expected_account = koushi_protocol::SessionKeyId {
         homeserver: account_homeserver,
         user_id: account_user_id,
@@ -1227,14 +1237,24 @@ pub async fn send_prepared_uploads(
     let (generation, lease) = parse_composer_wire_tokens(&renderer_generation, &lease_id)?;
     let settled = account_connection(state.inner(), account_tab_id.as_deref())
         .await?
-        .send_prepared_uploads(expected_account, generation, lease, target, draft_revision)
+        .send_prepared_uploads(
+            expected_account,
+            generation,
+            lease,
+            target,
+            draft_revision,
+            draft_document,
+        )
         .await
         .map_err(|error| error.to_string())?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    // #1130: the send settles the composer draft without consuming it, so the
-    // renderer only needs the plain command settlement: it must not clear the
-    // draft text it still has to send.
-    Ok(command_settlement(settled.generation))
+    // #1130/#1204: Core decides whether this send consumed the draft (a single
+    // attachment whose caption is the submitted text) and reports it, so the renderer
+    // clears through its established overlay path without re-deciding the policy.
+    Ok(PreparedUploadSendResponse {
+        consumed_draft: settled.consumed_draft,
+        settlement: command_settlement(settled.generation),
+    })
 }
 
 #[tauri::command]

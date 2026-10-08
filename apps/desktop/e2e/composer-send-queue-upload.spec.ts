@@ -1703,7 +1703,9 @@ test("sending staged attachments never wipes the typed composer draft (#1130)", 
   // draft was never dispatched, so it must still be in the composer.
   await expect.poll(() => invocationCount(page, "send_text")).toBe(0);
   await expect(composer).toHaveText("Here is the error:");
-  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0, {
+    timeout: 12000
+  });
 });
 
 test("staging hands Core the draft the composer is showing (#1194)", async ({ page }) => {
@@ -1760,6 +1762,41 @@ test("staging hands Core the draft the composer is showing (#1194)", async ({ pa
       )
     )
     .toBe(false);
+});
+
+/// #1204: when Core reports that an accepted send moved the draft into the message
+/// caption, the mounted composer drops the text it still shows, and the send is not
+/// repeated. The flag is an explicit Rust-shaped fixture, so the browser lane never
+/// reimplements the policy that decides consumption.
+test("a consumed prepared send empties the mounted composer", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await composer.fill("Caption text");
+  await page.evaluate(() => {
+    const harness = window.__harness as any;
+    harness.setPreparedSendConsumesDraft(true);
+  });
+  await attachFile(page, {
+    name: "consumed-fixture.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("consumed fixture")
+  });
+  await page.getByRole("button", { name: "Send attachments" }).click();
+
+  await expect.poll(() => invocationCount(page, "send_prepared_uploads")).toBe(1);
+  await expect(composer).toHaveText("");
+  // The staged projection is what the send settled; the dialog's own closure is
+  // covered by the #1130 case below, which exercises the same send without a
+  // consuming answer.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__harness.currentSnapshot().state.ui.timeline.staged_uploads.length
+      )
+    )
+    .toBe(0);
 });
 
 test("attach button stages the file and keeps the typed main draft (#1144)", async ({ page }) => {

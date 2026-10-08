@@ -4517,23 +4517,46 @@ function AccountContent({
     const scope = composerDraftScope(account, target);
     const admitted = beginComposerOperation(scope);
     if (!admitted) return;
-    // #1130: the send settles this revision without consuming the draft text, and
-    // nothing here clears the local overlay, so the typed text stays visible.
+    // #1130/#1204: Core decides whether this send consumes the draft — a single
+    // attachment whose caption is the text the renderer is showing. The text is
+    // captured before any await, and the acceptance is reserved so input typed right
+    // after the send receives a newer revision instead of racing the clear.
+    const capturedDraft = capturedComposerDocument(target);
     const draftRevision = currentComposerDraftRevision(scope, admitted.lease);
+    if (!reserveComposerAcceptedRevision(admitted, draftRevision)) {
+      return;
+    }
     for (const item of uploads) {
       latestTextMutationQueueRef.current.invalidate(
         `caption:main:${roomId}:${item.staged_id}`
       );
     }
     try {
-      const settlement = await api.sendPreparedUploads(
+      const response = await api.sendPreparedUploads(
         account,
         admitted.lease.leaseId,
         admitted.lease.rendererGeneration,
         target,
-        draftRevision
+        draftRevision,
+        capturedDraft
       );
-      await applyCommandReceipt(settlement);
+      await applyCommandReceipt(response.settlement);
+      // Only Core's answer clears anything, and only through the established clear
+      // path: dropping the overlay reference here would make that path early-return
+      // and leave both the registry overlay and the mounted editor showing the text.
+      if (response.consumedDraft) {
+        const hasNewerDraft =
+          mainComposerOverlayRef.current?.revision !== null &&
+          mainComposerOverlayRef.current?.revision !== undefined &&
+          mainComposerOverlayRef.current.revision !== draftRevision;
+        if (!hasNewerDraft) {
+          cancelComposerDraftPersist(scope);
+          // Deferred by a turn so the send's own state settlement lands first: the
+          // clear re-renders the composer, and doing that between the command
+          // response and its state update left the staging projection unapplied.
+          window.setTimeout(() => clearLocalComposerDraft(scope), 0);
+        }
+      }
     } catch {
       // Command failures are surfaced through the Rust-owned error/event path.
     } finally {
@@ -5313,22 +5336,37 @@ function AccountContent({
     const scope = composerDraftScope(account, target);
     const admitted = beginComposerOperation(scope);
     if (!admitted) return;
-    // #1130: as above; the thread draft is settled, never consumed.
+    // #1204: as above, for the thread composer.
+    const capturedDraft = capturedComposerDocument(target);
     const draftRevision = currentComposerDraftRevision(scope, admitted.lease);
+    if (!reserveComposerAcceptedRevision(admitted, draftRevision)) {
+      return;
+    }
     for (const item of uploads) {
       latestTextMutationQueueRef.current.invalidate(
         `caption:thread:${roomId}:${rootEventId}:${item.staged_id}`
       );
     }
     try {
-      const settlement = await api.sendPreparedUploads(
+      const response = await api.sendPreparedUploads(
         account,
         admitted.lease.leaseId,
         admitted.lease.rendererGeneration,
         target,
-        draftRevision
+        draftRevision,
+        capturedDraft
       );
-      await applyCommandReceipt(settlement);
+      await applyCommandReceipt(response.settlement);
+      if (response.consumedDraft) {
+        const hasNewerDraft =
+          threadComposerOverlayRef.current?.revision !== null &&
+          threadComposerOverlayRef.current?.revision !== undefined &&
+          threadComposerOverlayRef.current.revision !== draftRevision;
+        if (!hasNewerDraft) {
+          cancelThreadComposerDraftPersist(scope);
+          window.setTimeout(() => clearLocalThreadComposerDraft(scope), 0);
+        }
+      }
     } catch {
       // Command failures are surfaced through the Rust-owned error/event path.
     } finally {

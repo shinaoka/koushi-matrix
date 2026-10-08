@@ -2058,6 +2058,12 @@ export interface SubmissionResponse {
   settlement: CommandSettlement;
 }
 
+/** Result of a prepared-upload send (#1204). */
+export interface PreparedUploadSendResponse {
+  consumedDraft: boolean;
+  settlement: CommandSettlement;
+}
+
 export interface ComposerDraftAcceptanceResponse {
   acceptedRevision: ComposerDraftRevision;
   settlement: CommandSettlement;
