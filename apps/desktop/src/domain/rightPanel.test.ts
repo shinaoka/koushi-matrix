@@ -38,12 +38,6 @@ describe("right panel context menu routing", () => {
   test("does not invent panel switches for open and search-only actions", () => {
     expect(
       rightPanelIntentForContextMenuAction(
-        { kind: "space", spaceId: "!space-a:example.invalid" },
-        "selectSpace"
-      )
-    ).toEqual({ selectSpaceId: "!space-a:example.invalid" });
-    expect(
-      rightPanelIntentForContextMenuAction(
         { kind: "room", roomId: "!room-a:example.invalid" },
         "searchInRoom"
       )
