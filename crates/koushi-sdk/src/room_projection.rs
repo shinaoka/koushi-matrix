@@ -915,6 +915,45 @@ pub async fn room_list_snapshot(
     Ok(snapshot)
 }
 
+/// Room notification counters as the room list should project them (#1176).
+///
+/// The SDK's client-side counters are computed over the room's cached events
+/// only. On a cold start that window can be a single event, so while no own read
+/// receipt is anchored in the loaded timeline the client values are a lower
+/// bound: a never-read room reports `1` whatever its real unread total is. The
+/// homeserver's own `unread_notification_counts` still describes the room, so in
+/// exactly that case the per-counter maximum of the two snapshots is used
+/// instead. An anchored client receipt keeps the client values authoritative,
+/// because they account for encrypted events and mentions the server cannot
+/// classify. Ordering with the read-marker suppression in
+/// [`matrix_room_list_room_from_counts`] is deliberate: the maximum is taken
+/// here, suppression runs afterwards.
+///
+/// Only the notification and highlight counters are topped up. The server has no
+/// unread-*message* count, and `notification_count` ("total number of unread
+/// notifications") is not one, so the unread-message projection keeps the SDK's
+/// own `num_unread_messages()` value.
+///
+/// `pending` receipts are deliberately not a reason to top up: a nonempty
+/// `pending` only means some receipt could not be matched yet, while the client
+/// counters still count from the newest boundary the SDK did find. On
+/// homeservers that report dummy zero server counts (Synapse Simplified Sliding
+/// Sync) the top-up is a no-op. A stored receipt recorded as active while its
+/// target is absent from the loaded chunk is a residual cold-start undercount
+/// this projection cannot detect (see the state-machine notes).
+fn effective_room_notification_counts(room: &matrix_sdk::Room) -> (u64, u64) {
+    let receipts = room.read_receipts();
+    let client = (receipts.num_notifications, receipts.num_mentions);
+    if receipts.latest_active.is_some() {
+        return client;
+    }
+    let server = room.unread_notification_counts();
+    (
+        client.0.max(server.notification_count),
+        client.1.max(server.highlight_count),
+    )
+}
+
 pub fn room_attention_summary_from_counts(
     room_display_name: Option<String>,
     is_dm: bool,
@@ -1887,14 +1926,97 @@ pub(super) fn room_settings_snapshot_with_change(
     snapshot
 }
 
-/// A room without an `m.room.join_rules` event is invite-only (Matrix spec,
-/// and Element's own default). The event is in the room list's
-/// `required_state`, so a synced room without it has none.
-pub(super) fn matrix_room_join_rule_or_default(room: &matrix_sdk::Room) -> MatrixRoomJoinRule {
+/// A room's own authoritative access condition: its `m.room.join_rules` rule
+/// (#1166).
+///
+/// A room without an `m.room.join_rules` event is invite-only (Matrix spec, and
+/// Element's own default). The event is in the room list's `required_state`, so
+/// a synced room without it has none. The condition is never derived from
+/// encryption, directory visibility, history visibility, parent Space privacy,
+/// `is_dm`, the viewer's membership or `can_join`.
+pub fn matrix_room_join_rule_or_default(room: &matrix_sdk::Room) -> MatrixRoomJoinRule {
     room.join_rule()
         .as_ref()
         .map(matrix_room_join_rule)
         .unwrap_or(MatrixRoomJoinRule::Invite)
+}
+
+/// Whether a `restricted`/`knock_restricted` rule's allow list contains a
+/// condition this client can actually evaluate (#1166).
+///
+/// A `restricted` rule with no usable allow condition still classifies as
+/// `Restricted`, but the product must not imply that a membership route works:
+/// the tooltip then says an invitation is required. An allow-rule type this
+/// client does not model must never be reported as a confirmed empty set, which
+/// is what separates [`MatrixRestrictedConditions::UnknownAllowRule`] from
+/// [`MatrixRestrictedConditions::NoneUsable`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixRestrictedConditions {
+    /// At least one allow entry is a room-membership rule: a real route exists.
+    Usable,
+    /// Every allow entry is a rule type this client models, and none of them
+    /// admits joining without an invitation.
+    NoneUsable,
+    /// At least one entry uses a rule type this client does not model, so the
+    /// absence of a usable condition is not confirmed.
+    UnknownAllowRule,
+}
+
+/// The restricted-rule condition facts for a room (#1166). `None` when the
+/// room's rule is not restricted, so nothing is claimed about allow lists.
+pub fn matrix_room_restricted_conditions(
+    room: &matrix_sdk::Room,
+) -> Option<MatrixRestrictedConditions> {
+    use matrix_sdk::ruma::events::room::join_rules::{AllowRule, JoinRule};
+    let rule = room.join_rule();
+    let restricted = match rule.as_ref()? {
+        JoinRule::Restricted(restricted) | JoinRule::KnockRestricted(restricted) => restricted,
+        _ => return None,
+    };
+    let usable = restricted
+        .allow
+        .iter()
+        .any(|allow| matches!(allow, AllowRule::RoomMembership(_)));
+    if usable {
+        return Some(MatrixRestrictedConditions::Usable);
+    }
+    let unknown = restricted
+        .allow
+        .iter()
+        .any(|allow| !matches!(allow, AllowRule::RoomMembership(_)));
+    Some(if unknown {
+        MatrixRestrictedConditions::UnknownAllowRule
+    } else {
+        MatrixRestrictedConditions::NoneUsable
+    })
+}
+
+/// The rooms and Spaces a `restricted`/`knock_restricted` rule names as
+/// membership routes (#1166), in the order the event lists them and without
+/// duplicates. Empty when the rule is not restricted or names none.
+///
+/// Ids stay inside Rust state: the sidebar resolves them to display labels and
+/// only resolved names reach the renderer, so an inaccessible or unknown entry
+/// is never guessed at or exposed.
+pub fn matrix_room_restricted_allow_room_ids(room: &matrix_sdk::Room) -> Vec<String> {
+    use matrix_sdk::ruma::events::room::join_rules::{AllowRule, JoinRule};
+    let rule = room.join_rule();
+    let restricted = match rule.as_ref() {
+        Some(JoinRule::Restricted(restricted) | JoinRule::KnockRestricted(restricted)) => {
+            restricted
+        }
+        _ => return Vec::new(),
+    };
+    let mut ids: Vec<String> = Vec::new();
+    for allow in &restricted.allow {
+        if let AllowRule::RoomMembership(membership) = allow {
+            let id = membership.room_id.to_string();
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    ids
 }
 
 pub(super) fn matrix_room_join_rule(
@@ -2224,10 +2346,9 @@ async fn matrix_room_list_snapshot_from_rooms(
 
         // Sliding Sync server counts may be dummy zeros; the SDK evaluates
         // notifications and mentions locally, including encrypted events.
-        let notification_count = room.num_unread_notifications();
-        let highlight_count = room.num_unread_mentions();
         let is_marked_unread = room.is_marked_unread();
         let unread_messages = room.num_unread_messages();
+        let (notification_count, highlight_count) = effective_room_notification_counts(&room);
         // Keep raw unread messages separate from notification and manual-unread
         // projections. The state layer derives activity from all four fields;
         // a manual mark must not fabricate a Dock badge count.

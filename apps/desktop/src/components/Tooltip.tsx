@@ -1,13 +1,18 @@
 import {
+  type CSSProperties,
   type FocusEvent,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
+  useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState
 } from "react";
+
+import { FloatingLayer } from "./floatingLayer";
 
 type TooltipTriggerProps = {
   "aria-describedby"?: string;
@@ -25,10 +30,18 @@ type TooltipProps = {
   delayMs?: number;
 };
 
+/** Keeps the bubble away from the viewport edges. */
+const TOOLTIP_VIEWPORT_MARGIN_PX = 12;
+/** Distance between the trigger and the bubble. */
+const TOOLTIP_ANCHOR_GAP_PX = 8;
+
 export function Tooltip({ children, label, placement = "right", delayMs = 250 }: TooltipProps) {
   const tooltipId = useId();
   const [isOpen, setIsOpen] = useState(false);
   const openTimer = useRef<number | null>(null);
+  const hostRef = useRef<HTMLSpanElement>(null);
+  const bubbleRef = useRef<HTMLSpanElement>(null);
+  const [style, setStyle] = useState<CSSProperties>({ visibility: "hidden" });
 
   function clearOpenTimer() {
     if (openTimer.current !== null) {
@@ -79,6 +92,79 @@ export function Tooltip({ children, label, placement = "right", delayMs = 250 }:
     return () => document.removeEventListener("keydown", onDocumentKeyDown);
   }, [isOpen]);
 
+  // #1166: the bubble renders in the body-level floating layer, because sidebar
+  // and pane scrollports clip an in-row bubble (the same reason the read-receipt
+  // popup does). It is measured after mount, prefers the requested side, flips
+  // when that side cannot fit, and is clamped inside the viewport.
+  const positionBubble = useCallback(() => {
+    const host = hostRef.current;
+    const bubble = bubbleRef.current;
+    if (!host) {
+      return;
+    }
+    const anchor = host.getBoundingClientRect();
+    const size = bubble?.getBoundingClientRect();
+    const width = size?.width ?? 0;
+    const height = size?.height ?? 0;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const wantsRight = placement === "right";
+    let left = wantsRight
+      ? anchor.right + TOOLTIP_ANCHOR_GAP_PX
+      : anchor.left - TOOLTIP_ANCHOR_GAP_PX - width;
+    if (left + width > viewportWidth - TOOLTIP_VIEWPORT_MARGIN_PX) {
+      const flipped = anchor.left - TOOLTIP_ANCHOR_GAP_PX - width;
+      left = flipped >= TOOLTIP_VIEWPORT_MARGIN_PX
+        ? flipped
+        : Math.max(TOOLTIP_VIEWPORT_MARGIN_PX, viewportWidth - TOOLTIP_VIEWPORT_MARGIN_PX - width);
+    }
+    if (left < TOOLTIP_VIEWPORT_MARGIN_PX) {
+      left = TOOLTIP_VIEWPORT_MARGIN_PX;
+    }
+    const centered = anchor.top + anchor.height / 2 - height / 2;
+    const top = Math.min(
+      Math.max(centered, TOOLTIP_VIEWPORT_MARGIN_PX),
+      Math.max(
+        TOOLTIP_VIEWPORT_MARGIN_PX,
+        viewportHeight - TOOLTIP_VIEWPORT_MARGIN_PX - height
+      )
+    );
+    const next: CSSProperties = {
+      position: "fixed",
+      left: `${left}px`,
+      top: `${top}px`,
+      visibility: "visible"
+    };
+    // Identical geometry keeps the previous object, so a scroll frame that does
+    // not move the anchor cannot re-render in a loop.
+    setStyle((previous) =>
+      previous.left === next.left && previous.top === next.top ? previous : next
+    );
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      setStyle({ visibility: "hidden" });
+      return;
+    }
+    positionBubble();
+  }, [isOpen, label, placement, positionBubble]);
+
+  // A focused trigger can stay open while its pane scrolls or the window
+  // resizes, so the bubble follows the anchor instead of staying behind.
+  useEffect(() => {
+    if (!isOpen) {
+      return undefined;
+    }
+    const onMove = () => positionBubble();
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
+    return () => {
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
+    };
+  }, [isOpen, positionBubble]);
+
   const triggerProps: TooltipTriggerProps = {
     "aria-describedby": isOpen ? tooltipId : undefined,
     onBlur: close,
@@ -92,17 +178,23 @@ export function Tooltip({ children, label, placement = "right", delayMs = 250 }:
     onMouseLeave: close
   };
 
+  const bubble = (
+    <span
+      ref={bubbleRef}
+      className={`tooltip-bubble is-floating ${isOpen ? "is-open" : ""}`}
+      dir="auto"
+      id={tooltipId}
+      role="tooltip"
+      style={style}
+    >
+      {label}
+    </span>
+  );
+
   return (
-    <span className={`tooltip-host tooltip-host-${placement}`}>
+    <span className="tooltip-host tooltip-host-floating" ref={hostRef}>
       {children(triggerProps)}
-      <span
-        className={`tooltip-bubble ${isOpen ? "is-open" : ""}`}
-        dir="auto"
-        id={tooltipId}
-        role="tooltip"
-      >
-        {label}
-      </span>
+      {isOpen ? <FloatingLayer>{bubble}</FloatingLayer> : null}
     </span>
   );
 }

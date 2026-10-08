@@ -496,6 +496,300 @@ async fn explicit_empty_direct_map_overrides_cached_room_direct_targets() {
     assert_eq!(snapshot.rooms.len(), 1);
     assert!(!snapshot.rooms[0].is_dm);
 }
+/// #1176: a cold-start room list caches a single event per room, so the SDK's
+/// client-side counters are a lower bound while no own read receipt is anchored
+/// in the loaded timeline. The server counts that are already in hand must top
+/// the notification projection up.
+async fn mock_room_with_unread_state(
+    room_id: &matrix_sdk::ruma::RoomId,
+    receipts: matrix_sdk_base::read_receipts::ReadReceipts,
+    server_counts: matrix_sdk_base::sync::UnreadNotificationsCount,
+) -> (
+    matrix_sdk::test_utils::mocks::MatrixMockServer,
+    matrix_sdk::Room,
+) {
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room = server.sync_joined_room(&client, room_id).await;
+    room.update_room_info(|mut info| {
+        info.set_read_receipts(receipts);
+        info.update_notification_count(server_counts);
+        (
+            info,
+            matrix_sdk_base::RoomInfoNotableUpdateReasons::READ_RECEIPT,
+        )
+    })
+    .await;
+    (server, room)
+}
+
+async fn projected_single_room(room: matrix_sdk::Room) -> super::MatrixRoomListRoom {
+    super::room_list_snapshot_from_sdk_rooms(vec![room])
+        .await
+        .rooms
+        .into_iter()
+        .next()
+        .expect("one joined room must project into the room list")
+}
+
+fn read_receipts(
+    num_unread: u64,
+    num_notifications: u64,
+    num_mentions: u64,
+    latest_active: Option<&str>,
+) -> matrix_sdk_base::read_receipts::ReadReceipts {
+    matrix_sdk_base::read_receipts::ReadReceipts {
+        num_unread,
+        num_notifications,
+        num_mentions,
+        latest_active: latest_active.map(|event_id| {
+            matrix_sdk_base::read_receipts::LatestReadReceipt {
+                event_id: matrix_sdk::ruma::OwnedEventId::try_from(event_id)
+                    .expect("test receipt event id"),
+            }
+        }),
+        ..Default::default()
+    }
+}
+
+fn server_counts(
+    notification_count: u64,
+    highlight_count: u64,
+) -> matrix_sdk_base::sync::UnreadNotificationsCount {
+    matrix_sdk_base::sync::UnreadNotificationsCount {
+        notification_count,
+        highlight_count,
+    }
+}
+
+#[tokio::test]
+async fn cold_start_notification_lower_bound_is_topped_up_by_server_counts() {
+    use matrix_sdk::ruma::room_id;
+
+    let (_server, room) = mock_room_with_unread_state(
+        room_id!("!cold-unread:example.invalid"),
+        read_receipts(1, 1, 0, None),
+        server_counts(3, 0),
+    )
+    .await;
+
+    let projected = projected_single_room(room).await;
+    // The unread-message projection stays the SDK's own value: the server has no
+    // unread-message count (see `effective_room_notification_counts`).
+    assert_eq!(projected.unread_count, 1);
+    assert_eq!(projected.notification_count, 3);
+    assert_eq!(projected.highlight_count, 0);
+}
+
+#[tokio::test]
+async fn pending_receipts_do_not_top_up_an_anchored_client_count() {
+    use matrix_sdk::ruma::room_id;
+
+    // A pending receipt only means some receipt is still unmatched; the client
+    // counters are still counted from the newest boundary the SDK found, so the
+    // higher server count must not replace them.
+    let mut receipts = read_receipts(1, 0, 0, Some("$anchored:example.invalid"));
+    receipts
+        .pending
+        .push(matrix_sdk::ruma::OwnedEventId::try_from("$unmatched:example.invalid").unwrap());
+    let (_server, room) = mock_room_with_unread_state(
+        room_id!("!pending-receipt:example.invalid"),
+        receipts,
+        server_counts(2, 0),
+    )
+    .await;
+
+    let projected = projected_single_room(room).await;
+    assert_eq!(projected.unread_count, 1);
+    assert_eq!(projected.notification_count, 0);
+}
+
+#[tokio::test]
+async fn anchored_own_receipt_keeps_client_counts_over_higher_server_counts() {
+    use matrix_sdk::ruma::room_id;
+
+    // The server values are deliberately higher: an anchored client receipt must
+    // not be topped up at all, or a stale server count would inflate a room the
+    // client has already accounted for.
+    let (_server, room) = mock_room_with_unread_state(
+        room_id!("!anchored-receipt:example.invalid"),
+        read_receipts(3, 3, 1, Some("$anchored:example.invalid")),
+        server_counts(9, 9),
+    )
+    .await;
+
+    let projected = projected_single_room(room).await;
+    assert_eq!(projected.unread_count, 3);
+    assert_eq!(projected.notification_count, 3);
+    assert_eq!(projected.highlight_count, 1);
+}
+
+#[tokio::test]
+async fn client_counts_above_the_server_keep_the_client_values() {
+    use matrix_sdk::ruma::room_id;
+
+    let (_server, room) = mock_room_with_unread_state(
+        room_id!("!client-above-server:example.invalid"),
+        read_receipts(4, 4, 2, None),
+        server_counts(2, 1),
+    )
+    .await;
+
+    let projected = projected_single_room(room).await;
+    assert_eq!(projected.unread_count, 4);
+    assert_eq!(projected.notification_count, 4);
+    assert_eq!(projected.highlight_count, 2);
+}
+
+/// #1176 ordering: the server top-up runs before the read-marker suppression,
+/// so a stale positive server count cannot outlive a marker that covers the
+/// projected latest event.
+#[tokio::test]
+async fn stale_server_counts_still_lose_to_a_matching_read_marker() {
+    use matrix_sdk::ruma::{event_id, room_id, serde::Raw, user_id};
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    use matrix_sdk_test::{JoinedRoomBuilder, event_factory::EventFactory};
+
+    let room_id = room_id!("!stale-server-counts:example.invalid");
+    let sender = user_id!("@sender:example.invalid");
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    client
+        .event_cache()
+        .subscribe()
+        .expect("event cache subscription");
+    let room = server
+        .sync_room(&client, JoinedRoomBuilder::new(room_id))
+        .await;
+
+    let message = EventFactory::new()
+        .room(room_id)
+        .sender(sender)
+        .server_ts(42)
+        .text_msg("already read")
+        .event_id(event_id!("$read-msg:example.invalid"))
+        .into_raw_sync();
+    let fully_read: Raw<matrix_sdk::ruma::events::AnyRoomAccountDataEvent> = Raw::from_json(
+        serde_json::value::to_raw_value(&serde_json::json!({
+            "type": "m.fully_read",
+            "content": { "event_id": "$read-msg:example.invalid" }
+        }))
+        .expect("raw fully read marker"),
+    );
+    server
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(room_id)
+                .add_timeline_bulk(vec![message])
+                .add_account_data(fully_read),
+        )
+        .await;
+    // Wait for the fixture itself, so a broken marker/event setup fails as that,
+    // not as an unrelated count mismatch.
+    let mut projected_event_id = None;
+    for _ in 0..100 {
+        projected_event_id = super::matrix_room_latest_event_projection(&room)
+            .await
+            .0
+            .map(|latest| latest.event_id);
+        if projected_event_id.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        projected_event_id.as_deref(),
+        Some("$read-msg:example.invalid")
+    );
+    assert_eq!(
+        super::matrix_room_fully_read_event_id(&room)
+            .await
+            .as_deref(),
+        Some("$read-msg:example.invalid")
+    );
+
+    room.update_room_info(|mut info| {
+        info.set_read_receipts(read_receipts(1, 1, 0, None));
+        info.update_notification_count(server_counts(5, 0));
+        (
+            info,
+            matrix_sdk_base::RoomInfoNotableUpdateReasons::READ_RECEIPT,
+        )
+    })
+    .await;
+
+    let projected = projected_single_room(room).await;
+    assert_eq!(projected.unread_count, 0);
+    assert_eq!(projected.notification_count, 0);
+    assert_eq!(projected.highlight_count, 0);
+}
+
+#[tokio::test]
+async fn dummy_zero_server_counts_leave_client_counts_alone() {
+    use matrix_sdk::ruma::room_id;
+
+    let (_server, room) = mock_room_with_unread_state(
+        room_id!("!synapse-dummy-counts:example.invalid"),
+        read_receipts(2, 2, 1, None),
+        server_counts(0, 0),
+    )
+    .await;
+
+    let projected = projected_single_room(room).await;
+    assert_eq!(projected.unread_count, 2);
+    assert_eq!(projected.notification_count, 2);
+    assert_eq!(projected.highlight_count, 1);
+}
+
+#[tokio::test]
+async fn server_highlight_count_is_projected_when_client_accounting_is_incomplete() {
+    use matrix_sdk::ruma::room_id;
+
+    let (_server, room) = mock_room_with_unread_state(
+        room_id!("!server-highlight:example.invalid"),
+        read_receipts(0, 0, 0, None),
+        server_counts(0, 2),
+    )
+    .await;
+
+    let projected = projected_single_room(room).await;
+    assert_eq!(projected.unread_count, 0);
+    assert_eq!(projected.notification_count, 0);
+    assert_eq!(projected.highlight_count, 2);
+}
+
+#[test]
+fn room_list_room_from_counts_keeps_manual_unread_over_a_covered_marker() {
+    // The server fallback passes nonzero counts into the constructor; a manual
+    // mark must keep them instead of being zeroed by the marker suppression.
+    let room = matrix_room_list_room_from_counts(
+        "!room:example.invalid".to_owned(),
+        "Room".to_owned(),
+        None,
+        false,
+        Vec::new(),
+        MatrixRoomTags::default(),
+        5,
+        0,
+        5,
+        true,
+        None,
+        None,
+        Some(test_latest_event("$event:example.invalid")),
+        Some("$event:example.invalid".to_owned()),
+        None,
+        vec![],
+        false,
+        0,
+    );
+
+    assert_eq!(room.unread_count, 5);
+    assert_eq!(room.notification_count, 5);
+    assert!(room.marked_unread);
+}
+
 #[test]
 fn room_list_room_from_counts_carries_notification_metadata() {
     let room = matrix_room_list_room_from_counts(
@@ -766,4 +1060,139 @@ fn room_name_placeholder_maps_only_the_sdk_empty_room_names() {
     ] {
         assert_eq!(super::matrix_room_name_placeholder(&name), None);
     }
+}
+
+/// #1166: a restricted rule's allow list is classified without guessing.
+#[tokio::test]
+async fn restricted_rule_conditions_separate_usable_from_unknown_allow_rules() {
+    use matrix_sdk::ruma::{
+        events::room::join_rules::{AllowRule, JoinRule, Restricted},
+        room_id,
+    };
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    use matrix_sdk_test::{JoinedRoomBuilder, event_factory::EventFactory};
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let own = client.user_id().expect("own user").to_owned();
+    let factory = EventFactory::new();
+    // Each case syncs its own room: a handle sees later state events for the same
+    // room, so reusing one id would make the assertions read the wrong rule.
+    let synced = |room_id: &'static str, rule: JoinRule| {
+        let server = &server;
+        let client = &client;
+        let factory = &factory;
+        let own = &own;
+        async move {
+            let room_id = matrix_sdk::ruma::RoomId::parse(room_id).expect("room id");
+            server
+                .sync_room(
+                    client,
+                    JoinedRoomBuilder::new(&room_id)
+                        .add_state_event(factory.room_join_rules(rule).sender(own)),
+                )
+                .await;
+            client.get_room(&room_id).expect("joined room")
+        }
+    };
+
+    // A room-membership allow rule is a route this client can evaluate.
+    let usable = synced(
+        "!usable:example.invalid",
+        JoinRule::Restricted(Restricted::new(vec![AllowRule::room_membership(
+            room_id!("!allowed:example.invalid").to_owned(),
+        )])),
+    )
+    .await;
+    assert_eq!(
+        super::matrix_room_restricted_conditions(&usable),
+        Some(super::MatrixRestrictedConditions::Usable)
+    );
+
+    // An empty allow list is a confirmed absence of a usable condition.
+    let none_usable = synced(
+        "!none-usable:example.invalid",
+        JoinRule::Restricted(Restricted::new(Vec::new())),
+    )
+    .await;
+    assert_eq!(
+        super::matrix_room_restricted_conditions(&none_usable),
+        Some(super::MatrixRestrictedConditions::NoneUsable)
+    );
+
+    // An allow-rule type this client does not model must not be reported as a
+    // confirmed empty set.
+    let custom: AllowRule =
+        serde_json::from_value(serde_json::json!({ "type": "m.custom_allow_rule" }))
+            .expect("custom allow rule deserializes");
+    let unknown = synced(
+        "!unknown-allow:example.invalid",
+        JoinRule::Restricted(Restricted::new(vec![custom])),
+    )
+    .await;
+    assert_eq!(
+        super::matrix_room_restricted_conditions(&unknown),
+        Some(super::MatrixRestrictedConditions::UnknownAllowRule)
+    );
+
+    // A usable route wins even when unrecognized entries sit beside it, in
+    // either order: the membership route is what the user actually gets.
+    let custom_first: AllowRule =
+        serde_json::from_value(serde_json::json!({ "type": "m.custom_allow_rule" }))
+            .expect("custom allow rule deserializes");
+    let mixed_custom_first = synced(
+        "!mixed-first:example.invalid",
+        JoinRule::Restricted(Restricted::new(vec![
+            custom_first,
+            AllowRule::room_membership(room_id!("!allowed:example.invalid").to_owned()),
+        ])),
+    )
+    .await;
+    assert_eq!(
+        super::matrix_room_restricted_conditions(&mixed_custom_first),
+        Some(super::MatrixRestrictedConditions::Usable)
+    );
+
+    let custom_last: AllowRule =
+        serde_json::from_value(serde_json::json!({ "type": "m.custom_allow_rule" }))
+            .expect("custom allow rule deserializes");
+    let mixed_custom_last = synced(
+        "!mixed-last:example.invalid",
+        JoinRule::KnockRestricted(Restricted::new(vec![
+            AllowRule::room_membership(room_id!("!allowed:example.invalid").to_owned()),
+            custom_last,
+        ])),
+    )
+    .await;
+    assert_eq!(
+        super::matrix_room_restricted_conditions(&mixed_custom_last),
+        Some(super::MatrixRestrictedConditions::Usable)
+    );
+
+    // The named membership routes are reported without duplicates, and only for
+    // restricted rules (#1166).
+    assert_eq!(
+        super::matrix_room_restricted_allow_room_ids(&usable),
+        vec!["!allowed:example.invalid".to_owned()]
+    );
+    let duplicated = synced(
+        "!duplicated:example.invalid",
+        JoinRule::Restricted(Restricted::new(vec![
+            AllowRule::room_membership(room_id!("!allowed:example.invalid").to_owned()),
+            AllowRule::room_membership(room_id!("!allowed:example.invalid").to_owned()),
+        ])),
+    )
+    .await;
+    assert_eq!(
+        super::matrix_room_restricted_allow_room_ids(&duplicated),
+        vec!["!allowed:example.invalid".to_owned()],
+        "a repeated allow entry is listed once"
+    );
+    assert!(super::matrix_room_restricted_allow_room_ids(&none_usable).is_empty());
+    assert!(super::matrix_room_restricted_allow_room_ids(&unknown).is_empty());
+
+    // A non-restricted rule claims nothing about allow lists.
+    let public = synced("!public-rule:example.invalid", JoinRule::Public).await;
+    assert_eq!(super::matrix_room_restricted_conditions(&public), None);
+    assert!(super::matrix_room_restricted_allow_room_ids(&public).is_empty());
 }

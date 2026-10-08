@@ -54,9 +54,29 @@ impl super::AppActor {
         scheduled_sends: ScheduledSendStore,
     ) {
         let store = self.composer_draft_store_actor.clone();
-        let _ =
-            executor::spawn_blocking(move || store.save_scheduled_sends(&key_id, &scheduled_sends))
-                .await;
+        let save_key_id = key_id.clone();
+        let saved = executor::spawn_blocking(move || {
+            store.save_scheduled_sends(&save_key_id, &scheduled_sends)
+        })
+        .await;
+        if scheduled_send_session_key(&self.state).as_ref() != Some(&key_id) {
+            // The account changed while the write was in flight. This outcome
+            // belongs to a retired session and must not set or clear the
+            // replacement account's user-visible state (#1159).
+            return;
+        }
+        // #1159: acceptance is not durability. A dropped result left an
+        // unpersisted local reservation looking saved, so the outcome is now
+        // reduced into user-visible state. The store error and the account key
+        // are never surfaced (no identifiers, no paths).
+        let action = match saved {
+            Ok(Ok(())) => AppAction::ScheduledSendPersisted,
+            Err(_) | Ok(Err(_)) => AppAction::ScheduledSendPersistenceFailed {
+                message: "scheduled sends could not be saved on this device".to_owned(),
+            },
+        };
+        let effects = reduce(&mut self.state, action);
+        self.handle_ui_event_effects(&effects).await;
     }
 
     pub(super) fn scheduled_send_delay(&self) -> Option<Duration> {

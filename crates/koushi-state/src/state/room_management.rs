@@ -244,6 +244,38 @@ impl RoomJoinRule {
     }
 }
 
+/// Whether a `restricted`/`knock_restricted` rule has an allow condition this
+/// client can evaluate (#1166). Mirrors the SDK's classification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RestrictedConditions {
+    /// At least one allow entry is a room-membership rule: a real route exists.
+    Usable,
+    /// Every allow entry is a modelled rule type, and none admits joining
+    /// without an invitation.
+    NoneUsable,
+    /// An entry uses a rule type this client does not model, so an empty usable
+    /// set is not confirmed.
+    UnknownAllowRule,
+}
+
+/// One room's projected access condition (#1166).
+///
+/// The join rule is always present; the restricted-rule facts are only carried
+/// when the rule is `restricted`/`knock_restricted`, so a tooltip can explain
+/// that an invitation is required when no usable condition exists without
+/// claiming that about rules it never inspected.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomAccessCondition {
+    pub join_rule: RoomJoinRule,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restricted: Option<RestrictedConditions>,
+    /// Rooms and Spaces a restricted rule names as membership routes (#1166).
+    /// Rust resolves these to display labels before the renderer sees anything.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_room_ids: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RoomHistoryVisibility {
