@@ -66,7 +66,16 @@ export interface ComposerDraftLifecycleRegistry {
     submittedRevision: ComposerDraftRevision
   ): ComposerDraftRevision;
   beginOperation(scope: ComposerDraftScope): ComposerDraftOperationCapture;
-  settleOperation(capture: ComposerDraftOperationCapture): boolean;
+  /**
+   * Settle the operation. `releaseAcceptedRevision` gives back a speculative
+   * `reserveAcceptedRevision` advance when the send never consumed the draft
+   * (#1208), so an unchanged retry submits a revision Core admits. A newer
+   * local edit that depends on the reservation is never rolled back.
+   */
+  settleOperation(
+    capture: ComposerDraftOperationCapture,
+    options?: { releaseAcceptedRevision?: boolean }
+  ): boolean;
   settleOperationCompletion(
     capture: ComposerDraftOperationCapture,
     leaseId: string,
@@ -116,6 +125,7 @@ interface Entry {
       settled: Promise<void>;
       resolve: () => void;
       reservedAcceptedRevision: ComposerDraftRevision | null;
+      acceptedRevisionBase: ComposerDraftRevision | null;
     }
   >;
   lease: ComposerDraftLeaseSnapshot | null;
@@ -393,8 +403,13 @@ export function createComposerDraftLifecycleRegistry(
     ) {
       throw new ComposerDraftRendererRetiredError();
     }
+    const base =
+      compareComposerDraftRevisions(entry.revision, submittedRevision) >= 0
+        ? entry.revision
+        : submittedRevision;
     entry.revision = nextComposerDraftRevision(entry.revision, submittedRevision);
     pending.reservedAcceptedRevision = entry.revision;
+    pending.acceptedRevisionBase = base;
     reconcile(entry);
     return entry.revision;
   }
@@ -413,7 +428,8 @@ export function createComposerDraftLifecycleRegistry(
     entry.pendingOperations.set(operationId, {
       settled,
       resolve,
-      reservedAcceptedRevision: null
+      reservedAcceptedRevision: null,
+      acceptedRevisionBase: null
     });
     entry.lruSequence = null;
     return {
@@ -423,12 +439,24 @@ export function createComposerDraftLifecycleRegistry(
     };
   }
 
-  function settleOperation(capture: ComposerDraftOperationCapture): boolean {
+  function settleOperation(
+    capture: ComposerDraftOperationCapture,
+    options: { releaseAcceptedRevision?: boolean } = {}
+  ): boolean {
     const entry = lookup(capture.scope);
     const pending = entry?.pendingOperations.get(capture.operationId);
     if (!entry || !pending) return false;
     entry.pendingOperations.delete(capture.operationId);
     pending.resolve();
+    if (
+      options.releaseAcceptedRevision &&
+      pending.reservedAcceptedRevision !== null &&
+      pending.acceptedRevisionBase !== null &&
+      entry.revision === pending.reservedAcceptedRevision
+    ) {
+      // Nothing newer depends on the reservation, so hand back Core's revision.
+      entry.revision = pending.acceptedRevisionBase;
+    }
     const current = capture.rendererGeneration === rendererGeneration;
     reconcile(entry);
     return current;

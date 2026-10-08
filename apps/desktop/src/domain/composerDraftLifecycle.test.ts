@@ -228,6 +228,45 @@ describe("composer draft lifecycle registry", () => {
     });
   });
 
+  it("releases a rejected reservation so an unchanged retry submits the same revision", async () => {
+    const owner = account("release-rejected");
+    const scope = main(owner, "release-room");
+    const registry = createComposerDraftLifecycleRegistry(backendAt("1"));
+    const lease = await registry.activate(scope);
+    const capture = registry.beginOperation(scope);
+    expect(registry.reserveAcceptedRevision(capture, revision(1))).toBe("2");
+
+    // Core never accepted, so the operation settles as rejected. Without the
+    // release the local revision stays "2" and the unchanged retry is fenced
+    // off by Core, which still stores "1".
+    expect(
+      registry.settleOperation(capture, { releaseAcceptedRevision: true })
+    ).toBe(true);
+    expect(registry.snapshot(scope)).toMatchObject({ revision: "1" });
+
+    const retry = registry.beginOperation(scope);
+    expect(registry.reserveAcceptedRevision(retry, revision(1))).toBe("2");
+    expect(
+      registry.settleOperationCompletion(retry, lease.leaseId, revision(1))
+    ).toBe(true);
+    expect(registry.snapshot(scope)).toMatchObject({ revision: "2" });
+  });
+
+  it("keeps a rejected reservation that a newer local edit depends on", async () => {
+    const owner = account("release-newer");
+    const scope = main(owner, "release-newer-room");
+    const registry = createComposerDraftLifecycleRegistry(backendAt("1"));
+    await registry.activate(scope);
+    const capture = registry.beginOperation(scope);
+    expect(registry.reserveAcceptedRevision(capture, revision(1))).toBe("2");
+    expect(registry.nextDraft(scope)).toBe("3");
+
+    expect(
+      registry.settleOperation(capture, { releaseAcceptedRevision: true })
+    ).toBe(true);
+    expect(registry.snapshot(scope)).toMatchObject({ revision: "3" });
+  });
+
   it("clears only an overlay older than the Rust accepted-clear token", async () => {
     const owner = account("overlay-clear");
     const scope = main(owner, "overlay-room");

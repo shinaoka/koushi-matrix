@@ -1562,7 +1562,8 @@ describe("ContextualRightPanel", () => {
     expect(source).toContain("leaseId");
     expect(source).toContain("beginOperation(scope)");
     expect(source).toContain("reserveComposerAcceptedRevision(");
-    expect(source).toContain("settleOperation(capture)");
+    expect(source).toContain("settleOperation(capture, {");
+    expect(source).toContain("releaseAcceptedRevision");
     expect(source).not.toContain("composerDraftRevisionForTarget");
   });
 

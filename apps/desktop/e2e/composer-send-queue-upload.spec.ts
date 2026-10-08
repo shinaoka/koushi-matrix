@@ -1050,6 +1050,16 @@ for (const failure of ["rejected", "timeout"] as const) {
         page.evaluate(() => window.__harness.invocationsOf("send_text")[0]?.args.draftRevision)
       )
       .toBe("1");
+
+    // #1208: the failed reserving send must not leave the local revision ahead of
+    // Core, so the unchanged retry submits the revision Core still stores.
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect.poll(() => invocationCount(page, "send_text")).toBe(2);
+    await expect
+      .poll(async () =>
+        page.evaluate(() => window.__harness.invocationsOf("send_text")[1]?.args.draftRevision)
+      )
+      .toBe("1");
   });
 }
 
