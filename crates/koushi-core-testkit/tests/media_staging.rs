@@ -949,7 +949,21 @@ async fn lazy_native_decode_failure_settles_the_pair_instead_of_leaving_it_pendi
         retried.preparation,
         StagedUploadPreparation::Ready { .. }
     ));
+    assert!(
+        koushi_state::staged_uploads_are_sendable(std::slice::from_ref(&retried)),
+        "retry must leave the item sendable"
+    );
     assert_eq!(retried.caption, caption, "retry keeps the caption");
+    let retried_upload = runtime
+        .media_preparation()
+        .transition()
+        .await
+        .selected_upload(&target(), "heic")
+        .expect("retry keeps a selected upload");
+    assert_eq!(
+        retried_upload.bytes.len() as u64,
+        retried_upload.descriptor.byte_count
+    );
 }
 
 /// #1147: the original fallback after a lazy failure must not drop a caption the
@@ -1004,7 +1018,22 @@ async fn original_fallback_after_a_lazy_failure_keeps_the_caption() {
         original.preparation,
         StagedUploadPreparation::Ready { .. }
     ));
+    assert!(
+        koushi_state::staged_uploads_are_sendable(std::slice::from_ref(&original)),
+        "the original fallback must be sendable"
+    );
     assert_eq!(original.caption, caption, "the fallback keeps the caption");
+    let original_upload = runtime
+        .media_preparation()
+        .transition()
+        .await
+        .selected_upload(&target(), "heic")
+        .expect("the fallback keeps a selected upload");
+    assert_eq!(
+        original_upload.bytes,
+        heic_item("heic", 1).bytes,
+        "the original fallback uploads the exact source bytes"
+    );
 }
 
 /// #1147: a failure that arrives after the user moved to a cached pair is stale
@@ -1067,20 +1096,17 @@ async fn lazy_failure_superseded_by_a_cached_selection_is_not_published() {
         "a superseded failure must be rejected as stale"
     );
     let settled = connection.snapshot().timeline.staged_uploads[0].clone();
-    assert_eq!(
-        settled.preparation,
-        StagedUploadPreparation::Ready {
-            variants: match &settled.preparation {
-                StagedUploadPreparation::Ready { variants, .. } => variants.clone(),
-                _ => panic!("fixture precondition: ready"),
-            },
-            selected: cached,
-            pending: None,
-            generation: match &settled.preparation {
-                StagedUploadPreparation::Ready { generation, .. } => *generation,
-                _ => panic!("fixture precondition: ready"),
-            },
-        },
-        "the cached selection must survive the stale failure"
-    );
+    let StagedUploadPreparation::Ready {
+        selected: settled_selection,
+        pending,
+        ..
+    } = &settled.preparation
+    else {
+        panic!(
+            "the cached selection must survive the stale failure: {:?}",
+            settled.preparation
+        );
+    };
+    assert_eq!(*settled_selection, cached);
+    assert_eq!(*pending, None);
 }

@@ -464,6 +464,12 @@ impl MediaStagingService {
     /// success path uses is not enough here: the requested pair must still be the
     /// selected pending one, otherwise the state has already moved to a newer
     /// sendable selection and this failure is stale.
+    ///
+    /// Together with the per-target admission this method holds for its whole
+    /// body, the check is what makes the settlement race-free: the only producer
+    /// of `AppCommand::SelectStagedUploadOutput` is this service under that same
+    /// admission, so no selection can be applied between the validation below and
+    /// the publication.
     #[allow(clippy::too_many_arguments)]
     async fn publish_lazy_preparation_failure(
         &self,

@@ -30,6 +30,15 @@ License: Apache-2.0
 Copyright: Copyright The Matrix.org Foundation C.I.C.
 Notes: Vendored, statically linked into desktop release binaries. Fork changes are documented in `docs/upstream/matrix-rust-sdk-feedback.md`; modified source files carry either an inline `// Matrix desktop fork patch surface:` marker or a `// Modified for the Koushi desktop fork` notice after the upstream header. The upstream Apache-2.0 license text is included at `vendor/matrix-rust-sdk/LICENSE` and reproduced in release artifacts via `LICENSE-APACHE`.
 
+Project: heif-oxide HEIF test fixture
+Repository: https://github.com/marcusgrass/heif-oxide
+Upstream commit: published crate `heif-oxide` 0.1.0
+Source path: the package's generated HEVC still-image test fixture (`opaque.heic`)
+Local path: `crates/koushi-media/tests/fixtures/heif/opaque.heic`
+License: MIT (chosen from the package's MIT OR Apache-2.0 terms)
+Copyright: Copyright (c) 2026 Daniel Phillips
+Notes: Redistributed as a test asset. The upstream MIT copyright and permission notice is preserved verbatim at `crates/koushi-media/tests/fixtures/heif/LICENSE-MIT`; the fixture contains no user metadata. Referenced by the media preparation and staging tests.
+
 Project: Inter via Fontsource
 Repository: https://github.com/fontsource/font-files
 Upstream commit: package `@fontsource/inter@5.2.8`

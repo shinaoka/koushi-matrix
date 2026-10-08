@@ -48,7 +48,7 @@ export default defineConfig({
     {
       name: "webkit",
       use: { browserName: "webkit" },
-      testMatch: [/room-list-filter-native-clear\.spec\.ts$/]
+      testMatch: [/room-list-filter-native-clear\.spec\.ts$/, /upload-preview-heic\.spec\.ts$/]
     }
   ],
   webServer: {

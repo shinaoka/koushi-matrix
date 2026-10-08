@@ -561,4 +561,18 @@ fn heif_original_preview_renders_converted_bytes_while_upload_stays_exact() {
         registry.variant_preview_bytes(&target, "heif-preview", &converted_jpeg.variant_id),
         registry.variant_bytes(&target, "heif-preview", &converted_jpeg.variant_id)
     );
+
+    // The preview is a real image, not merely bytes that are not HEIC.
+    let decoded = image::load_from_memory(&preview).expect("preview decodes");
+    assert_eq!((decoded.width(), decoded.height()), (64, 64));
+
+    // And the selection the send path resolves still carries the exact source.
+    assert!(registry.select_variant(&target, "heif-preview", &original_keep.variant_id));
+    assert_eq!(
+        registry
+            .selected_upload(&target, "heif-preview")
+            .expect("Original+Keep is selected")
+            .bytes,
+        original_bytes
+    );
 }

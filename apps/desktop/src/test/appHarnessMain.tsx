@@ -942,11 +942,28 @@ function replaceStagedUploadsForTarget(
 /// Stands in for the converted bytes the Rust pipeline produces for an
 /// Original+Keep HEIC selection: the selection still uploads the exact HEIC
 /// payload, but the preview must be an image the WebView can render (#1147).
-const HEIC_ORIGINAL_PREVIEW_BYTES = [
+/// The production pipeline caches a JPEG, so the harness fabricates a real
+/// JPEG rather than an arbitrary renderable image.
+const HEIC_ORIGINAL_PREVIEW_FALLBACK_BYTES = [
   137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0,
   0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 31, 0,
   5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130
 ];
+
+function heicOriginalPreviewBytes(): number[] {
+  const canvas = document.createElement("canvas");
+  canvas.width = 2;
+  canvas.height = 2;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    // jsdom has no 2d context; the WebKit/Chromium lanes always do.
+    return HEIC_ORIGINAL_PREVIEW_FALLBACK_BYTES;
+  }
+  context.fillStyle = "#2d6fef";
+  context.fillRect(0, 0, 2, 2);
+  const encoded = canvas.toDataURL("image/jpeg", 0.9).split(",")[1] ?? "";
+  return Array.from(atob(encoded), (character) => character.charCodeAt(0));
+}
 
 function preparedHarnessItem(
   target: ComposerTarget,
@@ -995,7 +1012,7 @@ function preparedHarnessItem(
       preparedUploadKey(target, item.stagedId, variant.variant_id),
       originalKeep
         ? heicOriginal
-          ? [...HEIC_ORIGINAL_PREVIEW_BYTES]
+          ? heicOriginalPreviewBytes()
           : [...item.bytes]
         : item.bytes.slice(0, variant.byte_count)
     );
