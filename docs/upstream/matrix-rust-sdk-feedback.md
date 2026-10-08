@@ -83,6 +83,19 @@ or SDK boundary without logging private Matrix payloads.
 
 The [2026-09-14 thread unread evidence packet](2026-09-14-thread-unread-regressions.md) records exact historical revisions, separate reproduction cases, sanitized RED/GREEN results, and patch export instructions. It distinguishes fork test evidence from still-pending clean upstream verification.
 
+- Absent `unread_notifications` must not clear a room's counts (#1176, 2026-10-08,
+  local SDK topic `fix/1176-unread-count-updates`). MSC4186 and v3 sync responses
+  carry `unread_notifications` flattened with `#[serde(default)]`, so the pair is
+  empty when the server sent no count update, and ruma's `is_empty()` documents
+  exactly that meaning. Both response processors converted the empty pair with
+  `UnreadNotificationsCount::from`, which maps the missing fields to `0`, and then
+  replaced the room's stored counts, so one room response without those fields
+  silently cleared a room's unread badge (and, combined with the Koushi room-list
+  top-up, reverted the top-up to the client's cold-start lower bound). The
+  processors now keep the counts already known for the room when the pair is
+  empty. No SDK-level regression test was added: `matrix-sdk-test`'s sync builders
+  cannot express an empty pair, and the simplified-sliding-sync processor has no
+  mock seam; verified by source and by the Koushi projection tests instead.
 - Thread-related edit notification ownership (2026-09-14, local SDK topic
   `9aac22df2`) follows the receipt-boundary fix below. A read main message
   followed by a thread reply and a notifying edit of that reply reproduced
