@@ -1581,6 +1581,7 @@ pub fn run() {
             commands::app_updates::get_desktop_update_state,
             commands::app_updates::download_desktop_update,
             commands::app_updates::restart_to_install_desktop_update,
+            commands::app_updates::ignore_desktop_update,
             commands::diagnostics::get_diagnostic_snapshot,
             commands::diagnostics::observe_viewport_sync,
             commands::account_tabs::list_account_tabs,

@@ -65,6 +65,14 @@ describe("TauriDesktopApi", () => {
     expect(invoke).toHaveBeenCalledWith("check_for_desktop_update");
   });
 
+  test("ignores an exact desktop update version on request", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    await new TauriDesktopApi().ignoreDesktopUpdate("1.2.4");
+
+    expect(invoke).toHaveBeenCalledWith("ignore_desktop_update", { version: "1.2.4" });
+  });
+
   test("uses distinct state-only and state-plus-timeline resync commands", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 

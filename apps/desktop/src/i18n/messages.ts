@@ -801,6 +801,8 @@ export type MessageId =
   | "settings.updateAvailableTitle"
   | "settings.updateAvailableConfirm"
   | "settings.updateDownload"
+  | "settings.updateIgnore"
+  | "settings.updateIgnored"
   | "settings.updateDownloading"
   | "settings.updateReady"
   | "settings.updateRestart"
@@ -2601,6 +2603,9 @@ const en: Catalog = {
   "settings.updateAvailableTitle": "Update available",
   "settings.updateAvailableConfirm": "Download and install Koushi {version}?",
   "settings.updateDownload": "Download update",
+  "settings.updateIgnore": "Ignore this version",
+  "settings.updateIgnored":
+    "Automatic reminders are off for this version until Koushi restarts. You can still download it.",
   "settings.updateDownloading": "Downloading and verifying Koushi {version}…",
   "settings.updateReady": "Koushi {version} is ready to install.",
   "settings.updateRestart": "Restart to install",
@@ -4312,6 +4317,9 @@ const ja: Catalog = {
   "settings.updateAvailableTitle": "アップデートがあります",
   "settings.updateAvailableConfirm": "Koushi {version}をダウンロードしてインストールしますか？",
   "settings.updateDownload": "アップデートをダウンロード",
+  "settings.updateIgnore": "このバージョンを無視",
+  "settings.updateIgnored":
+    "Koushiを再起動するまで、このバージョンの自動通知はオフになります。ダウンロードは引き続き可能です。",
   "settings.updateDownloading": "Koushi {version}をダウンロードして検証しています…",
   "settings.updateReady": "Koushi {version}をインストールできます。",
   "settings.updateRestart": "再起動してインストール",

@@ -1333,6 +1333,7 @@ mock.setCommandResponse("get_desktop_update_state", () => ({ kind: "idle" }));
 mock.setCommandResponse("check_for_desktop_update", () => null);
 mock.setCommandResponse("download_desktop_update", () => null);
 mock.setCommandResponse("restart_to_install_desktop_update", () => null);
+mock.setCommandResponse("ignore_desktop_update", () => null);
 mock.setCommandResponse("subscribe_receipt_reader", ({
   source,
 }: {
