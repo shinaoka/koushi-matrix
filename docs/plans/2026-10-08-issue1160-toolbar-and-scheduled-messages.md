@@ -1,8 +1,8 @@
 # #1160: unified Home/Space toolbar and the scheduled-message right panel
 
-Status: design revision 3, after two independent pre-implementation reviews
-(GPT-6.1 Sol). No implementation started. Baseline `origin/main` `20c2cf61`
-(v0.20.0). Revisions 2 and 3 correct factual claims from review round 1 and fold
+Status: design revision 4, after three independent pre-implementation reviews
+(GPT-6.1 Sol), which found no outstanding blocker. No implementation started.
+Baseline `origin/main` `20c2cf61` (v0.20.0). Revisions 2 and 3 correct factual claims from review round 1 and fold
 in every remaining round-2 item; the section "What the reviews changed" records
 them.
 
@@ -45,16 +45,18 @@ main room pane keeps its current behavior.
   `send_at_ms`, `handle`, `is_dispatching`. Only the selected-room projection is
   exposed today (`items_for_room()` into `TimelinePaneState.scheduled_sends`,
   `reducer/directory.rs:207`).
-- The Space-membership facts available locally cover ONE Space: the selected
-  Space. `SpaceChildrenState` (`crates/koushi-state/src/state/space_children.rs`)
-  is filled for `state.navigation.active_space_id` only
-  (`reducer/navigation.rs:51`, `reducer/directory.rs:199`) from the SDK
-  `/hierarchy` projection, and the sidebar's Space scope is built from that
-  projection plus the DM-space relation (`crates/koushi-state/src/sidebar.rs`).
-  Another Space's children require an asynchronous `LoadSpaceChildren` request
-  (`crates/koushi-state/src/reducer/mod.rs:707`). The SDK request itself asks for
-  immediate children only (`vendor/matrix-rust-sdk` `spaces/room_list.rs` sets
-  `max_depth = 1`), so there is no local recursive membership to consume.
+- The sidebar's Space membership is a Rust projection with two lanes plus DMs
+  (`crates/koushi-state/src/sidebar.rs`): joined non-DM rooms come from the
+  selected `SpaceSummary.child_room_ids` resolved against `state.rooms`
+  (`sidebar.rs:326-336`), the not-joined lane comes from `SpaceChildrenState`
+  (`sidebar.rs:363-389`), and DMs are scoped by `RoomSummary.dm_space_ids`
+  (`sidebar.rs:391-401`). `SpaceSummary.child_room_ids` is projected from the
+  direct `m.space.child` edges (`crates/koushi-sdk/src/room_projection.rs:2326-2343,
+  3235-3267`) — the immediate children only, because the SDK request sets
+  `max_depth = 1` (`vendor/matrix-rust-sdk` `spaces/room_list.rs:281-282`), so
+  there is no local recursive membership to consume and none is claimed. The
+  sidebar can also fall back to every non-DM room when the active Space cannot
+  be resolved (`sidebar.rs:326-336`), which is a hazard for a captured scope.
 - The scoped-right-panel precedent is the thread list: `ThreadsListScope
   { Room, Home, Space }` (`crates/koushi-state/src/state/thread.rs:23`), state
   `AppState.threads_list` (`crates/koushi-state/src/state/mod.rs:386`),
@@ -133,10 +135,14 @@ Required, all part of this change:
   `scope_key()`/`from_scope_key()` because the projection is derived
   synchronously in the reducer with no asynchronous completion to correlate.
   `space_id` is the Space that was active when the panel opened.
-- `ScheduledSendsListState { Closed, Open { scope, items: Vec<ScheduledSendItem> } }`
+- `ScheduledSendsListState { Closed, Open { scope, capability, items: Vec<ScheduledSendItem> } }`
   as a new `AppState` field `scheduled_sends_list` plus a matching
-  `StateDeltaChangedSlices` entry. Reuse `ScheduledSendItem` as the entry type:
-  the renderer already has room summaries for the destination label.
+  `StateDeltaChangedSlices` entry. `capability` is derived from
+  `state.scheduled_sends.capability` and refreshed on a capability-only change,
+  because the renderer has no independent account-level capability today and the
+  room pane's capability comes from a selected room's timeline state that is not
+  refreshed when no room is selected. Reuse `ScheduledSendItem` as the entry
+  type: the renderer already has room summaries for the destination label.
 - One app command carrying the normal `RequestId`, turned into an open/close
   reducer action, routed from `crates/koushi-core/src/runtime.rs` the way the
   Threads commands are. No actor, no list correlation id, no pagination,
@@ -146,11 +152,18 @@ Required, all part of this change:
 - Derivation, single owner in Rust:
   - `Home`: every item of this account's store.
   - `Space { space_id }`: the items whose `room_id` is in the room set the
-    sidebar already computes for that Space from `SpaceChildrenState` and the
-    existing DM-space relation. Consume that projection; do not recompute
-    membership differently, do not traverse nested Spaces, and do not infer
-    membership from React state. Deduplicate by `scheduled_id` (the store is a
-    map, so a room reachable by several membership paths cannot double-count).
+    sidebar computes for that Space — its joined rooms from
+    `SpaceSummary.child_room_ids` resolved against `state.rooms`, plus the DMs the
+    DM-space relation assigns to it, i.e. the sidebar's `space_rooms ∪
+    global_dms` for that Space, including low-priority conversations and
+    independent of collapsed sections or a filter box. Consume that projection;
+    do not recompute membership differently, do not traverse nested Spaces, and
+    do not infer membership from React state. Filtering the backing map's values
+    already yields each reservation once; no separate deduplication pass.
+    A room that is only a child of a child Space is NOT part of the parent's
+    sidebar scope, and the panel must not claim it. If #1160 requires descendant
+    rooms regardless of what the sidebar shows, that is a separate scope decision
+    for the maintainer, not something this projection silently adds.
   - Recompute while open when `state.scheduled_sends` changes, so
     create/reschedule/cancel/dispatch are reflected without reopening. Add the
     change detection the new slice needs; note `state_delta.rs` currently does
@@ -167,11 +180,21 @@ Required, all part of this change:
     account owns its runtime and only the selected tab is visible; a backgrounded
     tab keeps its state;
   - panel replacement (opening Home Settings, Threads, Room Info, a thread or
-    another panel) closes it, and backgrounding a tab closes it through the
-    existing before-account-switch path while the previous bound API is still
-    selected (`App.tsx` `drainBeforeAccountSwitch` /
-    `onRegisterBeforeAccountSwitch`), not by relying on a React remount. Cover
-    the direct panel-mode setters as well as the shared transition helper.
+    another panel, through both the direct mode setters and the shared transition
+    helper) closes it, and backgrounding a tab closes ONLY the projection — never
+    the queue — through the existing before-account-switch path while the previous
+    bound API is still selected (`App.tsx` `drainBeforeAccountSwitch`,
+    `onRegisterBeforeAccountSwitch`), not by relying on a React remount. Returning
+    to that tab starts with the panel closed and clicking the clock derives a
+    fresh list from the preserved queue. If the runtime still reports `Open` while
+    a newly attached renderer starts closed, close the Rust projection before
+    treating the owner as attached rather than leaving two meanings of "open".
+  - scope guard on every refresh of an `Open` Space projection: the captured
+    Space must still exist and still be the active scope; otherwise close the
+    projection BEFORE deriving membership. Without this, an automatic Space
+    removal (`reducer/room.rs:281-299` clears `active_space_id`) or an automatic
+    room clear (`room.rs:301-350`) would silently broaden a captured Space list
+    to the sidebar's all-non-DM fallback.
   - session retirement and the two non-Ready transitions above close it.
 - Invalid or unknown `space_id`: reject the open (or close an already-open
   panel) rather than listing every room; the Threads reducer already checks its
@@ -223,16 +246,20 @@ inside `ScheduledSendsListState` or the reducer actions. Mirror list:
   timeline state, because the backing store can be installed without refreshing
   the timeline when no room is selected.
 - Toolbar: keep `workspace-header-actions`; add Scheduled messages (clock) beside
-  Threads and Settings in both Home and Space; move Activity/Explore/Invites from
-  the vertical rows into a left group in the same row (Home only); Members stays
+  Threads and Settings in the right group in both Home and Space; move
+  Activity/Explore/Invites from the vertical rows into the left context group of
+  the same row (Home only); Members is the Space's left context group and stays
   Space-only. Activity stops using `Clock3`; use an activity/feed icon so the
   clock means scheduled messages only.
 - Layout is measured, not assumed: Home holds six actions, Space holds four, and
   Members has automatic width with counts and padding
   (`styles.css` `workspace-*` rules). Reduce toolbar-local spacing/button size so
   the real groups fit `MIN_SIDEBAR_WIDTH = 260` in one row with the name
-  truncated, then prove it in the browser tier. No overflow menu unless that
-  measurement fails.
+  truncated, then prove it in the browser tier: one row, no sibling overlap, the
+  left context group at the logical start and the Threads–Scheduled–Info group at
+  the logical end with that intra-group order, the invite badge contained, and
+  nonzero invite and member counts including the child-only suffix and a
+  multi-digit count. No overflow menu unless that measurement fails.
 - Home Info/settings keeps opening the existing `spaceInfo` all-rooms summary;
   do not invent account settings for that button.
 - New product text goes into the message catalog for English and Japanese.
@@ -244,30 +271,44 @@ Rust (`koushi-state`, `koushi-protocol`, `koushi-core`):
 1. Home scope returns all account items across rooms and DMs, ordered by
    `send_at_ms` then `scheduled_id`.
 2. A Space scope returns exactly the items whose room the sidebar's membership
-   for that Space contains, excludes rooms outside it, and lists a room reachable
-   by several membership paths once.
+   for that Space contains (joined `child_room_ids` plus the assigned DMs),
+   excludes rooms outside it, and lists each reservation once. A synthetic
+   parent-Space → child-Space → room fixture must produce the same room set the
+   real sidebar shows for the parent, including the not-shown case, so the test
+   cannot pass from a pre-flattened fixture.
 3. The open list reflects create/reschedule/cancel/dispatch without reopen, and a
    membership-only change while open (DM reassignment, a removed child edge, a
-   duplicate path, and a cyclic/failed hierarchy load) updates it.
+   duplicate path, an automatic Space removal, and an automatic room clear)
+   updates or closes it per the scope guard.
 4. Queue load and a mutation in a room that is not the selected room reach the
    panel through emitted Core state deltas, not only through reducer field
-   assertions.
+   assertions, including a capability-only change.
 5. Opening outside a Ready session is rejected; invalid/unknown `space_id` is
-   rejected or closes the panel; sign-out/session retirement, `sync_failed_auth`
-   and unsupported revalidation all close it and leave no body-bearing list
-   behind; a duplicate close is a no-op; panel replacement closes it.
-6. Selecting another Space/Home/a room and a successful directory join close the
-   panel per the stated lifecycle, including the no-previous-room and
-   no-room-change cases; a closed panel exposes no items.
+   rejected or closes the panel; a duplicate close is a no-op. Sign-out/session
+   retirement, `sync_failed_auth` and unsupported revalidation must close it AND
+   the closed projection must reach the frontend through the delta → Tauri DTO →
+   renderer path so rendered bodies are removed, not merely asserted in the
+   reducer.
+6. Selecting another Space/Home/a room, room clearing, a same-room selection, and
+   a successful directory join close the panel per the stated lifecycle,
+   including the no-previous-room and no-room-change cases where the Threads
+   helpers are skipped; closure happens before the relevant early returns. Panel
+   replacement closes it through the real `App.tsx` handlers (direct mode setters
+   and the shared transition helper), and backgrounding then returning leaves the
+   list closed with the queue preserved.
 7. An entry with `thread_root_event_id` is marked as a thread reply; one without
    it is not.
 
 Mirrors and transport:
 
 8. `StateDeltaChangedSlices` entry, the five Tauri `dto.rs` touchpoints, the
-   schema bump 7 → 8, the `frontend_app_state` golden with a populated open list,
-   a closed state and an omitted slice, and the forwarded state-delta contract
-   fixture are updated; the normal (non-`UPDATE_*`) golden run passes.
+   schema bump 7 → 8, the forwarded state-delta contract fixture, and the
+   `frontend_app_state` golden are updated. The two contracts are asserted
+   separately, because a full snapshot carries mandatory UI fields while a
+   delta carries optional changed slices: a FULL snapshot test covers a populated
+   `Open` list and an explicit `Closed`; a FORWARDED DELTA test covers an `Open`
+   replacement, an explicit `Closed` replacement and the omission of the slice
+   when it did not change. The normal (non-`UPDATE_*`) golden run passes.
 9. Two accounts with distinct reservations and overlapping room ids: switching
    the account tab never shows the other account's items and never clears the
    other account's reservations; a delayed update from the previous tab cannot
@@ -299,7 +340,45 @@ command, exit status and captured failure, then the same check GREEN
 client comparison (Element Web/X) that `REPOSITORY_RULES.md` requires for a new
 shell interaction.
 
+## Upstream comparison (recorded before implementation)
+
+`REPOSITORY_RULES.md` requires inspecting the equivalent Element Web and Element X
+flow before designing new user-visible Matrix functionality.
+
+- **Scheduled messages.** Element Web exposes MSC4140 delayed events only as
+  client methods (`_unstable_sendDelayedEvent`, `_unstable_sendScheduledDelayedEvent`,
+  `_unstable_cancelScheduledDelayedEvent`, `_unstable_restartScheduledDelayedEvent`,
+  surfaced through `apps/web/src/stores/widgets/ElementWidgetDriver.ts`). There is
+  no scheduled-message list surface and no client API that enumerates an
+  account's delayed events. Element X Android and iOS have no scheduled-message
+  feature at all (their `scheduled` hits are WorkManager, `BGTaskScheduler` and
+  test clocks). **Intentional divergence:** Koushi owns a persisted local
+  reservation store, so it can enumerate and render them; consequently the list
+  can only show reservations this install created, which is what the existing
+  per-room list already does. This panel changes where that list is presented,
+  not where the data comes from, and it adds no Matrix API.
+- **Threads entry point.** Element Web renders the threads activity centre from
+  the `SpacePanel` (the rail area beside user settings,
+  `components/views/spaces/SpacePanel.tsx`), not from the room-list header.
+  Koushi already keeps Threads in the room-list header, and this change keeps that
+  divergence and adds the scheduled-messages button beside it. **Intentional
+  divergence**, recorded here: the header is Koushi's single place for
+  account- or Space-scoped list surfaces.
+- **Header layout.** Element Web's room-list header carries the room-list filter
+  and quick settings rather than a row of account-global actions; Activity,
+  Explore and Invites are not a header toolbar upstream. Koushi already models
+  them as Home-only entries in the sidebar, and this change keeps them Home-only
+  while moving them from vertical rows into the header row. **Intentional
+  divergence**, consistent with the existing desktop shell.
+
 ## Verification plan
+
+The list below is ITERATION verification while implementing. Before the PR the
+applicable repository-local landing gate is the feature-unified workspace suite,
+the full lint gate, the frontend tests and
+`qa:headless-local -- --server=both` (`docs/policies/engineering-rules.md`); a new
+headless QA scenario name must not be invented for this projection, so the
+landing gate uses the existing scenarios.
 
 Focused `cargo test -p koushi-state`, `-p koushi-protocol`, `-p koushi-core`
 (routing/admission), `cargo fmt --check`, clippy `-D warnings` for changed
@@ -319,6 +398,10 @@ not a pass, and no new headless QA scenario name is invented.
   timer, no capability copy outside the projected value.
 - No recursive Space traversal, graph service, membership cache or extra network
   load; consume the sidebar's membership.
+- No multi-state golden framework: keep the existing populated snapshot golden,
+  and assert delta omission in focused serialization tests.
+- No read-only variant of the panel: keep the existing account-bound
+  cancel/reschedule controls.
 - No sort/order abstraction; keep the existing comparator.
 - No overflow menu before the minimum-width measurement.
 - No new actor, polling, dependency or search/filter scaffolding.
@@ -328,6 +411,9 @@ not a pass, and no new headless QA scenario name is invented.
 1. Session-cleanup shape: one reducer-level "close when not Ready" invariant
    (recommended) versus adding the close to the two bypass transitions
    individually.
-2. Whether the panel keeps `ScheduledMessagesList`'s cancel/reschedule controls
-   (recommended: keep, reusing the existing account-bound commands) or is
-   read-only for the account/space scope.
+2. SCOPE DECISION for the maintainer: rooms that exist only below a child Space
+   are not in the parent Space's sidebar scope today (the SDK asks for immediate
+   children only). The panel matches the sidebar. If #1160 means those rooms must
+   appear under the parent regardless, say so before implementation, because it
+   needs either a recursive hierarchy load or a different membership source —
+   not a silent change in this projection.
