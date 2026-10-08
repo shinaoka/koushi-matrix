@@ -115,6 +115,8 @@ interface AppHarnessControl {
   resolveDeferredCommand(command: string, index: number, value: unknown): void;
   rejectDeferredCommand(command: string, index: number): void;
   setNextTextSendPendingBody(body: string): void;
+  /** Test-only: report `consumedDraft: true` for the next prepared send (#1204). */
+  setPreparedSendConsumesDraft(value: boolean): void;
   setSnapshot(snapshot: DesktopSnapshot): void;
   pushCoreEvent(event: CoreEventPayload): Promise<void>;
   pushDesktopMenu(action: string): Promise<void>;
@@ -2757,6 +2759,8 @@ mock.setCommandResponse("cancel_composer_reply", () => setCurrentSnapshot(readyS
 // send_reply / send_text return a correlated accepted response with the
 // Rust-shaped revision tombstone.
 let nextTextSendPendingBody: string | null = null;
+/// Test-only: makes the next prepared send report `consumedDraft: true` (#1204).
+let preparedSendConsumesDraftForTesting = false;
 for (const command of ["send_reply", "send_text"] as const) {
   mock.setCommandResponse(command, async ({
     accountHomeserver,
@@ -3666,7 +3670,42 @@ mock.setCommandResponse("send_prepared_uploads", ({
           }
         }
       : withoutUploads;
-  return setCurrentSnapshot(settled);
+  // #1130/#1204: Core owns whether a send consumed the draft; this fake reports the
+  // switch below — never a policy of its own. A consuming send is modelled as the
+  // Rust-shaped settlement it is: the composer draft is empty and the accepted clear
+  // token has advanced, so the renderer's fallback agrees with the cleared overlay.
+  const settledSnapshot =
+    preparedSendConsumesDraftForTesting && target.kind === "main"
+      ? {
+          ...settled,
+          state: {
+            ...settled.state,
+            ui: {
+              ...settled.state.ui,
+              timeline: {
+                ...settled.state.ui.timeline,
+                composer: {
+                  ...settled.state.ui.timeline.composer,
+                  draft: "",
+                  document: { version: 2 as const, inlines: [] },
+                  last_accepted_clear_revision:
+                    settled.state.ui.timeline.composer.draft_revision
+                }
+              }
+            }
+          }
+        }
+      : settled;
+  setCurrentSnapshot(settledSnapshot);
+  // Publish the settled snapshot through the harness's own state update (which bumps
+  // the generation the receipt must carry), so the renderer applies it through the
+  // real receipt reconciliation path.
+  harnessControl.pushStateUpdate();
+  return {
+    protocolVersion: 1,
+    publishedGeneration: currentSnapshot.state_generation ?? 0,
+    consumedDraft: preparedSendConsumesDraftForTesting
+  };
 });
 mock.setCommandResponse("update_staged_upload_caption", ({ target, stagedId, document }: {
   target: ComposerTarget;
@@ -3946,6 +3985,9 @@ const harnessControl: AppHarnessControl = {
   rejectDeferredCommand,
   setNextTextSendPendingBody: (body) => {
     nextTextSendPendingBody = body;
+  },
+  setPreparedSendConsumesDraft: (value) => {
+    preparedSendConsumesDraftForTesting = value;
   },
   setSnapshot: (snapshot) => {
     setCurrentSnapshot(snapshot);

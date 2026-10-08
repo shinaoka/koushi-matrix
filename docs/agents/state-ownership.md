@@ -1081,7 +1081,10 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   (`TimelinePaneState.staged_uploads[*].caption`). A single attachment staged into
   a target that had none is seeded once from the renderer's captured Composer
   document (#1194) and is edited like any other caption afterwards; no other
-  staging infers a caption. The staged-attachment send settles the composer draft
+  staging infers a caption. That caption is the one prepared send that consumes the
+  draft rather than settling it (#1204): a single attachment whose caption is still
+  the submitted text moves it into the message, so the composer is cleared. Any
+  other prepared send settles the composer draft
   revision without consuming its content (#1130): it dispatches only the staged
   items and their captions, so text typed before pasting an image survives the
   send while the revision, tombstones and accepted-send navigation stay exactly

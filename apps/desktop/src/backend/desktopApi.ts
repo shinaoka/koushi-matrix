@@ -16,6 +16,7 @@ import type {
   CreateRoomSettlement,
   ComposerDocument,
   ComposerDraftAcceptanceResponse,
+  PreparedUploadSendResponse,
   ComposerDraftRevision,
   ComposerKeyEvent,
   ComposerResolvedAction,
@@ -296,8 +297,9 @@ export interface DesktopApi {
     leaseId: string,
     rendererGeneration: string,
     target: ComposerTarget,
-    draftRevision: ComposerDraftRevision
-  ): Promise<CommandSettlement>;
+    draftRevision: ComposerDraftRevision,
+    draftDocument?: ComposerDocument
+  ): Promise<PreparedUploadSendResponse>;
   updateStagedUploadCaption(
     target: ComposerTarget,
     stagedId: string,

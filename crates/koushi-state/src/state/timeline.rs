@@ -196,6 +196,28 @@ impl fmt::Debug for StagedUploadItem {
 /// still recompressing (#500): the bytes that upload are the ones the UI shows.
 /// The empty list is vacuously sendable; callers reject an empty staging list
 /// separately when that matters.
+/// Whether a prepared-upload send moves the composer draft into the message (#1204).
+///
+/// True when the send submits exactly one attachment whose caption *is* the submitted
+/// draft document: that caption was seeded from the text, so the send carries it as the
+/// message caption and the composer must not keep a copy. Content identity is the
+/// policy — an edited caption, a newer draft, a whitespace-only document or any other
+/// item count leaves the draft alone (#1130).
+pub fn staged_upload_send_consumes_composer_draft(
+    items: &[StagedUploadItem],
+    draft_document: Option<&ComposerDocument>,
+) -> bool {
+    let [item] = items else {
+        return false;
+    };
+    let Some(draft_document) =
+        draft_document.filter(|document| !document.plain_body().trim().is_empty())
+    else {
+        return false;
+    };
+    item.caption.as_ref() == Some(draft_document)
+}
+
 pub fn staged_uploads_are_sendable(items: &[StagedUploadItem]) -> bool {
     items.iter().all(|item| {
         matches!(

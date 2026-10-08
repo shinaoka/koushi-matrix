@@ -24,6 +24,7 @@ import type {
   ComposerDocument,
   ComposerDraftRevision,
   ComposerDraftAcceptanceResponse,
+  PreparedUploadSendResponse,
   DirectoryQuery,
   MentionSurface,
   NavigationPreferenceUpdate,
@@ -681,16 +682,18 @@ export class TauriDesktopApi implements DesktopApi {
     leaseId: string,
     rendererGeneration: string,
     target: ComposerTarget,
-    draftRevision: ComposerDraftRevision
-  ): Promise<CommandSettlement> {
-    return this.invokeCommand<CommandSettlement>("send_prepared_uploads", {
+    draftRevision: ComposerDraftRevision,
+    draftDocument?: ComposerDocument
+  ): Promise<PreparedUploadSendResponse> {
+    return this.invokeCommand<PreparedUploadSendResponse>("send_prepared_uploads", {
       accountHomeserver: account.homeserver,
       accountUserId: account.userId,
       accountDeviceId: account.deviceId,
       leaseId,
       rendererGeneration,
       target,
-      draftRevision
+      draftRevision,
+      draftDocument
     });
   }
 
