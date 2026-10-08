@@ -2084,6 +2084,15 @@ test("resize and format are chosen independently before the send action", async 
   await expect.poll(() => invocationCount(page, "select_staged_upload_output")).toBe(
     selectionCountBeforeSend
   );
+  const probe3 = await page.evaluate(() => {
+    const harness = window.__harness as any;
+    return {
+      staged: harness.currentSnapshot().state.ui.timeline.staged_uploads.length,
+      sends: harness.invocationsOf("send_prepared_uploads").length,
+      lastArgs: harness.invocationsOf("send_prepared_uploads").at(-1)?.args
+    };
+  });
+  console.log("PROBE3", JSON.stringify(probe3));
   await expect(dialog).toHaveCount(0);
 });
 

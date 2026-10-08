@@ -2058,10 +2058,10 @@ export interface SubmissionResponse {
   settlement: CommandSettlement;
 }
 
-/** Result of a prepared-upload send (#1204). */
-export interface PreparedUploadSendResponse {
+/** Prepared-upload send settlement; the flag is the one case where Core consumed the
+ * composer draft into the message caption (#1204). */
+export interface PreparedUploadSendResponse extends CommandSettlement {
   consumedDraft: boolean;
-  settlement: CommandSettlement;
 }
 
 export interface ComposerDraftAcceptanceResponse {

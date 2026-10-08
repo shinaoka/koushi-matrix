@@ -1207,8 +1207,9 @@ pub async fn prepared_upload_preview(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PreparedUploadSendResponse {
-    pub consumed_draft: bool,
+    #[serde(flatten)]
     pub settlement: FrontendCommandSettlement,
+    pub consumed_draft: bool,
 }
 
 #[tauri::command]
@@ -1252,8 +1253,8 @@ pub async fn send_prepared_uploads(
     // attachment whose caption is the submitted text) and reports it, so the renderer
     // clears through its established overlay path without re-deciding the policy.
     Ok(PreparedUploadSendResponse {
-        consumed_draft: settled.consumed_draft,
         settlement: command_settlement(settled.generation),
+        consumed_draft: settled.consumed_draft,
     })
 }
 

@@ -3672,8 +3672,10 @@ mock.setCommandResponse("send_prepared_uploads", ({
       : withoutUploads;
   const next = setCurrentSnapshot(settled);
   // #1130/#1204: Core owns whether a send consumed the draft; this fake reports the
-  // switch below — never a policy of its own — so the browser lane can assert the
-  // renderer's clear from an explicit Rust-shaped fixture.
+  // switch below — never a policy of its own. The command response carries the flag,
+  // and the settled snapshot is published explicitly because this fake no longer
+  // returns a snapshot-shaped value that the harness normalizer would publish.
+  harnessControl.pushStateUpdate();
   return { consumedDraft: preparedSendConsumesDraftForTesting, settlement: next };
 });
 mock.setCommandResponse("update_staged_upload_caption", ({ target, stagedId, document }: {

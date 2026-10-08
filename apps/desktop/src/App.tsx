@@ -4540,7 +4540,7 @@ function AccountContent({
         draftRevision,
         capturedDraft
       );
-      await applyCommandReceipt(response.settlement);
+      await applyCommandReceipt(response);
       // Only Core's answer clears anything, and only through the established clear
       // path: dropping the overlay reference here would make that path early-return
       // and leave both the registry overlay and the mounted editor showing the text.
@@ -5356,7 +5356,7 @@ function AccountContent({
         draftRevision,
         capturedDraft
       );
-      await applyCommandReceipt(response.settlement);
+      await applyCommandReceipt(response);
       if (response.consumedDraft) {
         const hasNewerDraft =
           threadComposerOverlayRef.current?.revision !== null &&
