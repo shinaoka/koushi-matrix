@@ -1222,3 +1222,89 @@ async fn whitespace_only_composer_text_is_not_a_caption() {
         None
     );
 }
+
+/// #1194: the seed never overwrites what the user does while the seeded attachment
+/// is still preparing — an edit and an explicit clear both win.
+#[tokio::test]
+async fn caption_edits_while_preparing_win_over_the_seed() {
+    for explicit_clear in [false, true] {
+        let (runtime, mut connection, _stores) = ready_runtime().await;
+        let seeded = ComposerDocument::from_plain_text("holiday photo");
+        let edited = ComposerDocument::from_plain_text("caption while preparing");
+        let mut barrier = runtime
+            .media_staging()
+            .install_preparation_barrier_for_testing();
+        let service = runtime.media_staging().clone();
+        let mut staging_connection = runtime.attach();
+        let seeded_for_task = seeded.clone();
+        let task = tokio::spawn(async move {
+            service
+                .stage_upload_bytes_with_composer_document(
+                    &mut staging_connection,
+                    target(),
+                    vec![item("seeded", b"bytes")],
+                    Some(seeded_for_task),
+                )
+                .await
+        });
+        barrier.wait_started().await;
+        support::wait_for_state_event(&mut connection, |state| {
+            state.timeline.staged_uploads[0].caption.as_ref() == Some(&seeded)
+        })
+        .await;
+        let expected = if explicit_clear {
+            None
+        } else {
+            Some(edited.clone())
+        };
+        runtime
+            .inject_actions(vec![AppAction::UploadStagingCaptionChanged {
+                target: target(),
+                staged_id: "seeded".to_owned(),
+                caption: if explicit_clear {
+                    None
+                } else {
+                    Some(edited.clone())
+                },
+            }])
+            .await;
+        support::wait_for_state_event(&mut connection, |state| {
+            state.timeline.staged_uploads[0].caption == expected
+        })
+        .await;
+        barrier.release();
+        task.await.unwrap().expect("staging should settle");
+        assert_eq!(
+            connection.snapshot().timeline.staged_uploads[0].caption,
+            expected,
+            "explicit_clear={explicit_clear}"
+        );
+    }
+}
+
+/// #1194: the seed uses the same meaningful-caption criterion as the upload
+/// conversion, so a document whose only text comes from a mention still counts.
+#[tokio::test]
+async fn a_mention_only_composer_document_is_still_a_caption() {
+    let (runtime, mut connection, _stores) = ready_runtime().await;
+    let document = ComposerDocument::new(vec![ComposerInline::Mention {
+        target: koushi_state::MentionTarget::RoomMention {
+            display_label: "@room".to_owned(),
+        },
+        display_label: "@room".to_owned(),
+    }]);
+    runtime
+        .media_staging()
+        .stage_upload_bytes_with_composer_document(
+            &mut connection,
+            target(),
+            vec![item("mention", b"bytes")],
+            Some(document.clone()),
+        )
+        .await
+        .expect("staging should settle");
+    assert_eq!(
+        connection.snapshot().timeline.staged_uploads[0].caption,
+        Some(document)
+    );
+}

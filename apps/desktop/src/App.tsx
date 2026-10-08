@@ -1182,10 +1182,6 @@ function AccountContent({
   // rooms are `SpaceRailItem.leave_candidates` and Rust re-admits the choice.
   const [pendingSpaceLeave, setPendingSpaceLeave] = useState<{ spaceId: string } | null>(null);
   const [spaceLeaveInFlight, setSpaceLeaveInFlight] = useState(false);
-  const liveComposerDocumentRef = useRef<{
-    scope: ComposerDraftScope;
-    document: ComposerDocument;
-  } | null>(null);
   const mainComposerOverlayRef = useRef<{
     scope: ComposerDraftScope;
     document: ComposerDocument;
@@ -4831,29 +4827,33 @@ function AccountContent({
   }
 
   /**
-   * The document the mounted editor is showing for the active target.
+   * The document the mounted editor is showing for `target`, captured synchronously.
    *
    * #1194: staging needs the text the user is looking at, and the composer draft is
-   * persisted on a 350 ms debounce, so the Rust snapshot can lag it. Every composer
-   * change already reports its document here before that debounce is queued; Rust
-   * still decides whether it becomes an attachment's caption.
+   * persisted on a 350 ms debounce, so the hydrated snapshot can lag it. The
+   * existing scoped overlay is that text — an accepted send clears it, so a sent
+   * message can never become a later attachment's caption. When no overlay exists
+   * yet the hydrated document is the honest fallback.
    */
-  function rememberLiveComposerDocument(scope: ComposerDraftScope, document: ComposerDocument) {
-    liveComposerDocumentRef.current = { scope, document };
-  }
-
-  function liveComposerDocumentFor(target: ComposerTarget): ComposerDocument | undefined {
-    const live = liveComposerDocumentRef.current;
-    if (!live || live.scope.target.kind !== target.kind) return undefined;
-    if (live.scope.target.room_id !== target.room_id) return undefined;
-    if (
-      target.kind === "thread" &&
-      (live.scope.target.kind !== "thread" ||
-        live.scope.target.root_event_id !== target.root_event_id)
-    ) {
-      return undefined;
+  function capturedComposerDocument(target: ComposerTarget): ComposerDocument | undefined {
+    const account = currentComposerAccount;
+    if (!account) return undefined;
+    const scope = composerDraftScope(account, target);
+    const overlay =
+      target.kind === "main" ? mainComposerOverlayRef.current : threadComposerOverlayRef.current;
+    if (overlay && composerDraftScopesEqual(scope, overlay.scope)) {
+      return overlay.document;
     }
-    return live.document;
+    const timeline = snapshot?.state.ui.timeline;
+    if (target.kind === "main") {
+      return timeline?.room_id === target.room_id ? timeline.composer.document : undefined;
+    }
+    const thread = snapshot?.state.ui.thread;
+    return thread?.kind === "open" &&
+      thread.room_id === target.room_id &&
+      thread.root_event_id === target.root_event_id
+      ? thread.composer.document
+      : undefined;
   }
 
   function queueComposerDraftPersist(
@@ -4862,7 +4862,6 @@ function AccountContent({
     revision: ComposerDraftRevision
   ) {
     if (scope.target.kind !== "main") return;
-    rememberLiveComposerDocument(scope, document);
     cancelComposerDraftPersist(scope);
     const handle = window.setTimeout(() => {
       clearComposerDraftPersistTimer(scope);
@@ -4910,6 +4909,9 @@ function AccountContent({
       return;
     }
     const target: ComposerTarget = { kind: "main", room_id: roomId };
+    // Captured before reading the files, so a slow read cannot capture a newer
+    // composer state than the one the user attached from.
+    const capturedDraft = capturedComposerDocument(target);
     await stageAttachmentFiles(
       target,
       files,
@@ -4920,11 +4922,7 @@ function AccountContent({
         // can lag it by the composer's persist debounce. Rust owns the decision to
         // use it as a single attachment's caption.
         await settleCommand(
-          api.stageUploadBytes(
-            capturedTarget,
-            items,
-            liveComposerDocumentFor(capturedTarget) ?? composerDocument
-          )
+          api.stageUploadBytes(capturedTarget, items, capturedDraft)
         );
       }
     );
@@ -5269,6 +5267,7 @@ function AccountContent({
       return;
     }
     const target: ComposerTarget = { kind: "thread", room_id: roomId, root_event_id: rootEventId };
+    const capturedDraft = capturedComposerDocument(target);
     await stageAttachmentFiles(
       target,
       files,
@@ -5276,11 +5275,7 @@ function AccountContent({
       createStagedUploadId,
       async (capturedTarget, items) => {
         await settleCommand(
-          api.stageUploadBytes(
-            capturedTarget,
-            items,
-            liveComposerDocumentFor(capturedTarget) ?? thread.composer.document
-          )
+          api.stageUploadBytes(capturedTarget, items, capturedDraft)
         );
       }
     );
@@ -5620,7 +5615,6 @@ function AccountContent({
     revision: ComposerDraftRevision
   ) {
     if (scope.target.kind !== "thread") return;
-    rememberLiveComposerDocument(scope, document);
     const target = scope.target;
     cancelThreadComposerDraftPersist(scope);
     const handle = window.setTimeout(() => {
