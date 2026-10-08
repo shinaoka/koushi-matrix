@@ -1390,7 +1390,7 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
         // Counts and booleans only; the anchor id is never printed.
         let anchor_preloaded = initial_offline
             .iter()
-            .any(|item| timeline_item_event_id(item).as_deref() == Some(anchor.as_str()));
+            .any(|item| timeline_item_event_id(item) == Some(anchor.as_str()));
         eprintln!(
             "cache_restore room={room_idx} restored_items={} anchor_preloaded={anchor_preloaded}",
             initial_offline.len()
@@ -1515,7 +1515,7 @@ pub(super) async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), 
                 }
                 let mut found = false;
                 let _ = visit_timeline_diff_items(diffs, |item| {
-                    if timeline_item_event_id(item).as_deref() == Some(anchor.as_str()) {
+                    if timeline_item_event_id(item) == Some(anchor.as_str()) {
                         found = true;
                     }
                     Ok(())
