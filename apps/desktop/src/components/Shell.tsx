@@ -62,6 +62,7 @@ import {
   type PrimaryView,
   avatarInitial,
   elementAvatarColorIndex,
+  graphemeCount,
   roomListItemLabel,
   EMPTY_ROOM_TAGS
 } from "../app/uiShared";
@@ -463,6 +464,7 @@ export function WorkspaceRail({
             data-count={snapshot.sidebar.account_home.attention_count || undefined}
             type="button"
             aria-label={accountHomeLabel(snapshot.sidebar.account_home)}
+            aria-current={snapshot.sidebar.account_home.is_active ? "page" : undefined}
             onClick={() => onSelectSpace(null)}
           >
             <Home size={ICON_SIZE.rail} />
@@ -472,6 +474,12 @@ export function WorkspaceRail({
         <div className="workspace-list workspace-space-list">
           {snapshot.sidebar.space_rail.map((space) => {
             const localIcon = space.local_icon?.trim();
+            // #1217: an explicit local name is user text, so the generated tile
+            // renders the whole name. A Space with only a Matrix name keeps the
+            // Element/Compound single-grapheme fallback (#414).
+            const hasLocalName = Boolean(
+              snapshot.state.ui.navigation.space_local_presentations[space.space_id]?.name?.trim()
+            );
             const fallbackName = space.display_name.trim() || space.space_id || "?";
             // #1166: the rail item keeps the Space name and explains its access
             // condition, and a bounded overlay summarises it at the avatar.
@@ -500,6 +508,7 @@ export function WorkspaceRail({
                   draggable
                   type="button"
                   aria-label={fallbackName}
+                  aria-current={space.is_active ? "page" : undefined}
                   onClick={() => onSelectSpace(space.space_id)}
                   onDragStart={(event) => {
                     setDraggedSpaceId(space.space_id);
@@ -534,8 +543,8 @@ export function WorkspaceRail({
                     avatar={space.avatar}
                     className="workspace-button-avatar is-space"
                     colorSeed={space.space_id}
-                    fallback={localIcon || avatarInitial(fallbackName)}
-                    fallbackMode={localIcon ? "compactLabel" : "elementSpace"}
+                    fallback={localIcon || (hasLocalName ? fallbackName : avatarInitial(fallbackName))}
+                    fallbackMode={localIcon || hasLocalName ? "compactLabel" : "elementSpace"}
                     onRequestAvatarThumbnail={onRequestAvatarThumbnail}
                   />
                   {/* The overlay sits at the avatar's *upper* trailing corner: the
@@ -1559,7 +1568,7 @@ export function EntityAvatar({
   const fallbackStyle =
     fallbackMode === "compactLabel"
       ? ({
-          "--avatar-label-length": Math.max(fallback.length, 1)
+          "--avatar-label-length": Math.max(graphemeCount(fallback), 1)
         } as CSSProperties)
       : undefined;
   const elementColor =
