@@ -1268,6 +1268,7 @@ fn scheduled_send_scenario_runs_after_timeline_and_reports_private_tokens() {
             "scheduled_reschedule=ok",
             "scheduled_cancel=ok",
             "scheduled_fire=ok",
+            "scheduled_thread_reply=ok",
             "restore_cleanup=ok",
         ]
     );
