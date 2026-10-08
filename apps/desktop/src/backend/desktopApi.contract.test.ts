@@ -85,7 +85,8 @@ describe("DesktopApi command contract", () => {
         "cancelAddAccountTab",
         "listAccountTabs",
         "removeSignedOutAccountTab",
-        "selectAccountTab"
+        "selectAccountTab",
+        "ignoreDesktopUpdate"
       )
       .sort();
     expect(new Set(current).size).toBe(current.length);
