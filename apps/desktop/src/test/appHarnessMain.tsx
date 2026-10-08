@@ -2977,14 +2977,14 @@ mock.setCommandResponse(
 );
 mock.setCommandResponse(
   "send_thread_reply",
-  ({ accountHomeserver, accountUserId, accountDeviceId, submissionId, roomId, rootEventId, body, draftRevision }: {
+  ({ accountHomeserver, accountUserId, accountDeviceId, submissionId, roomId, rootEventId, document, draftRevision }: {
     accountHomeserver: string;
     accountUserId: string;
     accountDeviceId: string;
     submissionId: string;
     roomId: string;
     rootEventId: string;
-    body: string;
+    document: ComposerDocument;
     draftRevision: ComposerDraftRevision;
   }) => {
     if (!composerCommandAccountMatches({
@@ -3001,7 +3001,7 @@ mock.setCommandResponse(
       thread.root_event_id !== rootEventId ||
       !thread.composer ||
       thread.composer.pending_transaction_id ||
-      body.trim().length === 0
+      plainBodyFromDocument(document).trim().length === 0
     ) {
       return { submissionId, outcome: "rejected", snapshot: currentSnapshot };
     }
