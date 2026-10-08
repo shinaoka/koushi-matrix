@@ -276,7 +276,8 @@ export interface DesktopApi {
   ): Promise<ComposerDraftAcceptanceResponse>;
   stageUploadBytes(
     target: ComposerTarget,
-    items: StageUploadBytesRequestItem[]
+    items: StageUploadBytesRequestItem[],
+    composerDocument?: ComposerDocument
   ): Promise<CommandSettlement>;
   selectStagedUploadOutput(
     target: ComposerTarget,

@@ -845,9 +845,12 @@ impl CoreConnection {
         &mut self,
         target: koushi_state::ComposerTarget,
         items: Vec<crate::media_preparation::StageUploadBytesInput>,
+        composer_document: Option<koushi_state::ComposerDocument>,
     ) -> Result<u64, crate::media_staging::MediaStagingError> {
         let service = Arc::clone(&self.media_staging);
-        service.stage_upload_bytes(self, target, items).await
+        service
+            .stage_upload_bytes_with_composer_document(self, target, items, composer_document)
+            .await
     }
 
     /// Return the published generation after this operation settles.

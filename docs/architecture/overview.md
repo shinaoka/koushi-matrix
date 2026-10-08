@@ -1542,7 +1542,10 @@ tombstone when the accepted submission is still current. A prepared-upload
 (staged-attachment) send settles the same revision, LRU, and tombstone accounting
 without consuming the store entry, so text typed before pasting an attachment
 survives the send (#1130; state-machine.md and state-ownership.md describe the
-same contract).
+same contract). The matching seed goes the other way: a single attachment staged
+into a target that had none starts with the captured composer document as its
+caption (#1194), so text and file go out as one message without the user copying
+it by hand.
 If newer input was already persisted, acceptance preserves that content while
 rolling it forward to the advanced revision. Delayed pre-acceptance commands,
 responses, or projections therefore cannot restore sent content or erase the

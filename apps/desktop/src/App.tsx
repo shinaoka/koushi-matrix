@@ -4826,6 +4826,36 @@ function AccountContent({
     clearComposerDraftPersistTimer(scope);
   }
 
+  /**
+   * The document the mounted editor is showing for `target`, captured synchronously.
+   *
+   * #1194: staging needs the text the user is looking at, and the composer draft is
+   * persisted on a 350 ms debounce, so the hydrated snapshot can lag it. The
+   * existing scoped overlay is that text — an accepted send clears it, so a sent
+   * message can never become a later attachment's caption. When no overlay exists
+   * yet the hydrated document is the honest fallback.
+   */
+  function capturedComposerDocument(target: ComposerTarget): ComposerDocument | undefined {
+    const account = currentComposerAccount;
+    if (!account) return undefined;
+    const scope = composerDraftScope(account, target);
+    const overlay =
+      target.kind === "main" ? mainComposerOverlayRef.current : threadComposerOverlayRef.current;
+    if (overlay && composerDraftScopesEqual(scope, overlay.scope)) {
+      return overlay.document;
+    }
+    const timeline = snapshot?.state.ui.timeline;
+    if (target.kind === "main") {
+      return timeline?.room_id === target.room_id ? timeline.composer.document : undefined;
+    }
+    const thread = snapshot?.state.ui.thread;
+    return thread?.kind === "open" &&
+      thread.room_id === target.room_id &&
+      thread.root_event_id === target.root_event_id
+      ? thread.composer.document
+      : undefined;
+  }
+
   function queueComposerDraftPersist(
     scope: ComposerDraftScope,
     document: ComposerDocument,
@@ -4879,13 +4909,21 @@ function AccountContent({
       return;
     }
     const target: ComposerTarget = { kind: "main", room_id: roomId };
+    // Captured before reading the files, so a slow read cannot capture a newer
+    // composer state than the one the user attached from.
+    const capturedDraft = capturedComposerDocument(target);
     await stageAttachmentFiles(
       target,
       files,
       stagedUploads.length,
       createStagedUploadId,
       async (capturedTarget, items) => {
-        await settleCommand(api.stageUploadBytes(capturedTarget, items));
+        // #1194: the renderer holds the text the user is looking at; the snapshot
+        // can lag it by the composer's persist debounce. Rust owns the decision to
+        // use it as a single attachment's caption.
+        await settleCommand(
+          api.stageUploadBytes(capturedTarget, items, capturedDraft)
+        );
       }
     );
   }
@@ -5229,13 +5267,16 @@ function AccountContent({
       return;
     }
     const target: ComposerTarget = { kind: "thread", room_id: roomId, root_event_id: rootEventId };
+    const capturedDraft = capturedComposerDocument(target);
     await stageAttachmentFiles(
       target,
       files,
       thread.staged_uploads?.length ?? 0,
       createStagedUploadId,
       async (capturedTarget, items) => {
-        await settleCommand(api.stageUploadBytes(capturedTarget, items));
+        await settleCommand(
+          api.stageUploadBytes(capturedTarget, items, capturedDraft)
+        );
       }
     );
   }

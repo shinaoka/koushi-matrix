@@ -228,6 +228,23 @@ impl MediaStagingService {
         target: ComposerTarget,
         items: Vec<StageUploadBytesInput>,
     ) -> Result<u64, MediaStagingError> {
+        self.stage_upload_bytes_with_composer_document(connection, target, items, None)
+            .await
+    }
+
+    /// Stage a batch, taking the renderer's captured composer document so a single
+    /// new attachment can start with that text as its caption (#1194).
+    ///
+    /// The document is supplied by the caller rather than read from the snapshot:
+    /// the composer persists on a debounce, so the snapshot can lag the text the
+    /// user is looking at. The caption decision stays here.
+    pub async fn stage_upload_bytes_with_composer_document(
+        &self,
+        connection: &mut CoreConnection,
+        target: ComposerTarget,
+        items: Vec<StageUploadBytesInput>,
+        composer_document: Option<ComposerDocument>,
+    ) -> Result<u64, MediaStagingError> {
         let _admission = self.admit_target(&target).await;
         validate_batch(&items)?;
         let initial = connection.snapshot();
@@ -254,10 +271,29 @@ impl MediaStagingService {
             }
         }
 
+        // #1194: one new attachment staged into an empty target starts with the
+        // composer text as its caption, so the user does not have to copy it by
+        // hand. Seeded before the first publication: the preparation merge keeps
+        // whatever caption the state already holds, so a caption edited while
+        // preparation was blocked is never overwritten by this seed.
+        let caption_seed = (existing.is_empty() && items.len() == 1)
+            .then(|| {
+                composer_document
+                    .as_ref()
+                    .filter(|document| meaningful_caption_document(document))
+                    .cloned()
+            })
+            .flatten();
         let mut preparing_items = existing
             .iter()
             .cloned()
-            .chain(items.iter().map(|item| preparing_item(&target, item)))
+            .chain(items.iter().map(|item| {
+                let mut preparing = preparing_item(&target, item);
+                if let Some(document) = &caption_seed {
+                    preparing.caption = Some(document.clone());
+                }
+                preparing
+            }))
             .collect::<Vec<_>>();
         preparing_items.sort_by(|left, right| {
             left.position
@@ -1193,6 +1229,14 @@ fn timeline_key(
             },
         },
     }
+}
+
+/// Whether a composer document carries text worth using as an attachment caption.
+///
+/// The upload conversion drops whitespace-only bodies, so the caption seed uses
+/// the same criterion instead of "the document has inline nodes".
+fn meaningful_caption_document(document: &ComposerDocument) -> bool {
+    !document.plain_body().trim().is_empty()
 }
 
 fn media_caption_from_composer_document(

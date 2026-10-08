@@ -1706,6 +1706,62 @@ test("sending staged attachments never wipes the typed composer draft (#1130)", 
   await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0);
 });
 
+test("staging hands Core the draft the composer is showing (#1194)", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await composer.fill("Here is the error:");
+  await attachFile(page, {
+    name: "caption-fixture.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("browser-headless caption fixture")
+  });
+
+  // Core decides whether this becomes a caption; the renderer's only job is to hand
+  // it the document the mounted editor is showing, which can be younger than the
+  // composer's persist debounce.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("stage_upload_bytes").at(-1)?.args.composerDocument
+      )
+    )
+    .toMatchObject({ inlines: [{ kind: "text", text: "Here is the error:" }] });
+  await expect(page.getByText("caption-fixture.txt", { exact: true })).toBeVisible();
+  // #1130 still holds: staging never moves or clears the typed text.
+  await expect(composer).toHaveText("Here is the error:");
+  expect(await invocationCount(page, "send_prepared_uploads")).toBe(0);
+
+  // A sent message is not a draft: after the accepted text send clears the
+  // composer, a new attachment must carry no document at all.
+  await page.getByRole("button", { name: "Send attachments" }).click();
+  await expect.poll(() => invocationCount(page, "send_prepared_uploads")).toBe(1);
+  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0);
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await composer.fill("Second message");
+  await composer.press("Enter");
+  await expect.poll(() => invocationCount(page, "send_text")).toBe(1);
+  await expect(composer).toHaveText("");
+  await attachFile(page, {
+    name: "after-send-fixture.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("after send fixture")
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__harness
+          .invocationsOf("stage_upload_bytes")
+          .at(-1)?.args.composerDocument?.inlines?.some(
+            (inline: { kind: string; text?: string }) =>
+              inline.kind === "text" && (inline.text ?? "").trim().length > 0
+          )
+      )
+    )
+    .toBe(false);
+});
+
 test("attach button stages the file and keeps the typed main draft (#1144)", async ({ page }) => {
   await gotoReadyShell(page);
   await page.evaluate(() => window.__harness.clearInvocations());

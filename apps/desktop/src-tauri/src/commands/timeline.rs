@@ -1112,6 +1112,7 @@ pub async fn stage_upload_bytes(
     account_tab_id: Option<String>,
     target: koushi_state::ComposerTarget,
     items: Vec<StageUploadBytesInputItem>,
+    composer_document: Option<koushi_state::ComposerDocument>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
@@ -1129,7 +1130,7 @@ pub async fn stage_upload_bytes(
         .collect();
     let settled = account_connection(state.inner(), account_tab_id.as_deref())
         .await?
-        .stage_upload_bytes(target, items)
+        .stage_upload_bytes(target, items, composer_document)
         .await
         .map_err(|error| error.to_string())?;
     update_qa_window_title_from_state(&app, state.inner()).await;

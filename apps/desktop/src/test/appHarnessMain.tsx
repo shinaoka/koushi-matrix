@@ -3532,6 +3532,8 @@ mock.setCommandResponse("stage_upload_bytes", ({ target, items }: {
 }) => {
   const existing = stagedUploadsForTarget(currentSnapshot, target);
   if (existing === null) return currentSnapshot;
+  // Caption seeding is Core's decision (#1194); this fake only stages, so the
+  // harness never grows a second implementation of that policy.
   const next = replaceStagedUploadsForTarget(currentSnapshot, target, [
     ...existing,
     ...items.map((item) => preparedHarnessItem(target, item))

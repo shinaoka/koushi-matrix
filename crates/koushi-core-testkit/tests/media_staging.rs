@@ -85,7 +85,7 @@ async fn staging_publishes_preparing_then_ready_and_normalizes_mime() {
     let (_runtime, mut connection, _stores) = ready_runtime().await;
     let before = connection.versioned_snapshot();
     let snapshot = connection
-        .stage_upload_bytes(target(), vec![item("one", b"bytes")])
+        .stage_upload_bytes(target(), vec![item("one", b"bytes")], None)
         .await
         .expect("staging should settle");
     let snapshot_generation = snapshot;
@@ -252,7 +252,7 @@ async fn select_retry_original_and_compression_are_targeted_operations() {
     );
 
     let failed = connection
-        .stage_upload_bytes(target(), vec![item_at("failed", 2, b"")])
+        .stage_upload_bytes(target(), vec![item_at("failed", 2, b"")], None)
         .await;
     assert!(failed.is_ok());
     let retry = connection
@@ -311,7 +311,7 @@ async fn thread_target_isolated_from_main_target() {
         root_event_id: root_event_id.to_owned(),
     };
     let snapshot = connection
-        .stage_upload_bytes(thread, vec![item("thread-item", b"thread")])
+        .stage_upload_bytes(thread, vec![item("thread-item", b"thread")], None)
         .await
         .expect("thread staging should settle");
     let snapshot_generation = snapshot;
@@ -330,13 +330,17 @@ async fn positions_are_nonzero_unique_and_second_batches_settle_in_order() {
     let (runtime, mut connection, _stores) = ready_runtime().await;
     assert!(matches!(
         connection
-            .stage_upload_bytes(target(), vec![item_at("zero", 0, b"x")])
+            .stage_upload_bytes(target(), vec![item_at("zero", 0, b"x")], None)
             .await,
         Err(MediaStagingError::InvalidPosition)
     ));
     assert!(matches!(
         connection
-            .stage_upload_bytes(target(), vec![item_at("a", 1, b"a"), item_at("b", 1, b"b")])
+            .stage_upload_bytes(
+                target(),
+                vec![item_at("a", 1, b"a"), item_at("b", 1, b"b")],
+                None
+            )
             .await,
         Err(MediaStagingError::InvalidPosition)
     ));
@@ -350,6 +354,7 @@ async fn positions_are_nonzero_unique_and_second_batches_settle_in_order() {
         .stage_upload_bytes(
             target(),
             vec![item_at("two", 2, b"two"), item_at("three", 3, b"three")],
+            None,
         )
         .await
         .expect("second batch should settle");
@@ -1109,4 +1114,197 @@ async fn lazy_failure_superseded_by_a_cached_selection_is_not_published() {
     };
     assert_eq!(*settled_selection, cached);
     assert_eq!(*pending, None);
+}
+
+/// #1194: one attachment staged into an empty target starts with the composer's
+/// captured document as its caption, and the caption is visible while the
+/// attachment is still preparing.
+#[tokio::test]
+async fn single_attachment_takes_the_composer_document_as_its_caption() {
+    let (runtime, mut connection, _stores) = ready_runtime().await;
+    let document = ComposerDocument::from_plain_text("holiday photo");
+    let mut barrier = runtime
+        .media_staging()
+        .install_preparation_barrier_for_testing();
+    let service = runtime.media_staging().clone();
+    let mut staging_connection = runtime.attach();
+    let document_for_task = document.clone();
+    let task = tokio::spawn(async move {
+        service
+            .stage_upload_bytes_with_composer_document(
+                &mut staging_connection,
+                target(),
+                vec![item("seeded", b"bytes")],
+                Some(document_for_task),
+            )
+            .await
+    });
+    barrier.wait_started().await;
+    // The first publication already carries the caption, so the dialog shows it
+    // while preparation is still running.
+    support::wait_for_state_event(&mut connection, |state| {
+        state.timeline.staged_uploads[0].caption.as_ref() == Some(&document)
+    })
+    .await;
+    barrier.release();
+    task.await.unwrap().expect("staging should settle");
+    let staged = connection.snapshot().timeline.staged_uploads[0].clone();
+    assert_eq!(staged.caption, Some(document));
+}
+
+/// #1194: only one attachment staged into an empty target takes the draft. A batch
+/// of two, or a second attachment added later, never seeds a caption, and the first
+/// attachment keeps the one it already has.
+#[tokio::test]
+async fn only_a_single_new_attachment_takes_the_composer_document() {
+    let (runtime, mut connection, _stores) = ready_runtime().await;
+    let document = ComposerDocument::from_plain_text("holiday photo");
+    runtime
+        .media_staging()
+        .stage_upload_bytes_with_composer_document(
+            &mut connection,
+            target(),
+            vec![item("first", b"first bytes")],
+            Some(document.clone()),
+        )
+        .await
+        .expect("first attachment stages");
+    // A second attachment added later, with the same draft still in the composer.
+    runtime
+        .media_staging()
+        .stage_upload_bytes_with_composer_document(
+            &mut connection,
+            target(),
+            vec![item_at("second", 2, b"second bytes")],
+            Some(document.clone()),
+        )
+        .await
+        .expect("second attachment stages");
+    let staged = connection.snapshot().timeline.staged_uploads.clone();
+    assert_eq!(staged.len(), 2);
+    assert_eq!(staged[0].caption, Some(document.clone()));
+    assert_eq!(staged[1].caption, None, "a later attachment is not seeded");
+
+    // Two attachments in one batch are not seeded either.
+    let (batch_runtime, mut batch_connection, _stores) = ready_runtime().await;
+    batch_runtime
+        .media_staging()
+        .stage_upload_bytes_with_composer_document(
+            &mut batch_connection,
+            target(),
+            vec![item("a", b"a bytes"), item_at("b", 2, b"b bytes")],
+            Some(document),
+        )
+        .await
+        .expect("batch stages");
+    for item in batch_connection.snapshot().timeline.staged_uploads.iter() {
+        assert_eq!(item.caption, None, "a batch of two is not seeded");
+    }
+}
+
+/// #1194: a composer document without meaningful text is not a caption, matching
+/// what the upload conversion would drop anyway.
+#[tokio::test]
+async fn whitespace_only_composer_text_is_not_a_caption() {
+    let (runtime, mut connection, _stores) = ready_runtime().await;
+    runtime
+        .media_staging()
+        .stage_upload_bytes_with_composer_document(
+            &mut connection,
+            target(),
+            vec![item("blank", b"bytes")],
+            Some(ComposerDocument::from_plain_text("   ")),
+        )
+        .await
+        .expect("staging should settle");
+    assert_eq!(
+        connection.snapshot().timeline.staged_uploads[0].caption,
+        None
+    );
+}
+
+/// #1194: the seed never overwrites what the user does while the seeded attachment
+/// is still preparing — an edit and an explicit clear both win.
+#[tokio::test]
+async fn caption_edits_while_preparing_win_over_the_seed() {
+    for explicit_clear in [false, true] {
+        let (runtime, mut connection, _stores) = ready_runtime().await;
+        let seeded = ComposerDocument::from_plain_text("holiday photo");
+        let edited = ComposerDocument::from_plain_text("caption while preparing");
+        let mut barrier = runtime
+            .media_staging()
+            .install_preparation_barrier_for_testing();
+        let service = runtime.media_staging().clone();
+        let mut staging_connection = runtime.attach();
+        let seeded_for_task = seeded.clone();
+        let task = tokio::spawn(async move {
+            service
+                .stage_upload_bytes_with_composer_document(
+                    &mut staging_connection,
+                    target(),
+                    vec![item("seeded", b"bytes")],
+                    Some(seeded_for_task),
+                )
+                .await
+        });
+        barrier.wait_started().await;
+        support::wait_for_state_event(&mut connection, |state| {
+            state.timeline.staged_uploads[0].caption.as_ref() == Some(&seeded)
+        })
+        .await;
+        let expected = if explicit_clear {
+            None
+        } else {
+            Some(edited.clone())
+        };
+        runtime
+            .inject_actions(vec![AppAction::UploadStagingCaptionChanged {
+                target: target(),
+                staged_id: "seeded".to_owned(),
+                caption: if explicit_clear {
+                    None
+                } else {
+                    Some(edited.clone())
+                },
+            }])
+            .await;
+        support::wait_for_state_event(&mut connection, |state| {
+            state.timeline.staged_uploads[0].caption == expected
+        })
+        .await;
+        barrier.release();
+        task.await.unwrap().expect("staging should settle");
+        assert_eq!(
+            connection.snapshot().timeline.staged_uploads[0].caption,
+            expected,
+            "explicit_clear={explicit_clear}"
+        );
+    }
+}
+
+/// #1194: the seed uses the same meaningful-caption criterion as the upload
+/// conversion, so a document whose only text comes from a mention still counts.
+#[tokio::test]
+async fn a_mention_only_composer_document_is_still_a_caption() {
+    let (runtime, mut connection, _stores) = ready_runtime().await;
+    let document = ComposerDocument::new(vec![ComposerInline::Mention {
+        target: koushi_state::MentionTarget::RoomMention {
+            display_label: "@room".to_owned(),
+        },
+        display_label: "@room".to_owned(),
+    }]);
+    runtime
+        .media_staging()
+        .stage_upload_bytes_with_composer_document(
+            &mut connection,
+            target(),
+            vec![item("mention", b"bytes")],
+            Some(document.clone()),
+        )
+        .await
+        .expect("staging should settle");
+    assert_eq!(
+        connection.snapshot().timeline.staged_uploads[0].caption,
+        Some(document)
+    );
 }
