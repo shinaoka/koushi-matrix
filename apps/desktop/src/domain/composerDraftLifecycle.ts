@@ -66,7 +66,16 @@ export interface ComposerDraftLifecycleRegistry {
     submittedRevision: ComposerDraftRevision
   ): ComposerDraftRevision;
   beginOperation(scope: ComposerDraftScope): ComposerDraftOperationCapture;
-  settleOperation(capture: ComposerDraftOperationCapture): boolean;
+  /**
+   * Settle the operation. `releaseAcceptedRevision` gives back a speculative
+   * `reserveAcceptedRevision` advance when the send never consumed the draft
+   * (#1208), so an unchanged retry submits a revision Core admits. A newer
+   * local edit that depends on the reservation is never rolled back.
+   */
+  settleOperation(
+    capture: ComposerDraftOperationCapture,
+    options?: { releaseAcceptedRevision?: boolean }
+  ): boolean;
   settleOperationCompletion(
     capture: ComposerDraftOperationCapture,
     leaseId: string,
@@ -115,9 +124,18 @@ interface Entry {
     {
       settled: Promise<void>;
       resolve: () => void;
-      reservedAcceptedRevision: ComposerDraftRevision | null;
     }
   >;
+  /**
+   * Live speculative revisions, one per reserving operation (#1208). A settle
+   * either commits its entry (Core accepted) or releases it.
+   */
+  speculativeReservations: Map<number, ComposerDraftRevision>;
+  /**
+   * The highest revision that is not a live speculative advance: Core's
+   * authoritative revision, a settled revision, or a local edit.
+   */
+  reservedRevisionFloor: ComposerDraftRevision;
   lease: ComposerDraftLeaseSnapshot | null;
   activation: Promise<ComposerDraftLeaseSnapshot> | null;
   releasePending: boolean;
@@ -214,6 +232,8 @@ export function createComposerDraftLifecycleRegistry(
       active: false,
       debounce: null,
       pendingOperations: new Map(),
+      speculativeReservations: new Map(),
+      reservedRevisionFloor: COMPOSER_DRAFT_REVISION_ZERO,
       lease: null,
       activation: null,
       releasePending: false,
@@ -321,6 +341,7 @@ export function createComposerDraftLifecycleRegistry(
         throw new ComposerDraftRendererRetiredError();
       }
       entry.revision = lease.revision;
+      entry.reservedRevisionFloor = lease.revision;
       entry.lastAcceptedClearRevision = lease.lastAcceptedClearRevision;
       entry.hasAuthoritativeContent = lease.hasAuthoritativeContent;
       entry.lease = lease;
@@ -357,6 +378,11 @@ export function createComposerDraftLifecycleRegistry(
       entry.lastAcceptedClearRevision = lastAcceptedClearRevision;
     }
     entry.hasAuthoritativeContent = hasAuthoritativeContent;
+    if (
+      compareComposerDraftRevisions(revision, entry.reservedRevisionFloor) > 0
+    ) {
+      entry.reservedRevisionFloor = revision;
+    }
     const overlayCleared =
       entry.activeOverlay?.revision !== null &&
       entry.activeOverlay?.revision !== undefined &&
@@ -374,6 +400,7 @@ export function createComposerDraftLifecycleRegistry(
   function nextDraft(scope: ComposerDraftScope): ComposerDraftRevision {
     const entry = ensure(scope);
     entry.revision = nextComposerDraftRevision(entry.revision, entry.revision);
+    entry.reservedRevisionFloor = entry.revision;
     reconcile(entry);
     return entry.revision;
   }
@@ -394,7 +421,7 @@ export function createComposerDraftLifecycleRegistry(
       throw new ComposerDraftRendererRetiredError();
     }
     entry.revision = nextComposerDraftRevision(entry.revision, submittedRevision);
-    pending.reservedAcceptedRevision = entry.revision;
+    entry.speculativeReservations.set(capture.operationId, entry.revision);
     reconcile(entry);
     return entry.revision;
   }
@@ -412,8 +439,7 @@ export function createComposerDraftLifecycleRegistry(
     });
     entry.pendingOperations.set(operationId, {
       settled,
-      resolve,
-      reservedAcceptedRevision: null
+      resolve
     });
     entry.lruSequence = null;
     return {
@@ -423,13 +449,39 @@ export function createComposerDraftLifecycleRegistry(
     };
   }
 
-  function settleOperation(capture: ComposerDraftOperationCapture): boolean {
+  function settleOperation(
+    capture: ComposerDraftOperationCapture,
+    options: { releaseAcceptedRevision?: boolean } = {}
+  ): boolean {
     const entry = lookup(capture.scope);
     const pending = entry?.pendingOperations.get(capture.operationId);
     if (!entry || !pending) return false;
     entry.pendingOperations.delete(capture.operationId);
     pending.resolve();
     const current = capture.rendererGeneration === rendererGeneration;
+    const reservation = entry.speculativeReservations.get(capture.operationId);
+    if (reservation !== undefined) {
+      entry.speculativeReservations.delete(capture.operationId);
+      // A retired generation settles its bookkeeping but never mutates the
+      // replacement generation's revision.
+      if (current) {
+        if (options.releaseAcceptedRevision) {
+          // Nothing newer than the surviving reservations advances the revision,
+          // so fall back to the highest of the floor and the live reservations.
+          let fallback = entry.reservedRevisionFloor;
+          for (const live of entry.speculativeReservations.values()) {
+            if (compareComposerDraftRevisions(live, fallback) > 0) {
+              fallback = live;
+            }
+          }
+          entry.revision = fallback;
+        } else if (
+          compareComposerDraftRevisions(reservation, entry.reservedRevisionFloor) > 0
+        ) {
+          entry.reservedRevisionFloor = reservation;
+        }
+      }
+    }
     reconcile(entry);
     return current;
   }
@@ -440,10 +492,10 @@ export function createComposerDraftLifecycleRegistry(
     capturedRevision: ComposerDraftRevision
   ): boolean {
     const entry = lookup(capture.scope);
-    const pending = entry?.pendingOperations.get(capture.operationId);
+    const reserved = entry?.speculativeReservations.get(capture.operationId);
     const revisionMatchesCompletion =
       entry?.revision === capturedRevision ||
-      entry?.revision === pending?.reservedAcceptedRevision ||
+      entry?.revision === reserved ||
       (entry !== undefined &&
         compareComposerDraftRevisions(
           entry.lastAcceptedClearRevision,
@@ -526,6 +578,7 @@ export function createComposerDraftLifecycleRegistry(
     rendererGenerationActivation = null;
     for (const entry of entries()) {
       entry.active = false;
+      entry.speculativeReservations.clear();
       const lease = entry.lease;
       entry.lease = null;
       if (lease) {

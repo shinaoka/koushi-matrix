@@ -1050,6 +1050,16 @@ for (const failure of ["rejected", "timeout"] as const) {
         page.evaluate(() => window.__harness.invocationsOf("send_text")[0]?.args.draftRevision)
       )
       .toBe("1");
+
+    // #1208: the failed reserving send must not leave the local revision ahead of
+    // Core, so the unchanged retry submits the revision Core still stores.
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect.poll(() => invocationCount(page, "send_text")).toBe(2);
+    await expect
+      .poll(async () =>
+        page.evaluate(() => window.__harness.invocationsOf("send_text")[1]?.args.draftRevision)
+      )
+      .toBe("1");
   });
 }
 
@@ -1706,6 +1716,48 @@ test("sending staged attachments never wipes the typed composer draft (#1130)", 
   await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0, {
     timeout: 12000
   });
+});
+
+test("a successful prepared send keeps the advanced draft revision (#1208)", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+
+  await composer.fill("first staged draft");
+  await attachFile(page, {
+    name: "rev-first.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("first revision fixture")
+  });
+  await page.getByRole("button", { name: "Send attachments" }).click();
+  await expect.poll(() => invocationCount(page, "send_prepared_uploads")).toBe(1);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("send_prepared_uploads")[0]?.args.draftRevision
+      )
+    )
+    .toBe("1");
+
+  // Core settled that send without consuming the text, so the renderer stays on
+  // the settled revision; the next edit and send continue from it, not from "1".
+  await composer.fill("second staged draft");
+  await attachFile(page, {
+    name: "rev-second.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("second revision fixture")
+  });
+  await page.getByRole("button", { name: "Send attachments" }).click();
+  await expect.poll(() => invocationCount(page, "send_prepared_uploads")).toBe(2);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("send_prepared_uploads")[1]?.args.draftRevision
+      )
+    )
+    .toBe("3");
 });
 
 test("staging hands Core the draft the composer is showing (#1194)", async ({ page }) => {
