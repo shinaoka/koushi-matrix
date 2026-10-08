@@ -1,8 +1,10 @@
 # #1177 + #1220: room access and history — choice-and-detail editing and verified Space-member labels
 
-Status: design revision 1, awaiting an independent pre-implementation review. No
-implementation started. Baseline `origin/main` (after #1223) = `fbdb7211`.
-Worktree `/tmp/koushi-access`, branch `feat/1177-1220-room-access-editing`.
+Status: design revision 2. Revision 1 was reviewed by an independent GPT-6.1 Sol
+review (`docs/reviews/2026-10-09-issue1177-1220-design-review.md`) which returned
+three blockers and eleven other items; all are folded in below and the review
+record stays in the branch. No implementation started. Worktree
+`/tmp/koushi-access`, branch `feat/1177-1220-room-access-editing`.
 
 ## Scope
 
@@ -10,194 +12,300 @@ One deliverable: the same reusable choice-and-detail interface for join
 conditions and history visibility in **Create Room** and **Room Info**, owned by
 Rust, plus the people-facing access label that reports it.
 
-- #1177: "Members of selected Spaces" must be selectable and restorable with real
-  membership allow conditions; `private` must never be presented as the way to
-  let Space members join; the four history policies must be exposed through the
-  same interface; the combined outcome (who can join, who can read which
-  history, whether messages are encrypted, whether the room is listed) must be
-  visible; selection must be separate from commitment.
-- #1220: when a room's own `m.room.join_rules` is `restricted` or
-  `knock_restricted` and the sole verified usable allow target is a Space, the
-  room-list badge, the in-room header badge and the Room Info access summary say
-  **Space members can join** / **スペース参加者は参加可** with a full tooltip naming
-  the Space; otherwise they keep the generic **Conditions apply** / **参加条件有**.
-  Room Info must stop summarising `restricted`/`knock_restricted` as
-  `Private`/`非公開`. Unsupported or unknown allow data never becomes a specific
-  claim and never leaks a raw ID.
+- #1177: "Members of selected Spaces" selectable and restorable with real
+  membership allow conditions; `private` never presented as that route; the four
+  history policies through the same interface; the combined outcome visible;
+  selection separate from commitment.
+- #1220: the room-list badge, the in-room header badge and the Room Info access
+  summary say **Space members can join** only for the verified single-Space allow
+  route, and keep the generic **Conditions apply** otherwise; Room Info stops
+  summarising `restricted`/`knock_restricted` as `Private`; no invented names and
+  no leaked IDs.
 
-Non-goals: no change to who may edit what (the existing permission model), no new
-Matrix API beyond the SDK's existing join-rules/delayed-state calls, no
-redesign of the Space access section (#1166 shipped), no directory-publication
-feature work beyond disclosing the current value.
+Non-goals: no change to the permission model beyond reusing the existing facts
+correctly, no new SDK fork, no round-trip machinery for unmodelled condition
+types, no ordinary-room allow-target selection in the editor, no rededesign of
+the Space access section.
 
-## Verified current state
+## Verified current state (corrections from review round 1 included)
 
-- `RoomSettingsSnapshot` (`crates/koushi-state/src/state/room_management.rs:90`)
-  carries `join_rule: RoomJoinRule` and `history_visibility`, and
-  `RoomJoinRule::is_settable` (`:239`) admits only `Public | Invite | Knock |
-  Private`, because "the others need content the command does not carry (a
-  restricted allow list)".
-- `RoomSettingChange` (`:321`) has `JoinRule(RoomJoinRule)` and
-  `HistoryVisibility(..)` — neither can carry an allow list.
-- `RoomAccessCondition { allowed_room_ids: Vec<String>, .. }` exists
-  (`:276` region) and the sidebar projects its IDs to
-  `access_allowed_room_names` (`crates/koushi-state/src/sidebar.rs:648-660`) —
-  names only, no verified target type.
-- `RoomInfoPanel.tsx:419-440` edits the join rule with
-  `InlineChoicePropertyEditor<RoomJoinRule>` over
-  `SETTABLE_JOIN_RULES = ["public","invite","knock","private"]`
-  (`RoomInfoPanel.tsx:799-809`), appending the current rule when it is not
-  settable so the control never silently lands elsewhere, and `:442-470` edits
-  history visibility with a second `InlineChoicePropertyEditor` plus per-option
-  notes. Both are dropdown-style, not the required interface.
-- The create surface is `CreateEntityDialog` in
-  `apps/desktop/src/components/dialogs.tsx:239` with
-  `CreateRoomDialogOptions { aliasLocalpart, encrypted, invitedOnly, topic,
-  visibility: "private" | "public" }` (`:226`) and `CreateRoomRequest`
-  (`apps/desktop/src/App.tsx:426-443`): Core derives the join rule and history
-  from `visibility` + `invitedOnly` + `parentSpace`, so creation currently cannot
-  express either a membership allow list or an explicit history policy.
-- `SpaceAccessSection.tsx` already renders Space join rules including
-  `restricted` (`accessModeMessage`, `:222-260`) — the vocabulary exists, the
-  room-side editor does not.
+- `RoomSettingsSnapshot` (`crates/koushi-state/src/state/room_management.rs`)
+  carries `join_rule`, `history_visibility` and `permissions` only; no directory
+  visibility, no allow-condition detail.
+- `RoomJoinRule::is_settable` admits `Public | Invite | Knock | Private`; the
+  settable-rule restriction is also canon
+  (`docs/architecture/state-machine.md:3758-3763`) and must be amended here.
+- `RoomSettingChange::JoinRule(RoomJoinRule)` cannot carry an allow list.
+- The restricted-condition projection loses information:
+  `matrix_room_restricted_conditions`, `matrix_room_restricted_allow_room_ids`
+  and `RoomAccessCondition` return/keep only the membership entries and report
+  `Usable` as soon as one membership entry exists, so "one Space membership" and
+  "that membership plus an unsupported condition" project identically. The badge
+  and the editor both depend on that distinction.
+- Target type and target name are different facts, and the current name path is
+  weak: a missing cached display name falls back to the room ID, and that fallback
+  is carried into `access_allowed_room_names`. `is_space`/`room_type` /
+  `create_content` availability are the authoritative signals
+  (`vendor/matrix-rust-sdk/crates/matrix-sdk-base/src/room/mod.rs`); a `None`
+  room type is not positive proof of an ordinary room.
+- The production join-rule write is an ordinary
+  `privacy_settings().update_join_rule(JoinRule)` state event
+  (`crates/koushi-sdk/src/room_operations.rs`), which already accepts full
+  restricted content.
+- Creation **already** sends a real membership allow condition for a standard
+  private room in a Space (`crates/koushi-sdk/src/room_operations.rs`, the create
+  preset path, room version V9). What creation cannot express is an
+  *independently selected* policy and allow list; `visibility`, `invitedOnly` and
+  `parentSpace` are the only inputs today
+  (`apps/desktop/src/App.tsx` `createRoomRequestFromDraft`,
+  `crates/koushi-protocol/src/command/room.rs`,
+  `crates/koushi-core/src/room/operations.rs`), and the concrete presets are
+  derived in the SDK adapter, not in Core.
+- The in-room header is `apps/desktop/src/components/panes.tsx`
+  (`sidebarRoomAccess`, header badges and tooltips). Both the header and the row
+  tooltip special-case the existing generic label ID; changing the label without
+  those branches loses the Space name from the tooltip. Room Info has its own
+  binary Public/Private implementation, no access tooltip, and suppresses access
+  summaries for DMs. `knockRestricted` currently carries two routes — conditions
+  and request — and the new label must replace only the membership-route badge,
+  keeping "Can request".
+- Permissions: `can_edit_settings` is a conjunction over name/topic/avatar/join
+  rules/history, while `can_change_join_rule` is event-specific and is what
+  `RoomPermissionFacts::allows_setting_change` uses for join rules. Room Info
+  currently gates the join rule on the aggregate flag, so an account allowed to
+  change join rules but not to rename the room is blocked by the renderer
+  although Core would authorize the command. `SpaceAccessSection.tsx` already
+  uses the correct flag.
+- Live coherence today: `RoomAccessUpdated` updates only the access map,
+  successful setting changes update only `room_management.settings`, and the
+  open-settings reconciliation searches Spaces only and compares only the
+  join-rule enum — so an ordinary room's settings, and a change from
+  `restricted(A)` to `restricted(B)`, are not reconciled.
+- Directory publication is not projected anywhere; the SDK exposes
+  `get_room_visibility` (`vendor/matrix-rust-sdk/.../room/privacy_settings.rs`).
 
-## Upstream comparison (recorded before implementation)
+## Upstream comparison (corrected)
 
-- **Element Web** room settings expose the two policies as separate groups in the
-  Security tab: **Access** (join rule) and **Who can read history?**, each a
-  select, with a playwright spec that deliberately exercises differing
-  permissions between them (`apps/web/playwright/e2e/settings/room-settings/room-security-tab.spec.ts`).
-  `restricted` is offered as "Space members". There is no combined-outcome
-  preview and no allow-list editor beyond the parent-Space option.
-- **Element X Android** has no restricted join-rule editing surface.
-- **Intentional divergence:** #1177 explicitly replaces the plain-dropdown design
-  for these two policies with a visible choice list plus a details panel, and
-  adds the combined outcome. We keep Element's permission separation (each policy
-  stays independently editable per the existing permission facts) and keep the
-  option vocabulary aligned with Element's labels.
+`REPOSITORY_RULES.md` requires Element Web **and** Element X Android/iOS.
+
+- **Element X Android** has restricted-policy editing:
+  `features/securityandprivacy/impl/.../SecurityAndPrivacyView.kt` (Space-member
+  and combined request/member choices) with `SecurityAndPrivacyPresenter.kt`
+  (authorised-Space selection, mapping to `JoinRule.Restricted` /
+  `KnockRestricted` with membership conditions), and creation supports the same
+  variants (`features/createroom/.../ConfigureRoomPresenter.kt`, `JoinRuleItem.kt`).
+- **Element X iOS** has the same flow:
+  `SecurityAndPrivacyScreenViewModel.swift` (authorised-Space selection, existing
+  non-parent targets, restricted and knock-restricted write shapes) and
+  `View/SecurityAndPrivacyScreen.swift` (visible choices with descriptions).
+- **Element Web** exposes the two policies as separate groups in the room
+  security tab — **Access** (join rule) and **Who can read history?** — each a
+  select, with a playwright spec that exercises differing permissions between
+  them. (Revision 1 claimed there is no allow-list editor upstream; that claim is
+  not evidenced and is withdrawn.)
+- **Intentional divergences**, recorded: (a) per-property Save with a draft
+  preview versus the mobile screens' screen-level Save; (b) four distinct history
+  values versus the mobile fold of joined/invited; (c) directory publication
+  preserved and disclosed rather than adjusted on save as Android does; (d)
+  stricter verified target-type and unsupported-condition handling than the
+  mobile mappings, which filter to membership entries.
 
 ## Rust-owned contract
 
-Rust owns effective access policy, validation, membership allow conditions and
-the typed outcome model; React owns the uncommitted selection and rendering.
+Rust owns effective policy, validation, allow conditions, the outcome vocabulary
+and every authoritative fact; React owns the uncommitted selection and rendering.
 
-1. **Allow-target classification.** Project each allow target of a room's own
-   join rule as `AllowTarget { room_id, kind: AllowTargetKind, display_name:
-   Option<String> }` with `AllowTargetKind { Space, Room, Unknown }`. `kind` comes
-   from authoritative room type/ID information (the local room cache's
-   `m.room.create` type through the SDK), never from a name, the parent Space,
-   the viewer's membership, or a Space's own invite-only setting. Do not leak
-   `room_id` to the renderer when the name is unavailable: use `Unknown` and the
-   generic copy.
-2. **Settable restricted rules.** Extend the join-rule change to carry the allow
-   list, e.g. `RoomSettingChange::JoinRule { rule: RoomJoinRule, allowed_space_ids:
-   Vec<String> }`, and make a restricted rule settable only when the change
-   carries conditions. `private` stays a reserved Matrix value and is never
-   offered as the Space-membership route. `Unknown` is displayed, never sent back.
-3. **Creation.** Extend `CreateRoomRequest` / `CreateRoomDialogOptions` with an
-   explicit history visibility and an optional membership allow list. Rust
-   validates the referenced Spaces and the caller's permission, and derives the
-   existing defaults when nothing is supplied (standalone private/public →
-   `shared`; private room in a Space → `invited`) so current callers keep working.
-   Attachment to a Space never silently becomes the allow list: the parent Space
-   must be shown in the choice and explicitly included.
-4. **Typed outcome.** Project `RoomAccessOutcome { who_can_join, who_can_read_history,
-   encrypted, published_in_directory }` using message-catalog IDs plus
-   substitutions, so React renders the combined result instead of deriving it.
-   `who_can_join` reuses #1166/#1220 vocabulary: generic when multiple targets,
-   unknown types, no usable condition or unresolved type; specific only for the
-   verified single-Space case.
-5. **Unsupported conditions are preserved.** A rule with condition types this
-   client does not model stays visible as such, is never silently broadened, and
-   an edit either round-trips them or is rejected with a typed failure.
-6. **Live updates.** The room list, the timeline header and Room Info derive from
-   the same projection and update together when the join rule changes (including a
-   change made by another client), independent of the currently selected Space.
+1. **Allow-condition completeness.** Retain, from the room's own join-rule
+   content, an independent fact distinguishing confirmed-empty, membership-only,
+   membership-plus-unsupported, and unsupported-only. The editor offers the
+   membership editor only for the membership-only case; a mixed or
+   unsupported-only rule is shown as such and an edit that would rewrite it is
+   rejected with a typed failure and **no state-event write**. No round-trip
+   machinery for unmodelled condition types.
+2. **Target classification and naming, kept separate.**
+   `AllowTarget { kind, display_name }` where `kind` is verified from the local
+   room's create event (`Space`, `Room`, `Unknown` where the create event is
+   unavailable or redacted), and `display_name` is optional and only populated
+   from a name that is safe to show (never a room ID). Count all distinct targets
+   **before** dropping unnamed ones, and keep unnamed identities inside Rust when
+   rejecting or preserving an edit.
+3. **One pure outcome resolver.** A pure Rust function over
+   (join-rule policy, history policy, encryption, directory visibility, target
+   facts) returning the message-catalog IDs and substitutions for "who can
+   join", "who can read which history", "encrypted", "listed in the published
+   directory". It is used by (a) the confirmed room settings projection and
+   (b) a stateless preview entry point modelled on the existing room-address
+   preview (`apps/desktop/src-tauri/src/commands/room.rs`,
+   `crates/koushi-state/src/room_address.rs`). No new persistent outcome slice.
+   The preview contract states explicitly which policies it describes: the
+   property's own draft combined with the other property's **confirmed** value,
+   and the panel shows that distinction, because Save commits per property.
+4. **Settable restricted rules.** `RoomSettingChange` gains an explicit
+   access-policy override carrying the rule plus the selected allow Space IDs;
+   a restricted rule is settable only when the override carries a verified
+   allow list, and `private` stays reserved and is never offered as the Space
+   route. The canonical comparison of "the current policy" is the full policy
+   value (rule + allow targets), so switching allow Spaces is a change even
+   though the rule enum is unchanged.
+5. **Creation.** The create request gains an optional explicit access-policy
+   override (rule + allow Space IDs) and an explicit history policy, with these
+   rules: the UI always submits an explicit policy; when the override is omitted,
+   the existing legacy fallback (the private-in-Space preset, including its V9
+   pin) is preserved verbatim; `visibility`/`invitedOnly` keep their current
+   public-room stripping; a membership selection at Home is not allowed (the
+   choice states why); the selected allow Space must be an authorised Space and
+   need not be the attachment Space; an omitted allow list and an explicitly empty
+   list are different values; history defaults are resolved once and applied as
+   one override so only one initial-state write is sent. Choosing a Space as an
+   allow target never requires permission on that Space and never implies writing
+   `m.space.child`; the existing attachment/link failure report stays separate
+   from creation success.
+6. **Directory publication.** Read it with the SDK's `get_room_visibility` when
+   the room settings load, scoped to the queried directory, and project
+   confirmed / unavailable / loading / failed distinctly. Changing a join rule
+   never changes publication implicitly.
+7. **Permissions.** `RoomPermissionFacts::allows_setting_change` stays the single
+   admission authority. The join-rule control renders from `can_change_join_rule`
+   (fixing the current mismatch); the history control keeps the existing aggregate
+   permission, and that divergence from Element is documented rather than
+   silently upgraded.
+8. **Live coherence.** Extend the existing access observation and
+   reconciliation path to complete policy facts instead of adding a second
+   subscription owner: reconcile ordinary rooms too, compare the full policy
+   value rather than the enum, and keep working while an older SDK value is still
+   cached until the local write echoes. A change by another client (rule, allow
+   targets, or history) refreshes open settings without a reload or a Space
+   change.
+9. **Failure vocabulary.** Invalid or unsupported policy edits get a typed,
+   specific failure rather than the generic SDK failure, and the renderer shows
+   it on the property. No new general property-operation framework.
 
 ## React contract
 
-- One shared component, e.g. `AccessChoiceDetail`, used by the Room Info
+- One shared component (working name `AccessChoiceDetail`) used by Room Info's
   access/history section and by `CreateEntityDialog`, replacing the two
-  `InlineChoicePropertyEditor` used for these policies and the create dialog's
-  visibility/`invitedOnly` controls.
-- Left: all relevant choices with a short label and a one-line summary, the
-  selected one clearly marked. Right: the details of the selected choice,
-  including concrete outcomes, the configured Space membership conditions that
-  affect them, encryption/key limits, directory publication and the interaction
-  with the other policy, built from the Rust outcome DTO.
-- Selection is a draft; Room Info commits only on Save and creation only on
-  Create; Cancel restores the confirmed value; pending/saved/failed/read-only
-  state stays on the property, not in a shared footer. The details panel states
-  whether it describes the confirmed value or an unsaved draft.
-- Narrow/short windows stack the list and the details without collapsing back
-  into an unexplained dropdown; every choice and the Save/Create/Cancel actions
-  stay reachable. Keyboard navigation, visible focus, accessible selection and
-  detail association, EN/JA and pseudo-locale all hold.
-- Choices that the room version, permissions, creation capabilities or
-  encryption make unavailable are shown with the reason instead of being hidden.
+  `InlineChoicePropertyEditor` instances used for these policies and the create
+  dialog's visibility/`invitedOnly` controls. It reuses the existing
+  `SettingsPropertyCard` status/save affordances rather than a second status
+  framework.
+- Left: every relevant choice with a short label and a one-line summary, the
+  selected one marked. Right: the details for the selection, built from the Rust
+  outcome for the draft-combined-with-confirmed pair, stating whether it
+  describes confirmed or unsaved values.
+- Room Info commits on Save and creation on Create; Cancel restores the
+  confirmed value; pending/saved/failed/read-only stay on the property.
+- Narrow and short windows stack list and details, keeping every choice and the
+  actions reachable; keyboard navigation, visible focus, accessible
+  selection/detail association, EN/JA and pseudo-locale all hold.
+- Unavailable choices state the concrete reason (room version, permission,
+  encryption) instead of being hidden.
+- The three access surfaces consume one Rust-projected indicator contract
+  (specific/generic fact plus tooltip substitutions): the room-list row, the
+  in-room header in `panes.tsx`, and the room summary. The row and header tooltip
+  branches that special-case the current generic label ID are updated together,
+  the `knockRestricted` request route keeps its own badge, the summary keeps its
+  navigation to the property, Room Info stops rendering restricted rules as
+  `Private` and stops special-casing DMs, and the summary keeps showing the
+  confirmed value while the editor holds a draft.
 
 ## Acceptance criteria
 
-Rust:
+Rust / state:
 
-1. A `restricted`/`knock_restricted` room with one verified Space allow target
-   projects the specific join sentence and the Space name; with an ordinary-room
-   target, multiple targets, an unknown target type, an unavailable name or no
-   usable condition it projects the generic sentence and never a raw ID.
-2. `private` is never projected as the Space-membership route.
-3. Setting a restricted rule with conditions succeeds and round-trips; setting one
-   without conditions is rejected; an unmodelled condition type is preserved or
-   the edit is rejected, never silently dropped.
-4. Creating a room inside a Space with the membership choice produces a room whose
-   server-side join rule carries that Space as an allow condition; creating with
-   an explicit history policy sends it; omitting both keeps today's defaults.
-5. Room Info no longer labels `restricted`/`knock_restricted` as `Private`, and
-   the editor still shows the underlying rule.
-6. A join-rule change by another client updates the room list, the header and
-   Room Info together.
+1. Confirmed-empty, membership-only, membership-plus-unsupported and
+   unsupported-only rules are four distinct projections; a rejected edit
+   produces no state-event write.
+2. A verified single-Space route yields the specific sentence and the safe Space
+   name; an ordinary-room target, several targets, unknown type, unavailable name
+   or no usable condition yields the generic sentence with no raw ID; `private`
+   is never the Space route.
+3. Setting restricted with a verified allow list round-trips; without one it is
+   rejected; the canonical policy comparison treats a changed allow list as a
+   change.
+4. Creating in a Space with the membership choice produces a server room whose
+   join rule carries that Space; an explicit history policy is sent; omitting
+   both reproduces today's presets; two parent attachments with one explicitly
+   selected allow Space is honoured as selected.
+5. `can_change_join_rule = true, can_edit_settings = false` submits a join-rule
+   change successfully, and a forbidden direct command is still rejected.
+6. Another client changing only the allow targets, and another changing history,
+   converge in open settings without reload or Space change.
+7. Directory publication is reported as confirmed/unavailable/loading/failed and
+   is unchanged by a join-rule edit.
 
-Frontend (vitest, DOM/aria):
+Frontend:
 
-7. Both surfaces render the same choice-and-detail structure: every choice
-   reachable, selection distinct from the confirmed value, details following the
-   selection, Save/Cancel semantics per surface, pending/failed/read-only on the
-   property.
-8. Unavailable choices state why; keyboard, focus and accessible associations
-   hold; Japanese, English and pseudo-locale layouts do not clip or hide a choice.
+8. Both surfaces render the same structure: all choices reachable, selection
+   distinct from the confirmed value, details following the selection, Save
+   disabled on a real change including an allow-list-only change, per-surface
+   commit semantics, per-property status.
+9. The three access surfaces agree for one room in Home, a Space, People/DM,
+   favourites and low-priority contexts; the tooltip names the Space on hover and
+   keyboard focus; both `knockRestricted` badges survive.
 
-Browser-headless (Playwright): narrow-window stacking keeps every choice and the
-actions reachable, and the room-list badge, header badge and Room Info summary
-show the same label for the same room.
+Browser-headless / production path:
 
-Evidence discipline: each behaviour records the RED check first (command, exit
-status, captured failure) and then the same check GREEN.
+10. The browser payload submitted from each surface is asserted, not only the
+    standalone component.
+11. `qa:headless-local` on both `--server=tuwunel` and `--server=synapse`:
+    create with the membership choice and read back the synced allow content and
+    history visibility; restore a restricted rule through the real update command
+    and read back the synced allow content; observe a second-client allow-target
+    change without refresh.
+12. Narrow **and short** viewports with Japanese, English, accented and bidi
+    pseudo-locales keep every choice and the actions reachable (visibility alone
+    is not enough).
+
+Each behaviour records the RED check first (command, exit status, captured
+failure) and then the same check GREEN.
 
 ## Contract surfaces to mirror
 
-`crates/koushi-state/src/state/room_management.rs` (settings snapshot, change
-enum, outcome), `crates/koushi-core` (create-room and join-rule command paths),
-`crates/koushi-protocol` (command DTOs), `apps/desktop/src-tauri/src/dto.rs` +
-command registration, `apps/desktop/src/domain/types.ts`,
-`apps/desktop/src/components/{RoomInfoPanel.tsx,dialogs.tsx,Shell.tsx}`, the
-room-list/header badge helpers shipped by #1166, fixtures, the
-`frontend_app_state` golden if the snapshot shape changes, and the user guide.
+`crates/koushi-state/src/state/room_management.rs` (snapshot, change enum,
+policy comparison, outcome), `crates/koushi-state/src/sidebar.rs` and the room
+access projection (indicator facts), `crates/koushi-core/src/room/{operations.rs,
+management.rs,list_observer.rs}` and the reconciliation path,
+`crates/koushi-sdk/src/{room_operations.rs,room_projection.rs}` (write adapter and
+success projection — the current conversion rejects restricted rules),
+`crates/koushi-protocol/src/command/room.rs` and
+`crates/koushi-protocol/src/event/room.rs`,
+`apps/desktop/src-tauri/src/dto.rs` plus the preview command registration,
+`apps/desktop/src/domain/{types.ts,accessCondition.ts,coreEvents.generated.json}`,
+`apps/desktop/src/components/{RoomInfoPanel.tsx,dialogs.tsx,panes.tsx,Shell.tsx,SettingsPropertyCard.tsx}`,
+the test fixtures and `frontend_app_state` golden, the forwarded state-delta
+fixture (`apps/desktop/src-tauri/src/core_event_forwarder/tests.rs`), the canon
+(`docs/architecture/state-machine.md`, including the settable-rule restriction),
+and the user guide.
 
 ## Verification plan (iteration)
 
-Focused `cargo test -p koushi-state -p koushi-core -p koushi-protocol`,
-`cargo fmt --check`, clippy `-D warnings` for changed crates; golden regenerate +
-normal run if the snapshot changes; `npm run typecheck`, `npm run lint`, focused
-`npx vitest run`, the relevant Playwright specs from `apps/desktop`. The landing
-gate before the PR is the feature-unified workspace suite plus
-`qa:headless-local -- --server=both` per `docs/policies/engineering-rules.md`.
+Focused `cargo test -p koushi-state -p koushi-core -p koushi-protocol -p koushi-sdk`,
+`cargo fmt --check`, clippy `-D warnings` for changed crates, golden regenerate +
+normal run, `npm run typecheck`, `npm run lint`, focused `npx vitest run`, the
+touched Playwright specs from `apps/desktop`. Landing gate before the PR: the
+feature-unified workspace suite plus `qa:headless-local -- --server=both` per
+`docs/policies/engineering-rules.md`.
+
+## Delete list (applied from the review)
+
+- No independent persistent outcome slice: extend existing access/sidebar facts
+  and share one pure resolver with the draft preview.
+- No new Matrix write mechanism or SDK fork: `update_join_rule(JoinRule)` already
+  carries restricted content.
+- No arbitrary unsupported-condition round-trip: reject the affected edit with
+  the completeness fact.
+- No ordinary-room allow-target selection in this deliverable: preserve or reject
+  the existing ones.
+- No speculative creation modes or capability framework: expose only the agreed
+  routes with concrete reasons.
+- No second property-card/status/focus framework: reuse `SettingsPropertyCard`.
+- No duplicate Tauri settings DTOs or mechanical command-registration changes.
 
 ## Open questions for the reviewer
 
-1. Whether the allow-list editor should offer Spaces only (recommended) or also
-   allow an ordinary room target, given the issue says "Space members" but the
-   Matrix rule permits room targets.
-2. Whether creation should expose `knock_restricted` at all, or keep creation to
-   the routes the create dialog can explain honestly.
-3. Whether the outcome DTO should live on `RoomSettingsSnapshot` (room-scoped) or
-   as its own slice so the room-list and header badges can share it without
-   loading the settings surface.
+1. Whether creation should expose `knock_restricted` now or defer it with a
+   stated reason (the private-in-Space preset pins room version V9; a combined
+   request/member route needs its supported-version answer).
+2. Whether the history control should get its own event-specific permission fact
+   in this deliverable or keep the aggregate permission with a documented
+   divergence.
