@@ -732,6 +732,7 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "scheduled_reschedule=ok",
             "scheduled_cancel=ok",
             "scheduled_fire=ok",
+            "scheduled_thread_reply=ok",
         ],
         QaStage::SendQueue => &[
             "send_fail=ok",
@@ -748,7 +749,7 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "link_preview_e2ee_default=ok",
             "link_preview_hide=ok",
         ],
-        QaStage::CacheRestore => &["cache_restore=ok"],
+        QaStage::CacheRestore => &["cache_restore=ok", "cache_restore_continuity=reported"],
         QaStage::ReadStateConvergence => &["read_state_convergence=ok"],
         QaStage::HiddenStateAcl => &["hidden_state_acl=ok"],
         QaStage::ThreadLateJoiner => &[
@@ -851,6 +852,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "scheduled_reschedule=ok",
         "scheduled_cancel=ok",
         "scheduled_fire=ok",
+        "scheduled_thread_reply=ok",
         "send_fail=ok",
         "resend=ok",
         "cancel_send=ok",

@@ -88,6 +88,10 @@ pub(crate) fn handle_sync_failed(state: &mut AppState, reason: String) -> Vec<Ap
             message: "sign-in required".to_owned(),
             recoverable: true,
         });
+        // #1159: this transition retires the ready session without going through
+        // `clear_session_views`, so the scheduled-send durability notice must be
+        // withdrawn here too. `ErrorChanged` is already emitted below.
+        super::withdraw_scheduled_send_persistence_failure(state);
         effects.push(AppEffect::EmitUiEvent(UiEvent::SessionChanged));
         effects.push(AppEffect::EmitUiEvent(UiEvent::ErrorChanged));
     }

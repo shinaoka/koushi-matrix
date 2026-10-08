@@ -6,7 +6,7 @@ use koushi_state::{
     compose_sidebar, compose_sidebar_with_account_facts, compute_room_list_projection, reduce,
 };
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 fn active_sort_room(
     room_id: &str,
@@ -1248,4 +1248,78 @@ fn sidebar_global_dms_uses_the_authoritative_conversation_activity_order() {
             .collect::<Vec<_>>(),
         vec!["messaged", "join-only"]
     );
+}
+
+/// #1166: the room rows the sidebar renders carry their room's own access
+/// condition, and a room with no projected condition stays unknown.
+#[test]
+fn sidebar_room_rows_carry_the_projected_access_condition() {
+    let mut state = ready_state();
+    state.rooms = rooms();
+    state.spaces = spaces();
+    state.room_access = BTreeMap::from([
+        (
+            "room-a".to_owned(),
+            koushi_state::RoomAccessCondition {
+                join_rule: koushi_state::RoomJoinRule::Public,
+                restricted: None,
+                allowed_room_ids: Vec::new(),
+            },
+        ),
+        (
+            "dm-a".to_owned(),
+            koushi_state::RoomAccessCondition {
+                join_rule: koushi_state::RoomJoinRule::KnockRestricted,
+                restricted: Some(koushi_state::RestrictedConditions::NoneUsable),
+                // One resolvable route and one this projection cannot name.
+                allowed_room_ids: vec![
+                    "room-a".to_owned(),
+                    "!invisible:example.invalid".to_owned(),
+                ],
+            },
+        ),
+    ]);
+
+    let sidebar = koushi_state::compose_sidebar_for_state(&state);
+
+    let public_room = sidebar
+        .space_rooms
+        .iter()
+        .find(|room| room.room_id == "room-a")
+        .expect("room-a should be in the room list");
+    assert_eq!(
+        public_room.access_join_rule,
+        Some(koushi_state::RoomJoinRule::Public)
+    );
+    let direct_message = sidebar
+        .global_dms
+        .iter()
+        .find(|room| room.room_id == "dm-a")
+        .expect("dm-a should be in the DM list");
+    assert_eq!(
+        direct_message.access_join_rule,
+        Some(koushi_state::RoomJoinRule::KnockRestricted)
+    );
+    assert_eq!(
+        direct_message.access_restricted_conditions,
+        Some(koushi_state::RestrictedConditions::NoneUsable),
+        "the restricted-rule facts travel to the row"
+    );
+    assert_eq!(
+        public_room.access_restricted_conditions, None,
+        "a non-restricted rule carries no allow-condition claim"
+    );
+    assert_eq!(
+        direct_message.access_allowed_room_names,
+        vec!["Room A".to_owned()],
+        "a named route becomes a label this projection already carries, and an          entry it cannot name is omitted rather than exposed by id"
+    );
+    assert!(public_room.access_allowed_room_names.is_empty());
+    // A room with no projected condition is unknown, never a guessed rule.
+    let unknown = sidebar
+        .space_rooms
+        .iter()
+        .find(|room| room.room_id == "global-room")
+        .expect("global-room should be in the room list");
+    assert_eq!(unknown.access_join_rule, None);
 }

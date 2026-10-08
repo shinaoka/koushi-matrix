@@ -269,4 +269,68 @@ describe("context menu registry", () => {
     expect(pending).toEqual([]);
     expect(operationPending).toEqual([]);
   });
+  test("selected text offers Copy and web search first, and nothing else is needed (#1155)", () => {
+    const items = contextMenuItems({
+      kind: "message",
+      canManage: false,
+      canEdit: false,
+      canReply: true,
+      hasThread: false,
+      senderUserId: "@sender:example.invalid",
+      currentUserId: "@me:example.invalid",
+      roomId: "!room:example.invalid",
+      eventId: "$event:example.invalid",
+      isIgnored: false,
+      selectedText: "Second phrase."
+    });
+
+    expect(items.slice(0, 2).map((item) => item.id)).toEqual([
+      "copySelectedText",
+      "searchWebForSelectedText"
+    ]);
+    expect(items.map((item) => item.id)).toContain("replyToMessage");
+  });
+
+  test("a selection without a server identity still offers the text actions (#1155)", () => {
+    const items = contextMenuItems({
+      kind: "message",
+      canManage: false,
+      canEdit: false,
+      canReply: false,
+      hasThread: false,
+      senderUserId: "",
+      currentUserId: "@me:example.invalid",
+      roomId: "!room:example.invalid",
+      eventId: "",
+      isIgnored: false,
+      selectedText: "Local echo text"
+    });
+
+    expect(items.map((item) => item.id)).toEqual([
+      "copySelectedText",
+      "searchWebForSelectedText"
+    ]);
+  });
+
+  test("no selection leaves the message menu unchanged (#1155)", () => {
+    const base = {
+      kind: "message" as const,
+      canManage: true,
+      canEdit: true,
+      canReply: true,
+      hasThread: true,
+      senderUserId: "@owner:example.invalid",
+      currentUserId: "@owner:example.invalid",
+      roomId: "!room:example.invalid",
+      eventId: "$event:example.invalid",
+      isIgnored: false
+    };
+
+    expect(contextMenuItems({ ...base }).map((item) => item.id)).toEqual(
+      contextMenuItems({ ...base, selectedText: "" }).map((item) => item.id)
+    );
+    expect(contextMenuItems({ ...base }).map((item) => item.id)).not.toContain(
+      "copySelectedText"
+    );
+  });
 });

@@ -410,6 +410,9 @@ const japaneseInheritedMessageAllowlist = new Set<MessageId>([
 ]);
 
 const japaneseIdenticalMessageAllowlist = new Set<MessageId>([
+  // #1166: the access-condition summary uses the same em dash in both locales,
+  // matching the bilingual example in the issue ("スペース例 — 招待制。...").
+  "access.conditionSummarySeparator",
   // Scale fractions and image-format names are not prose: "1/2" and "JPEG"
   // read the same in both catalogs, and translating them would be wrong.
   "upload.resizeHalf",

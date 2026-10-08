@@ -945,6 +945,12 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             source,
             kind,
         } => room::handle_room_list_bootstrap_failed(state, generation, source, kind),
+        AppAction::RoomAccessUpdated {
+            generation,
+            source,
+            authoritative,
+            access,
+        } => room::handle_room_access_updated(state, generation, source, authoritative, access),
         AppAction::RoomListFilterSelected { filter } => {
             room::handle_room_list_filter_selected(state, filter)
         }
@@ -1429,6 +1435,10 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         | AppAction::ScheduledSendDispatched { scheduled_id } => {
             timeline::handle_scheduled_send_cancelled_or_dispatched(state, scheduled_id)
         }
+        AppAction::ScheduledSendPersistenceFailed { message } => {
+            timeline::handle_scheduled_send_persistence_failed(state, message)
+        }
+        AppAction::ScheduledSendPersisted => timeline::handle_scheduled_send_persisted(state),
         AppAction::UploadStagingChanged { target, items } => {
             timeline::handle_upload_staging_changed(state, target, items)
         }
@@ -2050,6 +2060,22 @@ pub(crate) fn current_session_info(state: &AppState) -> Option<crate::state::Ses
     }
 }
 
+/// Withdraws a local scheduled-send save failure (#1159).
+///
+/// The notice belongs to the account session that produced it, so every path
+/// that retires or replaces that session must withdraw it. Returns the effect to
+/// emit only when a notice was actually removed, so callers never emit a
+/// redundant `ErrorChanged`.
+pub(crate) fn withdraw_scheduled_send_persistence_failure(
+    state: &mut AppState,
+) -> Option<AppEffect> {
+    let previous_len = state.errors.len();
+    state
+        .errors
+        .retain(|error| error.code != timeline::SCHEDULED_SEND_PERSISTENCE_FAILED);
+    (state.errors.len() != previous_len).then_some(AppEffect::EmitUiEvent(UiEvent::ErrorChanged))
+}
+
 pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let previous_room_id = state.timeline.room_id.clone();
     let had_invite_workflow = state.invite_workflow != InviteWorkflowState::default();
@@ -2087,11 +2113,14 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let had_search_crawler = state.search_crawler != Default::default();
     let had_space_members = state.space_members != Default::default();
 
+    // #1159: the notice belongs to the session being retired.
+    let scheduled_send_persistence_effect = withdraw_scheduled_send_persistence_failure(state);
     state.navigation = NavigationState::default();
     state.link_preview_settings = Default::default();
     state.room_preferences = Default::default();
     state.spaces.clear();
     state.rooms.clear();
+    state.room_access.clear();
     state.invites.clear();
     state.room_list = Default::default();
     state.room_interactions.clear();
@@ -2226,6 +2255,9 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     }
     if had_space_members {
         effects.push(AppEffect::EmitUiEvent(UiEvent::SpaceMembersChanged));
+    }
+    if let Some(effect) = scheduled_send_persistence_effect {
+        effects.push(effect);
     }
     effects
 }

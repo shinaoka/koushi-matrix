@@ -579,6 +579,7 @@ fn implemented_final_tokens_include_thread() {
             "scheduled_reschedule=ok",
             "scheduled_cancel=ok",
             "scheduled_fire=ok",
+            "scheduled_thread_reply=ok",
             "send_fail=ok",
             "resend=ok",
             "cancel_send=ok",
@@ -871,6 +872,7 @@ fn final_tokens_follow_the_requested_scenario_including_composer() {
             "scheduled_reschedule=ok",
             "scheduled_cancel=ok",
             "scheduled_fire=ok",
+            "scheduled_thread_reply=ok",
             "restore_cleanup=ok",
         ]
     );
@@ -978,6 +980,7 @@ fn implemented_final_tokens_include_safety() {
             "scheduled_reschedule=ok",
             "scheduled_cancel=ok",
             "scheduled_fire=ok",
+            "scheduled_thread_reply=ok",
             "send_fail=ok",
             "resend=ok",
             "cancel_send=ok",

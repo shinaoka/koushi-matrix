@@ -1259,6 +1259,16 @@ pub enum AppAction {
     ScheduledSendCapabilityChanged {
         capability: ScheduledSendCapability,
     },
+    /// Each joined room's authoritative access condition (#1166). Sent in the
+    /// same batch as the room-list snapshot it describes and fenced by the same
+    /// generation/source decision, so a rejected snapshot cannot overwrite it.
+    /// An absent room means "not yet known".
+    RoomAccessUpdated {
+        generation: u64,
+        source: RoomListSource,
+        authoritative: bool,
+        access: std::collections::BTreeMap<String, crate::state::RoomAccessCondition>,
+    },
     ScheduledSendsLoaded {
         scheduled_sends: crate::state::ScheduledSendStore,
     },
@@ -1288,6 +1298,16 @@ pub enum AppAction {
     ScheduledSendDispatched {
         scheduled_id: String,
     },
+    /// The account's scheduled-send store could not be written locally (#1159).
+    /// Acceptance and durable local persistence are different facts, so the
+    /// reservation must not look saved on this device until a later save
+    /// succeeds. `message` is a coarse, identifier-free description.
+    ScheduledSendPersistenceFailed {
+        message: String,
+    },
+    /// A scheduled-send store write succeeded, so an earlier local-persistence
+    /// failure is no longer true (#1159).
+    ScheduledSendPersisted,
     UploadStagingChanged {
         target: crate::ComposerTarget,
         items: Vec<StagedUploadItem>,

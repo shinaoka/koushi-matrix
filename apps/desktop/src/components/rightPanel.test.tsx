@@ -957,3 +957,84 @@ describe("ContextualRightPanel thread render isolation", () => {
     expect(renderCounts.rows).toBe(rowsAfterMount);
   });
 });
+
+// #1155: the thread pane is the same message surface as the room pane, so its
+// rows must reach the app's message context menu (and therefore the
+// selected-text actions) exactly like room rows do.
+describe("ContextualRightPanel thread message context menu (#1155)", () => {
+  test("forwards a thread row's selected text to the app's context menu", () => {
+    const currentUserId = "@current:example.invalid";
+    const key = threadTimelineKey(currentUserId, room.room_id, "$root:example.invalid");
+    const storeContext = {
+      store: applyTimelineEvent(createTimelineStore(), {
+        InitialItems: {
+          request_id: null,
+          key,
+          generation: 1,
+          items: [message("$reply:example.invalid", "Thread reply")]
+        }
+      }),
+      setStore: vi.fn()
+    };
+    const onOpenContextMenu = vi.fn();
+    const base = threadSnapshot("");
+    const threadTimelineSnapshot = {
+      ...base,
+      state: {
+        ...base.state,
+        domain: {
+          ...base.state.domain,
+          live_signals: { presence: {}, rooms: {} },
+          profile: { ...base.state.domain.profile, own: { avatar: null } },
+          settings: {
+            ...base.state.domain.settings,
+            values: {
+              ...base.state.domain.settings.values,
+              appearance: { density: "default" }
+            }
+          }
+        }
+      }
+    } as unknown as DesktopSnapshot;
+
+    render(
+      <TimelineStoreContext.Provider value={storeContext}>
+        <ContextualRightPanel
+          {...defaultProps}
+          mode="thread"
+          snapshot={threadTimelineSnapshot}
+          timelineTransport={baseTransport({})}
+          onOpenContextMenu={onOpenContextMenu}
+        />
+      </TimelineStoreContext.Provider>
+    );
+
+    const row = document.querySelector('[data-event-id="$reply:example.invalid"]');
+    expect(row).toBeTruthy();
+    const walker = document.createTreeWalker(row!, NodeFilter.SHOW_TEXT);
+    let bodyText: Text | null = null;
+    while (walker.nextNode()) {
+      const candidate = walker.currentNode as Text;
+      if (candidate.data.includes("Thread reply")) {
+        bodyText = candidate;
+        break;
+      }
+    }
+    expect(bodyText).toBeTruthy();
+    const range = document.createRange();
+    range.setStart(bodyText!, 0);
+    range.setEnd(bodyText!, "Thread".length);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    fireEvent.contextMenu(row!);
+
+    expect(onOpenContextMenu).toHaveBeenCalledTimes(1);
+    const [, target, items] = onOpenContextMenu.mock.calls[0];
+    expect(target).toMatchObject({ kind: "message", selectedText: "Thread" });
+    expect(items.map((item: { id: string }) => item.id)).toEqual(
+      expect.arrayContaining(["copySelectedText", "searchWebForSelectedText"])
+    );
+  });
+});

@@ -35,6 +35,7 @@ import {
 import {
   currentSavedSession,
   forwardDestinationsFromSnapshot,
+  hasScheduledSendPersistenceFailure,
   ICON_SIZE,
   ignoreComposerKeyAction,
   pinnedEventIdsForRoom,
@@ -1047,6 +1048,9 @@ export function ContextualRightPanel({
             timelineKey={threadTimelineKeyValue}
             transport={timelineTransport}
             onReply={threadReplyStable}
+            onOpenContextMenu={onOpenContextMenu}
+            currentUserId={currentUserId ?? undefined}
+            ignoredUserIds={snapshot.state.domain.profile.ignored_user_ids}
             onOpenMatrixTarget={onOpenMatrixTarget ? threadOpenMatrixTargetStable : undefined}
             onOpenSenderProfile={onOpenSenderProfile ? threadOpenSenderProfileStable : undefined}
             onStartDirectMessage={threadStartDirectMessageStable}
@@ -1157,6 +1161,9 @@ export function ContextualRightPanel({
         stagedUploadsReady={uploadStagingItemsAreSendable(threadStagedUploads)}
         onSendStagedUploads={threadSendStagedUploadsStable}
         notice={threadComposerNotice}
+        scheduledSendPersistenceFailed={hasScheduledSendPersistenceFailure(
+          snapshot.state.ui.errors
+        )}
         document={threadDocument}
         draftKey={
           threadComposerDraftImeKey ??

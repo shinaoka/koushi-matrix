@@ -221,6 +221,62 @@ test("switching accounts flushes the active composer draft on its owning tab", a
   });
 });
 
+test("a restored account's signed-out form prefills its identity without overwriting edits (#119)", async ({ page }) => {
+  await gotoReadyShell(page);
+  const tabs = accountTabs(false, true, "ready");
+  await page.evaluate(async (nextTabs) => {
+    const harness = window.__harness as any;
+    harness.setCommandResponse("select_account_tab", ({ tabId }: { tabId: string }) => {
+      const snapshot = harness.currentSnapshot();
+      harness.setSnapshot({
+        ...snapshot,
+        account_tab_id: tabId,
+        state: {
+          ...snapshot.state,
+          domain: {
+            ...snapshot.state.domain,
+            session: { kind: "ready", homeserver: "https://bob.example.invalid", user_id: "@bob:example.invalid", device_id: "BOBDEVICE" }
+          }
+        }
+      });
+      return { ...nextTabs, selectedTabId: tabId };
+    });
+    await harness.pushAccountTabs(nextTabs);
+  }, tabs);
+  await page.getByRole("button", { name: "Bob: Ready", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Bob: Ready", exact: true })).toHaveAttribute("aria-current", "page");
+
+  await page.evaluate(async (nextTabs) => {
+    const harness = window.__harness as any;
+    const snapshot = harness.currentSnapshot();
+    harness.setSnapshot({
+      ...snapshot,
+      state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { kind: "signedOut" }, auth: { kind: "unknown" } } }
+    });
+    await harness.pushAccountTabs({
+      ...nextTabs,
+      selectedTabId: "bob-account-tab",
+      tabs: nextTabs.tabs.map((tab) => tab.id === "bob-account-tab" ? { ...tab, status: "signedOut" } : tab)
+    });
+    // Publish the stored snapshot too: the real backend sends the signed-out
+    // session as a state update, and the app only clears its snapshot when the
+    // selected tab id changes (#119).
+    harness.pushStateUpdate();
+  }, tabs);
+
+  const form = page.getByTestId("auth-screen");
+  await expect(form).toBeVisible();
+  await expect(form.locator('input[name="username"]')).toHaveValue("@bob:example.invalid");
+  await expect(form.locator('input[name="homeserver"]')).toHaveValue("https://bob.example.invalid");
+  await form.locator('input[name="username"]').fill("@edited:example.invalid");
+  await page.evaluate(() => {
+    window.__harness.setSnapshot({ ...window.__harness.currentSnapshot() });
+    window.__harness.pushStateUpdate();
+  });
+  await expect(form.locator('input[name="username"]')).toHaveValue("@edited:example.invalid");
+  await expect(page.getByRole("button", { name: "Harness: Ready", exact: true })).toBeVisible();
+});
+
 test("notification activation navigates and settles in the target account context", async ({ page }) => {
   await gotoReadyShell(page);
   const tabs = accountTabs(false, true, "ready");
@@ -268,6 +324,20 @@ test("notification activation navigates and settles in the target account contex
   const invocations = await page.evaluate(() => window.__harness.invocations());
   expect(invocations.find((call) => call.command === "open_notification_event")?.args.accountTabId)
     .toBe(bobId);
-  expect(invocations.find((call) => call.command === "settlement_snapshot")?.args.accountTabId)
-    .toBe(bobId);
+  // Every settlement that follows the activation must reconcile in the target
+  // account's context. Asserting only the first `settlement_snapshot`
+  // invocation was order-dependent: settling the preceding `select_account_tab`
+  // command legitimately uses the previously selected tab, so whether it landed
+  // before or after the activation decided the outcome (#119 flake).
+  const activationIndex = invocations.findIndex(
+    (call) => call.command === "open_notification_event"
+  );
+  expect(activationIndex).toBeGreaterThanOrEqual(0);
+  const settlementsAfterActivation = invocations
+    .slice(activationIndex)
+    .filter((call) => call.command === "settlement_snapshot");
+  expect(settlementsAfterActivation.length).toBeGreaterThan(0);
+  expect(
+    settlementsAfterActivation.every((call) => call.args.accountTabId === bobId)
+  ).toBe(true);
 });

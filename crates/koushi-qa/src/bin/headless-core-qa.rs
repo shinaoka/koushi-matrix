@@ -96,6 +96,8 @@ mod event_wait;
 mod fixtures;
 #[path = "headless_core_qa/orchestrator.rs"]
 mod orchestrator;
+#[path = "common/pagination_waiter.rs"]
+mod pagination_waiter;
 #[path = "headless_core_qa/participants.rs"]
 mod participants;
 #[path = "headless_core_qa/registry.rs"]

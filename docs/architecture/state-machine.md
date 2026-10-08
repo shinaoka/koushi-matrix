@@ -965,14 +965,40 @@ stateDiagram-v2
 Unread state crosses three Matrix concepts that must not be collapsed into one
 local flag:
 
-- `RoomSummary.unread_count` is the raw unread-message count; notification and
-  mention counts are separate SDK client-side observations, as is `marked_unread`.
-  Both full room projection and attention updates use SDK
-  `num_unread_notifications` / `num_unread_mentions`, not the server-computed
-  `unread_notification_counts`: Synapse 1.157.0 Sliding Sync returns zero dummy
-  counts, and servers cannot classify encrypted mentions. This follows Element X
-  iOS room-summary use of the SDK client-side counters; do not replace notification
-  counts with plain unread-message counts. These observations can arrive later than a
+- `RoomSummary.unread_count` is the effective unread-message count; notification
+  and mention counts are separate observations, as is `marked_unread`. The primary
+  source is the SDK's client-side `read_receipts` counters
+  (`num_unread_messages` / `num_unread_notifications` / `num_unread_mentions`),
+  because servers cannot classify encrypted mentions and Synapse 1.157.0 Sliding
+  Sync returns zero dummy `unread_notification_counts`. This follows Element X iOS
+  room-summary use of the SDK client-side counters; do not replace notification
+  counts with plain unread-message counts.
+  Those client counters are computed over the room's cached events only, and the
+  room list keeps one timeline event per room, so for a room the client has never
+  read they are a lower bound (a never-read room with several unread messages
+  reports 1) until something paginates the room. While no own read receipt is
+  anchored in the loaded timeline (`read_receipts().latest_active.is_none()`), the
+  room-list projection therefore tops the notification and mention counters up
+  with the server's `unread_notification_counts` (per-counter maximum). A nonempty
+  `pending` is deliberately not part of that condition: an unmatched receipt does
+  not make the client counters a lower bound, because they are counted from the
+  newest boundary the SDK did find. The top-up must stay before the read-marker
+  suppression below, so a stale server count is still zeroed when the fully-read
+  marker or the unthreaded private receipt covers the projected latest event and
+  the room is not manually marked unread. On homeservers that report dummy zero
+  server counts the top-up is a no-op.
+  The unread-message counter is not topped up: `notification_count` is the total
+  number of unread *notifications* and not an unread-message count, so
+  `RoomSummary.unread_count` keeps the SDK value. Two cold-start residuals follow
+  and are accepted for now: a stored receipt can be recorded as active while its
+  target is absent from the loaded chunk (undercount this projection cannot
+  detect), and a muted room — whose display count uses the greater of the unread
+  and notification counters — still shows the SDK's lower bound until the room is
+  paginated. Fixing either needs more loaded history, not a different counter.
+  The vendored SDK keeps the counts already known for a room when a sync response
+  carries no `unread_notifications` pair at all (an empty pair means "no count
+  update", not "none"), so a later sync cannot silently zero the top-up.
+  These observations can arrive later than a
   local command response, and historical Matrix Rust SDK releases have had
   unread-count/read-receipt convergence bugs (for example
   matrix-rust-sdk#6211, fixed upstream by matrix-rust-sdk#6406). Koushi must
@@ -1731,6 +1757,17 @@ tokens, paths, or raw errors.
   `ScheduledSendCancelled` and `ScheduledSendDispatched` remove the item. Room
   pruning, logout, lock, and account switch clear or retain the backing store by
   joined-room account context.
+- Acceptance is not durability (#1159). A failed local store write dispatches
+  `ScheduledSendPersistenceFailed`, which publishes exactly one coarse,
+  identifier-free `scheduled_send_persistence_failed` error and never appends a
+  second copy for a repeated failure; a later successful write dispatches
+  `ScheduledSendPersisted`, which clears that code only and emits nothing when
+  there was nothing to clear. Both actions require a `Ready` session and never
+  change the queue. The composer renders the notice from `ui.errors` alongside
+  the main and thread composers' other notices. The notice belongs to the
+  session that produced it: every path that retires or replaces that `Ready`
+  session withdraws it (`clear_session_views`, logout, sync failure, and
+  sliding-sync capability retirement).
 - `AppActor` owns the local fallback timer. When an item is due, it dispatches
   only `ScheduledSendHandle::Local` items through the account actor with the
   captured room/thread target and deterministic transaction id. Server
@@ -1761,6 +1798,10 @@ stateDiagram-v2
     Queued --> Empty: ScheduledSendDispatched [known Local handle] / route SendText
     Queued --> Empty: RoomListUpdated [room pruned] / retain joined rooms
     Queued --> Empty: LogoutRequested/SessionCleared
+    Empty --> Empty: ScheduledSendPersistenceFailed [Ready] / publish local-save failure
+    Queued --> Queued: ScheduledSendPersistenceFailed [Ready] / publish local-save failure
+    Empty --> Empty: ScheduledSendPersisted [Ready] / clear local-save failure
+    Queued --> Queued: ScheduledSendPersisted [Ready] / clear local-save failure
 ```
 
 - **Issue #450 guards**: `ScheduleSend` and `RescheduleScheduledSend` validate
@@ -2066,11 +2107,16 @@ stateDiagram-v2
   newest request id; unsubscribe, demand retirement (supersession, Home, room
   change, navigation deadline), shutdown, and the 10 s build timeout release
   the lease and activation, and a late completion can never install an actor.
-  The SDK future is detached, not aborted: the SDK registers event-focused
-  cache state before its `/context` load and never unregisters it, so an
-  aborted build would fail every later build of that target. A focused-build
-  failure or timeout settles the owning event navigation as `Failed`
-  immediately instead of at the AppActor deadline.
+  SDK event-focused initialization is transactional: initial `/context`
+  loading succeeds before cache state and the reusable handle are published,
+  so cancelling or failing construction leaves no orphaned state that poisons
+  retry. Core retains each preparation task; timeout drops its SDK future,
+  and cancellation aborts and awaits the task before releasing its lease or
+  acknowledging cleanup. Ordered shutdown aborts all preparation tasks and
+  awaits their settlement; unexpected Drop aborts as a fallback, not as an
+  orderly-shutdown acknowledgement. A focused-build failure or timeout settles
+  the owning event navigation as `Failed` immediately instead of at the
+  AppActor deadline.
 - `EnsureSubscribed` may reproject actor-owned InitialItems after transport loss,
   but the internal focused-projection commit is independently reliable. There is
   no sleep, fixed retry count, visibility heuristic, renderer acknowledgement,
@@ -3427,7 +3473,12 @@ Ordered shutdown gives the complete manager-owned enqueue-worker set one
 absolute, count-independent five-second graceful deadline while the global SDK
 terminal observer can still admit their results. Enqueue futures and the global
 observer are boxed futures directly polled by the manager; enqueue panic is
-caught at a fail-closed boundary. Graceful drain polls both worker and observer,
+caught at a fail-closed boundary. Because the manager is their only poller, every inline
+manager await that can block on an SDK lock (live timeline build, actor
+spawn, initial thread hydration) keeps polling all manager-owned worker sets
+(enqueue, focused-build, read, observer) and applies their completions
+afterwards; a parked worker can otherwise own the lock permit the inline
+await is queued behind. Graceful drain polls both worker and observer,
 then gives the observer one final non-blocking poll after worker quiescence or
 deadline cancellation so a queued exact terminal can be admitted. At the
 deadline the manager synchronously drops remaining cooperative enqueue futures,
