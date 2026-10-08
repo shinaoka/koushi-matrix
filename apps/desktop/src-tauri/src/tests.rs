@@ -330,7 +330,10 @@ fn desktop_menu_items_include_element_compatible_shortcuts() {
     let items = desktop_menu_items();
 
     assert!(items.iter().any(|item| {
-        item.id == "open_user_settings" && item.accelerator == "CmdOrCtrl+," && item.menu == "app"
+        item.id == "open_app_settings" && item.accelerator == "CmdOrCtrl+," && item.menu == "app"
+    }));
+    assert!(items.iter().any(|item| {
+        item.id == "open_account_settings" && item.accelerator.is_empty() && item.menu == "app"
     }));
     assert!(
         items
@@ -344,15 +347,15 @@ fn desktop_menu_items_include_element_compatible_shortcuts() {
     assert_eq!(about_index, 0);
     assert_eq!(items[about_index].label, "About Koushi");
 
-    let user_settings_index = items
+    let app_settings_index = items
         .iter()
-        .position(|item| item.id == "open_user_settings")
-        .expect("user settings menu item should exist");
+        .position(|item| item.id == "open_app_settings")
+        .expect("app settings menu item should exist");
     let sign_out_index = items
         .iter()
         .position(|item| item.id == "sign_out")
         .expect("sign out menu item should exist");
-    assert_eq!(sign_out_index, user_settings_index + 1);
+    assert_eq!(sign_out_index, app_settings_index + 1);
     assert!(items.iter().any(|item| {
         item.id == "show_help" && item.accelerator.is_empty() && item.menu == "help"
     }));

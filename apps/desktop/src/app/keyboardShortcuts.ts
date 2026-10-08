@@ -1,6 +1,14 @@
 import { shortcutIdForKeyboardEvent } from "../domain/shortcuts";
 
-const windowShortcutIds = new Set(["toggleFullscreen", "zoomIn", "zoomOut", "resetZoom"]);
+const windowShortcutIds = new Set([
+  "toggleFullscreen",
+  "zoomIn",
+  "zoomOut",
+  "resetZoom",
+  // App Settings is an app-level destination like the window operations, so its
+  // standard shortcut stays reachable while a modal settings dialog is open.
+  "openAppSettings"
+]);
 
 // Global listeners are installed once, so they must not close over one render's
 // handler. Re-register the handler every render and dispatch through this box.
@@ -20,8 +28,9 @@ export function createLatestShortcutHandler(): {
 }
 
 export function listenForAppShortcuts(handleShortcut: (id: string) => boolean): () => void {
-  // Window operations remain available in dialogs and focused widgets that stop
-  // bubbling keys. Room/composer shortcuts still defer to those local handlers.
+  // App-level and window operations remain available in dialogs and focused
+  // widgets that stop bubbling keys. Room/composer shortcuts still defer to
+  // those local handlers.
   function onWindowKeyDown(event: KeyboardEvent) {
     if (event.defaultPrevented) return;
     const shortcutId = shortcutIdForKeyboardEvent(event);

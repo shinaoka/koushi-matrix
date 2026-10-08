@@ -91,8 +91,9 @@ export type MessageId =
   | "app.title"
   | "app.versionMismatch.title"
   | "app.versionMismatch.detail"
+  | "menu.accountSettings"
+  | "menu.appSettings"
   | "menu.aboutKoushi"
-  | "menu.settings"
   | "menu.signOut"
   | "menu.toggleRightPanel"
   | "menu.koushiHelp"
@@ -753,7 +754,6 @@ export type MessageId =
   | "settings.accounts"
   | "settings.appearance"
   | "settings.language"
-  | "settings.languageDefault"
   | "settings.languageEnglish"
   | "settings.languageJapanese"
   | "settings.accountSwitcher"
@@ -1263,7 +1263,7 @@ export type MessageId =
   | "shortcut.noteCallsDeferred"
   | "shortcut.noteGoHomeAdapted"
   | "shortcut.noteUploadUiDeferred"
-  | "shortcut.openUserSettings"
+  | "shortcut.openAppSettings"
   | "shortcut.parityAdapted"
   | "shortcut.parityDeferred"
   | "shortcut.parityNotApplicable"
@@ -1880,7 +1880,8 @@ const en: Catalog = {
   // Native menu bar. Title Case matches the platform menu convention, so these
   // are separate from the sentence-case shortcut sheet labels.
   "menu.aboutKoushi": "About Koushi",
-  "menu.settings": "Settings…",
+  "menu.accountSettings": "Account Settings…",
+  "menu.appSettings": "App Settings…",
   "menu.signOut": "Sign Out",
   "menu.toggleRightPanel": "Toggle Right Panel",
   "menu.koushiHelp": "Koushi Help",
@@ -2552,9 +2553,8 @@ const en: Catalog = {
   "settings.accounts": "Accounts",
   "settings.appearance": "Appearance",
   "settings.language": "Language",
-  "settings.languageDefault": "Default (English)",
   "settings.languageEnglish": "English",
-  "settings.languageJapanese": "Japanese",
+  "settings.languageJapanese": "日本語",
   "settings.accountSwitcher": "Account switcher",
   "settings.current": "Current",
   "settings.autoLoadOlderMessages": "Automatically load older messages",
@@ -3084,7 +3084,7 @@ const en: Catalog = {
   "shortcut.noteCallsDeferred": "Calls are out of scope for this milestone.",
   "shortcut.noteGoHomeAdapted": "macOS uses Ctrl+Shift+H in some Matrix clients; this prototype keeps one cross-platform row.",
   "shortcut.noteUploadUiDeferred": "Upload UI is not implemented yet.",
-  "shortcut.openUserSettings": "Account Settings",
+  "shortcut.openAppSettings": "App Settings",
   "shortcut.parityAdapted": "adapted",
   "shortcut.parityDeferred": "deferred",
   "shortcut.parityNotApplicable": "not applicable",
@@ -3605,7 +3605,8 @@ const ja: Catalog = {
   "app.versionMismatch.detail":
     "コンポーネントの同期が取れていないため、このセッションを読み込めませんでした。Koushi を完全に終了してから、もう一度開いてください。",
   "menu.aboutKoushi": "Koushi について",
-  "menu.settings": "設定…",
+  "menu.accountSettings": "アカウント設定…",
+  "menu.appSettings": "アプリ設定…",
   "menu.signOut": "サインアウト",
   "menu.toggleRightPanel": "右パネルを切り替え",
   "menu.koushiHelp": "Koushi ヘルプ",
@@ -4267,8 +4268,7 @@ const ja: Catalog = {
   "settings.accounts": "アカウント",
   "settings.appearance": "外観",
   "settings.language": "言語",
-  "settings.languageDefault": "標準（英語）",
-  "settings.languageEnglish": "英語",
+  "settings.languageEnglish": "English",
   "settings.languageJapanese": "日本語",
   "settings.accountSwitcher": "アカウント切り替え",
   "settings.current": "現在",
@@ -4798,7 +4798,7 @@ const ja: Catalog = {
   "shortcut.noteCallsDeferred": "通話はこのマイルストーンの範囲外です。",
   "shortcut.noteGoHomeAdapted": "一部のMatrixクライアントのmacOS版ではCtrl+Shift+Hですが、この試作ではクロスプラットフォームの1行に統一しています。",
   "shortcut.noteUploadUiDeferred": "アップロードUIはまだ実装されていません。",
-  "shortcut.openUserSettings": "アカウント設定",
+  "shortcut.openAppSettings": "アプリ設定",
   "shortcut.parityAdapted": "調整済み",
   "shortcut.parityDeferred": "延期",
   "shortcut.parityNotApplicable": "対象外",

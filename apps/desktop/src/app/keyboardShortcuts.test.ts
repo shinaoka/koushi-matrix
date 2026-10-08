@@ -52,6 +52,22 @@ test("fullscreen works while a modal dialog is open", () => {
   expect(handle).toHaveBeenCalledExactlyOnceWith("toggleFullscreen");
 });
 
+test("Cmd+, opens App Settings while a modal dialog is open, but a room shortcut stays deferred", () => {
+  const handle = vi.fn(() => true);
+  dispose = listenForAppShortcuts(handle);
+  const dialog = document.createElement("dialog");
+  dialog.open = true;
+  dialog.addEventListener("keydown", (event) => event.stopPropagation());
+  document.body.append(dialog);
+
+  expect(press(dialog, ",", false).defaultPrevented).toBe(true);
+  expect(handle).toHaveBeenCalledExactlyOnceWith("openAppSettings");
+
+  handle.mockClear();
+  expect(press(dialog, "f", false).defaultPrevented).toBe(false);
+  expect(handle).not.toHaveBeenCalled();
+});
+
 test("fullscreen reaches the window before a focused surface stops key propagation", () => {
   const handle = vi.fn(() => true);
   dispose = listenForAppShortcuts(handle);
