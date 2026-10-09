@@ -124,3 +124,18 @@ test("failure stage is the first clause of the last core QA failure line", () =>
     "avatar model timed out"
   );
 });
+
+// #1191: an outer-deadline timeout keeps a stable per-scenario signature, with
+// the validated progress coordinate after the first clause.
+test("outer timeout failure line keeps a scenario stage", () => {
+  assert.equal(
+    failureStage(
+      "Headless core QA failed: timeout timeline_stress: last=timeline_stress_batches=ok\n"
+    ),
+    "timeout timeline_stress"
+  );
+  assert.equal(
+    failureStage("Headless core QA failed: timeout timeline_stress: progress=none\n"),
+    "timeout timeline_stress"
+  );
+});

@@ -171,3 +171,46 @@ fn matching_failure_is_terminal_even_while_waiting_for_gap_release() {
             .contains("Forbidden")
     );
 }
+
+/// #1200/#1233: the shallow-phase timeout must report a bounded,
+/// identifier-free view of the pagination state, so a missing terminal state can
+/// be told apart from a state that belonged to another request.
+#[test]
+fn timeout_diagnostics_track_the_last_transition_token() {
+    assert_eq!(
+        [
+            PaginationState::Idle,
+            PaginationState::Paginating,
+            PaginationState::EndReached,
+            PaginationState::Failed {
+                kind: TimelineFailureKind::Timeout
+            }
+        ]
+        .map(|state| pagination_state_token(&state)),
+        ["idle", "paginating", "end_reached", "failed"]
+    );
+
+    let mut waiter = PaginationWaiter::new(request(2));
+    assert_eq!(waiter.last_transition, "none");
+    assert_eq!(waiter.phase.token(), "awaiting_acceptance");
+
+    // A state that belongs to another request is recorded but never settles it.
+    assert_eq!(
+        waiter.observe(
+            &key(),
+            &state(Some(request(1)), PaginationState::EndReached)
+        ),
+        Ok(Step::Wait)
+    );
+    assert_eq!(waiter.last_transition, "other_request");
+
+    assert_eq!(
+        waiter.observe(
+            &key(),
+            &state(Some(request(2)), PaginationState::Paginating)
+        ),
+        Ok(Step::Wait)
+    );
+    assert_eq!(waiter.last_transition, "paginating");
+    assert_eq!(waiter.phase.token(), "paginating");
+}
