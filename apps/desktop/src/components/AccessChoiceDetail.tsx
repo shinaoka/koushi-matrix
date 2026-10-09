@@ -7,9 +7,8 @@ import {
   useRef
 } from "react";
 
-import type { MessageId } from "../i18n/messages";
-import { t } from "../i18n/messages";
 import type { RoomAccessOutcome, RoomAccessOutcomeLine } from "../domain/types";
+import { t } from "../i18n/messages";
 import { SettingsPropertyCard, type PropertySaveStatus } from "./SettingsPropertyCard";
 
 /** One choice of an access/history panel: a short label plus a one-line summary. */
@@ -219,5 +218,3 @@ export function accessOutcomeDetails(outcome: RoomAccessOutcome): ReactNode {
     </ul>
   );
 }
-
-export type { MessageId };
