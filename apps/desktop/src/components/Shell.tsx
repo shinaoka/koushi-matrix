@@ -10,6 +10,7 @@ import {
   useState
 } from "react";
 import {
+  Activity,
   AlertTriangle,
   Bell,
   Bug,
@@ -609,6 +610,7 @@ export function Sidebar({
   onOpenExplore,
   onOpenInvites,
   onOpenThreads = () => undefined,
+  onOpenScheduledMessages = () => undefined,
   onOpenSpaceInfo,
   onOpenSpaceMembers = () => undefined,
   spaceMemberCounts,
@@ -629,6 +631,7 @@ export function Sidebar({
   onOpenExplore: () => void;
   onOpenInvites: () => void;
   onOpenThreads?: () => void;
+  onOpenScheduledMessages?: () => void;
   onOpenSpaceInfo: () => void;
   onOpenSpaceMembers?: () => void;
   spaceMemberCounts?: { joined: number; childOnly: number };
@@ -743,59 +746,63 @@ export function Sidebar({
             : null}
         </div>
         <div className="workspace-header-actions no-wrap">
-          {activeSpace ? (
-            <SpaceMembersNavButton
-              childOnlyCount={resolvedSpaceMemberCounts.childOnly}
-              joinedCount={resolvedSpaceMemberCounts.joined}
-              onClick={onOpenSpaceMembers}
+          <div className="workspace-header-context-actions" data-toolbar-group="context">
+            {activeSpace ? (
+              <SpaceMembersNavButton
+                childOnlyCount={resolvedSpaceMemberCounts.childOnly}
+                joinedCount={resolvedSpaceMemberCounts.joined}
+                onClick={onOpenSpaceMembers}
+              />
+            ) : accountHomeActive ? (
+              <>
+                <HeaderActionButton
+                  action="activity"
+                  icon={<Activity size={ICON_SIZE.control} />}
+                  label={t("workspace.activity")}
+                  onClick={onOpenActivity}
+                  pressed={activeView === "activity"}
+                />
+                <HeaderActionButton
+                  action="explore"
+                  icon={<Compass size={ICON_SIZE.control} />}
+                  label={t("workspace.explore")}
+                  onClick={onOpenExplore}
+                  pressed={activeView === "explore"}
+                />
+                <HeaderActionButton
+                  action="invites"
+                  count={snapshot.state.domain.invites.length}
+                  icon={<Bell size={ICON_SIZE.control} />}
+                  label={t("workspace.invites")}
+                  onClick={onOpenInvites}
+                  pressed={activeView === "invites"}
+                />
+              </>
+            ) : null}
+          </div>
+          <div className="workspace-header-end-actions" data-toolbar-group="end">
+            <HeaderActionButton
+              action="threads"
+              icon={<MessageSquare size={ICON_SIZE.control} />}
+              label={t("threads.title")}
+              onClick={onOpenThreads}
             />
-          ) : null}
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={t("threads.title")}
-            onClick={onOpenThreads}
-          >
-            <MessageSquare size={ICON_SIZE.control} />
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={t("workspace.spaceInfoSettings")}
-            onClick={onOpenSpaceInfo}
-          >
-            <Settings size={ICON_SIZE.control} />
-          </button>
+            <HeaderActionButton
+              action="scheduled"
+              icon={<Clock3 size={ICON_SIZE.control} />}
+              label={t("workspace.scheduledMessages")}
+              onClick={onOpenScheduledMessages}
+            />
+            <HeaderActionButton
+              action="info"
+              icon={<Settings size={ICON_SIZE.control} />}
+              label={t("workspace.spaceInfoSettings")}
+              onClick={onOpenSpaceInfo}
+            />
+          </div>
         </div>
       </div>
       <div className="sidebar-scroll">
-        {/* #330: Activity, Explore, and Invites are account-global, so they live
-            under Home only. A space sidebar is the room list for that space; its
-            space-scoped actions are the header icons above. Room threads are
-            reached from the room header, where "this room" is already implied. */}
-        {accountHomeActive ? (
-          <>
-            <NavButton
-              active={activeView === "activity"}
-              icon={<Clock3 size={ICON_SIZE.control} />}
-              label={t("workspace.activity")}
-              onClick={onOpenActivity}
-            />
-            <NavButton
-              active={activeView === "explore"}
-              icon={<Compass size={ICON_SIZE.control} />}
-              label={t("workspace.explore")}
-              onClick={onOpenExplore}
-            />
-            <NavButton
-              active={activeView === "invites"}
-              count={snapshot.state.domain.invites.length}
-              icon={<Bell size={ICON_SIZE.control} />}
-              label={t("workspace.invites")}
-              onClick={onOpenInvites}
-            />
-          </>
-        ) : null}
         {!roomListReady ? (
           <div className="room-list-status" role="status">
             {roomListReadiness.kind === "failed" ? t("roomList.failed") : t("roomList.loading")}
@@ -1059,36 +1066,43 @@ function RoomSection({
   );
 }
 
-function NavButton({
-  active = false,
+function HeaderActionButton({
+  action,
   count = 0,
   icon,
   label,
-  liveCount = 0,
-  mentionCount = 0,
+  pressed,
   onClick
 }: {
-  active?: boolean;
+  action: string;
   count?: number;
   icon: ReactNode;
   label: string;
-  liveCount?: number;
-  mentionCount?: number;
-  onClick?: () => void;
+  pressed?: boolean;
+  onClick: () => void;
 }) {
   return (
-    <button
-      className={`nav-item ${active ? "is-active" : ""}`}
-      data-count={count || undefined}
-      data-live-count={liveCount || undefined}
-      data-mention-count={mentionCount || undefined}
-      type="button"
-      aria-label={label}
-      onClick={onClick}
-    >
-      {icon}
-      <span className="nav-label">{label}</span>
-    </button>
+    <Tooltip label={label}>
+      {(triggerProps) => (
+        <button
+          {...triggerProps}
+          className={`icon-button ${pressed ? "is-active" : ""}`}
+          data-count={count || undefined}
+          data-header-action={action}
+          type="button"
+          aria-label={label}
+          aria-pressed={pressed}
+          onClick={onClick}
+        >
+          {icon}
+          {count > 0 ? (
+            <span className="workspace-header-badge" aria-hidden="true">
+              {count}
+            </span>
+          ) : null}
+        </button>
+      )}
+    </Tooltip>
   );
 }
 
@@ -1101,24 +1115,31 @@ function SpaceMembersNavButton({
   joinedCount: number;
   onClick: () => void;
 }) {
+  const label = t("spaceMembers.navAccessible", {
+    joined: joinedCount,
+    childOnly: childOnlyCount
+  });
   return (
-    <button
-      className="icon-button space-members-nav"
-      type="button"
-      aria-label={t("spaceMembers.navAccessible", {
-        joined: joinedCount,
-        childOnly: childOnlyCount
-      })}
-      onClick={onClick}
-    >
-      <Users size={ICON_SIZE.control} aria-hidden="true" />
-      <span className="space-members-nav-count">
-        {joinedCount}
-        {childOnlyCount > 0 ? (
-          <span className="space-members-nav-warning"> · +{childOnlyCount}</span>
-        ) : null}
-      </span>
-    </button>
+    <Tooltip label={label}>
+      {(triggerProps) => (
+        <button
+          {...triggerProps}
+          className="icon-button space-members-nav"
+          data-header-action="members"
+          type="button"
+          aria-label={label}
+          onClick={onClick}
+        >
+          <Users size={ICON_SIZE.control} aria-hidden="true" />
+          <span className="space-members-nav-count">
+            {joinedCount}
+            {childOnlyCount > 0 ? (
+              <span className="space-members-nav-warning"> · +{childOnlyCount}</span>
+            ) : null}
+          </span>
+        </button>
+      )}
+    </Tooltip>
   );
 }
 

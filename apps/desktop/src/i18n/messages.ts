@@ -987,11 +987,13 @@ export type MessageId =
   | "scheduled.edit"
   | "scheduled.localFallback"
   | "scheduled.localFallbackNotice"
+  | "scheduled.panelEmpty"
   | "scheduled.persistenceFailed"
   | "scheduled.save"
   | "scheduled.schedule"
   | "scheduled.sendLater"
   | "scheduled.serverDelayedEvents"
+  | "scheduled.threadReply"
   | "scheduled.timeInput"
   | "scheduled.timeEarlierHour"
   | "scheduled.timeEarlierTenMinutes"
@@ -1497,6 +1499,7 @@ export type MessageId =
   | "workspace.rooms"
   | "workspace.resizeRoomList"
   | "workspace.resizeRightPanel"
+  | "workspace.scheduledMessages"
   | "workspace.search"
   | "workspace.searchEverywhere"
   | "workspace.searchInRoom"
@@ -2805,10 +2808,12 @@ const en: Catalog = {
   "scheduled.persistenceFailed":
     "Local scheduled-send changes could not be saved; they may not survive restarting the app.",
   "scheduled.localFallbackNotice": "Will send only while this app is running.",
+  "scheduled.panelEmpty": "No scheduled messages",
   "scheduled.save": "Save scheduled send",
   "scheduled.schedule": "Schedule send",
   "scheduled.sendLater": "Send later",
   "scheduled.serverDelayedEvents": "Server scheduled",
+  "scheduled.threadReply": "Thread reply",
   "scheduled.timeInput": "Scheduled send time",
   // #1124: mouse-driven adjustments for the native scheduled-send time field.
   "scheduled.timeEarlierHour": "1 hour earlier",
@@ -3322,6 +3327,7 @@ const en: Catalog = {
   "workspace.rooms": "Rooms",
   "workspace.resizeRoomList": "Resize room list",
   "workspace.resizeRightPanel": "Resize right panel",
+  "workspace.scheduledMessages": "Scheduled messages",
   "workspace.search": "Search",
   "workspace.searchEverywhere": "Search everywhere",
   "workspace.searchInRoom": "Search in {roomName}",
@@ -4520,12 +4526,14 @@ const ja: Catalog = {
   "scheduled.edit": "予約送信を編集",
   "scheduled.localFallback": "ローカルフォールバック",
   "scheduled.localFallbackNotice": "このアプリが起動中のときだけ送信されます。",
+  "scheduled.panelEmpty": "予約メッセージはありません",
   "scheduled.persistenceFailed":
     "予約送信の変更をこの端末に保存できませんでした。アプリを再起動すると失われる可能性があります。",
   "scheduled.save": "予約送信を保存",
   "scheduled.schedule": "予約送信",
   "scheduled.sendLater": "あとで送信",
   "scheduled.serverDelayedEvents": "サーバー予約",
+  "scheduled.threadReply": "スレッド返信",
   "scheduled.timeInput": "予約送信日時",
   "scheduled.timeEarlierHour": "1 時間前",
   "scheduled.timeEarlierTenMinutes": "10 分前",
@@ -5032,6 +5040,7 @@ const ja: Catalog = {
   "workspace.rooms": "ルーム",
   "workspace.resizeRoomList": "ルームリストの幅を変更",
   "workspace.resizeRightPanel": "右パネルの幅を変更",
+  "workspace.scheduledMessages": "予約メッセージ",
   "workspace.search": "検索",
   "workspace.searchEverywhere": "すべてを検索",
   "workspace.searchInRoom": "{roomName}内を検索",

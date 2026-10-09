@@ -336,18 +336,11 @@ describe("styles.css token system", () => {
       "--activity-row-action-radius"
     ]);
     expectBlockUses(selectorBlock(".workspace-button[data-count]::after"), ["--nav-badge-font-size"]);
-    expectBlockUses(selectorBlock(".nav-item[data-count]::after"), [
+    expectBlockUses(selectorBlock(".workspace-header-badge"), [
       "--nav-badge-size",
       "--nav-badge-padding-inline",
       "--nav-badge-font-size"
     ]);
-    expectBlockUses(
-      groupedSelectorBlock(
-        /\.nav-item\[data-mention-count\]\s+\.nav-label::after,\s*\.nav-item\[data-live-count\]\s+\.nav-label::before/,
-        "nav notification dots"
-      ),
-      ["--nav-dot-size", "--nav-dot-margin-inline-start"]
-    );
     expectBlockUses(selectorBlock(".room-mention-dot"), ["--nav-dot-size"]);
     expectBlockUses(selectorBlock(".room-count"), ["--room-count-min-inline-size", "--room-count-font-size"]);
     expectBlockUses(selectorBlock(".room-count:not(:empty)"), [

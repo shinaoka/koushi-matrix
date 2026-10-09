@@ -206,7 +206,6 @@
   --timeline-navigation-control-block-size: 36px;
 }
 
-.desktop[data-density="comfortable"] .nav-item,
 .desktop[data-density="comfortable"] .room-item {
   min-height: 39px;
   font-size: 15px;
@@ -1582,8 +1581,48 @@ button:disabled {
   display: flex;
   min-width: 0;
   align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
+}
+
+.workspace-header-context-actions {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-header-end-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-header-actions .icon-button[data-count] {
+  position: relative;
+}
+
+.workspace-header-badge {
+  position: absolute;
+  inset-block-start: -2px;
+  inset-inline-end: -2px;
+  min-inline-size: var(--nav-badge-size);
+  block-size: var(--nav-badge-size);
+  padding: 0 var(--nav-badge-padding-inline);
+  border: 2px solid var(--sidebar);
+  border-radius: var(--r-pill);
+  color: var(--brand-contrast);
+  font-size: var(--nav-badge-font-size);
+  font-weight: 820;
+  line-height: calc(var(--nav-badge-size) - 4px);
+  text-align: center;
+  background: var(--unread);
+}
+
+.workspace-header-actions .icon-button:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
 }
 
 .workspace-header-actions.no-wrap {
@@ -1636,7 +1675,6 @@ button:disabled {
   position: relative;
 }
 
-.nav-item,
 .room-item {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr) auto;
@@ -1652,12 +1690,10 @@ button:disabled {
   background: transparent;
 }
 
-.nav-item:hover,
 .room-item:hover {
   background: var(--surface-hover);
 }
 
-.nav-item.is-active,
 .room-item.is-active {
   border-inline-start-color: var(--brand);
   color: var(--brand-hover);
@@ -1685,38 +1721,6 @@ button:disabled {
   font-weight: 750;
 }
 
-.nav-item[data-count] {
-  position: relative;
-}
-
-.nav-item[data-count]::after {
-  min-inline-size: var(--nav-badge-size);
-  block-size: var(--nav-badge-size);
-  padding: 0 var(--nav-badge-padding-inline);
-  border-radius: var(--r-pill);
-  content: attr(data-count);
-  color: var(--brand-contrast);
-  font-size: var(--nav-badge-font-size);
-  line-height: var(--nav-badge-size);
-  text-align: center;
-  background: var(--danger);
-}
-
-.nav-item[data-mention-count] .nav-label::after,
-.nav-item[data-live-count] .nav-label::before {
-  display: inline-block;
-  inline-size: var(--nav-dot-size);
-  block-size: var(--nav-dot-size);
-  margin-inline-start: var(--nav-dot-margin-inline-start);
-  border-radius: var(--r-pill);
-  content: "";
-  vertical-align: middle;
-}
-
-.nav-item[data-mention-count] .nav-label::after {
-  background: var(--mention);
-}
-
 .room-mention-dot {
   display: inline-block;
   inline-size: var(--nav-dot-size);
@@ -1730,12 +1734,6 @@ button:disabled {
   inline-size: var(--nav-dot-size);
   block-size: var(--nav-dot-size);
   border-radius: var(--r-pill);
-  background: var(--unread);
-}
-
-.nav-item[data-live-count] .nav-label::before {
-  margin-inline-end: 2px;
-  margin-inline-start: 0;
   background: var(--unread);
 }
 
@@ -1936,7 +1934,6 @@ button:disabled {
   }
 }
 
-.nav-label,
 .room-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1945,7 +1942,6 @@ button:disabled {
 
 :where(
   .workspace-name,
-  .nav-label,
   .room-name,
   .channel-title h1,
   .channel-title span:last-child,

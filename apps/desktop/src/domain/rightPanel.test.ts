@@ -97,6 +97,23 @@ describe("right panel context menu routing", () => {
     );
   });
 
+  test("closes scheduled messages when the Rust projection is closed", () => {
+    expect(
+      effectiveRightPanelModeForSnapshot("scheduledMessages", snapshotForPanelMode("ready", false))
+    ).toBe("closed");
+
+    const open = snapshotForPanelMode("ready", false);
+    open.state.ui.scheduled_sends_list = {
+      kind: "open",
+      scope: { kind: "home" },
+      capability: "unknown",
+      items: []
+    };
+    expect(effectiveRightPanelModeForSnapshot("scheduledMessages", open)).toBe(
+      "scheduledMessages"
+    );
+  });
+
   test("closes missing thread mode without affecting other ready panels", () => {
     expect(effectiveRightPanelModeForSnapshot("thread", snapshotForPanelMode("ready", false))).toBe(
       "closed"

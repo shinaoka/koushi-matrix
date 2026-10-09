@@ -235,12 +235,18 @@ function ScheduledMessagesList({
   capability,
   items,
   onCancel,
-  onReschedule
+  onReschedule,
+  renderItemMeta
 }: {
   capability: ScheduledSendCapability;
   items: ScheduledSendItem[];
   onCancel: (scheduledId: string) => void;
   onReschedule: (scheduledId: string, body: string, sendAtMs: number) => void;
+  /**
+   * Optional per-item context (destination room label, thread-reply flag). The
+   * selected-room pane omits it; the scoped right panel supplies it.
+   */
+  renderItemMeta?: (item: ScheduledSendItem) => ReactNode;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editBody, setEditBody] = useState("");
@@ -295,6 +301,7 @@ function ScheduledMessagesList({
                 <span className="scheduled-message-body" dir="auto">
                   {item.body}
                 </span>
+                {renderItemMeta ? renderItemMeta(item) : null}
               </div>
               {isEditing ? (
                 <ImeSafeForm

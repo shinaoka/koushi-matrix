@@ -203,7 +203,8 @@ import type {
   SettingsPatch,
   SpaceMemberRoleOption,
   ThreadOpenIntent,
-  ThreadsListScope
+  ThreadsListScope,
+  ScheduledSendsScope
 } from "./domain/types";
 import {
   attachmentTransferHasFiles,
@@ -1334,9 +1335,28 @@ function AccountContent({
   const [loginDeviceName, setLoginDeviceName] = useState("");
   const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
   const [recoverySecretFilled, setRecoverySecretFilled] = useState(false);
-  const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>(
+  const [rightPanelMode, setRightPanelModeState] = useState<RightPanelMode>(
     settingsScope === "account" ? "userSettings" : "closed"
   );
+  // #1160: the scheduled-messages projection is Rust-owned and body-bearing, so
+  // every transition away from its panel closes the Rust projection while this
+  // account still owns the bound API. `effectiveRightPanelModeForSnapshot` then
+  // drops the items, so a closed projection can never keep rendering them.
+  const rightPanelModeRef = useRef<RightPanelMode>(rightPanelMode);
+  rightPanelModeRef.current = rightPanelMode;
+  function setRightPanelMode(nextMode: RightPanelMode): void {
+    if (
+      rightPanelModeRef.current === "scheduledMessages" &&
+      nextMode !== "scheduledMessages"
+    ) {
+      settleCommandInBackground(api.closeScheduledSendsList());
+    }
+    rightPanelModeRef.current = nextMode;
+    setRightPanelModeState(nextMode);
+  }
+  function updateRightPanelMode(updater: (mode: RightPanelMode) => RightPanelMode): void {
+    setRightPanelMode(updater(rightPanelModeRef.current));
+  }
   const shortcutHandler = useRef(createLatestShortcutHandler()).current;
   const [selectedProfileUserId, setSelectedProfileUserId] = useState<string | null>(null);
   const [peoplePanelScope, setPeoplePanelScope] = useState<PeoplePanelScope | null>(null);
@@ -3498,8 +3518,16 @@ function AccountContent({
     return (await Promise.all(drains)).every(Boolean);
   }
 
-  drainComposerForAccountSwitchRef.current = () =>
-    drainActiveComposerScopesForNavigation(true, true);
+  drainComposerForAccountSwitchRef.current = async () => {
+    const drained = await drainActiveComposerScopesForNavigation(true, true);
+    // #1160: a backgrounded tab closes only the body-bearing scheduled-sends
+    // projection, never the reservation queue, while the previous account still
+    // owns the bound API.
+    if (rightPanelModeRef.current === "scheduledMessages") {
+      await settleCommand(api.closeScheduledSendsList());
+    }
+    return drained;
+  };
   useEffect(() => {
     onRegisterBeforeAccountSwitch(() => drainComposerForAccountSwitchRef.current());
     return () => onRegisterBeforeAccountSwitch(null);
@@ -3519,7 +3547,7 @@ function AccountContent({
     setSpaceMembersRoleTransportFailure(null);
     setPeoplePanelScope(null);
     setSelectedProfileUserId(null);
-    setRightPanelMode((mode) =>
+    updateRightPanelMode((mode) =>
       mode === "people" || mode === "profile" ? "closed" : mode
     );
   }, []);
@@ -5284,6 +5312,20 @@ function AccountContent({
     setRightPanelMode("closed");
   }
 
+  async function openScheduledSendsPanel(scope: ScheduledSendsScope) {
+    roomSettingsRequestRef.current += 1;
+    await closeFocusedContextIfHiddenBy("scheduledMessages");
+    await settleCommand(api.openScheduledSendsList(scope));
+    setRightPanelMode("scheduledMessages");
+  }
+
+  function closeScheduledSendsPanel() {
+    // The mode transition dispatches the Rust close while this account still
+    // owns the bound API; `effectiveRightPanelModeForSnapshot` then gates the
+    // items on the projected state.
+    setRightPanelMode("closed");
+  }
+
   async function paginateThreadsList(scope: ThreadsListScope) {
     await settleCommand(api.paginateThreadsList(scope));
   }
@@ -6234,6 +6276,10 @@ function AccountContent({
       await closeThreadsListPanel();
       return;
     }
+    if (rightPanelMode === "scheduledMessages") {
+      closeScheduledSendsPanel();
+      return;
+    }
     if (rightPanelMode === "search") {
       await closeSearchPanel();
       return;
@@ -6849,6 +6895,12 @@ function AccountContent({
           onOpenThreads={() => {
             runInBackground(openThreadsListPanel(threadsListScope));
           }}
+          onOpenScheduledMessages={() => {
+            const scope: ScheduledSendsScope = activeSpace
+              ? { kind: "space", space_id: activeSpace.space_id }
+              : { kind: "home" };
+            runInBackground(openScheduledSendsPanel(scope));
+          }}
           onOpenSpaceInfo={() => {
             runInBackground(setRightPanelModeClosingFocusedContext("spaceInfo"));
           }}
@@ -7210,6 +7262,12 @@ function AccountContent({
           }}
           onPaginateThreadsList={(scope) => {
             runInBackground(paginateThreadsList(scope));
+          }}
+          onCancelScheduledSend={(scheduledId) => {
+            runInBackground(cancelScheduledSend(scheduledId));
+          }}
+          onRescheduleScheduledSend={(scheduledId, body, sendAtMs) => {
+            runInBackground(rescheduleScheduledSend(scheduledId, body, sendAtMs));
           }}
           onOpenRecovery={() => {
             runInBackground(setRightPanelModeClosingFocusedContext("recovery"));
