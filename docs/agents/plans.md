@@ -35,6 +35,15 @@ records the open decisions (policy owner, read intent, measurement first) and
 what was dropped (the SDK search-reader LRU, a second React retention limit, the
 invented 64 MiB and p95/p99 gates, and the conditional SDK gap step).
 
+[#1230 cold Room timeline retirement](../plans/2026-10-09-issue1230-cold-room-retirement.md)
+tracks the retention half. Its revision-1 retirement policy was **rejected** by
+the independent pre-implementation review: read work exists independently of
+`local_read_correlations`, so no correlation-based eligibility predicate is
+sound, and the stated residual was not self-healing. The record lists the nine
+requirements the ownership move must satisfy, the retirement variants not to
+retry, and a factual correction -- Room retirement already has a quiescence fence
+inside `clear_thread_root_projections_for_room`.
+
 - Rooms / DMs collapsible sidebar sections (design and implementation record):
   [2026-09-19-sidebar-sections-design.md](../superpowers/specs/2026-09-19-sidebar-sections-design.md)
   — its Low priority removal is superseded by #955 below.

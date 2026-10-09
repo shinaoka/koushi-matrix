@@ -91,11 +91,15 @@ existing unsubscribe bookkeeping — is **not safe as designed**. Verified hazar
    retirement runs; after removal,
    `handle_local_read_boundary_observed` returns early on the absent key
    (`timeline/read_state.rs:1694-1698`) and the observation is dropped.
-2. **Room retirement has no quiescence fence.** `unsubscribe_timeline` runs
-   `invalidate_and_quiesce` only for non-Room keys; the Room path does only
-   `clear_thread_root_projections_for_room` (`manager.rs:1735-1741`). That was
-   harmless while Room actors were only removed at teardown; it is not harmless
-   for mid-session retirement.
+2. **Correction (later finding): Room retirement *does* have a quiescence fence.**
+   An earlier revision of this record claimed the opposite. `unsubscribe_timeline`
+   calls `clear_thread_root_projections_for_room` for Room keys
+   (`manager.rs:1735-1741`), and that function's first step is
+   `timeline_actor_generations.invalidate_and_quiesce(key).await`
+   (`timeline/thread_projection.rs:520-526`). The fence exists indirectly and must
+   not be added a second time. What is *not* a fence is read ingress: the
+   read-boundary check compares the handle's `Arc<TimelinePositionIndex>`
+   (`timeline/read_state.rs:1694-1706`), not the generation gate.
 3. **Teardown is abort-only.** `Drop for TimelineActorHandle` aborts without
    awaiting (`timeline/actor.rs:831-840`), which engineering rules 2 forbids
    ("Tokio `JoinHandle::drop` detaches the task and is never an orderly
