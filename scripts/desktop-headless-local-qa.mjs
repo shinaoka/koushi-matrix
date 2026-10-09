@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   cpSync,
   createWriteStream,
   existsSync,
@@ -485,6 +486,13 @@ function runCoreHeadlessQa({
   appendQaOutput(logPath, result.stdout, result.stderr);
   if (result.status !== 0) {
     if (result.error?.code === "ETIMEDOUT") {
+      // #1191: the outer runner deadline killed the scenario before it could
+      // report its own stage. Record a validated, identifier-free coordinate so
+      // the lane can tell a stalled scenario from the outer deadline.
+      appendFileSync(
+        join(dirname(logPath), `core-${qaLabel}-stderr.log`),
+        `Headless core QA failed: timeout ${scenario}: ${lastQaProgressToken(result.stdout)}\n`
+      );
       throw new Error(
         `headless core QA (${qaLabel}) timed out for ${serverKind}; child output omitted after private-data validation`
       );
@@ -512,6 +520,16 @@ function assertQaOutputIsPrivate(label, result, secrets) {
   assertNoMatrixIdentifiers(output, label);
   assertNoLocalPaths(output, label);
   assertNoRawSdkErrors(output, label);
+}
+
+/**
+ * #1191: the last validated `<name>=ok` scenario token, so an outer-timeout
+ * failure line carries a private-data-free progress coordinate.
+ */
+function lastQaProgressToken(stdout) {
+  const matches = [...String(stdout ?? "").matchAll(/^([a-z0-9_]+)=ok\b/gm)];
+  const last = matches.at(-1)?.[1];
+  return last === undefined ? "progress=none" : `last=${last}=ok`;
 }
 
 function appendQaOutput(logPath, stdout, stderr) {
