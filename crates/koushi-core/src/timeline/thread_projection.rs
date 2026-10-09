@@ -1275,6 +1275,36 @@ struct ThreadRootProjectionRenderContext {
     reactions: Vec<ReactionGroup>,
 }
 
+/// #1237: the reply target a raw thread projection should show.
+///
+/// Mirrors the SDK's thread-focus rule (`extract_reply_and_thread_root`): in a
+/// thread timeline an `m.thread` relation with `is_falling_back: true` is the
+/// compatibility fallback (normally the root or the previous event), not a real
+/// reply, so it must not produce a reply quote. Outside a thread timeline — and
+/// for a genuine in-thread reply (`is_falling_back` absent/false) — the
+/// `m.in_reply_to` target is kept.
+fn thread_in_reply_to_event_id(key: &TimelineKey, content: &serde_json::Value) -> Option<String> {
+    let relation = content.get("m.relates_to");
+    if matches!(key.kind, TimelineKind::Thread { .. }) {
+        let is_thread_relation = relation
+            .and_then(|relation| relation.get("rel_type"))
+            .and_then(serde_json::Value::as_str)
+            == Some("m.thread");
+        let is_falling_back = relation
+            .and_then(|relation| relation.get("is_falling_back"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if is_thread_relation && is_falling_back {
+            return None;
+        }
+    }
+    relation
+        .and_then(|relation| relation.get("m.in_reply_to"))
+        .and_then(|reply| reply.get("event_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
 /// Convert the cache/network event payload into a self-contained root DTO
 /// without inserting it into the SDK timeline. `load_or_fetch_event` exposes a
 /// public decrypted raw event, not the SDK-private `EventTimelineItem`; this
@@ -1367,12 +1397,7 @@ fn thread_root_projection_item_from_raw_with_context(
         message_kind,
         spoiler_spans,
         timestamp_ms,
-        in_reply_to_event_id: content
-            .get("m.relates_to")
-            .and_then(|relation| relation.get("m.in_reply_to"))
-            .and_then(|reply| reply.get("event_id"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned),
+        in_reply_to_event_id: thread_in_reply_to_event_id(key, content),
         formatted: formatted.clone(),
         reply_quote: None,
         thread_root: None,
