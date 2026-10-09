@@ -289,6 +289,7 @@ pub fn build_state_delta(
     changed_slice!(thread);
     changed_slice!(thread_attention);
     changed_slice!(threads_list);
+    changed_slice!(scheduled_sends_list);
     changed_slice!(focused_context);
     changed_slice!(search);
     if previous.search_crawler.last_active != next.search_crawler.last_active {
@@ -589,6 +590,7 @@ fn audit_app_state_delta_slices(state: &AppState) {
         thread: _,
         thread_attention: _,
         threads_list: _,
+        scheduled_sends_list: _,
         thread_root_projections: _,
         focused_context: _,
         search: _,

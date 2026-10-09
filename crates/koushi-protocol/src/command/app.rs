@@ -237,6 +237,13 @@ pub enum AppCommand {
     CloseThreadsList {
         request_id: RequestId,
     },
+    OpenScheduledSendsList {
+        request_id: RequestId,
+        scope: koushi_state::ScheduledSendsScope,
+    },
+    CloseScheduledSendsList {
+        request_id: RequestId,
+    },
     PaginateThreadsList {
         request_id: RequestId,
         scope: koushi_state::ThreadsListScope,
@@ -601,6 +608,15 @@ impl fmt::Debug for AppCommand {
                 .finish(),
             Self::CloseThreadsList { request_id } => formatter
                 .debug_struct("CloseThreadsList")
+                .field("request_id", request_id)
+                .finish(),
+            Self::OpenScheduledSendsList { request_id, .. } => formatter
+                .debug_struct("OpenScheduledSendsList")
+                .field("request_id", request_id)
+                .field("scope", &"ScheduledSendsScope(..)")
+                .finish(),
+            Self::CloseScheduledSendsList { request_id } => formatter
+                .debug_struct("CloseScheduledSendsList")
                 .field("request_id", request_id)
                 .finish(),
             Self::PaginateThreadsList { request_id, .. } => formatter

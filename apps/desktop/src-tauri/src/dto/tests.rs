@@ -1861,6 +1861,48 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
             failure_kind: koushi_state::TimelineGapRepairFailureKind::Sdk,
         },
     };
+    // #1160: a populated, explicitly opened Space-scoped scheduled-sends list
+    // with one thread reply and one plain room reservation.
+    state.scheduled_sends = koushi_state::ScheduledSendStore {
+        capability: koushi_state::ScheduledSendCapability::ServerDelayedEvents,
+        items: [
+            (
+                "sched-contract-room".to_owned(),
+                koushi_state::ScheduledSendItem {
+                    scheduled_id: "sched-contract-room".to_owned(),
+                    room_id: "!low-priority-room:example.invalid".to_owned(),
+                    thread_root_event_id: None,
+                    body: "Scheduled room body".to_owned(),
+                    send_at_ms: 1_800_000_000_000,
+                    handle: koushi_state::ScheduledSendHandle::Local,
+                    is_dispatching: false,
+                },
+            ),
+            (
+                "sched-contract-thread".to_owned(),
+                koushi_state::ScheduledSendItem {
+                    scheduled_id: "sched-contract-thread".to_owned(),
+                    room_id: "!room:example.invalid".to_owned(),
+                    thread_root_event_id: Some("$scheduled-thread-root:example.invalid".to_owned()),
+                    body: "Scheduled thread reply body".to_owned(),
+                    send_at_ms: 1_900_000_000_000,
+                    handle: koushi_state::ScheduledSendHandle::Server {
+                        delay_id: "delay-contract".to_owned(),
+                    },
+                    is_dispatching: false,
+                },
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    state.scheduled_sends_list = koushi_state::ScheduledSendsListState::Open {
+        scope: koushi_state::ScheduledSendsScope::Space {
+            space_id: "!space:example.invalid".to_owned(),
+        },
+        capability: koushi_state::ScheduledSendCapability::ServerDelayedEvents,
+        items: state.scheduled_sends.items.values().cloned().collect(),
+    };
     state.thread = koushi_state::ThreadPaneState::Open {
         room_id: "!room:example.invalid".to_owned(),
         root_event_id: "$thread-root:example.invalid".to_owned(),
@@ -2335,5 +2377,22 @@ fn command_settlement_serializes_as_v1_camel_case_dto() {
             "protocolVersion": 1,
             "publishedGeneration": 43,
         })
+    );
+}
+
+/// #1160: a full snapshot always carries the scheduled-sends panel slice; the
+/// closed projection is explicit rather than an absent field, so the renderer
+/// can tell "panel closed" from "this build is older than the slice".
+#[test]
+fn scheduled_sends_list_full_snapshot_is_explicitly_closed() {
+    let value = serde_json::to_value(super::frontend_app_state_for_platform(
+        AppState::default(),
+        koushi_state::DisplayPlatform::Linux,
+    ))
+    .expect("default app state should serialize");
+
+    assert_eq!(
+        value["ui"]["scheduled_sends_list"],
+        json!({ "kind": "closed" })
     );
 }

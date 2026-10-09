@@ -59,6 +59,7 @@ import type {
   StageUploadBytesRequestItem,
   StagedUploadCompressionChoice,
   StagedUploadOutputSelection,
+  ScheduledSendsScope,
   SubmissionResponse,
   ThreadOpenIntent,
   ThreadsListScope,
@@ -136,6 +137,7 @@ export interface DesktopApi {
   checkForDesktopUpdate(): Promise<void>;
   downloadDesktopUpdate(expectedGeneration: number): Promise<void>;
   restartToInstallDesktopUpdate(): Promise<void>;
+  ignoreDesktopUpdate(version: string): Promise<void>;
   settlementSnapshot(accountTabId?: string): Promise<DesktopSnapshot>;
   resyncSnapshot(accountTabId?: string): Promise<DesktopSnapshot>;
   getDiagnosticSnapshot(): Promise<DiagnosticLogSnapshot>;
@@ -398,6 +400,8 @@ export interface DesktopApi {
   openThreadsList(scope: ThreadsListScope): Promise<CommandAdmission>;
   closeThreadsList(): Promise<CommandAdmission>;
   paginateThreadsList(scope: ThreadsListScope): Promise<CommandAdmission>;
+  openScheduledSendsList(scope: ScheduledSendsScope): Promise<CommandAdmission>;
+  closeScheduledSendsList(): Promise<CommandAdmission>;
   openFilesView(scope: FilesViewScope, filter: AttachmentFilter, sort: AttachmentSort): Promise<CommandAdmission>;
   closeFilesView(): Promise<CommandAdmission>;
   subscribeReceiptReader(

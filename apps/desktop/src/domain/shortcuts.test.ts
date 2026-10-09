@@ -33,8 +33,8 @@ describe("shortcut registry", () => {
 
   test("records Element-compatible settings and navigation shortcuts", () => {
     expect(shortcutById("showKeyboardSettings")).toBeUndefined();
-    expect(shortcutById("openUserSettings")).toMatchObject({
-      labelMessageId: "shortcut.openUserSettings",
+    expect(shortcutById("openAppSettings")).toMatchObject({
+      labelMessageId: "shortcut.openAppSettings",
       keys: ["Cmd", ","],
       platforms: ["macos"],
       parity: "same"
@@ -66,7 +66,7 @@ describe("shortcut registry", () => {
   test("exposes parity rows and native menu accelerators from the same registry", () => {
     expect(elementShortcutParity().map((row) => row.id)).toContain("filterRooms");
     expect(menuAccelerators()).toContainEqual({
-      id: "openUserSettings",
+      id: "openAppSettings",
       accelerator: "CmdOrCtrl+,",
       nativeMenu: "app"
     });
@@ -102,7 +102,7 @@ describe("shortcut registry", () => {
         shiftKey: false,
         altKey: false
       })
-    ).toBe("openUserSettings");
+    ).toBe("openAppSettings");
     // Windows/Linux: Ctrl+F → searchInRoom
     expect(
       shortcutIdForKeyboardEvent(
@@ -208,7 +208,8 @@ describe("shortcut registry", () => {
   test("accepts native menu payloads only for registered implemented actions", () => {
     expect(shortcutActionFromMenuPayload("showKeyboardSettings")).toBeNull();
     expect(shortcutActionFromMenuPayload("showHelp")).toBe("showHelp");
-    expect(shortcutActionFromMenuPayload("openUserSettings")).toBe("openUserSettings");
+    expect(shortcutActionFromMenuPayload("openAccountSettings")).toBe("openAccountSettings");
+    expect(shortcutActionFromMenuPayload("openAppSettings")).toBe("openAppSettings");
     expect(shortcutActionFromMenuPayload("logout")).toBe("logout");
     expect(shortcutActionFromMenuPayload("toggleRightPanel")).toBe("toggleRightPanel");
     expect(shortcutActionFromMenuPayload("toggleFullscreen")).toBe("toggleFullscreen");

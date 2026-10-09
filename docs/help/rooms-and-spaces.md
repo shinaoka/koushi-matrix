@@ -7,21 +7,26 @@
 A room contains a conversation. A Space groups rooms; joining a Space does not
 necessarily join every room it lists.
 
-Choose **Home** in the left rail to see your account-level navigation, including
-**Invites** and **Explore**. Choose a Space to see its rooms. If a conversation
-is absent from a Space view, return to Home before assuming it has disappeared.
+Choose **Home** in the left rail to see your account-level navigation. Home's
+header row carries **Activity**, **Explore**, and **Invites** at the start and
+**Threads**, **Scheduled messages**, and **Info** at the end. A Space replaces
+the start of that row with **Members** and keeps the same **Threads**,
+**Scheduled messages**, and **Info** actions at the end. Choose a Space to see
+its rooms. If a conversation is absent from a Space view, return to Home before
+assuming it has disappeared. The clock button opens the
+[scheduled messages panel](messaging.md#schedule-a-message).
 
 ## Join a room
 
 If you received an invitation:
 
-1. Open **Home → Invites**.
+1. Open **Home**, then choose **Invites** in the header.
 2. Select the invitation and check the room and inviter.
 3. Choose **Accept** to join, or **Decline** to reject it.
 
 If you have a room address:
 
-1. Open **Home → Explore**.
+1. Open **Home**, then choose **Explore** in the header.
 2. Enter the room address or Matrix link in the address field and choose
    **Preview**.
 3. Review the preview and choose the available join action. Invite-only rooms

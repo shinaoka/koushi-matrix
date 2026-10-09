@@ -94,8 +94,9 @@ export type MessageId =
   | "app.title"
   | "app.versionMismatch.title"
   | "app.versionMismatch.detail"
+  | "menu.accountSettings"
+  | "menu.appSettings"
   | "menu.aboutKoushi"
-  | "menu.settings"
   | "menu.signOut"
   | "menu.toggleRightPanel"
   | "menu.koushiHelp"
@@ -806,7 +807,6 @@ export type MessageId =
   | "settings.accounts"
   | "settings.appearance"
   | "settings.language"
-  | "settings.languageDefault"
   | "settings.languageEnglish"
   | "settings.languageJapanese"
   | "settings.accountSwitcher"
@@ -854,6 +854,8 @@ export type MessageId =
   | "settings.updateAvailableTitle"
   | "settings.updateAvailableConfirm"
   | "settings.updateDownload"
+  | "settings.updateIgnore"
+  | "settings.updateIgnored"
   | "settings.updateDownloading"
   | "settings.updateReady"
   | "settings.updateRestart"
@@ -1038,11 +1040,13 @@ export type MessageId =
   | "scheduled.edit"
   | "scheduled.localFallback"
   | "scheduled.localFallbackNotice"
+  | "scheduled.panelEmpty"
   | "scheduled.persistenceFailed"
   | "scheduled.save"
   | "scheduled.schedule"
   | "scheduled.sendLater"
   | "scheduled.serverDelayedEvents"
+  | "scheduled.threadReply"
   | "scheduled.timeInput"
   | "scheduled.timeEarlierHour"
   | "scheduled.timeEarlierTenMinutes"
@@ -1314,7 +1318,7 @@ export type MessageId =
   | "shortcut.noteCallsDeferred"
   | "shortcut.noteGoHomeAdapted"
   | "shortcut.noteUploadUiDeferred"
-  | "shortcut.openUserSettings"
+  | "shortcut.openAppSettings"
   | "shortcut.parityAdapted"
   | "shortcut.parityDeferred"
   | "shortcut.parityNotApplicable"
@@ -1548,6 +1552,7 @@ export type MessageId =
   | "workspace.rooms"
   | "workspace.resizeRoomList"
   | "workspace.resizeRightPanel"
+  | "workspace.scheduledMessages"
   | "workspace.search"
   | "workspace.searchEverywhere"
   | "workspace.searchInRoom"
@@ -1936,7 +1941,8 @@ const en: Catalog = {
   // Native menu bar. Title Case matches the platform menu convention, so these
   // are separate from the sentence-case shortcut sheet labels.
   "menu.aboutKoushi": "About Koushi",
-  "menu.settings": "Settings…",
+  "menu.accountSettings": "Account Settings…",
+  "menu.appSettings": "App Settings…",
   "menu.signOut": "Sign Out",
   "menu.toggleRightPanel": "Toggle Right Panel",
   "menu.koushiHelp": "Koushi Help",
@@ -2658,9 +2664,8 @@ const en: Catalog = {
   "settings.accounts": "Accounts",
   "settings.appearance": "Appearance",
   "settings.language": "Language",
-  "settings.languageDefault": "Default (English)",
   "settings.languageEnglish": "English",
-  "settings.languageJapanese": "Japanese",
+  "settings.languageJapanese": "日本語",
   "settings.accountSwitcher": "Account switcher",
   "settings.current": "Current",
   "settings.autoLoadOlderMessages": "Automatically load older messages",
@@ -2709,6 +2714,9 @@ const en: Catalog = {
   "settings.updateAvailableTitle": "Update available",
   "settings.updateAvailableConfirm": "Download and install Koushi {version}?",
   "settings.updateDownload": "Download update",
+  "settings.updateIgnore": "Ignore this version",
+  "settings.updateIgnored":
+    "Automatic reminders are off for this version until Koushi restarts. You can still download it.",
   "settings.updateDownloading": "Downloading and verifying Koushi {version}…",
   "settings.updateReady": "Koushi {version} is ready to install.",
   "settings.updateRestart": "Restart to install",
@@ -2908,10 +2916,12 @@ const en: Catalog = {
   "scheduled.persistenceFailed":
     "Local scheduled-send changes could not be saved; they may not survive restarting the app.",
   "scheduled.localFallbackNotice": "Will send only while this app is running.",
+  "scheduled.panelEmpty": "No scheduled messages",
   "scheduled.save": "Save scheduled send",
   "scheduled.schedule": "Schedule send",
   "scheduled.sendLater": "Send later",
   "scheduled.serverDelayedEvents": "Server scheduled",
+  "scheduled.threadReply": "Thread reply",
   "scheduled.timeInput": "Scheduled send time",
   // #1124: mouse-driven adjustments for the native scheduled-send time field.
   "scheduled.timeEarlierHour": "1 hour earlier",
@@ -3187,7 +3197,7 @@ const en: Catalog = {
   "shortcut.noteCallsDeferred": "Calls are out of scope for this milestone.",
   "shortcut.noteGoHomeAdapted": "macOS uses Ctrl+Shift+H in some Matrix clients; this prototype keeps one cross-platform row.",
   "shortcut.noteUploadUiDeferred": "Upload UI is not implemented yet.",
-  "shortcut.openUserSettings": "Account Settings",
+  "shortcut.openAppSettings": "App Settings",
   "shortcut.parityAdapted": "adapted",
   "shortcut.parityDeferred": "deferred",
   "shortcut.parityNotApplicable": "not applicable",
@@ -3425,6 +3435,7 @@ const en: Catalog = {
   "workspace.rooms": "Rooms",
   "workspace.resizeRoomList": "Resize room list",
   "workspace.resizeRightPanel": "Resize right panel",
+  "workspace.scheduledMessages": "Scheduled messages",
   "workspace.search": "Search",
   "workspace.searchEverywhere": "Search everywhere",
   "workspace.searchInRoom": "Search in {roomName}",
@@ -3713,7 +3724,8 @@ const ja: Catalog = {
   "app.versionMismatch.detail":
     "コンポーネントの同期が取れていないため、このセッションを読み込めませんでした。Koushi を完全に終了してから、もう一度開いてください。",
   "menu.aboutKoushi": "Koushi について",
-  "menu.settings": "設定…",
+  "menu.accountSettings": "アカウント設定…",
+  "menu.appSettings": "アプリ設定…",
   "menu.signOut": "サインアウト",
   "menu.toggleRightPanel": "右パネルを切り替え",
   "menu.koushiHelp": "Koushi ヘルプ",
@@ -4425,8 +4437,7 @@ const ja: Catalog = {
   "settings.accounts": "アカウント",
   "settings.appearance": "外観",
   "settings.language": "言語",
-  "settings.languageDefault": "標準（英語）",
-  "settings.languageEnglish": "英語",
+  "settings.languageEnglish": "English",
   "settings.languageJapanese": "日本語",
   "settings.accountSwitcher": "アカウント切り替え",
   "settings.current": "現在",
@@ -4475,6 +4486,9 @@ const ja: Catalog = {
   "settings.updateAvailableTitle": "アップデートがあります",
   "settings.updateAvailableConfirm": "Koushi {version}をダウンロードしてインストールしますか？",
   "settings.updateDownload": "アップデートをダウンロード",
+  "settings.updateIgnore": "このバージョンを無視",
+  "settings.updateIgnored":
+    "Koushiを再起動するまで、このバージョンの自動通知はオフになります。ダウンロードは引き続き可能です。",
   "settings.updateDownloading": "Koushi {version}をダウンロードして検証しています…",
   "settings.updateReady": "Koushi {version}をインストールできます。",
   "settings.updateRestart": "再起動してインストール",
@@ -4675,12 +4689,14 @@ const ja: Catalog = {
   "scheduled.edit": "予約送信を編集",
   "scheduled.localFallback": "ローカルフォールバック",
   "scheduled.localFallbackNotice": "このアプリが起動中のときだけ送信されます。",
+  "scheduled.panelEmpty": "予約メッセージはありません",
   "scheduled.persistenceFailed":
     "予約送信の変更をこの端末に保存できませんでした。アプリを再起動すると失われる可能性があります。",
   "scheduled.save": "予約送信を保存",
   "scheduled.schedule": "予約送信",
   "scheduled.sendLater": "あとで送信",
   "scheduled.serverDelayedEvents": "サーバー予約",
+  "scheduled.threadReply": "スレッド返信",
   "scheduled.timeInput": "予約送信日時",
   "scheduled.timeEarlierHour": "1 時間前",
   "scheduled.timeEarlierTenMinutes": "10 分前",
@@ -4953,7 +4969,7 @@ const ja: Catalog = {
   "shortcut.noteCallsDeferred": "通話はこのマイルストーンの範囲外です。",
   "shortcut.noteGoHomeAdapted": "一部のMatrixクライアントのmacOS版ではCtrl+Shift+Hですが、この試作ではクロスプラットフォームの1行に統一しています。",
   "shortcut.noteUploadUiDeferred": "アップロードUIはまだ実装されていません。",
-  "shortcut.openUserSettings": "アカウント設定",
+  "shortcut.openAppSettings": "アプリ設定",
   "shortcut.parityAdapted": "調整済み",
   "shortcut.parityDeferred": "延期",
   "shortcut.parityNotApplicable": "対象外",
@@ -5187,6 +5203,7 @@ const ja: Catalog = {
   "workspace.rooms": "ルーム",
   "workspace.resizeRoomList": "ルームリストの幅を変更",
   "workspace.resizeRightPanel": "右パネルの幅を変更",
+  "workspace.scheduledMessages": "予約メッセージ",
   "workspace.search": "検索",
   "workspace.searchEverywhere": "すべてを検索",
   "workspace.searchInRoom": "{roomName}内を検索",

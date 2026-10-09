@@ -583,6 +583,45 @@ async fn cold_start_notification_lower_bound_is_topped_up_by_server_counts() {
     assert_eq!(projected.highlight_count, 0);
 }
 
+/// #1176: the cold-start counter top-up also reaches the standalone attention
+/// summary (`room_attention_summary_from_room`), which the SDK re-exports as
+/// public consistency API. This helper has no first-party production caller; the
+/// room list projects its own counters and additionally suppresses a count
+/// covered by a read marker.
+#[tokio::test]
+async fn cold_start_attention_summary_uses_the_topped_up_server_count() {
+    use matrix_sdk::ruma::room_id;
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    use matrix_sdk_test::{JoinedRoomBuilder, event_factory::EventFactory};
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let own = client.user_id().expect("own user").to_owned();
+    let room_id = room_id!("!cold-summary:example.invalid");
+    let room = server
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(room_id)
+                .add_state_event(EventFactory::new().room_name("Cold Room").sender(&own)),
+        )
+        .await;
+    room.update_room_info(|mut info| {
+        info.set_read_receipts(read_receipts(1, 1, 0, None));
+        info.update_notification_count(server_counts(3, 0));
+        (
+            info,
+            matrix_sdk_base::RoomInfoNotableUpdateReasons::READ_RECEIPT,
+        )
+    })
+    .await;
+
+    let summary = super::room_attention_summary_from_room(&room)
+        .expect("a named room must project an attention summary");
+    assert_eq!(summary.notification_count, 3);
+    assert_eq!(summary.unread_count, 3);
+    assert_eq!(summary.highlight_count, 0);
+}
+
 #[tokio::test]
 async fn pending_receipts_do_not_top_up_an_anchored_client_count() {
     use matrix_sdk::ruma::room_id;
@@ -661,7 +700,11 @@ async fn stale_server_counts_still_lose_to_a_matching_read_marker() {
         .subscribe()
         .expect("event cache subscription");
     let room = server
-        .sync_room(&client, JoinedRoomBuilder::new(room_id))
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(room_id)
+                .add_state_event(EventFactory::new().room_name("Stale Room").sender(sender)),
+        )
         .await;
 
     let message = EventFactory::new()
@@ -720,10 +763,19 @@ async fn stale_server_counts_still_lose_to_a_matching_read_marker() {
     })
     .await;
 
-    let projected = projected_single_room(room).await;
+    let projected = projected_single_room(room.clone()).await;
     assert_eq!(projected.unread_count, 0);
     assert_eq!(projected.notification_count, 0);
     assert_eq!(projected.highlight_count, 0);
+
+    // #1176 known difference: the standalone attention summary applies the same
+    // counter top-up but not the room list's read-marker suppression, so it
+    // still reports the stale server count for this room state.
+    let summary = super::room_attention_summary_from_room(&room)
+        .expect("a named room must project an attention summary");
+    assert_eq!(summary.notification_count, 5);
+    assert_eq!(summary.unread_count, 5);
+    assert_eq!(summary.highlight_count, 0);
 }
 
 #[tokio::test]

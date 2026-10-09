@@ -9,11 +9,11 @@ use koushi_state::{
     LocalEncryptionState, LocalUserAliasUpdateState, MentionCandidatesState, NativeAttentionState,
     NavigationState, OwnProfile, PresenceKind, ProfileState, ProfileUpdateState, QrLoginState,
     RoomInteractionState, RoomListProjection, RoomLiveSignals, RoomManagementState,
-    RoomNotificationSettings, RoomPreferencesState, RoomSummary, SearchCrawlerLastActive,
-    SearchCrawlerRoomState, SearchCrawlerState, SearchState, SecureBackupGateState, SessionState,
-    SettingsState, SidebarModel, SoftLogoutReauthState, SpaceChildrenState, SpaceMembersState,
-    SpaceSummary, SyncState, ThreadAttentionState, ThreadPaneState, ThreadsListState,
-    TimelinePaneState, UserProfile,
+    RoomNotificationSettings, RoomPreferencesState, RoomSummary, ScheduledSendsListState,
+    SearchCrawlerLastActive, SearchCrawlerRoomState, SearchCrawlerState, SearchState,
+    SecureBackupGateState, SessionState, SettingsState, SidebarModel, SoftLogoutReauthState,
+    SpaceChildrenState, SpaceMembersState, SpaceSummary, SyncState, ThreadAttentionState,
+    ThreadPaneState, ThreadsListState, TimelinePaneState, UserProfile,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -116,6 +116,11 @@ pub struct StateDeltaChangedSlices {
     pub thread: Option<ThreadPaneState>,
     pub thread_attention: Option<ThreadAttentionState>,
     pub threads_list: Option<ThreadsListState>,
+    /// The explicitly opened Home/Space scheduled-sends projection (#1160).
+    /// Emitted whenever it changes, including an explicit `Closed` when the
+    /// panel closes; an omitted field means the slice is unchanged. The backing
+    /// queue is never emitted.
+    pub scheduled_sends_list: Option<ScheduledSendsListState>,
     pub focused_context: Option<FocusedContextState>,
     pub search: Option<SearchState>,
     pub search_crawler: Option<SearchCrawlerState>,

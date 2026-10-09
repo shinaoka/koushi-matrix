@@ -88,7 +88,8 @@ describe("DesktopApi command contract", () => {
         "selectAccountTab",
         "setRoomAccessDraft",
         "previewRoomAccess",
-        "previewCreateRoomAccess"
+        "previewCreateRoomAccess",
+        "ignoreDesktopUpdate"
       )
       .sort();
     expect(new Set(current).size).toBe(current.length);

@@ -2,8 +2,8 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         AppState, DirectoryJoinState, DirectoryPreviewState, DirectoryQuery, DirectoryQueryState,
-        FocusedContextState, ThreadAttentionState, ThreadPaneState, ThreadsListState,
-        TimelinePaneState,
+        FocusedContextState, ScheduledSendsListState, ThreadAttentionState, ThreadPaneState,
+        ThreadsListState, TimelinePaneState,
     },
 };
 
@@ -194,6 +194,9 @@ pub(crate) fn handle_directory_join_succeeded(
         || state.thread_attention != ThreadAttentionState::Closed;
     let had_threads_list = state.threads_list != ThreadsListState::Closed;
     state.directory.join = DirectoryJoinState::Idle;
+    // #1160: a successful join leaves the directory and selects the joined room,
+    // so it closes the scoped scheduled-sends panel like a room selection.
+    state.scheduled_sends_list = ScheduledSendsListState::Closed;
     state.navigation.active_space_id = None;
     let space_members_changed = super::space_members::handle_selected(state, None);
     let space_children_changed = super::space_children::handle_selected(state, None);

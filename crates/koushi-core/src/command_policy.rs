@@ -268,6 +268,8 @@ impl CoreCommandPolicy for CoreCommand {
                         | AppCommand::OpenThreadsList { .. }
                         | AppCommand::CloseThreadsList { .. }
                         | AppCommand::PaginateThreadsList { .. }
+                        | AppCommand::OpenScheduledSendsList { .. }
+                        | AppCommand::CloseScheduledSendsList { .. }
                         | AppCommand::TimelineScrollAnchorUpdated { .. }
                 )
             )
@@ -413,6 +415,11 @@ mod tests {
                     room_id: "!room:example.invalid".to_owned(),
                 },
             }),
+            CoreCommand::App(AppCommand::OpenScheduledSendsList {
+                request_id: id,
+                scope: koushi_state::ScheduledSendsScope::Home,
+            }),
+            CoreCommand::App(AppCommand::CloseScheduledSendsList { request_id: id }),
         ] {
             assert!(command.requires_ready_session());
         }

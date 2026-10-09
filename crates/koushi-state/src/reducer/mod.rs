@@ -5,9 +5,9 @@ use crate::{
         AccountManagementCapabilities, AccountManagementState, ActivityState, AppState,
         DirectoryState, E2eeKeyManagementState, E2eeTrustState, FilesViewState,
         FocusedContextState, InviteWorkflowState, LocalEncryptionState, NavigationState,
-        QrLoginState, SearchState, SessionState, SoftLogoutReauthState, SpaceConversationSurface,
-        SpaceNavigationSelection, ThreadAttentionState, ThreadPaneState, ThreadsListState,
-        TimelinePaneState, VerificationFlowState, compute_room_list_projection,
+        QrLoginState, ScheduledSendsListState, SearchState, SessionState, SoftLogoutReauthState,
+        SpaceConversationSurface, SpaceNavigationSelection, ThreadAttentionState, ThreadPaneState,
+        ThreadsListState, TimelinePaneState, VerificationFlowState, compute_room_list_projection,
     },
 };
 
@@ -31,6 +31,7 @@ mod navigation;
 mod profile;
 mod room;
 mod room_management;
+mod scheduled_sends;
 mod search;
 mod session;
 mod session_status;
@@ -89,6 +90,7 @@ pub(crate) fn clear_stale_verification_flow(state: &mut AppState) -> bool {
 pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
     let mut effects = reduce_action(state, action);
     contact_security::sync_verification_busy(state, &mut effects);
+    scheduled_sends::reconcile_scheduled_sends_list(state);
     effects
 }
 
@@ -1908,6 +1910,12 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
         } => thread::handle_paginate_threads_list(state, request_id, room_id),
         AppAction::CloseThreadsList => thread::handle_close_threads_list(state),
+        AppAction::OpenScheduledSendsList { scope } => {
+            scheduled_sends::handle_open_scheduled_sends_list(state, scope)
+        }
+        AppAction::CloseScheduledSendsList => {
+            scheduled_sends::handle_close_scheduled_sends_list(state)
+        }
         AppAction::ThreadRootProjectionObserved {
             room_id,
             root_event_id,
@@ -2496,6 +2504,12 @@ pub(crate) fn retarget_active_room_for_selected_space(
             state.thread = ThreadPaneState::Closed;
             state.thread_attention = ThreadAttentionState::Closed;
             state.timeline = Default::default();
+            // #1160: the active room left the selected Space and no replacement
+            // room exists, so an automatic room clear is retiring the room
+            // context. Close the scoped scheduled-sends panel like the
+            // room-disappeared path in room.rs rather than keeping its
+            // body-bearing items open.
+            state.scheduled_sends_list = ScheduledSendsListState::Closed;
             effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
                 room_id: previous_room_id,
             }));

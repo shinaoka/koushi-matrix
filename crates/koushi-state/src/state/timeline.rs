@@ -843,11 +843,23 @@ impl ScheduledSendStore {
             .filter(|item| item.room_id == room_id)
             .cloned()
             .collect::<Vec<_>>();
-        items.sort_by(|left, right| {
-            left.send_at_ms
-                .cmp(&right.send_at_ms)
-                .then_with(|| left.scheduled_id.cmp(&right.scheduled_id))
-        });
+        items.sort_by(scheduled_send_order);
+        items
+    }
+
+    /// The #1160 scoped-panel projection: every item when `room_ids` is `None`
+    /// (Home), otherwise the items whose room is in the derived membership set.
+    pub(crate) fn items_for_rooms(
+        &self,
+        room_ids: Option<&BTreeSet<String>>,
+    ) -> Vec<ScheduledSendItem> {
+        let mut items = self
+            .items
+            .values()
+            .filter(|item| room_ids.is_none_or(|ids| ids.contains(item.room_id.as_str())))
+            .cloned()
+            .collect::<Vec<_>>();
+        items.sort_by(scheduled_send_order);
         items
     }
 
@@ -953,6 +965,57 @@ impl fmt::Debug for ScheduledSendStore {
             )
             .finish()
     }
+}
+
+/// The shared scheduled-send ordering: `send_at_ms`, then `scheduled_id`.
+fn scheduled_send_order(left: &ScheduledSendItem, right: &ScheduledSendItem) -> std::cmp::Ordering {
+    left.send_at_ms
+        .cmp(&right.send_at_ms)
+        .then_with(|| left.scheduled_id.cmp(&right.scheduled_id))
+}
+
+/// The account (Home) or Space scope the scheduled-sends panel captured when it
+/// opened (#1160). Narrower than [`crate::ThreadsListScope`]:
+/// no `Room` variant and no scope-key encoding, because the projection is
+/// derived synchronously in the reducer with no asynchronous completion to
+/// correlate.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ScheduledSendsScope {
+    Home,
+    Space { space_id: String },
+}
+
+impl fmt::Debug for ScheduledSendsScope {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Home => formatter.write_str("Home"),
+            Self::Space { .. } => formatter
+                .debug_struct("Space")
+                .field("space_id", &"SpaceId(..)")
+                .finish(),
+        }
+    }
+}
+
+/// The explicitly opened scheduled-sends projection (#1160).
+///
+/// This is the one surface allowed to carry future message bodies for rooms the
+/// webview is not currently showing, and only while a Ready session keeps it
+/// open. `Open` reuses [`ScheduledSendItem`] so the renderer resolves the
+/// destination label from the room summaries it already has, and `capability`
+/// is copied from the account-level store because the room pane's capability
+/// comes from a selected-room timeline that is not refreshed with no room.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ScheduledSendsListState {
+    #[default]
+    Closed,
+    Open {
+        scope: ScheduledSendsScope,
+        capability: ScheduledSendCapability,
+        items: Vec<ScheduledSendItem>,
+    },
 }
 
 #[derive(Clone, Eq, PartialEq)]

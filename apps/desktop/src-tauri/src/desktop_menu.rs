@@ -7,7 +7,8 @@ use tauri::{
 
 pub(super) const MENU_EVENT_NAME: &str = "koushi-desktop://menu";
 const MENU_ID_ABOUT: &str = "about_koushi";
-const MENU_ID_OPEN_USER_SETTINGS: &str = "open_user_settings";
+const MENU_ID_OPEN_ACCOUNT_SETTINGS: &str = "open_account_settings";
+const MENU_ID_OPEN_APP_SETTINGS: &str = "open_app_settings";
 const MENU_ID_SIGN_OUT: &str = "sign_out";
 const MENU_ID_SHOW_HELP: &str = "show_help";
 const MENU_ID_CHECK_FOR_UPDATES: &str = "check_for_updates";
@@ -47,9 +48,16 @@ pub(crate) fn desktop_menu_items() -> Vec<DesktopMenuItem> {
             accelerator: "",
         },
         DesktopMenuItem {
-            id: MENU_ID_OPEN_USER_SETTINGS,
-            label_key: "menu.settings",
-            label: "Settings…",
+            id: MENU_ID_OPEN_ACCOUNT_SETTINGS,
+            label_key: "menu.accountSettings",
+            label: "Account Settings…",
+            menu: "app",
+            accelerator: "",
+        },
+        DesktopMenuItem {
+            id: MENU_ID_OPEN_APP_SETTINGS,
+            label_key: "menu.appSettings",
+            label: "App Settings…",
             menu: "app",
             accelerator: "CmdOrCtrl+,",
         },
@@ -135,7 +143,8 @@ pub(crate) fn desktop_standard_menu_items() -> Vec<DesktopStandardMenuItem> {
 
 pub(super) fn desktop_menu_action_id(menu_id: &str) -> Option<&'static str> {
     match menu_id {
-        MENU_ID_OPEN_USER_SETTINGS => Some("openUserSettings"),
+        MENU_ID_OPEN_ACCOUNT_SETTINGS => Some("openAccountSettings"),
+        MENU_ID_OPEN_APP_SETTINGS => Some("openAppSettings"),
         MENU_ID_SIGN_OUT => Some("logout"),
         MENU_ID_TOGGLE_RIGHT_PANEL => Some("toggleRightPanel"),
         MENU_ID_SHOW_HELP => Some("showHelp"),
@@ -220,7 +229,8 @@ pub(super) fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
     manager: &M,
     labels: &MenuLabels,
 ) -> tauri::Result<tauri::menu::Menu<R>> {
-    let open_user_settings = menu_item(manager, MENU_ID_OPEN_USER_SETTINGS, labels)?;
+    let open_account_settings = menu_item(manager, MENU_ID_OPEN_ACCOUNT_SETTINGS, labels)?;
+    let open_app_settings = menu_item(manager, MENU_ID_OPEN_APP_SETTINGS, labels)?;
     let sign_out = menu_item(manager, MENU_ID_SIGN_OUT, labels)?;
     let toggle_right_panel = menu_item(manager, MENU_ID_TOGGLE_RIGHT_PANEL, labels)?;
     let show_help = menu_item(manager, MENU_ID_SHOW_HELP, labels)?;
@@ -263,7 +273,8 @@ pub(super) fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
         .about_with_text(localized(labels, "menu.aboutKoushi"), Some(about_metadata))
         .item(&check_for_updates)
         .separator()
-        .item(&open_user_settings)
+        .item(&open_account_settings)
+        .item(&open_app_settings)
         .item(&sign_out)
         .separator()
         .item(&quit)
@@ -369,6 +380,34 @@ mod tests {
     }
 
     #[test]
+    fn account_and_app_settings_are_separate_menu_items_with_distinct_targets() {
+        let items = desktop_menu_items();
+        let account = items
+            .iter()
+            .find(|item| item.id == "open_account_settings")
+            .expect("Account Settings menu item should exist");
+        let app = items
+            .iter()
+            .find(|item| item.id == "open_app_settings")
+            .expect("App Settings menu item should exist");
+
+        assert_eq!(account.menu, "app");
+        assert_eq!(account.label_key, "menu.accountSettings");
+        assert_eq!(account.label, "Account Settings…");
+        assert!(account.accelerator.is_empty());
+        assert_eq!(
+            desktop_menu_action_id(account.id),
+            Some("openAccountSettings")
+        );
+
+        assert_eq!(app.menu, "app");
+        assert_eq!(app.label_key, "menu.appSettings");
+        assert_eq!(app.label, "App Settings…");
+        assert_eq!(app.accelerator, "CmdOrCtrl+,");
+        assert_eq!(desktop_menu_action_id(app.id), Some("openAppSettings"));
+    }
+
+    #[test]
     fn native_zoom_keys_dispatch_to_the_shared_webview_zoom_owner() {
         let items = desktop_menu_items();
         for (id, action, accelerator) in [
@@ -405,7 +444,8 @@ mod tests {
         let ids = native_menu_label_keys();
         for key in [
             "menu.aboutKoushi",
-            "menu.settings",
+            "menu.accountSettings",
+            "menu.appSettings",
             "menu.signOut",
             "menu.toggleRightPanel",
             "menu.koushiHelp",

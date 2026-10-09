@@ -60,6 +60,7 @@ import type {
   HistoryExportScopeInput,
   HistoryExportStart,
   FilesViewScope,
+  ScheduledSendsScope,
   SubmissionResponse,
   ThreadOpenIntent,
   ThreadsListScope
@@ -158,6 +159,10 @@ export class TauriDesktopApi implements DesktopApi {
 
   async restartToInstallDesktopUpdate(): Promise<void> {
     return this.invokeCommand<void>("restart_to_install_desktop_update");
+  }
+
+  async ignoreDesktopUpdate(version: string): Promise<void> {
+    return this.invokeCommand<void>("ignore_desktop_update", { version });
   }
 
   async settlementSnapshot(accountTabId?: string): Promise<DesktopSnapshot> {
@@ -1051,6 +1056,14 @@ export class TauriDesktopApi implements DesktopApi {
 
   async closeThreadsList(): Promise<CommandAdmission> {
     return this.invokeCommand<CommandAdmission>("close_threads_list");
+  }
+
+  async openScheduledSendsList(scope: ScheduledSendsScope): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("open_scheduled_sends_list", { scope });
+  }
+
+  async closeScheduledSendsList(): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("close_scheduled_sends_list");
   }
 
   async openFilesView(

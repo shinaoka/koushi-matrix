@@ -3407,11 +3407,17 @@ fn matrix_room_tag_info_from_sdk(
 
 pub fn room_attention_summary_from_room(room: &matrix_sdk::Room) -> Option<RoomAttentionSummary> {
     let room_display_name = room.cached_display_name().map(|name| name.to_string())?;
+    // #1176: apply the same cold-start counter top-up as the room list, for the
+    // same room state. This helper does not run the room list's read-marker
+    // suppression (`matrix_room_list_room_from_counts`), so the two projections
+    // can still differ when a read marker covers the latest event (see the
+    // state-machine notes and `stale_server_counts_still_lose_to_a_matching_read_marker`).
+    let (notification_count, highlight_count) = effective_room_notification_counts(room);
     room_attention_summary_from_counts(
         Some(room_display_name),
         room.is_dm(),
-        room.num_unread_notifications(),
-        room.num_unread_mentions(),
+        notification_count,
+        highlight_count,
         room.num_unread_messages(),
         room.is_marked_unread(),
     )

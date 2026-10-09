@@ -512,6 +512,10 @@ fn account_tabs_snapshot_from_states(
                         }
                         _ => None,
                     });
+            // One per-account attention policy: the tab badge is the same value
+            // as this account's Home aggregate (#1219).
+            let unread_count =
+                koushi_state::account_attention_summary_for_state(&state).attention_count;
             AccountTabSummary {
                 id: tab.id.as_str().to_owned(),
                 account_key: tab.account_key.map(|key| key.0),
@@ -519,7 +523,7 @@ fn account_tabs_snapshot_from_states(
                 display_name: state.profile.own.display_name,
                 avatar_source_ref,
                 status,
-                unread_count: state.native_attention.summary.unread_count,
+                unread_count,
             }
         })
         .collect();
@@ -1581,6 +1585,7 @@ pub fn run() {
             commands::app_updates::get_desktop_update_state,
             commands::app_updates::download_desktop_update,
             commands::app_updates::restart_to_install_desktop_update,
+            commands::app_updates::ignore_desktop_update,
             commands::diagnostics::get_diagnostic_snapshot,
             commands::diagnostics::observe_viewport_sync,
             commands::account_tabs::list_account_tabs,
@@ -1760,6 +1765,8 @@ pub fn run() {
             commands::views::open_threads_list,
             commands::views::close_threads_list,
             commands::views::paginate_threads_list,
+            commands::views::open_scheduled_sends_list,
+            commands::views::close_scheduled_sends_list,
             commands::views::open_thread,
             commands::views::close_thread,
             commands::views::subscribe_receipt_reader,

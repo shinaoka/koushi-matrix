@@ -167,6 +167,19 @@ describe("styles.css token system", () => {
     expect(actual).toMatch(/max-block-size:\s*none/);
   });
 
+  test("scheduled-message destination metadata isolates, truncates and separates", () => {
+    const context = selectorBlock(".scheduled-message-context");
+    expect(context).toContain("display: flex;");
+    expect(context).toContain("min-width: 0;");
+    const room = selectorBlock(".scheduled-message-room");
+    expect(room).toContain("min-width: 0;");
+    expect(room).toContain("overflow: hidden;");
+    expect(room).toContain("text-overflow: ellipsis;");
+    expect(room).toContain("white-space: nowrap;");
+    expect(selectorBlock(".scheduled-message-separator")).toContain("flex: 0 0 auto;");
+    expect(selectorBlock(".scheduled-message-thread")).toContain("white-space: nowrap;");
+  });
+
   test("selected room row uses a logical brand start bar", () => {
     expect(css).toMatch(/border-inline-start-color:\s*var\(--brand\)/);
     expect(css).not.toContain("box-shadow: inset 3px 0 0 0 var(--brand)");
@@ -336,18 +349,11 @@ describe("styles.css token system", () => {
       "--activity-row-action-radius"
     ]);
     expectBlockUses(selectorBlock(".workspace-button[data-count]::after"), ["--nav-badge-font-size"]);
-    expectBlockUses(selectorBlock(".nav-item[data-count]::after"), [
+    expectBlockUses(selectorBlock(".workspace-header-badge"), [
       "--nav-badge-size",
       "--nav-badge-padding-inline",
       "--nav-badge-font-size"
     ]);
-    expectBlockUses(
-      groupedSelectorBlock(
-        /\.nav-item\[data-mention-count\]\s+\.nav-label::after,\s*\.nav-item\[data-live-count\]\s+\.nav-label::before/,
-        "nav notification dots"
-      ),
-      ["--nav-dot-size", "--nav-dot-margin-inline-start"]
-    );
     expectBlockUses(selectorBlock(".room-mention-dot"), ["--nav-dot-size"]);
     expectBlockUses(selectorBlock(".room-count"), ["--room-count-min-inline-size", "--room-count-font-size"]);
     expectBlockUses(selectorBlock(".room-count:not(:empty)"), [

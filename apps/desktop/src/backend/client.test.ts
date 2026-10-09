@@ -65,6 +65,14 @@ describe("TauriDesktopApi", () => {
     expect(invoke).toHaveBeenCalledWith("check_for_desktop_update");
   });
 
+  test("ignores an exact desktop update version on request", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    await new TauriDesktopApi().ignoreDesktopUpdate("1.2.4");
+
+    expect(invoke).toHaveBeenCalledWith("ignore_desktop_update", { version: "1.2.4" });
+  });
+
   test("uses distinct state-only and state-plus-timeline resync commands", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 
@@ -91,6 +99,23 @@ describe("TauriDesktopApi", () => {
       rootEventId: "$root:example.invalid",
       intent: "newThreadDraft"
     });
+  });
+
+  test("passes the captured scheduled-sends scope to Rust and closes it by request", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = new TauriDesktopApi();
+    await api.openScheduledSendsList({ kind: "space", space_id: "!space:example.invalid" });
+    await api.openScheduledSendsList({ kind: "home" });
+    await api.closeScheduledSendsList();
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "open_scheduled_sends_list", {
+      scope: { kind: "space", space_id: "!space:example.invalid" }
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "open_scheduled_sends_list", {
+      scope: { kind: "home" }
+    });
+    expect(invoke).toHaveBeenNthCalledWith(3, "close_scheduled_sends_list");
   });
 
   test("discovers login methods through typed Tauri command", async () => {

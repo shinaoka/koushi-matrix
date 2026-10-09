@@ -330,7 +330,10 @@ fn desktop_menu_items_include_element_compatible_shortcuts() {
     let items = desktop_menu_items();
 
     assert!(items.iter().any(|item| {
-        item.id == "open_user_settings" && item.accelerator == "CmdOrCtrl+," && item.menu == "app"
+        item.id == "open_app_settings" && item.accelerator == "CmdOrCtrl+," && item.menu == "app"
+    }));
+    assert!(items.iter().any(|item| {
+        item.id == "open_account_settings" && item.accelerator.is_empty() && item.menu == "app"
     }));
     assert!(
         items
@@ -344,15 +347,15 @@ fn desktop_menu_items_include_element_compatible_shortcuts() {
     assert_eq!(about_index, 0);
     assert_eq!(items[about_index].label, "About Koushi");
 
-    let user_settings_index = items
+    let app_settings_index = items
         .iter()
-        .position(|item| item.id == "open_user_settings")
-        .expect("user settings menu item should exist");
+        .position(|item| item.id == "open_app_settings")
+        .expect("app settings menu item should exist");
     let sign_out_index = items
         .iter()
         .position(|item| item.id == "sign_out")
         .expect("sign out menu item should exist");
-    assert_eq!(sign_out_index, user_settings_index + 1);
+    assert_eq!(sign_out_index, app_settings_index + 1);
     assert!(items.iter().any(|item| {
         item.id == "show_help" && item.accelerator.is_empty() && item.menu == "help"
     }));
@@ -467,8 +470,61 @@ fn account_badges_aggregate_saturating_across_tabs() {
     );
 }
 
+fn attention_room(room_id: &str, is_dm: bool, unread_count: u64) -> koushi_state::RoomSummary {
+    koushi_state::RoomSummary {
+        display_name_placeholder: None,
+        display_label_placeholder: None,
+        room_id: room_id.to_owned(),
+        display_name: "Room".to_owned(),
+        display_label: "Room".to_owned(),
+        original_display_label: "Room".to_owned(),
+        avatar: None,
+        is_dm,
+        dm_user_ids: Vec::new(),
+        tags: koushi_state::RoomTags::default(),
+        unread_count,
+        notification_count: 0,
+        highlight_count: 0,
+        marked_unread: false,
+        recency_stamp: None,
+        conversation_activity: None,
+        latest_event: None,
+        parent_space_ids: Vec::new(),
+        dm_space_ids: Vec::new(),
+        is_encrypted: false,
+        joined_members: 0,
+    }
+}
+
+fn pending_invite(room_id: &str) -> koushi_state::InvitePreview {
+    koushi_state::InvitePreview {
+        room_id: room_id.to_owned(),
+        display_name: "Invited".to_owned(),
+        display_name_placeholder: None,
+        avatar: None,
+        topic: None,
+        inviter_display_name: None,
+        inviter_user_id: None,
+        is_dm: false,
+        is_space: false,
+    }
+}
+
+/// Only Ready tabs are badged, so a badge fixture must be Ready.
+fn ready_app_state() -> koushi_state::AppState {
+    koushi_state::AppState {
+        session: koushi_state::SessionState::Ready(koushi_state::SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: "@tab:example.invalid".to_owned(),
+            device_id: "TAB".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        ..koushi_state::AppState::default()
+    }
+}
+
 #[test]
-fn account_tab_snapshot_projects_badges_from_every_runtime() {
+fn account_tab_snapshot_projects_the_per_account_policy_from_every_runtime() {
     use koushi_core::account_runtime_manager::{AccountTabDescriptor, AccountTabId};
     use koushi_protocol::AccountKey;
 
@@ -477,31 +533,52 @@ fn account_tab_snapshot_projects_badges_from_every_runtime() {
         account_key: Some(AccountKey(user_id.to_owned())),
         homeserver: Some("https://example.invalid".to_owned()),
     };
-    let mut alice = koushi_state::AppState::default();
+    let mut alice = ready_app_state();
     alice.native_attention.summary.badge_count = 2;
-    alice.native_attention.summary.unread_count = 1;
-    let mut bob = koushi_state::AppState::default();
+    // Raw unread content with zero notification/highlight counters (#1219).
+    alice
+        .rooms
+        .push(attention_room("!alice-dm:example.invalid", true, 1));
+    let mut bob = ready_app_state();
     bob.native_attention.summary.badge_count = 4;
-    bob.native_attention.summary.unread_count = 3;
+    bob.invites
+        .push(pending_invite("!bob-invite:example.invalid"));
+    bob.invites
+        .push(pending_invite("!bob-invite-2:example.invalid"));
 
     let snapshot = super::account_tabs_snapshot_from_states(
         "account:@bob:example.invalid".to_owned(),
         [
             (
                 descriptor("account:@alice:example.invalid", "@alice:example.invalid"),
-                alice,
+                alice.clone(),
             ),
             (
                 descriptor("account:@bob:example.invalid", "@bob:example.invalid"),
-                bob,
+                bob.clone(),
             ),
         ],
     );
 
     assert_eq!(snapshot.selected_tab_id, "account:@bob:example.invalid");
     assert_eq!(snapshot.badge_count, 6);
+    // The tab count is that account's Home aggregate, invites included.
+    assert_eq!(
+        snapshot.tabs[0].unread_count,
+        koushi_state::compose_sidebar_for_state(&alice)
+            .account_home
+            .attention_count
+    );
     assert_eq!(snapshot.tabs[0].unread_count, 1);
-    assert_eq!(snapshot.tabs[1].unread_count, 3);
+    assert_eq!(
+        snapshot.tabs[1].unread_count,
+        koushi_state::compose_sidebar_for_state(&bob)
+            .account_home
+            .attention_count
+    );
+    assert_eq!(snapshot.tabs[1].unread_count, 2);
+    // Background tab attention never leaks into the selected tab.
+    assert_ne!(snapshot.tabs[0].unread_count, snapshot.tabs[1].unread_count);
 }
 
 #[tokio::test]

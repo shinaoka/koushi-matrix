@@ -77,7 +77,7 @@ import {
   type SpaceInviteAvailabilityReason,
   type SpaceInviteCancellationAvailabilityReason
 } from "./SpaceMembersPanel";
-import { MessageArticle, PinnedEventsList, SearchResults } from "./mediaLists";
+import { MessageArticle, PinnedEventsList, ScheduledMessagesList, SearchResults } from "./mediaLists";
 import { ThreadComposer, type ComposerSendingAccount } from "./composer";
 import { UploadStagingDialog, uploadStagingItemsAreSendable } from "./dialogs";
 import type { OpenContextMenu } from "../app/uiShared";
@@ -144,6 +144,8 @@ export function ContextualRightPanel({
   onBackToPeople,
   onRefreshFilesView,
   onPaginateThreadsList,
+  onCancelScheduledSend = () => undefined,
+  onRescheduleScheduledSend = () => undefined,
   onOpenRecovery,
   onManageAccount = () => undefined,
   onRefreshCurrentSessionStatus = () => undefined,
@@ -291,6 +293,12 @@ export function ContextualRightPanel({
   onBackToPeople?: () => void;
   onRefreshFilesView: (scope: AttachmentScope, filter: AttachmentFilter, sort: AttachmentSort) => void;
   onPaginateThreadsList: (scope: ThreadsListScope) => void;
+  onCancelScheduledSend?: (scheduledId: string) => void;
+  onRescheduleScheduledSend?: (
+    scheduledId: string,
+    body: string,
+    sendAtMs: number
+  ) => void;
   onOpenRecovery: () => void;
   onManageAccount?: () => void;
   onRefreshCurrentSessionStatus?: (trigger: SessionStatusRefreshCommandTrigger) => void;
@@ -600,6 +608,7 @@ export function ContextualRightPanel({
           localEncryption={snapshot.state.domain.local_encryption}
           keyboardLabelProfile={shortcutLabelProfileFromLocaleProfile(snapshot.state.domain.locale_profile)}
           platform={snapshot.state.domain.locale_profile.platform}
+          catalogLocale={snapshot.state.domain.locale_profile.catalog_locale}
           profile={snapshot.state.domain.profile}
           searchCrawlerState={snapshot.state.domain.search_crawler}
           settings={snapshot.state.domain.settings}
@@ -909,6 +918,54 @@ export function ContextualRightPanel({
           onOpenThread={onOpenThread}
           onPaginate={onPaginateThreadsList}
         />
+      </aside>
+    );
+  }
+
+  if (mode === "scheduledMessages") {
+    const scheduledSends =
+      snapshot.state.ui.scheduled_sends_list.kind === "open"
+        ? snapshot.state.ui.scheduled_sends_list
+        : null;
+    const scheduledItems = scheduledSends?.items ?? [];
+    return (
+      <aside className="thread-pane" aria-label={t("panel.context")}>
+        <PanelHeader title={t("scheduled.title")} onClose={onClosePanel} />
+        {scheduledItems.length === 0 ? (
+          <p className="panel-empty-state">{t("scheduled.panelEmpty")}</p>
+        ) : (
+          <ScheduledMessagesList
+            capability={scheduledSends?.capability ?? "unknown"}
+            items={scheduledItems}
+            onCancel={onCancelScheduledSend}
+            onReschedule={onRescheduleScheduledSend}
+            renderItemMeta={(item) => {
+              const destination = snapshot.state.domain.rooms.find(
+                (room) => room.room_id === item.room_id
+              );
+              return (
+                <span className="scheduled-message-context">
+                  {/* Remote/user text: direction is isolated per the i18n
+                      contract, and the name may be long or an address
+                      fallback. */}
+                  <span className="scheduled-message-room" dir="auto">
+                    {destination ? roomDisplayLabel(destination) : item.room_id}
+                  </span>
+                  {item.thread_root_event_id ? (
+                    <>
+                      <span className="scheduled-message-separator" aria-hidden="true">
+                        ·
+                      </span>
+                      <span className="scheduled-message-thread">
+                        {t("scheduled.threadReply")}
+                      </span>
+                    </>
+                  ) : null}
+                </span>
+              );
+            }}
+          />
+        )}
       </aside>
     );
   }

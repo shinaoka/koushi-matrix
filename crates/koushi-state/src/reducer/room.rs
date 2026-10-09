@@ -5,8 +5,8 @@ use crate::{
     state::{
         AppError, AppState, OperationFailureKind, PinOp, PinOperationState, PinnedEvent,
         RoomAccessObservation, RoomListFailureKind, RoomListFilter, RoomListReadiness,
-        RoomListSource, RoomSummary, RoomTagInfo, RoomTagKind, SpaceSummary, ThreadAttentionState,
-        ThreadPaneState, ThreadsListState, TimelinePaneState,
+        RoomListSource, RoomSummary, RoomTagInfo, RoomTagKind, ScheduledSendsListState,
+        SpaceSummary, ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
     },
 };
 
@@ -448,6 +448,9 @@ fn handle_room_list_updated_with_crawler(
             state.thread = ThreadPaneState::Closed;
             state.thread_attention = ThreadAttentionState::Closed;
             state.threads_list = ThreadsListState::Closed;
+            // #1160: the active room disappeared, so the room-scoped panel
+            // projection closes with it (the backing queue stays authoritative).
+            state.scheduled_sends_list = ScheduledSendsListState::Closed;
             state.navigation.event_navigation = crate::state::EventNavigationState::Idle;
 
             effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged {

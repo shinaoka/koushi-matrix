@@ -6,9 +6,12 @@
 
 Select the account icon at the bottom of the left rail to open **Account
 Settings** for that account. Select the gear in the top bar to open **App
-Settings**, which apply across account tabs. On macOS, **Koushi → Settings…**
-or **Cmd+,** opens Account Settings. When an account is selected, use the
-button at the bottom of the category list to switch between settings scopes.
+Settings**, which apply across account tabs. On macOS, the **Koushi** menu has
+these as separate **Account Settings…** and **App Settings…** items; **Cmd+,**
+opens **App Settings**. Choosing either item while settings are already open
+switches directly to that scope. With **Account Settings** open, use the button
+at the bottom of the category list to switch to **App Settings**; to return,
+open **Account Settings** from the rail or the **Koushi** menu.
 
 Both scopes open in a foreground dialog. Choose a category on the left; its
 controls appear on the right. Each side scrolls when the window is small. Close
@@ -28,7 +31,7 @@ translated app.
 
 | Scope and category | Settings and actions |
 | --- | --- |
-| App Settings → Appearance (外観) | Language (Default (English), English, Japanese); theme; display density; UI font and emoji style. |
+| App Settings → Appearance (外観) | Language (English or 日本語); theme; display density; UI font and emoji style. |
 | App Settings → Notifications (通知) | Notification sounds and badge counts. Operating-system permissions also apply. |
 | App Settings → Preferences (環境設定) | Code-block wrapping; hiding removed messages; close to tray where configurable; automatic loading of older messages; placement of threaded conversations at their latest reply. |
 | App Settings → Keyboard (キーボード) | Send-message shortcut (Enter or the platform modifier+Enter); reference list of keyboard shortcuts and their availability. |
@@ -66,7 +69,17 @@ Software update dialog. **Include pre-release versions** also considers
 SemVer versions such as `1.2.0-alpha.1`, `1.2.0-beta.1`, and `1.2.0-rc.1`.
 Use **Check for updates** for an immediate result; when no newer version is
 found, the result says that the current version is up to date. An automatic
-discovery opens the same screen. Downloading and restarting are separate,
+discovery opens the same screen. Closing the dialog, pressing Escape, or
+leaving it unanswered is temporary: the next scheduled or manual check presents
+the offer again without reopening immediately. **Ignore this version** stops
+automatic reminders for that exact version until Koushi exits; there is no
+in-app way to undo it, and signing out or switching accounts does not reset it.
+While a version is ignored, the Software update dialog says so and
+**Download update** remains available. Background checks continue, a newer
+eligible release is still announced, and a manual check still reports the
+ignored version. If a later check cannot reach the feed, the existing offer
+stays available and the dialog reports the failed check. Downloading and
+restarting are separate,
 explicit actions; automatic checks do not automatically install or restart.
 Unsupported builds show that in-app updates are unavailable. When Koushi was
 installed by a distribution package that manages its files (for example an AUR
@@ -76,7 +89,9 @@ Changing the pre-release setting discards an unapproved candidate and checks the
 new channel when automatic checks are enabled. Once you choose Download update,
 that release stays selected; the pre-release switch is disabled until the
 download/install flow ends. Turning automatic checks off does not remove an
-already offered release or stop a manually requested check.
+already offered release or stop a manually requested check. An undownloaded
+offer does not block later checks: when a newer eligible release exists, the
+next check replaces the old offer with the newest one.
 
 On macOS, dialogs and viewers leave space above their contents for the standard
 window buttons. Small windows scroll within the dialog. Escape closes the

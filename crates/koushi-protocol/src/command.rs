@@ -69,6 +69,8 @@ impl CoreCommand {
                 | AppCommand::CloseFilesView { request_id }
                 | AppCommand::OpenThreadsList { request_id, .. }
                 | AppCommand::CloseThreadsList { request_id }
+                | AppCommand::OpenScheduledSendsList { request_id, .. }
+                | AppCommand::CloseScheduledSendsList { request_id }
                 | AppCommand::PaginateThreadsList { request_id, .. }
                 | AppCommand::RecordLocalEncryptionHealth { request_id, .. }
                 | AppCommand::UpdateNativeAttentionState { request_id, .. }

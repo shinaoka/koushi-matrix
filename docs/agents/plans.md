@@ -25,6 +25,28 @@ removing full-history RAM body/edit retention, with the remaining store shrink
 and bounded refill. M3 (durable crawl commitments) and M4 (startup warm set)
 were dropped from the PR.
 
+[#1150 resident retention](../plans/2026-10-09-issue1150-resident-retention.md)
+records the M2 follow-up: it lands the fork PR #19 revision on the SDK fork's
+`main` and the matching gitlink move, and it records why the retention changes
+(bounded Room timeline-actor set, event-ring sizing) are **not** implemented
+-- two independent reviews rejected the direct design with verified
+read-intent-loss, quiescence, teardown-settlement and scheduler hazards. It also
+records the open decisions (policy owner, read intent, measurement first) and
+what was dropped (the SDK search-reader LRU, a second React retention limit, the
+invented 64 MiB and p95/p99 gates, and the conditional SDK gap step).
+
+[#1230 cold Room timeline retirement](../plans/2026-10-09-issue1230-cold-room-retirement.md)
+and its successor [read-intent ownership](../plans/2026-10-09-issue1230-read-intent-ownership.md)
+are an **archive, not implementation briefs**. Four designs were reviewed and
+none reached an implementable state before the maintainer closed the work as not
+planned: the retirement-policy designs failed because read work exists
+independently of `local_read_correlations`, and the ownership-move revision left
+eight specification items open, including an engineering-rules cancel-and-await
+conflict. The residual retention is instead tracked as a "Known deviation" note in
+engineering rules "Async and Runtime" 2. The first record also corrects a factual
+error: Room retirement already has a quiescence fence inside
+`clear_thread_root_projections_for_room`.
+
 - Rooms / DMs collapsible sidebar sections (design and implementation record):
   [2026-09-19-sidebar-sections-design.md](../superpowers/specs/2026-09-19-sidebar-sections-design.md)
   — its Low priority removal is superseded by #955 below.
