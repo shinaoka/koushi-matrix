@@ -614,6 +614,54 @@ describe("CreateEntityDialog room access", () => {
       rule: "invite"
     });
   });
+
+  it.each([
+    ["publicWithRestrictedAccess", "room.accessRejectionPublicWithRestrictedAccess"],
+    ["explicitPolicyWithInvitedOnly", "room.accessRejectionExplicitPolicyWithInvitedOnly"],
+    ["emptyAccessTargets", "room.accessRejectionEmptyAccessTargets"],
+    ["publicWithInvitedOnly", "room.accessRejectionPublicWithInvitedOnly"]
+  ] as const)("surfaces the Rust rejection %s and disables Create", (rejection, messageId) => {
+    render(
+      <CreateEntityDialog
+        kind="room"
+        isBusy={false}
+        value="papers"
+        roomOptions={{
+          aliasLocalpart: "papers",
+          encrypted: true,
+          invitedOnly: false,
+          topic: "",
+          visibility: "private"
+        }}
+        addressPreview={{
+          localpart: "papers",
+          full_alias: "#papers:example.invalid",
+          error: null,
+          server_name: "example.invalid"
+        }}
+        createAccessPreview={{
+          scope: { kind: "create", sessionId: 0 },
+          confirmed: false,
+          rejection,
+          roomVersionPinned: true,
+          outcome: {
+            join: { messageId: "room.accessOutcomeJoinSpaceMembers", substitutions: ["Design"] },
+            history: { messageId: "room.accessOutcomeHistoryShared" },
+            encryption: { messageId: "room.accessOutcomeEncrypted" },
+            directory: { messageId: "room.accessOutcomeDirectoryLoading" },
+            nonRetroactive: { messageId: "room.historyNonRetroactive" }
+          }
+        }}
+        onCancel={vi.fn()}
+        onRoomOptionsChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onValueChange={vi.fn()}
+      />
+    );
+    expect(screen.getByText(t(messageId))).toBeTruthy();
+    expect(screen.getByText(t("room.accessRoomVersionPinned"))).toBeTruthy();
+    expect((screen.getByRole("button", { name: t("dialog.submitCreateRoom") }) as HTMLButtonElement).disabled).toBe(true);
+  });
 });
 
 describe("DirectoryPreviewDialog text direction", () => {

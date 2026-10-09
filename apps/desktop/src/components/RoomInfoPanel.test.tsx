@@ -14,7 +14,8 @@ import type {
   RoomNotificationSettings,
   RoomSettingsSnapshot,
   RoomSummary,
-  SettingsState
+  SettingsState,
+  SpaceSummary
 } from "../domain/types";
 
 const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
@@ -242,6 +243,49 @@ describe("RoomInfoPanel", () => {
     expect(
       within(propertyCard("join-rule")).getByRole("radio", { name: /Members of a Space/ })
     ).toBeTruthy();
+  });
+
+  test("enables Save only for a valid real access change", () => {
+    const onUpdateRoomSetting = vi.fn();
+    const scope = { kind: "room" as const, roomId: baseRoom.room_id };
+    const view = (allowTargets: string[], confirmed: boolean) => (
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[spaceSummary("!space:example.invalid", "Design")]}
+        roomManagement={{
+          selected_room_id: baseRoom.room_id,
+          settings: roomSettings(),
+          draft: { scope, revision: 1, rule: "restricted", allowTargets },
+          operation: { kind: "idle" }
+        }}
+        accessPreview={{ ...accessPreviewFixture("access", confirmed), scope }}
+        onUpdateRoomSetting={onUpdateRoomSetting}
+        onSetAccessDraft={vi.fn()}
+      />
+    );
+    const save = () =>
+      within(propertyCard("join-rule")).getByRole("button", { name: "Save join rule" });
+
+    // Reordered/identical server list is not a change: Rust's preview says
+    // confirmed, so Save is disabled.
+    const { rerender } = render(view(["!space:example.invalid"], true));
+    expect((save() as HTMLButtonElement).disabled).toBe(true);
+
+    // A genuinely changed allow list is a valid real change.
+    rerender(view(["!space:example.invalid", "!space2:example.invalid"], false));
+    expect((save() as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(save());
+    expect(onUpdateRoomSetting).toHaveBeenCalledWith(baseRoom.room_id, {
+      accessPolicy: {
+        rule: "restricted",
+        allowTargets: ["!space:example.invalid", "!space2:example.invalid"]
+      }
+    });
+
+    // An explicitly empty allow list is not a submittable route.
+    rerender(view([], false));
+    expect((save() as HTMLButtonElement).disabled).toBe(true);
   });
 
   test("shows current access and history while disabling edits without permission", () => {
@@ -866,6 +910,18 @@ function roomSettings(overrides: Partial<RoomSettingsSnapshot> = {}): RoomSettin
     },
     members: [],
     ...overrides
+  };
+}
+
+function spaceSummary(spaceId: string, displayName: string): SpaceSummary {
+  return {
+    space_id: spaceId,
+    raw_name: displayName,
+    display_name: displayName,
+    avatar: null,
+    join_rule: "invite",
+    child_room_ids: [],
+    parent_side_child_room_ids: []
   };
 }
 
