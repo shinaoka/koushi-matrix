@@ -457,13 +457,6 @@ fn next_timeline_actor_generation(_state: &mut TimelineActorGenerationGateState)
     NEXT_TIMELINE_ACTOR_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
 
-pub(super) fn replay_projection_request_id(
-    projection_request_id: RequestId,
-    initial_projection_committed: bool,
-) -> Option<RequestId> {
-    (!initial_projection_committed).then_some(projection_request_id)
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct InitialItemsRequestIdentity {
     projection_request_id: Option<RequestId>,
@@ -480,14 +473,12 @@ impl InitialItemsRequestIdentity {
 
     pub(super) fn replay(
         projection_request_id: RequestId,
-        initial_projection_committed: bool,
         cause_request_id: Option<RequestId>,
     ) -> Self {
         Self {
-            projection_request_id: replay_projection_request_id(
-                projection_request_id,
-                initial_projection_committed,
-            ),
+            // This is the actor-owned view-source identity. The command that
+            // requested this replay is correlated separately below.
+            projection_request_id: Some(projection_request_id),
             cause_request_id,
         }
     }
@@ -1765,11 +1756,7 @@ impl TimelineActor {
             &self.timeline_actor_generations,
             &self.key,
             self.actor_generation,
-            InitialItemsRequestIdentity::replay(
-                self.projection_request_id,
-                self.initial_projection_committed,
-                cause_request_id,
-            ),
+            InitialItemsRequestIdentity::replay(self.projection_request_id, cause_request_id),
             self.generation,
             Vec::new(),
             PreparedInitialWindow {
@@ -2517,3 +2504,7 @@ fn classify_pagination_error(err: &matrix_sdk_ui::timeline::Error) -> TimelineFa
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "navigation/replay_identity_tests.rs"]
+mod replay_identity_tests;
