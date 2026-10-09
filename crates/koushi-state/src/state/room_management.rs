@@ -3,11 +3,18 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use super::errors::OperationFailureKind;
+use crate::{
+    RoomAccessOutcome, RoomAccessViewerFacts, RoomDirectoryVisibility, resolve_room_access_outcome,
+};
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RoomManagementState {
     pub selected_room_id: Option<String>,
     pub settings: Option<RoomSettingsSnapshot>,
+    /// The Rust-owned access/history draft (#1177). React keeps only DOM/focus
+    /// state; every rule, target and history selection lives here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<RoomAccessDraft>,
     pub operation: RoomManagementOperationState,
 }
 
@@ -23,8 +30,209 @@ impl fmt::Debug for RoomManagementState {
                 "settings",
                 &self.settings.as_ref().map(|_| "RoomSettingsSnapshot(..)"),
             )
+            .field("draft", &self.draft)
             .field("operation", &self.operation)
             .finish()
+    }
+}
+
+/// Which editor a draft belongs to (#1177): the room being edited, or the
+/// pending create session.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RoomAccessDraftScope {
+    Room { room_id: String },
+    Create { session_id: u64 },
+}
+
+impl fmt::Debug for RoomAccessDraftScope {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Room { .. } => formatter
+                .debug_struct("Room")
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::Create { session_id } => formatter
+                .debug_struct("Create")
+                .field("session_id", session_id)
+                .finish(),
+        }
+    }
+}
+
+impl RoomAccessDraftScope {
+    pub fn room_id(&self) -> Option<&str> {
+        match self {
+            Self::Room { room_id } => Some(room_id),
+            Self::Create { .. } => None,
+        }
+    }
+}
+
+/// The Rust-owned, serializable access/history draft (#1177).
+///
+/// `revision` increments on every accepted mutation and fences any preview
+/// derived from the draft. Outcome notes are derived for the current draft,
+/// never stored in it.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomAccessDraft {
+    pub scope: RoomAccessDraftScope,
+    pub revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<RoomJoinRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<RoomHistoryVisibility>,
+}
+
+impl fmt::Debug for RoomAccessDraft {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RoomAccessDraft")
+            .field("scope", &self.scope)
+            .field("revision", &self.revision)
+            .field("rule", &self.rule)
+            .field("allow_target_count", &self.allow_targets.len())
+            .field("history", &self.history)
+            .finish()
+    }
+}
+
+impl RoomAccessDraft {
+    pub fn new(scope: RoomAccessDraftScope) -> Self {
+        Self {
+            scope,
+            revision: 0,
+            rule: None,
+            allow_targets: Vec::new(),
+            history: None,
+        }
+    }
+
+    fn touch(&mut self) {
+        self.revision = self.revision.saturating_add(1);
+    }
+
+    pub fn set_rule(&mut self, rule: Option<RoomJoinRule>) {
+        if self.rule != rule {
+            self.rule = rule;
+            self.touch();
+        }
+    }
+
+    /// Replace the selected allow-target set; canonicalized so a reordered or
+    /// duplicated selection is the same value.
+    pub fn set_allow_targets(&mut self, allow_targets: Vec<String>) {
+        let canonical =
+            RoomAccessPolicy::new(self.rule.unwrap_or(RoomJoinRule::Restricted), allow_targets)
+                .allow_targets;
+        if self.allow_targets != canonical {
+            self.allow_targets = canonical;
+            self.touch();
+        }
+    }
+
+    pub fn set_history(&mut self, history: Option<RoomHistoryVisibility>) {
+        if self.history != history {
+            self.history = history;
+            self.touch();
+        }
+    }
+
+    /// The effective policy the draft would submit, or `None` until a rule is
+    /// chosen.
+    pub fn policy(&self) -> Option<RoomAccessPolicy> {
+        self.rule
+            .map(|rule| RoomAccessPolicy::new(rule, self.allow_targets.clone()))
+    }
+
+    /// Canonical comparison against the confirmed policy (#1177): the full
+    /// rule plus a sorted, deduplicated target set, so a reordered or
+    /// duplicated server allow list is not a change.
+    pub fn differs_from(&self, settings: &RoomSettingsSnapshot) -> bool {
+        let Some(policy) = self.policy() else {
+            return false;
+        };
+        policy != confirmed_access_policy(settings)
+    }
+}
+
+/// The canonical confirmed policy of a settings snapshot (#1177).
+pub fn confirmed_access_policy(settings: &RoomSettingsSnapshot) -> RoomAccessPolicy {
+    let rule = settings.access.join_rule.unwrap_or(settings.join_rule);
+    let targets = settings
+        .access
+        .allow_targets
+        .iter()
+        .map(|target| target.room_id.clone())
+        .collect();
+    RoomAccessPolicy::new(rule, targets)
+}
+
+/// The confirmed outcome of a room's access tuple (#1177).
+pub fn confirmed_room_access_outcome(
+    settings: &RoomSettingsSnapshot,
+    encrypted: bool,
+    directory: RoomDirectoryVisibility,
+    route: Option<&str>,
+    viewer: RoomAccessViewerFacts,
+) -> RoomAccessOutcome {
+    resolve_room_access_outcome(
+        settings.access.join_rule,
+        settings.access.restricted,
+        &settings.access.allow_targets,
+        route,
+        settings.history_visibility,
+        encrypted,
+        directory,
+        viewer,
+    )
+}
+
+impl RoomAccessDraft {
+    /// The outcome of this draft's access values (#1177): the draft's rule and
+    /// targets where set, otherwise the confirmed value. `history` may be an
+    /// unsaved draft value, so callers label the result accordingly.
+    pub fn outcome(
+        &self,
+        settings: &RoomSettingsSnapshot,
+        encrypted: bool,
+        directory: RoomDirectoryVisibility,
+        route: Option<&str>,
+        viewer: RoomAccessViewerFacts,
+    ) -> RoomAccessOutcome {
+        let (rule, restricted) = match self.rule {
+            Some(RoomJoinRule::Restricted) | Some(RoomJoinRule::KnockRestricted) => (
+                self.rule,
+                Some(if self.allow_targets.is_empty() {
+                    RestrictedConditions::ConfirmedEmpty
+                } else {
+                    RestrictedConditions::MembershipOnly
+                }),
+            ),
+            Some(rule) => (Some(rule), None),
+            None => (settings.access.join_rule, settings.access.restricted),
+        };
+        let targets: Vec<RoomAllowTarget> = self
+            .allow_targets
+            .iter()
+            .map(|room_id| RoomAllowTarget {
+                kind: RoomAllowTargetKind::Unknown,
+                room_id: room_id.clone(),
+            })
+            .collect();
+        resolve_room_access_outcome(
+            rule,
+            restricted,
+            &targets,
+            route,
+            self.history.unwrap_or(settings.history_visibility),
+            encrypted,
+            directory,
+            viewer,
+        )
     }
 }
 
@@ -590,6 +798,82 @@ mod tests {
                     Vec::new()
                 )),
             Some(OperationFailureKind::Invalid)
+        );
+    }
+
+    #[test]
+    fn draft_comparison_is_canonical_and_ignores_a_reordered_server_list() {
+        let settings = snapshot_with_access(restricted(RestrictedConditions::MembershipOnly));
+        let mut draft = RoomAccessDraft::new(RoomAccessDraftScope::Room {
+            room_id: "!room:example.invalid".to_owned(),
+        });
+        assert!(
+            !draft.differs_from(&settings),
+            "an empty draft is not a change"
+        );
+        draft.set_rule(Some(RoomJoinRule::Restricted));
+        draft.set_allow_targets(vec!["!space:example.invalid".to_owned()]);
+        assert!(
+            !draft.differs_from(&settings),
+            "the same canonical policy is not a change"
+        );
+        draft.set_allow_targets(vec![
+            "!space:example.invalid".to_owned(),
+            "!space:example.invalid".to_owned(),
+        ]);
+        assert!(
+            !draft.differs_from(&settings),
+            "a duplicated target is not a change"
+        );
+        draft.set_allow_targets(vec!["!other:example.invalid".to_owned()]);
+        assert!(
+            draft.differs_from(&settings),
+            "a changed target is a change"
+        );
+        let revision = draft.revision;
+        draft.set_allow_targets(vec!["!other:example.invalid".to_owned()]);
+        assert_eq!(
+            draft.revision, revision,
+            "a no-op mutation does not bump the revision"
+        );
+    }
+
+    #[test]
+    fn draft_outcome_uses_the_draft_history_with_the_confirmed_encryption() {
+        let settings = snapshot_with_access(restricted(RestrictedConditions::MembershipOnly));
+        let mut draft = RoomAccessDraft::new(RoomAccessDraftScope::Room {
+            room_id: "!room:example.invalid".to_owned(),
+        });
+        draft.set_rule(Some(RoomJoinRule::Restricted));
+        draft.set_allow_targets(vec!["!space:example.invalid".to_owned()]);
+        draft.set_history(Some(RoomHistoryVisibility::Joined));
+        let outcome = draft.outcome(
+            &settings,
+            true,
+            RoomDirectoryVisibility::Private,
+            Some("Design Team"),
+            RoomAccessViewerFacts::default(),
+        );
+        assert_eq!(
+            outcome.join.message_id,
+            "room.accessOutcomeJoinSpaceMembers"
+        );
+        assert_eq!(
+            outcome.history.message_id,
+            "room.accessOutcomeHistoryJoined"
+        );
+        assert!(outcome.history_key_caveat.is_none());
+        assert_eq!(
+            confirmed_room_access_outcome(
+                &settings,
+                true,
+                RoomDirectoryVisibility::Private,
+                None,
+                RoomAccessViewerFacts::default(),
+            )
+            .join
+            .message_id,
+            "room.accessOutcomeJoinMembershipRoute"
         );
     }
 

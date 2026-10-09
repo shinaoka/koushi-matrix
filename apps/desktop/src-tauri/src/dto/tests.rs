@@ -1720,6 +1720,7 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
                 user_trust: None,
             }],
         }),
+        draft: None,
         operation: RoomManagementOperationState::Idle,
     };
 

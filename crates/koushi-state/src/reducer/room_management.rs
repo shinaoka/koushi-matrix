@@ -1,8 +1,9 @@
 use crate::{
     effect::{AppEffect, UiEvent},
     state::{
-        AppState, OperationFailureKind, RoomManagementOperationKind, RoomManagementOperationState,
-        RoomMemberRole, RoomModerationAction, RoomSettingChange,
+        AppState, OperationFailureKind, RoomAccessDraft, RoomAccessDraftScope,
+        RoomHistoryVisibility, RoomJoinRule, RoomManagementOperationKind,
+        RoomManagementOperationState, RoomMemberRole, RoomModerationAction, RoomSettingChange,
     },
 };
 
@@ -298,6 +299,94 @@ pub(crate) fn handle_room_member_role_update_failed(
         kind,
     };
     vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+}
+
+pub(crate) fn handle_room_access_draft_rule_set(
+    state: &mut AppState,
+    scope: RoomAccessDraftScope,
+    rule: Option<RoomJoinRule>,
+) -> Vec<AppEffect> {
+    let Some(draft) = room_access_draft_for_scope(state, &scope) else {
+        return Vec::new();
+    };
+    draft.set_rule(rule);
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+}
+
+pub(crate) fn handle_room_access_draft_allow_targets_set(
+    state: &mut AppState,
+    scope: RoomAccessDraftScope,
+    allow_targets: Vec<String>,
+) -> Vec<AppEffect> {
+    let Some(draft) = room_access_draft_for_scope(state, &scope) else {
+        return Vec::new();
+    };
+    draft.set_allow_targets(allow_targets);
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+}
+
+pub(crate) fn handle_room_access_draft_history_set(
+    state: &mut AppState,
+    scope: RoomAccessDraftScope,
+    history: Option<RoomHistoryVisibility>,
+) -> Vec<AppEffect> {
+    let Some(draft) = room_access_draft_for_scope(state, &scope) else {
+        return Vec::new();
+    };
+    draft.set_history(history);
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+}
+
+pub(crate) fn handle_room_access_draft_reset(
+    state: &mut AppState,
+    scope: RoomAccessDraftScope,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    if state
+        .room_management
+        .draft
+        .as_ref()
+        .is_some_and(|draft| draft.scope == scope)
+    {
+        state.room_management.draft = None;
+        return vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)];
+    }
+    Vec::new()
+}
+
+/// The draft for `scope`, created (or replaced) when the editor moves to a
+/// different room or create session. A room scope is admitted only for the
+/// loaded room, so a stale editor's command is ignored rather than applied to
+/// another room.
+fn room_access_draft_for_scope<'a>(
+    state: &'a mut AppState,
+    scope: &RoomAccessDraftScope,
+) -> Option<&'a mut RoomAccessDraft> {
+    if !is_session_ready(state) {
+        return None;
+    }
+    if let Some(room_id) = scope.room_id() {
+        let is_loaded = state.room_management.selected_room_id.as_deref() == Some(room_id)
+            || state
+                .room_management
+                .settings
+                .as_ref()
+                .is_some_and(|settings| settings.room_id == room_id);
+        if !is_loaded {
+            return None;
+        }
+    }
+    let needs_new = state
+        .room_management
+        .draft
+        .as_ref()
+        .is_none_or(|draft| draft.scope != *scope);
+    if needs_new {
+        state.room_management.draft = Some(RoomAccessDraft::new(scope.clone()));
+    }
+    state.room_management.draft.as_mut()
 }
 
 // --- Private helpers ---

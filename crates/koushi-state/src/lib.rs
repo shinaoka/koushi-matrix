@@ -9,6 +9,7 @@ mod composer_shortcuts;
 mod effect;
 mod locale_profile;
 mod reducer;
+mod room_access;
 mod room_address;
 mod sidebar;
 mod space_add_rooms;
@@ -39,6 +40,10 @@ pub use locale_profile::{
     resolve_locale_display_profile,
 };
 pub use reducer::reduce;
+pub use room_access::{
+    RoomAccessOutcome, RoomAccessOutcomeLine, RoomAccessViewerFacts, RoomDirectoryVisibility,
+    resolve_room_access_outcome,
+};
 pub use room_address::{
     CreateRoomDefaults, CreateRoomVisibility, RoomAddressAvailability,
     RoomAddressAvailabilityState, RoomAddressError, RoomAddressPreview, RoomAddressSuggestion,
@@ -109,12 +114,13 @@ pub use state::{
     ProfileResolutionInput, ProfileResolutionSource, ProfileState, ProfileUpdateRequest,
     ProfileUpdateState, ProvisionalPhase, QrLoginState, RecoveryKeyDeliveryState,
     RecoveryKeyMaterial, RecoveryMethod, ReplyQuote, ReplyQuoteCodeBlock, ReplyQuoteFormattedBody,
-    ReplyQuoteState, RestrictedConditions, RoomAccessCondition, RoomAccessPolicy, RoomAllowTarget,
-    RoomAllowTargetKind, RoomAttentionKind, RoomAttentionProjection, RoomAttentionSummary,
-    RoomHistoryVisibility, RoomInteractionState, RoomJoinRule, RoomKeyExportState,
-    RoomKeyImportState, RoomLatestEventSummary, RoomListEntryKind, RoomListFailureKind,
-    RoomListFilter, RoomListProjection, RoomListProjectionItem, RoomListReadiness, RoomListSort,
-    RoomListSource, RoomLiveSignals, RoomManagementOperationKind, RoomManagementOperationState,
+    ReplyQuoteState, RestrictedConditions, RoomAccessCondition, RoomAccessDraft,
+    RoomAccessDraftScope, RoomAccessPolicy, RoomAllowTarget, RoomAllowTargetKind,
+    RoomAttentionKind, RoomAttentionProjection, RoomAttentionSummary, RoomHistoryVisibility,
+    RoomInteractionState, RoomJoinRule, RoomKeyExportState, RoomKeyImportState,
+    RoomLatestEventSummary, RoomListEntryKind, RoomListFailureKind, RoomListFilter,
+    RoomListProjection, RoomListProjectionItem, RoomListReadiness, RoomListSort, RoomListSource,
+    RoomLiveSignals, RoomManagementOperationKind, RoomManagementOperationState,
     RoomManagementState, RoomMemberMembership, RoomMemberRole, RoomMemberRoleOption,
     RoomMemberSummary, RoomMentionPermission, RoomModerationAction, RoomNamePlaceholder,
     RoomNotificationMode, RoomNotificationModeOperation, RoomNotificationSettings,
@@ -154,17 +160,17 @@ pub use state::{
     VerificationInitiator, VerificationMethod, VerificationMethodCapability, VerificationTarget,
     WindowSettings, admit_space_member_cancellation, admit_space_member_invite,
     admit_space_member_role, admit_space_members_load, compute_room_list_projection,
-    enrich_live_receipt, is_ignored_user, native_attention_capabilities_for_platform,
-    native_attention_projection_from_rooms, native_attention_state_from_rooms,
-    normalize_notification_email, refresh_live_receipt_display_projection,
-    refresh_live_typing_user_display_projection, refresh_profile_user_display_projection,
-    refresh_room_settings_member_display_projection, refresh_room_summary_display_projection,
-    resolve_live_receipt_profile, resolve_optional_user_display_name, resolve_people_label,
-    resolve_user_display_name, room_activity_unread_count, room_attention_kind,
-    room_attention_projection, room_attention_summary, search_query_too_short,
-    session_status_failure_backoff_ms, sort_threads_list_items,
-    staged_upload_item_with_completed_output, staged_upload_send_consumes_composer_draft,
-    staged_uploads_are_sendable,
+    confirmed_access_policy, confirmed_room_access_outcome, enrich_live_receipt, is_ignored_user,
+    native_attention_capabilities_for_platform, native_attention_projection_from_rooms,
+    native_attention_state_from_rooms, normalize_notification_email,
+    refresh_live_receipt_display_projection, refresh_live_typing_user_display_projection,
+    refresh_profile_user_display_projection, refresh_room_settings_member_display_projection,
+    refresh_room_summary_display_projection, resolve_live_receipt_profile,
+    resolve_optional_user_display_name, resolve_people_label, resolve_user_display_name,
+    room_activity_unread_count, room_attention_kind, room_attention_projection,
+    room_attention_summary, search_query_too_short, session_status_failure_backoff_ms,
+    sort_threads_list_items, staged_upload_item_with_completed_output,
+    staged_upload_send_consumes_composer_draft, staged_uploads_are_sendable,
 };
 
 pub fn encrypted_messaging_is_admitted(state: &AppState) -> bool {

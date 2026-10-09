@@ -1118,6 +1118,21 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             kind,
         } => room_management::handle_room_setting_update_failed(state, request_id, room_id, kind),
+        AppAction::RoomAccessDraftRuleSet { scope, rule } => {
+            room_management::handle_room_access_draft_rule_set(state, scope, rule)
+        }
+        AppAction::RoomAccessDraftAllowTargetsSet {
+            scope,
+            allow_targets,
+        } => {
+            room_management::handle_room_access_draft_allow_targets_set(state, scope, allow_targets)
+        }
+        AppAction::RoomAccessDraftHistorySet { scope, history } => {
+            room_management::handle_room_access_draft_history_set(state, scope, history)
+        }
+        AppAction::RoomAccessDraftReset { scope } => {
+            room_management::handle_room_access_draft_reset(state, scope)
+        }
         AppAction::RoomModerationRequested {
             request_id,
             room_id,

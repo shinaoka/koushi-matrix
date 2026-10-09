@@ -347,6 +347,7 @@ fn room_management_debug_output_redacts_private_values() {
             RoomManagementState {
                 selected_room_id: Some("!private-room:example.invalid".to_owned()),
                 settings: Some(settings.clone()),
+                draft: None,
                 operation: RoomManagementOperationState::Pending {
                     request_id: 30,
                     room_id: "!private-room:example.invalid".to_owned(),
@@ -516,6 +517,7 @@ fn room_settings_snapshot_replaces_existing_room_management_state() {
     state.room_management = RoomManagementState {
         selected_room_id: Some("!old:example.invalid".to_owned()),
         settings: Some(editable_settings("!old:example.invalid")),
+        draft: None,
         operation: RoomManagementOperationState::Pending {
             request_id: 1,
             room_id: "!old:example.invalid".to_owned(),
@@ -536,6 +538,7 @@ fn room_settings_snapshot_replaces_existing_room_management_state() {
         RoomManagementState {
             selected_room_id: Some("!new:example.invalid".to_owned()),
             settings: Some(editable_settings("!new:example.invalid")),
+            draft: None,
             operation: RoomManagementOperationState::Idle,
         }
     );
@@ -552,6 +555,7 @@ fn room_settings_snapshot_preserves_same_room_pending_operation() {
     state.room_management = RoomManagementState {
         selected_room_id: Some(room_id.to_owned()),
         settings: Some(editable_settings(room_id)),
+        draft: None,
         operation: RoomManagementOperationState::Pending {
             request_id: 7,
             room_id: room_id.to_owned(),
@@ -930,6 +934,7 @@ fn access_policy_edit_is_rejected_with_the_unsupported_condition_kind() {
             "!room:example.invalid",
             restricted_access(koushi_state::RestrictedConditions::MembershipPlusUnsupported),
         )),
+        draft: None,
         operation: RoomManagementOperationState::Idle,
     };
 
@@ -970,6 +975,7 @@ fn access_policy_edit_is_rejected_when_the_current_policy_is_unverified() {
                 allow_targets: Vec::new(),
             },
         )),
+        draft: None,
         operation: RoomManagementOperationState::Idle,
     };
 
@@ -1002,6 +1008,7 @@ fn access_policy_edit_is_admitted_for_verified_membership_only_content() {
             "!room:example.invalid",
             restricted_access(koushi_state::RestrictedConditions::MembershipOnly),
         )),
+        draft: None,
         operation: RoomManagementOperationState::Idle,
     };
 
@@ -1022,4 +1029,91 @@ fn access_policy_edit_is_admitted_for_verified_membership_only_content() {
             operation: RoomManagementOperationKind::Settings,
         }
     );
+}
+
+fn scope(room_id: &str) -> koushi_state::RoomAccessDraftScope {
+    koushi_state::RoomAccessDraftScope::Room {
+        room_id: room_id.to_owned(),
+    }
+}
+
+fn load_settings(state: &mut AppState, room_id: &str) {
+    reduce(
+        state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: room_id.to_owned(),
+            settings: editable_settings(room_id),
+        },
+    );
+}
+
+#[test]
+fn room_access_draft_commands_are_canonical_and_revisioned() {
+    let mut state = ready_state();
+    load_settings(&mut state, "!room:example.invalid");
+
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftRuleSet {
+            scope: scope("!room:example.invalid"),
+            rule: Some(RoomJoinRule::Restricted),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftAllowTargetsSet {
+            scope: scope("!room:example.invalid"),
+            allow_targets: vec![
+                "!b:example.invalid".to_owned(),
+                "!a:example.invalid".to_owned(),
+                "!a:example.invalid".to_owned(),
+            ],
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftHistorySet {
+            scope: scope("!room:example.invalid"),
+            history: Some(RoomHistoryVisibility::Invited),
+        },
+    );
+
+    let draft = state.room_management.draft.as_ref().expect("draft");
+    assert_eq!(
+        draft.allow_targets,
+        vec![
+            "!a:example.invalid".to_owned(),
+            "!b:example.invalid".to_owned()
+        ]
+    );
+    assert_eq!(draft.history, Some(RoomHistoryVisibility::Invited));
+    assert_eq!(draft.revision, 3, "three real mutations");
+
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftReset {
+            scope: scope("!room:example.invalid"),
+        },
+    );
+    assert!(state.room_management.draft.is_none());
+}
+
+#[test]
+fn room_access_draft_ignores_a_stale_room_scope() {
+    let mut state = ready_state();
+    load_settings(&mut state, "!room:example.invalid");
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomAccessDraftRuleSet {
+            scope: scope("!other:example.invalid"),
+            rule: Some(RoomJoinRule::Public),
+        },
+    );
+
+    assert!(
+        effects.is_empty(),
+        "an unloaded room's draft command is ignored"
+    );
+    assert!(state.room_management.draft.is_none());
 }

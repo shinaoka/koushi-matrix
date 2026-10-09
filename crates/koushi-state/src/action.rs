@@ -19,13 +19,14 @@ use crate::state::{
     MentionCandidatesCompleteness, MentionCandidatesFailureKind, MentionSurface,
     NativeAttentionDispatchId, NativeAttentionSoundOutcome, NativeAttentionState,
     NavigationPreferenceUpdate, NavigationState, OperationFailureKind, OwnProfile, PinnedEvent,
-    PresenceKind, ProfileUpdateRequest, RecoveryMethod, RoomListFailureKind, RoomListFilter,
-    RoomListProjection, RoomListSource, RoomMentionPermission, RoomModerationAction,
-    RoomPreferencesState, RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo,
-    RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability, ScheduledSendHandle,
-    ScheduledSendItem, SearchResult, SearchScope, SessionInfo, SessionStatusRefreshTrigger,
-    SettingsPatch, SettingsValues, SpaceChildLinkOutcome, SpaceChildSummary,
-    SpaceMemberInviteOutcome, SpaceMemberRoleUpdateOutcome, SpaceMembersProjection, SpaceSummary,
+    PresenceKind, ProfileUpdateRequest, RecoveryMethod, RoomAccessDraftScope,
+    RoomHistoryVisibility, RoomJoinRule, RoomListFailureKind, RoomListFilter, RoomListProjection,
+    RoomListSource, RoomMentionPermission, RoomModerationAction, RoomPreferencesState,
+    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
+    SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult,
+    SearchScope, SessionInfo, SessionStatusRefreshTrigger, SettingsPatch, SettingsValues,
+    SpaceChildLinkOutcome, SpaceChildSummary, SpaceMemberInviteOutcome,
+    SpaceMemberRoleUpdateOutcome, SpaceMembersProjection, SpaceSummary,
     StagedUploadCompressionChoice, StagedUploadItem, StagedUploadOutputSelection,
     SyncLifecycleStatus, TimelineContinuityInspection, TimelineGapRepairFailureKind,
     TimelineMediaDownloadState, TimelineMediaGalleryItem, TimelineScrollAnchor,
@@ -997,6 +998,22 @@ pub enum AppAction {
         room_id: String,
         kind: OperationFailureKind,
     },
+    /// #1177: set the Rust-owned draft rule for one scope.
+    RoomAccessDraftRuleSet {
+        scope: RoomAccessDraftScope,
+        rule: Option<RoomJoinRule>,
+    },
+    RoomAccessDraftAllowTargetsSet {
+        scope: RoomAccessDraftScope,
+        allow_targets: Vec<String>,
+    },
+    RoomAccessDraftHistorySet {
+        scope: RoomAccessDraftScope,
+        history: Option<RoomHistoryVisibility>,
+    },
+    RoomAccessDraftReset {
+        scope: RoomAccessDraftScope,
+    },
     RoomModerationRequested {
         request_id: u64,
         room_id: String,
@@ -1883,6 +1900,28 @@ impl fmt::Debug for AppAction {
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
                 .field("kind", kind)
+                .finish(),
+            Self::RoomAccessDraftRuleSet { scope, rule } => formatter
+                .debug_struct("RoomAccessDraftRuleSet")
+                .field("scope", scope)
+                .field("rule", rule)
+                .finish(),
+            Self::RoomAccessDraftAllowTargetsSet {
+                scope,
+                allow_targets,
+            } => formatter
+                .debug_struct("RoomAccessDraftAllowTargetsSet")
+                .field("scope", scope)
+                .field("allow_target_count", &allow_targets.len())
+                .finish(),
+            Self::RoomAccessDraftHistorySet { scope, history } => formatter
+                .debug_struct("RoomAccessDraftHistorySet")
+                .field("scope", scope)
+                .field("history", history)
+                .finish(),
+            Self::RoomAccessDraftReset { scope } => formatter
+                .debug_struct("RoomAccessDraftReset")
+                .field("scope", scope)
                 .finish(),
             Self::RoomModerationRequested {
                 request_id, action, ..
