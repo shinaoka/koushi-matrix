@@ -17,6 +17,9 @@ import type {
   RoomNotificationMode,
   RoomJoinRule,
   RoomSettingChange,
+  RoomAccessDraft,
+  RoomAccessDraftCommand,
+  RoomAccessPreview,
   SavedSessionInfo,
   SearchResult,
   SettingsPatch,
@@ -207,6 +210,10 @@ export function ContextualRightPanel({
   onForceRotateOutboundSession = () => undefined,
   historyExportControls,
   onUpdateRoomSetting = () => undefined,
+  roomAccessDraft = null,
+  roomAccessPreview = null,
+  roomHistoryPreview = null,
+  onSetRoomAccessDraft = () => undefined,
   onUpdateSpaceJoinRule,
   onIgnoreUser = () => undefined,
   onUnignoreUser = () => undefined,
@@ -380,6 +387,10 @@ export function ContextualRightPanel({
   spaceLocalOverrides?: Record<string, SpaceLocalPresentation>;
   onTimelineDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
+  roomAccessDraft?: RoomAccessDraft | null;
+  roomAccessPreview?: RoomAccessPreview | null;
+  roomHistoryPreview?: RoomAccessPreview | null;
+  onSetRoomAccessDraft?: (command: RoomAccessDraftCommand) => void;
   /** Issue #935: settles, or rejects when Rust refuses the change. */
   onUpdateSpaceJoinRule?: (spaceId: string, joinRule: RoomJoinRule) => Promise<void>;
   onIgnoreUser?: (userId: string) => void;
@@ -680,6 +691,10 @@ export function ContextualRightPanel({
           }
           onSetRoomNotificationMode={onSetRoomNotificationMode}
           onUpdateRoomSetting={onUpdateRoomSetting}
+          accessDraft={roomAccessDraft}
+          accessPreview={roomAccessPreview}
+          historyPreview={roomHistoryPreview}
+          onSetAccessDraft={onSetRoomAccessDraft}
           inviteHistoryPolicy={
             snapshot.state.domain.invite_workflow?.query.room_id === activeRoom?.room_id
               ? snapshot.state.domain.invite_workflow?.history_policy ?? null

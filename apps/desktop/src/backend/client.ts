@@ -36,6 +36,12 @@ import type {
   NotificationCategory,
   RoomNotificationMode,
   RoomSettingChange,
+  RoomAccessDraftCommand,
+  RoomAccessDraftScope,
+  RoomAccessPreview,
+  RoomAccessPreviewContext,
+  CreateRoomAccessPreviewInput,
+  CreateRoomAccessPreview,
   RoomTagKind,
   SavedSessionInfo,
   SearchScopeKind,
@@ -1232,6 +1238,24 @@ export class TauriDesktopApi implements DesktopApi {
 
   async previewRoomAddress(name: string, aliasLocalpart: string | null): Promise<RoomAddressPreview> {
     return this.invokeCommand<RoomAddressPreview>("preview_room_address", { name, aliasLocalpart });
+  }
+
+  async setRoomAccessDraft(command: RoomAccessDraftCommand): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("set_room_access_draft", { command });
+  }
+
+  async previewRoomAccess(
+    scope: RoomAccessDraftScope,
+    context: RoomAccessPreviewContext
+  ): Promise<RoomAccessPreview> {
+    return this.invokeCommand<RoomAccessPreview>("preview_room_access", { scope, context });
+  }
+
+  async previewCreateRoomAccess(
+    scope: RoomAccessDraftScope,
+    input: CreateRoomAccessPreviewInput
+  ): Promise<CreateRoomAccessPreview> {
+    return this.invokeCommand<CreateRoomAccessPreview>("preview_create_room_access", { scope, input });
   }
 
   async createRoom(request: CreateRoomRequest): Promise<CreateRoomSettlement> {

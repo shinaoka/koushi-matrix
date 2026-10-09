@@ -28,8 +28,24 @@ import type {
   StagedUploadFormatChoice,
   StagedUploadItem,
   StagedUploadOutputSelection,
-  StagedUploadResizeChoice
+  StagedUploadResizeChoice,
+  CreateRoomAccessPreview,
+  RoomAccessDraft,
+  RoomAccessDraftCommand,
+  RoomJoinRule,
+  RoomHistoryVisibility,
+  CreateRoomAccessRejection
 } from "../domain/types";
+import {
+  AccessChoiceDetail,
+  accessOutcomeDetails,
+  type AccessChoiceDetailChoice
+} from "./AccessChoiceDetail";
+import {
+  HISTORY_VISIBILITY_OPTIONS,
+  roomHistoryVisibilityDescription,
+  roomHistoryVisibilityLabel
+} from "../domain/roomHistoryChoice";
 import type { MentionCandidate } from "../domain/projectionTypes";
 import {
   ICON_SIZE,
@@ -223,6 +239,19 @@ export function LeaveSpaceDialog({
 
 // ===== CreateEntityDialog =====
 
+function createAccessRejectionText(rejection: CreateRoomAccessRejection): string {
+  switch (rejection) {
+    case "publicWithRestrictedAccess":
+      return t("room.accessRejectionPublicWithRestrictedAccess");
+    case "explicitPolicyWithInvitedOnly":
+      return t("room.accessRejectionExplicitPolicyWithInvitedOnly");
+    case "emptyAccessTargets":
+      return t("room.accessRejectionEmptyAccessTargets");
+    case "publicWithInvitedOnly":
+      return t("room.accessRejectionPublicWithInvitedOnly");
+  }
+}
+
 export interface CreateRoomDialogOptions {
   aliasLocalpart: string;
   encrypted: boolean;
@@ -253,7 +282,11 @@ export function CreateEntityDialog({
   onRoomOptionsChange,
   onOpenAddressHelp,
   onSubmit,
-  onValueChange
+  onValueChange,
+  roomAccessDraft = null,
+  createAccessPreview = null,
+  joinedSpaces = [],
+  onSetRoomAccessDraft = () => undefined
 }: {
   activeSpaceName?: string | null;
   /** The Space the room is created in (#1006); `null` at Home. */
@@ -272,6 +305,13 @@ export function CreateEntityDialog({
   onOpenAddressHelp?: (url: string) => void;
   onSubmit: () => void;
   onValueChange: (value: string) => void;
+  /** The Rust-owned create access/history draft (#1177). */
+  roomAccessDraft?: RoomAccessDraft | null;
+  /** The Rust effective-proposed-tuple preview for the create draft (#1177). */
+  createAccessPreview?: CreateRoomAccessPreview | null;
+  /** The viewer's joined Spaces, for the membership allow-target picker. */
+  joinedSpaces?: { id: string; name: string }[];
+  onSetRoomAccessDraft?: (command: RoomAccessDraftCommand) => void;
 }) {
   const isSpace = kind === "space";
   const addressInputRef = useRef<HTMLInputElement>(null);
@@ -289,6 +329,35 @@ export function CreateEntityDialog({
       topic: "",
       visibility: "private"
     } satisfies CreateRoomDialogOptions);
+  // #1177: the create dialog's access/history choices live in the Rust-owned
+  // draft; this dialog only maps the rule to the legacy visibility flag the
+  // create request still carries for the preset and address.
+  const createScope = { kind: "create" as const, sessionId: 0 };
+  const createRule: RoomJoinRule =
+    roomAccessDraft?.rule ?? (effectiveRoomOptions.visibility === "public" ? "public" : "invite");
+  const createAllowTargets = roomAccessDraft?.allowTargets ?? [];
+  const createHistory: RoomHistoryVisibility = roomAccessDraft?.history ?? "shared";
+  const createAccessChoices: readonly AccessChoiceDetailChoice[] = [
+    {
+      value: "public",
+      label: t("room.joinRulePublic"),
+      summary: t("room.accessChoicePublicSummary")
+    },
+    {
+      value: "invite",
+      label: t("room.joinRuleInvite"),
+      summary: t("room.accessChoiceInviteSummary")
+    },
+    {
+      value: "restricted",
+      label: t("room.accessChoiceSpaceMembers"),
+      summary: t("room.accessChoiceSpaceMembersSummary")
+    }
+  ];
+  const createRejection =
+    createAccessPreview?.rejection != null
+      ? createAccessRejectionText(createAccessPreview.rejection)
+      : null;
   const title = isSpace ? t("dialog.createSpaceTitle") : t("dialog.createRoomTitle");
   const inputLabel = isSpace ? t("dialog.spaceName") : t("dialog.roomName");
   // #1023: a room's display name is optional (the SDK calculates one); a
@@ -298,12 +367,15 @@ export function CreateEntityDialog({
     ? t("dialog.submitCreateSpace")
     : t("dialog.submitCreateRoom");
   // A public room's address readiness is the Rust preview's verdict,
-  // including "no address" for an unnamed room (#1023).
+  // including "no address" for an unnamed room (#1023). A rejected access
+  // proposal (public plus restricted, or a restricted rule with no route)
+  // blocks Create too.
   const canSubmit =
     (isSpace
       ? value.trim().length > 0
       : effectiveRoomOptions.visibility === "private" ||
         (addressPreview !== null && addressPreview.error === null)) &&
+    (isSpace || (createAccessPreview != null && createAccessPreview.rejection == null)) &&
     !isBusy;
 
   function updateRoomOptions(patch: Partial<CreateRoomDialogOptions>) {
@@ -351,75 +423,125 @@ export function CreateEntityDialog({
         ) : null}
         {!isSpace ? (
           <div className="create-room-options">
-            <div className="create-room-visibility" role="radiogroup" aria-label={t("dialog.roomVisibility")}>
-              <label className="create-room-option">
-                <input
-                  type="radio"
-                  name="create-room-visibility"
-                  checked={effectiveRoomOptions.visibility === "private"}
-                  onChange={() =>
-                    updateRoomOptions({
-                      visibility: "private"
-                    })
-                  }
-                />
-                <span>{t("dialog.privateRoom")}</span>
-              </label>
-              <label className="create-room-option">
-                <input
-                  type="radio"
-                  name="create-room-visibility"
-                  checked={effectiveRoomOptions.visibility === "public"}
-                  onChange={() =>
-                    updateRoomOptions({
-                      visibility: "public"
-                    })
-                  }
-                />
-                <span>{t("dialog.publicRoom")}</span>
-              </label>
-            </div>
-            {effectiveRoomOptions.visibility === "private" ? (
-              <div className="create-room-space-note">
-                {activeSpaceName
-                  ? effectiveRoomOptions.invitedOnly
-                    ? t("dialog.invitedOnlyRoomInSpace", { spaceName: activeSpaceName })
-                    : t("dialog.standardRoomInSpace", { spaceName: activeSpaceName })
-                  : t("dialog.privateRoomDescription")}
-              </div>
-            ) : null}
-            {effectiveRoomOptions.visibility === "private" ? (
-              <>
-                {activeSpaceName ? (
-                  <label className="dialog-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={effectiveRoomOptions.invitedOnly}
-                      aria-label={t("dialog.invitedOnlyRoom")}
-                      onChange={(event) =>
-                        updateRoomOptions({
-                          invitedOnly: event.currentTarget.checked
-                        })
-                      }
-                    />
-                    <span>{t("dialog.invitedOnlyRoom")}</span>
-                  </label>
-                ) : null}
-                <label className="dialog-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={effectiveRoomOptions.encrypted}
-                    aria-label={t("dialog.encryptedRoom")}
-                    onChange={(event) =>
-                      updateRoomOptions({
-                        encrypted: event.currentTarget.checked
-                      })
-                    }
-                  />
-                  <span>{t("dialog.encryptedRoom")}</span>
-                </label>
-              </>
-            ) : null}
+            <AccessChoiceDetail
+              property="create-access"
+              label={t("room.joinRule")}
+              choices={createAccessChoices}
+              selected={createRule}
+              details={
+                createAccessPreview ? (
+                  accessOutcomeDetails(createAccessPreview.outcome)
+                ) : (
+                  <p className="profile-settings-hint">{t("room.settingsLoading")}</p>
+                )
+              }
+              detailsConfirmed={false}
+              canEdit
+              saveEnabled={false}
+              saveLabel={submitLabel}
+              changeLabel={t("action.cancel")}
+              rejection={createRejection}
+              notes={
+                <>
+                  {createRule !== "public" ? (
+                    <div className="create-room-space-note">
+                      {activeSpaceName
+                        ? t("dialog.standardRoomInSpace", { spaceName: activeSpaceName })
+                        : t("dialog.privateRoomDescription")}
+                    </div>
+                  ) : null}
+                  {createRule === "invite" ? (
+                    <p className="profile-settings-hint">{t("dialog.invitedOnlyRoom")}</p>
+                  ) : null}
+                  {createRule === "restricted" ? (
+                    <div
+                      className="access-allow-targets"
+                      role="group"
+                      aria-label={t("room.accessAllowTargets")}
+                    >
+                      <p className="profile-settings-hint">{t("room.accessAllowTargetsHint")}</p>
+                      {joinedSpaces.length === 0 ? (
+                        <p className="profile-settings-hint">{t("room.accessNoJoinedSpaces")}</p>
+                      ) : (
+                        joinedSpaces.map((space) => (
+                          <label className="dialog-checkbox" key={space.id}>
+                            <input
+                              type="checkbox"
+                              checked={createAllowTargets.includes(space.id)}
+                              onChange={(event) => {
+                                const target = event.currentTarget;
+                                const next = target.checked
+                                  ? [...createAllowTargets, space.id]
+                                  : createAllowTargets.filter((id) => id !== space.id);
+                                onSetRoomAccessDraft({
+                                  kind: "allowTargets",
+                                  scope: createScope,
+                                  allowTargets: next
+                                });
+                              }}
+                            />
+                            <span dir="auto">{space.name}</span>
+                          </label>
+                        ))
+                      )}
+                    </div>
+                  ) : null}
+                  {createRule !== "public" ? (
+                    <label className="dialog-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={effectiveRoomOptions.encrypted}
+                        aria-label={t("dialog.encryptedRoom")}
+                        onChange={(event) =>
+                          updateRoomOptions({ encrypted: event.currentTarget.checked })
+                        }
+                      />
+                      <span>{t("dialog.encryptedRoom")}</span>
+                    </label>
+                  ) : null}
+                  {createAccessPreview?.roomVersionPinned ? (
+                    <p className="profile-settings-hint">{t("room.accessRoomVersionPinned")}</p>
+                  ) : null}
+                </>
+              }
+              onSelect={(value) => {
+                const rule = value as RoomJoinRule;
+                onSetRoomAccessDraft({ kind: "rule", scope: createScope, rule });
+                updateRoomOptions({
+                  visibility: rule === "public" ? "public" : "private",
+                  invitedOnly: false
+                });
+              }}
+            />
+            <AccessChoiceDetail
+              property="create-history"
+              label={t("room.historyVisibility")}
+              choices={HISTORY_VISIBILITY_OPTIONS.map((visibility) => ({
+                value: visibility,
+                label: roomHistoryVisibilityLabel(visibility),
+                summary: roomHistoryVisibilityDescription(visibility)
+              }))}
+              selected={createHistory}
+              details={
+                createAccessPreview ? (
+                  accessOutcomeDetails(createAccessPreview.outcome)
+                ) : (
+                  <p className="profile-settings-hint">{t("room.settingsLoading")}</p>
+                )
+              }
+              detailsConfirmed={false}
+              canEdit
+              saveEnabled={false}
+              saveLabel={submitLabel}
+              changeLabel={t("action.cancel")}
+              onSelect={(value) =>
+                onSetRoomAccessDraft({
+                  kind: "history",
+                  scope: createScope,
+                  history: value as RoomHistoryVisibility
+                })
+              }
+            />
             <ImeTextField
               className="dialog-input"
               type="text"

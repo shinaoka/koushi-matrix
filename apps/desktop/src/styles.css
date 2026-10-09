@@ -8540,6 +8540,131 @@ kbd {
   resize: vertical;
 }
 
+/*
+ * #1177: the shared choice-and-detail editor. The choice list and the Rust
+ * details stack as grid rows, so a narrow or short pane keeps every choice and
+ * the Save/Cancel actions reachable without a fixed height.
+ */
+.access-choice-detail {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.access-choice-detail-legend {
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.access-choice-list {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.access-choice-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.access-choice-item[data-selected="true"] {
+  border-color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 8%, transparent);
+}
+
+.access-choice-item input {
+  flex: 0 0 auto;
+  margin-block-start: 2px;
+}
+
+.access-choice-item input:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.access-choice-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.access-choice-label {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.access-choice-summary,
+.access-choice-reason {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-break: strict;
+  overflow-wrap: anywhere;
+}
+
+.access-choice-reason {
+  color: var(--warning, var(--text-muted));
+  font-weight: 600;
+}
+
+.access-detail-panel {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.access-detail-heading {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.access-detail-state {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.access-detail-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-inline-start: 18px;
+  color: var(--text);
+  font-size: 13px;
+  line-break: strict;
+  overflow-wrap: anywhere;
+}
+
+.access-detail-caveat,
+.access-detail-note {
+  color: var(--text-muted);
+}
+
+@media (max-height: 420px) {
+  .access-detail-panel {
+    max-height: 40vh;
+    overflow-y: auto;
+  }
+}
+
 .settings-property-status {
   margin: 0;
   color: var(--text-muted);

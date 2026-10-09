@@ -18,10 +18,14 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { t } from "../i18n/messages";
 import { ImeSafeForm, ImeTextField } from "./ImeTextControl";
 import {
-  InlineChoicePropertyEditor,
   InlineTextPropertyEditor,
   type PropertySaveStatus
 } from "./SettingsPropertyCard";
+import {
+  AccessChoiceDetail,
+  accessOutcomeDetails,
+  type AccessChoiceDetailChoice
+} from "./AccessChoiceDetail";
 import { EntityAvatar } from "./Shell";
 import { avatarInitial, roomAccessTooltipLabel, roomDisplayLabel } from "../app/uiShared";
 import {
@@ -30,6 +34,11 @@ import {
   roomAccessIndicator,
   type RoomAccessProjection
 } from "../domain/accessCondition";
+import {
+  HISTORY_VISIBILITY_OPTIONS,
+  roomHistoryVisibilityDescription,
+  roomHistoryVisibilityLabel
+} from "../domain/roomHistoryChoice";
 import { Tooltip, type TooltipTriggerProps } from "./Tooltip";
 import {
   HistoryExportSection,
@@ -48,7 +57,10 @@ import type {
   RoomSummary,
   LinkPreviewSettingsState,
   SettingsState,
-  SpaceSummary
+  SpaceSummary,
+  RoomAccessDraft,
+  RoomAccessDraftCommand,
+  RoomAccessPreview,
 } from "../domain/types";
 
 export function RoomInfoPanel({
@@ -71,7 +83,11 @@ export function RoomInfoPanel({
   onOpenRecovery,
   onReturnToInvite,
   historyExport,
-  historyExportControls
+  historyExportControls,
+  accessDraft,
+  accessPreview,
+  historyPreview,
+  onSetAccessDraft
 }: {
   room: RoomSummary | null;
   roomManagement?: RoomManagementState;
@@ -94,6 +110,13 @@ export function RoomInfoPanel({
   onReturnToInvite?: () => void;
   historyExport?: HistoryExportState;
   historyExportControls?: HistoryExportControls;
+  /** The Rust-owned access/history draft for this room (#1177). */
+  accessDraft?: RoomAccessDraft | null;
+  /** The Rust access-panel preview for the current draft (#1177). */
+  accessPreview?: RoomAccessPreview | null;
+  /** The Rust history-panel preview for the current draft (#1177). */
+  historyPreview?: RoomAccessPreview | null;
+  onSetAccessDraft?: (command: RoomAccessDraftCommand) => void;
 }) {
   const roomId = room?.room_id ?? "";
   const roomName = room ? roomDisplayLabel(room) : "";
@@ -192,8 +215,38 @@ export function RoomInfoPanel({
       : null;
   const statusBadges = roomStatusBadges(isEncrypted, settings, access);
 
+  // #1177: the access/history editor works over the Rust-owned draft. The
+  // confirmed rule and completeness facts come from the shared sidebar
+  // projection (`access`), never from a locally derived condition.
+  const accessScope = roomId ? ({ kind: "room", roomId } as const) : null;
+  const draftRule = accessDraft?.rule ?? null;
+  const confirmedJoinRule = access?.joinRule ?? settings?.join_rule ?? null;
+  const selectedJoinRule: RoomJoinRule = draftRule ?? confirmedJoinRule ?? "unknown";
+  const selectedAllowTargets = accessDraft?.allowTargets ?? [];
+  const accessRejectionReason = !access?.joinRule
+    ? t("room.accessUnavailableNotInspected")
+    : access.restricted === "membershipPlusUnsupported" || access.restricted === "unsupportedOnly"
+      ? t("room.accessUnavailableUnsupported")
+      : null;
+  const draftHistory = accessDraft?.history ?? null;
+  const selectedHistory: RoomHistoryVisibility =
+    draftHistory ?? settings?.history_visibility ?? "joined";
+  const joinedSpaces = spaces.map((space) => ({
+    id: space.space_id,
+    name: space.display_name
+  }));
+  const accessSaveEnabled =
+    accessPreview != null &&
+    !accessPreview.confirmed &&
+    draftRule != null &&
+    !(draftRule === "restricted" && selectedAllowTargets.length === 0) &&
+    !accessRejectionReason;
+  const historySaveEnabled =
+    historyPreview != null && !historyPreview.confirmed && draftHistory != null;
+
   function submitSetting(field: RoomSettingField, change: RoomSettingChange, target: string | null) {
-    const allowed = "joinRule" in change ? mayChangeJoinRule : canEditSettings;
+    const allowed =
+      "joinRule" in change || "accessPolicy" in change ? mayChangeJoinRule : canEditSettings;
     if (!allowed) return;
     setSubmission({
       roomId,
@@ -455,66 +508,173 @@ export function RoomInfoPanel({
         <p className="profile-settings-hint">{t("room.accessAndHistoryHint")}</p>
         {settings ? (
           <>
-            <InlineChoicePropertyEditor<RoomJoinRule>
-              key={`${roomId}:join-rule`}
-              property="join-rule"
-              label={t("room.joinRule")}
-              headingRef={joinRuleHeadingRef}
-              value={settings.join_rule}
-              valueLabel={roomJoinRuleLabel}
-              options={joinRuleOptions(settings.join_rule).map((rule) => ({
-                value: rule,
-                disabled: !SETTABLE_JOIN_RULES.includes(rule)
-              }))}
-              selectLabel={t("room.joinRule")}
-              changeLabel={t("room.changeJoinRule")}
-              saveLabel={t("room.saveJoinRule")}
-              canEdit={mayChangeJoinRule}
-              busy={settingsPending}
-              readOnlyReason={readOnlyJoinRuleReason}
-              status={fieldStatus("joinRule")}
-              onSave={(joinRule) => submitSetting("joinRule", { joinRule }, joinRule)}
-            />
-            <InlineChoicePropertyEditor<RoomHistoryVisibility>
-              key={`${roomId}:history-visibility`}
+            {(() => {
+              const accessChoices: AccessChoiceDetailChoice[] = [
+                {
+                  value: "public",
+                  label: t("room.joinRulePublic"),
+                  summary: t("room.accessChoicePublicSummary")
+                },
+                {
+                  value: "invite",
+                  label: t("room.joinRuleInvite"),
+                  summary: t("room.accessChoiceInviteSummary")
+                },
+                {
+                  value: "knock",
+                  label: t("room.joinRuleKnock"),
+                  summary: t("room.accessChoiceKnockSummary")
+                },
+                {
+                  value: "restricted",
+                  label: access?.spaceMembersRoute
+                    ? t("room.accessChoiceSpaceMembersPinned", {
+                        space: access.spaceMembersRoute
+                      })
+                    : t("room.accessChoiceSpaceMembers"),
+                  summary: t("room.accessChoiceSpaceMembersSummary")
+                }
+              ];
+              const allowPicker =
+                selectedJoinRule === "restricted" ? (
+                  <div
+                    className="access-allow-targets"
+                    role="group"
+                    aria-label={t("room.accessAllowTargets")}
+                  >
+                    <p className="profile-settings-hint">{t("room.accessAllowTargetsHint")}</p>
+                    {joinedSpaces.length === 0 ? (
+                      <p className="profile-settings-hint">{t("room.accessNoJoinedSpaces")}</p>
+                    ) : (
+                      joinedSpaces.map((space) => (
+                        <label className="dialog-checkbox" key={space.id}>
+                          <input
+                            type="checkbox"
+                            checked={selectedAllowTargets.includes(space.id)}
+                            disabled={!mayChangeJoinRule || settingsPending}
+                            onChange={(event) => {
+                              if (!accessScope) return;
+                              const target = event.currentTarget;
+                              const next = target.checked
+                                ? [...selectedAllowTargets, space.id]
+                                : selectedAllowTargets.filter((id) => id !== space.id);
+                              onSetAccessDraft?.({
+                                kind: "allowTargets",
+                                scope: accessScope,
+                                allowTargets: next
+                              });
+                            }}
+                          />
+                          <span dir="auto">{space.name}</span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                ) : null;
+              return (
+                <AccessChoiceDetail
+                  property="join-rule"
+                  label={t("room.joinRule")}
+                  headingRef={joinRuleHeadingRef}
+                  choices={accessChoices}
+                  selected={selectedJoinRule}
+                  details={
+                    accessPreview ? (
+                      accessOutcomeDetails(accessPreview.outcome)
+                    ) : (
+                      <p className="profile-settings-hint">{t("room.settingsLoading")}</p>
+                    )
+                  }
+                  detailsConfirmed={accessPreview?.confirmed ?? true}
+                  canEdit={mayChangeJoinRule && !accessRejectionReason}
+                  busy={settingsPending}
+                  readOnlyReason={accessRejectionReason ?? readOnlyJoinRuleReason}
+                  saveEnabled={accessSaveEnabled}
+                  saveLabel={t("room.saveJoinRule")}
+                  changeLabel={t("room.changeJoinRule")}
+                  status={fieldStatus("joinRule")}
+                  rejection={accessRejectionReason}
+                  notes={allowPicker}
+                  onSelect={(value) => {
+                    if (!accessScope) return;
+                    onSetAccessDraft?.({
+                      kind: "rule",
+                      scope: accessScope,
+                      rule: value as RoomJoinRule
+                    });
+                  }}
+                  onSave={() => {
+                    if (!accessScope) return;
+                    submitSetting(
+                      "joinRule",
+                      {
+                        accessPolicy: {
+                          rule: selectedJoinRule,
+                          allowTargets: selectedAllowTargets
+                        }
+                      },
+                      selectedJoinRule
+                    );
+                  }}
+                  onCancel={() => {
+                    if (!accessScope) return;
+                    onSetAccessDraft?.({ kind: "rule", scope: accessScope, rule: null });
+                  }}
+                />
+              );
+            })()}
+            <AccessChoiceDetail
               property="history-visibility"
               label={t("room.historyVisibility")}
               headingRef={historyHeadingRef}
-              value={settings.history_visibility}
-              valueLabel={roomHistoryVisibilityLabel}
-              options={HISTORY_VISIBILITY_OPTIONS.map((visibility) => ({ value: visibility }))}
-              selectLabel={t("room.historyVisibility")}
-              changeLabel={t("room.changeHistoryVisibility")}
-              saveLabel={t("room.saveHistoryVisibility")}
+              choices={HISTORY_VISIBILITY_OPTIONS.map((visibility) => ({
+                value: visibility,
+                label: roomHistoryVisibilityLabel(visibility),
+                summary: roomHistoryVisibilityDescription(visibility)
+              }))}
+              selected={selectedHistory}
+              details={
+                historyPreview ? (
+                  accessOutcomeDetails(historyPreview.outcome)
+                ) : (
+                  <p className="profile-settings-hint">{t("room.settingsLoading")}</p>
+                )
+              }
+              detailsConfirmed={historyPreview?.confirmed ?? true}
               canEdit={mayEditSettings}
               busy={settingsPending}
               readOnlyReason={readOnlyReason}
+              saveEnabled={historySaveEnabled}
+              saveLabel={t("room.saveHistoryVisibility")}
+              changeLabel={t("room.changeHistoryVisibility")}
               status={fieldStatus("historyVisibility")}
-              notes={(visibility) => (
-                <>
-                  <p className="profile-settings-hint">
-                    {roomHistoryVisibilityDescription(visibility)}
-                  </p>
-                  {visibility === "worldReadable" ? (
-                    <p className="settings-notice" role="note">
-                      <AlertTriangle size={15} aria-hidden="true" />
-                      {t("room.historyWorldReadableWarning")}
-                    </p>
-                  ) : null}
-                  {isEncrypted && visibility === "shared" ? (
-                    <p className="settings-notice" role="note">
-                      <KeyRound size={15} aria-hidden="true" />
-                      {t("room.historySharedEncryptedHint")}
-                    </p>
-                  ) : null}
+              notes={
+                selectedHistory === "worldReadable" ? (
                   <p className="settings-notice" role="note">
-                    {t("room.historyNonRetroactive")}
+                    <AlertTriangle size={15} aria-hidden="true" />
+                    {t("room.historyWorldReadableWarning")}
                   </p>
-                </>
-              )}
-              onSave={(historyVisibility) =>
-                submitSetting("historyVisibility", { historyVisibility }, historyVisibility)
+                ) : null
               }
+              onSelect={(value) => {
+                if (!accessScope) return;
+                onSetAccessDraft?.({
+                  kind: "history",
+                  scope: accessScope,
+                  history: value as RoomHistoryVisibility
+                });
+              }}
+              onSave={() =>
+                submitSetting(
+                  "historyVisibility",
+                  { historyVisibility: selectedHistory },
+                  selectedHistory
+                )
+              }
+              onCancel={() => {
+                if (!accessScope) return;
+                onSetAccessDraft?.({ kind: "history", scope: accessScope, history: null });
+              }}
             />
             {historyPolicy.readiness === "recoveryRequired" ? (
               <div className="settings-notice" role="alert">
@@ -756,13 +916,6 @@ interface StatusBadge {
   description?: string;
 }
 
-const HISTORY_VISIBILITY_OPTIONS: readonly RoomHistoryVisibility[] = [
-  "worldReadable",
-  "shared",
-  "invited",
-  "joined"
-];
-
 function roomSettingFailureMessage(kind: OperationFailureKind): string {
   return kind === "forbidden" ? t("room.settingForbidden") : t("room.operationFailed");
 }
@@ -860,45 +1013,6 @@ function roomJoinRuleLabel(rule: RoomJoinRule): string {
       return t("room.joinRulePrivate");
     case "unknown":
       return t("room.joinRuleUnknown");
-  }
-}
-
-/** The rules a join-rule change can carry; mirrors Rust `RoomJoinRule::is_settable`. */
-const SETTABLE_JOIN_RULES: readonly RoomJoinRule[] = ["public", "invite", "knock", "private"];
-
-/**
- * The settable rules, plus the current one when it is not settable, so the
- * select shows the room's real rule instead of silently landing on another.
- */
-function joinRuleOptions(current: RoomJoinRule): readonly RoomJoinRule[] {
-  return SETTABLE_JOIN_RULES.includes(current)
-    ? SETTABLE_JOIN_RULES
-    : [...SETTABLE_JOIN_RULES, current];
-}
-
-function roomHistoryVisibilityLabel(visibility: RoomHistoryVisibility): string {
-  switch (visibility) {
-    case "worldReadable":
-      return t("room.historyWorldReadable");
-    case "shared":
-      return t("room.historyShared");
-    case "invited":
-      return t("room.historyInvited");
-    case "joined":
-      return t("room.historyJoined");
-  }
-}
-
-function roomHistoryVisibilityDescription(visibility: RoomHistoryVisibility): string {
-  switch (visibility) {
-    case "worldReadable":
-      return t("room.historyWorldReadableDescription");
-    case "shared":
-      return t("room.historySharedDescription");
-    case "invited":
-      return t("room.historyInvitedDescription");
-    case "joined":
-      return t("room.historyJoinedDescription");
   }
 }
 

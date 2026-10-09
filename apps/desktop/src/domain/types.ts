@@ -1,3 +1,4 @@
+import type { MessageId } from "../i18n/messages";
 import type { LinkPreview } from "./linkPreview";
 
 export type SearchScopeKind = "currentRoom" | "currentSpace" | "allRooms";
@@ -1773,7 +1774,82 @@ export interface DirectoryRoomSummary {
 export interface RoomManagementState {
   selected_room_id: string | null;
   settings: RoomSettingsSnapshot | null;
+  /**
+   * The Rust-owned access/history draft (#1177). React keeps only DOM/focus
+   * state; every rule, target and history selection lives here.
+   */
+  draft?: RoomAccessDraft | null;
   operation: RoomManagementOperationState;
+}
+
+/** The scope a Rust-owned access/history draft belongs to (#1177). */
+export type RoomAccessDraftScope =
+  | { kind: "room"; roomId: string }
+  | { kind: "create"; sessionId: number };
+
+export interface RoomAccessDraft {
+  scope: RoomAccessDraftScope;
+  revision: number;
+  rule?: RoomJoinRule | null;
+  allowTargets?: string[];
+  history?: RoomHistoryVisibility | null;
+}
+
+/** A typed mutation of the Rust-owned access/history draft (#1177). */
+export type RoomAccessDraftCommand =
+  | { kind: "rule"; scope: RoomAccessDraftScope; rule?: RoomJoinRule | null }
+  | { kind: "allowTargets"; scope: RoomAccessDraftScope; allowTargets: string[] }
+  | { kind: "history"; scope: RoomAccessDraftScope; history?: RoomHistoryVisibility | null }
+  | { kind: "reset"; scope: RoomAccessDraftScope };
+
+/** Which property a Rust access preview describes (#1177). */
+export type RoomAccessPreviewContext = "access" | "history";
+
+/** One resolved outcome line: a catalog id plus ordered substitutions. */
+export interface RoomAccessOutcomeLine {
+  messageId: MessageId;
+  substitutions?: string[];
+}
+
+export interface RoomAccessOutcome {
+  join: RoomAccessOutcomeLine;
+  joinRequest?: RoomAccessOutcomeLine;
+  history: RoomAccessOutcomeLine;
+  encryption: RoomAccessOutcomeLine;
+  directory: RoomAccessOutcomeLine;
+  historyKeyCaveat?: RoomAccessOutcomeLine;
+  nonRetroactive: RoomAccessOutcomeLine;
+}
+
+/** A stateless Rust preview of one Room Info panel (#1177). */
+export interface RoomAccessPreview {
+  scope: RoomAccessDraftScope;
+  context: RoomAccessPreviewContext;
+  confirmed: boolean;
+  outcome: RoomAccessOutcome;
+}
+
+/** Why a create proposal cannot be submitted (#1177). */
+export type CreateRoomAccessRejection =
+  | "publicWithRestrictedAccess"
+  | "explicitPolicyWithInvitedOnly"
+  | "emptyAccessTargets"
+  | "publicWithInvitedOnly";
+
+/** Effective create inputs the Rust preview normalizes with Create's rules. */
+export interface CreateRoomAccessPreviewInput {
+  visibility: CreateRoomVisibility;
+  invitedOnly: boolean;
+  encrypted: boolean;
+  parentSpaceId?: string | null;
+}
+
+export interface CreateRoomAccessPreview {
+  scope: RoomAccessDraftScope;
+  confirmed: boolean;
+  outcome: RoomAccessOutcome;
+  rejection?: CreateRoomAccessRejection;
+  roomVersionPinned: boolean;
 }
 
 export type RoomManagementOperationState =
