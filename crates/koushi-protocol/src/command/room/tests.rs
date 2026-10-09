@@ -328,4 +328,25 @@ fn room_access_draft_wire_shape_is_camel_case() {
     let parsed_open: RoomAccessDraftCommand =
         serde_json::from_value(open_wire).expect("frontend open shape deserializes");
     assert_eq!(parsed_open, open);
+
+    // #1177: one target edit keeps camelCase fields and redacts the target id.
+    let toggle = RoomAccessDraftCommand::ToggleAllowTarget {
+        scope: scope.clone(),
+        target: "!space:example.invalid".to_owned(),
+        selected: true,
+    };
+    let toggle_wire = serde_json::json!({
+        "kind": "toggleAllowTarget",
+        "scope": { "kind": "room", "roomId": "!room:example.invalid" },
+        "target": "!space:example.invalid",
+        "selected": true,
+    });
+    assert_eq!(
+        serde_json::to_value(&toggle).expect("serialize toggle"),
+        toggle_wire
+    );
+    let parsed_toggle: RoomAccessDraftCommand =
+        serde_json::from_value(toggle_wire).expect("frontend toggle shape deserializes");
+    assert_eq!(parsed_toggle, toggle);
+    assert!(!format!("{toggle:?}").contains("!space:example.invalid"));
 }

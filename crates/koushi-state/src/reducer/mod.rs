@@ -1134,6 +1134,13 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         } => {
             room_management::handle_room_access_draft_allow_targets_set(state, scope, allow_targets)
         }
+        AppAction::RoomAccessDraftAllowTargetToggled {
+            scope,
+            target,
+            selected,
+        } => room_management::handle_room_access_draft_allow_target_toggled(
+            state, scope, target, selected,
+        ),
         AppAction::RoomAccessDraftHistorySet { scope, history } => {
             room_management::handle_room_access_draft_history_set(state, scope, history)
         }

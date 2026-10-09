@@ -328,6 +328,15 @@ impl RoomActor {
                 scope,
                 allow_targets,
             },
+            RoomAccessDraftCommand::ToggleAllowTarget {
+                scope,
+                target,
+                selected,
+            } => AppAction::RoomAccessDraftAllowTargetToggled {
+                scope,
+                target,
+                selected,
+            },
             RoomAccessDraftCommand::History { scope, history } => {
                 AppAction::RoomAccessDraftHistorySet { scope, history }
             }

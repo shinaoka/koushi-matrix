@@ -124,8 +124,51 @@ pub(super) async fn verify(
         ));
     }
 
-    // #1177: an explicit membership policy at creation is honoured, and its
-    // allow content and history are readable after sync.
+    // #1177: the allow selection names a Space DISTINCT from the attachment, and
+    // one A does not administer (B owns it and invites A), so the membership
+    // route never depends on permission over the named Space.
+    let allow_space_id =
+        create_space_for_qa(conn_b, "QA Space Access Allow", "space_access allow space").await?;
+    wait_for_space_in_space_list(conn_b, &allow_space_id, "space_access B allow space list")
+        .await?;
+    let user_a = format!("@{}:{}", config.user_a, config.server_name);
+    invite_user_for_qa(
+        conn_b,
+        &allow_space_id,
+        &user_a,
+        "space_access invite A to the allow Space",
+    )
+    .await?;
+    wait_for_invite_in_snapshot(conn_a, &allow_space_id, None, "space_access A allow invite")
+        .await?;
+    let join_allow_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(RoomCommand::JoinRoom {
+            request_id: join_allow_id,
+            room_id: allow_space_id.clone(),
+        }))
+        .await
+        .map_err(|e| format!("space_access: submit A join allow Space failed: {e}"))?;
+    wait_for_room_joined(
+        conn_a,
+        join_allow_id,
+        &allow_space_id,
+        "space_access A joins allow Space",
+    )
+    .await?;
+    wait_for_space_in_space_list(conn_a, &allow_space_id, "space_access A allow space list")
+        .await?;
+    // Force a client-side read of the allow Space so its create event is in
+    // A's state store before Create validates the selected target.
+    load_room_settings_for_qa(
+        conn_a,
+        &allow_space_id,
+        "space_access A allow space settings",
+    )
+    .await?;
+
+    // #1177: an explicit membership policy at creation is honoured, its allow
+    // content is EXACTLY the selected target, and its history is read back.
     let membership_room_id = conn_a.next_request_id();
     conn_a
         .command(CoreCommand::Room(RoomCommand::CreateRoom {
@@ -142,7 +185,7 @@ pub(super) async fn verify(
                 }),
                 access_policy: Some(RoomAccessPolicy::new(
                     RoomJoinRule::Restricted,
-                    vec![space_id.clone()],
+                    vec![allow_space_id.clone()],
                 )),
                 history: Some(RoomHistoryVisibility::Joined),
             },
@@ -158,26 +201,14 @@ pub(super) async fn verify(
         "space_access membership projection",
     )
     .await?;
-    let membership = load_room_settings_for_qa(
+    let membership = wait_for_room_settings_exact_targets(
         conn_a,
         &membership_room_id,
+        RoomJoinRule::Restricted,
+        &[allow_space_id.as_str()],
         "space_access membership settings",
     )
     .await?;
-    if membership.access.restricted != Some(RestrictedConditions::MembershipOnly) {
-        return Err(format!(
-            "space_access: the created membership room reports {:?}",
-            membership.access.restricted
-        ));
-    }
-    if !membership
-        .access
-        .allow_targets
-        .iter()
-        .any(|target| target.room_id == space_id)
-    {
-        return Err("space_access: the created membership room does not name the Space".to_owned());
-    }
     if membership.history_visibility != RoomHistoryVisibility::Joined {
         return Err(format!(
             "space_access: the created room's history is {:?}, not Joined",
@@ -185,11 +216,106 @@ pub(super) async fn verify(
         ));
     }
     println!("space_access_create_membership=ok");
+    println!("space_access_target_without_permission=ok");
     println!("space_access_history=ok");
 
-    // #1177: move a genuinely different policy (Public) first, then restore a
-    // restricted rule through the real update command and read back the exact
-    // synced allow content.
+    // #1177: all four history values through the real Room Info update command.
+    for target in [
+        RoomHistoryVisibility::Shared,
+        RoomHistoryVisibility::Invited,
+        RoomHistoryVisibility::Joined,
+        RoomHistoryVisibility::WorldReadable,
+    ] {
+        let update_id = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::Room(RoomCommand::UpdateRoomSetting {
+                request_id: update_id,
+                room_id: membership_room_id.clone(),
+                change: RoomSettingChange::HistoryVisibility(target),
+            }))
+            .await
+            .map_err(|e| format!("space_access: submit history {target:?} failed: {e}"))?;
+        let updated =
+            wait_for_room_setting_updated(conn_a, update_id, "space_access history update").await?;
+        if updated.history_visibility != target {
+            return Err(format!(
+                "space_access: the saved snapshot carries history {:?}, not {target:?}",
+                updated.history_visibility
+            ));
+        }
+    }
+    println!("space_access_history_values=ok");
+
+    // #1177: B keeps the membership room's settings open; A's history change
+    // reaches B's open settings without a reload.
+    // #1177: B is a member of the allow Space, so the restricted room admits B;
+    // joining lets B observe A's later allow-target and history changes.
+    let b_join_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Room(RoomCommand::JoinRoom {
+            request_id: b_join_id,
+            room_id: membership_room_id.clone(),
+        }))
+        .await
+        .map_err(|e| format!("space_access: submit B join membership room failed: {e}"))?;
+    wait_for_room_joined(
+        conn_b,
+        b_join_id,
+        &membership_room_id,
+        "space_access B joins membership room",
+    )
+    .await?;
+    load_room_settings_for_qa(
+        conn_b,
+        &membership_room_id,
+        "space_access B membership settings",
+    )
+    .await?;
+    let history_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(RoomCommand::UpdateRoomSetting {
+            request_id: history_id,
+            room_id: membership_room_id.clone(),
+            change: RoomSettingChange::HistoryVisibility(RoomHistoryVisibility::Shared),
+        }))
+        .await
+        .map_err(|e| format!("space_access: submit observed history change failed: {e}"))?;
+    wait_for_room_setting_updated(conn_a, history_id, "space_access observed history change")
+        .await?;
+    wait_for_observed_history(
+        conn_b,
+        &membership_room_id,
+        RoomHistoryVisibility::Shared,
+        "space_access B observes history",
+    )
+    .await?;
+
+    // #1177: a second client observes an allow-target change without a reload.
+    let allow_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(RoomCommand::UpdateRoomSetting {
+            request_id: allow_id,
+            room_id: membership_room_id.clone(),
+            change: RoomSettingChange::AccessPolicy(RoomAccessPolicy::new(
+                RoomJoinRule::Restricted,
+                vec![space_id.clone()],
+            )),
+        }))
+        .await
+        .map_err(|e| format!("space_access: submit observed allow change failed: {e}"))?;
+    wait_for_room_setting_updated(conn_a, allow_id, "space_access observed allow change").await?;
+    wait_for_room_access_allow_target(
+        conn_b,
+        &membership_room_id,
+        RoomJoinRule::Restricted,
+        &space_id,
+        "space_access B observes allow target",
+    )
+    .await?;
+    println!("space_access_second_client=ok");
+
+    // #1177: move a genuinely different policy (Public) first, then restore the
+    // restricted allow list and read back the exact synced allow content.
     let public_id = conn_a.next_request_id();
     conn_a
         .command(CoreCommand::Room(RoomCommand::UpdateRoomSetting {
@@ -215,7 +341,7 @@ pub(super) async fn verify(
             room_id: membership_room_id.clone(),
             change: RoomSettingChange::AccessPolicy(RoomAccessPolicy::new(
                 RoomJoinRule::Restricted,
-                vec![space_id.clone()],
+                vec![allow_space_id.clone()],
             )),
         }))
         .await
@@ -227,53 +353,45 @@ pub(super) async fn verify(
         conn_a,
         &membership_room_id,
         RoomJoinRule::Restricted,
-        &space_id,
+        &allow_space_id,
         "space_access restore projection",
     )
     .await?;
-    let restored = load_room_settings_for_qa(
+    wait_for_room_settings_exact_targets(
         conn_a,
         &membership_room_id,
+        RoomJoinRule::Restricted,
+        &[allow_space_id.as_str()],
         "space_access restored settings",
     )
     .await?;
-    if !room_settings_carry_allow_target(&restored, &space_id) {
-        // The SDK's settings read can lag the list observer's synced content on
-        // a slower homeserver; re-read once the next observation advances.
-        let deadline = tokio::time::Instant::now() + ROOM_LIST_EVENT_TIMEOUT;
-        let mut latest = restored;
-        while !room_settings_carry_allow_target(&latest, &space_id) {
-            match tokio::time::timeout_at(deadline, conn_a.recv_event()).await {
-                Ok(Ok(_)) => {
-                    latest = load_room_settings_for_qa(
-                        conn_a,
-                        &membership_room_id,
-                        "space_access restored settings retry",
-                    )
-                    .await?;
-                }
-                Ok(Err(lag)) => {
-                    return Err(format!(
-                        "space_access: restore event stream lagged (skipped={})",
-                        lag.skipped
-                    ));
-                }
-                Err(_) => break,
-            }
-        }
-        if !room_settings_carry_allow_target(&latest, &space_id) {
-            return Err(format!(
-                "space_access: a restored restricted rule has {} allow targets, first names the Space: {}",
-                latest.access.allow_targets.len(),
-                latest
-                    .access
-                    .allow_targets
-                    .first()
-                    .is_some_and(|target| target.room_id == space_id),
-            ));
-        }
-    }
     println!("space_access_restricted_restore=ok");
+
+    // #1177: a second parent attachment, added through the existing link
+    // command, leaves the allow content exactly the selected target.
+    let second_parent_id = create_space_for_qa(
+        conn_a,
+        "QA Space Access Second Parent",
+        "space_access second parent",
+    )
+    .await?;
+    set_space_child_for_qa(
+        conn_a,
+        &second_parent_id,
+        &membership_room_id,
+        "space_access second parent link",
+    )
+    .await?;
+    wait_for_room_settings_exact_targets(
+        conn_a,
+        &membership_room_id,
+        RoomJoinRule::Restricted,
+        &[allow_space_id.as_str()],
+        "space_access two parent settings",
+    )
+    .await?;
+    println!("space_access_two_parent=ok");
+
     println!("space_access=ok");
     Ok(())
 }
@@ -324,13 +442,100 @@ async fn wait_for_observed_join_rule(
     }
 }
 
-fn room_settings_carry_allow_target(
+fn room_settings_carry_exact_targets(
     settings: &koushi_state::RoomSettingsSnapshot,
-    target_id: &str,
+    expected_rule: RoomJoinRule,
+    expected_targets: &[&str],
 ) -> bool {
-    settings.access.restricted == Some(RestrictedConditions::MembershipOnly)
-        && settings.access.allow_targets.len() == 1
-        && settings.access.allow_targets[0].room_id == target_id
+    settings.access.join_rule == Some(expected_rule)
+        && settings.access.restricted == Some(RestrictedConditions::MembershipOnly)
+        && settings.access.allow_targets.len() == expected_targets.len()
+        && expected_targets.iter().all(|target| {
+            settings
+                .access
+                .allow_targets
+                .iter()
+                .any(|observed| observed.room_id == *target)
+        })
+}
+
+/// Reload a room's settings until the synced allow content is EXACTLY
+/// `expected_targets` (#1177). The SDK's settings read can lag the list
+/// observer's synced content, so the next observation is awaited between reads.
+async fn wait_for_room_settings_exact_targets(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    expected_rule: RoomJoinRule,
+    expected_targets: &[&str],
+    label: &str,
+) -> Result<koushi_state::RoomSettingsSnapshot, String> {
+    let deadline = tokio::time::Instant::now() + ROOM_LIST_EVENT_TIMEOUT;
+    let mut latest = load_room_settings_for_qa(conn, room_id, label).await?;
+    while !room_settings_carry_exact_targets(&latest, expected_rule, expected_targets) {
+        match tokio::time::timeout_at(deadline, conn.recv_event()).await {
+            Ok(Ok(_)) => {
+                latest = load_room_settings_for_qa(conn, room_id, label).await?;
+            }
+            Ok(Err(lag)) => {
+                return Err(format!(
+                    "{label}: event stream lagged (skipped={})",
+                    lag.skipped
+                ));
+            }
+            Err(_) => break,
+        }
+    }
+    if !room_settings_carry_exact_targets(&latest, expected_rule, expected_targets) {
+        return Err(format!(
+            "{label}: expected exactly {expected_targets:?}, got {:?}",
+            latest
+                .access
+                .allow_targets
+                .iter()
+                .map(|target| &target.room_id)
+                .collect::<Vec<_>>()
+        ));
+    }
+    Ok(latest)
+}
+
+/// Wait until the open settings for `room_id` carry `expected` history without
+/// a reload, the path Room Info relies on when another client changes it.
+async fn wait_for_observed_history(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    expected: RoomHistoryVisibility,
+    label: &str,
+) -> Result<(), String> {
+    let observed = |snapshot: &AppState| {
+        snapshot
+            .room_management
+            .settings
+            .as_ref()
+            .filter(|settings| settings.room_id == room_id)
+            .map(|settings| settings.history_visibility)
+    };
+    let deadline = tokio::time::Instant::now() + ROOM_LIST_EVENT_TIMEOUT;
+    loop {
+        if observed(&conn.snapshot()) == Some(expected) {
+            return Ok(());
+        }
+        match tokio::time::timeout_at(deadline, conn.recv_event()).await {
+            Ok(Ok(_)) => continue,
+            Ok(Err(lag)) => {
+                return Err(format!(
+                    "{label}: event stream lagged (skipped={})",
+                    lag.skipped
+                ));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "{label}: timed out waiting for history {expected:?} (open={:?})",
+                    observed(&conn.snapshot())
+                ));
+            }
+        }
+    }
 }
 
 /// Wait until the shared room-access projection reports a restricted rule with

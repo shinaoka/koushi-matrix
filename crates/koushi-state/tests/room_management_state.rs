@@ -1503,3 +1503,120 @@ fn directory_visibility_observation_only_applies_to_the_open_room() {
         koushi_state::RoomDirectoryVisibility::Public
     );
 }
+
+#[test]
+fn opening_a_room_editor_restores_the_confirmed_allow_list() {
+    let mut state = ready_state();
+    state.room_management = RoomManagementState {
+        selected_room_id: Some("!room:example.invalid".to_owned()),
+        settings: Some(settings_with_access(
+            "!room:example.invalid",
+            restricted_access(koushi_state::RestrictedConditions::MembershipOnly),
+        )),
+        draft: None,
+        directory: koushi_state::RoomDirectoryVisibility::Loading,
+        active_room_editor: None,
+        active_create_session: None,
+        operation: RoomManagementOperationState::Idle,
+    };
+
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftOpened {
+            scope: scope("!room:example.invalid"),
+            create: None,
+        },
+    );
+
+    let draft = state.room_management.draft.as_ref().expect("room draft");
+    assert_eq!(draft.rule, Some(RoomJoinRule::Restricted));
+    assert_eq!(
+        draft.allow_targets,
+        vec!["!space:example.invalid".to_owned()],
+        "the confirmed allow list is restored into the draft, not left empty"
+    );
+    assert!(
+        !draft.touched,
+        "the seeded confirmed selection is not a user choice"
+    );
+    assert!(
+        draft.context_is_confirmed(
+            koushi_state::RoomAccessPreviewContext::Access,
+            state.room_management.settings.as_ref().unwrap(),
+        ),
+        "the restored selection reads as confirmed until it is edited"
+    );
+}
+
+#[test]
+fn two_rapid_room_target_edits_apply_against_the_current_draft() {
+    let mut state = ready_state();
+    state.room_management = RoomManagementState {
+        selected_room_id: Some("!room:example.invalid".to_owned()),
+        settings: Some(settings_with_access(
+            "!room:example.invalid",
+            restricted_access(koushi_state::RestrictedConditions::MembershipOnly),
+        )),
+        draft: None,
+        directory: koushi_state::RoomDirectoryVisibility::Loading,
+        active_room_editor: None,
+        active_create_session: None,
+        operation: RoomManagementOperationState::Idle,
+    };
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftOpened {
+            scope: scope("!room:example.invalid"),
+            create: None,
+        },
+    );
+
+    // Two edits arrive back-to-back: the second must be applied to the draft the
+    // first produced, so neither selection is dropped.
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftAllowTargetToggled {
+            scope: scope("!room:example.invalid"),
+            target: "!space-b:example.invalid".to_owned(),
+            selected: true,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftAllowTargetToggled {
+            scope: scope("!room:example.invalid"),
+            target: "!space-c:example.invalid".to_owned(),
+            selected: true,
+        },
+    );
+
+    let draft = state.room_management.draft.as_ref().expect("room draft");
+    assert_eq!(
+        draft.allow_targets,
+        vec![
+            "!space-b:example.invalid".to_owned(),
+            "!space-c:example.invalid".to_owned(),
+            "!space:example.invalid".to_owned(),
+        ]
+    );
+    assert!(draft.touched);
+
+    // An edit against the confirmed rule clears the rest of the list as a user
+    // choice, preserving the unmodified confirmed target only.
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftAllowTargetToggled {
+            scope: scope("!room:example.invalid"),
+            target: "!space:example.invalid".to_owned(),
+            selected: false,
+        },
+    );
+    let draft = state.room_management.draft.as_ref().expect("room draft");
+    assert_eq!(
+        draft.allow_targets,
+        vec![
+            "!space-b:example.invalid".to_owned(),
+            "!space-c:example.invalid".to_owned()
+        ]
+    );
+}

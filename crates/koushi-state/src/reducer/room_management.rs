@@ -451,6 +451,19 @@ pub(crate) fn handle_room_access_draft_allow_targets_set(
     vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
 }
 
+pub(crate) fn handle_room_access_draft_allow_target_toggled(
+    state: &mut AppState,
+    scope: RoomAccessDraftScope,
+    target: String,
+    selected: bool,
+) -> Vec<AppEffect> {
+    let Some(draft) = room_access_draft_for_scope(state, &scope) else {
+        return Vec::new();
+    };
+    draft.toggle_allow_target(&target, selected);
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+}
+
 pub(crate) fn handle_room_access_draft_history_set(
     state: &mut AppState,
     scope: RoomAccessDraftScope,
@@ -482,6 +495,14 @@ pub(crate) fn handle_room_access_draft_opened(
                     .is_some_and(|settings| settings.room_id == *room_id);
             if !is_loaded {
                 return Vec::new();
+            }
+            if let Some(settings) = state
+                .room_management
+                .settings
+                .as_ref()
+                .filter(|settings| settings.room_id == *room_id)
+            {
+                draft.seed_room_selection(settings);
             }
             state.room_management.active_room_editor = Some(room_id.clone());
         }
@@ -573,7 +594,16 @@ fn room_access_draft_for_scope<'a>(
         .as_ref()
         .is_none_or(|draft| draft.scope != *scope);
     if needs_new {
-        state.room_management.draft = Some(RoomAccessDraft::new(scope.clone()));
+        let mut draft = RoomAccessDraft::new(scope.clone());
+        if let Some(settings) = state
+            .room_management
+            .settings
+            .as_ref()
+            .filter(|settings| settings.room_id == room_id)
+        {
+            draft.seed_room_selection(settings);
+        }
+        state.room_management.draft = Some(draft);
     }
     state.room_management.draft.as_mut()
 }

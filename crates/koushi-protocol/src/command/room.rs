@@ -27,6 +27,12 @@ pub enum RoomAccessDraftCommand {
         #[serde(default)]
         allow_targets: Vec<String>,
     },
+    /// Apply one target edit against the draft's current target set (#1177).
+    ToggleAllowTarget {
+        scope: RoomAccessDraftScope,
+        target: String,
+        selected: bool,
+    },
     History {
         scope: RoomAccessDraftScope,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,6 +66,13 @@ impl fmt::Debug for RoomAccessDraftCommand {
                 .debug_struct("AllowTargets")
                 .field("scope", scope)
                 .field("allow_target_count", &allow_targets.len())
+                .finish(),
+            Self::ToggleAllowTarget {
+                scope, selected, ..
+            } => formatter
+                .debug_struct("ToggleAllowTarget")
+                .field("scope", scope)
+                .field("selected", selected)
                 .finish(),
             Self::History { scope, history } => formatter
                 .debug_struct("History")

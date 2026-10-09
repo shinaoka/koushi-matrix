@@ -204,24 +204,89 @@ impl RoomAccessDraft {
         self.touched = false;
     }
 
+    /// Establish the effective room selection from the confirmed policy before
+    /// any target editing (#1177), without marking it as a user choice. A
+    /// confirmed restricted room restores its complete allow list, so the
+    /// renderer never has to guess it from a lagging scalar, and an existing
+    /// ordinary-room or unverified target stays inside the draft rather than
+    /// being silently dropped.
+    pub fn seed_room_selection(&mut self, settings: &RoomSettingsSnapshot) {
+        let Some(rule) = settings.access.join_rule else {
+            // The rule content is not inspected: claim nothing, so the panel
+            // keeps showing the unavailable condition instead of a scalar guess.
+            return;
+        };
+        self.rule = Some(rule);
+        self.allow_targets = if Self::rule_carries_targets(rule) {
+            RoomAccessPolicy::new(
+                rule,
+                settings
+                    .access
+                    .allow_targets
+                    .iter()
+                    .map(|target| target.room_id.clone())
+                    .collect(),
+            )
+            .allow_targets
+        } else {
+            Vec::new()
+        };
+        self.touched = false;
+    }
+
     fn touch(&mut self) {
         self.revision = self.revision.saturating_add(1);
+    }
+
+    /// A rule that may carry a membership allow list (#1177). Every other rule
+    /// submits no targets, so a stale selection can never leak into it.
+    fn rule_carries_targets(rule: RoomJoinRule) -> bool {
+        matches!(
+            rule,
+            RoomJoinRule::Restricted | RoomJoinRule::KnockRestricted
+        )
     }
 
     pub fn set_rule(&mut self, rule: Option<RoomJoinRule>) {
         if self.rule != rule {
             self.rule = rule;
+            // A rule that carries no allow list drops any retained selection here
+            // rather than relying on a second renderer command, so the renderer
+            // never has to build a replacement target set (#1177).
+            if !rule.is_some_and(Self::rule_carries_targets) {
+                self.allow_targets.clear();
+            }
             self.touch();
             self.touched = true;
         }
     }
 
+    /// Apply one target edit against the draft's CURRENT target set (#1177). The
+    /// renderer sends the target and its desired state, never a replacement list
+    /// built from lagging props, so two rapid edits cannot drop one another.
+    pub fn toggle_allow_target(&mut self, target: &str, selected: bool) {
+        if target.is_empty() {
+            return;
+        }
+        let mut next = self.allow_targets.clone();
+        if selected {
+            next.push(target.to_owned());
+        } else {
+            next.retain(|id| id != target);
+        }
+        self.set_allow_targets(next);
+    }
+
     /// Replace the selected allow-target set; canonicalized so a reordered or
-    /// duplicated selection is the same value.
+    /// duplicated selection is the same value. A rule that carries no allow
+    /// list keeps it empty.
     pub fn set_allow_targets(&mut self, allow_targets: Vec<String>) {
-        let canonical =
-            RoomAccessPolicy::new(self.rule.unwrap_or(RoomJoinRule::Restricted), allow_targets)
-                .allow_targets;
+        let rule = self.rule.unwrap_or(RoomJoinRule::Restricted);
+        let canonical = if Self::rule_carries_targets(rule) {
+            RoomAccessPolicy::new(rule, allow_targets).allow_targets
+        } else {
+            Vec::new()
+        };
         if self.allow_targets != canonical {
             self.allow_targets = canonical;
             self.touch();

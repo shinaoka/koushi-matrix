@@ -1008,6 +1008,12 @@ pub enum AppAction {
         scope: RoomAccessDraftScope,
         allow_targets: Vec<String>,
     },
+    /// #1177: apply one target edit against the draft's current set.
+    RoomAccessDraftAllowTargetToggled {
+        scope: RoomAccessDraftScope,
+        target: String,
+        selected: bool,
+    },
     RoomAccessDraftHistorySet {
         scope: RoomAccessDraftScope,
         history: Option<RoomHistoryVisibility>,
@@ -1931,6 +1937,13 @@ impl fmt::Debug for AppAction {
                 .debug_struct("RoomAccessDraftAllowTargetsSet")
                 .field("scope", scope)
                 .field("allow_target_count", &allow_targets.len())
+                .finish(),
+            Self::RoomAccessDraftAllowTargetToggled {
+                scope, selected, ..
+            } => formatter
+                .debug_struct("RoomAccessDraftAllowTargetToggled")
+                .field("scope", scope)
+                .field("selected", selected)
                 .finish(),
             Self::RoomAccessDraftHistorySet { scope, history } => formatter
                 .debug_struct("RoomAccessDraftHistorySet")
