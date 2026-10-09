@@ -1323,9 +1323,35 @@ function rejectDeferredCommand(command: string, index: number): void {
   if (entry) entry.reject(new Error("synthetic deferred rejection"));
 }
 
+/** A well-formed access outcome for the harness previews (#1177). */
+function harnessAccessOutcome() {
+  return {
+    join: { messageId: "room.accessOutcomeJoinInvite" },
+    history: { messageId: "room.accessOutcomeHistoryShared" },
+    encryption: { messageId: "room.accessOutcomeNotEncrypted" },
+    directory: { messageId: "room.accessOutcomeDirectoryPrivate" },
+    nonRetroactive: { messageId: "room.historyNonRetroactive" }
+  };
+}
+
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
 // any unanticipated snapshot read still renders the shell.
 mock.setCommandResponse("get_snapshot", () => currentSnapshot);
+// #1177: the shared access/history editor's Rust previews. The harness returns
+// a well-formed outcome so the editor renders in the browser specs; the real
+// Rust resolver owns the wording and substitutions.
+mock.setCommandResponse("preview_room_access", ({ scope, context }) => ({
+  scope,
+  context,
+  confirmed: false,
+  outcome: harnessAccessOutcome()
+}));
+mock.setCommandResponse("preview_create_room_access", ({ scope }) => ({
+  scope,
+  confirmed: false,
+  outcome: harnessAccessOutcome(),
+  roomVersionPinned: false
+}));
 mock.setCommandResponse("list_account_tabs", harnessAccountTabsSnapshot);
 mock.setCommandResponse("select_account_tab", harnessAccountTabsSnapshot);
 // Explicit adapter projections: tests publish later states rather than emulate the updater.

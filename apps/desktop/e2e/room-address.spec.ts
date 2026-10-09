@@ -20,14 +20,14 @@ test("public address preserves manual edits and collision drafts until successfu
   await page.getByRole("button", { name: "Create room", exact: true }).click();
   const name = page.getByRole("textbox", { name: "Room name" });
   await name.fill("Example Room");
-  await page.getByRole("radio", { name: "Public room", exact: true }).check();
+  await page.locator('input[type="radio"][value="public"]').check();
   const address = page.getByRole("textbox", { name: "Room address" });
   await expect(address).toHaveValue("example-room");
   await address.fill("manual");
   await name.fill("Changed Name");
   await expect(address).toHaveValue("manual");
-  await page.getByRole("radio", { name: "Private room", exact: true }).check();
-  await page.getByRole("radio", { name: "Public room", exact: true }).check();
+  await page.locator('input[type="radio"][value="invite"]').check();
+  await page.locator('input[type="radio"][value="public"]').check();
   await expect(address).toHaveValue("manual");
   await expect(page.getByRole("status").filter({ hasText: "Full address:" })).toHaveText("Full address: #manual:example.invalid");
   await address.focus();
@@ -62,11 +62,11 @@ test("private creation needs no alias even when a public address is invalid", as
   await page.getByRole("button", { name: "Create room", exact: true }).click();
   const name = page.getByRole("textbox", { name: "Room name" });
   await name.fill("Private discussion");
-  await page.getByRole("radio", { name: "Public room", exact: true }).check();
+  await page.locator('input[type="radio"][value="public"]').check();
   await expect(page.getByRole("textbox", { name: "Room address" })).toHaveValue("#invalid");
   const submit = page.getByRole("button", { name: "Submit create room" });
   await expect(submit).toBeDisabled();
-  await page.getByRole("radio", { name: "Private room", exact: true }).check();
+  await page.locator('input[type="radio"][value="invite"]').check();
   await expect(submit).toBeEnabled();
   await submit.click();
   await expect(name).toBeHidden();
@@ -126,7 +126,7 @@ test("a Space room conflict names the attempted address and keeps the draft in t
   await page.getByRole("button", { name: "Create room", exact: true }).click();
   const name = page.getByRole("textbox", { name: "Room name" });
   await name.fill("papers");
-  await page.getByRole("radio", { name: "Public room", exact: true }).check();
+  await page.locator('input[type="radio"][value="public"]').check();
   const address = page.getByRole("textbox", { name: "Room address" });
   await expect(address).toHaveValue("research-group-papers");
   await expect(page.getByText(/^Public room in research-group:/)).toBeVisible();
@@ -193,7 +193,7 @@ test("advisory availability offers an unchecked alternative and follows the show
 
   await page.getByRole("button", { name: "Create room", exact: true }).click();
   await page.getByRole("textbox", { name: "Room name" }).fill("Papers");
-  await page.getByRole("radio", { name: "Public room", exact: true }).check();
+  await page.locator('input[type="radio"][value="public"]').check();
   const address = page.getByRole("textbox", { name: "Room address" });
   await expect(address).toHaveValue("papers");
   await expect.poll(checks).toEqual(["papers"]);
@@ -291,7 +291,7 @@ test("a public Space selects a public room and creates an unnamed room without a
   await page.getByRole("button", { name: "Create room", exact: true }).click();
   const name = page.getByRole("textbox", { name: "Room name" });
   await expect(name).toHaveValue("");
-  await expect(page.getByRole("radio", { name: "Public room", exact: true })).toBeChecked();
+  await expect(page.locator('input[type="radio"][value="public"]')).toBeChecked();
   await expect(page.getByText(/^Public room in open-lab:/)).toBeVisible();
   await expect(page.getByRole("status").filter({ hasText: "without an address" })).toBeVisible();
   const submit = page.getByRole("button", { name: "Submit create room" });
@@ -314,7 +314,7 @@ test("choosing private in a public Space creates an encrypted private Space room
   await page.getByRole("button", { name: "Create room", exact: true }).click();
   await page.getByRole("textbox", { name: "Room name" }).fill("notes");
   await expect(page.getByRole("textbox", { name: "Room address" })).toHaveValue("open-lab-notes");
-  await page.getByRole("radio", { name: "Private room", exact: true }).check();
+  await page.locator('input[type="radio"][value="invite"]').check();
   await expect(page.getByRole("checkbox", { name: "Encrypted room" })).toBeChecked();
   await page.getByRole("button", { name: "Submit create room" }).click();
   await expect(page.getByRole("textbox", { name: "Room name" })).toBeHidden();
@@ -335,7 +335,7 @@ test("Home keeps the private default and an unnamed private room needs no name",
     window.__harness.clearInvocations();
   });
   await page.getByRole("button", { name: "Create room", exact: true }).click();
-  await expect(page.getByRole("radio", { name: "Private room", exact: true })).toBeChecked();
+  await expect(page.locator('input[type="radio"][value="invite"]')).toBeChecked();
   await page.getByRole("button", { name: "Submit create room" }).click();
   await expect(page.getByRole("textbox", { name: "Room name" })).toBeHidden();
   expect(await page.evaluate(() => window.__harness.invocationsOf("create_room").map((call) => call.args.options)))
