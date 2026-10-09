@@ -221,10 +221,13 @@ pub(super) async fn verify(
         .await
         .map_err(|e| format!("space_access: submit restricted restore failed: {e}"))?;
     wait_for_room_setting_updated(conn_a, restore_id, "space_access restore").await?;
-    wait_for_room_access_projection(
+    // Wait for the synced allow content, not just the rule: the SDK can publish
+    // the rule before its membership entries are parsed.
+    wait_for_room_access_allow_target(
         conn_a,
         &membership_room_id,
         RoomJoinRule::Restricted,
+        &space_id,
         "space_access restore projection",
     )
     .await?;
@@ -234,19 +237,41 @@ pub(super) async fn verify(
         "space_access restored settings",
     )
     .await?;
-    if restored.access.restricted != Some(RestrictedConditions::MembershipOnly)
-        || restored.access.allow_targets.len() != 1
-        || restored.access.allow_targets[0].room_id != space_id
-    {
-        return Err(format!(
-            "space_access: a restored restricted rule has {} allow targets, first names the Space: {}",
-            restored.access.allow_targets.len(),
-            restored
-                .access
-                .allow_targets
-                .first()
-                .is_some_and(|target| target.room_id == space_id),
-        ));
+    if !room_settings_carry_allow_target(&restored, &space_id) {
+        // The SDK's settings read can lag the list observer's synced content on
+        // a slower homeserver; re-read once the next observation advances.
+        let deadline = tokio::time::Instant::now() + ROOM_LIST_EVENT_TIMEOUT;
+        let mut latest = restored;
+        while !room_settings_carry_allow_target(&latest, &space_id) {
+            match tokio::time::timeout_at(deadline, conn_a.recv_event()).await {
+                Ok(Ok(_)) => {
+                    latest = load_room_settings_for_qa(
+                        conn_a,
+                        &membership_room_id,
+                        "space_access restored settings retry",
+                    )
+                    .await?;
+                }
+                Ok(Err(lag)) => {
+                    return Err(format!(
+                        "space_access: restore event stream lagged (skipped={})",
+                        lag.skipped
+                    ));
+                }
+                Err(_) => break,
+            }
+        }
+        if !room_settings_carry_allow_target(&latest, &space_id) {
+            return Err(format!(
+                "space_access: a restored restricted rule has {} allow targets, first names the Space: {}",
+                latest.access.allow_targets.len(),
+                latest
+                    .access
+                    .allow_targets
+                    .first()
+                    .is_some_and(|target| target.room_id == space_id),
+            ));
+        }
     }
     println!("space_access_restricted_restore=ok");
     println!("space_access=ok");
@@ -293,6 +318,56 @@ async fn wait_for_observed_join_rule(
                 let (synced, open) = observed(&conn.snapshot());
                 return Err(format!(
                     "{label}: timed out waiting for {expected:?} (synced={synced:?} open={open:?})"
+                ));
+            }
+        }
+    }
+}
+
+fn room_settings_carry_allow_target(
+    settings: &koushi_state::RoomSettingsSnapshot,
+    target_id: &str,
+) -> bool {
+    settings.access.restricted == Some(RestrictedConditions::MembershipOnly)
+        && settings.access.allow_targets.len() == 1
+        && settings.access.allow_targets[0].room_id == target_id
+}
+
+/// Wait until the shared room-access projection reports a restricted rule with
+/// `target_id` as a membership allow target, without reloading its settings.
+async fn wait_for_room_access_allow_target(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    expected_rule: RoomJoinRule,
+    target_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let observed = |snapshot: &AppState| {
+        snapshot.room_access.get(room_id).is_some_and(|condition| {
+            condition.join_rule == Some(expected_rule)
+                && condition.restricted == Some(RestrictedConditions::MembershipOnly)
+                && condition
+                    .allow_targets
+                    .iter()
+                    .any(|target| target.room_id == target_id)
+        })
+    };
+    let deadline = tokio::time::Instant::now() + ROOM_LIST_EVENT_TIMEOUT;
+    loop {
+        if observed(&conn.snapshot()) {
+            return Ok(());
+        }
+        match tokio::time::timeout_at(deadline, conn.recv_event()).await {
+            Ok(Ok(_)) => continue,
+            Ok(Err(lag)) => {
+                return Err(format!(
+                    "{label}: event stream lagged (skipped={})",
+                    lag.skipped
+                ));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "{label}: timed out waiting for the membership allow target"
                 ));
             }
         }
