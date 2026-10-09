@@ -492,7 +492,12 @@ export function ContextualRightPanel({
   );
   const threadEditMentionQueryChangeStable = useStableEvent(onThreadMentionQueryChange);
   const threadMathModeChangeStable = useStableEvent((enabled: boolean) =>
-    onUpdateSettings?.({ composer: { ...composerSettings, math_mode: enabled } })
+    onUpdateSettings?.({
+      // #1244: math mode is app-scoped, so the patch names its scope; otherwise
+      // the closed Settings dialog would stamp it account-scoped and drop it.
+      scope: "app",
+      composer: { ...composerSettings, math_mode: enabled }
+    })
   );
   const threadSendStagedUploadsStable = useStableEvent(() => {
     if (threadPreviewRoomId && threadPreviewRootEventId) {
@@ -1222,6 +1227,8 @@ export function ContextualRightPanel({
           recentEmojis={composerSettings.recent_emojis}
           onMathModeChange={(enabled) =>
             onUpdateSettings?.({
+              // #1244: math mode is app-scoped, so name the scope explicitly.
+              scope: "app",
               composer: { ...composerSettings, math_mode: enabled }
             })
           }

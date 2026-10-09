@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ROOM_ACCESS_CHECKING,
+  roomAccessBadgeGlyph,
   roomAccessHeaderBadges,
   roomAccessIndicator,
   roomAccessRailSummary,
@@ -319,5 +320,15 @@ describe("restricted allow-condition facts (#1166)", () => {
     ] as const) {
       expect(sidebarRoomAccess(sidebarFor(lane), row.room_id), `${lane} lane`).toEqual(expected);
     }
+  });
+});
+
+describe("compact room-list access glyphs (#1249)", () => {
+  it("maps every compact badge label to its glyph", () => {
+    expect(roomAccessBadgeGlyph("access.spaceMembersCanJoin")).toBe("spaceMembers");
+    expect(roomAccessBadgeGlyph("access.conditionsApply")).toBe("conditions");
+    expect(roomAccessBadgeGlyph("access.canRequest")).toBe("request");
+    expect(roomAccessBadgeGlyph("access.checking")).toBe("checking");
+    expect(roomAccessBadgeGlyph("access.unknown")).toBe("unknown");
   });
 });

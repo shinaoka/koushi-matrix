@@ -3191,7 +3191,10 @@ function AccountContent({
   }
 
   async function updateSettings(patch: SettingsPatch) {
-    const scope = settingsScope === "app" ? "app" : "account";
+    // An explicit patch scope wins. The Settings dialog's open tab scopes its own
+    // patches; the composer Math switch (app-scoped) names its scope itself, so
+    // the reducer applies it even while the dialog is closed (#1244).
+    const scope = patch.scope ?? (settingsScope === "app" ? "app" : "account");
     await settleCommand(api.updateSettings({ ...patch, scope }));
   }
 
@@ -7317,6 +7320,10 @@ function AccountContent({
             onComposerMathModeChange={(enabled) => {
               runInBackground(
                 updateSettings({
+                  // #1244: math mode is app-scoped while the same patch shape
+                  // carries account-scoped recent emojis; name the scope so the
+                  // reducer applies the math change.
+                  scope: "app",
                   composer: {
                     ...snapshot.state.domain.settings.values.composer,
                     math_mode: enabled

@@ -21,6 +21,7 @@ import {
   Home,
   LockKeyhole,
   CircleHelp,
+  HandHelping,
   Info,
   LoaderCircle,
   MessageSquare,
@@ -28,6 +29,7 @@ import {
   Plus,
   Search,
   Settings,
+  UserRoundCheck,
   Users,
   X
 } from "lucide-react";
@@ -49,9 +51,11 @@ import { contextMenuItems } from "../domain/contextMenus";
 import { renderableThumbnailSourceUrl } from "../backend/linkMediaRuntime";
 import {
   ROOM_ACCESS_CHECKING,
+  roomAccessBadgeGlyph,
   roomAccessHeaderBadges,
   roomAccessIndicator,
-  roomAccessRailSummary
+  roomAccessRailSummary,
+  type RoomAccessGlyph
 } from "../domain/accessCondition";
 import { Tooltip } from "./Tooltip";
 import { ImeTextField } from "./ImeTextControl";
@@ -68,6 +72,13 @@ import {
   EMPTY_ROOM_TAGS
 } from "../app/uiShared";
 const HOME_SCOPE_KEY = "__home__";
+
+// #1246: the Space reorder payload stays in the app. A `text/plain` item reaches
+// the system pasteboard, where macOS turns the bare room ID into a broken web
+// location when a drop leaves the window; an app-private type is opaque outside
+// the webview. The in-app reorder reads `draggedSpaceId` first and uses this only
+// as the cross-instance fallback.
+const SPACE_DRAG_TYPE = "application/x-koushi-space";
 
 export type RuntimeAlertKind = "secureBackup" | "sync" | "session";
 
@@ -431,7 +442,7 @@ export function WorkspaceRail({
 
   function dropSpaceOn(targetSpaceId: string, event: DragEvent<HTMLButtonElement>) {
     event.preventDefault();
-    const sourceSpaceId = draggedSpaceId ?? event.dataTransfer.getData("text/plain");
+    const sourceSpaceId = draggedSpaceId ?? event.dataTransfer.getData(SPACE_DRAG_TYPE);
     setDraggedSpaceId(null);
     setDragOverSpaceId(null);
 
@@ -517,7 +528,7 @@ export function WorkspaceRail({
                   onDragStart={(event) => {
                     setDraggedSpaceId(space.space_id);
                     event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData("text/plain", space.space_id);
+                    event.dataTransfer.setData(SPACE_DRAG_TYPE, space.space_id);
                   }}
                   onDragOver={(event) => {
                     event.preventDefault();
@@ -1290,6 +1301,25 @@ function SectionTitle({
   );
 }
 
+function RoomAccessGlyphIcon({ glyph }: { glyph: RoomAccessGlyph }) {
+  switch (glyph) {
+    case "globe":
+      return <Globe2 size={ICON_SIZE.access} aria-hidden="true" />;
+    case "padlock":
+      return <LockKeyhole size={ICON_SIZE.access} aria-hidden="true" />;
+    case "spaceMembers":
+      return <UserRoundCheck size={ICON_SIZE.access} aria-hidden="true" />;
+    case "conditions":
+      return <Info size={ICON_SIZE.access} aria-hidden="true" />;
+    case "request":
+      return <HandHelping size={ICON_SIZE.access} aria-hidden="true" />;
+    case "checking":
+      return <LoaderCircle size={ICON_SIZE.access} aria-hidden="true" />;
+    default:
+      return <CircleHelp size={ICON_SIZE.access} aria-hidden="true" />;
+  }
+}
+
 function RoomButton({
   activeRoomId,
   kind,
@@ -1407,9 +1437,15 @@ function RoomButton({
           )}
         </span>
       ) : null}
-      {/* #1166: the icon, name and compact badges share the grid's name cell so
-          the avatar and the trailing unread area keep their columns. */}
+      {/* #1166: the name, access icon and compact badges share the grid's name
+          cell so the avatar and the trailing unread area keep their columns.
+          #1247: the access icon follows the name so every name keeps one left
+          edge regardless of whether an indicator is present.
+          #1249: the compact list renders the access facts as small muted glyphs
+          instead of the long text badges; the full localized label stays in the
+          tooltip and in the row's accessible description. */}
       <span className="room-name-shell">
+        <span className="room-name" dir="auto">{roomLabel}</span>
         {access?.icon ? (
           <Tooltip
             label={roomAccessTooltipLabel(
@@ -1422,18 +1458,17 @@ function RoomButton({
               <span
                 className="room-access-icon"
                 data-room-access={access.icon}
+                role="img"
+                aria-label={t(
+                  access.icon === "globe" ? "access.public" : "access.inviteOnly"
+                )}
                 {...triggerProps}
               >
-                {access.icon === "globe" ? (
-                  <Globe2 size={ICON_SIZE.micro} aria-hidden="true" />
-                ) : (
-                  <LockKeyhole size={ICON_SIZE.micro} aria-hidden="true" />
-                )}
+                <RoomAccessGlyphIcon glyph={access.icon === "globe" ? "globe" : "padlock"} />
               </span>
             )}
           </Tooltip>
         ) : null}
-        <span className="room-name" dir="auto">{roomLabel}</span>
         {access
           ? access.badges.map((badge) => (
               <Tooltip
@@ -1445,8 +1480,14 @@ function RoomButton({
                 )}
               >
                 {(triggerProps) => (
-                  <span className="room-access-badge" {...triggerProps}>
-                    {t(badge.labelMessageId)}
+                  <span
+                    className="room-access-badge"
+                    data-access-glyph={roomAccessBadgeGlyph(badge.labelMessageId)}
+                    role="img"
+                    aria-label={t(badge.labelMessageId)}
+                    {...triggerProps}
+                  >
+                    <RoomAccessGlyphIcon glyph={roomAccessBadgeGlyph(badge.labelMessageId)} />
                   </span>
                 )}
               </Tooltip>

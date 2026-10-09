@@ -165,6 +165,8 @@ export const EMPTY_ROOM_TAGS: RoomTags = { favourite: null, low_priority: null }
 
 export const ICON_SIZE = {
   micro: 14,
+  /** #1249: the compact room-list access glyphs. */
+  access: 12,
   compact: 15,
   small: 16,
   input: 17,

@@ -100,6 +100,29 @@ afterEach(() => {
 });
 
 describe("Rust-projected workspace shell", () => {
+  // #1246: the reorder drag must not put the bare room ID on the system text
+  // pasteboard, where macOS turns it into a broken web location.
+  it("carries the Space drag payload under an app-private type", () => {
+    const snapshot = readyDesktopSnapshotFixture();
+    snapshot.sidebar.space_rail = [railSpace("!lab:example.invalid", "Lab", true)];
+
+    render(<WorkspaceRail snapshot={snapshot} {...railProps()} />);
+
+    const dataTransfer = {
+      setData: vi.fn(),
+      getData: vi.fn(() => ""),
+      effectAllowed: "",
+      dropEffect: "none"
+    };
+    fireEvent.dragStart(screen.getByRole("button", { name: "Lab" }), { dataTransfer });
+
+    expect(dataTransfer.setData).toHaveBeenCalledWith(
+      "application/x-koushi-space",
+      "!lab:example.invalid"
+    );
+    expect(dataTransfer.setData).not.toHaveBeenCalledWith("text/plain", expect.anything());
+  });
+
   it("requests an icon only after its rendered avatar intersects", () => {
     vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
     const request = vi.fn();
@@ -260,6 +283,25 @@ describe("Rust-projected workspace shell", () => {
     const home = screen.getByRole("button", { name: "Home" });
     expect(home.classList.contains("is-active")).toBe(true);
     expect(home.getAttribute("aria-current")).toBe("page");
+  });
+
+  // #1247: the access icon follows the name so every room name keeps one left
+  // edge, whether or not an indicator is present.
+  it("renders the room access indicator after the display name", () => {
+    const snapshot = readyDesktopSnapshotFixture();
+    const visible: RoomListItem = { ...room("!public:example.invalid", "Public Room"), access_join_rule: "public" };
+    snapshot.sidebar.sections.rooms = [visible];
+    snapshot.sidebar.space_rooms = [visible];
+
+    render(<Sidebar snapshot={snapshot} {...sidebarProps()} />);
+
+    const name = screen.getByText("Public Room");
+    const shell = name.closest(".room-name-shell")!;
+    const icon = shell.querySelector(".room-access-icon");
+    expect(icon).toBeTruthy();
+    expect(name.compareDocumentPosition(icon!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The name is the first thing in the shell, so its left edge is the row's.
+    expect(shell.firstElementChild).toBe(name);
   });
 
   it("preserves Rust section order and performs only text filtering", () => {
