@@ -1809,3 +1809,52 @@ fn the_draft_serializes_only_renderable_allow_targets() {
         "an ordinary-room identity never reaches the renderer: {wire}"
     );
 }
+
+#[test]
+fn the_access_preview_never_serializes_a_preserved_target_identity() {
+    let room = "!room:example.invalid";
+    let mut state = ready_state();
+    state.room_management = RoomManagementState {
+        selected_room_id: Some(room.to_owned()),
+        settings: Some(settings_with_access(
+            room,
+            koushi_state::RoomAccessCondition {
+                join_rule: Some(RoomJoinRule::Restricted),
+                restricted: Some(koushi_state::RestrictedConditions::MembershipPlusUnsupported),
+                allow_targets: vec![
+                    koushi_state::RoomAllowTarget {
+                        kind: koushi_state::RoomAllowTargetKind::Space,
+                        room_id: "!space:example.invalid".to_owned(),
+                    },
+                    koushi_state::RoomAllowTarget {
+                        kind: koushi_state::RoomAllowTargetKind::Room,
+                        room_id: "!ordinary:example.invalid".to_owned(),
+                    },
+                ],
+            },
+        )),
+        ..RoomManagementState::default()
+    };
+    state.spaces = vec![joined_space("!space:example.invalid")];
+    let editor_scope = scope(room);
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftOpened {
+            scope: editor_scope.clone(),
+            create: None,
+        },
+    );
+
+    for context in [
+        koushi_state::RoomAccessPreviewContext::Access,
+        koushi_state::RoomAccessPreviewContext::History,
+    ] {
+        let preview = koushi_state::preview_room_access_draft(&state, &editor_scope, context);
+        let wire = serde_json::to_value(&preview).expect("preview wire");
+        assert!(
+            !wire.to_string().contains("!ordinary:example.invalid"),
+            "an unrenderable preserved identity never reaches the renderer through a {context:?} \
+             preview: {wire}"
+        );
+    }
+}

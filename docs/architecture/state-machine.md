@@ -3804,9 +3804,10 @@ stateDiagram-v2
   full canonical policy (rule plus sorted, deduplicated allow targets): an equal
   editable policy advances the authoritative metadata in place instead of
   replacing the locally held order, while a genuine policy change replaces the
-  condition. Ordinary rooms reconcile too, not only Spaces. `SpaceSummary.join_rule`
-  is the rule-only compatibility carrier for the room-list path; the complete
-  observation is the single installer for the same join-rule fact.
+  condition. Ordinary rooms reconcile too, not only Spaces. This observation is
+  the single installer of the open settings join-rule fact; `SpaceSummary.join_rule`
+  is only a room-list carrier (sidebar and address fallbacks) and never installs
+  it on its own.
 - The pre-send settings read is presentation-preserving but admission is not
   (#1177). `RoomSettingsSnapshotLoaded` keeps a locally accepted access/history
   value that its own observation has not yet advanced, while
@@ -3818,10 +3819,14 @@ stateDiagram-v2
   operation settles rather than staying pending behind a preserved snapshot.
 - A confirmed room's directory publication is read with the SDK
   `get_room_visibility` and installed as `RoomDirectoryVisibilityObserved`
-  (#1177) for the open room only: confirmed `Public`/`Private`, `Unavailable`
-  when no room is loaded, and `Failed` when the read fails. An unrecognized SDK
-  visibility is an error, never a confirmed non-listing claim. A join-rule write
-  never changes it implicitly.
+  (#1177) for the open room only: confirmed `Public`/`Private`, and `Failed`
+  when the read cannot make a confirmed claim. `Unavailable` is claimed only
+  when no room is loaded, and `Loading` is the state before the read lands. The
+  field enters `Loading` when the open room changes, while a same-room pre-send
+  `RoomSettingsSnapshotLoaded` preserves the publication already read instead
+  of resetting it, so the panel does not flicker back to "checking" while a
+  setting change re-reads the snapshot. A join-rule write never changes it
+  implicitly.
 - The create-room access is an explicit optional contract (#1177).
   `CreateRoomOptions.access_policy` (rule plus selected allow Space ids) and
   `history` are optional; omitting both reproduces the legacy presets
@@ -3842,15 +3847,6 @@ stateDiagram-v2
   submitted values are stripped. Membership selection is offered wherever the
   viewer is joined to at least one Space; this is a product choice, not a Matrix
   restriction, and the picker lists the viewer's joined Spaces.
-- The access observation reconciles the open settings snapshot (#1177). When a
-  `RoomAccessUpdated` advances the shared `room_access` condition for the open
-  room, the reducer copies the observation's rule and full condition into
-  `room_management.settings` and emits `RoomManagementChanged`; ordinary rooms
-  reconcile too, not only Spaces. The change test uses the full canonical policy
-  (rule plus sorted, deduplicated allow targets), so a reordered or duplicated
-  server allow list is not a change and never replaces the locally held value.
-  The `SpaceSummary.join_rule` transition above remains the rule-only carrier
-  for the room-list path.
 - A successful local settings change installs its accepted value as a delta, not
   a level copy (#1177). The pre-send read may still lag the SDK echo of the other
   locally editable property, so an access change keeps the locally held history
@@ -3887,8 +3883,10 @@ stateDiagram-v2
   unchanged draft resolves from the confirmed completeness and target facts, so
   a membership-only guess never replaces an uneditable confirmed condition; a
   proposed membership policy does not erase those facts either. `RoomAccessPreview`
-  carries Rust's `canonical_policy_key` so React attributes a save to the full
-  canonical policy without re-implementing canonicalization.
+  carries Rust's opaque `canonical_policy_key`, a stable token over the full
+  canonical policy that carries no room id, so React attributes a save to that
+  policy without re-implementing canonicalization or exposing a preserved
+  target identity.
 - An access-policy edit is re-validated against the pre-send settings read
   (#1177). `RoomSettingsSnapshot.access` carries the verified facts and is
   serde-skipped from the IPC wire shape. `RoomAccessCondition::access_policy_rejection`

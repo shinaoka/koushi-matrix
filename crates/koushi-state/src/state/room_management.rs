@@ -355,11 +355,45 @@ impl RoomAccessDraft {
     }
 }
 
-/// The canonical key of one access policy (#1177): the rule plus its sorted,
-/// deduplicated allow-target set. Rust owns this so the renderer attributes a
-/// save to the full policy instead of re-implementing canonicalization.
+/// The opaque comparison token of one access policy (#1177): Rust's stable
+/// identity for canonical-policy equality. It deliberately carries no room id,
+/// so a preserved ordinary-room or unknown allow target never reaches the
+/// renderer through a preview. React stores the token a save was submitted under
+/// and attributes success only when the confirmed preview returns the same
+/// token; the exact bytes are an implementation detail and are never parsed.
 pub fn canonical_policy_key(policy: &RoomAccessPolicy) -> String {
-    format!("{:?}|{}", policy.rule, policy.allow_targets.join(","))
+    // FNV-1a over the canonical rule discriminant and the sorted, deduplicated
+    // allow targets. Stable within a process session, which is all the equality
+    // comparison needs.
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    fn mix(hash: &mut u64, bytes: &[u8]) {
+        for byte in bytes {
+            *hash ^= u64::from(*byte);
+            *hash = hash.wrapping_mul(PRIME);
+        }
+    }
+    let mut hash = OFFSET;
+    mix(&mut hash, &[join_rule_token(policy.rule)]);
+    for target in &policy.allow_targets {
+        mix(&mut hash, target.as_bytes());
+        mix(&mut hash, &[0]);
+    }
+    format!("policy:{hash:016x}")
+}
+
+/// A stable one-byte discriminant for a join rule (#1177), used only to seed
+/// the opaque canonical-policy token.
+fn join_rule_token(rule: RoomJoinRule) -> u8 {
+    match rule {
+        RoomJoinRule::Public => 0,
+        RoomJoinRule::Invite => 1,
+        RoomJoinRule::Knock => 2,
+        RoomJoinRule::Restricted => 3,
+        RoomJoinRule::KnockRestricted => 4,
+        RoomJoinRule::Private => 5,
+        RoomJoinRule::Unknown => 6,
+    }
 }
 
 /// The canonical confirmed policy of a settings snapshot (#1177).
@@ -411,9 +445,11 @@ pub struct RoomAccessPreview {
     pub context: RoomAccessPreviewContext,
     pub confirmed: bool,
     pub outcome: RoomAccessOutcome,
-    /// The canonical key of the effective access policy (#1177), Rust-owned so
-    /// the renderer attributes a save to the full policy instead of
-    /// re-implementing canonicalization. `None` for a history preview.
+    /// The opaque comparison token of the effective access policy (#1177):
+    /// Rust-owned and free of any room id, so the renderer attributes a save to
+    /// the full policy without re-implementing canonicalization and without a
+    /// preserved target identity leaking through the wire. `None` for a history
+    /// preview.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canonical_policy_key: Option<String>,
 }

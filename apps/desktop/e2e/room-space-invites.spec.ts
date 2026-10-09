@@ -3330,23 +3330,34 @@ test("the Room Info access editor dispatches typed draft commands over Rust-shap
   await gotoReadyShell(page);
   await page.evaluate((roomId) => {
     const outcome = {
-      // Two targets: no single-Space route, so the generic membership line.
+      // Two targets: no single-Space route, so the generic membership line. Used
+      // by the create preview and by the two-target access transitions below.
       join: { messageId: "room.accessOutcomeJoinMembershipRoute" },
       history: { messageId: "room.accessOutcomeHistoryShared" },
       encryption: { messageId: "room.accessOutcomeNotEncrypted" },
       directory: { messageId: "room.accessOutcomeDirectoryPrivate" },
       nonRetroactive: { messageId: "room.historyNonRetroactive" }
     };
-    const preview = (confirmed: boolean) => ({
+    // The harness is fixture-only: the spec sets the Rust-shaped result fixture
+    // for each transition and asserts the dispatched command. The initial
+    // preview describes the initial draft: restricted to Alpha alone, with its
+    // opaque Rust canonical-policy token.
+    window.__harness.setCommandResponse("preview_room_access", () => ({
       scope: { kind: "room", roomId },
       context: "access",
-      confirmed,
-      canonicalPolicyKey: "restricted|!space-a:example.invalid,!space-b:example.invalid",
-      outcome
-    });
-    // The harness is fixture-only: the spec sets the Rust-shaped result fixture
-    // for each transition and asserts the dispatched command.
-    window.__harness.setCommandResponse("preview_room_access", () => preview(false));
+      confirmed: false,
+      canonicalPolicyKey: "policy:6f1e2d3c4b5a6978",
+      outcome: {
+        join: {
+          messageId: "room.accessOutcomeJoinSpaceMembers",
+          substitutions: ["Alpha"]
+        },
+        history: { messageId: "room.accessOutcomeHistoryShared" },
+        encryption: { messageId: "room.accessOutcomeNotEncrypted" },
+        directory: { messageId: "room.accessOutcomeDirectoryPrivate" },
+        nonRetroactive: { messageId: "room.historyNonRetroactive" }
+      }
+    }));
     window.__harness.setCommandResponse("preview_create_room_access", () => ({
       scope: { kind: "create", sessionId: 1 },
       confirmed: false,
@@ -3444,6 +3455,11 @@ test("the Room Info access editor dispatches typed draft commands over Rust-shap
   await page.getByRole("button", { name: t("room.roomInfo") }).click();
   const card = page.locator('[data-setting-property="join-rule"]');
   await expect(card).toBeVisible();
+  // The initial preview describes the fixture's own initial draft: restricted
+  // to Alpha alone.
+  await expect(
+    card.getByText(t("room.accessOutcomeJoinSpaceMembers", { space: "Alpha" }))
+  ).toBeVisible();
 
   // The confirmed restricted(A) selection is restored from the fixture, not
   // guessed from the lagging scalar rule.
@@ -3477,6 +3493,21 @@ test("the Room Info access editor dispatches typed draft commands over Rust-shap
   await page.evaluate((roomId) => {
     const snapshot = window.__harness.currentSnapshot();
     const management = snapshot.state.domain.room_management;
+    // The draft now selected Alpha and Beta, so the re-fetched preview describes
+    // that two-target tuple with its own opaque token.
+    window.__harness.setCommandResponse("preview_room_access", () => ({
+      scope: { kind: "room", roomId },
+      context: "access",
+      confirmed: false,
+      canonicalPolicyKey: "policy:8a7b6c5d4e3f2019",
+      outcome: {
+        join: { messageId: "room.accessOutcomeJoinMembershipRoute" },
+        history: { messageId: "room.accessOutcomeHistoryShared" },
+        encryption: { messageId: "room.accessOutcomeNotEncrypted" },
+        directory: { messageId: "room.accessOutcomeDirectoryPrivate" },
+        nonRetroactive: { messageId: "room.historyNonRetroactive" }
+      }
+    }));
     window.__harness.setSnapshot({
       ...snapshot,
       state_generation: (snapshot.state_generation ?? 0) + 1,
@@ -3498,6 +3529,9 @@ test("the Room Info access editor dispatches typed draft commands over Rust-shap
     });
     window.__harness.pushStateUpdate();
   }, HARNESS_ROOM_ID);
+  // The re-fetched preview now describes the two-target draft, so the opaque
+  // token captured at Save is the two-target one.
+  await expect(card.getByText(t("room.accessOutcomeJoinMembershipRoute"))).toBeVisible();
   await expect(card.getByRole("button", { name: "Save join rule" })).toBeEnabled();
   await card.getByRole("button", { name: "Save join rule" }).click();
   await expect
@@ -3524,7 +3558,7 @@ test("the Room Info access editor dispatches typed draft commands over Rust-shap
         scope,
         context,
         confirmed: true,
-        canonicalPolicyKey: "restricted|!space-a:example.invalid,!space-b:example.invalid",
+        canonicalPolicyKey: "policy:8a7b6c5d4e3f2019",
         outcome: {
           join: { messageId: "room.accessOutcomeJoinMembershipRoute" },
           history: { messageId: "room.accessOutcomeHistoryShared" },

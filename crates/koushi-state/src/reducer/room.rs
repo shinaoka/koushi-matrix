@@ -304,40 +304,6 @@ pub(crate) fn handle_room_joined_locally(state: &mut AppState, room_id: String) 
     Vec::new()
 }
 
-/// Carry a Space's join-rule change from sync into the open settings snapshot,
-/// so Space Info shows a change another client made (#935).
-///
-/// Only a change between two synced values counts. The settings snapshot is the
-/// fresher source right after this client saves, while the room list may still
-/// carry the old rule until the server echoes the event back; copying the
-/// room-list value level-wise would revert a just-saved change. Permissions are
-/// left alone: Core re-reads them before it sends any change.
-fn reconcile_open_settings_join_rule(state: &mut AppState, spaces: &[SpaceSummary]) -> bool {
-    let Some(settings) = state.room_management.settings.as_mut() else {
-        return false;
-    };
-    let Some(synced) = spaces
-        .iter()
-        .find(|space| space.space_id == settings.room_id)
-        .and_then(|space| space.join_rule)
-    else {
-        return false;
-    };
-    let Some(previous) = state
-        .spaces
-        .iter()
-        .find(|space| space.space_id == settings.room_id)
-        .and_then(|space| space.join_rule)
-    else {
-        return false;
-    };
-    if previous == synced || settings.join_rule == synced {
-        return false;
-    }
-    settings.join_rule = synced;
-    true
-}
-
 fn handle_room_list_updated_with_crawler(
     state: &mut AppState,
     spaces: Vec<crate::state::SpaceSummary>,
@@ -387,7 +353,6 @@ fn handle_room_list_updated_with_crawler(
     let had_active_room_before_update = state.navigation.active_room_id.is_some();
     merge_new_spaces_into_preference(&mut state.navigation.space_order, &spaces);
     apply_space_order_preference(&mut spaces, &state.navigation.space_order);
-    let settings_join_rule_changed = reconcile_open_settings_join_rule(state, &spaces);
     state.spaces = spaces;
     // The renderable allow-target subset depends on which Spaces are joined
     // (#1177), so refresh it whenever the space list moves.
@@ -413,9 +378,6 @@ fn handle_room_list_updated_with_crawler(
     refresh_timeline_media_gallery(state);
 
     let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
-    if settings_join_rule_changed {
-        effects.push(AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged));
-    }
     if removed_room_interactions {
         effects.push(AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged));
     }

@@ -975,7 +975,7 @@ function accessPreviewFixture(
     context,
     confirmed,
     canonicalPolicyKey:
-      context === "access" ? "restricted|!space-b:example.invalid" : undefined,
+      context === "access" ? "policy:4c3d2e1f0a9b8c7d" : undefined,
     outcome: {
       join: { messageId: "room.accessOutcomeJoinInvite" },
       history: { messageId: "room.accessOutcomeHistoryShared" },
