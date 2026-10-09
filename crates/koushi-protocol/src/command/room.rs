@@ -4,9 +4,60 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{AccountKey, RequestId};
 use koushi_state::{
-    DirectoryQuery, InviteScopeSelection, RoomAccessPolicy, RoomHistoryVisibility,
-    RoomModerationAction, RoomSettingChange, RoomTagKind,
+    DirectoryQuery, InviteScopeSelection, RoomAccessDraftScope, RoomAccessPolicy, RoomHistoryVisibility,
+    RoomJoinRule, RoomModerationAction, RoomSettingChange, RoomTagKind,
 };
+
+/// A typed mutation of the Rust-owned access/history draft (#1177).
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RoomAccessDraftCommand {
+    Rule {
+        scope: RoomAccessDraftScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rule: Option<RoomJoinRule>,
+    },
+    AllowTargets {
+        scope: RoomAccessDraftScope,
+        #[serde(default)]
+        allow_targets: Vec<String>,
+    },
+    History {
+        scope: RoomAccessDraftScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history: Option<RoomHistoryVisibility>,
+    },
+    Reset {
+        scope: RoomAccessDraftScope,
+    },
+}
+
+impl fmt::Debug for RoomAccessDraftCommand {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Rule { scope, rule } => formatter
+                .debug_struct("Rule")
+                .field("scope", scope)
+                .field("rule", rule)
+                .finish(),
+            Self::AllowTargets {
+                scope, allow_targets, ..
+            } => formatter
+                .debug_struct("AllowTargets")
+                .field("scope", scope)
+                .field("allow_target_count", &allow_targets.len())
+                .finish(),
+            Self::History { scope, history } => formatter
+                .debug_struct("History")
+                .field("scope", scope)
+                .field("history", history)
+                .finish(),
+            Self::Reset { scope } => {
+                formatter.debug_struct("Reset").field("scope", scope).finish()
+            }
+        }
+    }
+}
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -229,6 +280,13 @@ pub enum RoomCommand {
     LoadRoomSettings {
         request_id: RequestId,
         room_id: String,
+    },
+    /// Mutate the Rust-owned access/history draft (#1177). The reducer applies
+    /// the mutation only for the currently loaded scope; there is no result
+    /// event beyond the updated snapshot.
+    SetRoomAccessDraft {
+        request_id: RequestId,
+        command: RoomAccessDraftCommand,
     },
     QueryMentionCandidates {
         request_id: RequestId,
@@ -529,6 +587,13 @@ impl fmt::Debug for RoomCommand {
                 .debug_struct("LoadRoomSettings")
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::SetRoomAccessDraft {
+                request_id, command, ..
+            } => formatter
+                .debug_struct("SetRoomAccessDraft")
+                .field("request_id", request_id)
+                .field("command", command)
                 .finish(),
             Self::QueryMentionCandidates {
                 request_id,

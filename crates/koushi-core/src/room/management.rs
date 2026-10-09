@@ -1,5 +1,6 @@
 use super::actor::RoomActor;
 use super::operations::{classify_room_error, operation_failure_kind};
+use koushi_protocol::command::RoomAccessDraftCommand;
 use koushi_protocol::event::{CoreEvent, RoomEvent};
 use koushi_protocol::failure::{CoreFailure, RoomFailureKind};
 use koushi_protocol::ids::RequestId;
@@ -278,6 +279,28 @@ impl RoomActor {
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
+    }
+
+    pub(super) async fn handle_set_room_access_draft(&self, command: RoomAccessDraftCommand) {
+        // The reducer owns scope admission and canonicalization; a stale scope
+        // is ignored there rather than applied to another room.
+        let action = match command {
+            RoomAccessDraftCommand::Rule { scope, rule } => {
+                AppAction::RoomAccessDraftRuleSet { scope, rule }
+            }
+            RoomAccessDraftCommand::AllowTargets {
+                scope,
+                allow_targets,
+            } => AppAction::RoomAccessDraftAllowTargetsSet {
+                scope,
+                allow_targets,
+            },
+            RoomAccessDraftCommand::History { scope, history } => {
+                AppAction::RoomAccessDraftHistorySet { scope, history }
+            }
+            RoomAccessDraftCommand::Reset { scope } => AppAction::RoomAccessDraftReset { scope },
+        };
+        self.reduce_reliable(vec![action]).await;
     }
 
     pub(super) async fn handle_update_room_setting(

@@ -194,13 +194,15 @@ pub use directory::{
 
 // ── Re-exports: room_management ─────────────────────────────────────────────
 pub use room_management::{
+    CreateRoomAccessPreview, CreateRoomAccessPreviewInput, CreateRoomAccessRejection,
     RestrictedConditions, RoomAccessCondition, RoomAccessDraft, RoomAccessDraftScope,
-    RoomAccessPolicy, RoomAllowTarget, RoomAllowTargetKind, RoomHistoryVisibility, RoomJoinRule,
-    RoomManagementOperationKind, RoomManagementOperationState, RoomManagementState,
-    RoomMemberMembership, RoomMemberRole, RoomMemberRoleOption, RoomMemberSummary,
-    RoomModerationAction, RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot,
-    UserTrustState, canonical_access_policy, confirmed_access_policy,
-    confirmed_room_access_outcome,
+    RoomAccessPolicy, RoomAccessPreview, RoomAccessPreviewContext, RoomAllowTarget,
+    RoomAllowTargetKind, RoomHistoryVisibility, RoomJoinRule, RoomManagementOperationKind,
+    RoomManagementOperationState, RoomManagementState, RoomMemberMembership, RoomMemberRole,
+    RoomMemberRoleOption, RoomMemberSummary, RoomModerationAction, RoomPermissionFacts,
+    RoomSettingChange, RoomSettingsSnapshot, UserTrustState, canonical_access_policy,
+    confirmed_access_policy, confirmed_room_access_outcome, preview_create_room_access,
+    preview_room_access_draft,
 };
 
 // ── Re-exports: e2ee ────────────────────────────────────────────────────────
