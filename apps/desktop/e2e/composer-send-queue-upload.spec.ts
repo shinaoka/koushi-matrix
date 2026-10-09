@@ -455,6 +455,34 @@ test("markdown toolbar and slash composer input dispatch Rust-owned send bodies"
   });
 });
 
+test("composer Math switch names the app scope so the change is not dropped (#1244)", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  const mathSwitch = page.getByRole("switch", { name: /math formatting on/i });
+  await expect(mathSwitch).toHaveAttribute("aria-checked", "true");
+  await mathSwitch.click();
+
+  // The patch must carry the app scope: an account-scoped patch drops
+  // composer.math_mode, so the switch would stay on in the real app.
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings").at(-1)?.args)
+    )
+    .toMatchObject({
+      patch: {
+        scope: "app",
+        composer: { math_mode: false }
+      }
+    });
+  await expect(page.getByRole("switch", { name: /math formatting off/i })).toHaveAttribute(
+    "aria-checked",
+    "false"
+  );
+});
+
 test("composer string revision stays exact above Number.MAX_SAFE_INTEGER", async ({ page }) => {
   await gotoReadyShell(page);
   await page.evaluate(() => {

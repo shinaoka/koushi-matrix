@@ -236,6 +236,41 @@ export function roomAccessHeaderBadges(
 }
 
 /**
+ * #1249: the compact glyph a room-list access fact renders instead of a text
+ * badge. The full localized label stays in the tooltip, the row description and
+ * the room header/Room Info; the compact list never repeats the long badge.
+ */
+export type RoomAccessGlyph =
+  | "globe"
+  | "padlock"
+  | "spaceMembers"
+  | "conditions"
+  | "request"
+  | "unknown"
+  | "checking";
+
+/**
+ * Maps a compact badge's label to its glyph. Public and invite-only use the
+ * indicator's own `icon`, so only the badge labels reach here.
+ */
+export function roomAccessBadgeGlyph(labelMessageId: MessageId): RoomAccessGlyph {
+  switch (labelMessageId) {
+    case "access.spaceMembersCanJoin":
+      return "spaceMembers";
+    case "access.conditionsApply":
+      return "conditions";
+    case "access.canRequest":
+      return "request";
+    case "access.checking":
+      return "checking";
+    default:
+      // `access.unknown` (and any future compact label without its own glyph)
+      // stays a question mark rather than guessing a condition.
+      return "unknown";
+  }
+}
+
+/**
  * The projected access condition of a room in the sidebar model, across every
  * list a room can appear in. `null` means it was not projected.
  */
