@@ -234,6 +234,7 @@ describe("diagnosticReport", () => {
               is_paginating: false,
               end_reached: true
             },
+            scheduled_sends_list: { kind: "closed" },
             errors: [
               {
                 code: "timeline_subscription_failed",

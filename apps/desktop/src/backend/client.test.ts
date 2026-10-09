@@ -101,6 +101,23 @@ describe("TauriDesktopApi", () => {
     });
   });
 
+  test("passes the captured scheduled-sends scope to Rust and closes it by request", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = new TauriDesktopApi();
+    await api.openScheduledSendsList({ kind: "space", space_id: "!space:example.invalid" });
+    await api.openScheduledSendsList({ kind: "home" });
+    await api.closeScheduledSendsList();
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "open_scheduled_sends_list", {
+      scope: { kind: "space", space_id: "!space:example.invalid" }
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "open_scheduled_sends_list", {
+      scope: { kind: "home" }
+    });
+    expect(invoke).toHaveBeenNthCalledWith(3, "close_scheduled_sends_list");
+  });
+
   test("discovers login methods through typed Tauri command", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 

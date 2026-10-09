@@ -97,6 +97,23 @@ describe("right panel context menu routing", () => {
     );
   });
 
+  test("closes scheduled messages when the Rust projection is closed", () => {
+    expect(
+      effectiveRightPanelModeForSnapshot("scheduledMessages", snapshotForPanelMode("ready", false))
+    ).toBe("closed");
+
+    const open = snapshotForPanelMode("ready", false);
+    open.state.ui.scheduled_sends_list = {
+      kind: "open",
+      scope: { kind: "home" },
+      capability: "unknown",
+      items: []
+    };
+    expect(effectiveRightPanelModeForSnapshot("scheduledMessages", open)).toBe(
+      "scheduledMessages"
+    );
+  });
+
   test("closes missing thread mode without affecting other ready panels", () => {
     expect(effectiveRightPanelModeForSnapshot("thread", snapshotForPanelMode("ready", false))).toBe(
       "closed"
@@ -149,7 +166,7 @@ function snapshotForPanelMode(
 ): Pick<DesktopSnapshot, "state" | "thread"> {
   return {
     state: {
-      schema_version: 7,
+      schema_version: 8,
       domain: {
         session_lock_reason: null,
         session:
@@ -400,6 +417,7 @@ function snapshotForPanelMode(
         focused_context: { kind: "closed" },
         files_view: { kind: "closed" }, history_export: { kind: "idle" },
         threads_list: { kind: "closed" },
+        scheduled_sends_list: { kind: "closed" },
         errors: [],
         basic_operation: { kind: "idle" },
         room_address_availability: { kind: "idle" }

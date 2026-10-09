@@ -24,13 +24,14 @@ use koushi_state::{
     NativeAttentionCapabilities, NativeAttentionState, NavigationState, OwnProfile, PresenceKind,
     ProfileState, ProfileUpdateState, ProvisionalPhase, QrLoginState, RoomInteractionState,
     RoomListProjection, RoomLiveSignals, RoomManagementState, RoomNotificationSettings,
-    RoomPreferencesState, RoomSummary, SearchCrawlerLastActive, SearchCrawlerRoomState,
-    SearchCrawlerState, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
-    SecureBackupGateState, SessionLockReason, SessionState, SettingsState, SidebarModel,
-    SoftLogoutReauthState, SpaceChildrenState, SpaceMembersState, SpaceSummary, StagedUploadItem,
-    SyncState, ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
-    TypographyDisplayProfile, UserProfile, VerificationGateRejectReason, VerificationGateState,
-    VerificationMethod, native_attention_capabilities_for_platform, resolve_locale_display_profile,
+    RoomPreferencesState, RoomSummary, ScheduledSendsListState, SearchCrawlerLastActive,
+    SearchCrawlerRoomState, SearchCrawlerState, SearchMatchField, SearchMatchKind, SearchResult,
+    SearchScope, SearchState, SecureBackupGateState, SessionLockReason, SessionState,
+    SettingsState, SidebarModel, SoftLogoutReauthState, SpaceChildrenState, SpaceMembersState,
+    SpaceSummary, StagedUploadItem, SyncState, ThreadAttentionState, ThreadPaneState,
+    ThreadsListState, TimelinePaneState, TypographyDisplayProfile, UserProfile,
+    VerificationGateRejectReason, VerificationGateState, VerificationMethod,
+    native_attention_capabilities_for_platform, resolve_locale_display_profile,
     resolve_typography_display_profile,
 };
 use serde::{Deserialize, Serialize};
@@ -432,6 +433,8 @@ pub struct FrontendUiStateChangedSlices {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub threads_list: Option<ThreadsListState>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled_sends_list: Option<ScheduledSendsListState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub basic_operation: Option<BasicOperationState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub room_address_availability: Option<koushi_state::RoomAddressAvailabilityState>,
@@ -449,6 +452,7 @@ impl FrontendUiStateChangedSlices {
             && self.files_view.is_none()
             && self.history_export.is_none()
             && self.threads_list.is_none()
+            && self.scheduled_sends_list.is_none()
             && self.basic_operation.is_none()
             && self.room_address_availability.is_none()
             && self.errors.is_none()
@@ -545,6 +549,7 @@ impl From<StateDelta> for FrontendDesktopSnapshotDelta {
         ui.files_view = changed.files_view;
         ui.history_export = changed.history_export;
         ui.threads_list = changed.threads_list;
+        ui.scheduled_sends_list = changed.scheduled_sends_list;
         ui.basic_operation = changed.basic_operation;
         ui.room_address_availability = changed.room_address_availability;
         ui.errors = changed.errors;
@@ -638,6 +643,7 @@ pub struct FrontendUiState {
     pub files_view: FilesViewState,
     pub history_export: koushi_state::HistoryExportState,
     pub threads_list: ThreadsListState,
+    pub scheduled_sends_list: ScheduledSendsListState,
     pub basic_operation: BasicOperationState,
     pub room_address_availability: koushi_state::RoomAddressAvailabilityState,
     pub errors: Vec<AppError>,
@@ -712,6 +718,7 @@ fn frontend_app_state_for_platform(state: AppState, platform: DisplayPlatform) -
             files_view: state.files_view,
             history_export: state.history_export,
             threads_list: state.threads_list,
+            scheduled_sends_list: state.scheduled_sends_list,
             basic_operation: state.basic_operation,
             room_address_availability: state.room_address_availability,
             errors: state.errors,
@@ -719,8 +726,9 @@ fn frontend_app_state_for_platform(state: AppState, platform: DisplayPlatform) -
     }
 }
 
-/// IPC snapshot contract version. Version 7 adds the desktop update preference.
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 7;
+/// IPC snapshot contract version. Version 8 adds the explicitly opened
+/// Home/Space scheduled-sends panel projection.
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 8;
 
 pub(crate) fn frontend_display_platform() -> DisplayPlatform {
     #[cfg(target_os = "macos")]

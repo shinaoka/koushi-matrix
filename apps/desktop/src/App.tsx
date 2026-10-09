@@ -203,7 +203,8 @@ import type {
   SettingsPatch,
   SpaceMemberRoleOption,
   ThreadOpenIntent,
-  ThreadsListScope
+  ThreadsListScope,
+  ScheduledSendsScope
 } from "./domain/types";
 import {
   attachmentTransferHasFiles,
@@ -1334,9 +1335,45 @@ function AccountContent({
   const [loginDeviceName, setLoginDeviceName] = useState("");
   const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
   const [recoverySecretFilled, setRecoverySecretFilled] = useState(false);
-  const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>(
+  const [rightPanelMode, setRightPanelModeState] = useState<RightPanelMode>(
     settingsScope === "account" ? "userSettings" : "closed"
   );
+  // #1160: the scheduled-messages projection is Rust-owned and body-bearing, so
+  // every transition away from its panel closes the Rust projection while this
+  // account still owns the bound API. `effectiveRightPanelModeForSnapshot` then
+  // drops the items, so a closed projection can never keep rendering them.
+  const rightPanelModeRef = useRef<RightPanelMode>(rightPanelMode);
+  rightPanelModeRef.current = rightPanelMode;
+  // Renderer-only right-panel transition intent. Every explicit mode change,
+  // every navigation invalidation and the before-account-switch drain bump it,
+  // so a delayed scheduled-messages open whose receipt lands after a newer
+  // intent retires the projection it created instead of resurrecting the panel.
+  const rightPanelIntentEpochRef = useRef(0);
+  // True while this renderer has an admitted `open_scheduled_sends_list` whose
+  // panel mode has not settled. The attach reconcile must not close a
+  // projection this renderer is legitimately opening.
+  const scheduledSendsOpenInFlightRef = useRef(false);
+  // The pending scheduled-panel open, so the before-account-switch drain can
+  // settle it (and the stale completion retires its projection) while the
+  // previous bound API is still selected.
+  const scheduledSendsOpenPromiseRef = useRef<Promise<void> | null>(null);
+  // True while an unattached `Open` projection is being retired; keeps the
+  // reconcile effect from re-dispatching if a rejected close returns `Open`.
+  const scheduledSendsReconcileInFlightRef = useRef(false);
+  function setRightPanelMode(nextMode: RightPanelMode): void {
+    rightPanelIntentEpochRef.current += 1;
+    if (
+      rightPanelModeRef.current === "scheduledMessages" &&
+      nextMode !== "scheduledMessages"
+    ) {
+      settleCommandInBackground(api.closeScheduledSendsList());
+    }
+    rightPanelModeRef.current = nextMode;
+    setRightPanelModeState(nextMode);
+  }
+  function updateRightPanelMode(updater: (mode: RightPanelMode) => RightPanelMode): void {
+    setRightPanelMode(updater(rightPanelModeRef.current));
+  }
   const shortcutHandler = useRef(createLatestShortcutHandler()).current;
   const [selectedProfileUserId, setSelectedProfileUserId] = useState<string | null>(null);
   const [peoplePanelScope, setPeoplePanelScope] = useState<PeoplePanelScope | null>(null);
@@ -1346,6 +1383,29 @@ function AccountContent({
   useEffect(() => {
     setRightPanelMode(settingsScope === "account" ? "userSettings" : "closed");
   }, [settingsScope]);
+  // #1160: a Rust projection can outlive the renderer that opened it. A fresh
+  // mount or reattach starts with the panel closed while the runtime still
+  // holds a body-bearing `Open` list, and a delayed open whose receipt lands
+  // after a newer panel intent must not adopt the panel. Whenever the
+  // projection is Open but this renderer does not own the scheduled panel, the
+  // account-bound close is submitted and the resulting `Closed` replacement
+  // drops the bodies; `effectiveRightPanelModeForSnapshot` additionally gates
+  // rendering on the projection itself. A legitimate in-flight open sets
+  // `scheduledSendsOpenInFlightRef` before its first await, so its own `Open`
+  // does not read as unattached.
+  useEffect(() => {
+    if (!snapshot) return;
+    if (snapshot.state.ui.scheduled_sends_list.kind !== "open") return;
+    if (rightPanelMode === "scheduledMessages") return;
+    if (scheduledSendsOpenInFlightRef.current) return;
+    if (scheduledSendsReconcileInFlightRef.current) return;
+    scheduledSendsReconcileInFlightRef.current = true;
+    runInBackground(
+      settleCommand(api.closeScheduledSendsList()).finally(() => {
+        scheduledSendsReconcileInFlightRef.current = false;
+      })
+    );
+  }, [api, rightPanelMode, settleCommand, snapshot]);
   // Opening Account Settings awaits focused-context cleanup before it sets the
   // panel mode. A later scope choice must invalidate that in-flight open, or a
   // settled cleanup would resurrect `userSettings` over the destination the
@@ -3498,8 +3558,28 @@ function AccountContent({
     return (await Promise.all(drains)).every(Boolean);
   }
 
-  drainComposerForAccountSwitchRef.current = () =>
-    drainActiveComposerScopesForNavigation(true, true);
+  drainComposerForAccountSwitchRef.current = async () => {
+    // Fence any scheduled-panel open still awaiting its receipt so its stale
+    // completion retires the previous account's projection instead of
+    // resurrecting it after the switch. Settle it first: once the next tab is
+    // selected, this account's bound API rejects, and the projection would be
+    // left open.
+    rightPanelIntentEpochRef.current += 1;
+    await scheduledSendsOpenPromiseRef.current?.catch(() => undefined);
+    const drained = await drainActiveComposerScopesForNavigation(true, true);
+    // #1160: a backgrounded tab closes only the body-bearing scheduled-sends
+    // projection, never the reservation queue, while the previous account still
+    // owns the bound API. Close whenever the requested mode owns the panel OR
+    // the runtime still reports an Open projection, so a body-bearing list that
+    // a fresh renderer never claimed is retired too.
+    if (
+      rightPanelModeRef.current === "scheduledMessages" ||
+      snapshotRef.current?.state.ui.scheduled_sends_list.kind === "open"
+    ) {
+      await settleCommand(api.closeScheduledSendsList());
+    }
+    return drained;
+  };
   useEffect(() => {
     onRegisterBeforeAccountSwitch(() => drainComposerForAccountSwitchRef.current());
     return () => onRegisterBeforeAccountSwitch(null);
@@ -3519,7 +3599,7 @@ function AccountContent({
     setSpaceMembersRoleTransportFailure(null);
     setPeoplePanelScope(null);
     setSelectedProfileUserId(null);
-    setRightPanelMode((mode) =>
+    updateRightPanelMode((mode) =>
       mode === "people" || mode === "profile" ? "closed" : mode
     );
   }, []);
@@ -5284,6 +5364,48 @@ function AccountContent({
     setRightPanelMode("closed");
   }
 
+  async function openScheduledSendsPanel(scope: ScheduledSendsScope) {
+    const intent = ++rightPanelIntentEpochRef.current;
+    roomSettingsRequestRef.current += 1;
+    scheduledSendsOpenInFlightRef.current = true;
+    const operation = (async () => {
+      try {
+        await closeFocusedContextIfHiddenBy("scheduledMessages");
+        if (rightPanelIntentEpochRef.current !== intent) {
+          // A newer intent arrived while the focused context was closing; do not
+          // submit an open the user no longer wants.
+          return;
+        }
+        await settleCommand(api.openScheduledSendsList(scope));
+        if (rightPanelIntentEpochRef.current !== intent) {
+          // The receipt landed after a newer panel intent (Info, Threads, a
+          // navigation transition, or the account-switch drain). Retire the
+          // projection this open created; never resurrect the panel.
+          await settleCommand(api.closeScheduledSendsList()).catch(() => undefined);
+          return;
+        }
+        setRightPanelMode("scheduledMessages");
+      } finally {
+        scheduledSendsOpenInFlightRef.current = false;
+      }
+    })();
+    scheduledSendsOpenPromiseRef.current = operation;
+    try {
+      await operation;
+    } finally {
+      if (scheduledSendsOpenPromiseRef.current === operation) {
+        scheduledSendsOpenPromiseRef.current = null;
+      }
+    }
+  }
+
+  function closeScheduledSendsPanel() {
+    // The mode transition dispatches the Rust close while this account still
+    // owns the bound API; `effectiveRightPanelModeForSnapshot` then gates the
+    // items on the projected state.
+    setRightPanelMode("closed");
+  }
+
   async function paginateThreadsList(scope: ThreadsListScope) {
     await settleCommand(api.paginateThreadsList(scope));
   }
@@ -6234,6 +6356,10 @@ function AccountContent({
       await closeThreadsListPanel();
       return;
     }
+    if (rightPanelMode === "scheduledMessages") {
+      closeScheduledSendsPanel();
+      return;
+    }
     if (rightPanelMode === "search") {
       await closeSearchPanel();
       return;
@@ -6849,6 +6975,12 @@ function AccountContent({
           onOpenThreads={() => {
             runInBackground(openThreadsListPanel(threadsListScope));
           }}
+          onOpenScheduledMessages={() => {
+            const scope: ScheduledSendsScope = activeSpace
+              ? { kind: "space", space_id: activeSpace.space_id }
+              : { kind: "home" };
+            runInBackground(openScheduledSendsPanel(scope));
+          }}
           onOpenSpaceInfo={() => {
             runInBackground(setRightPanelModeClosingFocusedContext("spaceInfo"));
           }}
@@ -7210,6 +7342,12 @@ function AccountContent({
           }}
           onPaginateThreadsList={(scope) => {
             runInBackground(paginateThreadsList(scope));
+          }}
+          onCancelScheduledSend={(scheduledId) => {
+            runInBackground(cancelScheduledSend(scheduledId));
+          }}
+          onRescheduleScheduledSend={(scheduledId, body, sendAtMs) => {
+            runInBackground(rescheduleScheduledSend(scheduledId, body, sendAtMs));
           }}
           onOpenRecovery={() => {
             runInBackground(setRightPanelModeClosingFocusedContext("recovery"));

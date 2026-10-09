@@ -13,6 +13,7 @@ export type RightPanelMode =
   | "spaceInfo"
   | "files"
   | "threads"
+  | "scheduledMessages"
   | "pinned"
   | "people"
   | "profile";
@@ -124,6 +125,13 @@ export function effectiveRightPanelModeForSnapshot(
   }
 
   if (requestedMode === "threads" && snapshot.state.ui.threads_list.kind === "closed") {
+    return "closed";
+  }
+
+  if (
+    requestedMode === "scheduledMessages" &&
+    snapshot.state.ui.scheduled_sends_list.kind === "closed"
+  ) {
     return "closed";
   }
 

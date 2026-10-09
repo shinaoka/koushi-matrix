@@ -5273,6 +5273,118 @@ fn event_queue_slots_stay_within_the_documented_budget() {
     );
 }
 
+/// #1160: the open command and its projection must be observable through the
+/// production `CoreConnection` command lane and emitted `CoreEvent` stream, not
+/// only by calling `reduce` and `build_state_delta` directly.
+#[tokio::test]
+async fn scheduled_sends_open_command_emits_the_projection_through_the_runtime() {
+    let (runtime, _stores) = CoreRuntime::start_isolated_with_event_capacity(64);
+    let mut connection = runtime.attach();
+
+    let mut store = koushi_state::ScheduledSendStore {
+        capability: koushi_state::ScheduledSendCapability::LocalFallback,
+        items: Default::default(),
+    };
+    store.insert(koushi_state::ScheduledSendItem {
+        scheduled_id: "sched-runtime".to_owned(),
+        room_id: "!room:example.invalid".to_owned(),
+        thread_root_event_id: None,
+        body: "runtime body".to_owned(),
+        send_at_ms: 1_900_000_000_000,
+        handle: koushi_state::ScheduledSendHandle::Local,
+        is_dispatching: false,
+    });
+    let room = RoomSummary {
+        display_name_placeholder: None,
+        display_label_placeholder: None,
+        room_id: "!room:example.invalid".to_owned(),
+        display_name: "Room".to_owned(),
+        display_label: "Room".to_owned(),
+        original_display_label: "Room".to_owned(),
+        avatar: None,
+        is_dm: false,
+        dm_user_ids: Vec::new(),
+        tags: RoomTags::default(),
+        unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
+        marked_unread: false,
+        recency_stamp: None,
+        conversation_activity: None,
+        latest_event: None,
+        parent_space_ids: Vec::new(),
+        dm_space_ids: Vec::new(),
+        is_encrypted: false,
+        joined_members: 0,
+    };
+
+    runtime
+        .inject_actions(vec![
+            AppAction::AppStarted,
+            AppAction::RestoreSessionSucceeded(SessionInfo {
+                homeserver: "https://example.invalid".to_owned(),
+                user_id: "@me:example.invalid".to_owned(),
+                device_id: "DEVICE".to_owned(),
+                authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+            }),
+            AppAction::CurrentDeviceTrustChanged(koushi_state::CurrentDeviceTrustState::Verified),
+            AppAction::RoomListUpdated {
+                rooms: vec![room],
+                spaces: Vec::new(),
+            },
+            AppAction::ScheduledSendsLoaded {
+                scheduled_sends: store,
+            },
+        ])
+        .await;
+    wait_for_runtime_snapshot(&mut connection, |state| {
+        matches!(state.session, koushi_state::SessionState::Ready(_))
+            && state.scheduled_sends.items.contains_key("sched-runtime")
+    })
+    .await;
+
+    let request_id = connection.next_request_id();
+    connection
+        .command(CoreCommand::App(AppCommand::OpenScheduledSendsList {
+            request_id,
+            scope: koushi_state::ScheduledSendsScope::Home,
+        }))
+        .await
+        .expect("open command must be admitted");
+
+    let delta = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match connection
+                .recv_event()
+                .await
+                .expect("event stream stays open")
+            {
+                CoreEvent::StateDelta(delta)
+                    if matches!(
+                        delta.changed.scheduled_sends_list,
+                        Some(koushi_state::ScheduledSendsListState::Open { .. })
+                    ) =>
+                {
+                    return delta;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the open command must emit its projection through a production StateDelta");
+    let Some(koushi_state::ScheduledSendsListState::Open { items, .. }) =
+        delta.changed.scheduled_sends_list
+    else {
+        unreachable!("the guarded delta slice is the open projection");
+    };
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].scheduled_id, "sched-runtime");
+    assert_eq!(items[0].body, "runtime body");
+
+    runtime.shutdown_handle().abort();
+}
+
 mod activity_renderer_states;
 mod anchored_send;
 mod navigation_network;

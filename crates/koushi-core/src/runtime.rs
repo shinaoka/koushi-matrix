@@ -3815,6 +3815,20 @@ impl AppActor {
                             self.handle_app_effects(request_id, effects).await;
                             true
                         }
+                        AppCommand::OpenScheduledSendsList { request_id, scope } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::OpenScheduledSendsList { scope })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::CloseScheduledSendsList { request_id } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::CloseScheduledSendsList)
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
                         AppCommand::PaginateThreadsList { request_id, scope } => {
                             let effects = self
                                 .reduce_app_action(AppAction::PaginateThreadsList {
