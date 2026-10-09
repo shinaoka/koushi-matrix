@@ -1006,6 +1006,12 @@ impl RoomActor {
             } => {
                 self.handle_load_room_settings(request_id, room_id).await;
             }
+            RoomCommand::SetRoomAccessDraft {
+                request_id: _,
+                command,
+            } => {
+                self.handle_set_room_access_draft(command).await;
+            }
             RoomCommand::QueryMentionCandidates {
                 request_id,
                 account_key,

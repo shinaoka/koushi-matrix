@@ -1666,6 +1666,7 @@ pub(super) async fn matrix_room_settings_snapshot(
             .ok()
             .map(|uri| uri.to_string()),
         join_rule: matrix_room_join_rule_or_default(room),
+        access: matrix_room_access_facts(room).await,
         history_visibility: matrix_room_history_visibility(&room.history_visibility_or_default()),
         permissions: MatrixRoomPermissionFacts {
             can_edit_settings,
@@ -1919,6 +1920,33 @@ pub(super) fn room_settings_snapshot_with_change(
         MatrixRoomSettingChange::JoinRule(join_rule) => {
             snapshot.join_rule = *join_rule;
         }
+        MatrixRoomSettingChange::AccessPolicy { rule, allow } => {
+            snapshot.join_rule = *rule;
+            snapshot.access.join_rule = Some(*rule);
+            snapshot.access.restricted = match rule {
+                MatrixRoomJoinRule::Restricted => {
+                    Some(MatrixRestrictedCompleteness::MembershipOnly)
+                }
+                _ => None,
+            };
+            let mut targets: Vec<&str> = allow
+                .iter()
+                .map(String::as_str)
+                .filter(|target| !target.is_empty())
+                .collect();
+            targets.sort_unstable();
+            targets.dedup();
+            // The target kinds are verified from the local create events on the
+            // next observation; an optimistic projection stays `Unknown` rather
+            // than claiming a Space route.
+            snapshot.access.allow_targets = targets
+                .into_iter()
+                .map(|room_id| MatrixAllowTarget {
+                    kind: MatrixAllowTargetKind::Unknown,
+                    room_id: room_id.to_owned(),
+                })
+                .collect();
+        }
         MatrixRoomSettingChange::HistoryVisibility(history_visibility) => {
             snapshot.history_visibility = *history_visibility;
         }
@@ -1941,82 +1969,199 @@ pub fn matrix_room_join_rule_or_default(room: &matrix_sdk::Room) -> MatrixRoomJo
         .unwrap_or(MatrixRoomJoinRule::Invite)
 }
 
-/// Whether a `restricted`/`knock_restricted` rule's allow list contains a
-/// condition this client can actually evaluate (#1166).
+/// What the client could determine about a `restricted`/`knock_restricted`
+/// rule's allow list (#1220).
 ///
-/// A `restricted` rule with no usable allow condition still classifies as
-/// `Restricted`, but the product must not imply that a membership route works:
-/// the tooltip then says an invitation is required. An allow-rule type this
-/// client does not model must never be reported as a confirmed empty set, which
-/// is what separates [`MatrixRestrictedConditions::UnknownAllowRule`] from
-/// [`MatrixRestrictedConditions::NoneUsable`].
+/// The five values keep the losses the old three-way projection made apart: a
+/// rule whose content was never inspected is not the same as a confirmed empty
+/// list, a membership route beside an unmodelled entry is not the same as a
+/// membership-only route, and an allow-rule type this client does not model must
+/// never be reported as a confirmed empty set.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MatrixRestrictedConditions {
-    /// At least one allow entry is a room-membership rule: a real route exists.
-    Usable,
-    /// Every allow entry is a rule type this client models, and none of them
-    /// admits joining without an invitation.
-    NoneUsable,
-    /// At least one entry uses a rule type this client does not model, so the
-    /// absence of a usable condition is not confirmed.
-    UnknownAllowRule,
+pub enum MatrixRestrictedCompleteness {
+    /// The `m.room.join_rules` content is unavailable (unsynced or hidden), so
+    /// nothing is claimed about the rule or its allow list.
+    NotInspected,
+    /// The rule is restricted and its allow list is empty.
+    ConfirmedEmpty,
+    /// Every allow entry is a room-membership rule, and there is at least one.
+    MembershipOnly,
+    /// At least one room-membership entry sits beside at least one entry using a
+    /// rule type this client does not model.
+    MembershipPlusUnsupported,
+    /// At least one allow entry, all of them using rule types this client does
+    /// not model.
+    UnsupportedOnly,
 }
 
-/// The restricted-rule condition facts for a room (#1166). `None` when the
-/// room's rule is not restricted, so nothing is claimed about allow lists.
-pub fn matrix_room_restricted_conditions(
-    room: &matrix_sdk::Room,
-) -> Option<MatrixRestrictedConditions> {
-    use matrix_sdk::ruma::events::room::join_rules::{AllowRule, JoinRule};
-    let rule = room.join_rule();
-    let restricted = match rule.as_ref()? {
-        JoinRule::Restricted(restricted) | JoinRule::KnockRestricted(restricted) => restricted,
-        _ => return None,
-    };
-    let usable = restricted
-        .allow
-        .iter()
-        .any(|allow| matches!(allow, AllowRule::RoomMembership(_)));
-    if usable {
-        return Some(MatrixRestrictedConditions::Usable);
-    }
-    let unknown = restricted
-        .allow
-        .iter()
-        .any(|allow| !matches!(allow, AllowRule::RoomMembership(_)));
-    Some(if unknown {
-        MatrixRestrictedConditions::UnknownAllowRule
-    } else {
-        MatrixRestrictedConditions::NoneUsable
-    })
-}
-
-/// The rooms and Spaces a `restricted`/`knock_restricted` rule names as
-/// membership routes (#1166), in the order the event lists them and without
-/// duplicates. Empty when the rule is not restricted or names none.
+/// The kind of one `restricted`/`knock_restricted` allow target (#1220).
 ///
-/// Ids stay inside Rust state: the sidebar resolves them to display labels and
-/// only resolved names reach the renderer, so an inaccessible or unknown entry
-/// is never guessed at or exposed.
-pub fn matrix_room_restricted_allow_room_ids(room: &matrix_sdk::Room) -> Vec<String> {
+/// The kind is verified from the local room's own `m.room.create`, never from
+/// the target id: `Unknown` covers a create event that is missing, redacted or
+/// of a type this client cannot classify, and is not positive proof that the
+/// target is an ordinary room.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixAllowTargetKind {
+    Space,
+    Room,
+    Unknown,
+}
+
+/// One distinct allow target of a restricted rule (#1220).
+///
+/// The id stays inside Rust: every distinct target is counted before unnamed
+/// ones are dropped, and the sidebar resolves the id to a display label rather
+/// than exposing it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixAllowTarget {
+    pub kind: MatrixAllowTargetKind,
+    pub room_id: String,
+}
+
+/// The room's own authoritative access facts (#1220).
+///
+/// `join_rule` is `None` when `m.room.join_rules` is unavailable, so an
+/// unsynced rule is never defaulted to `Invite` and reported as inspected.
+/// `restricted` is `None` when the inspectable rule is not restricted.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MatrixRoomAccessFacts {
+    pub join_rule: Option<MatrixRoomJoinRule>,
+    pub restricted: Option<MatrixRestrictedCompleteness>,
+    pub allow_targets: Vec<MatrixAllowTarget>,
+    /// The room's own history visibility, read with the same facts so an
+    /// external history change rides the same observation (#1177).
+    pub history_visibility: MatrixRoomHistoryVisibility,
+}
+
+/// Project a joined room's own access facts (#1220).
+///
+/// The condition is the room's own `m.room.join_rules` content; it is never
+/// derived from encryption, directory visibility, history visibility, parent
+/// Space privacy, `is_dm`, the viewer's membership or `can_join`.
+pub async fn matrix_room_access_facts(room: &matrix_sdk::Room) -> MatrixRoomAccessFacts {
     use matrix_sdk::ruma::events::room::join_rules::{AllowRule, JoinRule};
-    let rule = room.join_rule();
-    let restricted = match rule.as_ref() {
-        Some(JoinRule::Restricted(restricted) | JoinRule::KnockRestricted(restricted)) => {
-            restricted
-        }
-        _ => return Vec::new(),
+    let history_visibility = matrix_room_history_visibility(&room.history_visibility_or_default());
+    let Some(raw_rule) = room.join_rule() else {
+        return MatrixRoomAccessFacts {
+            join_rule: None,
+            restricted: Some(MatrixRestrictedCompleteness::NotInspected),
+            allow_targets: Vec::new(),
+            history_visibility,
+        };
     };
-    let mut ids: Vec<String> = Vec::new();
-    for allow in &restricted.allow {
-        if let AllowRule::RoomMembership(membership) = allow {
-            let id = membership.room_id.to_string();
-            if !ids.contains(&id) {
-                ids.push(id);
+    let join_rule = matrix_room_join_rule(&raw_rule);
+    let restricted = match &raw_rule {
+        JoinRule::Restricted(restricted) | JoinRule::KnockRestricted(restricted) => {
+            restricted.allow.as_slice()
+        }
+        _ => {
+            return MatrixRoomAccessFacts {
+                join_rule: Some(join_rule),
+                restricted: None,
+                allow_targets: Vec::new(),
+                history_visibility,
+            };
+        }
+    };
+    let mut membership = 0_usize;
+    let mut unsupported = 0_usize;
+    let mut seen: Vec<String> = Vec::new();
+    let mut allow_targets: Vec<MatrixAllowTarget> = Vec::new();
+    for allow in restricted {
+        match allow {
+            AllowRule::RoomMembership(membership_rule) => {
+                membership += 1;
+                let room_id = membership_rule.room_id.to_string();
+                if seen.contains(&room_id) {
+                    continue;
+                }
+                let kind = matrix_allow_target_kind(room, &membership_rule.room_id).await;
+                seen.push(room_id.clone());
+                allow_targets.push(MatrixAllowTarget { kind, room_id });
             }
+            _ => unsupported += 1,
         }
     }
-    ids
+    let restricted = match (membership, unsupported) {
+        (0, 0) => MatrixRestrictedCompleteness::ConfirmedEmpty,
+        (0, _) => MatrixRestrictedCompleteness::UnsupportedOnly,
+        (_, 0) => MatrixRestrictedCompleteness::MembershipOnly,
+        (_, _) => MatrixRestrictedCompleteness::MembershipPlusUnsupported,
+    };
+    MatrixRoomAccessFacts {
+        join_rule: Some(join_rule),
+        restricted: Some(restricted),
+        allow_targets,
+        history_visibility,
+    }
+}
+
+/// Classify one allow target from the local room's own `m.room.create` (#1220).
+///
+/// `create_content()` cannot tell a redacted pre-v11 create event from an
+/// original one: the SDK keeps the redacted event with every field defaulted
+/// (so a redacted Space loses its type but stays available). For room versions
+/// before 11 only the raw state event still records the redaction, so the kind
+/// is verified through the public state-event API and an unproven type stays
+/// `Unknown` rather than becoming an ordinary room.
+async fn matrix_allow_target_kind(
+    room: &matrix_sdk::Room,
+    target: &matrix_sdk::ruma::RoomId,
+) -> MatrixAllowTargetKind {
+    matrix_allow_target_kind_for_client(&room.client(), target).await
+}
+
+async fn matrix_allow_target_kind_for_client(
+    client: &matrix_sdk::Client,
+    target: &matrix_sdk::ruma::RoomId,
+) -> MatrixAllowTargetKind {
+    use matrix_sdk::{
+        deserialized_responses::SyncOrStrippedState,
+        ruma::{
+            events::{EmptyStateKey, SyncStateEvent, room::create::RoomCreateEventContent},
+            room::RoomType,
+        },
+    };
+    let Some(target) = client.get_room(target) else {
+        return MatrixAllowTargetKind::Unknown;
+    };
+    let Ok(Some(raw)) = target
+        .get_state_event_static_for_key::<RoomCreateEventContent, _>(&EmptyStateKey)
+        .await
+    else {
+        return MatrixAllowTargetKind::Unknown;
+    };
+    let Ok(SyncOrStrippedState::Sync(SyncStateEvent::Original(create))) = raw.deserialize() else {
+        // A redacted or stripped create event is not positive proof of any type.
+        return MatrixAllowTargetKind::Unknown;
+    };
+    match create.content.room_type {
+        Some(RoomType::Space) => MatrixAllowTargetKind::Space,
+        // Only an available, unredacted create event with no explicit (or a
+        // plain-room) type proves an ordinary room; any other type stays unknown.
+        Some(_) => MatrixAllowTargetKind::Unknown,
+        None => MatrixAllowTargetKind::Room,
+    }
+}
+
+/// Whether `target` is a Space this account has joined, verified from the
+/// target's own create event (#1177). Used to admit a newly selected restricted
+/// allow target before it is forwarded to the server. A typed direct command
+/// cannot select an ordinary room, a Space the account has not joined, or an
+/// unknown target.
+pub async fn matrix_is_joined_verified_space(session: &MatrixClientSession, target: &str) -> bool {
+    use matrix_sdk::RoomState;
+    let Ok(target) = target.parse::<matrix_sdk::ruma::OwnedRoomId>() else {
+        return false;
+    };
+    let client = session.client();
+    let Some(room) = client.get_room(&target) else {
+        return false;
+    };
+    if room.state() != RoomState::Joined {
+        return false;
+    }
+    matrix_allow_target_kind_for_client(&client, &target).await == MatrixAllowTargetKind::Space
 }
 
 pub(super) fn matrix_room_join_rule(
@@ -2047,6 +2192,64 @@ pub(super) fn sdk_join_rule_for_update(
         // name a rule this client cannot write back faithfully.
         MatrixRoomJoinRule::Restricted
         | MatrixRoomJoinRule::KnockRestricted
+        | MatrixRoomJoinRule::Unknown => Err(MatrixRoomOperationError::InvalidRoomSetting),
+    }
+}
+
+/// Build the `m.room.join_rules` content for a settable access policy (#1177).
+///
+/// A restricted rule is accepted only with at least one canonical membership
+/// target, and a non-restricted rule only with none. `knock_restricted`,
+/// `private` and an unknown rule are not settable through this path; a
+/// reserved `private` is never produced as the Space route.
+pub(super) fn sdk_join_rule_for_access_policy(
+    rule: MatrixRoomJoinRule,
+    allow: &[String],
+) -> Result<matrix_sdk::ruma::events::room::join_rules::JoinRule, MatrixRoomOperationError> {
+    use matrix_sdk::ruma::events::room::join_rules::{AllowRule, JoinRule, Restricted};
+    let mut targets: Vec<&str> = allow
+        .iter()
+        .map(String::as_str)
+        .filter(|target| !target.is_empty())
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+    match rule {
+        MatrixRoomJoinRule::Restricted => {
+            if targets.is_empty() {
+                return Err(MatrixRoomOperationError::InvalidRoomSetting);
+            }
+            let mut rules = Vec::with_capacity(targets.len());
+            for target in targets {
+                let room_id = matrix_sdk::ruma::RoomId::parse(target)
+                    .map_err(|_| MatrixRoomOperationError::InvalidRoomSetting)?;
+                rules.push(AllowRule::room_membership(room_id));
+            }
+            Ok(JoinRule::Restricted(Restricted::new(rules)))
+        }
+        MatrixRoomJoinRule::Public => {
+            if targets.is_empty() {
+                Ok(JoinRule::Public)
+            } else {
+                Err(MatrixRoomOperationError::InvalidRoomSetting)
+            }
+        }
+        MatrixRoomJoinRule::Invite => {
+            if targets.is_empty() {
+                Ok(JoinRule::Invite)
+            } else {
+                Err(MatrixRoomOperationError::InvalidRoomSetting)
+            }
+        }
+        MatrixRoomJoinRule::Knock => {
+            if targets.is_empty() {
+                Ok(JoinRule::Knock)
+            } else {
+                Err(MatrixRoomOperationError::InvalidRoomSetting)
+            }
+        }
+        MatrixRoomJoinRule::KnockRestricted
+        | MatrixRoomJoinRule::Private
         | MatrixRoomJoinRule::Unknown => Err(MatrixRoomOperationError::InvalidRoomSetting),
     }
 }

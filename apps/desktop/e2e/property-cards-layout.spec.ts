@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { t } from "../src/i18n/messages";
+import { pseudoLocalize, t } from "../src/i18n/messages";
 
 import { HARNESS_ROOM_ID, gotoReadyShell } from "./support/basicOperations";
 
@@ -123,5 +123,201 @@ for (const locale of ["en", "ja"] as const) {
       expect(card.overflow, card.property).toBeLessThanOrEqual(1);
       expect(card.escaped, card.property).toEqual([]);
     }
+  });
+}
+
+/*
+ * #1177: the shared access/history editor is a wide choice/detail split that
+ * stacks in a narrow or short pane. Every choice and both actions must stay
+ * hit-testable and keyboard reachable across locales, not merely present in
+ * document order. Pseudo-accented and bidi locales stand in for expanded and
+ * RTL product text.
+ */
+const EDITOR_PROFILES = {
+  en: { lang: "en", catalog_locale: "en", pseudo_locale: "none" },
+  ja: { lang: "ja", catalog_locale: "ja", pseudo_locale: "none" },
+  accented: { lang: "en-XA", catalog_locale: "pseudo", pseudo_locale: "accented" },
+  bidi: { lang: "ar-XB", catalog_locale: "pseudo", pseudo_locale: "bidi" }
+} as const;
+
+type EditorLocale = keyof typeof EDITOR_PROFILES;
+
+function roomInfoAriaLabel(locale: EditorLocale): string {
+  if (locale === "en") return t("room.roomInfo");
+  if (locale === "ja") return t("room.roomInfo", {}, "ja");
+  return pseudoLocalize("Room info", EDITOR_PROFILES[locale].pseudo_locale);
+}
+
+async function seedAccessEditor(page: Page, locale: EditorLocale) {
+  await page.evaluate(
+    ({ roomId, profile }) => {
+      const outcome = {
+        join: { messageId: "room.accessOutcomeJoinSpaceMembers", substitutions: ["Alpha"] },
+        history: { messageId: "room.accessOutcomeHistoryShared" },
+        encryption: { messageId: "room.accessOutcomeNotEncrypted" },
+        directory: { messageId: "room.accessOutcomeDirectoryPrivate" },
+        nonRetroactive: { messageId: "room.historyNonRetroactive" }
+      };
+      window.__harness.setCommandResponse(
+        "preview_room_access",
+        ({ scope, context }: { scope: unknown; context: unknown }) => ({
+          scope,
+          context,
+          confirmed: false,
+          outcome
+        })
+      );
+      const snapshot = window.__harness.currentSnapshot();
+      const withAccess = <T extends { room_id: string }>(rows: T[]): T[] =>
+        rows.map((row) =>
+          row.room_id === roomId
+            ? {
+                ...row,
+                access_join_rule: "restricted" as const,
+                access_restricted_conditions: "membershipOnly" as const
+              }
+            : row
+        );
+      window.__harness.setSnapshot({
+        ...snapshot,
+        sidebar: {
+          ...snapshot.sidebar,
+          space_rooms: withAccess(snapshot.sidebar.space_rooms),
+          sections: {
+            ...snapshot.sidebar.sections,
+            rooms: withAccess(snapshot.sidebar.sections.rooms)
+          }
+        },
+        state: {
+          ...snapshot.state,
+          domain: {
+            ...snapshot.state.domain,
+            locale_profile: { ...snapshot.state.domain.locale_profile, ...profile },
+            spaces: [
+              {
+                space_id: "!access-space:example.invalid",
+                raw_name: "Accessibility Space With A Long Synthetic Name",
+                display_name: "Accessibility Space With A Long Synthetic Name",
+                avatar: null,
+                join_rule: "invite",
+                child_room_ids: [],
+                parent_side_child_room_ids: []
+              }
+            ],
+            room_management: {
+              selected_room_id: roomId,
+              settings: {
+                room_id: roomId,
+                name: "Harness Room",
+                topic: null,
+                avatar_url: null,
+                join_rule: "restricted",
+                history_visibility: "shared",
+                permissions: {
+                  can_edit_settings: true,
+                  can_change_join_rule: true,
+                  can_edit_roles: true,
+                  can_invite: true,
+                  can_kick: true,
+                  can_ban: false,
+                  can_unban: false
+                },
+                members: []
+              },
+              draft: {
+                scope: { kind: "room", roomId },
+                revision: 1,
+                rule: "restricted",
+                allowTargets: []
+              },
+              operation: { kind: "idle" }
+            }
+          }
+        }
+      });
+      window.__harness.setCommandResponse("load_room_settings", () =>
+        window.__harness.currentSnapshot()
+      );
+      window.__harness.pushStateUpdate();
+    },
+    { roomId: HARNESS_ROOM_ID, profile: EDITOR_PROFILES[locale] }
+  );
+}
+
+const EDITOR_CASES: Array<{
+  locale: EditorLocale;
+  name: string;
+  width: number;
+  height: number;
+  split: boolean;
+}> = [
+  { locale: "en", name: "wide", width: 1200, height: 900, split: true },
+  { locale: "ja", name: "narrow", width: 560, height: 900, split: false },
+  { locale: "accented", name: "wide", width: 1200, height: 900, split: true },
+  { locale: "bidi", name: "short", width: 1200, height: 430, split: false }
+];
+
+for (const testCase of EDITOR_CASES) {
+  test(`the access editor keeps every choice and action reachable (${testCase.locale}, ${testCase.name})`, async ({
+    page
+  }) => {
+    await page.setViewportSize({ width: testCase.width, height: testCase.height });
+    await gotoReadyShell(page);
+    await seedAccessEditor(page, testCase.locale);
+    await page.getByRole("button", { name: roomInfoAriaLabel(testCase.locale) }).click();
+
+    const card = page.locator('.room-info-panel [data-setting-property="join-rule"]');
+    await expect(card).toBeVisible();
+    const editor = card.locator(".access-choice-detail");
+    await expect(editor).toBeVisible();
+
+    // Every choice and both actions are fully inside the viewport and hit-
+    // testable at their measured centre — real geometry, not document order.
+    const controls = editor.locator('input[type="radio"], input[type="checkbox"], button');
+    const count = await controls.count();
+    expect(count).toBeGreaterThanOrEqual(6);
+    for (let index = 0; index < count; index += 1) {
+      const control = controls.nth(index);
+      await control.scrollIntoViewIfNeeded();
+      await expect(control).toBeInViewport({ ratio: 1 });
+      const hit = await control.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        const target = document.elementFromPoint(
+          box.left + box.width / 2,
+          box.top + box.height / 2
+        );
+        if (!target) return false;
+        return (
+          target === element ||
+          element.contains(target) ||
+          Boolean(target.closest("label")?.contains(element))
+        );
+      });
+      expect(hit, `control ${index} hit-testable`).toBe(true);
+    }
+
+    // The agreed layout: a side-by-side split when wide, stacked when narrow or
+    // short.
+    const listBox = await editor.locator(".access-choice-list").boundingBox();
+    const detailsBox = await editor.locator(".access-detail-panel").boundingBox();
+    expect(listBox).not.toBeNull();
+    expect(detailsBox).not.toBeNull();
+    if (testCase.split) {
+      expect(listBox!.x + listBox!.width, "list left of details").toBeLessThanOrEqual(
+        detailsBox!.x + 2
+      );
+    } else {
+      expect(listBox!.y + listBox!.height, "list above details").toBeLessThanOrEqual(
+        detailsBox!.y + 2
+      );
+    }
+
+    // Keyboard navigation moves within the choice group and changes selection.
+    const radios = editor.locator('input[type="radio"]');
+    await radios.first().scrollIntoViewIfNeeded();
+    await radios.first().focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(radios.nth(1)).toBeFocused();
+    expect(await editor.locator('input[type="radio"]:checked').count()).toBe(1);
   });
 }

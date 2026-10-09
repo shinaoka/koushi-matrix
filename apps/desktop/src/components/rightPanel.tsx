@@ -17,6 +17,8 @@ import type {
   RoomNotificationMode,
   RoomJoinRule,
   RoomSettingChange,
+  RoomAccessDraftCommand,
+  RoomAccessPreview,
   SavedSessionInfo,
   SearchResult,
   SettingsPatch,
@@ -61,6 +63,7 @@ import {
 import { FilesView } from "./FilesView";
 import { ModalDialog } from "./ModalDialog";
 import { RoomInfoPanel } from "./RoomInfoPanel";
+import { sidebarRoomAccess } from "../domain/accessCondition";
 import type { HistoryExportControls } from "./HistoryExportDialog";
 import { SpaceInfoPanel } from "./SpaceInfoPanel";
 import { ThreadsListView } from "./ThreadsListView";
@@ -208,6 +211,9 @@ export function ContextualRightPanel({
   onForceRotateOutboundSession = () => undefined,
   historyExportControls,
   onUpdateRoomSetting = () => undefined,
+  roomAccessPreview = null,
+  roomHistoryPreview = null,
+  onSetRoomAccessDraft = () => undefined,
   onUpdateSpaceJoinRule,
   onIgnoreUser = () => undefined,
   onUnignoreUser = () => undefined,
@@ -387,6 +393,9 @@ export function ContextualRightPanel({
   spaceLocalOverrides?: Record<string, SpaceLocalPresentation>;
   onTimelineDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
+  roomAccessPreview?: RoomAccessPreview | null;
+  roomHistoryPreview?: RoomAccessPreview | null;
+  onSetRoomAccessDraft?: (command: RoomAccessDraftCommand) => void;
   /** Issue #935: settles, or rejects when Rust refuses the change. */
   onUpdateSpaceJoinRule?: (spaceId: string, joinRule: RoomJoinRule) => Promise<void>;
   onIgnoreUser?: (userId: string) => void;
@@ -669,6 +678,9 @@ export function ContextualRightPanel({
           appSettings={snapshot.state.domain.settings}
           linkPreviewSettings={snapshot.state.domain.link_preview_settings}
           spaces={snapshot.state.domain.spaces}
+          access={
+            activeRoom ? sidebarRoomAccess(snapshot.sidebar, activeRoom.room_id) : null
+          }
           onInvitePeople={
             activeRoom
               ? () =>
@@ -685,6 +697,9 @@ export function ContextualRightPanel({
           }
           onSetRoomNotificationMode={onSetRoomNotificationMode}
           onUpdateRoomSetting={onUpdateRoomSetting}
+          accessPreview={roomAccessPreview}
+          historyPreview={roomHistoryPreview}
+          onSetAccessDraft={onSetRoomAccessDraft}
           inviteHistoryPolicy={
             snapshot.state.domain.invite_workflow?.query.room_id === activeRoom?.room_id
               ? snapshot.state.domain.invite_workflow?.history_policy ?? null

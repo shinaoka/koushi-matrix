@@ -82,6 +82,21 @@ pub enum RoomFailureKind {
     NotFound,
     Network,
     Sdk,
+    /// The current join-rule content has allow conditions this client does not
+    /// model, so rewriting it would drop them (#1177).
+    UnsupportedPolicyCondition,
+    /// The current join-rule policy could not be read from the store before
+    /// the write, so the edit was not attempted (#1177).
+    PolicyNotVerified,
+    /// A create request combined `visibility=public` with an explicit
+    /// restricted access policy (#1177).
+    PublicRoomWithRestrictedAccess,
+    /// A create request combined an explicit access policy with
+    /// `invitedOnly=true` (#1177).
+    ExplicitAccessPolicyWithInvitedOnly,
+    /// A create request selected a restricted access policy without a single
+    /// membership allow target (#1177).
+    EmptyAccessPolicyTargets,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

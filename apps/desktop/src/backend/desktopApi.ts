@@ -44,6 +44,12 @@ import type {
   RoomModerationAction,
   RoomNotificationMode,
   RoomSettingChange,
+  RoomAccessDraftCommand,
+  RoomAccessDraftScope,
+  RoomAccessPreview,
+  RoomAccessPreviewContext,
+  CreateRoomAccessPreviewInput,
+  CreateRoomAccessPreview,
   RoomTagKind,
   SavedSessionInfo,
   SearchScopeKind,
@@ -479,6 +485,15 @@ export interface DesktopApi {
     confirmed: boolean
   ): Promise<CommandSettlement>;
   previewRoomAddress(name: string, aliasLocalpart: string | null): Promise<RoomAddressPreview>;
+  setRoomAccessDraft(command: RoomAccessDraftCommand): Promise<CommandAdmission>;
+  previewRoomAccess(
+    scope: RoomAccessDraftScope,
+    context: RoomAccessPreviewContext
+  ): Promise<RoomAccessPreview>;
+  previewCreateRoomAccess(
+    scope: RoomAccessDraftScope,
+    input: CreateRoomAccessPreviewInput
+  ): Promise<CreateRoomAccessPreview>;
   createRoom(request: CreateRoomRequest): Promise<CreateRoomSettlement>;
   createSpace(name: string): Promise<CommandSettlement>;
   setSpaceChild(spaceId: string, childRoomId: string): Promise<CommandAdmission>;

@@ -789,6 +789,52 @@ pub async fn preview_room_address(
         .preview_room_address(&name, alias_localpart.as_deref()))
 }
 
+/// Mutate the Rust-owned access/history draft (#1177). Admission only: the
+/// updated draft arrives in the next `StateDelta`.
+#[tauri::command]
+pub async fn set_room_access_draft(
+    account_tab_id: Option<String>,
+    command: koushi_protocol::command::RoomAccessDraftCommand,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    submit_core_command_with_admission(
+        state.inner(),
+        CoreCommand::Room(RoomCommand::SetRoomAccessDraft {
+            request_id,
+            command,
+        }),
+    )
+    .await
+}
+
+/// A stateless Rust preview of one Room Info access/history panel (#1177).
+#[tauri::command]
+pub async fn preview_room_access(
+    account_tab_id: Option<String>,
+    scope: koushi_state::RoomAccessDraftScope,
+    context: koushi_state::RoomAccessPreviewContext,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<koushi_state::RoomAccessPreview, String> {
+    Ok(account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
+        .preview_room_access(&scope, context))
+}
+
+/// A stateless Rust preview of the create dialog's effective proposed tuple
+/// (#1177), normalized with the same rules Create applies.
+#[tauri::command]
+pub async fn preview_create_room_access(
+    account_tab_id: Option<String>,
+    scope: koushi_state::RoomAccessDraftScope,
+    input: koushi_state::CreateRoomAccessPreviewInput,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<koushi_state::CreateRoomAccessPreview, String> {
+    Ok(account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
+        .preview_create_room_access(&scope, input))
+}
+
 #[tauri::command]
 pub async fn create_room(
     account_tab_id: Option<String>,

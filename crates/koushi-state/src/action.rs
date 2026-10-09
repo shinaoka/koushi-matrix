@@ -19,13 +19,14 @@ use crate::state::{
     MentionCandidatesCompleteness, MentionCandidatesFailureKind, MentionSurface,
     NativeAttentionDispatchId, NativeAttentionSoundOutcome, NativeAttentionState,
     NavigationPreferenceUpdate, NavigationState, OperationFailureKind, OwnProfile, PinnedEvent,
-    PresenceKind, ProfileUpdateRequest, RecoveryMethod, RoomListFailureKind, RoomListFilter,
-    RoomListProjection, RoomListSource, RoomMentionPermission, RoomModerationAction,
-    RoomPreferencesState, RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo,
-    RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability, ScheduledSendHandle,
-    ScheduledSendItem, SearchResult, SearchScope, SessionInfo, SessionStatusRefreshTrigger,
-    SettingsPatch, SettingsValues, SpaceChildLinkOutcome, SpaceChildSummary,
-    SpaceMemberInviteOutcome, SpaceMemberRoleUpdateOutcome, SpaceMembersProjection, SpaceSummary,
+    PresenceKind, ProfileUpdateRequest, RecoveryMethod, RoomAccessDraftScope,
+    RoomHistoryVisibility, RoomJoinRule, RoomListFailureKind, RoomListFilter, RoomListProjection,
+    RoomListSource, RoomMentionPermission, RoomModerationAction, RoomPreferencesState,
+    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
+    SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult,
+    SearchScope, SessionInfo, SessionStatusRefreshTrigger, SettingsPatch, SettingsValues,
+    SpaceChildLinkOutcome, SpaceChildSummary, SpaceMemberInviteOutcome,
+    SpaceMemberRoleUpdateOutcome, SpaceMembersProjection, SpaceSummary,
     StagedUploadCompressionChoice, StagedUploadItem, StagedUploadOutputSelection,
     SyncLifecycleStatus, TimelineContinuityInspection, TimelineGapRepairFailureKind,
     TimelineMediaDownloadState, TimelineMediaGalleryItem, TimelineScrollAnchor,
@@ -990,12 +991,42 @@ pub enum AppAction {
     RoomSettingUpdateSucceeded {
         request_id: u64,
         room_id: String,
+        change: RoomSettingChange,
         settings: RoomSettingsSnapshot,
     },
     RoomSettingUpdateFailed {
         request_id: u64,
         room_id: String,
         kind: OperationFailureKind,
+    },
+    /// #1177: set the Rust-owned draft rule for one scope.
+    RoomAccessDraftRuleSet {
+        scope: RoomAccessDraftScope,
+        rule: Option<RoomJoinRule>,
+    },
+    RoomAccessDraftAllowTargetsSet {
+        scope: RoomAccessDraftScope,
+        allow_targets: Vec<String>,
+    },
+    /// #1177: apply one target edit against the draft's current set.
+    RoomAccessDraftAllowTargetToggled {
+        scope: RoomAccessDraftScope,
+        target: String,
+        selected: bool,
+    },
+    RoomAccessDraftHistorySet {
+        scope: RoomAccessDraftScope,
+        history: Option<RoomHistoryVisibility>,
+    },
+    RoomAccessDraftReset {
+        scope: RoomAccessDraftScope,
+    },
+    /// Admit a new access/history editor lifetime (#1177). A mutation or reset
+    /// from any other scope is rejected, so a retired editor's command can never
+    /// recreate its draft. `create` seeds the effective creation selection.
+    RoomAccessDraftOpened {
+        scope: RoomAccessDraftScope,
+        create: Option<crate::state::CreateRoomAccessSeed>,
     },
     RoomModerationRequested {
         request_id: u64,
@@ -1259,15 +1290,22 @@ pub enum AppAction {
     ScheduledSendCapabilityChanged {
         capability: ScheduledSendCapability,
     },
-    /// Each joined room's authoritative access condition (#1166). Sent in the
-    /// same batch as the room-list snapshot it describes and fenced by the same
-    /// generation/source decision, so a rejected snapshot cannot overwrite it.
-    /// An absent room means "not yet known".
+    /// Each joined room's authoritative access/history observation (#1166,
+    /// #1177). Sent in the same batch as the room-list snapshot it describes
+    /// and fenced by the same generation/source decision, so a rejected
+    /// snapshot cannot overwrite it. An absent room means "not yet known".
     RoomAccessUpdated {
         generation: u64,
         source: RoomListSource,
         authoritative: bool,
-        access: std::collections::BTreeMap<String, crate::state::RoomAccessCondition>,
+        observations: std::collections::BTreeMap<String, crate::state::RoomAccessObservation>,
+    },
+    /// A confirmed room's directory publication, read with `get_room_visibility`
+    /// (#1177). Only the open room's value is kept, and a join-rule write never
+    /// changes it implicitly.
+    RoomDirectoryVisibilityObserved {
+        room_id: String,
+        visibility: crate::RoomDirectoryVisibility,
     },
     ScheduledSendsLoaded {
         scheduled_sends: crate::state::ScheduledSendStore,
@@ -1878,10 +1916,13 @@ impl fmt::Debug for AppAction {
                 .field("room_id", &"RoomId(..)")
                 .field("change", change)
                 .finish(),
-            Self::RoomSettingUpdateSucceeded { request_id, .. } => formatter
+            Self::RoomSettingUpdateSucceeded {
+                request_id, change, ..
+            } => formatter
                 .debug_struct("RoomSettingUpdateSucceeded")
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
+                .field("change", change)
                 .field("settings", &"RoomSettingsSnapshot(..)")
                 .finish(),
             Self::RoomSettingUpdateFailed {
@@ -1891,6 +1932,40 @@ impl fmt::Debug for AppAction {
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
                 .field("kind", kind)
+                .finish(),
+            Self::RoomAccessDraftRuleSet { scope, rule } => formatter
+                .debug_struct("RoomAccessDraftRuleSet")
+                .field("scope", scope)
+                .field("rule", rule)
+                .finish(),
+            Self::RoomAccessDraftAllowTargetsSet {
+                scope,
+                allow_targets,
+            } => formatter
+                .debug_struct("RoomAccessDraftAllowTargetsSet")
+                .field("scope", scope)
+                .field("allow_target_count", &allow_targets.len())
+                .finish(),
+            Self::RoomAccessDraftAllowTargetToggled {
+                scope, selected, ..
+            } => formatter
+                .debug_struct("RoomAccessDraftAllowTargetToggled")
+                .field("scope", scope)
+                .field("selected", selected)
+                .finish(),
+            Self::RoomAccessDraftHistorySet { scope, history } => formatter
+                .debug_struct("RoomAccessDraftHistorySet")
+                .field("scope", scope)
+                .field("history", history)
+                .finish(),
+            Self::RoomAccessDraftReset { scope } => formatter
+                .debug_struct("RoomAccessDraftReset")
+                .field("scope", scope)
+                .finish(),
+            Self::RoomAccessDraftOpened { scope, create } => formatter
+                .debug_struct("RoomAccessDraftOpened")
+                .field("scope", scope)
+                .field("create", &create.is_some())
                 .finish(),
             Self::RoomModerationRequested {
                 request_id, action, ..

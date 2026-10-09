@@ -4,8 +4,93 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{AccountKey, RequestId};
 use koushi_state::{
-    DirectoryQuery, InviteScopeSelection, RoomModerationAction, RoomSettingChange, RoomTagKind,
+    CreateRoomAccessSeed, DirectoryQuery, InviteScopeSelection, RoomAccessDraftScope,
+    RoomAccessPolicy, RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomSettingChange,
+    RoomTagKind,
 };
+
+/// A typed mutation of the Rust-owned access/history draft (#1177).
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RoomAccessDraftCommand {
+    Rule {
+        scope: RoomAccessDraftScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rule: Option<RoomJoinRule>,
+    },
+    AllowTargets {
+        scope: RoomAccessDraftScope,
+        #[serde(default)]
+        allow_targets: Vec<String>,
+    },
+    /// Apply one target edit against the draft's current target set (#1177).
+    ToggleAllowTarget {
+        scope: RoomAccessDraftScope,
+        target: String,
+        selected: bool,
+    },
+    History {
+        scope: RoomAccessDraftScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history: Option<RoomHistoryVisibility>,
+    },
+    Reset {
+        scope: RoomAccessDraftScope,
+    },
+    /// Admit a new editor lifetime for `scope` (#1177). The create variant seeds
+    /// the effective selection from the legacy preset before target editing.
+    Open {
+        scope: RoomAccessDraftScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        create: Option<CreateRoomAccessSeed>,
+    },
+}
+
+impl fmt::Debug for RoomAccessDraftCommand {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Rule { scope, rule } => formatter
+                .debug_struct("Rule")
+                .field("scope", scope)
+                .field("rule", rule)
+                .finish(),
+            Self::AllowTargets {
+                scope,
+                allow_targets,
+                ..
+            } => formatter
+                .debug_struct("AllowTargets")
+                .field("scope", scope)
+                .field("allow_target_count", &allow_targets.len())
+                .finish(),
+            Self::ToggleAllowTarget {
+                scope, selected, ..
+            } => formatter
+                .debug_struct("ToggleAllowTarget")
+                .field("scope", scope)
+                .field("selected", selected)
+                .finish(),
+            Self::History { scope, history } => formatter
+                .debug_struct("History")
+                .field("scope", scope)
+                .field("history", history)
+                .finish(),
+            Self::Reset { scope } => formatter
+                .debug_struct("Reset")
+                .field("scope", scope)
+                .finish(),
+            Self::Open { scope, create } => formatter
+                .debug_struct("Open")
+                .field("scope", scope)
+                .field("create", &create.is_some())
+                .finish(),
+        }
+    }
+}
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +108,16 @@ pub struct CreateRoomOptions {
     pub visibility: CreateRoomVisibility,
     #[serde(default)]
     pub parent_space: Option<CreateRoomParentSpace>,
+    /// An explicit access policy (#1177): the join rule and the selected
+    /// membership allow Spaces. `None` keeps the legacy visibility/invite-only
+    /// presets. An explicitly selected allow Space need not be the attachment
+    /// Space and never writes an `m.space.child`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_policy: Option<RoomAccessPolicy>,
+    /// An explicit history visibility (#1177). `None` keeps the legacy
+    /// private-in-Space `invited` default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<RoomHistoryVisibility>,
 }
 
 impl fmt::Debug for CreateRoomOptions {
@@ -42,6 +137,8 @@ impl fmt::Debug for CreateRoomOptions {
             .field("invited_only", &self.invited_only)
             .field("visibility", &self.visibility)
             .field("parent_space", &self.parent_space)
+            .field("access_policy", &self.access_policy)
+            .field("history", &self.history)
             .finish()
     }
 }
@@ -216,6 +313,13 @@ pub enum RoomCommand {
     LoadRoomSettings {
         request_id: RequestId,
         room_id: String,
+    },
+    /// Mutate the Rust-owned access/history draft (#1177). The reducer applies
+    /// the mutation only for the currently loaded scope; there is no result
+    /// event beyond the updated snapshot.
+    SetRoomAccessDraft {
+        request_id: RequestId,
+        command: RoomAccessDraftCommand,
     },
     QueryMentionCandidates {
         request_id: RequestId,
@@ -516,6 +620,15 @@ impl fmt::Debug for RoomCommand {
                 .debug_struct("LoadRoomSettings")
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::SetRoomAccessDraft {
+                request_id,
+                command,
+                ..
+            } => formatter
+                .debug_struct("SetRoomAccessDraft")
+                .field("request_id", request_id)
+                .field("command", command)
                 .finish(),
             Self::QueryMentionCandidates {
                 request_id,

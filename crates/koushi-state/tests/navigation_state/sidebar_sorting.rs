@@ -1255,26 +1255,89 @@ fn sidebar_global_dms_uses_the_authoritative_conversation_activity_order() {
 #[test]
 fn sidebar_room_rows_carry_the_projected_access_condition() {
     let mut state = ready_state();
-    state.rooms = rooms();
+    state.rooms = {
+        let mut room_list = rooms();
+        room_list.push(active_sort_room("unprojected", false, &[], &[], None));
+        room_list.push(active_sort_room("mixed-unnamed", false, &[], &[], None));
+        room_list
+    };
     state.spaces = spaces();
     state.room_access = BTreeMap::from([
         (
             "room-a".to_owned(),
             koushi_state::RoomAccessCondition {
-                join_rule: koushi_state::RoomJoinRule::Public,
+                join_rule: Some(koushi_state::RoomJoinRule::Public),
                 restricted: None,
-                allowed_room_ids: Vec::new(),
+                allow_targets: Vec::new(),
             },
         ),
         (
             "dm-a".to_owned(),
             koushi_state::RoomAccessCondition {
-                join_rule: koushi_state::RoomJoinRule::KnockRestricted,
-                restricted: Some(koushi_state::RestrictedConditions::NoneUsable),
+                join_rule: Some(koushi_state::RoomJoinRule::KnockRestricted),
+                restricted: Some(koushi_state::RestrictedConditions::ConfirmedEmpty),
                 // One resolvable route and one this projection cannot name.
-                allowed_room_ids: vec![
-                    "room-a".to_owned(),
-                    "!invisible:example.invalid".to_owned(),
+                allow_targets: vec![
+                    koushi_state::RoomAllowTarget {
+                        kind: koushi_state::RoomAllowTargetKind::Room,
+                        room_id: "room-a".to_owned(),
+                    },
+                    koushi_state::RoomAllowTarget {
+                        kind: koushi_state::RoomAllowTargetKind::Unknown,
+                        room_id: "!invisible:example.invalid".to_owned(),
+                    },
+                ],
+            },
+        ),
+        (
+            "global-room".to_owned(),
+            koushi_state::RoomAccessCondition {
+                join_rule: Some(koushi_state::RoomJoinRule::Restricted),
+                restricted: Some(koushi_state::RestrictedConditions::MembershipOnly),
+                // Exactly one distinct target, verified a Space in the local
+                // room's create event, with a name this projection carries.
+                allow_targets: vec![koushi_state::RoomAllowTarget {
+                    kind: koushi_state::RoomAllowTargetKind::Space,
+                    room_id: "space-a".to_owned(),
+                }],
+            },
+        ),
+        (
+            "mixed-unnamed".to_owned(),
+            koushi_state::RoomAccessCondition {
+                join_rule: Some(koushi_state::RoomJoinRule::Restricted),
+                restricted: Some(koushi_state::RestrictedConditions::MembershipOnly),
+                // One named Space beside one target this projection cannot name:
+                // both count, so a regression that filtered unnamed targets
+                // before deciding cardinality would wrongly claim the route.
+                allow_targets: vec![
+                    koushi_state::RoomAllowTarget {
+                        kind: koushi_state::RoomAllowTargetKind::Space,
+                        room_id: "space-a".to_owned(),
+                    },
+                    koushi_state::RoomAllowTarget {
+                        kind: koushi_state::RoomAllowTargetKind::Unknown,
+                        room_id: "!invisible:example.invalid".to_owned(),
+                    },
+                ],
+            },
+        ),
+        (
+            "space-a".to_owned(),
+            koushi_state::RoomAccessCondition {
+                join_rule: Some(koushi_state::RoomJoinRule::Restricted),
+                restricted: Some(koushi_state::RestrictedConditions::MembershipPlusUnsupported),
+                // A membership route beside an unmodelled entry is never the
+                // verified single-Space route.
+                allow_targets: vec![
+                    koushi_state::RoomAllowTarget {
+                        kind: koushi_state::RoomAllowTargetKind::Space,
+                        room_id: "space-a".to_owned(),
+                    },
+                    koushi_state::RoomAllowTarget {
+                        kind: koushi_state::RoomAllowTargetKind::Unknown,
+                        room_id: "!unsupported:example.invalid".to_owned(),
+                    },
                 ],
             },
         ),
@@ -1302,7 +1365,7 @@ fn sidebar_room_rows_carry_the_projected_access_condition() {
     );
     assert_eq!(
         direct_message.access_restricted_conditions,
-        Some(koushi_state::RestrictedConditions::NoneUsable),
+        Some(koushi_state::RestrictedConditions::ConfirmedEmpty),
         "the restricted-rule facts travel to the row"
     );
     assert_eq!(
@@ -1315,11 +1378,43 @@ fn sidebar_room_rows_carry_the_projected_access_condition() {
         "a named route becomes a label this projection already carries, and an          entry it cannot name is omitted rather than exposed by id"
     );
     assert!(public_room.access_allowed_room_names.is_empty());
-    // A room with no projected condition is unknown, never a guessed rule.
-    let unknown = sidebar
+    assert_eq!(
+        direct_message.access_space_members_route, None,
+        "a rule that is not membership-only is never the verified Space route"
+    );
+    let space_route_room = sidebar
         .space_rooms
         .iter()
         .find(|room| room.room_id == "global-room")
         .expect("global-room should be in the room list");
+    assert_eq!(
+        space_route_room.access_space_members_route.as_deref(),
+        Some("Space A"),
+        "the single verified Space route names the Space for the specific sentence"
+    );
+    let mixed_unnamed = sidebar
+        .space_rooms
+        .iter()
+        .find(|room| room.room_id == "mixed-unnamed")
+        .expect("mixed-unnamed should be in the room list");
+    assert_eq!(
+        mixed_unnamed.access_space_members_route, None,
+        "an unnamed target still counts, so a named-plus-unnamed pair is not the verified single-Space route"
+    );
+    let space_row = sidebar
+        .space_rail
+        .iter()
+        .find(|space| space.space_id == "space-a")
+        .expect("space-a should be on the rail");
+    assert_eq!(
+        space_row.access_space_members_route, None,
+        "a membership-plus-unsupported rule keeps the generic sentence"
+    );
+    // A room with no projected condition is unknown, never a guessed rule.
+    let unknown = sidebar
+        .space_rooms
+        .iter()
+        .find(|room| room.room_id == "unprojected")
+        .expect("unprojected should be in the room list");
     assert_eq!(unknown.access_join_rule, None);
 }

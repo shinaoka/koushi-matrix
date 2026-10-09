@@ -2832,3 +2832,43 @@ describe("Timeline item row rendering", () => {
     expect(source).not.toContain('(sessionKind === "ready" && snapshot.state.domain.sync !== "running")');
   });
 });
+
+describe("createRoomRequestFromDraft access selection (#1177)", () => {
+  const options = {
+    aliasLocalpart: "",
+    encrypted: true,
+    invitedOnly: false,
+    topic: "",
+    visibility: "private" as const
+  };
+
+  test("an untouched seeded draft keeps the legacy preset path", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { createRoomRequestFromDraft } = await import("./App");
+    const request = createRoomRequestFromDraft("Room", options, "!space:example.invalid", {
+      scope: { kind: "create", sessionId: 1 },
+      revision: 0,
+      rule: "restricted",
+      allowTargets: ["!space:example.invalid"],
+      touched: false
+    });
+    expect(request.accessPolicy).toBeNull();
+    expect(request.parentSpace).toEqual({ spaceId: "!space:example.invalid" });
+  });
+
+  test("a target edit submits the seeded rule with the full target set", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { createRoomRequestFromDraft } = await import("./App");
+    const request = createRoomRequestFromDraft("Room", options, "!space:example.invalid", {
+      scope: { kind: "create", sessionId: 1 },
+      revision: 1,
+      rule: "restricted",
+      allowTargets: ["!space-b:example.invalid", "!space:example.invalid"],
+      touched: true
+    });
+    expect(request.accessPolicy).toEqual({
+      rule: "restricted",
+      allowTargets: ["!space-b:example.invalid", "!space:example.invalid"]
+    });
+  });
+});

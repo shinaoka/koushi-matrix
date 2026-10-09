@@ -194,11 +194,16 @@ pub use directory::{
 
 // ── Re-exports: room_management ─────────────────────────────────────────────
 pub use room_management::{
-    RestrictedConditions, RoomAccessCondition, RoomHistoryVisibility, RoomJoinRule,
-    RoomManagementOperationKind, RoomManagementOperationState, RoomManagementState,
+    CreateRoomAccessPreview, CreateRoomAccessPreviewInput, CreateRoomAccessRejection,
+    CreateRoomAccessSeed, RestrictedConditions, RoomAccessCondition, RoomAccessDraft,
+    RoomAccessDraftScope, RoomAccessObservation, RoomAccessPolicy, RoomAccessPreview,
+    RoomAccessPreviewContext, RoomAllowTarget, RoomAllowTargetKind, RoomHistoryVisibility,
+    RoomJoinRule, RoomManagementOperationKind, RoomManagementOperationState, RoomManagementState,
     RoomMemberMembership, RoomMemberRole, RoomMemberRoleOption, RoomMemberSummary,
     RoomModerationAction, RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot,
-    UserTrustState,
+    UserTrustState, access_policy_target_rejection, canonical_access_policy,
+    confirmed_access_policy, confirmed_room_access_outcome, preview_create_room_access,
+    preview_room_access_draft,
 };
 
 // ── Re-exports: e2ee ────────────────────────────────────────────────────────
@@ -368,6 +373,25 @@ pub struct AppState {
     /// from encryption, DM status, the viewer's membership or `can_join`.
     #[serde(default)]
     pub room_access: BTreeMap<String, RoomAccessCondition>,
+    /// The last authoritative/provisional observation behind `room_access`,
+    /// per room (#1177). Kept apart from the displayed value so a locally
+    /// accepted access/history value that has not been observed is never
+    /// mistaken for an unchanged old observation.
+    #[serde(skip)]
+    pub room_access_observed: BTreeMap<String, RoomAccessObservation>,
+    /// The raw pre-send access condition of each room's last settings read
+    /// (#1177), kept apart from the presentation-preserved `settings.access` so
+    /// the reducer's admission check sees the facts the read actually found and
+    /// agrees with Core's own pre-send verdict instead of the local accepted
+    /// value. Cleared with the room's other access state.
+    #[serde(skip)]
+    pub room_access_pre_send: BTreeMap<String, RoomAccessCondition>,
+    /// The highest create-editor session identity Rust has admitted (#1177). A
+    /// stale `Open` at or below it is a retired lifetime and is rejected, so it
+    /// can never recreate a draft or replace a newer one. Monotonic for the
+    /// process; never serialized.
+    #[serde(skip)]
+    pub create_access_session_watermark: u64,
     #[serde(skip)]
     pub composer_drafts: ComposerDraftStore,
     #[serde(skip)]
@@ -457,6 +481,9 @@ impl Default for AppState {
             room_notification_awaiting_echo: HashMap::new(),
             room_interactions: BTreeMap::new(),
             room_access: BTreeMap::new(),
+            room_access_observed: BTreeMap::new(),
+            room_access_pre_send: BTreeMap::new(),
+            create_access_session_watermark: 0,
             composer_drafts: ComposerDraftStore::default(),
             scheduled_sends: ScheduledSendStore::default(),
             upload_staging: UploadStagingStore::default(),

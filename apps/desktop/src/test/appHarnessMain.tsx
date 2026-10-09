@@ -1323,9 +1323,47 @@ function rejectDeferredCommand(command: string, index: number): void {
   if (entry) entry.reject(new Error("synthetic deferred rejection"));
 }
 
+/** A well-formed access outcome for the harness previews (#1177). */
+function harnessAccessOutcome() {
+  return {
+    join: { messageId: "room.accessOutcomeJoinInvite" },
+    history: { messageId: "room.accessOutcomeHistoryShared" },
+    encryption: { messageId: "room.accessOutcomeNotEncrypted" },
+    directory: { messageId: "room.accessOutcomeDirectoryPrivate" },
+    nonRetroactive: { messageId: "room.historyNonRetroactive" }
+  };
+}
+
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
 // any unanticipated snapshot read still renders the shell.
 mock.setCommandResponse("get_snapshot", () => currentSnapshot);
+// #1177 fixture-only browser contract: the harness must not reimplement the
+// Rust draft reducer, its canonicalization or Create's normalization. A spec
+// seeds the Rust-shaped snapshot/result fixture for the transition it tests and
+// asserts on the dispatched command; these defaults only keep an unrelated
+// snapshot read rendering a well-formed editor.
+mock.setCommandResponse("set_room_access_draft", () => ({
+  kind: "admitted",
+  request_id: 0
+}));
+mock.setCommandResponse(
+  "preview_room_access",
+  ({ scope, context }: { scope: unknown; context: unknown }) => ({
+    scope,
+    context,
+    confirmed: true,
+    outcome: harnessAccessOutcome()
+  })
+);
+mock.setCommandResponse("preview_create_room_access", ({ scope }: { scope: unknown }) => ({
+  scope,
+  confirmed: false,
+  outcome: harnessAccessOutcome(),
+  effectiveRule: "invite",
+  effectiveHistory: "shared",
+  rejection: null,
+  roomVersionPinned: false
+}));
 mock.setCommandResponse("list_account_tabs", harnessAccountTabsSnapshot);
 mock.setCommandResponse("select_account_tab", harnessAccountTabsSnapshot);
 // Explicit adapter projections: tests publish later states rather than emulate the updater.

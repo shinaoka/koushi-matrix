@@ -52,6 +52,8 @@ pub(super) async fn verify(conn_a: &mut CoreConnection) -> Result<(), String> {
         parent_space: Some(CreateRoomParentSpace {
             space_id: space_id.clone(),
         }),
+        access_policy: None,
+        history: None,
     };
     let unnamed_id = create(conn_a, options(None), "unnamed public").await?;
     wait_for_linked(conn_a, &space_id, &unnamed_id).await?;

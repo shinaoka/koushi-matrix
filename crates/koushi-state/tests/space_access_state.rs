@@ -2,11 +2,13 @@
 //! join rule changed elsewhere reaches the open settings snapshot.
 
 use koushi_state::{
-    AppAction, AppEffect, AppState, OperationFailureKind, RoomHistoryVisibility, RoomJoinRule,
+    AppAction, AppEffect, AppState, OperationFailureKind, RoomAccessCondition,
+    RoomAccessObservation, RoomHistoryVisibility, RoomJoinRule, RoomListSource,
     RoomManagementOperationKind, RoomManagementOperationState, RoomPermissionFacts,
     RoomSettingChange, RoomSettingsSnapshot, SessionInfo, SessionState, SpaceSummary, UiEvent,
     reduce,
 };
+use std::collections::BTreeMap;
 
 const SPACE_ID: &str = "!space:example.invalid";
 
@@ -45,6 +47,7 @@ fn settings(join_rule: RoomJoinRule, permissions: RoomPermissionFacts) -> RoomSe
         share_link: None,
         join_rule,
         history_visibility: RoomHistoryVisibility::Shared,
+        access: koushi_state::RoomAccessCondition::default(),
         permissions,
         members: Vec::new(),
     }
@@ -75,12 +78,27 @@ fn open_space_settings(state: &mut AppState, join_rule: RoomJoinRule) {
     );
 }
 
-fn sync_join_rule(state: &mut AppState, join_rule: RoomJoinRule) -> Vec<AppEffect> {
+/// Publish a Space join-rule change through the complete access observation,
+/// the single owner that installs the join-rule fact into the open settings
+/// (#935/#1177).
+fn observe_space_join_rule(state: &mut AppState, join_rule: RoomJoinRule) -> Vec<AppEffect> {
     reduce(
         state,
-        AppAction::RoomListUpdated {
-            spaces: vec![space(Some(join_rule))],
-            rooms: Vec::new(),
+        AppAction::RoomAccessUpdated {
+            generation: 0,
+            source: RoomListSource::Cache,
+            authoritative: true,
+            observations: BTreeMap::from([(
+                SPACE_ID.to_owned(),
+                RoomAccessObservation {
+                    access: RoomAccessCondition {
+                        join_rule: Some(join_rule),
+                        restricted: None,
+                        allow_targets: Vec::new(),
+                    },
+                    history_visibility: RoomHistoryVisibility::Shared,
+                },
+            )]),
         },
     )
 }
@@ -190,11 +208,12 @@ fn a_join_rule_changed_by_another_client_reaches_the_open_settings() {
     let mut state = ready_state();
     open_space_settings(&mut state, RoomJoinRule::Invite);
 
-    let effects = sync_join_rule(&mut state, RoomJoinRule::Public);
+    let effects = observe_space_join_rule(&mut state, RoomJoinRule::Public);
 
     assert_eq!(shown_join_rule(&state), Some(RoomJoinRule::Public));
     assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)));
-    // The permission facts are Core's to re-read; sync leaves them alone.
+    // The permission facts are Core's to re-read; the observation leaves them
+    // alone.
     assert_eq!(
         state
             .room_management
@@ -206,74 +225,41 @@ fn a_join_rule_changed_by_another_client_reaches_the_open_settings() {
 }
 
 #[test]
-fn a_room_list_still_carrying_the_old_rule_does_not_revert_a_saved_change() {
+fn the_room_list_scalar_alone_does_not_install_the_open_join_rule() {
     let mut state = ready_state();
     open_space_settings(&mut state, RoomJoinRule::Invite);
-    reduce(
-        &mut state,
-        AppAction::RoomSettingUpdateRequested {
-            request_id: 5,
-            room_id: SPACE_ID.to_owned(),
-            change: RoomSettingChange::JoinRule(RoomJoinRule::Public),
-        },
-    );
-    reduce(
-        &mut state,
-        AppAction::RoomSettingUpdateSucceeded {
-            request_id: 5,
-            room_id: SPACE_ID.to_owned(),
-            settings: settings(RoomJoinRule::Public, join_rule_only()),
-        },
-    );
 
-    // The server has not echoed the event back yet.
-    let effects = sync_join_rule(&mut state, RoomJoinRule::Invite);
-    assert_eq!(shown_join_rule(&state), Some(RoomJoinRule::Public));
-    assert!(!effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)));
-
-    // Then it has.
-    sync_join_rule(&mut state, RoomJoinRule::Public);
-    assert_eq!(shown_join_rule(&state), Some(RoomJoinRule::Public));
-}
-
-#[test]
-fn a_rule_first_learned_from_sync_does_not_override_loaded_settings() {
-    let mut state = ready_state();
-    // A restored snapshot predates the field, so the Space's rule is unknown.
+    // The room-list scalar carrier moves, but no complete access observation
+    // has published the join-rule fact, so the open settings must not change.
     reduce(
         &mut state,
         AppAction::RoomListUpdated {
-            spaces: vec![space(None)],
+            spaces: vec![space(Some(RoomJoinRule::Public))],
             rooms: Vec::new(),
         },
     );
-    reduce(
-        &mut state,
-        AppAction::RoomSettingsSnapshotLoaded {
-            room_id: SPACE_ID.to_owned(),
-            settings: settings(RoomJoinRule::Public, join_rule_only()),
-        },
+
+    assert_eq!(
+        shown_join_rule(&state),
+        Some(RoomJoinRule::Invite),
+        "only the complete observation installs the join-rule fact"
     );
-
-    sync_join_rule(&mut state, RoomJoinRule::Invite);
-
-    assert_eq!(shown_join_rule(&state), Some(RoomJoinRule::Public));
 }
 
 #[test]
 fn another_spaces_join_rule_change_leaves_the_open_settings_alone() {
     let mut state = ready_state();
     open_space_settings(&mut state, RoomJoinRule::Invite);
-    let other = |join_rule| SpaceSummary {
-        space_id: "!other:example.invalid".to_owned(),
-        ..space(Some(join_rule))
-    };
+    let other_id = "!other:example.invalid";
     reduce(
         &mut state,
         AppAction::RoomListUpdated {
             spaces: vec![
                 space(Some(RoomJoinRule::Invite)),
-                other(RoomJoinRule::Invite),
+                SpaceSummary {
+                    space_id: other_id.to_owned(),
+                    ..space(Some(RoomJoinRule::Invite))
+                },
             ],
             rooms: Vec::new(),
         },
@@ -281,12 +267,21 @@ fn another_spaces_join_rule_change_leaves_the_open_settings_alone() {
 
     reduce(
         &mut state,
-        AppAction::RoomListUpdated {
-            spaces: vec![
-                space(Some(RoomJoinRule::Invite)),
-                other(RoomJoinRule::Public),
-            ],
-            rooms: Vec::new(),
+        AppAction::RoomAccessUpdated {
+            generation: 0,
+            source: RoomListSource::Cache,
+            authoritative: true,
+            observations: BTreeMap::from([(
+                other_id.to_owned(),
+                RoomAccessObservation {
+                    access: RoomAccessCondition {
+                        join_rule: Some(RoomJoinRule::Public),
+                        restricted: None,
+                        allow_targets: Vec::new(),
+                    },
+                    history_visibility: RoomHistoryVisibility::Shared,
+                },
+            )]),
         },
     );
 

@@ -135,7 +135,7 @@ describe("room access rail summary", () => {
 
 describe("restricted allow-condition facts (#1166)", () => {
   it("says an invitation is required only when no usable condition is confirmed", () => {
-    const noUsable = roomAccessIndicator("restricted", "noneUsable");
+    const noUsable = roomAccessIndicator("restricted", "confirmedEmpty");
     expect(noUsable?.descriptionMessageId).toBe(
       "access.restrictedNoUsableConditionsDescription"
     );
@@ -148,16 +148,16 @@ describe("restricted allow-condition facts (#1166)", () => {
 
     // An allow-rule type the client does not model keeps the generic wording:
     // the absence of a usable condition is not confirmed.
-    const unknown = roomAccessIndicator("restricted", "unknownAllowRule");
+    const unknown = roomAccessIndicator("restricted", "unsupportedOnly");
     expect(unknown?.descriptionMessageId).toBe("access.conditionsDescription");
 
     // A usable condition keeps the membership explanation.
-    const usable = roomAccessIndicator("restricted", "usable");
+    const usable = roomAccessIndicator("restricted", "membershipOnly");
     expect(usable?.descriptionMessageId).toBe("access.conditionsDescription");
   });
 
   it("keeps the request route when a knock_restricted rule has no usable condition", () => {
-    const indicator = roomAccessIndicator("knockRestricted", "noneUsable");
+    const indicator = roomAccessIndicator("knockRestricted", "confirmedEmpty");
     expect(indicator?.badges).toEqual([
       {
         labelMessageId: "access.conditionsApply",
@@ -179,7 +179,7 @@ describe("restricted allow-condition facts (#1166)", () => {
         {
           room_id: "!room:example.invalid",
           access_join_rule: "restricted" as const,
-          access_restricted_conditions: "noneUsable" as const
+          access_restricted_conditions: "confirmedEmpty" as const
         }
       ],
       global_dms: [],
@@ -187,13 +187,137 @@ describe("restricted allow-condition facts (#1166)", () => {
     };
     expect(sidebarRoomAccess(sidebar, "!room:example.invalid")).toEqual({
       joinRule: "restricted",
-      restricted: "noneUsable",
+      restricted: "confirmedEmpty",
+      spaceMembersRoute: null,
       allowedRoomNames: []
     });
     expect(sidebarRoomAccess(sidebar, "!missing:example.invalid")).toEqual({
       joinRule: null,
       restricted: null,
+      spaceMembersRoute: null,
       allowedRoomNames: []
     });
+  });
+
+  it("uses the specific sentence only for a verified single-Space route", () => {
+    // A verified membership-only route names the Space.
+    const specific = roomAccessIndicator("restricted", "membershipOnly", {
+      spaceMembersRoute: "Alpha Space"
+    });
+    expect(specific?.labelMessageIds).toEqual(["access.spaceMembersCanJoin"]);
+    expect(specific?.descriptionMessageId).toBe("access.spaceMembersCanJoinDescription");
+    expect(specific?.descriptionSpaceName).toBe("Alpha Space");
+    expect(specific?.badges).toEqual([
+      {
+        labelMessageId: "access.spaceMembersCanJoin",
+        descriptionMessageId: "access.spaceMembersCanJoinDescription",
+        descriptionSpaceName: "Alpha Space"
+      }
+    ]);
+
+    // A blank name never claims it; the generic facts carry the named routes.
+    for (const name of ["", "   ", null, undefined]) {
+      const generic = roomAccessIndicator("restricted", "membershipOnly", {
+        spaceMembersRoute: name,
+        allowedRoomNames: ["Allowed Room"]
+      });
+      expect(generic?.descriptionMessageId).toBe("access.conditionsDescription");
+      expect(generic?.descriptionSpaceName).toBeUndefined();
+      expect(generic?.descriptionAllowedRoomNames).toEqual(["Allowed Room"]);
+    }
+
+    // Every other completeness keeps the generic facts even with a name.
+    for (const restricted of [
+      "notInspected",
+      "confirmedEmpty",
+      "membershipPlusUnsupported",
+      "unsupportedOnly"
+    ] as const) {
+      const generic = roomAccessIndicator("restricted", restricted, {
+        spaceMembersRoute: "Alpha Space"
+      });
+      expect(generic?.descriptionSpaceName).toBeUndefined();
+    }
+
+    // `private` is never the Space-membership route.
+    const privateRule = roomAccessIndicator("private", "membershipOnly", {
+      spaceMembersRoute: "Alpha Space"
+    });
+    expect(privateRule?.descriptionMessageId).toBe("access.unknownDescription");
+    expect(privateRule?.descriptionSpaceName).toBeUndefined();
+  });
+
+  it("keeps the request badge and names the Space for a single-Space knock-restricted rule", () => {
+    const indicator = roomAccessIndicator("knockRestricted", "membershipOnly", {
+      spaceMembersRoute: "Alpha Space"
+    });
+    expect(indicator?.badges).toEqual([
+      {
+        labelMessageId: "access.spaceMembersCanJoin",
+        descriptionMessageId: "access.spaceMembersCanJoinDescription",
+        descriptionSpaceName: "Alpha Space"
+      },
+      {
+        labelMessageId: "access.canRequest",
+        descriptionMessageId: "access.requestRouteDescription"
+      }
+    ]);
+    expect(indicator?.descriptionMessageId).toBe(
+      "access.spaceMembersCanJoinCanRequestDescription"
+    );
+  });
+
+  it("finds a row in every sidebar lane and carries the verified Space route", () => {
+    const row = {
+      room_id: "!room:example.invalid",
+      access_join_rule: "restricted" as const,
+      access_restricted_conditions: "membershipOnly" as const,
+      access_allowed_room_names: ["Allowed Space"],
+      access_space_members_route: "Allowed Space"
+    };
+    // A room can render from any lane, so the row is placed in each lane in turn
+    // rather than only in the one the reader happens to check.
+    const sidebarFor = (
+      lane:
+        | "space_rooms"
+        | "global_dms"
+        | "not_joined_space_rooms"
+        | "favourites"
+        | "rooms"
+        | "people"
+        | "low_priority"
+        | "not_joined"
+    ) => {
+      const sidebar: Parameters<typeof sidebarRoomAccess>[0] = {
+        space_rooms: [],
+        global_dms: [],
+        not_joined_space_rooms: [],
+        sections: { favourites: [], rooms: [], people: [], low_priority: [], not_joined: [] }
+      };
+      if (lane === "space_rooms" || lane === "global_dms" || lane === "not_joined_space_rooms") {
+        sidebar[lane] = [row];
+      } else {
+        sidebar.sections![lane] = [row];
+      }
+      return sidebar;
+    };
+    const expected = {
+      joinRule: "restricted" as const,
+      restricted: "membershipOnly" as const,
+      spaceMembersRoute: "Allowed Space",
+      allowedRoomNames: ["Allowed Space"]
+    };
+    for (const lane of [
+      "space_rooms",
+      "global_dms",
+      "not_joined_space_rooms",
+      "favourites",
+      "rooms",
+      "people",
+      "low_priority",
+      "not_joined"
+    ] as const) {
+      expect(sidebarRoomAccess(sidebarFor(lane), row.room_id), `${lane} lane`).toEqual(expected);
+    }
   });
 });

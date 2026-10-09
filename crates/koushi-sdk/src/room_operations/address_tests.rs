@@ -39,6 +39,8 @@ async fn room_alias_collision_is_distinct_from_network_failure_and_redacts_serve
             invited_only: false,
             visibility: MatrixCreateRoomVisibility::Public,
             parent_space: None,
+            access_policy: None,
+            history: None,
         },
     )
     .await
