@@ -6,7 +6,7 @@ use std::{
     thread,
 };
 #[test]
-fn parses_password_sso_and_token_flows() {
+fn treats_delegated_oidc_compatible_sso_as_oidc() {
     let response = serde_json::json!({
         "flows": [
             { "type": "m.login.password" },
@@ -21,7 +21,7 @@ fn parses_password_sso_and_token_flows() {
     let flows = parse_login_discovery(&response).expect("discovery should parse");
 
     assert_eq!(flows[0].kind, LoginFlowKind::Password);
-    assert_eq!(flows[1].kind, LoginFlowKind::Sso);
+    assert_eq!(flows[1].kind, LoginFlowKind::Oidc);
     assert!(flows[1].delegated_oidc_compatibility);
     assert_eq!(flows[2].kind, LoginFlowKind::Token);
 }
