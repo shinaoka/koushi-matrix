@@ -69,9 +69,10 @@ use super::super::test_support::{
 use super::super::thread_projection::ThreadAttentionTracker;
 use super::{
     InitialItemsRequestIdentity, NavigationProjectionCleanup, NavigationProjectionIngress,
-    NavigationProjectionIntent, ROOM_REPLAY_INITIAL_ITEMS_MAX, TimelineActorGenerationGate,
-    acquire_pagination_permit_and_emit_paginating, activity_row_from_timeline_item,
-    backward_pagination_changed_oldest_edge, derive_timeline_navigation_snapshot,
+    NavigationProjectionIntent, PaginationAttempt, ROOM_REPLAY_INITIAL_ITEMS_MAX,
+    TimelineActorGenerationGate, acquire_pagination_permit_and_emit_paginating,
+    activity_row_from_timeline_item, backward_pagination_changed_oldest_edge,
+    bounded_paginate_with, derive_timeline_navigation_snapshot,
     derive_timeline_navigation_snapshot_with_read_state, emit_initial_items_for_generation,
     receive_navigation_projection, replay_initial_items_window,
     should_hydrate_empty_initial_room_timeline, timeline_unread_consistency_diagnostic_event,
@@ -3167,4 +3168,46 @@ async fn same_generation_room_readmission_reprojects_the_room() {
         .expect("stale demand wake");
     manager.handle_navigation_projection(demand).await;
     assert_eq!(manager.applied_room_projection, Some(2));
+}
+
+/// #1239: a pagination whose SDK await never returns must settle as a retryable
+/// timeout instead of leaving the pane in `Paginating`.
+#[tokio::test(start_paused = true)]
+async fn bounded_pagination_times_out_to_a_retryable_failure() {
+    assert_eq!(
+        PaginationAttempt::Failed(TimelineFailureKind::Timeout).trace_token(),
+        "timeout"
+    );
+
+    let timed_out = bounded_paginate_with(
+        Duration::from_secs(30),
+        std::future::pending::<Result<bool, matrix_sdk_ui::timeline::Error>>(),
+    )
+    .await;
+    assert!(matches!(
+        timed_out,
+        PaginationAttempt::Failed(TimelineFailureKind::Timeout)
+    ));
+    assert_eq!(
+        timed_out.into_state(),
+        PaginationState::Failed {
+            kind: TimelineFailureKind::Timeout
+        },
+        "the timeout must surface through the normal retryable pagination state"
+    );
+
+    assert!(matches!(
+        bounded_paginate_with(Duration::from_secs(30), async {
+            Ok::<bool, matrix_sdk_ui::timeline::Error>(true)
+        })
+        .await,
+        PaginationAttempt::ReachedEnd
+    ));
+    assert!(matches!(
+        bounded_paginate_with(Duration::from_secs(30), async {
+            Ok::<bool, matrix_sdk_ui::timeline::Error>(false)
+        })
+        .await,
+        PaginationAttempt::Idle
+    ));
 }

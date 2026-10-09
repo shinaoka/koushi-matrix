@@ -1235,15 +1235,15 @@ impl TimelineActor {
             );
             let paginate_started = Some(startup_trace::now());
             let trace_started = Some(std::time::Instant::now());
-            let outcome = match direction {
-                PaginationDirection::Backward => timeline.paginate_backwards(event_count).await,
-                PaginationDirection::Forward => timeline.paginate_forwards(event_count).await,
-            };
-            let outcome_token = match &outcome {
-                Ok(true) => "end_reached",
-                Ok(false) => "idle",
-                Err(_) => "failed",
-            };
+            // #1239: bound the SDK await so a stalled relationship request can
+            // never leave the pane in `Paginating` for the life of the timeline.
+            let outcome = bounded_paginate_with(TIMELINE_PAGINATION_TIMEOUT, async {
+                match direction {
+                    PaginationDirection::Backward => timeline.paginate_backwards(event_count).await,
+                    PaginationDirection::Forward => timeline.paginate_forwards(event_count).await,
+                }
+            })
+            .await;
             trace_timeline_paginate(
                 "sdk_finish",
                 request_id,
@@ -1252,9 +1252,13 @@ impl TimelineActor {
                 event_count,
                 trace_started.map(|started| started.elapsed().as_millis()),
                 gate_ms,
-                Some(outcome_token),
+                Some(outcome.trace_token()),
             );
-            startup_trace::trace_paginate(paginate_started, gate_wait, matches!(outcome, Ok(true)));
+            startup_trace::trace_paginate(
+                paginate_started,
+                gate_wait,
+                matches!(&outcome, PaginationAttempt::ReachedEnd),
+            );
             outcome
         };
         drop(permit);
@@ -1268,14 +1272,7 @@ impl TimelineActor {
             None
         };
 
-        let next_state = match result {
-            Ok(true) => PaginationState::EndReached,
-            Ok(false) => PaginationState::Idle,
-            Err(err) => {
-                let kind = classify_pagination_error(&err);
-                PaginationState::Failed { kind }
-            }
-        };
+        let next_state = result.into_state();
 
         PaginationCompletion {
             state: next_state,
@@ -2452,6 +2449,58 @@ fn unread_position_for_index(
         TimelineUnreadPosition::BelowViewport
     } else {
         TimelineUnreadPosition::InsideViewport
+    }
+}
+
+/// #1239: the upper bound for one SDK pagination. A thread backfill must reach a
+/// terminal state (Idle / EndReached / Failed) within this window even when the
+/// SDK request never returns; the timeout surfaces as a retryable failure.
+const TIMELINE_PAGINATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// One bounded SDK pagination outcome (#1239).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PaginationAttempt {
+    ReachedEnd,
+    Idle,
+    Failed(TimelineFailureKind),
+}
+
+impl PaginationAttempt {
+    /// A terminal-state token for the pagination diagnostics.
+    fn trace_token(self) -> &'static str {
+        match self {
+            PaginationAttempt::ReachedEnd => "end_reached",
+            PaginationAttempt::Idle => "idle",
+            PaginationAttempt::Failed(TimelineFailureKind::Timeout) => "timeout",
+            PaginationAttempt::Failed(_) => "failed",
+        }
+    }
+
+    fn is_ok(self) -> bool {
+        !matches!(self, PaginationAttempt::Failed(_))
+    }
+
+    fn into_state(self) -> PaginationState {
+        match self {
+            PaginationAttempt::ReachedEnd => PaginationState::EndReached,
+            PaginationAttempt::Idle => PaginationState::Idle,
+            PaginationAttempt::Failed(kind) => PaginationState::Failed { kind },
+        }
+    }
+}
+
+/// The timeout/classification half of one bounded pagination (#1239). The SDK
+/// call itself stays at the `paginate_once_for` call site, after scheduler
+/// admission; this wraps it in the deadline and classifies the outcome.
+async fn bounded_paginate_with<F>(deadline: std::time::Duration, paginate: F) -> PaginationAttempt
+where
+    F: std::future::Future<Output = Result<bool, matrix_sdk_ui::timeline::Error>>,
+{
+    match executor::timeout(deadline, paginate).await {
+        Ok(Ok(true)) => PaginationAttempt::ReachedEnd,
+        Ok(Ok(false)) => PaginationAttempt::Idle,
+        Ok(Err(err)) => PaginationAttempt::Failed(classify_pagination_error(&err)),
+        Err(_) => PaginationAttempt::Failed(TimelineFailureKind::Timeout),
     }
 }
 
