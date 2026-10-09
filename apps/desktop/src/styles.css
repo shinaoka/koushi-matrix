@@ -5743,7 +5743,12 @@ mark {
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 8px;
   inline-size: 100%;
-  block-size: 100%;
+  /* #1234: size to content so a previewless file does not leave blank space
+     between its card and the send action. A fitted image still takes the
+     available height through the :has rule below; every case is capped at the
+     overlay and scrolls its list instead. */
+  block-size: auto;
+  max-block-size: 100%;
   min-inline-size: 0;
   min-block-size: 0;
   padding: 12px;
@@ -5751,6 +5756,12 @@ mark {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
+}
+
+/* #1234: a staged preview can use the spare height; without one the dialog hugs
+   its content. */
+.upload-staging-dialog:has(.upload-staging-item.has-preview) {
+  block-size: 100%;
 }
 
 .upload-staging-header,
@@ -9937,14 +9948,17 @@ kbd {
   gap: 4px;
 }
 
-.room-access-icon {
+.room-access-icon,
+.room-access-badge {
+  /* #1249: the globe, padlock and membership/condition glyphs form one muted,
+     subordinate cluster after the name. The full localized label stays in the
+     tooltip, the row description and the room header/Room Info. */
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   color: var(--text-muted);
 }
 
-.room-access-badge,
 .channel-access-badge {
   flex: 0 0 auto;
   padding-inline: var(--room-count-padding-inline);
