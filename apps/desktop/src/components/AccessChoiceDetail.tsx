@@ -47,7 +47,6 @@ export function AccessChoiceDetail({
   status = null,
   saveEnabled = true,
   saveLabel,
-  changeLabel,
   notes,
   onSelect,
   onSave,
@@ -74,8 +73,6 @@ export function AccessChoiceDetail({
   saveEnabled?: boolean;
   /** Accessible name of the Save button. */
   saveLabel: string;
-  /** Accessible name of the Cancel button. */
-  changeLabel: string;
   /** Extra property-specific notes (encryption/history caveats). */
   notes?: ReactNode;
   onSelect: (value: string) => void;
@@ -113,7 +110,6 @@ export function AccessChoiceDetail({
         <button
           className="profile-settings-action"
           type="button"
-          aria-label={changeLabel}
           disabled={busy}
           onClick={() => {
             onCancel();

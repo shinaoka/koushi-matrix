@@ -58,7 +58,6 @@ import type {
   LinkPreviewSettingsState,
   SettingsState,
   SpaceSummary,
-  RoomAccessDraft,
   RoomAccessDraftCommand,
   RoomAccessPreview,
 } from "../domain/types";
@@ -84,7 +83,6 @@ export function RoomInfoPanel({
   onReturnToInvite,
   historyExport,
   historyExportControls,
-  accessDraft,
   accessPreview,
   historyPreview,
   onSetAccessDraft
@@ -110,8 +108,6 @@ export function RoomInfoPanel({
   onReturnToInvite?: () => void;
   historyExport?: HistoryExportState;
   historyExportControls?: HistoryExportControls;
-  /** The Rust-owned access/history draft for this room (#1177). */
-  accessDraft?: RoomAccessDraft | null;
   /** The Rust access-panel preview for the current draft (#1177). */
   accessPreview?: RoomAccessPreview | null;
   /** The Rust history-panel preview for the current draft (#1177). */
@@ -132,6 +128,7 @@ export function RoomInfoPanel({
   const managementForRoom =
     roomManagement?.selected_room_id === roomId ? roomManagement : null;
   const settings = managementForRoom?.settings ?? null;
+  const accessDraft = managementForRoom?.draft ?? null;
   const shareLink = settings?.share_link?.trim() || null;
   const operation = managementForRoom?.operation ?? { kind: "idle" as const };
   const settingsPending = operation.kind === "pending" && operation.operation === "settings";
@@ -223,11 +220,14 @@ export function RoomInfoPanel({
   const confirmedJoinRule = access?.joinRule ?? settings?.join_rule ?? null;
   const selectedJoinRule: RoomJoinRule = draftRule ?? confirmedJoinRule ?? "unknown";
   const selectedAllowTargets = accessDraft?.allowTargets ?? [];
-  const accessRejectionReason = !access?.joinRule
-    ? t("room.accessUnavailableNotInspected")
-    : access.restricted === "membershipPlusUnsupported" || access.restricted === "unsupportedOnly"
-      ? t("room.accessUnavailableUnsupported")
-      : null;
+  const accessRejectionReason = access
+    ? access.joinRule == null
+      ? t("room.accessUnavailableNotInspected")
+      : access.restricted === "membershipPlusUnsupported" ||
+          access.restricted === "unsupportedOnly"
+        ? t("room.accessUnavailableUnsupported")
+        : null
+    : null;
   const draftHistory = accessDraft?.history ?? null;
   const selectedHistory: RoomHistoryVisibility =
     draftHistory ?? settings?.history_visibility ?? "joined";
@@ -236,13 +236,12 @@ export function RoomInfoPanel({
     name: space.display_name
   }));
   const accessSaveEnabled =
-    accessPreview != null &&
-    !accessPreview.confirmed &&
     draftRule != null &&
+    (accessPreview == null || !accessPreview.confirmed) &&
     !(draftRule === "restricted" && selectedAllowTargets.length === 0) &&
     !accessRejectionReason;
   const historySaveEnabled =
-    historyPreview != null && !historyPreview.confirmed && draftHistory != null;
+    draftHistory != null && (historyPreview == null || !historyPreview.confirmed);
 
   function submitSetting(field: RoomSettingField, change: RoomSettingChange, target: string | null) {
     const allowed =
@@ -535,6 +534,17 @@ export function RoomInfoPanel({
                   summary: t("room.accessChoiceSpaceMembersSummary")
                 }
               ];
+              // A rule this app cannot set is shown as itself, disabled with a
+              // concrete reason, rather than silently landing on another rule.
+              if (!accessChoices.some((choice) => choice.value === selectedJoinRule)) {
+                accessChoices.push({
+                  value: selectedJoinRule,
+                  label: roomJoinRuleLabel(selectedJoinRule),
+                  summary: t("room.accessChoiceConditionsSummary"),
+                  disabled: true,
+                  disabledReason: t("room.accessUnavailableNotSettable")
+                });
+              }
               const allowPicker =
                 selectedJoinRule === "restricted" ? (
                   <div
@@ -591,7 +601,6 @@ export function RoomInfoPanel({
                   readOnlyReason={accessRejectionReason ?? readOnlyJoinRuleReason}
                   saveEnabled={accessSaveEnabled}
                   saveLabel={t("room.saveJoinRule")}
-                  changeLabel={t("room.changeJoinRule")}
                   status={fieldStatus("joinRule")}
                   rejection={accessRejectionReason}
                   notes={allowPicker}
@@ -646,7 +655,6 @@ export function RoomInfoPanel({
               readOnlyReason={readOnlyReason}
               saveEnabled={historySaveEnabled}
               saveLabel={t("room.saveHistoryVisibility")}
-              changeLabel={t("room.changeHistoryVisibility")}
               status={fieldStatus("historyVisibility")}
               notes={
                 selectedHistory === "worldReadable" ? (

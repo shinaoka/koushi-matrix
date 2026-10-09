@@ -375,7 +375,7 @@ export function CreateEntityDialog({
       ? value.trim().length > 0
       : effectiveRoomOptions.visibility === "private" ||
         (addressPreview !== null && addressPreview.error === null)) &&
-    (isSpace || (createAccessPreview != null && createAccessPreview.rejection == null)) &&
+    (isSpace || createAccessPreview?.rejection == null) &&
     !isBusy;
 
   function updateRoomOptions(patch: Partial<CreateRoomDialogOptions>) {
@@ -439,7 +439,6 @@ export function CreateEntityDialog({
               canEdit
               saveEnabled={false}
               saveLabel={submitLabel}
-              changeLabel={t("action.cancel")}
               rejection={createRejection}
               notes={
                 <>
@@ -533,7 +532,6 @@ export function CreateEntityDialog({
               canEdit
               saveEnabled={false}
               saveLabel={submitLabel}
-              changeLabel={t("action.cancel")}
               onSelect={(value) =>
                 onSetRoomAccessDraft({
                   kind: "history",

@@ -560,47 +560,59 @@ describe("dialog IME submit handling", () => {
 });
 
 describe("CreateEntityDialog room access", () => {
-  it("explains standard Space access and exposes invite-only access", () => {
+  it("offers public, invite-only and Space-member access and maps the choice", () => {
     const onRoomOptionsChange = vi.fn();
-    const roomOptions = {
-      aliasLocalpart: "",
-      encrypted: true,
-      invitedOnly: false,
-      topic: "",
-      visibility: "private" as const
-    };
-    const { rerender } = render(
+    const onSetRoomAccessDraft = vi.fn();
+    const view = (visibility: "private" | "public") => (
       <CreateEntityDialog
         activeSpaceName="春学"
         kind="room"
         isBusy={false}
-        roomOptions={roomOptions}
+        roomOptions={{
+          aliasLocalpart: "",
+          encrypted: true,
+          invitedOnly: false,
+          topic: "",
+          visibility
+        }}
         value="秘密ルーム"
         onCancel={vi.fn()}
         onRoomOptionsChange={onRoomOptionsChange}
         onSubmit={vi.fn()}
         onValueChange={vi.fn()}
+        onSetRoomAccessDraft={onSetRoomAccessDraft}
       />
     );
+    const { rerender } = render(view("private"));
 
     expect(screen.getByText(t("dialog.standardRoomInSpace", { spaceName: "春学" }))).toBeTruthy();
-    fireEvent.click(screen.getByRole("checkbox", { name: t("dialog.invitedOnlyRoom") }));
-    expect(onRoomOptionsChange).toHaveBeenLastCalledWith(expect.objectContaining({ invitedOnly: true }));
-
-    rerender(
-      <CreateEntityDialog
-        activeSpaceName="春学"
-        kind="room"
-        isBusy={false}
-        roomOptions={{ ...roomOptions, invitedOnly: true }}
-        value="秘密ルーム"
-        onCancel={vi.fn()}
-        onRoomOptionsChange={onRoomOptionsChange}
-        onSubmit={vi.fn()}
-        onValueChange={vi.fn()}
-      />
+    fireEvent.click(screen.getByRole("radio", { name: /Public/ }));
+    expect(onSetRoomAccessDraft).toHaveBeenCalledWith({
+      kind: "rule",
+      scope: { kind: "create", sessionId: 0 },
+      rule: "public"
+    });
+    expect(onRoomOptionsChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ visibility: "public" })
     );
-    expect(screen.getByText(t("dialog.invitedOnlyRoomInSpace", { spaceName: "春学" }))).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("radio", { name: /Members of a Space/ }));
+    expect(onSetRoomAccessDraft).toHaveBeenCalledWith({
+      kind: "rule",
+      scope: { kind: "create", sessionId: 0 },
+      rule: "restricted"
+    });
+    expect(onRoomOptionsChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ visibility: "private", invitedOnly: false })
+    );
+
+    rerender(view("public"));
+    fireEvent.click(screen.getByRole("radio", { name: /Invite only/ }));
+    expect(onSetRoomAccessDraft).toHaveBeenCalledWith({
+      kind: "rule",
+      scope: { kind: "create", sessionId: 0 },
+      rule: "invite"
+    });
   });
 });
 

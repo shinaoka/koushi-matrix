@@ -2803,7 +2803,6 @@ function AccountContent({
         : null,
     [rightPanelMode, snapshot?.state.ui.navigation.active_room_id]
   );
-  const roomAccessDraft = snapshot?.state.domain.room_management.draft ?? null;
   const roomAccessPreview = useRoomAccessPreview(
     api,
     roomAccessScope,
@@ -7476,7 +7475,6 @@ function AccountContent({
           onUpdateRoomSetting={(roomId, change) => {
             runInBackground(updateRoomSetting(roomId, change));
           }}
-          roomAccessDraft={roomAccessDraft}
           roomAccessPreview={roomAccessPreview}
           roomHistoryPreview={roomHistoryPreview}
           onSetRoomAccessDraft={(command) => {

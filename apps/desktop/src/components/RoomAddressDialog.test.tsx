@@ -18,9 +18,18 @@ test.each(["en", "ja"] as const)("renders Rust address preview and preserves dra
   expect(screen.getByText(`${t("dialog.roomAddressHelp")} ${t("dialog.roomAddressScope", { server: "example.invalid" })}`)).toBeTruthy();
   expect(screen.getByText(t("dialog.roomAddressPreview", { address: "#manual:example.invalid" }))).toBeTruthy();
   expect(screen.getByLabelText(t("dialog.roomAddress")).getAttribute("aria-describedby")).toContain("create-room-address-help");
-  fireEvent.click(screen.getByRole("radio", { name: t("dialog.privateRoom") }));
+  fireEvent.click(accessRadio("invite"));
   expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ visibility: "private", aliasLocalpart: "manual" }));
 });
+
+/** Locale-independent selection among the create dialog's access choices. */
+function accessRadio(value: string): HTMLElement {
+  const radio = screen
+    .getAllByRole("radio")
+    .find((element) => (element as HTMLInputElement).value === value);
+  if (!radio) throw new Error(`no access radio ${value}`);
+  return radio;
+}
 
 // #1006: an alias conflict names the attempted address and its server-wide
 // scope, keeps the room name, and puts the user at the address field.
@@ -159,7 +168,7 @@ test("switching visibility keeps the private encryption choice", () => {
   render(<CreateEntityDialog kind="room" isBusy={false} value=""
     roomOptions={{ aliasLocalpart: "", topic: "", visibility: "private", encrypted: true, invitedOnly: false }}
     onCancel={vi.fn()} onValueChange={vi.fn()} onSubmit={vi.fn()} onRoomOptionsChange={onChange} />);
-  fireEvent.click(screen.getByRole("radio", { name: t("dialog.publicRoom") }));
+  fireEvent.click(screen.getByRole("radio", { name: /Public/ }));
   expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ visibility: "public", encrypted: true }));
 });
 

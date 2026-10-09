@@ -6,6 +6,9 @@ import { RoomInfoPanel } from "./RoomInfoPanel";
 import { setActiveLocaleProfile, t } from "../i18n/messages";
 import type {
   LinkPreviewSettingsState,
+  RoomAccessPreview,
+  RoomHistoryVisibility,
+  RoomJoinRule,
   RoomManagementOperationState,
   RoomManagementState,
   RoomNotificationSettings,
@@ -154,51 +157,44 @@ describe("RoomInfoPanel", () => {
 
   test("saves join rule and history visibility independently", () => {
     const onUpdateRoomSetting = vi.fn();
-    render(
+    const onSetAccessDraft = vi.fn();
+    const scope = { kind: "room" as const, roomId: baseRoom.room_id };
+    const view = (rule: RoomJoinRule | null, history: RoomHistoryVisibility | null) => (
       <RoomInfoPanel
         room={baseRoom}
         roomNotificationSettings={idleSettings}
         spaces={[]}
         roomManagement={{
           selected_room_id: baseRoom.room_id,
-          settings: {
-            room_id: baseRoom.room_id,
-            name: "Alpha Room",
-            topic: null,
-            avatar_url: null,
-            join_rule: "invite",
-            history_visibility: "shared",
-            permissions: {
-              can_edit_settings: true,
-              can_change_join_rule: true,
-              can_edit_roles: true,
-              can_invite: true,
-              can_kick: true,
-              can_ban: true,
-              can_unban: true
-            },
-            members: []
-          },
+          settings: roomSettings(),
+          draft: { scope, revision: 2, rule, history },
           operation: { kind: "idle" }
         }}
+        accessPreview={accessPreviewFixture("access", false)}
+        historyPreview={accessPreviewFixture("history", false)}
         onUpdateRoomSetting={onUpdateRoomSetting}
+        onSetAccessDraft={onSetAccessDraft}
       />
     );
+    const { rerender } = render(view("invite", "shared"));
 
-    fireEvent.click(screen.getByRole("button", { name: "Change join rule" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Join rule" }), {
-      target: { value: "public" }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save join rule" }));
-    fireEvent.click(screen.getByRole("button", { name: "Change history visibility" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "History visibility" }), {
-      target: { value: "invited" }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save history visibility" }));
-
+    fireEvent.click(within(propertyCard("join-rule")).getByRole("radio", { name: /Public/ }));
+    expect(onSetAccessDraft).toHaveBeenCalledWith({ kind: "rule", scope, rule: "public" });
+    rerender(view("public", "shared"));
+    fireEvent.click(within(propertyCard("join-rule")).getByRole("button", { name: "Save join rule" }));
     expect(onUpdateRoomSetting).toHaveBeenNthCalledWith(1, baseRoom.room_id, {
-      joinRule: "public"
+      accessPolicy: { rule: "public", allowTargets: [] }
     });
+
+    fireEvent.click(
+      within(propertyCard("history-visibility")).getByRole("radio", { name: /Since invite/ })
+    );
+    rerender(view("public", "invited"));
+    fireEvent.click(
+      within(propertyCard("history-visibility")).getByRole("button", {
+        name: "Save history visibility"
+      })
+    );
     expect(onUpdateRoomSetting).toHaveBeenNthCalledWith(2, baseRoom.room_id, {
       historyVisibility: "invited"
     });
@@ -237,13 +233,15 @@ describe("RoomInfoPanel", () => {
     );
 
     expect(propertyCard("join-rule").textContent).toContain(t("room.joinRuleKnockRestricted"));
-    fireEvent.click(screen.getByRole("button", { name: "Change join rule" }));
-    const select = screen.getByRole("combobox", { name: "Join rule" }) as HTMLSelectElement;
-    expect(select.value).toBe("knockRestricted");
-    const current = Array.from(select.options).find((option) => option.value === "knockRestricted");
-    expect(current?.disabled).toBe(true);
-    // Restricted needs an allow list the command does not carry, so it is not offered.
-    expect(Array.from(select.options).some((option) => option.value === "restricted")).toBe(false);
+    const current = within(propertyCard("join-rule")).getByRole("radio", {
+      name: /Knock or restricted/
+    }) as HTMLInputElement;
+    expect(current.disabled).toBe(true);
+    expect(current.checked).toBe(true);
+    // The membership route is offered; the unmodelled rule is shown as itself.
+    expect(
+      within(propertyCard("join-rule")).getByRole("radio", { name: /Members of a Space/ })
+    ).toBeTruthy();
   });
 
   test("shows current access and history while disabling edits without permission", () => {
@@ -317,21 +315,24 @@ describe("RoomInfoPanel", () => {
             },
             members: []
           },
+          draft: {
+            scope: { kind: "room", roomId: baseRoom.room_id },
+            revision: 1,
+            rule: "public"
+          },
           operation: { kind: "idle" }
         }}
+        accessPreview={accessPreviewFixture("access", false)}
         onUpdateRoomSetting={onUpdateRoomSetting}
       />
     );
 
     // The event-specific fact admits the join-rule control; the aggregate keeps
     // the room name and history read-only in place.
-    fireEvent.click(screen.getByRole("button", { name: "Change join rule" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Join rule" }), {
-      target: { value: "public" }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save join rule" }));
+    fireEvent.click(within(propertyCard("join-rule")).getByRole("radio", { name: /Public/ }));
+    fireEvent.click(within(propertyCard("join-rule")).getByRole("button", { name: "Save join rule" }));
     expect(onUpdateRoomSetting).toHaveBeenCalledWith(baseRoom.room_id, {
-      joinRule: "public"
+      accessPolicy: { rule: "public", allowTargets: [] }
     });
     for (const property of ["topic", "history-visibility"]) {
       const card = propertyCard(property);
@@ -881,6 +882,25 @@ function propertyCard(property: string): HTMLElement {
   return card as HTMLElement;
 }
 
+/** A Rust access/history preview fixture (#1177). */
+function accessPreviewFixture(
+  context: "access" | "history",
+  confirmed: boolean
+): RoomAccessPreview {
+  return {
+    scope: { kind: "room", roomId: baseRoom.room_id },
+    context,
+    confirmed,
+    outcome: {
+      join: { messageId: "room.accessOutcomeJoinInvite" },
+      history: { messageId: "room.accessOutcomeHistoryShared" },
+      encryption: { messageId: "room.accessOutcomeNotEncrypted" },
+      directory: { messageId: "room.accessOutcomeDirectoryPrivate" },
+      nonRetroactive: { messageId: "room.historyNonRetroactive" }
+    }
+  };
+}
+
 // Issue #1008: each property's value, change control and result share one card.
 describe("RoomInfoPanel property cards", () => {
   test("shows the topic once and edits it in the same card", () => {
@@ -937,46 +957,75 @@ describe("RoomInfoPanel property cards", () => {
     expect(onUpdateRoomSetting).toHaveBeenCalledWith(baseRoom.room_id, { avatarUrl: null });
   });
 
-  test("cancel closes the editor without saving and returns focus to Edit", () => {
+  test("cancel restores the confirmed value and returns focus to the heading", () => {
     const onUpdateRoomSetting = vi.fn();
+    const onSetAccessDraft = vi.fn();
+    const scope = { kind: "room" as const, roomId: baseRoom.room_id };
     render(
       <RoomInfoPanel
         room={baseRoom}
         roomNotificationSettings={idleSettings}
         spaces={[]}
-        roomManagement={managed()}
+        roomManagement={{
+          ...managed(),
+          draft: { scope, revision: 1, rule: "public" }
+        }}
+        accessPreview={accessPreviewFixture("access", false)}
         onUpdateRoomSetting={onUpdateRoomSetting}
+        onSetAccessDraft={onSetAccessDraft}
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Change join rule" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Join rule" }), { target: { value: "public" } });
-    fireEvent.click(within(propertyCard("join-rule")).getByRole("button", { name: "Cancel" }));
+    const card = propertyCard("join-rule");
+    fireEvent.click(within(card).getByRole("radio", { name: /Public/ }));
+    fireEvent.click(within(card).getByRole("button", { name: "Cancel" }));
 
-    expect(screen.queryByRole("combobox", { name: "Join rule" })).toBeNull();
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Change join rule" }));
     expect(onUpdateRoomSetting).not.toHaveBeenCalled();
-    expect(propertyCard("join-rule").textContent).toContain("Invite only");
+    expect(onSetAccessDraft).toHaveBeenCalledWith({ kind: "rule", scope, rule: null });
+    expect(document.activeElement).toBe(within(card).getByRole("heading", { level: 4 }));
   });
 
   test("history notes explain the value being chosen, in its card", () => {
-    render(
+    const scope = { kind: "room" as const, roomId: baseRoom.room_id };
+    const historyPreviewFor = (visibility: RoomHistoryVisibility): RoomAccessPreview => ({
+      scope,
+      context: "history",
+      confirmed: false,
+      outcome: {
+        join: { messageId: "room.accessOutcomeJoinInvite" },
+        history:
+          visibility === "worldReadable"
+            ? { messageId: "room.accessOutcomeHistoryWorldReadable" }
+            : { messageId: "room.accessOutcomeHistoryShared" },
+        encryption: { messageId: "room.accessOutcomeEncrypted" },
+        directory: { messageId: "room.accessOutcomeDirectoryPrivate" },
+        ...(visibility === "shared" || visibility === "invited"
+          ? { historyKeyCaveat: { messageId: "room.historySharedEncryptedHint" as const } }
+          : {}),
+        nonRetroactive: { messageId: "room.historyNonRetroactive" }
+      }
+    });
+    const view = (visibility: RoomHistoryVisibility) => (
       <RoomInfoPanel
         room={{ ...baseRoom, is_encrypted: true }}
         roomNotificationSettings={idleSettings}
         spaces={[]}
-        roomManagement={managed()}
+        roomManagement={{
+          ...managed(),
+          draft: { scope, revision: 1, history: visibility }
+        }}
+        historyPreview={historyPreviewFor(visibility)}
         onUpdateRoomSetting={vi.fn()}
       />
     );
 
+    const { rerender } = render(view("shared"));
     const card = propertyCard("history-visibility");
     expect(card.textContent).toContain(t("room.historySharedDescription"));
     expect(card.textContent).toContain(t("room.historySharedEncryptedHint"));
     expect(card.textContent).toContain(t("room.historyNonRetroactive"));
 
-    fireEvent.click(within(card).getByRole("button", { name: "Change history visibility" }));
-    fireEvent.change(within(card).getByRole("combobox"), { target: { value: "worldReadable" } });
+    rerender(view("worldReadable"));
     expect(card.textContent).toContain(t("room.historyWorldReadableWarning"));
     expect(card.textContent).toContain(t("room.historyNonRetroactive"));
     expect(card.textContent).not.toContain(t("room.historySharedEncryptedHint"));
