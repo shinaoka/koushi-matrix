@@ -513,7 +513,7 @@ pub fn preview_create_room_access(
     } else {
         // The legacy private-in-Space preset names the attachment Space.
         let id = parent_id.unwrap_or_default().to_owned();
-        let route = single_space_route_name(state, &[id.clone()]);
+        let route = single_space_route_name(state, std::slice::from_ref(&id));
         (
             Some(RoomJoinRule::Restricted),
             Some(RestrictedConditions::MembershipOnly),
