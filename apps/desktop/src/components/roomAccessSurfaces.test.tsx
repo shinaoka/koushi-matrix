@@ -166,7 +166,8 @@ describe("the three access surfaces agree on the verified Space route (#1220)", 
     render(<Sidebar snapshot={snapshotWithRoute()} {...sidebarProps()} />);
 
     const row = screen.getByRole("button", { name: /^Conditional Room$/ });
-    expect(within(row).getByText(t("access.spaceMembersCanJoin"))).toBeTruthy();
+    // #1249: the compact list shows the glyph; the label is its accessible name.
+    expect(within(row).getByRole("img", { name: t("access.spaceMembersCanJoin") })).toBeTruthy();
 
     // The row's accessible description carries the Space substitution, not the
     // generic conditions sentence and never a raw id.
@@ -329,7 +330,7 @@ describe("the three access surfaces agree on the verified Space route (#1220)", 
     // The room row announces the shared checking explanation.
     const { unmount: unmountSidebar } = render(<Sidebar snapshot={snapshot} {...sidebarProps()} />);
     const rowButton = screen.getByRole("button", { name: /^Conditional Room$/ });
-    expect(within(rowButton).getByText(t("access.checking"))).toBeTruthy();
+    expect(within(rowButton).getByRole("img", { name: t("access.checking") })).toBeTruthy();
     const rowDescription = rowButton.getAttribute("aria-describedby");
     expect(rowDescription).toBeTruthy();
     expect(document.getElementById(rowDescription!)?.textContent).toBe(

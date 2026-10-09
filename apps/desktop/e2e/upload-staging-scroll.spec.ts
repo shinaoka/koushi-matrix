@@ -320,6 +320,24 @@ function expectNaturalCard(card: Awaited<ReturnType<typeof stagingCardGeometry>>
   ).toBeLessThanOrEqual(card.composerContent + 12);
 }
 
+/**
+ * #1234: the staging dialog must hug its content for a previewless file instead
+ * of filling the overlay, so the send action stays near the staged items.
+ */
+async function stagingContentGeometry(page: Page) {
+  return page.evaluate(() => {
+    const dialog = document.querySelector<HTMLElement>(".upload-staging-dialog")!;
+    const list = dialog.querySelector<HTMLElement>(".upload-staging-list")!;
+    const action = dialog.querySelector<HTMLElement>(".upload-staging-actions button")!;
+    return {
+      viewportHeight: window.innerHeight,
+      dialogHeight: dialog.getBoundingClientRect().height,
+      listBottom: list.getBoundingClientRect().bottom,
+      actionTop: action.getBoundingClientRect().top
+    };
+  });
+}
+
 for (const surface of ["main", "thread"] as const) {
   for (const viewport of [STANDARD_VIEWPORT, SHORT_VIEWPORT, { width: 900, height: 440 }]) {
     test(`${surface} single file without a preview keeps its natural height at ${viewport.height}px (#1012)`, async ({ page }) => {
@@ -348,6 +366,16 @@ for (const surface of ["main", "thread"] as const) {
       await expect(caption).toBeInViewport();
       expectStagingBounded((await stagingGeometry(page))!, `${surface} file staging`);
       await expect(dialog.getByRole("button", { name: t("upload.sendAttachments") })).toBeInViewport();
+      const hugging = await stagingContentGeometry(page);
+      const huggingLabel = `${surface} ${viewport.height}px`;
+      // Only the dialog gap and action padding sit between the list and the send
+      // action; spare window height is not inserted between them (#1234).
+      expect(hugging.actionTop - hugging.listBottom, huggingLabel).toBeLessThanOrEqual(32);
+      expect(hugging.dialogHeight, huggingLabel).toBeLessThanOrEqual(hugging.viewportHeight);
+      if (viewport.height >= 800) {
+        // The dialog follows its content rather than the full overlay height.
+        expect(hugging.dialogHeight, huggingLabel).toBeLessThan(hugging.viewportHeight - 120);
+      }
     });
   }
 }

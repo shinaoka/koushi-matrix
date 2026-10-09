@@ -58,6 +58,17 @@ on ownership, permissions, and whether the message has been sent.
 previously read or saved it. A pending or failed local send has different actions
 from a sent message. Read the confirmation before removing anything.
 
+## Copy or search selected text
+
+Select text inside a message, then open the message's context menu. When a
+selection is present, **Copy selected text** and **Search selected text on
+DuckDuckGo** appear above the other actions. **Copy selected text** copies
+exactly the selected characters. **Search selected text on DuckDuckGo** opens
+the selection as a search query in your default browser, using the fixed
+DuckDuckGo provider rather than the browser's own default search engine. Both
+actions need only the selection, so they also work on a message you cannot edit
+and on a not-yet-sent local message.
+
 ## Send files and images
 
 1. Choose **Attach file**, or drop a file onto the composer.

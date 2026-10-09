@@ -713,7 +713,11 @@ describe("SessionVerificationGate interactions", () => {
     );
 
     expect(screen.getByRole("main", { name: "Secure backup required" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Checking secure backup…" })).toBeTruthy();
+    expect(
+      screen.getByRole("heading", {
+        name: "Checking the backup of your decryption keys on the homeserver…"
+      })
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Create room" })).toBeNull();
   });
 

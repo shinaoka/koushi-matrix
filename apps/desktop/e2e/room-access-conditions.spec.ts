@@ -153,16 +153,25 @@ test("room rows render the projected access condition with its tooltip", async (
   ).toContainText("Open Room");
   await expect(rooms.locator('[data-testid="room-item"]', { hasText: "Open Room" }).locator(".room-access-badge")).toHaveCount(0);
 
-  // The other rules use compact badges, in the documented order.
+  // The other rules use compact glyphs, in the documented order (#1249).
   const bothRow = rooms.getByRole("button", { name: /^Both Room$/ });
-  await expect(bothRow.locator(".room-access-badge")).toHaveText([
-    t("access.conditionsApply"),
-    t("access.canRequest")
-  ]);
+  await expect(bothRow.locator(".room-access-badge")).toHaveCount(2);
+  await expect(bothRow.locator(".room-access-badge").nth(0)).toHaveAttribute(
+    "data-access-glyph",
+    "conditions"
+  );
+  await expect(bothRow.locator(".room-access-badge").nth(1)).toHaveAttribute(
+    "data-access-glyph",
+    "request"
+  );
 
   // A row whose condition has not been projected says so rather than guessing.
   const plainRow = rooms.getByRole("button", { name: new RegExp("Plain Room") });
-  await expect(plainRow.locator(".room-access-badge")).toHaveText([t("access.checking")]);
+  await expect(plainRow.locator(".room-access-badge")).toHaveCount(1);
+  await expect(plainRow.locator(".room-access-badge").first()).toHaveAttribute(
+    "data-access-glyph",
+    "checking"
+  );
   await expect(plainRow.locator("[data-room-access]")).toHaveCount(0);
 
   // The condition is the row's description, so the name stays the room label
@@ -221,9 +230,11 @@ test("a verified single-Space route names the Space and keeps the request badge 
   // The generic conditions badge becomes the specific sentence, and its tooltip
   // substitutes the Space name Rust resolved.
   const routeRow = rooms.getByRole("button", { name: "Space Route Room", exact: true });
-  await expect(routeRow.locator(".room-access-badge")).toHaveText([
-    t("access.spaceMembersCanJoin")
-  ]);
+  await expect(routeRow.locator(".room-access-badge")).toHaveCount(1);
+  await expect(routeRow.locator(".room-access-badge").first()).toHaveAttribute(
+    "data-access-glyph",
+    "spaceMembers"
+  );
   await routeRow.locator(".room-access-badge").first().hover();
   await expect(
     page.locator("body > .tooltip-bubble.is-open").filter({
@@ -248,10 +259,15 @@ test("a verified single-Space route names the Space and keeps the request badge 
 
   // A single-Space knock-restricted rule keeps its own request badge.
   const bothRow = rooms.getByRole("button", { name: "Space Route Both Room", exact: true });
-  await expect(bothRow.locator(".room-access-badge")).toHaveText([
-    t("access.spaceMembersCanJoin"),
-    t("access.canRequest")
-  ]);
+  await expect(bothRow.locator(".room-access-badge")).toHaveCount(2);
+  await expect(bothRow.locator(".room-access-badge").nth(0)).toHaveAttribute(
+    "data-access-glyph",
+    "spaceMembers"
+  );
+  await expect(bothRow.locator(".room-access-badge").nth(1)).toHaveAttribute(
+    "data-access-glyph",
+    "request"
+  );
   await bothRow.locator(".room-access-badge").first().hover();
   await expect(
     page.locator("body > .tooltip-bubble.is-open").filter({
@@ -572,3 +588,86 @@ test("a restricted Space with no usable condition explains the invitation requir
       .filter({ hasText: t("access.allowedRooms", { rooms: "Conditional Room" }) })
   ).toHaveCount(0);
 });
+
+// #1249: the compact access glyphs stay visible after a long room name
+// ellipsizes, in English, Japanese and pseudo-localized copy at a narrow width.
+for (const locale of [
+  { label: "English", lang: "en", catalog: "en", pseudo: "none" },
+  { label: "Japanese", lang: "ja", catalog: "ja", pseudo: "none" },
+  { label: "pseudo-localized", lang: "en-XB", catalog: "pseudo", pseudo: "accented" }
+] as const) {
+  test(`a long room name ellipsizes without hiding the access glyphs in ${locale.label} (#1249)`, async ({
+    page
+  }) => {
+    await page.setViewportSize({ width: 820, height: 800 });
+    const base = await openHarness(page);
+    const name =
+      locale.catalog === "ja"
+        ? "非常に長い合成ルーム名でアクセスアイコンと重ならないことを確認する名前"
+        : "Synthetic very long room name that must ellipsize before the access glyphs";
+    const longRow = {
+      ...row("!long:example.invalid", name, "knockRestricted"),
+      access_restricted_conditions: "membershipOnly" as const,
+      access_space_members_route: "Allowed Space"
+    };
+    const rows = [longRow, ...ROOMS];
+    await pushSnapshot(page, {
+      ...base,
+      state: {
+        ...base.state,
+        domain: {
+          ...base.state.domain,
+          locale_profile: {
+            ...base.state.domain.locale_profile,
+            lang: locale.lang,
+            dir: "ltr",
+            catalog_locale: locale.catalog,
+            pseudo_locale: locale.pseudo
+          }
+        }
+      },
+      sidebar: {
+        ...base.sidebar,
+        active_space_id: null,
+        account_home: { ...base.sidebar.account_home, is_active: true },
+        space_rail: base.sidebar.space_rail.map((space) => ({ ...space, is_active: false })),
+        space_rooms: rows,
+        global_dms: [],
+        sections: {
+          favourites: [],
+          not_joined: [],
+          rooms: rows,
+          people: [],
+          low_priority: []
+        }
+      }
+    });
+
+    const item = page
+      .locator('[data-testid="room-item"]')
+      .filter({ hasText: name.slice(0, 10) });
+    await expect(item).toBeVisible();
+    const geometry = await item.evaluate((element) => {
+      const roomName = element.querySelector<HTMLElement>(".room-name")!;
+      const glyphs = Array.from(
+        element.querySelectorAll<HTMLElement>(".room-access-icon, .room-access-badge")
+      );
+      return {
+        nameScrollWidth: roomName.scrollWidth,
+        nameClientWidth: roomName.clientWidth,
+        nameRight: roomName.getBoundingClientRect().right,
+        glyphCount: glyphs.length,
+        glyphsVisible: glyphs.every((glyph) => {
+          const rect = glyph.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        }),
+        firstGlyphLeft: glyphs[0]?.getBoundingClientRect().left ?? -1
+      };
+    });
+    // The name, not the access cluster, gives way.
+    expect(geometry.nameScrollWidth).toBeGreaterThan(geometry.nameClientWidth);
+    expect(geometry.glyphCount).toBe(2);
+    expect(geometry.glyphsVisible).toBe(true);
+    expect(geometry.firstGlyphLeft).toBeGreaterThanOrEqual(geometry.nameRight - 1);
+  });
+}
