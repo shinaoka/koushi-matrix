@@ -124,6 +124,12 @@ describe("desktop release scripts", () => {
 
   test("release preflight validates installer and signing preparation", () => {
     const output = runScript("scripts/desktop-release-preflight.mjs", ["--check-config"]);
+    const tauriConfig = JSON.parse(
+      readFileSync(
+        new URL("../../../../apps/desktop/src-tauri/tauri.conf.json", import.meta.url),
+        "utf8"
+      )
+    );
 
     expect(output).toContain("bundle.active");
     expect(output).toContain("dmg");
@@ -134,6 +140,8 @@ describe("desktop release scripts", () => {
     expect(output).toContain("macOS.updater.endpoint");
     expect(output).toContain("windows.signCommand");
     expect(output).toContain("windows.wix.upgradeCode");
+    expect(output).toContain("windows.minimumWebview2Version");
+    expect(tauriConfig.bundle.windows.minimumWebview2Version).toBe("155.0.4283.45");
     expect(output).toContain("security.assetProtocol.enable");
     expect(output).toContain("security.assetProtocol.scope.noBroadAppdata");
     expect(output).toContain("security.assetProtocol.scope.mediaDownloads");
