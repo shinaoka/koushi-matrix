@@ -693,7 +693,6 @@ describe("CreateEntityDialog room access", () => {
         createAccessPreview={{
           scope: { kind: "create", sessionId: 1 },
           confirmed: false,
-          rejection: null,
           effectiveRule: "restricted",
           effectiveHistory: "shared",
           roomVersionPinned: true,
