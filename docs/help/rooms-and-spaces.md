@@ -185,16 +185,23 @@ Open **Room info**. Each property is shown, changed, and confirmed in one card:
   choose **Save** (or **Cancel**, or press **Esc**). Saving an empty value
   removes the topic or avatar. The avatar card shows the room's picture and its
   `mxc://` address.
-- **Access and history**: **Join rule** and **History visibility**. Choose
-  **Change**, pick a value, and choose **Save**. Changing the join rule needs
-  permission to change join rules, which is separate from permission to rename
-  the room, so an account that may change access but not the room name can still
-  change it. A restricted rule is summarised by its people-facing access
-  condition (**Conditions apply**, or **Space members can join** when exactly
-  one Space is verified) rather than as **Private**. The explanation under the
-  choice describes the value you are about to save, including when history
-  becomes visible to anyone and that a change does not apply to messages already
-  sent.
+- **Access and history**: **Join rule** and **History visibility** each show a
+  list of choices on the left and, on the right, what the current selection
+  means: who can join, who can read which history, whether the room is
+  encrypted, and whether it is listed in the public directory. The selected
+  choice is marked, and the details say whether they describe the saved values
+  or unsaved changes. Choose a value and then **Save** (or **Cancel**, or press
+  **Esc**) to restore the saved value. Changing the join rule needs permission
+  to change join rules, which is separate from permission to rename the room,
+  so an account that may change access but not the room name can still change
+  it. Choosing **Members of a Space** lists the Spaces you belong to; pick the
+  ones whose members may join. A restricted rule is summarised by its
+  people-facing access condition (**Conditions apply**, or **Space members can
+  join** when exactly one Space is verified) rather than as **Private**, and a
+  rule the app cannot rewrite is shown disabled with the reason. The details
+  keep server eligibility and key availability separate, note when history
+  becomes visible to anyone, and state that a change does not apply to messages
+  already sent. The same editor is used while creating a room.
 
 The badges at the top of **Room info**, such as **Public** or **Anyone can see
 history**, move to the matching card. A card shows **Saving…** while the change

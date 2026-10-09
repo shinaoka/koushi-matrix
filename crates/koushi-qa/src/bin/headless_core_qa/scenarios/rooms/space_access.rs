@@ -9,7 +9,7 @@
 use super::super::event_wait::wait_for_space_child_projection;
 use super::super::fixtures::set_space_child_for_qa;
 use super::*;
-use koushi_state::RoomJoinRule;
+use koushi_state::{RestrictedConditions, RoomAccessPolicy, RoomHistoryVisibility, RoomJoinRule};
 
 pub(super) async fn verify(
     config: &QaConfig,
@@ -123,6 +123,88 @@ pub(super) async fn verify(
             "space_access: the child room's join rule moved from {child_rule:?} to {child_after:?}"
         ));
     }
+
+    // #1177: an explicit membership policy at creation is honoured, and its
+    // allow content and history are readable after sync.
+    let membership_room_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(RoomCommand::CreateRoom {
+            request_id: membership_room_id,
+            options: koushi_protocol::CreateRoomOptions {
+                name: "QA Space Access Membership".to_owned(),
+                topic: None,
+                alias_localpart: None,
+                encrypted: false,
+                invited_only: false,
+                visibility: Default::default(),
+                parent_space: Some(koushi_protocol::CreateRoomParentSpace {
+                    space_id: space_id.clone(),
+                }),
+                access_policy: Some(RoomAccessPolicy::new(
+                    RoomJoinRule::Restricted,
+                    vec![space_id.clone()],
+                )),
+                history: Some(RoomHistoryVisibility::Joined),
+            },
+        }))
+        .await
+        .map_err(|e| format!("space_access: submit membership room create failed: {e}"))?;
+    let membership_room_id =
+        wait_for_room_created(conn_a, membership_room_id, "space_access membership create").await?;
+    wait_for_room_access_projection(conn_a, &membership_room_id, RoomJoinRule::Restricted, "space_access membership projection").await?;
+    let membership = load_room_settings_for_qa(conn_a, &membership_room_id, "space_access membership settings").await?;
+    if membership.access.restricted != Some(RestrictedConditions::MembershipOnly) {
+        return Err(format!(
+            "space_access: the created membership room reports {:?}",
+            membership.access.restricted
+        ));
+    }
+    if !membership
+        .access
+        .allow_targets
+        .iter()
+        .any(|target| target.room_id == space_id)
+    {
+        return Err("space_access: the created membership room does not name the Space".to_owned());
+    }
+    if membership.history_visibility != RoomHistoryVisibility::Joined {
+        return Err(format!(
+            "space_access: the created room's history is {:?}, not Joined",
+            membership.history_visibility
+        ));
+    }
+    println!("space_access_create_membership=ok");
+    println!("space_access_history=ok");
+
+    // #1177: restore a restricted rule through the real update command and read
+    // back the synced allow content; B observes it without reloading.
+    let restore_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(RoomCommand::UpdateRoomSetting {
+            request_id: restore_id,
+            room_id: membership_room_id.clone(),
+            change: RoomSettingChange::AccessPolicy(RoomAccessPolicy::new(
+                RoomJoinRule::Restricted,
+                vec![space_id.clone()],
+            )),
+        }))
+        .await
+        .map_err(|e| format!("space_access: submit restricted restore failed: {e}"))?;
+    wait_for_room_setting_updated(conn_a, restore_id, "space_access restore").await?;
+    wait_for_room_access_projection(conn_a, &membership_room_id, RoomJoinRule::Restricted, "space_access restore projection").await?;
+    let restored = load_room_settings_for_qa(conn_a, &membership_room_id, "space_access restored settings").await?;
+    if restored.access.restricted != Some(RestrictedConditions::MembershipOnly)
+        || !restored
+            .access
+            .allow_targets
+            .iter()
+            .any(|target| target.room_id == space_id)
+    {
+        return Err(
+            "space_access: a restored restricted rule lost its synced allow content".to_owned(),
+        );
+    }
+    println!("space_access_restricted_restore=ok");
     println!("space_access=ok");
     Ok(())
 }
@@ -167,6 +249,43 @@ async fn wait_for_observed_join_rule(
                 let (synced, open) = observed(&conn.snapshot());
                 return Err(format!(
                     "{label}: timed out waiting for {expected:?} (synced={synced:?} open={open:?})"
+                ));
+            }
+        }
+    }
+}
+
+/// Wait until the shared room-access projection reports `expected` for a room
+/// (not a Space), without reloading its settings.
+async fn wait_for_room_access_projection(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    expected: RoomJoinRule,
+    label: &str,
+) -> Result<(), String> {
+    let observed = |snapshot: &AppState| {
+        snapshot
+            .room_access
+            .get(room_id)
+            .and_then(|condition| condition.join_rule)
+    };
+    let deadline = tokio::time::Instant::now() + ROOM_LIST_EVENT_TIMEOUT;
+    loop {
+        if observed(&conn.snapshot()) == Some(expected) {
+            return Ok(());
+        }
+        match tokio::time::timeout_at(deadline, conn.recv_event()).await {
+            Ok(Ok(_)) => continue,
+            Ok(Err(lag)) => {
+                return Err(format!(
+                    "{label}: event stream lagged (skipped={})",
+                    lag.skipped
+                ));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "{label}: timed out waiting for {expected:?} (observed={:?})",
+                    observed(&conn.snapshot())
                 ));
             }
         }
