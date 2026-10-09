@@ -41,8 +41,8 @@ pub use locale_profile::{
 };
 pub use reducer::reduce;
 pub use room_access::{
-    RoomAccessOutcome, RoomAccessOutcomeLine, RoomAccessViewerFacts, RoomDirectoryVisibility,
-    resolve_room_access_outcome,
+    RoomAccessOutcome, RoomAccessOutcomeLine, RoomAccessResolveInput, RoomAccessViewerFacts,
+    RoomDirectoryVisibility, resolve_room_access_outcome,
 };
 pub use room_address::{
     CreateRoomDefaults, CreateRoomVisibility, RoomAddressAvailability,

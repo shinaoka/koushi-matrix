@@ -78,22 +78,41 @@ pub struct RoomAccessViewerFacts {
     pub can_request_access: bool,
 }
 
+/// Every effective input of the outcome resolver (#1177).
+///
+/// `join_rule` is `None` when the rule content is unavailable. The restricted
+/// completeness, the resolved single-Space route name and the directory
+/// publication are authoritative facts supplied by callers, never React
+/// assertions.
+#[derive(Clone, Copy, Debug)]
+pub struct RoomAccessResolveInput<'a> {
+    pub join_rule: Option<RoomJoinRule>,
+    pub restricted: Option<RestrictedConditions>,
+    pub allow_targets: &'a [RoomAllowTarget],
+    pub space_members_route: Option<&'a str>,
+    pub history: RoomHistoryVisibility,
+    pub encrypted: bool,
+    pub directory: RoomDirectoryVisibility,
+    pub viewer: RoomAccessViewerFacts,
+}
+
 /// Resolve the effective access tuple into catalog lines (#1177).
 ///
 /// This is pure: callers supply every effective input, including the verified
 /// restricted completeness, the resolved single-Space route name and the
 /// confirmed directory publication. An absent `join_rule` is "not verified",
 /// never a default rule.
-pub fn resolve_room_access_outcome(
-    join_rule: Option<RoomJoinRule>,
-    restricted: Option<RestrictedConditions>,
-    allow_targets: &[RoomAllowTarget],
-    space_members_route: Option<&str>,
-    history: RoomHistoryVisibility,
-    encrypted: bool,
-    directory: RoomDirectoryVisibility,
-    viewer: RoomAccessViewerFacts,
-) -> RoomAccessOutcome {
+pub fn resolve_room_access_outcome(input: RoomAccessResolveInput<'_>) -> RoomAccessOutcome {
+    let RoomAccessResolveInput {
+        join_rule,
+        restricted,
+        allow_targets,
+        space_members_route,
+        history,
+        encrypted,
+        directory,
+        viewer,
+    } = input;
     let route = space_members_route
         .map(str::trim)
         .filter(|name| !name.is_empty());
@@ -210,16 +229,16 @@ mod tests {
         encrypted: bool,
         directory: RoomDirectoryVisibility,
     ) -> RoomAccessOutcome {
-        resolve_room_access_outcome(
-            rule,
+        resolve_room_access_outcome(RoomAccessResolveInput {
+            join_rule: rule,
             restricted,
-            &[target()],
-            route,
+            allow_targets: &[target()],
+            space_members_route: route,
             history,
             encrypted,
             directory,
-            RoomAccessViewerFacts::default(),
-        )
+            viewer: RoomAccessViewerFacts::default(),
+        })
     }
 
     #[test]
@@ -327,18 +346,18 @@ mod tests {
 
     #[test]
     fn request_route_line_tracks_the_viewer_fact() {
-        let outcome = resolve_room_access_outcome(
-            Some(RoomJoinRule::KnockRestricted),
-            Some(RestrictedConditions::MembershipOnly),
-            &[target()],
-            Some("Design Team"),
-            RoomHistoryVisibility::Invited,
-            false,
-            RoomDirectoryVisibility::Private,
-            RoomAccessViewerFacts {
+        let outcome = resolve_room_access_outcome(RoomAccessResolveInput {
+            join_rule: Some(RoomJoinRule::KnockRestricted),
+            restricted: Some(RestrictedConditions::MembershipOnly),
+            allow_targets: &[target()],
+            space_members_route: Some("Design Team"),
+            history: RoomHistoryVisibility::Invited,
+            encrypted: false,
+            directory: RoomDirectoryVisibility::Private,
+            viewer: RoomAccessViewerFacts {
                 can_request_access: true,
             },
-        );
+        });
         assert_eq!(
             outcome
                 .join_request

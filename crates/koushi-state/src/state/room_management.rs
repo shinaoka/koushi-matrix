@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use super::errors::OperationFailureKind;
 use crate::{
-    RoomAccessOutcome, RoomAccessViewerFacts, RoomDirectoryVisibility, resolve_room_access_outcome,
+    RoomAccessOutcome, RoomAccessResolveInput, RoomAccessViewerFacts, RoomDirectoryVisibility,
+    resolve_room_access_outcome,
 };
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -179,16 +180,16 @@ pub fn confirmed_room_access_outcome(
     route: Option<&str>,
     viewer: RoomAccessViewerFacts,
 ) -> RoomAccessOutcome {
-    resolve_room_access_outcome(
-        settings.access.join_rule,
-        settings.access.restricted,
-        &settings.access.allow_targets,
-        route,
-        settings.history_visibility,
+    resolve_room_access_outcome(RoomAccessResolveInput {
+        join_rule: settings.access.join_rule,
+        restricted: settings.access.restricted,
+        allow_targets: &settings.access.allow_targets,
+        space_members_route: route,
+        history: settings.history_visibility,
         encrypted,
         directory,
         viewer,
-    )
+    })
 }
 
 impl RoomAccessDraft {
@@ -223,16 +224,16 @@ impl RoomAccessDraft {
                 room_id: room_id.clone(),
             })
             .collect();
-        resolve_room_access_outcome(
-            rule,
+        resolve_room_access_outcome(RoomAccessResolveInput {
+            join_rule: rule,
             restricted,
-            &targets,
-            route,
-            self.history.unwrap_or(settings.history_visibility),
+            allow_targets: &targets,
+            space_members_route: route,
+            history: self.history.unwrap_or(settings.history_visibility),
             encrypted,
             directory,
             viewer,
-        )
+        })
     }
 }
 
@@ -310,8 +311,9 @@ pub struct RoomSettingsSnapshot {
     pub history_visibility: RoomHistoryVisibility,
     /// The verified access facts (#1220): the rule's availability, its
     /// restricted allow-condition completeness and its target kinds. The
-    /// editor reads this instead of trusting the scalar `join_rule`.
-    #[serde(default)]
+    /// editor reads this instead of trusting the scalar `join_rule`. The raw
+    /// target ids stay inside Rust (they are never part of the IPC wire shape).
+    #[serde(default, skip)]
     pub access: RoomAccessCondition,
     pub permissions: RoomPermissionFacts,
     pub members: Vec<RoomMemberSummary>,
