@@ -263,6 +263,25 @@ below are the policy those rules do not state.
    frames, and timers are permitted only for mounted presentation lifetime and
    are cancelled by the same React effect/controller on key change and unmount;
    product retries, backoff, correlation, and session cleanup remain Rust-owned.
+
+   **Known deviation, deliberately unfixed.** `TimelineManagerActor::timelines`
+   (`crates/koushi-core/src/timeline/manager.rs:493`) *is* an unbounded map of owned
+   live handles: a Room key is never unsubscribed, so every room visited in a
+   session keeps its timeline actor, its `navigation_items` (the full canonical
+   item list, deliberately wider than the 120-item replay window), its media
+   caches and its SDK `Timeline` handle. `LiveTailRefreshCoordinator::states` is
+   likewise never pruned for a non-delayed room. This is a known violation of the
+   sentence above, established structurally, not an oversight.
+
+   It stays unfixed by maintainer decision after four designs failed independent
+   pre-implementation review: bounding it needs the read-intent ownership move, and
+   the actor-owned child tasks have no approved cancel-and-await teardown boundary
+   either. The evidence, the rejected designs, the nine requirements and the eight
+   open specification items are in
+   `docs/plans/2026-10-09-issue1230-cold-room-retirement.md` and
+   `docs/plans/2026-10-09-issue1230-read-intent-ownership.md` (both merged). Reopen
+   that work only with a measurement showing the retained bytes matter; expect the
+   read-receipt state machine to be the blast radius.
 3. Timeline scrollback and gap repair are event-driven; the contract is
    overview "Timeline Viewport And Scrollback" and "Room Timeline Gap Repair".
    Do not add polling, fixed-delay retries, or a user-scroll latch to

@@ -37,16 +37,15 @@ invented 64 MiB and p95/p99 gates, and the conditional SDK gap step).
 
 [#1230 cold Room timeline retirement](../plans/2026-10-09-issue1230-cold-room-retirement.md)
 and its successor [read-intent ownership](../plans/2026-10-09-issue1230-read-intent-ownership.md)
-track the retention half. Both are **review records, not implementation briefs**:
-four designs have been reviewed and none is implementable yet. The first
-retirement-policy design failed because read work exists independently of
-`local_read_correlations`; the ownership-move revision was told to fix eight
-remaining specification items, including a cheap validator contract for a queued
-report from a retiring actor, settlement-triggered and preemptible maintenance, the
-confirmation lifetime across re-entry, and an engineering-rules teardown conflict
-that needs an explicit decision. No code has been written, and the first record
-also corrects a factual error -- Room retirement already has a quiescence fence
-inside `clear_thread_root_projections_for_room`.
+are an **archive, not implementation briefs**. Four designs were reviewed and
+none reached an implementable state before the maintainer closed the work as not
+planned: the retirement-policy designs failed because read work exists
+independently of `local_read_correlations`, and the ownership-move revision left
+eight specification items open, including an engineering-rules cancel-and-await
+conflict. The residual retention is instead tracked as a "Known deviation" note in
+engineering rules "Async and Runtime" 2. The first record also corrects a factual
+error: Room retirement already has a quiescence fence inside
+`clear_thread_root_projections_for_room`.
 
 - Rooms / DMs collapsible sidebar sections (design and implementation record):
   [2026-09-19-sidebar-sections-design.md](../superpowers/specs/2026-09-19-sidebar-sections-design.md)

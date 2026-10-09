@@ -1,10 +1,13 @@
 # #1230: retire cold Room timeline actors without losing read intent
 
-Status: **rejected by the independent pre-implementation review; not
-implemented.** Revision 2 records the verdict, the two BLOCKERs, the other
-findings, and the one factual error this review corrected in the predecessor
-record. The next attempt starts from the ownership move this issue's title
-assumed, not from the retirement policy below.
+Status: **rejected by the independent pre-implementation review; archived — not
+planned.** Revision 2 records the verdict, the two BLOCKERs, the other findings, and
+the one factual error this review corrected in the predecessor record. The
+maintainer closed this line of work; see the successor record
+[read-intent ownership](2026-10-09-issue1230-read-intent-ownership.md) and the
+"Known deviation" note in engineering rules "Async and Runtime" 2 for where the
+residual is tracked. The next attempt starts from the ownership move this issue's
+title assumed, not from the retirement policy below.
 
 Parent: [#1230](https://github.com/shinaoka/koushi-matrix/issues/1230), scoping
 the retention half of [#1150](https://github.com/shinaoka/koushi-matrix/issues/1150).
