@@ -290,6 +290,56 @@ describe("RoomInfoPanel", () => {
     expect(propertyCard("history-visibility").textContent).toContain("Since join");
   });
 
+  test("lets an account change the join rule without the aggregate settings permission (#1220)", () => {
+    const onUpdateRoomSetting = vi.fn();
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={{
+          selected_room_id: baseRoom.room_id,
+          settings: {
+            room_id: baseRoom.room_id,
+            name: "Alpha Room",
+            topic: null,
+            avatar_url: null,
+            join_rule: "invite",
+            history_visibility: "shared",
+            permissions: {
+              can_edit_settings: false,
+              can_change_join_rule: true,
+              can_edit_roles: false,
+              can_invite: false,
+              can_kick: false,
+              can_ban: false,
+              can_unban: false
+            },
+            members: []
+          },
+          operation: { kind: "idle" }
+        }}
+        onUpdateRoomSetting={onUpdateRoomSetting}
+      />
+    );
+
+    // The event-specific fact admits the join-rule control; the aggregate keeps
+    // the room name and history read-only in place.
+    fireEvent.click(screen.getByRole("button", { name: "Change join rule" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Join rule" }), {
+      target: { value: "public" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save join rule" }));
+    expect(onUpdateRoomSetting).toHaveBeenCalledWith(baseRoom.room_id, {
+      joinRule: "public"
+    });
+    for (const property of ["topic", "history-visibility"]) {
+      const card = propertyCard(property);
+      expect(within(card).queryByRole("button")).toBeNull();
+      expect(card.textContent).toContain(t("room.settingNoPermission"));
+    }
+  });
+
   test("keeps a room-name composition across equivalent Rust settings snapshots", () => {
     const management = () => ({
       selected_room_id: baseRoom.room_id,

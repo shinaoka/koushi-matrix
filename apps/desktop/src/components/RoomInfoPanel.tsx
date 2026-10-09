@@ -25,6 +25,10 @@ import {
 import { EntityAvatar } from "./Shell";
 import { avatarInitial, roomDisplayLabel } from "../app/uiShared";
 import {
+  roomAccessIndicator,
+  type RoomAccessProjection
+} from "../domain/accessCondition";
+import {
   HistoryExportSection,
   type HistoryExportControls
 } from "./HistoryExportDialog";
@@ -55,6 +59,7 @@ export function RoomInfoPanel({
   onOpenFiles,
   onSetRoomNotificationMode,
   onUpdateRoomSetting,
+  access,
   onSetRoomUrlPreviewOverride,
   onOpenPeople,
   onRepairRoomTimeline,
@@ -75,6 +80,8 @@ export function RoomInfoPanel({
   onOpenFiles?: () => void;
   onSetRoomNotificationMode?: (roomId: string, mode: RoomNotificationMode) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
+  /** The room's projected access facts from the shared sidebar contract (#1220). */
+  access?: RoomAccessProjection | null;
   onSetRoomUrlPreviewOverride?: (roomId: string, enabled: boolean) => void;
   onOpenPeople?: () => void;
   onRepairRoomTimeline?: (roomId: string) => void | Promise<void>;
@@ -171,10 +178,20 @@ export function RoomInfoPanel({
   const canEditSettings = mayEditSettings && !settingsPending;
   const readOnlyReason =
     settings && !settings.permissions.can_edit_settings ? t("room.settingNoPermission") : null;
-  const statusBadges = roomStatusBadges(isEncrypted, Boolean(room?.is_dm), settings);
+  // #1220: the join-rule control is governed by the event-specific fact, not the
+  // aggregate; an account that may change join rules but not rename the room can
+  // still hold it. Rust enforces the same single authority before it sends.
+  const mayChangeJoinRule =
+    Boolean(settings?.permissions.can_change_join_rule) && Boolean(onUpdateRoomSetting);
+  const readOnlyJoinRuleReason =
+    settings && !settings.permissions.can_change_join_rule
+      ? t("room.settingNoPermission")
+      : null;
+  const statusBadges = roomStatusBadges(isEncrypted, settings, access ?? null);
 
   function submitSetting(field: RoomSettingField, change: RoomSettingChange, target: string | null) {
-    if (!canEditSettings) return;
+    const allowed = "joinRule" in change ? mayChangeJoinRule : canEditSettings;
+    if (!allowed) return;
     setSubmission({
       roomId,
       field,
@@ -433,9 +450,9 @@ export function RoomInfoPanel({
               selectLabel={t("room.joinRule")}
               changeLabel={t("room.changeJoinRule")}
               saveLabel={t("room.saveJoinRule")}
-              canEdit={mayEditSettings}
+              canEdit={mayChangeJoinRule}
               busy={settingsPending}
-              readOnlyReason={readOnlyReason}
+              readOnlyReason={readOnlyJoinRuleReason}
               status={fieldStatus("joinRule")}
               onSave={(joinRule) => submitSetting("joinRule", { joinRule }, joinRule)}
             />
@@ -731,8 +748,8 @@ function roomSettingFailureMessage(kind: OperationFailureKind): string {
 
 function roomStatusBadges(
   isEncrypted: boolean,
-  isDm: boolean,
-  settings: RoomManagementState["settings"]
+  settings: RoomManagementState["settings"],
+  access: RoomAccessProjection | null
 ): StatusBadge[] {
   const badges: StatusBadge[] = [
     {
@@ -745,12 +762,17 @@ function roomStatusBadges(
     }
   ];
 
-  if (settings && !isDm) {
+  if (settings) {
+    // #1220: the summary is the same people-facing condition the row and header
+    // render, never a binary Public/Private that reads a restricted rule as
+    // `private`. It is shown for DMs too, which have their own access condition.
+    const joinRule = access?.joinRule ?? settings.join_rule;
+    const indicator = roomAccessIndicator(joinRule, access?.restricted ?? null, {
+      spaceMembersRoute: access?.spaceMembersRoute ?? null,
+      allowedRoomNames: access?.allowedRoomNames ?? []
+    });
     badges.push({
-      label:
-        settings.join_rule === "public"
-          ? t("room.statusPublic")
-          : t("room.statusPrivate"),
+      label: indicator ? t(indicator.labelMessageIds[0]) : roomJoinRuleLabel(joinRule),
       icon: <Globe2 size={14} aria-hidden="true" />,
       setting: "joinRule"
     });

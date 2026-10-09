@@ -645,6 +645,61 @@ fn room_setting_update_records_pending_and_matching_completion_clears_it() {
     );
 }
 
+/// #1220: the event-specific fact admits a join-rule change on its own, and the
+/// one `allows_setting_change` guard stays the authority for every change.
+#[test]
+fn join_rule_change_needs_only_the_join_rule_permission() {
+    let mut state = ready_state();
+    let room_id = "!room:example.invalid";
+    let mut settings = editable_settings(room_id);
+    settings.permissions.can_edit_settings = false;
+    settings.permissions.can_change_join_rule = true;
+    reduce(
+        &mut state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: room_id.to_owned(),
+            settings,
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateRequested {
+            request_id: 11,
+            room_id: room_id.to_owned(),
+            change: RoomSettingChange::JoinRule(RoomJoinRule::Public),
+        },
+    );
+    assert_eq!(
+        state.room_management.operation,
+        RoomManagementOperationState::Pending {
+            request_id: 11,
+            room_id: room_id.to_owned(),
+            operation: RoomManagementOperationKind::Settings,
+        },
+        "an account that may change join rules but not rename the room can change the join rule"
+    );
+
+    // A name change still needs the aggregate and is rejected before mutation.
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateRequested {
+            request_id: 12,
+            room_id: room_id.to_owned(),
+            change: RoomSettingChange::Name(Some("New synthetic name".to_owned())),
+        },
+    );
+    assert_eq!(
+        state.room_management.operation,
+        RoomManagementOperationState::Failed {
+            request_id: 12,
+            room_id: room_id.to_owned(),
+            operation: RoomManagementOperationKind::Settings,
+            kind: OperationFailureKind::Forbidden,
+        }
+    );
+}
+
 #[test]
 fn stale_room_management_completion_is_ignored() {
     let mut state = ready_state();

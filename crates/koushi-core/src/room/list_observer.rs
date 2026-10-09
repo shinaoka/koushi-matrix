@@ -1534,15 +1534,24 @@ async fn normalize_and_project_entries(
     let joined_access = joined_rooms
         .iter()
         .map(|room| {
+            let facts = koushi_sdk::matrix_room_access_facts(room);
             (
                 room.room_id().to_string(),
                 koushi_state::RoomAccessCondition {
-                    join_rule: super::management::room_join_rule_from_sdk(
-                        koushi_sdk::matrix_room_join_rule_or_default(room),
-                    ),
-                    restricted: koushi_sdk::matrix_room_restricted_conditions(room)
+                    join_rule: facts
+                        .join_rule
+                        .map(super::management::room_join_rule_from_sdk),
+                    restricted: facts
+                        .restricted
                         .map(super::management::restricted_conditions_from_sdk),
-                    allowed_room_ids: koushi_sdk::matrix_room_restricted_allow_room_ids(room),
+                    allow_targets: facts
+                        .allow_targets
+                        .into_iter()
+                        .map(|target| koushi_state::RoomAllowTarget {
+                            kind: super::management::allow_target_kind_from_sdk(target.kind),
+                            room_id: target.room_id,
+                        })
+                        .collect(),
                 },
             )
         })

@@ -333,16 +333,22 @@ export function operationFailureLabel(kind: OperationFailureKind): string {
 }
 
 /**
- * The tooltip text for an access condition (#1166): its explanation, plus the
- * membership routes a restricted rule names when Rust resolved their labels.
+ * The tooltip text for an access condition (#1166, #1220): its explanation, plus
+ * the membership routes a restricted rule names.
  *
- * Only resolved names are listed, so an unknown or invisible entry adds nothing
- * rather than a guessed label or a raw id.
+ * A verified single-Space route substitutes its Space name into the specific
+ * message (#1220); otherwise only resolved names are listed, so an unknown or
+ * invisible entry adds nothing rather than a guessed label or a raw id.
  */
 export function roomAccessTooltipLabel(
   descriptionMessageId: MessageId,
-  allowedRoomNames?: readonly string[] | null
+  allowedRoomNames?: readonly string[] | null,
+  spaceName?: string | null
 ): string {
+  const trimmedSpaceName = spaceName?.trim();
+  if (trimmedSpaceName) {
+    return t(descriptionMessageId, { space: trimmedSpaceName });
+  }
   const explanation = t(descriptionMessageId);
   const names = (allowedRoomNames ?? []).filter((name) => name.trim().length > 0);
   if (names.length === 0) {

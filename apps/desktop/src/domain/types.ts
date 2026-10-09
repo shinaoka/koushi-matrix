@@ -2816,6 +2816,13 @@ export interface SpaceRailItem {
   /** Resolved labels of the rooms/Spaces a restricted rule names (#1166). */
   access_allowed_room_names?: string[];
   /**
+   * The verified single-Space membership route (#1220): present only when the
+   * rule names exactly one distinct target whose create event proves it is a
+   * Space and whose name resolves. This is the tooltip substitution for the
+   * specific sentence.
+   */
+  access_space_members_route?: string | null;
+  /**
    * Joined, non-DM rooms this Space shows, which a Space leave may take with
    * it. Rust projection; the `leave_space` command re-admits against it.
    */
@@ -2833,12 +2840,17 @@ export interface SpaceLeaveCandidate {
 }
 
 /**
- * Whether a `restricted`/`knock_restricted` rule has an allow condition this
- * client can evaluate (#1166). Mirrors the Rust `RestrictedConditions`: an
- * allow-rule type the client does not model is never reported as a confirmed
- * empty set.
+ * What the client could determine about a `restricted`/`knock_restricted`
+ * rule's allow conditions (#1220). Mirrors the Rust `RestrictedConditions`:
+ * an allow-rule type the client does not model is never reported as a confirmed
+ * empty set, and an unavailable rule is never reported as inspected.
  */
-export type RestrictedConditions = "usable" | "noneUsable" | "unknownAllowRule";
+export type RestrictedConditions =
+  | "notInspected"
+  | "confirmedEmpty"
+  | "membershipOnly"
+  | "membershipPlusUnsupported"
+  | "unsupportedOnly";
 
 export interface RoomListItem {
   room_id: string;
@@ -2863,6 +2875,11 @@ export interface RoomListItem {
   access_restricted_conditions?: RestrictedConditions | null;
   /** Resolved labels of the rooms/Spaces a restricted rule names (#1166). */
   access_allowed_room_names?: string[];
+  /**
+   * The verified single-Space membership route (#1220), or absent for every
+   * other restricted shape.
+   */
+  access_space_members_route?: string | null;
   display_name: string;
   /** Mirrors `RoomSummary.display_label_placeholder`; render via `roomListItemLabel`. */
   display_name_placeholder?: RoomNamePlaceholder | null;

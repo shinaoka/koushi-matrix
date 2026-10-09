@@ -4,6 +4,7 @@ export type MessageId =
   | "access.public"
   | "access.inviteOnly"
   | "access.conditionsApply"
+  | "access.spaceMembersCanJoin"
   | "access.canRequest"
   | "access.unknown"
   | "access.unknownFull"
@@ -12,6 +13,8 @@ export type MessageId =
   | "access.publicDescription"
   | "access.inviteOnlyDescription"
   | "access.conditionsDescription"
+  | "access.spaceMembersCanJoinDescription"
+  | "access.spaceMembersCanJoinCanRequestDescription"
   | "access.requestDescription"
   | "access.knockRestrictedDescription"
   | "access.conditionsRouteDescription"
@@ -1780,6 +1783,7 @@ const en: Catalog = {
   "access.public": "Public",
   "access.inviteOnly": "Invite only",
   "access.conditionsApply": "Conditions apply",
+  "access.spaceMembersCanJoin": "Space members can join",
   "access.canRequest": "Can request",
   "access.unknown": "Unknown",
   "access.unknownFull": "Unknown join conditions",
@@ -1789,6 +1793,10 @@ const en: Catalog = {
   "access.inviteOnlyDescription": "An invitation is required to join.",
   "access.conditionsDescription":
     "Members of specified Spaces or rooms can join without an invitation. Others need an invitation.",
+  "access.spaceMembersCanJoinDescription":
+    "Members of {space} can join without an invitation. Others need an invitation.",
+  "access.spaceMembersCanJoinCanRequestDescription":
+    "Members of {space} can join without an invitation. Others can request an invitation or accept one.",
   "access.requestDescription":
     "You can request an invitation. An invitation is required to join.",
   "access.knockRestrictedDescription":
@@ -3496,6 +3504,7 @@ const ja: Catalog = {
   "access.public": "公開",
   "access.inviteOnly": "招待制",
   "access.conditionsApply": "参加条件有",
+  "access.spaceMembersCanJoin": "スペースのメンバーは参加できます",
   "access.canRequest": "申請可",
   "access.unknown": "不明",
   "access.unknownFull": "参加条件不明",
@@ -3505,6 +3514,10 @@ const ja: Catalog = {
   "access.inviteOnlyDescription": "参加には招待が必要です。",
   "access.conditionsDescription":
     "指定されたSpace・ルームのメンバーは招待なしで参加できます。それ以外は招待が必要です。",
+  "access.spaceMembersCanJoinDescription":
+    "{space}のメンバーは招待なしで参加できます。それ以外は招待が必要です。",
+  "access.spaceMembersCanJoinCanRequestDescription":
+    "{space}のメンバーは招待なしで参加できます。それ以外は参加を申請するか、招待を受ける必要があります。",
   "access.requestDescription":
     "参加を申請できます。参加には招待が必要です。",
   "access.knockRestrictedDescription":

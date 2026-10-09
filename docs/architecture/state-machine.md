@@ -3758,9 +3758,23 @@ stateDiagram-v2
   active membership.
 - Join rules are projected as the server holds them: `knockRestricted` and
   rules the client does not model (`unknown`) are distinct values, never folded
-  into `restricted` or `invite`. A missing `m.room.join_rules` event is
-  `invite`. Only `public`, `invite`, `knock`, and `private` can be sent back
-  (`RoomJoinRule::is_settable`); the others fail as an invalid setting.
+  into `restricted` or `invite`. Only `public`, `invite`, `knock`, and
+  `private` can be sent back (`RoomJoinRule::is_settable`); the others fail as
+  an invalid setting.
+- Each joined room's own access condition (#1166, #1220) is projected from its
+  `m.room.join_rules` as `RoomAccessCondition { join_rule, restricted,
+  allow_targets }`. `join_rule` is `None` when the rule content is unavailable,
+  so an unsynced rule is never defaulted to `invite` and reported as inspected;
+  the room-settings snapshot keeps the SDK's own `invite` default. `restricted`
+  is the five-way completeness (not inspected / confirmed empty / membership
+  only / membership plus unsupported / unsupported only) and must be carried to
+  the pre-send settings read before a restricted rule is written. `allow_targets`
+  keeps every distinct target with the kind its local `m.room.create` proves
+  (`Space` / `Room` / `Unknown`); the target id stays inside Rust. The sidebar
+  resolves ids to display labels and derives `access_space_members_route`, the
+  one fact that admits the specific "Space members can join" sentence: exactly
+  one distinct target, verified a Space, with a resolvable non-id name. `private`
+  is never that route and no raw room id reaches a renderer.
 - `SpaceSummary.join_rule` carries each Space's join rule from every room-list
   update. When it changes between two synced values for the Space whose
   settings are open, the reducer copies it into

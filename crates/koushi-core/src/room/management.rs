@@ -9,9 +9,9 @@ use koushi_sdk::{
     MatrixRoomSettingsSnapshot, MatrixUserTrustState,
 };
 use koushi_state::{
-    AppAction, RestrictedConditions, RoomHistoryVisibility, RoomJoinRule, RoomMemberRole,
-    RoomMemberRoleOption, RoomMemberSummary, RoomModerationAction, RoomPermissionFacts,
-    RoomSettingChange, RoomSettingsSnapshot, UserTrustState,
+    AppAction, RestrictedConditions, RoomAllowTargetKind, RoomHistoryVisibility, RoomJoinRule,
+    RoomMemberRole, RoomMemberRoleOption, RoomMemberSummary, RoomModerationAction,
+    RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot, UserTrustState,
 };
 
 fn room_settings_snapshot_from_sdk(settings: MatrixRoomSettingsSnapshot) -> RoomSettingsSnapshot {
@@ -93,16 +93,37 @@ pub(super) fn room_join_rule_from_sdk(join_rule: MatrixRoomJoinRule) -> RoomJoin
     }
 }
 
-/// Mirror of the SDK's restricted-allow-condition classification (#1166).
+/// Mirror of the SDK's restricted-allow-condition completeness (#1220).
 pub(super) fn restricted_conditions_from_sdk(
-    conditions: koushi_sdk::MatrixRestrictedConditions,
+    conditions: koushi_sdk::MatrixRestrictedCompleteness,
 ) -> RestrictedConditions {
     match conditions {
-        koushi_sdk::MatrixRestrictedConditions::Usable => RestrictedConditions::Usable,
-        koushi_sdk::MatrixRestrictedConditions::NoneUsable => RestrictedConditions::NoneUsable,
-        koushi_sdk::MatrixRestrictedConditions::UnknownAllowRule => {
-            RestrictedConditions::UnknownAllowRule
+        koushi_sdk::MatrixRestrictedCompleteness::NotInspected => {
+            RestrictedConditions::NotInspected
         }
+        koushi_sdk::MatrixRestrictedCompleteness::ConfirmedEmpty => {
+            RestrictedConditions::ConfirmedEmpty
+        }
+        koushi_sdk::MatrixRestrictedCompleteness::MembershipOnly => {
+            RestrictedConditions::MembershipOnly
+        }
+        koushi_sdk::MatrixRestrictedCompleteness::MembershipPlusUnsupported => {
+            RestrictedConditions::MembershipPlusUnsupported
+        }
+        koushi_sdk::MatrixRestrictedCompleteness::UnsupportedOnly => {
+            RestrictedConditions::UnsupportedOnly
+        }
+    }
+}
+
+/// Mirror of the SDK's verified allow-target kind (#1220).
+pub(super) fn allow_target_kind_from_sdk(
+    kind: koushi_sdk::MatrixAllowTargetKind,
+) -> RoomAllowTargetKind {
+    match kind {
+        koushi_sdk::MatrixAllowTargetKind::Space => RoomAllowTargetKind::Space,
+        koushi_sdk::MatrixAllowTargetKind::Room => RoomAllowTargetKind::Room,
+        koushi_sdk::MatrixAllowTargetKind::Unknown => RoomAllowTargetKind::Unknown,
     }
 }
 

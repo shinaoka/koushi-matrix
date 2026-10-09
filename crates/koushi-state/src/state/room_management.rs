@@ -244,36 +244,60 @@ impl RoomJoinRule {
     }
 }
 
-/// Whether a `restricted`/`knock_restricted` rule has an allow condition this
-/// client can evaluate (#1166). Mirrors the SDK's classification.
+/// What the client could determine about a `restricted`/`knock_restricted`
+/// rule's allow conditions (#1220). Mirrors the SDK's five-way completeness.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RestrictedConditions {
-    /// At least one allow entry is a room-membership rule: a real route exists.
-    Usable,
-    /// Every allow entry is a modelled rule type, and none admits joining
-    /// without an invitation.
-    NoneUsable,
-    /// An entry uses a rule type this client does not model, so an empty usable
-    /// set is not confirmed.
-    UnknownAllowRule,
+    /// The join-rule content is unavailable (unsynced or hidden): nothing is
+    /// claimed about the rule or its allow list.
+    NotInspected,
+    /// The rule is restricted and its allow list is empty.
+    ConfirmedEmpty,
+    /// Every allow entry is a room-membership rule, and there is at least one.
+    MembershipOnly,
+    /// At least one room-membership entry beside at least one unmodelled entry.
+    MembershipPlusUnsupported,
+    /// At least one allow entry, all of them unmodelled.
+    UnsupportedOnly,
 }
 
-/// One room's projected access condition (#1166).
+/// The kind of one restricted-rule allow target (#1220), verified from the
+/// local room's create event.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoomAllowTargetKind {
+    Space,
+    Room,
+    Unknown,
+}
+
+/// One distinct allow target of a restricted rule (#1220).
 ///
-/// The join rule is always present; the restricted-rule facts are only carried
-/// when the rule is `restricted`/`knock_restricted`, so a tooltip can explain
-/// that an invitation is required when no usable condition exists without
-/// claiming that about rules it never inspected.
+/// The id stays inside Rust: every distinct target is counted before unnamed
+/// ones are dropped, and the sidebar resolves the id to a display label rather
+/// than exposing it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomAllowTarget {
+    pub kind: RoomAllowTargetKind,
+    pub room_id: String,
+}
+
+/// One room's projected access condition (#1166, #1220).
+///
+/// The join rule is `None` when the rule content is unavailable, so an unsynced
+/// rule is never defaulted to `Invite` and reported as inspected. The
+/// restricted facts are carried only when the rule is
+/// `restricted`/`knock_restricted`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RoomAccessCondition {
-    pub join_rule: RoomJoinRule,
+    pub join_rule: Option<RoomJoinRule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restricted: Option<RestrictedConditions>,
-    /// Rooms and Spaces a restricted rule names as membership routes (#1166).
+    /// Rooms and Spaces a restricted rule names as membership routes (#1220).
     /// Rust resolves these to display labels before the renderer sees anything.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_room_ids: Vec<String>,
+    pub allow_targets: Vec<RoomAllowTarget>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

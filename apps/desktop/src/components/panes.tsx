@@ -840,8 +840,10 @@ export function TimelinePane({
     ? sidebarRoomAccess(snapshot.sidebar, timelineRoomId)
     : null;
   const headerAccess = headerRoomAccess
-    ? roomAccessIndicator(headerRoomAccess.joinRule, headerRoomAccess.restricted) ??
-      ROOM_ACCESS_CHECKING
+    ? roomAccessIndicator(headerRoomAccess.joinRule, headerRoomAccess.restricted, {
+        spaceMembersRoute: headerRoomAccess.spaceMembersRoute,
+        allowedRoomNames: headerRoomAccess.allowedRoomNames
+      }) ?? ROOM_ACCESS_CHECKING
     : null;
   const liveLatestEventId = roomLatestDisplayEventId(activeRoom?.latest_event);
   const threadAttention = snapshot.state.domain.thread_attention;
@@ -1006,7 +1008,8 @@ export function TimelinePane({
             <Tooltip
               label={roomAccessTooltipLabel(
                 headerAccess.descriptionMessageId,
-                headerRoomAccess?.allowedRoomNames
+                headerAccess.descriptionAllowedRoomNames,
+                headerAccess.descriptionSpaceName
               )}
             >
               {(triggerProps) => (
@@ -1030,14 +1033,11 @@ export function TimelinePane({
             ? roomAccessHeaderBadges(headerAccess).map((badge) => (
                 <Tooltip
                   key={badge.labelMessageId}
-                  label={
-                    badge.labelMessageId === "access.conditionsApply"
-                      ? roomAccessTooltipLabel(
-                          badge.descriptionMessageId,
-                          headerRoomAccess?.allowedRoomNames
-                        )
-                      : t(badge.descriptionMessageId)
-                  }
+                  label={roomAccessTooltipLabel(
+                    badge.descriptionMessageId,
+                    badge.descriptionAllowedRoomNames,
+                    badge.descriptionSpaceName
+                  )}
                 >
                   {(triggerProps) => (
                     <span className="channel-access-badge" tabIndex={0} {...triggerProps}>

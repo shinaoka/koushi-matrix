@@ -61,6 +61,7 @@ import {
 import { FilesView } from "./FilesView";
 import { ModalDialog } from "./ModalDialog";
 import { RoomInfoPanel } from "./RoomInfoPanel";
+import { sidebarRoomAccess } from "../domain/accessCondition";
 import type { HistoryExportControls } from "./HistoryExportDialog";
 import { SpaceInfoPanel } from "./SpaceInfoPanel";
 import { ThreadsListView } from "./ThreadsListView";
@@ -660,6 +661,9 @@ export function ContextualRightPanel({
           appSettings={snapshot.state.domain.settings}
           linkPreviewSettings={snapshot.state.domain.link_preview_settings}
           spaces={snapshot.state.domain.spaces}
+          access={
+            activeRoom ? sidebarRoomAccess(snapshot.sidebar, activeRoom.room_id) : null
+          }
           onInvitePeople={
             activeRoom
               ? () =>

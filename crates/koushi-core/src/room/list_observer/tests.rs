@@ -1281,16 +1281,23 @@ async fn live_room_list_projects_each_rooms_own_access_condition() {
     assert_eq!(
         projected
             .get(public_room.as_str())
-            .map(|access| access.join_rule),
+            .and_then(|access| access.join_rule),
         Some(koushi_state::RoomJoinRule::Public),
         "a public room keeps its own rule"
     );
     assert_eq!(
         projected
             .get(default_room.as_str())
-            .map(|access| access.join_rule),
-        Some(koushi_state::RoomJoinRule::Invite),
-        "a room without m.room.join_rules is invite-only, not unknown"
+            .and_then(|access| access.join_rule),
+        None,
+        "a room whose m.room.join_rules was not inspected is not claimed invite-only"
+    );
+    assert_eq!(
+        projected
+            .get(default_room.as_str())
+            .and_then(|access| access.restricted),
+        Some(koushi_state::RestrictedConditions::NotInspected),
+        "an unavailable rule is reported as not inspected"
     );
     assert_eq!(
         projected

@@ -186,9 +186,15 @@ Open **Room info**. Each property is shown, changed, and confirmed in one card:
   removes the topic or avatar. The avatar card shows the room's picture and its
   `mxc://` address.
 - **Access and history**: **Join rule** and **History visibility**. Choose
-  **Change**, pick a value, and choose **Save**. The explanation under the choice
-  describes the value you are about to save, including when history becomes
-  visible to anyone and that a change does not apply to messages already sent.
+  **Change**, pick a value, and choose **Save**. Changing the join rule needs
+  permission to change join rules, which is separate from permission to rename
+  the room, so an account that may change access but not the room name can still
+  change it. A restricted rule is summarised by its people-facing access
+  condition (**Conditions apply**, or **Space members can join** when exactly
+  one Space is verified) rather than as **Private**. The explanation under the
+  choice describes the value you are about to save, including when history
+  becomes visible to anyone and that a change does not apply to messages already
+  sent.
 
 The badges at the top of **Room info**, such as **Public** or **Anyone can see
 history**, move to the matching card. A card shows **Saving…** while the change

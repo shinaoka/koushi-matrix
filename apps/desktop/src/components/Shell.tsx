@@ -486,14 +486,17 @@ export function WorkspaceRail({
             // #1166: the rail item carries its own projected access condition.
             const spaceRule = space.access_join_rule ?? null;
             const spaceAccess =
-              roomAccessIndicator(spaceRule, space.access_restricted_conditions) ??
-              ROOM_ACCESS_CHECKING;
+              roomAccessIndicator(spaceRule, space.access_restricted_conditions, {
+                spaceMembersRoute: space.access_space_members_route,
+                allowedRoomNames: space.access_allowed_room_names
+              }) ?? ROOM_ACCESS_CHECKING;
             const railSummary = roomAccessRailSummary(spaceRule);
             return (
             <Tooltip
               label={`${fallbackName}${t("access.conditionSummarySeparator")}${roomAccessTooltipLabel(
                 spaceAccess.descriptionMessageId,
-                space.access_allowed_room_names
+                spaceAccess.descriptionAllowedRoomNames,
+                spaceAccess.descriptionSpaceName
               )}`}
               key={space.space_id}
             >
@@ -653,7 +656,11 @@ export function Sidebar({
   const activeSpaceAccess = activeSpace
     ? roomAccessIndicator(
         activeSpace.access_join_rule ?? null,
-        activeSpace.access_restricted_conditions
+        activeSpace.access_restricted_conditions,
+        {
+          spaceMembersRoute: activeSpace.access_space_members_route,
+          allowedRoomNames: activeSpace.access_allowed_room_names
+        }
       ) ?? ROOM_ACCESS_CHECKING
     : null;
   const accountHomeActive = snapshot.sidebar.account_home.is_active && !activeSpace;
@@ -698,7 +705,8 @@ export function Sidebar({
             <Tooltip
               label={roomAccessTooltipLabel(
                 activeSpaceAccess.descriptionMessageId,
-                activeSpace?.access_allowed_room_names
+                activeSpaceAccess.descriptionAllowedRoomNames,
+                activeSpaceAccess.descriptionSpaceName
               )}
             >
               {(triggerProps) => (
@@ -724,14 +732,11 @@ export function Sidebar({
             ? roomAccessHeaderBadges(activeSpaceAccess).map((badge) => (
                 <Tooltip
                   key={badge.labelMessageId}
-                  label={
-                    badge.labelMessageId === "access.conditionsApply"
-                      ? roomAccessTooltipLabel(
-                          badge.descriptionMessageId,
-                          activeSpace?.access_allowed_room_names
-                        )
-                      : t(badge.descriptionMessageId)
-                  }
+                  label={roomAccessTooltipLabel(
+                    badge.descriptionMessageId,
+                    badge.descriptionAllowedRoomNames,
+                    badge.descriptionSpaceName
+                  )}
                 >
                   {(triggerProps) => (
                     <span className="workspace-access-badge" tabIndex={0} {...triggerProps}>
@@ -1304,8 +1309,10 @@ function RoomButton({
   // projected the row says so instead of guessing. Lanes that have no joined
   // condition (invitations, not-joined) render none.
   const access =
-    roomAccessIndicator(room.access_join_rule, room.access_restricted_conditions) ??
-    (kind === "room" || kind === "dm" ? ROOM_ACCESS_CHECKING : null);
+    roomAccessIndicator(room.access_join_rule, room.access_restricted_conditions, {
+      spaceMembersRoute: room.access_space_members_route,
+      allowedRoomNames: room.access_allowed_room_names
+    }) ?? (kind === "room" || kind === "dm" ? ROOM_ACCESS_CHECKING : null);
   const roomLabel = roomListItemLabel(room);
   // #1166: the condition is announced as the row's *description*, so the row's
   // accessible name stays exactly the room label other surfaces and tests match
@@ -1372,7 +1379,11 @@ function RoomButton({
       </span>
       {access ? (
         <span className="sr-only" id={accessDescriptionId}>
-          {t(access.descriptionMessageId)}
+          {roomAccessTooltipLabel(
+            access.descriptionMessageId,
+            access.descriptionAllowedRoomNames,
+            access.descriptionSpaceName
+          )}
         </span>
       ) : null}
       {/* #1166: the icon, name and compact badges share the grid's name cell so
@@ -1382,7 +1393,8 @@ function RoomButton({
           <Tooltip
             label={roomAccessTooltipLabel(
               access.descriptionMessageId,
-              room.access_allowed_room_names
+              access.descriptionAllowedRoomNames,
+              access.descriptionSpaceName
             )}
           >
             {(triggerProps) => (
@@ -1405,14 +1417,11 @@ function RoomButton({
           ? access.badges.map((badge) => (
               <Tooltip
                 key={badge.labelMessageId}
-                label={
-                  badge.labelMessageId === "access.conditionsApply"
-                    ? roomAccessTooltipLabel(
-                        badge.descriptionMessageId,
-                        room.access_allowed_room_names
-                      )
-                    : t(badge.descriptionMessageId)
-                }
+                label={roomAccessTooltipLabel(
+                  badge.descriptionMessageId,
+                  badge.descriptionAllowedRoomNames,
+                  badge.descriptionSpaceName
+                )}
               >
                 {(triggerProps) => (
                   <span className="room-access-badge" {...triggerProps}>
