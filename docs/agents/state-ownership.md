@@ -451,7 +451,11 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
 - Thread-root lifecycle and placement are also Rust-owned. The session-scoped
   `ThreadRootProjectionService` retains canonical/hydrated root snapshots until
   authoritative aggregate/redaction clear, Room unsubscribe, or session teardown;
-  a bounded display omission is dormant, never deletion. Rust State mirrors only
+  a bounded display omission is dormant, never deletion. Thread summaries describe
+  aggregate presentation state, not complete per-thread unread state: capability
+  advertisement and a room-badge change do not prove thread-event delivery, so a
+  thread contribution may be added to room totals only with a proven
+  non-overlapping decomposition. Rust State mirrors only
   explicit Core lifecycle actions. The Room actor's `DisplayProjectionState`
   applies root-event/latest-reply order, standalone-reply suppression, stable row
   identity and display-relative diffs. `TimelineItem` display metadata is a

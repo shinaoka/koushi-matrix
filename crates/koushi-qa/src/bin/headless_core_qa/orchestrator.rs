@@ -937,6 +937,25 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         )
         .await?;
 
+        // #1238 diagnostic: A keeps the room subscribed, as a resident room is in the
+        // app, so B's thread reply reaches A's room timeline as a live diff and the
+        // delivery diagnostic can measure that boundary.
+        let pre_thread_room_subscribe_id = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+                request_id: pre_thread_room_subscribe_id,
+                key: key_a.clone(),
+                initial_backfill: koushi_protocol::command::InitialBackfillPolicy::Disabled,
+            }))
+            .await
+            .map_err(|e| format!("submit pre-thread room subscribe A: {e}"))?;
+        let _ = wait_for_initial_items(
+            &mut conn_a,
+            &key_a,
+            pre_thread_room_subscribe_id,
+            "pre-thread room subscribe A",
+        )
+        .await?;
         let txn_b_thread_reply = "qa-phase11-txn-b-thread-reply".to_owned();
         let send_b_thread_reply_id = conn_b.next_request_id();
         conn_b
@@ -998,6 +1017,35 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         .await?;
         println!("thread_projection_lifecycle=stable");
         println!("thread_summary=ok");
+
+        // #1238 diagnostic (temporary): name the boundary where an unopened
+        // thread's replies stop being delivered, rather than inferring it from a
+        // room badge. Private-data-free: booleans and counts only.
+        let delivery = conn_a.snapshot().thread_delivery;
+        let tri = |value: Option<bool>| match value {
+            Some(true) => "yes",
+            Some(false) => "no",
+            None => "unknown",
+        };
+        println!(
+            "thread_delivery_detail capability={} subscribe={} subscribed={} cache_read={} unread={} notifications={} mentions={}",
+            tri(delivery.capability_advertised),
+            if delivery.subscribe_attempted {
+                "yes"
+            } else {
+                "no"
+            },
+            tri(delivery.subscribe_succeeded),
+            if delivery.thread_cache_read {
+                "yes"
+            } else {
+                "no"
+            },
+            delivery.thread_cache_unread,
+            delivery.thread_cache_notifications,
+            delivery.thread_cache_mentions,
+        );
+        println!("thread_delivery=recorded");
 
         let thread_key_a = TimelineKey {
             account_key: account_key_a.clone(),

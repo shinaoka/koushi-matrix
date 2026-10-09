@@ -64,6 +64,11 @@ pub enum AppAction {
         blocked_request_id: u64,
         request_id: u64,
     },
+    /// #1238 diagnostic (temporary): the measured boundary of unopened-thread
+    /// delivery for one room.
+    ThreadDeliveryDiagnosticRecorded {
+        diagnostic: crate::state::ThreadDeliveryDiagnostic,
+    },
     SlidingSyncCapabilityRevalidationStarted {
         account_epoch: u64,
         request_id: u64,

@@ -105,6 +105,10 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         | AppAction::SlidingSyncCapabilityRevalidationCompleted { .. }) => {
             sliding_sync::reduce(state, action)
         }
+        AppAction::ThreadDeliveryDiagnosticRecorded { diagnostic } => {
+            state.thread_delivery = diagnostic;
+            Vec::new()
+        }
         AppAction::RestoreSessionSucceeded(info) => {
             session::handle_restore_session_succeeded(state, info)
         }

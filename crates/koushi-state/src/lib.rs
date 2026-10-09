@@ -184,7 +184,7 @@ pub fn encrypted_messaging_is_admitted(state: &AppState) -> bool {
 pub use state::{
     SlidingSyncAdmission, SlidingSyncAdmissionKind, SlidingSyncAdmissionSource,
     SlidingSyncCapabilityFailureKind, SlidingSyncCapabilityResult, SlidingSyncCapabilityState,
-    SlidingSyncPositiveEvidence, SlidingSyncRevalidationState,
+    SlidingSyncPositiveEvidence, SlidingSyncRevalidationState, ThreadDeliveryDiagnostic,
 };
 // Space add-existing-room projection and linking settlements (#1007).
 pub use space_add_rooms::{
