@@ -1334,118 +1334,36 @@ function harnessAccessOutcome() {
   };
 }
 
-interface HarnessDraft {
-  scope: { kind: string; roomId?: string; sessionId?: number };
-  revision: number;
-  rule?: string | null;
-  allowTargets?: string[];
-  history?: string | null;
-}
-
-/** Mirror the Rust reducer's draft mutation so the browser harness round-trips it. */
-function harnessDraftFromCommand(
-  current: HarnessDraft | null,
-  command: {
-    kind: "rule" | "allowTargets" | "history" | "reset";
-    scope: HarnessDraft["scope"];
-    rule?: string | null;
-    allowTargets?: string[];
-    history?: string | null;
-  }
-): HarnessDraft | null {
-  if (command.kind === "reset") return null;
-  const base =
-    current && JSON.stringify(current.scope) === JSON.stringify(command.scope)
-      ? current
-      : { scope: command.scope, revision: 0, allowTargets: [] };
-  const next = { ...base, revision: base.revision + 1 };
-  switch (command.kind) {
-    case "rule":
-      return { ...next, rule: command.rule ?? null };
-    case "allowTargets":
-      return {
-        ...next,
-        allowTargets: [...new Set((command.allowTargets ?? []).filter(Boolean))].sort()
-      };
-    case "history":
-      return { ...next, history: command.history ?? null };
-  }
-}
-
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
 // any unanticipated snapshot read still renders the shell.
 mock.setCommandResponse("get_snapshot", () => currentSnapshot);
-// #1177: the shared access/history editor's Rust previews. The harness returns
-// a well-formed outcome so the editor renders in the browser specs; the real
-// Rust resolver owns the wording and substitutions.
-mock.setCommandResponse("preview_room_access", ({ scope, context }: { scope: unknown; context: unknown }) => ({
-  scope,
-  context,
-  confirmed: false,
-  outcome: harnessAccessOutcome()
+// #1177 fixture-only browser contract: the harness must not reimplement the
+// Rust draft reducer, its canonicalization or Create's normalization. A spec
+// seeds the Rust-shaped snapshot/result fixture for the transition it tests and
+// asserts on the dispatched command; these defaults only keep an unrelated
+// snapshot read rendering a well-formed editor.
+mock.setCommandResponse("set_room_access_draft", () => ({
+  kind: "admitted",
+  request_id: 0
 }));
-mock.setCommandResponse("set_room_access_draft", ({
-  command
-}: {
-  command: Parameters<typeof harnessDraftFromCommand>[1];
-}) => {
-  const draft = harnessDraftFromCommand(
-    (currentSnapshot.state.domain.room_management.draft as HarnessDraft | null) ?? null,
-    command
-  );
-  setCurrentSnapshot({
-    ...currentSnapshot,
-    state: {
-      ...currentSnapshot.state,
-      domain: {
-        ...currentSnapshot.state.domain,
-        room_management: {
-          ...currentSnapshot.state.domain.room_management,
-          draft: draft as typeof currentSnapshot.state.domain.room_management.draft
-        }
-      }
-    }
-  });
-  harnessControl.pushStateUpdate();
-  return { kind: "admitted", request_id: 0 };
-});
 mock.setCommandResponse(
-  "preview_create_room_access",
-  ({
+  "preview_room_access",
+  ({ scope, context }: { scope: unknown; context: unknown }) => ({
     scope,
-    input
-  }: {
-    scope: unknown;
-    input: { visibility: string; parentSpaceId?: string | null };
-  }) => {
-    const draft = currentSnapshot.state.domain.room_management.draft;
-    const own = draft?.scope.kind === "create" ? (draft as HarnessDraft) : null;
-    const explicitRule = own?.rule ?? null;
-    // Mirror the Rust normalization: an explicit draft wins; else public wins;
-    // a private room in a Space keeps the legacy restricted preset.
-    const effectiveRule =
-      explicitRule ??
-      (input.visibility === "public" ? "public" : input.parentSpaceId ? "restricted" : "invite");
-    const effectiveHistory =
-      own?.history ??
-      (input.visibility !== "public" && input.parentSpaceId ? "invited" : "shared");
-    const rejection =
-      explicitRule === "restricted" && (own?.allowTargets ?? []).length === 0
-        ? "emptyAccessTargets"
-        : input.visibility === "public" && explicitRule === "restricted"
-          ? "publicWithRestrictedAccess"
-          : undefined;
-    return {
-      scope,
-      confirmed: false,
-      outcome: harnessAccessOutcome(),
-      effectiveRule,
-      effectiveHistory,
-      rejection,
-      roomVersionPinned: effectiveRule === "restricted"
-    };
-  }
+    context,
+    confirmed: true,
+    outcome: harnessAccessOutcome()
+  })
 );
+mock.setCommandResponse("preview_create_room_access", ({ scope }: { scope: unknown }) => ({
+  scope,
+  confirmed: false,
+  outcome: harnessAccessOutcome(),
+  effectiveRule: "invite",
+  effectiveHistory: "shared",
+  rejection: null,
+  roomVersionPinned: false
+}));
 mock.setCommandResponse("list_account_tabs", harnessAccountTabsSnapshot);
 mock.setCommandResponse("select_account_tab", harnessAccountTabsSnapshot);
 // Explicit adapter projections: tests publish later states rather than emulate the updater.

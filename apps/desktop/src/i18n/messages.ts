@@ -555,7 +555,6 @@ export type MessageId =
   | "room.accessUnavailableUnsupported"
   | "room.accessUnavailableNotInspected"
   | "room.accessUnavailableNotSettable"
-  | "room.accessUnavailablePrivate"
   | "room.accessRejectionPublicWithRestrictedAccess"
   | "room.accessRejectionExplicitPolicyWithInvitedOnly"
   | "room.accessRejectionEmptyAccessTargets"
@@ -2409,7 +2408,6 @@ const en: Catalog = {
   "room.accessUnavailableUnsupported": "This room's current conditions include content this app does not model, so it cannot rewrite them safely.",
   "room.accessUnavailableNotInspected": "This room's current conditions could not be verified.",
   "room.accessUnavailableNotSettable": "This rule cannot be set from this app.",
-  "room.accessUnavailablePrivate": "Private is reserved and is not offered as a Space route.",
   "room.accessRejectionPublicWithRestrictedAccess": "A public room cannot also be limited to members of a Space.",
   "room.accessRejectionExplicitPolicyWithInvitedOnly": "Turn off invite-only before choosing an explicit access rule.",
   "room.accessRejectionEmptyAccessTargets": "Choose at least one Space for this rule.",
@@ -4177,7 +4175,6 @@ const ja: Catalog = {
   "room.accessUnavailableUnsupported": "現在の参加条件にこのアプリが扱えない内容が含まれるため、安全に書き換えられません。",
   "room.accessUnavailableNotInspected": "現在の参加条件を確認できませんでした。",
   "room.accessUnavailableNotSettable": "このルールはこのアプリから設定できません。",
-  "room.accessUnavailablePrivate": "プライベートは予約済みの値で、スペース経由のルートとしては提示されません。",
   "room.accessRejectionPublicWithRestrictedAccess": "公開ルームをスペースのメンバー限定にすることはできません。",
   "room.accessRejectionExplicitPolicyWithInvitedOnly": "明示的な参加ルールを選ぶ前に、招待制をオフにしてください。",
   "room.accessRejectionEmptyAccessTargets": "このルールには少なくとも一つのスペースを選んでください。",

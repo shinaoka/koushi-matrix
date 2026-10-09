@@ -2832,15 +2832,33 @@ function AccountContent({
   );
   const previousRoomAccessRoomRef = useRef<string | null>(null);
   useEffect(() => {
-    const roomId = snapshot?.state.ui.navigation.active_room_id ?? null;
-    if (roomId === previousRoomAccessRoomRef.current) return;
-    previousRoomAccessRoomRef.current = roomId;
+    if (rightPanelMode !== "roomInfo") return;
+    if (!snapshot) return;
+    const roomId = snapshot.state.ui.navigation.active_room_id ?? null;
     if (!roomId) return;
-    // Drop a draft left from an earlier visit to this room.
+    const roomManagement = snapshot.state.domain.room_management;
+    if (roomManagement.settings?.room_id !== roomId) return;
+    const draft = roomManagement.draft;
+    const hasRoomDraft = draft?.scope.kind === "room" && draft.scope.roomId === roomId;
+    // Admit a room editor lifetime whenever this room has no draft: Rust seeds
+    // it from the confirmed policy, so the editor restores the confirmed allow
+    // list instead of the renderer guessing it from a lagging scalar (#1177). A
+    // create dialog also owns the single draft slot, so never fight it; reseed
+    // the room only once that draft is gone.
+    const key = `${roomId}\u0000${hasRoomDraft ? "draft" : draft ? "other" : "none"}`;
+    if (previousRoomAccessRoomRef.current === key) return;
+    previousRoomAccessRoomRef.current = key;
+    if (draft) return;
     void api
-      .setRoomAccessDraft({ kind: "reset", scope: { kind: "room", roomId } })
+      .setRoomAccessDraft({ kind: "open", scope: { kind: "room", roomId } })
       .catch(() => undefined);
-  }, [api, snapshot?.state.ui.navigation.active_room_id]);
+  }, [
+    api,
+    rightPanelMode,
+    snapshot?.state.ui.navigation.active_room_id,
+    snapshot?.state.domain.room_management.settings,
+    snapshot?.state.domain.room_management.draft
+  ]);
 
   // Space info and Space Members both read the Space's permissions from the
   // single Rust room_management slot, which room-scoped loads (room invite

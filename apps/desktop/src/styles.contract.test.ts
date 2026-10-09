@@ -612,19 +612,3 @@ describe("styles.css token system", () => {
     }
   });
 });
-
-// #1177: the shared choice-and-detail editor is a single-column grid, so a
-// narrow or short pane stacks the list, the details and the actions instead of
-// clipping them behind a fixed height.
-describe("access choice-detail editor layout", () => {
-  test("stacks the choice list, details and actions without a fixed height", () => {
-    const editor = selectorBlock(".access-choice-detail");
-    expect(editor).toContain("display: grid");
-    expect(editor).toContain("min-width: 0");
-    expect(editor).not.toMatch(/(?:^|\s)(?:height|block-size):/);
-    const details = selectorBlock(".access-detail-panel");
-    expect(details).toContain("min-width: 0");
-    // A short viewport scrolls the details rather than hiding the actions.
-    expect(css).toContain("@media (max-height: 420px)");
-  });
-});

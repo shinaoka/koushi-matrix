@@ -482,14 +482,11 @@ export function CreateEntityDialog({
                               type="checkbox"
                               checked={createAllowTargets.includes(space.id)}
                               onChange={(event) => {
-                                const target = event.currentTarget;
-                                const next = target.checked
-                                  ? [...createAllowTargets, space.id]
-                                  : createAllowTargets.filter((id) => id !== space.id);
                                 onSetRoomAccessDraft({
-                                  kind: "allowTargets",
+                                  kind: "toggleAllowTarget",
                                   scope: createScope,
-                                  allowTargets: next
+                                  target: space.id,
+                                  selected: event.currentTarget.checked
                                 });
                               }}
                             />
@@ -519,17 +516,9 @@ export function CreateEntityDialog({
               }
               onSelect={(value) => {
                 const rule = value as RoomJoinRule;
-                const restricted = rule === "restricted";
+                // Rust clears any retained target set when the new rule carries
+                // none (#1177).
                 onSetRoomAccessDraft({ kind: "rule", scope: createScope, rule });
-                // A non-restricted rule carries no allow list; clear any targets
-                // retained from a previous restricted selection.
-                if (!restricted) {
-                  onSetRoomAccessDraft({
-                    kind: "allowTargets",
-                    scope: createScope,
-                    allowTargets: []
-                  });
-                }
                 updateRoomOptions({
                   visibility: rule === "public" ? "public" : "private",
                   invitedOnly: false

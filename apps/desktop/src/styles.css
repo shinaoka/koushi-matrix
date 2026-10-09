@@ -8541,20 +8541,39 @@ kbd {
 }
 
 /*
- * #1177: the shared choice-and-detail editor. The choice list and the Rust
- * details stack as grid rows, so a narrow or short pane keeps every choice and
- * the Save/Cancel actions reachable without a fixed height.
+ * #1177: the shared choice-and-detail editor. Wide panes split the choice list
+ * from the Rust details so both are visible at once; a narrow or short pane
+ * stacks them, so every choice and the Save/Cancel actions stay reachable
+ * without a fixed height.
  */
 .access-choice-detail {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  grid-template-areas:
+    "legend legend"
+    "choices details"
+    "actions actions";
   gap: 10px;
+  align-items: start;
   min-width: 0;
   margin: 0;
   padding: 0;
   border: 0;
 }
 
+@media (max-width: 640px), (max-height: 520px) {
+  .access-choice-detail {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "legend"
+      "choices"
+      "details"
+      "actions";
+  }
+}
+
 .access-choice-detail-legend {
+  grid-area: legend;
   padding: 0;
   color: var(--text-muted);
   font-size: 12px;
@@ -8562,6 +8581,7 @@ kbd {
 }
 
 .access-choice-list {
+  grid-area: choices;
   display: grid;
   gap: 4px;
   min-width: 0;
@@ -8620,6 +8640,7 @@ kbd {
 }
 
 .access-detail-panel {
+  grid-area: details;
   display: grid;
   gap: 6px;
   min-width: 0;
@@ -8627,6 +8648,10 @@ kbd {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
+}
+
+.access-choice-detail > .profile-settings-actions {
+  grid-area: actions;
 }
 
 .access-detail-heading {

@@ -1813,6 +1813,12 @@ export interface CreateRoomAccessSeed {
 export type RoomAccessDraftCommand =
   | { kind: "rule"; scope: RoomAccessDraftScope; rule?: RoomJoinRule | null }
   | { kind: "allowTargets"; scope: RoomAccessDraftScope; allowTargets: string[] }
+  | {
+      kind: "toggleAllowTarget";
+      scope: RoomAccessDraftScope;
+      target: string;
+      selected: boolean;
+    }
   | { kind: "history"; scope: RoomAccessDraftScope; history?: RoomHistoryVisibility | null }
   | { kind: "reset"; scope: RoomAccessDraftScope }
   | { kind: "open"; scope: RoomAccessDraftScope; create?: CreateRoomAccessSeed };

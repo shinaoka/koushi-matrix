@@ -62,6 +62,19 @@ import type {
   RoomAccessPreview,
 } from "../domain/types";
 
+/**
+ * The canonical key of one access policy (#1177): the rule plus its sorted,
+ * deduplicated allow-target set. The Saved status compares this key, so an
+ * allow-list-only edit on the same rule is attributed to the allow list, never
+ * to the shared scalar rule.
+ */
+export function canonicalAccessPolicyKey(
+  rule: RoomJoinRule | null,
+  allowTargets: readonly string[]
+): string {
+  return JSON.stringify([rule ?? "", [...allowTargets].sort()]);
+}
+
 export function RoomInfoPanel({
   room,
   roomManagement,
@@ -291,6 +304,20 @@ export function RoomInfoPanel({
       return { kind: "failed", message: roomSettingFailureMessage(operation.failureKind) };
     }
     // Saved only once Rust's snapshot carries the submitted value.
+    if (field === "joinRule") {
+      // A join-rule save is proven only by the FULL canonical policy: a
+      // restricted(A) → restricted(B) edit must not read as saved from the
+      // shared scalar rule alone (#1177). Rust's preview reports whether the
+      // current draft still equals the confirmed policy; the draft key proves it
+      // is the policy we submitted.
+      const confirmedDraftKey =
+        accessDraft?.rule != null
+          ? canonicalAccessPolicyKey(accessDraft.rule, accessDraft.allowTargets ?? [])
+          : null;
+      return accessPreview?.confirmed === true && confirmedDraftKey === submission.target
+        ? { kind: "saved" }
+        : null;
+    }
     return (confirmedValue(field)?.trim() || null) === submission.target
       ? { kind: "saved" }
       : null;
@@ -571,23 +598,15 @@ export function RoomInfoPanel({
                             disabled={!mayChangeJoinRule || settingsPending}
                             onChange={(event) => {
                               if (!accessScope) return;
-                              const target = event.currentTarget;
-                              const next = target.checked
-                                ? [...selectedAllowTargets, space.id]
-                                : selectedAllowTargets.filter((id) => id !== space.id);
-                              // A target edit on the confirmed restricted rule must
-                              // also establish that rule, or Save stays disabled.
-                              if (draftRule == null) {
-                                onSetAccessDraft?.({
-                                  kind: "rule",
-                                  scope: accessScope,
-                                  rule: "restricted"
-                                });
-                              }
+                              // One target edit against the draft's current set
+                              // (#1177): never a replacement list built from
+                              // lagging props, so two rapid edits cannot drop
+                              // one another.
                               onSetAccessDraft?.({
-                                kind: "allowTargets",
+                                kind: "toggleAllowTarget",
                                 scope: accessScope,
-                                allowTargets: next
+                                target: space.id,
+                                selected: event.currentTarget.checked
                               });
                             }}
                           />
@@ -622,24 +641,19 @@ export function RoomInfoPanel({
                   notes={allowPicker}
                   onSelect={(value) => {
                     if (!accessScope) return;
-                    const rule = value as RoomJoinRule;
+                    // Rust clears any retained target set when the new rule
+                    // carries none (#1177).
                     onSetAccessDraft?.({
                       kind: "rule",
                       scope: accessScope,
-                      rule
+                      rule: value as RoomJoinRule
                     });
-                    // A non-restricted rule carries no allow list; clear any
-                    // targets retained from a previous restricted selection.
-                    if (rule !== "restricted") {
-                      onSetAccessDraft?.({
-                        kind: "allowTargets",
-                        scope: accessScope,
-                        allowTargets: []
-                      });
-                    }
                   }}
                   onSave={() => {
                     if (!accessScope) return;
+                    // The recorded target is the full canonical policy, so a
+                    // same-rule allow-list-only edit is attributed to the allow
+                    // list, not to the shared scalar (#1177).
                     submitSetting(
                       "joinRule",
                       {
@@ -649,16 +663,16 @@ export function RoomInfoPanel({
                             selectedJoinRule === "restricted" ? selectedAllowTargets : []
                         }
                       },
-                      selectedJoinRule
+                      canonicalAccessPolicyKey(selectedJoinRule, selectedAllowTargets)
                     );
                   }}
                   onCancel={() => {
                     if (!accessScope) return;
-                    onSetAccessDraft?.({ kind: "rule", scope: accessScope, rule: null });
+                    // Re-seed the draft from the confirmed policy, so Cancel
+                    // restores the visible allow selection too (#1177).
                     onSetAccessDraft?.({
-                      kind: "allowTargets",
-                      scope: accessScope,
-                      allowTargets: []
+                      kind: "open",
+                      scope: accessScope
                     });
                   }}
                 />
