@@ -6,12 +6,16 @@ import { RoomInfoPanel } from "./RoomInfoPanel";
 import { setActiveLocaleProfile, t } from "../i18n/messages";
 import type {
   LinkPreviewSettingsState,
+  RoomAccessPreview,
+  RoomHistoryVisibility,
+  RoomJoinRule,
   RoomManagementOperationState,
   RoomManagementState,
   RoomNotificationSettings,
   RoomSettingsSnapshot,
   RoomSummary,
-  SettingsState
+  SettingsState,
+  SpaceSummary
 } from "../domain/types";
 
 const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
@@ -154,51 +158,44 @@ describe("RoomInfoPanel", () => {
 
   test("saves join rule and history visibility independently", () => {
     const onUpdateRoomSetting = vi.fn();
-    render(
+    const onSetAccessDraft = vi.fn();
+    const scope = { kind: "room" as const, roomId: baseRoom.room_id };
+    const view = (rule: RoomJoinRule | null, history: RoomHistoryVisibility | null) => (
       <RoomInfoPanel
         room={baseRoom}
         roomNotificationSettings={idleSettings}
         spaces={[]}
         roomManagement={{
           selected_room_id: baseRoom.room_id,
-          settings: {
-            room_id: baseRoom.room_id,
-            name: "Alpha Room",
-            topic: null,
-            avatar_url: null,
-            join_rule: "invite",
-            history_visibility: "shared",
-            permissions: {
-              can_edit_settings: true,
-              can_change_join_rule: true,
-              can_edit_roles: true,
-              can_invite: true,
-              can_kick: true,
-              can_ban: true,
-              can_unban: true
-            },
-            members: []
-          },
+          settings: roomSettings(),
+          draft: { scope, revision: 2, rule, history },
           operation: { kind: "idle" }
         }}
+        accessPreview={accessPreviewFixture("access", false)}
+        historyPreview={accessPreviewFixture("history", false)}
         onUpdateRoomSetting={onUpdateRoomSetting}
+        onSetAccessDraft={onSetAccessDraft}
       />
     );
+    const { rerender } = render(view("invite", "shared"));
 
-    fireEvent.click(screen.getByRole("button", { name: "Change join rule" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Join rule" }), {
-      target: { value: "public" }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save join rule" }));
-    fireEvent.click(screen.getByRole("button", { name: "Change history visibility" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "History visibility" }), {
-      target: { value: "invited" }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save history visibility" }));
-
+    fireEvent.click(within(propertyCard("join-rule")).getByRole("radio", { name: /Public/ }));
+    expect(onSetAccessDraft).toHaveBeenCalledWith({ kind: "rule", scope, rule: "public" });
+    rerender(view("public", "shared"));
+    fireEvent.click(within(propertyCard("join-rule")).getByRole("button", { name: "Save join rule" }));
     expect(onUpdateRoomSetting).toHaveBeenNthCalledWith(1, baseRoom.room_id, {
-      joinRule: "public"
+      accessPolicy: { rule: "public", allowTargets: [] }
     });
+
+    fireEvent.click(
+      within(propertyCard("history-visibility")).getByRole("radio", { name: /Since invite/ })
+    );
+    rerender(view("public", "invited"));
+    fireEvent.click(
+      within(propertyCard("history-visibility")).getByRole("button", {
+        name: "Save history visibility"
+      })
+    );
     expect(onUpdateRoomSetting).toHaveBeenNthCalledWith(2, baseRoom.room_id, {
       historyVisibility: "invited"
     });
@@ -237,13 +234,85 @@ describe("RoomInfoPanel", () => {
     );
 
     expect(propertyCard("join-rule").textContent).toContain(t("room.joinRuleKnockRestricted"));
-    fireEvent.click(screen.getByRole("button", { name: "Change join rule" }));
-    const select = screen.getByRole("combobox", { name: "Join rule" }) as HTMLSelectElement;
-    expect(select.value).toBe("knockRestricted");
-    const current = Array.from(select.options).find((option) => option.value === "knockRestricted");
-    expect(current?.disabled).toBe(true);
-    // Restricted needs an allow list the command does not carry, so it is not offered.
-    expect(Array.from(select.options).some((option) => option.value === "restricted")).toBe(false);
+    const current = within(propertyCard("join-rule")).getByRole("radio", {
+      name: /Knock or restricted/
+    }) as HTMLInputElement;
+    expect(current.disabled).toBe(true);
+    expect(current.checked).toBe(true);
+    // The membership route is offered; the unmodelled rule is shown as itself.
+    expect(
+      within(propertyCard("join-rule")).getByRole("radio", { name: /Members of a Space/ })
+    ).toBeTruthy();
+  });
+
+  test("ignores a draft that belongs to another editor's scope", () => {
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={{
+          selected_room_id: baseRoom.room_id,
+          settings: roomSettings(),
+          draft: { scope: { kind: "create", sessionId: 0 }, revision: 1, rule: "public" },
+          operation: { kind: "idle" }
+        }}
+        accessPreview={accessPreviewFixture("access", true)}
+        onUpdateRoomSetting={vi.fn()}
+        onSetAccessDraft={vi.fn()}
+      />
+    );
+    const card = propertyCard("join-rule");
+    // The confirmed invite rule is selected; the create draft's public rule is not.
+    expect(
+      (within(card).getByRole("radio", { name: /Invite only/ }) as HTMLInputElement).checked
+    ).toBe(true);
+    expect(
+      (within(card).getByRole("radio", { name: /Public/ }) as HTMLInputElement).checked
+    ).toBe(false);
+  });
+
+  test("enables Save only for a valid real access change", () => {
+    const onUpdateRoomSetting = vi.fn();
+    const scope = { kind: "room" as const, roomId: baseRoom.room_id };
+    const view = (allowTargets: string[], confirmed: boolean) => (
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[spaceSummary("!space:example.invalid", "Design")]}
+        roomManagement={{
+          selected_room_id: baseRoom.room_id,
+          settings: roomSettings(),
+          draft: { scope, revision: 1, rule: "restricted", allowTargets },
+          operation: { kind: "idle" }
+        }}
+        accessPreview={{ ...accessPreviewFixture("access", confirmed), scope }}
+        onUpdateRoomSetting={onUpdateRoomSetting}
+        onSetAccessDraft={vi.fn()}
+      />
+    );
+    const save = () =>
+      within(propertyCard("join-rule")).getByRole("button", { name: "Save join rule" });
+
+    // Reordered/identical server list is not a change: Rust's preview says
+    // confirmed, so Save is disabled.
+    const { rerender } = render(view(["!space:example.invalid"], true));
+    expect((save() as HTMLButtonElement).disabled).toBe(true);
+
+    // A genuinely changed allow list is a valid real change.
+    rerender(view(["!space:example.invalid", "!space2:example.invalid"], false));
+    expect((save() as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(save());
+    expect(onUpdateRoomSetting).toHaveBeenCalledWith(baseRoom.room_id, {
+      accessPolicy: {
+        rule: "restricted",
+        allowTargets: ["!space:example.invalid", "!space2:example.invalid"]
+      }
+    });
+
+    // An explicitly empty allow list is not a submittable route.
+    rerender(view([], false));
+    expect((save() as HTMLButtonElement).disabled).toBe(true);
   });
 
   test("shows current access and history while disabling edits without permission", () => {
@@ -288,6 +357,59 @@ describe("RoomInfoPanel", () => {
     }
     expect(propertyCard("join-rule").textContent).toContain("Invite only");
     expect(propertyCard("history-visibility").textContent).toContain("Since join");
+  });
+
+  test("lets an account change the join rule without the aggregate settings permission (#1220)", () => {
+    const onUpdateRoomSetting = vi.fn();
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={{
+          selected_room_id: baseRoom.room_id,
+          settings: {
+            room_id: baseRoom.room_id,
+            name: "Alpha Room",
+            topic: null,
+            avatar_url: null,
+            join_rule: "invite",
+            history_visibility: "shared",
+            permissions: {
+              can_edit_settings: false,
+              can_change_join_rule: true,
+              can_edit_roles: false,
+              can_invite: false,
+              can_kick: false,
+              can_ban: false,
+              can_unban: false
+            },
+            members: []
+          },
+          draft: {
+            scope: { kind: "room", roomId: baseRoom.room_id },
+            revision: 1,
+            rule: "public"
+          },
+          operation: { kind: "idle" }
+        }}
+        accessPreview={accessPreviewFixture("access", false)}
+        onUpdateRoomSetting={onUpdateRoomSetting}
+      />
+    );
+
+    // The event-specific fact admits the join-rule control; the aggregate keeps
+    // the room name and history read-only in place.
+    fireEvent.click(within(propertyCard("join-rule")).getByRole("radio", { name: /Public/ }));
+    fireEvent.click(within(propertyCard("join-rule")).getByRole("button", { name: "Save join rule" }));
+    expect(onUpdateRoomSetting).toHaveBeenCalledWith(baseRoom.room_id, {
+      accessPolicy: { rule: "public", allowTargets: [] }
+    });
+    for (const property of ["topic", "history-visibility"]) {
+      const card = propertyCard(property);
+      expect(within(card).queryByRole("button")).toBeNull();
+      expect(card.textContent).toContain(t("room.settingNoPermission"));
+    }
   });
 
   test("keeps a room-name composition across equivalent Rust settings snapshots", () => {
@@ -818,6 +940,18 @@ function roomSettings(overrides: Partial<RoomSettingsSnapshot> = {}): RoomSettin
   };
 }
 
+function spaceSummary(spaceId: string, displayName: string): SpaceSummary {
+  return {
+    space_id: spaceId,
+    raw_name: displayName,
+    display_name: displayName,
+    avatar: null,
+    join_rule: "invite",
+    child_room_ids: [],
+    parent_side_child_room_ids: []
+  };
+}
+
 function managed(
   settings: RoomSettingsSnapshot = roomSettings(),
   operation: RoomManagementOperationState = { kind: "idle" }
@@ -829,6 +963,27 @@ function propertyCard(property: string): HTMLElement {
   const card = document.querySelector(`[data-setting-property="${property}"]`);
   if (!card) throw new Error(`no ${property} card`);
   return card as HTMLElement;
+}
+
+/** A Rust access/history preview fixture (#1177). */
+function accessPreviewFixture(
+  context: "access" | "history",
+  confirmed: boolean
+): RoomAccessPreview {
+  return {
+    scope: { kind: "room", roomId: baseRoom.room_id },
+    context,
+    confirmed,
+    canonicalPolicyKey:
+      context === "access" ? "policy:4c3d2e1f0a9b8c7d" : undefined,
+    outcome: {
+      join: { messageId: "room.accessOutcomeJoinInvite" },
+      history: { messageId: "room.accessOutcomeHistoryShared" },
+      encryption: { messageId: "room.accessOutcomeNotEncrypted" },
+      directory: { messageId: "room.accessOutcomeDirectoryPrivate" },
+      nonRetroactive: { messageId: "room.historyNonRetroactive" }
+    }
+  };
 }
 
 // Issue #1008: each property's value, change control and result share one card.
@@ -887,46 +1042,187 @@ describe("RoomInfoPanel property cards", () => {
     expect(onUpdateRoomSetting).toHaveBeenCalledWith(baseRoom.room_id, { avatarUrl: null });
   });
 
-  test("cancel closes the editor without saving and returns focus to Edit", () => {
+  test("cancel re-seeds the confirmed policy and returns focus to the heading", () => {
     const onUpdateRoomSetting = vi.fn();
+    const onSetAccessDraft = vi.fn();
+    const scope = { kind: "room" as const, roomId: baseRoom.room_id };
     render(
       <RoomInfoPanel
         room={baseRoom}
         roomNotificationSettings={idleSettings}
         spaces={[]}
-        roomManagement={managed()}
+        roomManagement={{
+          ...managed(),
+          draft: { scope, revision: 1, rule: "public" }
+        }}
+        accessPreview={accessPreviewFixture("access", false)}
         onUpdateRoomSetting={onUpdateRoomSetting}
+        onSetAccessDraft={onSetAccessDraft}
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Change join rule" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Join rule" }), { target: { value: "public" } });
-    fireEvent.click(within(propertyCard("join-rule")).getByRole("button", { name: "Cancel" }));
+    const card = propertyCard("join-rule");
+    fireEvent.click(within(card).getByRole("radio", { name: /Public/ }));
+    fireEvent.click(within(card).getByRole("button", { name: "Cancel" }));
 
-    expect(screen.queryByRole("combobox", { name: "Join rule" })).toBeNull();
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Change join rule" }));
     expect(onUpdateRoomSetting).not.toHaveBeenCalled();
-    expect(propertyCard("join-rule").textContent).toContain("Invite only");
+    // Rust re-seeds the draft from the confirmed policy, so the visible allow
+    // selection returns too (not only the rule and outcome).
+    expect(onSetAccessDraft).toHaveBeenCalledWith({ kind: "open", scope });
+    expect(document.activeElement).toBe(within(card).getByRole("heading", { level: 4 }));
+  });
+
+  test("restores the confirmed allow list and toggles each target against the current draft", () => {
+    const onSetAccessDraft = vi.fn();
+    const scope = { kind: "room" as const, roomId: baseRoom.room_id };
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[
+          spaceSummary("!space-a:example.invalid", "Alpha"),
+          spaceSummary("!space-b:example.invalid", "Beta")
+        ]}
+        roomManagement={{
+          selected_room_id: baseRoom.room_id,
+          settings: roomSettings({ join_rule: "restricted" }),
+          // Rust seeded the confirmed target A into the draft.
+          draft: { scope, revision: 0, rule: "restricted", allowTargets: ["!space-a:example.invalid"] },
+          operation: { kind: "idle" }
+        }}
+        accessPreview={accessPreviewFixture("access", true)}
+        onUpdateRoomSetting={vi.fn()}
+        onSetAccessDraft={onSetAccessDraft}
+      />
+    );
+
+    const card = propertyCard("join-rule");
+    // The confirmed restricted(A) selection is restored, not shown unchecked.
+    expect(
+      (
+        within(card).getByRole("checkbox", {
+          name: /Alpha/
+        }) as HTMLInputElement
+      ).checked
+    ).toBe(true);
+    expect(
+      (
+        within(card).getByRole("checkbox", {
+          name: /Beta/
+        }) as HTMLInputElement
+      ).checked
+    ).toBe(false);
+
+    // Each edit carries the target and its state, never a replacement list
+    // rebuilt from lagging props, so two rapid edits cannot drop one another.
+    fireEvent.click(within(card).getByRole("checkbox", { name: /Beta/ }));
+    expect(onSetAccessDraft).toHaveBeenNthCalledWith(1, {
+      kind: "toggleAllowTarget",
+      scope,
+      target: "!space-b:example.invalid",
+      selected: true
+    });
+    fireEvent.click(within(card).getByRole("checkbox", { name: /Alpha/ }));
+    expect(onSetAccessDraft).toHaveBeenNthCalledWith(2, {
+      kind: "toggleAllowTarget",
+      scope,
+      target: "!space-a:example.invalid",
+      selected: false
+    });
+  });
+
+  test("a same-rule allow-list save is saved only when Rust confirms the full policy", () => {
+    const onUpdateRoomSetting = vi.fn();
+    const scope = { kind: "room" as const, roomId: baseRoom.room_id };
+    const view = (confirmed: boolean) => (
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[
+          spaceSummary("!space-a:example.invalid", "Alpha"),
+          spaceSummary("!space-b:example.invalid", "Beta")
+        ]}
+        roomManagement={{
+          selected_room_id: baseRoom.room_id,
+          // The confirmed scalar rule is already `restricted`: a scalar
+          // comparison alone would read `Saved` for the allow-list edit.
+          settings: roomSettings({ join_rule: "restricted" }),
+          draft: {
+            scope,
+            revision: 1,
+            rule: "restricted",
+            allowTargets: ["!space-b:example.invalid"]
+          },
+          operation: { kind: "idle" }
+        }}
+        accessPreview={accessPreviewFixture("access", confirmed)}
+        onUpdateRoomSetting={onUpdateRoomSetting}
+        onSetAccessDraft={vi.fn()}
+      />
+    );
+
+    const { rerender } = render(view(false));
+    const card = propertyCard("join-rule");
+    expect(within(card).queryByRole("status")).toBeNull();
+
+    fireEvent.click(within(card).getByRole("button", { name: "Save join rule" }));
+    expect(onUpdateRoomSetting).toHaveBeenCalledWith(baseRoom.room_id, {
+      accessPolicy: { rule: "restricted", allowTargets: ["!space-b:example.invalid"] }
+    });
+
+    // The same-rule allow-list edit is not yet saved while Rust reports the
+    // draft as unconfirmed.
+    rerender(view(false));
+    expect(within(propertyCard("join-rule")).queryByRole("status")).toBeNull();
+
+    // Only Rust confirming the full canonical policy turns it to Saved.
+    rerender(view(true));
+    expect(within(propertyCard("join-rule")).getByRole("status").textContent).toBe(
+      "Saved"
+    );
   });
 
   test("history notes explain the value being chosen, in its card", () => {
-    render(
+    const scope = { kind: "room" as const, roomId: baseRoom.room_id };
+    const historyPreviewFor = (visibility: RoomHistoryVisibility): RoomAccessPreview => ({
+      scope,
+      context: "history",
+      confirmed: false,
+      outcome: {
+        join: { messageId: "room.accessOutcomeJoinInvite" },
+        history:
+          visibility === "worldReadable"
+            ? { messageId: "room.accessOutcomeHistoryWorldReadable" }
+            : { messageId: "room.accessOutcomeHistoryShared" },
+        encryption: { messageId: "room.accessOutcomeEncrypted" },
+        directory: { messageId: "room.accessOutcomeDirectoryPrivate" },
+        ...(visibility === "shared" || visibility === "invited"
+          ? { historyKeyCaveat: { messageId: "room.historySharedEncryptedHint" as const } }
+          : {}),
+        nonRetroactive: { messageId: "room.historyNonRetroactive" }
+      }
+    });
+    const view = (visibility: RoomHistoryVisibility) => (
       <RoomInfoPanel
         room={{ ...baseRoom, is_encrypted: true }}
         roomNotificationSettings={idleSettings}
         spaces={[]}
-        roomManagement={managed()}
+        roomManagement={{
+          ...managed(),
+          draft: { scope, revision: 1, history: visibility }
+        }}
+        historyPreview={historyPreviewFor(visibility)}
         onUpdateRoomSetting={vi.fn()}
       />
     );
 
+    const { rerender } = render(view("shared"));
     const card = propertyCard("history-visibility");
     expect(card.textContent).toContain(t("room.historySharedDescription"));
     expect(card.textContent).toContain(t("room.historySharedEncryptedHint"));
     expect(card.textContent).toContain(t("room.historyNonRetroactive"));
 
-    fireEvent.click(within(card).getByRole("button", { name: "Change history visibility" }));
-    fireEvent.change(within(card).getByRole("combobox"), { target: { value: "worldReadable" } });
+    rerender(view("worldReadable"));
     expect(card.textContent).toContain(t("room.historyWorldReadableWarning"));
     expect(card.textContent).toContain(t("room.historyNonRetroactive"));
     expect(card.textContent).not.toContain(t("room.historySharedEncryptedHint"));

@@ -86,6 +86,9 @@ describe("DesktopApi command contract", () => {
         "listAccountTabs",
         "removeSignedOutAccountTab",
         "selectAccountTab",
+        "setRoomAccessDraft",
+        "previewRoomAccess",
+        "previewCreateRoomAccess",
         "ignoreDesktopUpdate"
       )
       .sort();

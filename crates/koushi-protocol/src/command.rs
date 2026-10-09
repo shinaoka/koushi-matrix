@@ -176,6 +176,7 @@ impl CoreCommand {
                 | RoomCommand::DismissDirectoryPreview { request_id }
                 | RoomCommand::JoinDirectoryRoom { request_id, .. }
                 | RoomCommand::LoadRoomSettings { request_id, .. }
+                | RoomCommand::SetRoomAccessDraft { request_id, .. }
                 | RoomCommand::QueryMentionCandidates { request_id, .. }
                 | RoomCommand::UpdateRoomSetting { request_id, .. }
                 | RoomCommand::ModerateRoomMember { request_id, .. }
@@ -260,7 +261,10 @@ pub use account::{
     SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SetAvatarRequest,
 };
 pub use app::{AppCommand, EventNavigationMissingTargetPolicy};
-pub use room::{CreateRoomOptions, CreateRoomParentSpace, CreateRoomVisibility, RoomCommand};
+pub use room::{
+    CreateRoomOptions, CreateRoomParentSpace, CreateRoomVisibility, RoomAccessDraftCommand,
+    RoomCommand,
+};
 pub use search::{SearchCommand, SearchScope, ThreadsListCommand};
 pub use timeline::{
     ImageUploadCompressionPolicy, ImageUploadCompressionState, ImageUploadDimensions,

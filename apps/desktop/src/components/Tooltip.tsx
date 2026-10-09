@@ -14,7 +14,7 @@ import {
 
 import { FloatingLayer } from "./floatingLayer";
 
-type TooltipTriggerProps = {
+export type TooltipTriggerProps = {
   "aria-describedby"?: string;
   onBlur: (event: FocusEvent<HTMLElement>) => void;
   onFocus: (event: FocusEvent<HTMLElement>) => void;

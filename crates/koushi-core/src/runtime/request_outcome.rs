@@ -1628,6 +1628,10 @@ fn operation_failure_to_room_failure(kind: koushi_state::OperationFailureKind) -
         koushi_state::OperationFailureKind::Timeout
         | koushi_state::OperationFailureKind::Invalid
         | koushi_state::OperationFailureKind::Sdk => RoomFailureKind::Sdk,
+        koushi_state::OperationFailureKind::UnsupportedPolicyCondition => {
+            RoomFailureKind::UnsupportedPolicyCondition
+        }
+        koushi_state::OperationFailureKind::PolicyNotVerified => RoomFailureKind::PolicyNotVerified,
     }
 }
 

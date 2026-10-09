@@ -4,6 +4,7 @@ export type MessageId =
   | "access.public"
   | "access.inviteOnly"
   | "access.conditionsApply"
+  | "access.spaceMembersCanJoin"
   | "access.canRequest"
   | "access.unknown"
   | "access.unknownFull"
@@ -12,6 +13,8 @@ export type MessageId =
   | "access.publicDescription"
   | "access.inviteOnlyDescription"
   | "access.conditionsDescription"
+  | "access.spaceMembersCanJoinDescription"
+  | "access.spaceMembersCanJoinCanRequestDescription"
   | "access.requestDescription"
   | "access.knockRestrictedDescription"
   | "access.conditionsRouteDescription"
@@ -535,6 +538,54 @@ export type MessageId =
   | "room.editAvatar"
   | "room.accessAndHistory"
   | "room.accessAndHistoryHint"
+  | "room.accessChooseLabel"
+  | "room.accessChooseHistory"
+  | "room.accessDetailsLabel"
+  | "room.accessDetailsConfirmed"
+  | "room.accessDetailsUnsaved"
+  | "room.accessChoiceSpaceMembers"
+  | "room.accessChoiceSpaceMembersPinned"
+  | "room.accessChoicePublicSummary"
+  | "room.accessChoiceInviteSummary"
+  | "room.accessChoiceKnockSummary"
+  | "room.accessChoiceSpaceMembersSummary"
+  | "room.accessChoiceConditionsSummary"
+  | "room.accessAllowTargets"
+  | "room.accessAllowTargetsHint"
+  | "room.accessNoJoinedSpaces"
+  | "room.accessUnavailableUnsupported"
+  | "room.accessUnavailableNotInspected"
+  | "room.accessUnavailableNotSettable"
+  | "room.accessRejectionPublicWithRestrictedAccess"
+  | "room.accessRejectionExplicitPolicyWithInvitedOnly"
+  | "room.accessRejectionEmptyAccessTargets"
+  | "room.accessRejectionPublicWithInvitedOnly"
+  | "room.accessRoomVersionPinned"
+  | "room.accessOutcomeJoinNotVerified"
+  | "room.accessOutcomeJoinPublic"
+  | "room.accessOutcomeJoinInvite"
+  | "room.accessOutcomeJoinPrivate"
+  | "room.accessOutcomeJoinKnock"
+  | "room.accessOutcomeJoinUnknown"
+  | "room.accessOutcomeJoinSpaceMembers"
+  | "room.accessOutcomeJoinMembershipRoute"
+  | "room.accessOutcomeJoinNoRoute"
+  | "room.accessOutcomeJoinConditionsUnverifiedContent"
+  | "room.accessOutcomeJoinUnsupportedContent"
+  | "room.accessOutcomeJoinCanRequest"
+  | "room.accessOutcomeHistoryWorldReadable"
+  | "room.accessOutcomeHistoryShared"
+  | "room.accessOutcomeHistoryInvited"
+  | "room.accessOutcomeHistoryJoined"
+  | "room.accessOutcomeEncrypted"
+  | "room.accessOutcomeNotEncrypted"
+  | "room.accessOutcomeDirectoryPublic"
+  | "room.accessOutcomeDirectoryPrivate"
+  | "room.accessOutcomeDirectoryUnavailable"
+  | "room.accessOutcomeDirectoryFailed"
+  | "room.accessOutcomeDirectoryLoading"
+  | "room.accessOutcomeDirectoryWillBePublic"
+  | "room.accessOutcomeDirectoryWillBePrivate"
   | "room.copyShareLink"
   | "room.directMessage"
   | "room.dmList"
@@ -600,6 +651,8 @@ export type MessageId =
   | "room.operationFailed"
   | "room.settingForbidden"
   | "room.settingNoPermission"
+  | "room.settingUnsupportedPolicyCondition"
+  | "room.settingPolicyNotVerified"
   | "room.people"
   | "room.rolePermissions"
   | "room.memberRole"
@@ -1785,6 +1838,7 @@ const en: Catalog = {
   "access.public": "Public",
   "access.inviteOnly": "Invite only",
   "access.conditionsApply": "Conditions apply",
+  "access.spaceMembersCanJoin": "Space members can join",
   "access.canRequest": "Can request",
   "access.unknown": "Unknown",
   "access.unknownFull": "Unknown join conditions",
@@ -1794,6 +1848,10 @@ const en: Catalog = {
   "access.inviteOnlyDescription": "An invitation is required to join.",
   "access.conditionsDescription":
     "Members of specified Spaces or rooms can join without an invitation. Others need an invitation.",
+  "access.spaceMembersCanJoinDescription":
+    "Members of {space} can join without an invitation. Others need an invitation.",
+  "access.spaceMembersCanJoinCanRequestDescription":
+    "Members of {space} can join without an invitation. Others can request an invitation or accept one.",
   "access.requestDescription":
     "You can request an invitation. An invitation is required to join.",
   "access.knockRestrictedDescription":
@@ -2338,6 +2396,54 @@ const en: Catalog = {
   "room.directMessage": "Direct message",
   "room.accessAndHistory": "Access and history",
   "room.accessAndHistoryHint": "Join rules decide who may enter; history visibility decides what they can see. These settings are independent.",
+  "room.accessChooseLabel": "Choose who can join",
+  "room.accessChooseHistory": "Choose who can read history",
+  "room.accessDetailsLabel": "What this means",
+  "room.accessDetailsConfirmed": "These details describe the saved values.",
+  "room.accessDetailsUnsaved": "These details describe unsaved changes.",
+  "room.accessChoiceSpaceMembers": "Members of a Space",
+  "room.accessChoiceSpaceMembersPinned": "Members of {space}",
+  "room.accessChoicePublicSummary": "Anyone with the address can join.",
+  "room.accessChoiceInviteSummary": "Only invited people can join.",
+  "room.accessChoiceKnockSummary": "People can ask to join; a member must approve.",
+  "room.accessChoiceSpaceMembersSummary": "Members of a Space you choose can join.",
+  "room.accessChoiceConditionsSummary": "This room uses join conditions this app cannot edit as one rule.",
+  "room.accessAllowTargets": "Spaces whose members can join",
+  "room.accessAllowTargetsHint": "Choose the Spaces whose members may join. The attachment Space is independent.",
+  "room.accessNoJoinedSpaces": "You are not in any Space yet.",
+  "room.accessUnavailableUnsupported": "This room's current conditions include content this app does not model, so it cannot rewrite them safely.",
+  "room.accessUnavailableNotInspected": "This room's current conditions could not be verified.",
+  "room.accessUnavailableNotSettable": "This rule cannot be set from this app.",
+  "room.accessRejectionPublicWithRestrictedAccess": "A public room cannot also be limited to members of a Space.",
+  "room.accessRejectionExplicitPolicyWithInvitedOnly": "Turn off invite-only before choosing an explicit access rule.",
+  "room.accessRejectionEmptyAccessTargets": "Choose at least one Space for this rule.",
+  "room.accessRejectionPublicWithInvitedOnly": "A public room cannot be invite-only.",
+  "room.accessRoomVersionPinned": "This rule creates the room with room version 9.",
+  "room.accessOutcomeJoinNotVerified": "Join rule not verified",
+  "room.accessOutcomeJoinPublic": "Anyone can join",
+  "room.accessOutcomeJoinInvite": "Invite only",
+  "room.accessOutcomeJoinPrivate": "Private",
+  "room.accessOutcomeJoinKnock": "Anyone can request to join",
+  "room.accessOutcomeJoinUnknown": "Join rule not recognised",
+  "room.accessOutcomeJoinSpaceMembers": "Members of {space} can join",
+  "room.accessOutcomeJoinMembershipRoute": "Members of the listed rooms or Spaces can join",
+  "room.accessOutcomeJoinNoRoute": "No join route is defined",
+  "room.accessOutcomeJoinConditionsUnverifiedContent": "Join conditions include content this app cannot verify",
+  "room.accessOutcomeJoinUnsupportedContent": "Join conditions use content this app does not support",
+  "room.accessOutcomeJoinCanRequest": "You can request to join",
+  "room.accessOutcomeHistoryWorldReadable": "Anyone can read history, including before they joined",
+  "room.accessOutcomeHistoryShared": "Members can read all history, including before they joined",
+  "room.accessOutcomeHistoryInvited": "Members can read history from the point they were invited",
+  "room.accessOutcomeHistoryJoined": "Members can read history from the point they joined",
+  "room.accessOutcomeEncrypted": "Encrypted",
+  "room.accessOutcomeNotEncrypted": "Not encrypted",
+  "room.accessOutcomeDirectoryPublic": "Listed in the public directory",
+  "room.accessOutcomeDirectoryPrivate": "Not listed in the directory",
+  "room.accessOutcomeDirectoryUnavailable": "Directory listing unavailable",
+  "room.accessOutcomeDirectoryFailed": "Could not check the directory listing",
+  "room.accessOutcomeDirectoryLoading": "Checking the directory listing",
+  "room.accessOutcomeDirectoryWillBePublic": "Will be listed in the public directory",
+  "room.accessOutcomeDirectoryWillBePrivate": "Will not be listed in the directory",
   "room.dmList": "DM list",
   "room.editRoles": "Edit roles",
   "room.editSettings": "Edit settings",
@@ -2396,6 +2502,8 @@ const en: Catalog = {
   "room.notifyModeMute": "Mute",
   "room.operationFailed": "Operation failed",
   "room.settingForbidden": "You no longer have permission to change this setting.",
+  "room.settingUnsupportedPolicyCondition": "This room's current conditions include content this app does not model, so it cannot rewrite them safely.",
+  "room.settingPolicyNotVerified": "This room's current conditions could not be verified, so the change was not attempted.",
   "room.settingNoPermission": "Your role in this room cannot change this setting.",
   "room.people": "People",
   "room.roleAdministrator": "Administrator",
@@ -3507,6 +3615,7 @@ const ja: Catalog = {
   "access.public": "公開",
   "access.inviteOnly": "招待制",
   "access.conditionsApply": "参加条件有",
+  "access.spaceMembersCanJoin": "スペースのメンバーは参加できます",
   "access.canRequest": "申請可",
   "access.unknown": "不明",
   "access.unknownFull": "参加条件不明",
@@ -3516,6 +3625,10 @@ const ja: Catalog = {
   "access.inviteOnlyDescription": "参加には招待が必要です。",
   "access.conditionsDescription":
     "指定されたSpace・ルームのメンバーは招待なしで参加できます。それ以外は招待が必要です。",
+  "access.spaceMembersCanJoinDescription":
+    "{space}のメンバーは招待なしで参加できます。それ以外は招待が必要です。",
+  "access.spaceMembersCanJoinCanRequestDescription":
+    "{space}のメンバーは招待なしで参加できます。それ以外は参加を申請するか、招待を受ける必要があります。",
   "access.requestDescription":
     "参加を申請できます。参加には招待が必要です。",
   "access.knockRestrictedDescription":
@@ -4056,6 +4169,54 @@ const ja: Catalog = {
   "room.directMessage": "ダイレクトメッセージ",
   "room.accessAndHistory": "アクセスと履歴",
   "room.accessAndHistoryHint": "参加ルールは入室できる人を、履歴の表示範囲は見える内容を決めます。両者は独立しています。",
+  "room.accessChooseLabel": "参加できる人を選ぶ",
+  "room.accessChooseHistory": "履歴を読める人を選ぶ",
+  "room.accessDetailsLabel": "この設定の意味",
+  "room.accessDetailsConfirmed": "この内容は保存済みの値を示しています。",
+  "room.accessDetailsUnsaved": "この内容は未保存の変更を示しています。",
+  "room.accessChoiceSpaceMembers": "スペースのメンバー",
+  "room.accessChoiceSpaceMembersPinned": "{space} のメンバー",
+  "room.accessChoicePublicSummary": "アドレスを知っている人は誰でも参加できます。",
+  "room.accessChoiceInviteSummary": "招待された人だけが参加できます。",
+  "room.accessChoiceKnockSummary": "参加をリクエストでき、メンバーが承認します。",
+  "room.accessChoiceSpaceMembersSummary": "選んだスペースのメンバーが参加できます。",
+  "room.accessChoiceConditionsSummary": "このルームは、このアプリでは一つのルールとして編集できない参加条件を使っています。",
+  "room.accessAllowTargets": "メンバーの参加を許可するスペース",
+  "room.accessAllowTargetsHint": "参加を許可するスペースを選びます。添付先のスペースとは独立しています。",
+  "room.accessNoJoinedSpaces": "まだどのスペースにも参加していません。",
+  "room.accessUnavailableUnsupported": "現在の参加条件にこのアプリが扱えない内容が含まれるため、安全に書き換えられません。",
+  "room.accessUnavailableNotInspected": "現在の参加条件を確認できませんでした。",
+  "room.accessUnavailableNotSettable": "このルールはこのアプリから設定できません。",
+  "room.accessRejectionPublicWithRestrictedAccess": "公開ルームをスペースのメンバー限定にすることはできません。",
+  "room.accessRejectionExplicitPolicyWithInvitedOnly": "明示的な参加ルールを選ぶ前に、招待制をオフにしてください。",
+  "room.accessRejectionEmptyAccessTargets": "このルールには少なくとも一つのスペースを選んでください。",
+  "room.accessRejectionPublicWithInvitedOnly": "公開ルームを招待制にすることはできません。",
+  "room.accessRoomVersionPinned": "このルールではルームバージョン 9 でルームが作成されます。",
+  "room.accessOutcomeJoinNotVerified": "参加ルールは未確認",
+  "room.accessOutcomeJoinPublic": "誰でも参加できます",
+  "room.accessOutcomeJoinInvite": "招待制",
+  "room.accessOutcomeJoinPrivate": "プライベート",
+  "room.accessOutcomeJoinKnock": "誰でも参加をリクエストできます",
+  "room.accessOutcomeJoinUnknown": "参加ルールを認識できません",
+  "room.accessOutcomeJoinSpaceMembers": "{space} のメンバーが参加できます",
+  "room.accessOutcomeJoinMembershipRoute": "一覧のルームまたはスペースのメンバーが参加できます",
+  "room.accessOutcomeJoinNoRoute": "参加ルートが定義されていません",
+  "room.accessOutcomeJoinConditionsUnverifiedContent": "参加条件にこのアプリでは確認できない内容が含まれます",
+  "room.accessOutcomeJoinUnsupportedContent": "参加条件にこのアプリが対応していない内容が使われています",
+  "room.accessOutcomeJoinCanRequest": "参加をリクエストできます",
+  "room.accessOutcomeHistoryWorldReadable": "参加前を含め、誰でも履歴を読めます",
+  "room.accessOutcomeHistoryShared": "参加前を含め、メンバーはすべての履歴を読めます",
+  "room.accessOutcomeHistoryInvited": "メンバーは招待された時点以降の履歴を読めます",
+  "room.accessOutcomeHistoryJoined": "メンバーは参加した時点以降の履歴を読めます",
+  "room.accessOutcomeEncrypted": "暗号化",
+  "room.accessOutcomeNotEncrypted": "暗号化なし",
+  "room.accessOutcomeDirectoryPublic": "公開ディレクトリに掲載",
+  "room.accessOutcomeDirectoryPrivate": "ディレクトリに未掲載",
+  "room.accessOutcomeDirectoryUnavailable": "ディレクトリ掲載状況は不明",
+  "room.accessOutcomeDirectoryFailed": "ディレクトリ掲載状況を確認できませんでした",
+  "room.accessOutcomeDirectoryLoading": "ディレクトリ掲載状況を確認中",
+  "room.accessOutcomeDirectoryWillBePublic": "公開ディレクトリに掲載予定",
+  "room.accessOutcomeDirectoryWillBePrivate": "ディレクトリに未掲載予定",
   "room.dmList": "DM一覧",
   "room.editRoles": "ロールを編集",
   "room.editSettings": "設定を編集",
@@ -4114,6 +4275,8 @@ const ja: Catalog = {
   "room.notifyModeMute": "ミュート",
   "room.operationFailed": "操作に失敗しました",
   "room.settingForbidden": "この設定を変更する権限がありません。",
+  "room.settingUnsupportedPolicyCondition": "現在の参加条件にこのアプリが扱えない内容が含まれるため、安全に書き換えられません。",
+  "room.settingPolicyNotVerified": "現在の参加条件を確認できなかったため、変更は行われませんでした。",
   "room.settingNoPermission": "このルームでのあなたの役割では、この設定を変更できません。",
   "room.people": "ユーザー",
   "room.roleAdministrator": "管理者",

@@ -123,6 +123,8 @@ async fn verify_with_auditor(
                 parent_space: Some(CreateRoomParentSpace {
                     space_id: space_id.clone(),
                 }),
+                access_policy: None,
+                history: None,
             },
         }))
         .await

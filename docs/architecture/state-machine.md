@@ -3714,12 +3714,18 @@ stateDiagram-v2
     [*] --> Idle
     Idle --> Idle: RoomSettingsSnapshotLoaded
     Idle --> PendingSettings: RoomSettingUpdateRequested [Ready + can_edit_settings]
+    Idle --> FailedSettings: RoomSettingUpdateRequested [raw pre-send access rejection]
     Idle --> PendingModeration: RoomModerationRequested [Ready + matching permission fact]
     Idle --> PendingRoles: RoomMemberRoleUpdateRequested [Ready + can_edit_roles]
     Idle --> FailedPermissions: RoomSettingUpdateRequested [permission denied]
     Idle --> FailedPermissions: RoomModerationRequested [permission denied]
     Idle --> FailedPermissions: RoomMemberRoleUpdateRequested [permission denied]
-    PendingSettings --> PendingSettings: RoomSettingsSnapshotLoaded [same room]
+    Idle --> Idle: RoomAccessUpdated [advancing property]
+    Idle --> Idle: RoomAccessDraftOpened/Reset/TargetMutation [admitted lifetime+scope]
+    Idle --> Idle: RoomDirectoryVisibilityObserved [selected room]
+    PendingSettings --> PendingSettings: RoomSettingsSnapshotLoaded [same room, preserve accepted-vs-observed]
+    PendingSettings --> FailedSettings: RoomSettingUpdateRequested [raw pre-send access rejection]
+    PendingSettings --> FailedSettings: RoomSettingUpdateFailed [pre-send rejection settles]
     PendingModeration --> PendingModeration: RoomSettingsSnapshotLoaded [same room]
     PendingRoles --> PendingRoles: RoomSettingsSnapshotLoaded [same room]
     PendingSettings --> Idle: RoomSettingUpdateSucceeded [matching request_id]
@@ -3795,22 +3801,141 @@ stateDiagram-v2
   active membership.
 - Join rules are projected as the server holds them: `knockRestricted` and
   rules the client does not model (`unknown`) are distinct values, never folded
-  into `restricted` or `invite`. A missing `m.room.join_rules` event is
-  `invite`. Only `public`, `invite`, `knock`, and `private` can be sent back
-  (`RoomJoinRule::is_settable`); the others fail as an invalid setting.
-- `SpaceSummary.join_rule` carries each Space's join rule from every room-list
-  update. When it changes between two synced values for the Space whose
-  settings are open, the reducer copies it into
-  `room_management.settings.join_rule`, so a change made by another client
-  reaches Space Info without a reload. A level-wise copy would revert a
-  just-saved change while the room list still carries the old rule, so only a
-  synced transition counts; permissions are left for Core to re-read (#935).
+  into `restricted` or `invite`. The ordinary scalar `RoomSettingChange::JoinRule`
+  can carry `public`, `invite`, `knock`, and `private` (`RoomJoinRule::is_settable`);
+  the others fail as an invalid setting. A `restricted` rule is settable only
+  through `RoomSettingChange::AccessPolicy(RoomAccessPolicy { rule, allow_targets })`
+  (#1177): the allow list is canonical (sorted, deduplicated), must hold at
+  least one target for `restricted`, must be empty for a non-restricted rule,
+  and `knock_restricted`/`private`/`unknown` are not produced by that path.
+  `private` stays reserved and is never presented as the Space route.
+- Each joined room's own access condition (#1166, #1220) is projected from its
+  `m.room.join_rules` as `RoomAccessCondition { join_rule, restricted,
+  allow_targets }`. `join_rule` is `None` when the rule content is unavailable,
+  so an unsynced rule is never defaulted to `invite` and reported as inspected;
+  the room-settings snapshot keeps the SDK's own `invite` default. `restricted`
+  is the five-way completeness (not inspected / confirmed empty / membership
+  only / membership plus unsupported / unsupported only) and must be carried to
+  the pre-send settings read before a restricted rule is written. `allow_targets`
+  keeps every distinct target with the kind its local `m.room.create` proves
+  (`Space` / `Room` / `Unknown`); only an available, unredacted create event
+  with no other type proves an ordinary room, because a redacted pre-v11 create
+  event keeps its defaulted fields. The target id stays inside Rust. The sidebar
+  resolves ids to display labels and derives `access_space_members_route`, the
+  one fact that admits the specific "Space members can join" sentence: exactly
+  one distinct target, verified a Space, with a resolvable non-id name. `private`
+  is never that route and no raw room id reaches a renderer.
+- The access observation (`RoomAccessUpdated`, #1177) reconciles the open
+  settings snapshot through one owner, `AppState.room_access_observed`.
+  `room_access` is the immediately displayed value (it may hold a local accepted
+  change); the observed tuple is the last authoritative/provisional read. Access
+  and history advance **independently**: a new observation is compared
+  property-by-property against the ledger, and only the property whose own
+  observed value moved may overwrite a locally accepted value for that property.
+  So an access echo carrying an unchanged old history does not roll back an
+  accepted history save, and a history echo carrying an unchanged old access does
+  not roll back an accepted access save, in either order. A property that did not
+  advance is dropped, and a metadata/order-only access advance (a target-kind or
+  completeness change at the same editable policy) never releases an unrelated
+  old history value. When the access property advances, the change test uses the
+  full canonical policy (rule plus sorted, deduplicated allow targets): an equal
+  editable policy advances the authoritative metadata in place instead of
+  replacing the locally held order, while a genuine policy change replaces the
+  condition. Ordinary rooms reconcile too, not only Spaces. This observation is
+  the single installer of the open settings join-rule fact; `SpaceSummary.join_rule`
+  is only a room-list carrier (sidebar and address fallbacks) and never installs
+  it on its own.
+- The pre-send settings read is presentation-preserving but admission is not
+  (#1177). `RoomSettingsSnapshotLoaded` keeps a locally accepted access/history
+  value that its own observation has not yet advanced, while
+  `AppState.room_access_pre_send` records the RAW access condition that read
+  actually found. A requested access-policy edit is admitted against the raw
+  facts, never the presentation-preserved value, so the reducer's guard agrees
+  with Core's own pre-send verdict. When Core rejects a pre-send access policy it
+  emits `RoomSettingUpdateRequested` followed by `RoomSettingUpdateFailed`, so the
+  operation settles rather than staying pending behind a preserved snapshot.
+- A confirmed room's directory publication is read with the SDK
+  `get_room_visibility` and installed as `RoomDirectoryVisibilityObserved`
+  (#1177) for the open room only: confirmed `Public`/`Private`, and `Failed`
+  when the read cannot make a confirmed claim. `Unavailable` is claimed only
+  when no room is loaded, and `Loading` is the state before the read lands. The
+  field enters `Loading` when the open room changes, while a same-room pre-send
+  `RoomSettingsSnapshotLoaded` preserves the publication already read instead
+  of resetting it, so the panel does not flicker back to "checking" while a
+  setting change re-reads the snapshot. A join-rule write never changes it
+  implicitly.
+- The create-room access is an explicit optional contract (#1177).
+  `CreateRoomOptions.access_policy` (rule plus selected allow Space ids) and
+  `history` are optional; omitting both reproduces the legacy presets
+  byte-for-byte, including the private-in-Space restricted rule naming the
+  attached Space, the V9 room-version pin and the `invited` history default. An
+  explicit policy controls the join content and its selected allow Spaces
+  independently of the attachment: a selected allow Space need not be the
+  attachment, requires no permission on it, and never writes `m.space.child`
+  (the separate link command owns that and keeps its own failure report). A
+  `public` create with an explicit restricted policy, an explicit policy with
+  `invitedOnly`, and an explicitly empty restricted allow list are each rejected
+  with a typed `RoomFailureKind` (`PublicRoomWithRestrictedAccess`,
+  `ExplicitAccessPolicyWithInvitedOnly`, `EmptyAccessPolicyTargets`) before any
+  request is sent. A restricted policy pins a room version that supports it
+  (>= 8, today V9). Supplying `history` sends exactly one initial-state event;
+  omitting it keeps the legacy default. The private option keeps its
+  encryption/invitation draft while public is selected; only the effective
+  submitted values are stripped. Membership selection is offered wherever the
+  viewer is joined to at least one Space; this is a product choice, not a Matrix
+  restriction, and the picker lists the viewer's joined Spaces.
+- A successful local settings change installs its accepted value as a delta, not
+  a level copy (#1177). The pre-send read may still lag the SDK echo of the other
+  locally editable property, so an access change keeps the locally held history
+  value and a history change keeps the locally held access value until the shared
+  observation agrees with the read. A successful access change (restricted policy
+  or scalar join rule) also reaches `room_access` immediately, so the sidebar and
+  header badges update without waiting for the echo; the next authoritative
+  observation replaces it.
 - SDK state-event mutation calls can return before the SDK room cache reflects
   the sent state event. The SDK adapter must project the submitted setting
   change or member power-level change into the success snapshot or otherwise
   wait for a refreshed cache before emitting `RoomSettingUpdated` /
   `RoomMemberRoleUpdated`; React must not patch the visible settings or role
   state locally.
+- The access/history editor owns its selection in Rust, not React (#1177).
+  `RoomManagementState.draft` is a serializable `RoomAccessDraft { scope,
+  revision, rule, history, touched }`. The complete selected allow set stays in
+  an internal, serde-skipped `allow_targets`; only its renderable subset, the
+  joined Spaces the picker offers, is serialized as `allowTargets`, so an
+  ordinary-room, unknown or unnamed confirmed target never reaches the
+  renderer. `revision` increments on every accepted mutation and `touched`
+  records a real user choice (the seeded legacy create preset is not touched).
+  Typed `RoomAccessDraftRuleSet`, `RoomAccessDraftAllowTargetsSet`,
+  `RoomAccessDraftToggleAllowTarget`, `RoomAccessDraftHistorySet`,
+  `RoomAccessDraftReset`, and `RoomAccessDraftOpened` actions mutate it. A
+  target edit is applied against the draft's CURRENT set, so two rapid edits
+  cannot drop one another. `RoomAccessDraftOpened` admits an editor lifetime: a
+  room scope only for the loaded room (and another room's load invalidates the
+  previous draft synchronously), and a create scope only for a distinct,
+  monotonic per-open session id — a retired session's mutation or reset, and a
+  stale `Open` at or below the process watermark, are ignored rather than
+  recreating or replacing a draft. Outcome notes are derived for the current
+  draft by the pure `resolve_room_access_outcome`, never stored in the draft. An
+  unchanged draft resolves from the confirmed completeness and target facts, so
+  a membership-only guess never replaces an uneditable confirmed condition; a
+  proposed membership policy does not erase those facts either. `RoomAccessPreview`
+  carries Rust's opaque `canonical_policy_key`, a stable token over the full
+  canonical policy that carries no room id, so React attributes a save to that
+  policy without re-implementing canonicalization or exposing a preserved
+  target identity.
+- An access-policy edit is re-validated against the pre-send settings read
+  (#1177). `RoomSettingsSnapshot.access` carries the verified facts and is
+  serde-skipped from the IPC wire shape. `RoomAccessCondition::access_policy_rejection`
+  admits the edit only when the current restricted allow content is
+  `MembershipOnly`/`ConfirmedEmpty` (or the rule is not restricted). It rejects a
+  mixed or unsupported-only current condition with
+  `RoomFailureKind::UnsupportedPolicyCondition` and an unavailable/uninspected
+  condition with `RoomFailureKind::PolicyNotVerified`, mapped to the matching
+  `OperationFailureKind`; either rejection writes no state event. Every newly
+  selected allow target must additionally be a joined, verified Space
+  (`RoomAccessCondition::access_target_rejection`); an existing non-Space
+  condition is preserved or its removal is rejected explicitly.
 - Failure state stores only coarse `RoomFailureKind` values. Room IDs, user IDs,
   room names/topics, avatar URLs, moderation reasons, raw SDK errors, and event
   identifiers must not appear in `Debug` output or QA stdout.
@@ -3823,7 +3948,13 @@ stateDiagram-v2
   room so timeline and room/space stages are not disrupted. `space_access=ok`
   proves a disposable Space's join rule switches invite ↔ public for its
   creator, reaches a second member's open settings through sync, is refused for
-  that member, and leaves the child room's join rule unchanged.
+  that member, and leaves the child room's join rule unchanged; its #1177
+  extensions prove an explicit membership create whose target Space the creator
+  cannot edit, exactly one server-side `m.room.history_visibility` initial-state
+  event, the exact canonical allow set and all four history values read back
+  independently, a second client's OPEN settings reconciling to that exact
+  target set and to a history change without reload, a restricted restore, and a
+  second parent attachment both projected and persisted on the homeserver.
   `space_add_existing=ok` proves a room version 12 (domainless) room with only a
   child-side `m.space.parent` is offered, added through `SetSpaceChild`, and
   projected as added, and that the homeserver then holds a routed

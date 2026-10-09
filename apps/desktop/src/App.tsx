@@ -41,7 +41,10 @@ import {
 import type {
   ComposerDocument,
   ComposerDraftRevision,
+  CreateRoomAccessPreviewInput,
   OperationFailureKind,
+  RoomAccessDraft,
+  RoomAccessDraftScope,
   TimelinePaneState
 } from "./domain/types";
 import {
@@ -153,6 +156,10 @@ import {
 import { useDesktopAttentionEffects } from "./app/useDesktopAttentionEffects";
 import { useUiLatencyDiagnostics } from "./app/useUiLatencyDiagnostics";
 import { useRoomAddressPreview } from "./app/useRoomAddressPreview";
+import {
+  useCreateRoomAccessPreview,
+  useRoomAccessPreview
+} from "./app/useRoomAccessPreview";
 import {
   createDiagnosticLogBuffer,
   diagnosticReport,
@@ -424,12 +431,19 @@ function defaultCreateRoomDialogOptions(defaults?: CreateRoomDefaults | null): C
 /** Pause after the last address edit before the advisory lookup (#1006). */
 const ROOM_ADDRESS_CHECK_DEBOUNCE_MS = 400;
 
-function createRoomRequestFromDraft(
+export function createRoomRequestFromDraft(
   name: string,
   options: CreateRoomDialogOptions,
-  activeSpaceId: string | null
+  activeSpaceId: string | null,
+  accessDraft: RoomAccessDraft | null
 ): CreateRoomRequest {
   const visibility = options.visibility;
+  // #1177: the access/history selections are Rust-owned; the request carries
+  // the draft's rule with its canonical allow list only once the user has made
+  // an explicit choice. An untouched create draft keeps the legacy preset path
+  // (including its room-version pin). A public selection still strips encryption
+  // and invitation mode for the submitted values.
+  const rule = accessDraft?.touched ? (accessDraft.rule ?? null) : null;
   return {
     name,
     topic: options.topic.trim() || null,
@@ -437,6 +451,14 @@ function createRoomRequestFromDraft(
     encrypted: visibility === "private" ? options.encrypted : false,
     invitedOnly: visibility === "private" ? options.invitedOnly : false,
     visibility,
+    accessPolicy: rule
+      ? {
+          rule,
+          // A non-restricted rule carries no allow list; the writer rejects one.
+          allowTargets: rule === "restricted" ? accessDraft?.allowTargets ?? [] : []
+        }
+      : null,
+    history: accessDraft?.history ?? null,
     // Core derives the relationship routing (#1007); a room version 12 Space
     // ID has no server name to extract here.
     parentSpace: activeSpaceId ? { spaceId: activeSpaceId } : null
@@ -1538,6 +1560,9 @@ function AccountContent({
   const [createDialog, setCreateDialog] = useState<"room" | "space" | null>(null);
   const [createDraftName, setCreateDraftName] = useState("");
   const createDialogEpochRef = useRef(0);
+  // A distinct access-editor lifetime per open create dialog (#1177); never 0.
+  const createAccessSessionRef = useRef(0);
+  const [createAccessSessionId, setCreateAccessSessionId] = useState(0);
   // The attempted address of a create that failed with AliasInUse (#1006),
   // kept with the localpart it applies to so an edit retires it.
   const [createRoomAliasCollision, setCreateRoomAliasCollision] = useState<
@@ -1606,6 +1631,53 @@ function AccountContent({
     ...createRoomDraftOptions,
     aliasLocalpart: createRoomManualAlias ?? createRoomAddressPreview?.localpart ?? ""
   };
+  // #1177: the create dialog's access/history choices live in the Rust-owned
+  // draft; the preview is the effective proposed tuple after Create's own
+  // normalization. `invitedOnly` is no longer a separate control: the private
+  // choices carry an explicit policy, so the effective submitted value is
+  // always not-invite-only.
+  const createRoomAccessScope = useMemo<RoomAccessDraftScope | null>(
+    () =>
+      createDialog === "room" && createAccessSessionId !== 0
+        ? { kind: "create", sessionId: createAccessSessionId }
+        : null,
+    [createDialog, createAccessSessionId]
+  );
+  const createRoomAccessInput = useMemo<CreateRoomAccessPreviewInput>(
+    () => ({
+      visibility: createRoomDraftOptions.visibility,
+      invitedOnly: false,
+      encrypted: createRoomDraftOptions.encrypted,
+      parentSpaceId: snapshot?.state.ui.navigation.active_space_id ?? null
+    }),
+    [
+      createRoomDraftOptions.visibility,
+      createRoomDraftOptions.encrypted,
+      snapshot?.state.ui.navigation.active_space_id
+    ]
+  );
+  const createRoomAccessPreview = useCreateRoomAccessPreview(
+    api,
+    createRoomAccessScope,
+    createRoomAccessInput,
+    snapshot?.state_generation,
+    createDialog === "room"
+  );
+  // #1177: only this open dialog's own create session may show or consume its
+  // draft; a stale draft from a previous lifetime is never rendered.
+  const createRoomAccessDraft = useMemo(() => {
+    const draft = snapshot?.state.domain.room_management.draft;
+    return draft?.scope.kind === "create" && draft.scope.sessionId === createAccessSessionId
+      ? draft
+      : null;
+  }, [snapshot?.state.domain.room_management.draft, createAccessSessionId]);
+  const createRoomJoinedSpaces = useMemo(
+    () => (snapshot?.state.domain.spaces ?? []).map((space) => ({
+      id: space.space_id,
+      name: space.display_name
+    })),
+    [snapshot?.state.domain.spaces]
+  );
   const [reportDialog, setReportDialog] = useState<ReportDialogState | null>(null);
   const [reportReasonDraft, setReportReasonDraft] = useState("");
   const [timelineStore, setTimelineStore] = useState<TimelineStoreState>(createTimelineStore);
@@ -2823,6 +2895,62 @@ function AccountContent({
     snapshot?.state.domain.room_management.operation,
     snapshot?.state.domain.room_management.selected_room_id,
     snapshot?.state.domain.room_management.settings
+  ]);
+
+  // #1177: the Room Info access/history editor reads the Rust-owned draft and a
+  // stateless Rust preview for the current scope. The preview re-requests on
+  // every published generation (a draft mutation, a confirmed-property
+  // advance, an encryption toggle or a session reset) and drops any older
+  // response, so an out-of-order result never replaces newer details.
+  const roomAccessScope = useMemo<RoomAccessDraftScope | null>(
+    () =>
+      rightPanelMode === "roomInfo" && snapshot?.state.ui.navigation.active_room_id
+        ? { kind: "room", roomId: snapshot.state.ui.navigation.active_room_id }
+        : null,
+    [rightPanelMode, snapshot?.state.ui.navigation.active_room_id]
+  );
+  const roomAccessPreview = useRoomAccessPreview(
+    api,
+    roomAccessScope,
+    "access",
+    snapshot?.state_generation,
+    true
+  );
+  const roomHistoryPreview = useRoomAccessPreview(
+    api,
+    roomAccessScope,
+    "history",
+    snapshot?.state_generation,
+    true
+  );
+  const previousRoomAccessRoomRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (rightPanelMode !== "roomInfo") return;
+    if (!snapshot) return;
+    const roomId = snapshot.state.ui.navigation.active_room_id ?? null;
+    if (!roomId) return;
+    const roomManagement = snapshot.state.domain.room_management;
+    if (roomManagement.settings?.room_id !== roomId) return;
+    const draft = roomManagement.draft;
+    const hasRoomDraft = draft?.scope.kind === "room" && draft.scope.roomId === roomId;
+    // Admit a room editor lifetime whenever this room has no draft: Rust seeds
+    // it from the confirmed policy, so the editor restores the confirmed allow
+    // list instead of the renderer guessing it from a lagging scalar (#1177). A
+    // create dialog also owns the single draft slot, so never fight it; reseed
+    // the room only once that draft is gone.
+    const key = `${roomId}\u0000${hasRoomDraft ? "draft" : draft ? "other" : "none"}`;
+    if (previousRoomAccessRoomRef.current === key) return;
+    previousRoomAccessRoomRef.current = key;
+    if (draft) return;
+    void api
+      .setRoomAccessDraft({ kind: "open", scope: { kind: "room", roomId } })
+      .catch(() => undefined);
+  }, [
+    api,
+    rightPanelMode,
+    snapshot?.state.ui.navigation.active_room_id,
+    snapshot?.state.domain.room_management.settings,
+    snapshot?.state.domain.room_management.draft
   ]);
 
   // Space info and Space Members both read the Space's permissions from the
@@ -4106,9 +4234,29 @@ function AccountContent({
     setCreateRoomAliasCollision(null);
     setCreateRoomManualAlias(null);
     setCreateDraftName("");
-    setCreateRoomDraftOptions(
-      defaultCreateRoomDialogOptions(snapshotRef.current?.sidebar.create_room_defaults)
+    const defaults = defaultCreateRoomDialogOptions(
+      snapshotRef.current?.sidebar.create_room_defaults
     );
+    setCreateRoomDraftOptions(defaults);
+    if (kind === "room") {
+      // #1177: a fresh, distinct access-editor lifetime. Rust seeds its effective
+      // selection from the legacy preset before target editing.
+      const sessionId = ++createAccessSessionRef.current;
+      setCreateAccessSessionId(sessionId);
+      void api
+        .setRoomAccessDraft({
+          kind: "open",
+          scope: { kind: "create", sessionId },
+          create: {
+            visibility: defaults.visibility,
+            invitedOnly: defaults.invitedOnly,
+            parentSpaceId: snapshotRef.current?.state.ui.navigation.active_space_id ?? null
+          }
+        })
+        .catch(() => undefined);
+    } else {
+      setCreateAccessSessionId(0);
+    }
     setCreateDialog(kind);
   }
 
@@ -4119,6 +4267,16 @@ function AccountContent({
     setCreateDialog(null);
     setCreateDraftName("");
     setCreateRoomDraftOptions(defaultCreateRoomDialogOptions());
+    if (createAccessSessionId !== 0) {
+      // Retire exactly this session; an in-flight command from an older one is
+      // rejected by Rust rather than recreating its draft.
+      void api
+        .setRoomAccessDraft({
+          kind: "reset",
+          scope: { kind: "create", sessionId: createAccessSessionId }
+        })
+        .catch(() => undefined);
+    }
   }
 
   function openNewDmDialog() {
@@ -4471,9 +4629,22 @@ function AccountContent({
     }
     setIsBusy(true);
     try {
+      const createRoomDraftState = snapshotRef.current?.state.domain.room_management.draft ?? null;
+      // Only this create session's own draft may shape the submitted policy or
+      // history; a Room Info draft left open elsewhere must not leak into it.
+      const createRoomDraft =
+        createRoomDraftState?.scope.kind === "create" &&
+        createRoomDraftState.scope.sessionId === createAccessSessionId
+          ? createRoomDraftState
+          : null;
       const createRoomRequest =
         kind === "room"
-          ? createRoomRequestFromDraft(name, displayedCreateRoomOptions, activeSpaceIdForCreatedRoom)
+          ? createRoomRequestFromDraft(
+              name,
+              displayedCreateRoomOptions,
+              activeSpaceIdForCreatedRoom,
+              createRoomDraft
+            )
           : null;
       let spaceLinkFailure: OperationFailureKind | null = null;
       if (kind === "space") {
@@ -7534,6 +7705,11 @@ function AccountContent({
           onUpdateRoomSetting={(roomId, change) => {
             runInBackground(updateRoomSetting(roomId, change));
           }}
+          roomAccessPreview={roomAccessPreview}
+          roomHistoryPreview={roomHistoryPreview}
+          onSetRoomAccessDraft={(command) => {
+            runInBackground(api.setRoomAccessDraft(command).then(() => undefined));
+          }}
           onUpdateSpaceJoinRule={(spaceId, joinRule) => updateRoomSetting(spaceId, { joinRule })}
           onIgnoreUser={(userId) => {
             runInBackground(ignoreUser(userId));
@@ -7597,6 +7773,13 @@ function AccountContent({
           onOpenAddressHelp={(url) => runInBackground(openExternalHttpUrl(url))}
           value={createDraftName}
           onCancel={closeCreateDialog}
+          roomAccessDraft={createRoomAccessDraft}
+          createAccessPreview={createRoomAccessPreview}
+          createAccessSessionId={createAccessSessionId}
+          joinedSpaces={createRoomJoinedSpaces}
+          onSetRoomAccessDraft={(command) => {
+            runInBackground(api.setRoomAccessDraft(command).then(() => undefined));
+          }}
           onRoomOptionsChange={(options) => {
             if (options.aliasLocalpart !== displayedCreateRoomOptions.aliasLocalpart) {
               setCreateRoomManualAlias(options.aliasLocalpart);

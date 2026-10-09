@@ -101,6 +101,12 @@ pub struct SpaceRailItem {
     /// than guessed at or exposed by id.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub access_allowed_room_names: Vec<String>,
+    /// The verified single-Space membership route (#1220): `Some(name)` only
+    /// when the rule names exactly one distinct target, the target's create
+    /// event proves it is a Space, and its name resolves. This is the one fact
+    /// that lets the people-facing surface say the specific sentence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_space_members_route: Option<String>,
     /// The joined child rooms the Space-leave confirmation offers to leave
     /// with this Space.
     #[serde(default)]
@@ -135,6 +141,10 @@ pub struct RoomListItem {
     /// than guessed at or exposed by id.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub access_allowed_room_names: Vec<String>,
+    /// The verified single-Space membership route (#1220), or `None` for every
+    /// other restricted shape. See [`SpaceRailItem::access_space_members_route`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_space_members_route: Option<String>,
     pub display_name: String,
     /// Mirrors `RoomSummary.display_label_placeholder` for `display_name`
     /// (#1050): the GUI renders it through the message catalog.
@@ -271,6 +281,8 @@ fn compose_sidebar_with_preferences(
         .iter()
         .map(|space| {
             let local = local_presentations.0.get(&space.space_id);
+            let (access_allowed_room_names, access_space_members_route) =
+                access_allow_names(room_access.get(&space.space_id), &access_names_by_room);
             SpaceRailItem {
                 space_id: space.space_id.clone(),
                 display_name: local
@@ -288,14 +300,12 @@ fn compose_sidebar_with_preferences(
                 is_active: active_space_id == Some(space.space_id.as_str()),
                 access_join_rule: room_access
                     .get(&space.space_id)
-                    .map(|condition| condition.join_rule),
+                    .and_then(|condition| condition.join_rule),
                 access_restricted_conditions: room_access
                     .get(&space.space_id)
                     .and_then(|condition| condition.restricted),
-                access_allowed_room_names: access_allowed_room_names(
-                    room_access.get(&space.space_id),
-                    &access_names_by_room,
-                ),
+                access_allowed_room_names,
+                access_space_members_route,
                 leave_candidates: crate::space_leave::space_leave_candidates(
                     space,
                     spaces,
@@ -557,6 +567,7 @@ fn not_joined_room_list_item(
         access_join_rule: None,
         access_restricted_conditions: None,
         access_allowed_room_names: Vec::new(),
+        access_space_members_route: None,
         display_name: child.display_name.clone(),
         avatar: child.avatar.clone(),
         tags: RoomTags::default(),
@@ -605,6 +616,8 @@ fn room_list_item(
         .get(&room.room_id)
         .map(|settings| settings.mode);
     let projection = room_attention_projection(room, mode);
+    let (access_allowed_room_names, access_space_members_route) =
+        access_allow_names(room_access.get(&room.room_id), access_names_by_room);
     RoomListItem {
         display_name_placeholder: room.display_label_placeholder.clone(),
         room_id: room.room_id.clone(),
@@ -612,14 +625,12 @@ fn room_list_item(
         can_join: false,
         access_join_rule: room_access
             .get(&room.room_id)
-            .map(|condition| condition.join_rule),
+            .and_then(|condition| condition.join_rule),
         access_restricted_conditions: room_access
             .get(&room.room_id)
             .and_then(|condition| condition.restricted),
-        access_allowed_room_names: access_allowed_room_names(
-            room_access.get(&room.room_id),
-            access_names_by_room,
-        ),
+        access_allowed_room_names,
+        access_space_members_route,
         display_name: room.display_label.clone(),
         avatar: room.avatar.clone(),
         tags: room.tags.clone(),
@@ -634,26 +645,45 @@ fn room_list_item(
     }
 }
 
-/// Display labels for a restricted rule's named membership routes (#1166).
+/// Display labels for a restricted rule's named membership routes (#1166) and
+/// the verified single-Space route (#1220).
 ///
-/// Only ids this projection can name become text: an unknown or invisible entry
-/// stays out rather than being guessed at or shown as a raw id.
-fn access_allowed_room_names(
+/// Only ids this projection can name become text: an unknown, invisible or
+/// id-shaped entry stays out rather than being guessed at or shown as a raw id.
+/// The specific Space route additionally requires exactly one distinct target
+/// whose create event proved it a Space, so an ordinary-room target, several
+/// targets or an unknown type never claims it.
+fn access_allow_names(
     condition: Option<&RoomAccessCondition>,
     names_by_room: &HashMap<&str, &str>,
-) -> Vec<String> {
+) -> (Vec<String>, Option<String>) {
     let Some(condition) = condition else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
-    condition
-        .allowed_room_ids
+    let resolved = |target: &crate::state::RoomAllowTarget| -> Option<&str> {
+        let name = *names_by_room.get(target.room_id.as_str())?;
+        let name = name.trim();
+        if name.is_empty() || name == target.room_id {
+            None
+        } else {
+            Some(name)
+        }
+    };
+    let names = condition
+        .allow_targets
         .iter()
-        .filter_map(|room_id| {
-            names_by_room
-                .get(room_id.as_str())
-                .map(|name| (*name).to_owned())
-        })
-        .collect()
+        .filter_map(|target| resolved(target).map(str::to_owned))
+        .collect();
+    let space_members_route = match condition.restricted {
+        Some(RestrictedConditions::MembershipOnly) if condition.allow_targets.len() == 1 => {
+            let target = &condition.allow_targets[0];
+            (target.kind == crate::state::RoomAllowTargetKind::Space)
+                .then(|| resolved(target).map(str::to_owned))
+                .flatten()
+        }
+        _ => None,
+    };
+    (names, space_members_route)
 }
 
 fn unread_count(

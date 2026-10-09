@@ -1266,6 +1266,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
         share_link: Some("https://matrix.to/#/%23private%3Aexample.test".to_owned()),
         join_rule: RoomJoinRule::Invite,
         history_visibility: RoomHistoryVisibility::Shared,
+        access: koushi_state::RoomAccessCondition::default(),
         permissions: RoomPermissionFacts {
             can_edit_settings: true,
             can_change_join_rule: true,

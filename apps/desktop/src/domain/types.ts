@@ -1,3 +1,4 @@
+import type { MessageId } from "../i18n/messages";
 import type { LinkPreview } from "./linkPreview";
 
 export type SearchScopeKind = "currentRoom" | "currentSpace" | "allRooms";
@@ -21,6 +22,19 @@ export interface CreateRoomRequest {
   invitedOnly: boolean;
   visibility: CreateRoomVisibility;
   parentSpace?: CreateRoomParentSpace | null;
+  /** An explicit access policy (#1177); omitted keeps the legacy presets. An
+   * explicitly selected allow Space need not be the attachment and never
+   * writes `m.space.child`. */
+  accessPolicy?: RoomAccessPolicy | null;
+  /** An explicit history visibility (#1177); omitted keeps the legacy
+   * private-in-Space `invited` default. */
+  history?: RoomHistoryVisibility | null;
+}
+
+/** A settable access policy: a join rule plus its canonical allow Space ids (#1177). */
+export interface RoomAccessPolicy {
+  rule: RoomJoinRule;
+  allowTargets: string[];
 }
 
 export type CreateRoomVisibility = "private" | "public";
@@ -1554,7 +1568,11 @@ export type OperationFailureKind =
   | "network"
   | "timeout"
   | "invalid"
-  | "sdk";
+  | "sdk"
+  /** The current join-rule content has allow conditions this client does not model (#1177). */
+  | "unsupportedPolicyCondition"
+  /** The current join-rule policy could not be read before the write (#1177). */
+  | "policyNotVerified";
 
 export interface MediaTransferProgress {
   current: number;
@@ -1762,7 +1780,107 @@ export interface DirectoryRoomSummary {
 export interface RoomManagementState {
   selected_room_id: string | null;
   settings: RoomSettingsSnapshot | null;
+  /**
+   * The Rust-owned access/history draft (#1177). React keeps only DOM/focus
+   * state; every rule, target and history selection lives here.
+   */
+  draft?: RoomAccessDraft | null;
   operation: RoomManagementOperationState;
+}
+
+/** The scope a Rust-owned access/history draft belongs to (#1177). */
+export type RoomAccessDraftScope =
+  | { kind: "room"; roomId: string }
+  | { kind: "create"; sessionId: number };
+
+export interface RoomAccessDraft {
+  scope: RoomAccessDraftScope;
+  revision: number;
+  rule?: RoomJoinRule | null;
+  /** The renderable subset of the selected allow targets (#1177): only joined
+   * Spaces the picker offers. Unrenderable confirmed identities stay in Rust. */
+  allowTargets?: string[];
+  history?: RoomHistoryVisibility | null;
+  /** Whether the user made an explicit choice; an untouched create draft keeps
+   * the legacy preset path to Create. */
+  touched?: boolean;
+}
+
+/** The create dialog facts that seed an opened create editor (#1177). */
+export interface CreateRoomAccessSeed {
+  visibility: CreateRoomVisibility;
+  invitedOnly?: boolean;
+  parentSpaceId?: string | null;
+}
+
+/** A typed mutation of the Rust-owned access/history draft (#1177). */
+export type RoomAccessDraftCommand =
+  | { kind: "rule"; scope: RoomAccessDraftScope; rule?: RoomJoinRule | null }
+  | { kind: "allowTargets"; scope: RoomAccessDraftScope; allowTargets: string[] }
+  | {
+      kind: "toggleAllowTarget";
+      scope: RoomAccessDraftScope;
+      target: string;
+      selected: boolean;
+    }
+  | { kind: "history"; scope: RoomAccessDraftScope; history?: RoomHistoryVisibility | null }
+  | { kind: "reset"; scope: RoomAccessDraftScope }
+  | { kind: "open"; scope: RoomAccessDraftScope; create?: CreateRoomAccessSeed };
+
+/** Which property a Rust access preview describes (#1177). */
+export type RoomAccessPreviewContext = "access" | "history";
+
+/** One resolved outcome line: a catalog id plus ordered substitutions. */
+export interface RoomAccessOutcomeLine {
+  messageId: MessageId;
+  substitutions?: string[];
+}
+
+export interface RoomAccessOutcome {
+  join: RoomAccessOutcomeLine;
+  joinRequest?: RoomAccessOutcomeLine;
+  history: RoomAccessOutcomeLine;
+  encryption: RoomAccessOutcomeLine;
+  directory: RoomAccessOutcomeLine;
+  historyKeyCaveat?: RoomAccessOutcomeLine;
+  nonRetroactive: RoomAccessOutcomeLine;
+}
+
+/** A stateless Rust preview of one Room Info panel (#1177). */
+export interface RoomAccessPreview {
+  scope: RoomAccessDraftScope;
+  context: RoomAccessPreviewContext;
+  confirmed: boolean;
+  outcome: RoomAccessOutcome;
+  /** The canonical key of the effective access policy, Rust-owned (#1177). */
+  canonicalPolicyKey?: string;
+}
+
+/** Why a create proposal cannot be submitted (#1177). */
+export type CreateRoomAccessRejection =
+  | "publicWithRestrictedAccess"
+  | "explicitPolicyWithInvitedOnly"
+  | "emptyAccessTargets"
+  | "publicWithInvitedOnly";
+
+/** Effective create inputs the Rust preview normalizes with Create's rules. */
+export interface CreateRoomAccessPreviewInput {
+  visibility: CreateRoomVisibility;
+  invitedOnly: boolean;
+  encrypted: boolean;
+  parentSpaceId?: string | null;
+}
+
+export interface CreateRoomAccessPreview {
+  scope: RoomAccessDraftScope;
+  confirmed: boolean;
+  outcome: RoomAccessOutcome;
+  /** The effective join rule Create would submit (legacy preset included). */
+  effectiveRule: RoomJoinRule | null;
+  /** The effective history visibility Create would submit. */
+  effectiveHistory: RoomHistoryVisibility;
+  rejection?: CreateRoomAccessRejection;
+  roomVersionPinned: boolean;
 }
 
 export type RoomManagementOperationState =
@@ -1851,6 +1969,7 @@ export type RoomSettingChange =
   | { topic: string | null }
   | { avatarUrl: string | null }
   | { joinRule: RoomJoinRule }
+  | { accessPolicy: RoomAccessPolicy }
   | { historyVisibility: RoomHistoryVisibility };
 
 export type RoomModerationAction = "kick" | "ban" | "unban";
@@ -2831,6 +2950,13 @@ export interface SpaceRailItem {
   /** Resolved labels of the rooms/Spaces a restricted rule names (#1166). */
   access_allowed_room_names?: string[];
   /**
+   * The verified single-Space membership route (#1220): present only when the
+   * rule names exactly one distinct target whose create event proves it is a
+   * Space and whose name resolves. This is the tooltip substitution for the
+   * specific sentence.
+   */
+  access_space_members_route?: string | null;
+  /**
    * Joined, non-DM rooms this Space shows, which a Space leave may take with
    * it. Rust projection; the `leave_space` command re-admits against it.
    */
@@ -2848,12 +2974,17 @@ export interface SpaceLeaveCandidate {
 }
 
 /**
- * Whether a `restricted`/`knock_restricted` rule has an allow condition this
- * client can evaluate (#1166). Mirrors the Rust `RestrictedConditions`: an
- * allow-rule type the client does not model is never reported as a confirmed
- * empty set.
+ * What the client could determine about a `restricted`/`knock_restricted`
+ * rule's allow conditions (#1220). Mirrors the Rust `RestrictedConditions`:
+ * an allow-rule type the client does not model is never reported as a confirmed
+ * empty set, and an unavailable rule is never reported as inspected.
  */
-export type RestrictedConditions = "usable" | "noneUsable" | "unknownAllowRule";
+export type RestrictedConditions =
+  | "notInspected"
+  | "confirmedEmpty"
+  | "membershipOnly"
+  | "membershipPlusUnsupported"
+  | "unsupportedOnly";
 
 export interface RoomListItem {
   room_id: string;
@@ -2878,6 +3009,11 @@ export interface RoomListItem {
   access_restricted_conditions?: RestrictedConditions | null;
   /** Resolved labels of the rooms/Spaces a restricted rule names (#1166). */
   access_allowed_room_names?: string[];
+  /**
+   * The verified single-Space membership route (#1220), or absent for every
+   * other restricted shape.
+   */
+  access_space_members_route?: string | null;
   display_name: string;
   /** Mirrors `RoomSummary.display_label_placeholder`; render via `roomListItemLabel`. */
   display_name_placeholder?: RoomNamePlaceholder | null;

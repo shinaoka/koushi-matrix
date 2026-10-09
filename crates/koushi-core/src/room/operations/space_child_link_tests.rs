@@ -338,6 +338,8 @@ async fn create_domainless_room_in_space(child_status: u16) -> (Vec<AppAction>, 
                     parent_space: Some(CreateRoomParentSpace {
                         space_id: SPACE.to_owned(),
                     }),
+                    access_policy: None,
+                    history: None,
                 },
             }))
             .await

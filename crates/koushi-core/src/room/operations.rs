@@ -11,8 +11,9 @@ use koushi_protocol::event::{CoreEvent, ReportKind, RoomEvent};
 use koushi_protocol::failure::{CoreFailure, RoomFailureKind};
 use koushi_protocol::ids::RequestId;
 use koushi_sdk::{
-    MatrixClientSession, MatrixCreateRoomOptions, MatrixCreateRoomParentSpace,
-    MatrixCreateRoomVisibility, MatrixRoomOperationError, MatrixRoomTagKind,
+    MatrixClientSession, MatrixCreateRoomAccessPolicy, MatrixCreateRoomOptions,
+    MatrixCreateRoomParentSpace, MatrixCreateRoomVisibility, MatrixRoomOperationError,
+    MatrixRoomTagKind,
 };
 use koushi_state::{
     AppAction, BasicOperationRequest, INVITE_ALREADY_IN_SPACE_MESSAGE, InviteDestination,
@@ -169,6 +170,15 @@ fn matrix_create_room_options(options: CreateRoomOptions) -> MatrixCreateRoomOpt
                 space_id: parent.space_id,
                 via_servers: Vec::new(),
             }),
+        access_policy: options
+            .access_policy
+            .map(|policy| MatrixCreateRoomAccessPolicy {
+                rule: super::management::room_join_rule_to_sdk(policy.rule),
+                allow: policy.allow_targets,
+            }),
+        history: options
+            .history
+            .map(super::management::room_history_visibility_to_sdk),
     }
 }
 
@@ -193,6 +203,15 @@ pub(super) fn operation_failure_kind(kind: RoomFailureKind) -> OperationFailureK
         RoomFailureKind::Network => OperationFailureKind::Network,
         RoomFailureKind::NotFound => OperationFailureKind::NotFound,
         RoomFailureKind::Sdk => OperationFailureKind::Sdk,
+        RoomFailureKind::UnsupportedPolicyCondition => {
+            OperationFailureKind::UnsupportedPolicyCondition
+        }
+        RoomFailureKind::PolicyNotVerified => OperationFailureKind::PolicyNotVerified,
+        // The three create-request policy rejections are invalid requests; no
+        // create path reduces them into a room-management operation state.
+        RoomFailureKind::PublicRoomWithRestrictedAccess
+        | RoomFailureKind::ExplicitAccessPolicyWithInvitedOnly
+        | RoomFailureKind::EmptyAccessPolicyTargets => OperationFailureKind::Invalid,
     }
 }
 
@@ -226,12 +245,22 @@ pub(crate) fn classify_room_error(error: &MatrixRoomOperationError) -> RoomFailu
     use koushi_sdk::MatrixRoomOperationFailureKind;
     match error {
         MatrixRoomOperationError::InvalidRoomSetting => RoomFailureKind::Sdk,
+        MatrixRoomOperationError::PublicRoomWithRestrictedAccess => {
+            RoomFailureKind::PublicRoomWithRestrictedAccess
+        }
+        MatrixRoomOperationError::ExplicitAccessPolicyWithInvitedOnly => {
+            RoomFailureKind::ExplicitAccessPolicyWithInvitedOnly
+        }
+        MatrixRoomOperationError::EmptyAccessPolicyTargets => {
+            RoomFailureKind::EmptyAccessPolicyTargets
+        }
         MatrixRoomOperationError::InvalidRoomId
         | MatrixRoomOperationError::InvalidRoomAlias
         | MatrixRoomOperationError::InvalidEventId
         | MatrixRoomOperationError::InvalidUserId
         | MatrixRoomOperationError::InvalidServerName
-        | MatrixRoomOperationError::RoomUnavailable => RoomFailureKind::NotFound,
+        | MatrixRoomOperationError::RoomUnavailable
+        | MatrixRoomOperationError::DirectoryVisibilityUnavailable => RoomFailureKind::NotFound,
         MatrixRoomOperationError::InvalidInvite => RoomFailureKind::InvalidInvite,
         MatrixRoomOperationError::Sdk(kind) => match kind {
             MatrixRoomOperationFailureKind::AliasInUse => RoomFailureKind::AliasInUse,
@@ -256,6 +285,13 @@ fn room_failure_token(kind: RoomFailureKind) -> &'static str {
         RoomFailureKind::Network => "failed_network",
         RoomFailureKind::NotFound => "failed_not_found",
         RoomFailureKind::Sdk => "failed_sdk",
+        RoomFailureKind::UnsupportedPolicyCondition => "failed_unsupported_policy_condition",
+        RoomFailureKind::PolicyNotVerified => "failed_policy_not_verified",
+        RoomFailureKind::PublicRoomWithRestrictedAccess => "failed_public_restricted_access",
+        RoomFailureKind::ExplicitAccessPolicyWithInvitedOnly => {
+            "failed_explicit_policy_with_invited_only"
+        }
+        RoomFailureKind::EmptyAccessPolicyTargets => "failed_empty_access_policy_targets",
     }
 }
 
@@ -365,6 +401,28 @@ impl RoomActor {
             request: BasicOperationRequest::CreateRoom { name: name.clone() },
         }])
         .await;
+        // #1177: a restricted create policy may name only joined verified
+        // Spaces. The picker offers them, but a typed direct command must not
+        // be able to select an ordinary room or an unknown target.
+        if let Some(policy) = &options.access_policy {
+            for target in &policy.allow_targets {
+                if !koushi_sdk::matrix_is_joined_verified_space(session, target).await {
+                    trace_room_operation("create_room", "policy_not_verified", request_id);
+                    self.emit_failure(
+                        request_id,
+                        CoreFailure::RoomOperationFailed {
+                            kind: RoomFailureKind::PolicyNotVerified,
+                        },
+                    );
+                    self.reduce_reliable(vec![AppAction::BasicOperationFailed {
+                        request_id: request_id.sequence,
+                        message: CREATE_ROOM_FAILED_MESSAGE.to_owned(),
+                    }])
+                    .await;
+                    return;
+                }
+            }
+        }
         match koushi_sdk::create_room(session, matrix_create_room_options(options)).await {
             Ok(room_id) => {
                 trace_room_operation("create_room", "succeeded", request_id);

@@ -232,3 +232,121 @@ fn room_management_commands_debug_redacts_room_user_and_settings_values() {
         assert!(!debug.contains("Private moderation reason"), "{debug}");
     }
 }
+
+#[test]
+fn create_room_options_serialize_the_explicit_policy_and_history() {
+    use koushi_state::{RoomAccessPolicy, RoomHistoryVisibility, RoomJoinRule};
+
+    let options = CreateRoomOptions {
+        name: "Synthetic".to_owned(),
+        topic: None,
+        alias_localpart: None,
+        encrypted: true,
+        invited_only: false,
+        visibility: CreateRoomVisibility::Private,
+        parent_space: None,
+        access_policy: Some(RoomAccessPolicy::new(
+            RoomJoinRule::Restricted,
+            vec![
+                "!b:example.invalid".to_owned(),
+                "!a:example.invalid".to_owned(),
+            ],
+        )),
+        history: Some(RoomHistoryVisibility::Joined),
+    };
+    let value = serde_json::to_value(&options).expect("serialize create options");
+    assert_eq!(
+        value["accessPolicy"],
+        serde_json::json!({
+            "rule": "restricted",
+            "allowTargets": ["!a:example.invalid", "!b:example.invalid"],
+        })
+    );
+    assert_eq!(value["history"], serde_json::json!("joined"));
+
+    let debug = format!("{options:?}");
+    assert!(debug.contains("RoomAccessPolicy"), "{debug}");
+    assert!(!debug.contains("!a:example.invalid"), "{debug}");
+    assert!(!debug.contains("!b:example.invalid"), "{debug}");
+    assert!(debug.contains("allow_target_count"), "{debug}");
+}
+
+#[test]
+fn room_access_draft_wire_shape_is_camel_case() {
+    let scope = koushi_state::RoomAccessDraftScope::Room {
+        room_id: "!room:example.invalid".to_owned(),
+    };
+    assert_eq!(
+        serde_json::to_value(&scope).expect("serialize scope"),
+        serde_json::json!({ "kind": "room", "roomId": "!room:example.invalid" })
+    );
+    assert_eq!(
+        serde_json::to_value(koushi_state::RoomAccessDraftScope::Create { session_id: 7 })
+            .expect("serialize scope"),
+        serde_json::json!({ "kind": "create", "sessionId": 7 })
+    );
+
+    let command = RoomAccessDraftCommand::AllowTargets {
+        scope: scope.clone(),
+        allow_targets: vec!["!a:example.invalid".to_owned()],
+    };
+    let frontend = serde_json::json!({
+        "kind": "allowTargets",
+        "scope": { "kind": "room", "roomId": "!room:example.invalid" },
+        "allowTargets": ["!a:example.invalid"],
+    });
+    assert_eq!(
+        serde_json::to_value(&command).expect("serialize command"),
+        frontend
+    );
+    let parsed: RoomAccessDraftCommand =
+        serde_json::from_value(frontend).expect("frontend shape deserializes");
+    assert_eq!(parsed, command);
+
+    // #1177: the open command and its create seed keep camelCase fields.
+    let open = RoomAccessDraftCommand::Open {
+        scope: koushi_state::RoomAccessDraftScope::Create { session_id: 4 },
+        create: Some(koushi_state::CreateRoomAccessSeed {
+            visibility: koushi_state::CreateRoomVisibility::Private,
+            invited_only: false,
+            parent_space_id: Some("!space:example.invalid".to_owned()),
+        }),
+    };
+    let open_wire = serde_json::json!({
+        "kind": "open",
+        "scope": { "kind": "create", "sessionId": 4 },
+        "create": {
+            "visibility": "private",
+            "invitedOnly": false,
+            "parentSpaceId": "!space:example.invalid",
+        },
+    });
+    assert_eq!(
+        serde_json::to_value(&open).expect("serialize open"),
+        open_wire
+    );
+    let parsed_open: RoomAccessDraftCommand =
+        serde_json::from_value(open_wire).expect("frontend open shape deserializes");
+    assert_eq!(parsed_open, open);
+
+    // #1177: one target edit keeps camelCase fields and redacts the target id.
+    let toggle = RoomAccessDraftCommand::ToggleAllowTarget {
+        scope: scope.clone(),
+        target: "!space:example.invalid".to_owned(),
+        selected: true,
+    };
+    let toggle_wire = serde_json::json!({
+        "kind": "toggleAllowTarget",
+        "scope": { "kind": "room", "roomId": "!room:example.invalid" },
+        "target": "!space:example.invalid",
+        "selected": true,
+    });
+    assert_eq!(
+        serde_json::to_value(&toggle).expect("serialize toggle"),
+        toggle_wire
+    );
+    let parsed_toggle: RoomAccessDraftCommand =
+        serde_json::from_value(toggle_wire).expect("frontend toggle shape deserializes");
+    assert_eq!(parsed_toggle, toggle);
+    assert!(!format!("{toggle:?}").contains("!space:example.invalid"));
+}

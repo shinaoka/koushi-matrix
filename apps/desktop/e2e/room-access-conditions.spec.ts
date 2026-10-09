@@ -40,17 +40,30 @@ const PUBLIC_ROOM = row("!open:example.invalid", "Open Room", "public");
 const INVITE_ROOM = row("!invite:example.invalid", "Invite Room", "invite");
 const RESTRICTED_ROOM = {
   ...row("!conditional:example.invalid", "Conditional Room", "restricted"),
-  access_restricted_conditions: "usable" as const,
-  // Rust resolves the rule's named routes to labels; the renderer lists them.
+  access_restricted_conditions: "membershipOnly" as const,
+  // Rust resolved a named route but no verified single-Space route, so the
+  // generic sentence applies and the tooltip names the route it has.
   access_allowed_room_names: ["Allowed Room"]
+};
+const SPACE_ROUTE_ROOM = {
+  ...row("!space-route:example.invalid", "Space Route Room", "restricted"),
+  access_restricted_conditions: "membershipOnly" as const,
+  access_allowed_room_names: ["Allowed Space"],
+  access_space_members_route: "Allowed Space"
+};
+const SPACE_ROUTE_BOTH_ROOM = {
+  ...row("!space-route-both:example.invalid", "Space Route Both Room", "knockRestricted"),
+  access_restricted_conditions: "membershipOnly" as const,
+  access_allowed_room_names: ["Allowed Space"],
+  access_space_members_route: "Allowed Space"
 };
 const NO_USABLE_ROOM = {
   ...row("!no-usable:example.invalid", "No Usable Room", "restricted"),
-  access_restricted_conditions: "noneUsable" as const
+  access_restricted_conditions: "confirmedEmpty" as const
 };
 const UNKNOWN_ALLOW_ROOM = {
   ...row("!unknown-allow:example.invalid", "Unknown Allow Room", "restricted"),
-  access_restricted_conditions: "unknownAllowRule" as const
+  access_restricted_conditions: "unsupportedOnly" as const
 };
 const KNOCK_ROOM = row("!request:example.invalid", "Request Room", "knock");
 const BOTH_ROOM = row("!both:example.invalid", "Both Room", "knockRestricted");
@@ -61,6 +74,8 @@ const ROOMS = [
   PUBLIC_ROOM,
   INVITE_ROOM,
   RESTRICTED_ROOM,
+  SPACE_ROUTE_ROOM,
+  SPACE_ROUTE_BOTH_ROOM,
   NO_USABLE_ROOM,
   UNKNOWN_ALLOW_ROOM,
   KNOCK_ROOM,
@@ -139,7 +154,7 @@ test("room rows render the projected access condition with its tooltip", async (
   await expect(rooms.locator('[data-testid="room-item"]', { hasText: "Open Room" }).locator(".room-access-badge")).toHaveCount(0);
 
   // The other rules use compact badges, in the documented order.
-  const bothRow = rooms.getByRole("button", { name: new RegExp("Both Room") });
+  const bothRow = rooms.getByRole("button", { name: /^Both Room$/ });
   await expect(bothRow.locator(".room-access-badge")).toHaveText([
     t("access.conditionsApply"),
     t("access.canRequest")
@@ -195,6 +210,60 @@ test("room rows render the projected access condition with its tooltip", async (
     .filter({ hasText: t("access.requestRouteDescription") });
   await expect(requestBubble).toHaveCount(1);
   await expect(requestBubble).toBeInViewport({ ratio: 1 });
+});
+
+test("a verified single-Space route names the Space and keeps the request badge (#1220)", async ({
+  page
+}) => {
+  await pushRoomList(page);
+  const rooms = page.getByRole("region", { name: t("roomList.categoryRooms"), exact: true });
+
+  // The generic conditions badge becomes the specific sentence, and its tooltip
+  // substitutes the Space name Rust resolved.
+  const routeRow = rooms.getByRole("button", { name: "Space Route Room", exact: true });
+  await expect(routeRow.locator(".room-access-badge")).toHaveText([
+    t("access.spaceMembersCanJoin")
+  ]);
+  await routeRow.locator(".room-access-badge").first().hover();
+  await expect(
+    page.locator("body > .tooltip-bubble.is-open").filter({
+      hasText: t("access.spaceMembersCanJoinDescription", { space: "Allowed Space" })
+    })
+  ).toHaveCount(1);
+  await expect(
+    page
+      .locator("body > .tooltip-bubble.is-open")
+      .filter({ hasText: t("access.conditionsDescription") })
+  ).toHaveCount(0);
+
+  // Keyboard focus reaches the same specific sentence, never a raw id.
+  const describedBy = await routeRow.getAttribute("aria-describedby");
+  expect(describedBy).toBeTruthy();
+  await expect(page.locator(`[id="${describedBy}"]`)).toHaveText(
+    t("access.spaceMembersCanJoinDescription", { space: "Allowed Space" })
+  );
+  await expect(page.locator(`[id="${describedBy}"]`)).not.toContainText(
+    "!space-route:example.invalid"
+  );
+
+  // A single-Space knock-restricted rule keeps its own request badge.
+  const bothRow = rooms.getByRole("button", { name: "Space Route Both Room", exact: true });
+  await expect(bothRow.locator(".room-access-badge")).toHaveText([
+    t("access.spaceMembersCanJoin"),
+    t("access.canRequest")
+  ]);
+  await bothRow.locator(".room-access-badge").first().hover();
+  await expect(
+    page.locator("body > .tooltip-bubble.is-open").filter({
+      hasText: t("access.spaceMembersCanJoinDescription", { space: "Allowed Space" })
+    })
+  ).toHaveCount(1);
+  await bothRow.locator(".room-access-badge").last().hover();
+  await expect(
+    page
+      .locator("body > .tooltip-bubble.is-open")
+      .filter({ hasText: t("access.requestRouteDescription") })
+  ).toHaveCount(1);
 });
 
 test("the room header shows the active room's access condition", async ({ page }) => {
@@ -263,8 +332,9 @@ function spaceRailItem(
   item: SpaceSummary,
   is_active: boolean,
   unread_count = 0,
-  restricted?: "usable" | "noneUsable" | "unknownAllowRule",
-  allowedRoomNames?: string[]
+  restricted?: "notInspected" | "confirmedEmpty" | "membershipOnly" | "membershipPlusUnsupported" | "unsupportedOnly",
+  allowedRoomNames?: string[],
+  spaceMembersRoute?: string
 ) {
   return {
     space_id: item.space_id,
@@ -277,6 +347,7 @@ function spaceRailItem(
     access_join_rule: item.join_rule,
     ...(restricted ? { access_restricted_conditions: restricted } : {}),
     ...(allowedRoomNames ? { access_allowed_room_names: allowedRoomNames } : {}),
+    ...(spaceMembersRoute ? { access_space_members_route: spaceMembersRoute } : {}),
     leave_candidates: []
   };
 }
@@ -292,10 +363,7 @@ async function pushSpaces(page: Page, activeSpaceId: string | null): Promise<voi
           item,
           item.space_id === activeSpaceId,
           item.space_id === "!invite-space:example.invalid" ? 3 : 0,
-          item.space_id === "!conditional-space:example.invalid" ? "noneUsable" : undefined,
-          item.space_id === "!conditional-space:example.invalid"
-            ? ["Conditional Room"]
-            : undefined
+          item.space_id === "!conditional-space:example.invalid" ? "confirmedEmpty" : undefined
         )
       ),
       account_home: { ...base.sidebar.account_home, is_active: activeSpaceId === null }
@@ -484,7 +552,8 @@ test("a restricted Space with no usable condition explains the invitation requir
       .filter({ hasText: t("access.conditionsDescription") })
   ).toHaveCount(0);
 
-  // The rail item keeps the same explanation.
+  // The rail keeps the same explanation; a confirmed-empty allow list names no
+  // route, so no `Allowed:` line is added.
   const rail = page.getByRole("navigation", { name: t("workspace.workspaces") });
   const item = rail.getByRole("button", { name: "Conditional Space", exact: true });
   await item.hover();
@@ -497,10 +566,9 @@ test("a restricted Space with no usable condition explains the invitation requir
         )}`
       })
   ).toHaveCount(1);
-  // The rail also names the route Rust resolved for this Space.
   await expect(
     page
       .locator("body > .tooltip-bubble.is-open")
       .filter({ hasText: t("access.allowedRooms", { rooms: "Conditional Room" }) })
-  ).toHaveCount(1);
+  ).toHaveCount(0);
 });

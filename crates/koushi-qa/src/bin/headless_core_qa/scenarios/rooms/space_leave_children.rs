@@ -92,6 +92,8 @@ async fn create_room_in_space(
             parent_space: Some(CreateRoomParentSpace {
                 space_id: space_id.to_owned(),
             }),
+            access_policy: None,
+            history: None,
         },
     }))
     .await

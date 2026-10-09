@@ -80,6 +80,7 @@ fn room_settings(room_id: &str, members: Vec<RoomMemberSummary>) -> RoomSettings
         share_link: None,
         join_rule: RoomJoinRule::Invite,
         history_visibility: RoomHistoryVisibility::Shared,
+        access: koushi_state::RoomAccessCondition::default(),
         permissions: RoomPermissionFacts::default(),
         members,
     }

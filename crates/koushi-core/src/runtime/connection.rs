@@ -1150,6 +1150,32 @@ impl CoreConnection {
         koushi_sdk::preview_room_address(name, alias_localpart, space_name, user_id)
     }
 
+    /// A stateless preview of one Room Info access/history panel (#1177).
+    ///
+    /// It borrows the current published snapshot, applies the Rust-owned draft
+    /// only when its scope matches, and never supplies a trusted verified-Space
+    /// or confirmed-publication assertion. The returned identity lets the
+    /// caller fence an older result.
+    pub fn preview_room_access(
+        &self,
+        scope: &koushi_state::RoomAccessDraftScope,
+        context: koushi_state::RoomAccessPreviewContext,
+    ) -> koushi_state::RoomAccessPreview {
+        let snapshot = self.snapshot_rx.borrow();
+        koushi_state::preview_room_access_draft(&snapshot.state, scope, context)
+    }
+
+    /// A stateless preview of the create dialog's effective proposed access
+    /// tuple (#1177), normalized with the same rules Create applies.
+    pub fn preview_create_room_access(
+        &self,
+        scope: &koushi_state::RoomAccessDraftScope,
+        input: koushi_state::CreateRoomAccessPreviewInput,
+    ) -> koushi_state::CreateRoomAccessPreview {
+        let snapshot = self.snapshot_rx.borrow();
+        koushi_state::preview_create_room_access(&snapshot.state, scope, input)
+    }
+
     /// Latest state snapshot (latest-wins watch semantics).
     pub fn snapshot(&self) -> AppStateSnapshot {
         self.snapshot_rx.borrow().state.clone()

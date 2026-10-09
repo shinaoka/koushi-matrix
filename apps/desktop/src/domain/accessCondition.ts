@@ -2,13 +2,14 @@ import type { MessageId } from "../i18n/messages";
 import type { RestrictedConditions, RoomJoinRule } from "./types";
 
 /**
- * #1166: the access-condition vocabulary shared by the room list, the room
- * header and the Space rail/header.
+ * #1166, #1220: the access-condition vocabulary shared by the room list, the
+ * room header, the Space rail/header and the Room Info summary.
  *
  * The condition comes from Rust (`RoomListItem.access_join_rule` /
- * `SpaceSummary.join_rule`), which projects the object's own
- * `m.room.join_rules`. It is independent of encryption, DM status, the viewer's
- * membership and `can_join`, and it is never inferred here.
+ * `SpaceRailItem.access_join_rule` / `access_restricted_conditions`), which
+ * projects the object's own `m.room.join_rules`. It is independent of
+ * encryption, DM status, the viewer's membership and `can_join`, and it is never
+ * inferred here.
  *
  * A `null`/absent rule means "not projected yet" (or a row lane that has no
  * condition, such as an invitation), never a guessed rule.
@@ -18,6 +19,10 @@ export type RoomAccessBadge = {
   labelMessageId: MessageId;
   /** Explanation shown while that badge is hovered or focused. */
   descriptionMessageId: MessageId;
+  /** Verified single-Space route name substituted into `{space}` (#1220). */
+  descriptionSpaceName?: string;
+  /** Named allow routes appended to the generic explanation. */
+  descriptionAllowedRoomNames?: readonly string[];
 };
 
 export type RoomAccessIndicator = {
@@ -29,6 +34,20 @@ export type RoomAccessIndicator = {
   badges: RoomAccessBadge[];
   /** Explanation for the whole condition: row/header hover or focus. */
   descriptionMessageId: MessageId;
+  /** Verified single-Space route name substituted into `{space}` (#1220). */
+  descriptionSpaceName?: string;
+  /** Named allow routes appended to the generic explanation. */
+  descriptionAllowedRoomNames?: readonly string[];
+};
+
+/**
+ * The Rust-resolved route facts a surface hands the indicator: the verified
+ * single-Space route name (#1220) and the named allow routes (#1166). Both are
+ * already resolved by Rust; React never derives them.
+ */
+export type RoomAccessRouteFacts = {
+  spaceMembersRoute?: string | null;
+  allowedRoomNames?: readonly string[] | null;
 };
 
 /**
@@ -36,17 +55,24 @@ export type RoomAccessIndicator = {
  *
  * `unknown` also covers the reserved Matrix `private` value: the reference
  * vocabulary has no icon or badge for it, and the issue forbids presenting it as
- * a recognized condition.
+ * a recognized condition. `private` is therefore never the Space-membership
+ * route.
  */
 export function roomAccessIndicator(
   rule: RoomJoinRule | null | undefined,
-  restricted?: RestrictedConditions | null
+  restricted?: RestrictedConditions | null,
+  route: RoomAccessRouteFacts = {}
 ): RoomAccessIndicator | null {
-  // #1166: a restricted rule with no usable allow condition still classifies as
-  // restricted, but its explanation must say an invitation is required. An
-  // allow-rule type the client does not model keeps the generic explanation:
-  // the absence of a usable condition is not confirmed.
-  const noUsableConditions = restricted === "noneUsable";
+  // #1220: the specific "Space members can join" sentence applies only to a
+  // verified membership-only route Rust resolved to a safe Space name. Every
+  // other restricted shape keeps the generic facts, so several targets, an
+  // ordinary-room target or an unknown/redacted type never claims it.
+  const spaceName =
+    restricted === "membershipOnly" ? route.spaceMembersRoute?.trim() || null : null;
+  const namedRoutes = spaceName ? undefined : route.allowedRoomNames ?? undefined;
+  // Only a confirmed empty allow list proves that no usable condition exists; an
+  // unmodelled or uninspected rule keeps the generic explanation.
+  const noUsableConditions = restricted === "confirmedEmpty";
   switch (rule) {
     case "public":
       return {
@@ -63,6 +89,21 @@ export function roomAccessIndicator(
         descriptionMessageId: "access.inviteOnlyDescription"
       };
     case "restricted":
+      if (spaceName) {
+        return {
+          icon: null,
+          labelMessageIds: ["access.spaceMembersCanJoin"],
+          badges: [
+            {
+              labelMessageId: "access.spaceMembersCanJoin",
+              descriptionMessageId: "access.spaceMembersCanJoinDescription",
+              descriptionSpaceName: spaceName
+            }
+          ],
+          descriptionMessageId: "access.spaceMembersCanJoinDescription",
+          descriptionSpaceName: spaceName
+        };
+      }
       return {
         icon: null,
         labelMessageIds: ["access.conditionsApply"],
@@ -71,12 +112,14 @@ export function roomAccessIndicator(
             labelMessageId: "access.conditionsApply",
             descriptionMessageId: noUsableConditions
               ? "access.restrictedNoUsableConditionsDescription"
-              : "access.conditionsDescription"
+              : "access.conditionsDescription",
+            descriptionAllowedRoomNames: noUsableConditions ? undefined : namedRoutes
           }
         ],
         descriptionMessageId: noUsableConditions
           ? "access.restrictedNoUsableConditionsDescription"
-          : "access.conditionsDescription"
+          : "access.conditionsDescription",
+        descriptionAllowedRoomNames: noUsableConditions ? undefined : namedRoutes
       };
     case "knock":
       return {
@@ -91,6 +134,27 @@ export function roomAccessIndicator(
         descriptionMessageId: "access.requestDescription"
       };
     case "knockRestricted":
+      if (spaceName) {
+        return {
+          icon: null,
+          labelMessageIds: ["access.spaceMembersCanJoin", "access.canRequest"],
+          // The membership route names the Space; the request route keeps its own
+          // badge and explanation.
+          badges: [
+            {
+              labelMessageId: "access.spaceMembersCanJoin",
+              descriptionMessageId: "access.spaceMembersCanJoinDescription",
+              descriptionSpaceName: spaceName
+            },
+            {
+              labelMessageId: "access.canRequest",
+              descriptionMessageId: "access.requestRouteDescription"
+            }
+          ],
+          descriptionMessageId: "access.spaceMembersCanJoinCanRequestDescription",
+          descriptionSpaceName: spaceName
+        };
+      }
       return {
         icon: null,
         labelMessageIds: ["access.conditionsApply", "access.canRequest"],
@@ -101,7 +165,8 @@ export function roomAccessIndicator(
             labelMessageId: "access.conditionsApply",
             descriptionMessageId: noUsableConditions
               ? "access.restrictedNoUsableConditionsDescription"
-              : "access.conditionsRouteDescription"
+              : "access.conditionsRouteDescription",
+            descriptionAllowedRoomNames: noUsableConditions ? undefined : namedRoutes
           },
           {
             labelMessageId: "access.canRequest",
@@ -110,7 +175,8 @@ export function roomAccessIndicator(
         ],
         descriptionMessageId: noUsableConditions
           ? "access.restrictedNoUsableConditionsCanRequestDescription"
-          : "access.knockRestrictedDescription"
+          : "access.knockRestrictedDescription",
+        descriptionAllowedRoomNames: noUsableConditions ? undefined : namedRoutes
       };
     case "private":
     case "unknown":
@@ -146,7 +212,8 @@ export const ROOM_ACCESS_CHECKING: RoomAccessIndicator = {
 /**
  * The badges a room/Space header shows: the full label of the condition, which
  * is the icon's own label for public/invite-only and the compact badges
- * otherwise. Each entry keeps the explanation for its own route.
+ * otherwise. Each entry keeps the explanation and route substitution for its
+ * own route, falling back to the whole-condition explanation.
  */
 export function roomAccessHeaderBadges(
   indicator: RoomAccessIndicator
@@ -160,7 +227,10 @@ export function roomAccessHeaderBadges(
     );
     return {
       labelMessageId,
-      descriptionMessageId: badge?.descriptionMessageId ?? indicator.descriptionMessageId
+      descriptionMessageId: badge?.descriptionMessageId ?? indicator.descriptionMessageId,
+      descriptionSpaceName: badge?.descriptionSpaceName ?? indicator.descriptionSpaceName,
+      descriptionAllowedRoomNames:
+        badge?.descriptionAllowedRoomNames ?? indicator.descriptionAllowedRoomNames
     };
   });
 }
@@ -174,28 +244,50 @@ interface SidebarAccessRow {
   access_join_rule?: RoomJoinRule | null;
   access_restricted_conditions?: RestrictedConditions | null;
   access_allowed_room_names?: string[];
+  access_space_members_route?: string | null;
 }
 
-export function sidebarRoomAccess(
-  sidebar: {
-    space_rooms: readonly SidebarAccessRow[];
-    global_dms: readonly SidebarAccessRow[];
-    not_joined_space_rooms: readonly SidebarAccessRow[];
-  },
-  roomId: string
-): {
+interface SidebarAccessLists {
+  space_rooms: readonly SidebarAccessRow[];
+  global_dms: readonly SidebarAccessRow[];
+  not_joined_space_rooms: readonly SidebarAccessRow[];
+  sections?: {
+    favourites: readonly SidebarAccessRow[];
+    rooms: readonly SidebarAccessRow[];
+    people: readonly SidebarAccessRow[];
+    low_priority: readonly SidebarAccessRow[];
+    not_joined: readonly SidebarAccessRow[];
+  };
+}
+
+export type RoomAccessProjection = {
   joinRule: RoomJoinRule | null;
   restricted: RestrictedConditions | null;
+  spaceMembersRoute: string | null;
   allowedRoomNames: readonly string[];
-} {
+};
+
+export function sidebarRoomAccess(
+  sidebar: SidebarAccessLists,
+  roomId: string
+): RoomAccessProjection {
+  // #1220: a room can render from any lane (Home, a Space, People/DM, favourites,
+  // low priority), so all of them are searched; otherwise the three surfaces
+  // could disagree about one room.
   const row = [
     ...sidebar.space_rooms,
     ...sidebar.global_dms,
-    ...sidebar.not_joined_space_rooms
+    ...sidebar.not_joined_space_rooms,
+    ...(sidebar.sections?.favourites ?? []),
+    ...(sidebar.sections?.rooms ?? []),
+    ...(sidebar.sections?.people ?? []),
+    ...(sidebar.sections?.low_priority ?? []),
+    ...(sidebar.sections?.not_joined ?? [])
   ].find((item) => item.room_id === roomId);
   return {
     joinRule: row?.access_join_rule ?? null,
     restricted: row?.access_restricted_conditions ?? null,
+    spaceMembersRoute: row?.access_space_members_route ?? null,
     allowedRoomNames: row?.access_allowed_room_names ?? []
   };
 }

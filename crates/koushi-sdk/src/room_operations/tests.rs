@@ -1,13 +1,14 @@
 use super::{
-    MatrixCreateRoomOptions, MatrixCreateRoomParentSpace, MatrixCreateRoomVisibility,
-    MatrixJoinTarget, MatrixPreviewJoinability, MatrixPreviewMembership,
-    MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom, MatrixRoomHistoryVisibility,
-    MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomModerationAction, MatrixRoomOperationError,
-    MatrixRoomPermissionFacts, MatrixRoomSettingChange, MatrixRoomSettingsSnapshot,
-    create_public_directory_room, create_room_request, get_room_settings_snapshot,
-    join_room_target, matrix_room_preview_from_sdk, moderate_room_member,
-    query_public_room_directory, resolve_join_target, set_space_power_level,
-    unrelated_power_levels_equal, update_room_member_power_level, update_room_setting,
+    MatrixCreateRoomAccessPolicy, MatrixCreateRoomOptions, MatrixCreateRoomParentSpace,
+    MatrixCreateRoomVisibility, MatrixJoinTarget, MatrixPreviewJoinability,
+    MatrixPreviewMembership, MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom,
+    MatrixRoomHistoryVisibility, MatrixRoomJoinRule, MatrixRoomMemberRole,
+    MatrixRoomModerationAction, MatrixRoomOperationError, MatrixRoomPermissionFacts,
+    MatrixRoomSettingChange, MatrixRoomSettingsSnapshot, create_public_directory_room,
+    create_room_request, get_room_settings_snapshot, join_room_target,
+    matrix_room_preview_from_sdk, moderate_room_member, query_public_room_directory,
+    resolve_join_target, set_space_power_level, unrelated_power_levels_equal,
+    update_room_member_power_level, update_room_setting,
 };
 
 use crate::room_projection::{
@@ -97,6 +98,8 @@ fn create_room_request_projects_space_room_options() {
             space_id: "!space:example.invalid".to_owned(),
             via_servers: vec!["example.invalid".to_owned()],
         }),
+        access_policy: None,
+        history: None,
     })
     .expect("request should build");
 
@@ -156,6 +159,8 @@ fn create_room_request_projects_public_alias_without_encryption() {
         invited_only: false,
         visibility: MatrixCreateRoomVisibility::Public,
         parent_space: None,
+        access_policy: None,
+        history: None,
     })
     .expect("request should build");
 
@@ -187,6 +192,8 @@ fn create_room_request_omits_the_name_and_alias_of_an_unnamed_public_space_room(
             space_id: "!space:example.invalid".to_owned(),
             via_servers: vec!["example.invalid".to_owned()],
         }),
+        access_policy: None,
+        history: None,
     })
     .expect("an unnamed public room needs no address");
 
@@ -225,6 +232,8 @@ fn create_room_request_keeps_an_explicit_address_for_an_unnamed_public_room() {
         invited_only: false,
         visibility: MatrixCreateRoomVisibility::Public,
         parent_space: None,
+        access_policy: None,
+        history: None,
     })
     .expect("request should build");
     assert_eq!(request.name, None);
@@ -247,6 +256,8 @@ fn create_room_request_still_requires_an_address_for_a_named_public_room() {
                         invited_only: false,
                         visibility: MatrixCreateRoomVisibility::Public,
                         parent_space: None,
+                        access_policy: None,
+                        history: None,
                     }),
                     Err(MatrixRoomOperationError::InvalidRoomAlias)
                 ),
@@ -266,6 +277,8 @@ fn create_room_request_omits_the_name_of_an_unnamed_private_room() {
         invited_only: false,
         visibility: MatrixCreateRoomVisibility::Private,
         parent_space: None,
+        access_policy: None,
+        history: None,
     })
     .expect("an unnamed private room is valid");
     assert_eq!(request.name, None);
@@ -285,6 +298,8 @@ fn create_room_request_projects_invited_only_space_room() {
             space_id: "!space:example.invalid".to_owned(),
             via_servers: vec!["example.invalid".to_owned()],
         }),
+        access_policy: None,
+        history: None,
     })
     .expect("request should build");
 
@@ -311,6 +326,267 @@ fn create_room_request_projects_invited_only_space_room() {
                 .and_then(|content| content.get("history_visibility"))
                 .and_then(serde_json::Value::as_str)
                 == Some("invited")
+    }));
+}
+
+fn create_room_access_policy(
+    rule: MatrixRoomJoinRule,
+    allow: &[&str],
+) -> MatrixCreateRoomAccessPolicy {
+    MatrixCreateRoomAccessPolicy {
+        rule,
+        allow: allow.iter().map(|target| (*target).to_owned()).collect(),
+    }
+}
+
+fn initial_state_events_of_type<'a>(
+    events: &'a [serde_json::Value],
+    event_type: &str,
+) -> Vec<&'a serde_json::Value> {
+    events
+        .iter()
+        .filter(|event| event.get("type").and_then(serde_json::Value::as_str) == Some(event_type))
+        .collect()
+}
+
+fn private_space_room_options(
+    access_policy: Option<MatrixCreateRoomAccessPolicy>,
+    history: Option<MatrixRoomHistoryVisibility>,
+) -> MatrixCreateRoomOptions {
+    MatrixCreateRoomOptions {
+        name: "Synthetic Ops".to_owned(),
+        topic: None,
+        alias_localpart: None,
+        encrypted: true,
+        invited_only: false,
+        visibility: MatrixCreateRoomVisibility::Private,
+        parent_space: Some(MatrixCreateRoomParentSpace {
+            space_id: "!attached:example.invalid".to_owned(),
+            via_servers: vec!["example.invalid".to_owned()],
+        }),
+        access_policy,
+        history,
+    }
+}
+
+#[test]
+fn create_room_request_rejects_public_with_an_explicit_restricted_policy() {
+    let error = create_room_request(MatrixCreateRoomOptions {
+        name: "Synthetic Public".to_owned(),
+        topic: None,
+        alias_localpart: Some("synthetic-public".to_owned()),
+        encrypted: false,
+        invited_only: false,
+        visibility: MatrixCreateRoomVisibility::Public,
+        parent_space: None,
+        access_policy: Some(create_room_access_policy(
+            MatrixRoomJoinRule::Restricted,
+            &["!space:example.invalid"],
+        )),
+        history: None,
+    })
+    .unwrap_err();
+    assert_eq!(
+        error,
+        MatrixRoomOperationError::PublicRoomWithRestrictedAccess
+    );
+}
+
+#[test]
+fn create_room_request_rejects_an_explicit_policy_with_invited_only() {
+    let error = create_room_request(MatrixCreateRoomOptions {
+        invited_only: true,
+        ..private_space_room_options(
+            Some(create_room_access_policy(
+                MatrixRoomJoinRule::Restricted,
+                &["!space:example.invalid"],
+            )),
+            None,
+        )
+    })
+    .unwrap_err();
+    assert_eq!(
+        error,
+        MatrixRoomOperationError::ExplicitAccessPolicyWithInvitedOnly
+    );
+}
+
+#[test]
+fn create_room_request_rejects_an_explicitly_empty_restricted_allow_list() {
+    for allow in [
+        create_room_access_policy(MatrixRoomJoinRule::Restricted, &[]),
+        create_room_access_policy(MatrixRoomJoinRule::Restricted, &["  "]),
+    ] {
+        let error = create_room_request(MatrixCreateRoomOptions {
+            access_policy: Some(allow),
+            ..private_space_room_options(None, None)
+        })
+        .unwrap_err();
+        assert_eq!(error, MatrixRoomOperationError::EmptyAccessPolicyTargets);
+    }
+}
+
+#[test]
+fn create_room_request_honours_a_selected_allow_space_different_from_the_attachment() {
+    let request = create_room_request(MatrixCreateRoomOptions {
+        access_policy: Some(create_room_access_policy(
+            MatrixRoomJoinRule::Restricted,
+            &["!selected:example.invalid"],
+        )),
+        ..private_space_room_options(None, None)
+    })
+    .expect("request should build");
+
+    let initial_state = initial_state_json(&request);
+    let join_rules = initial_state_events_of_type(&initial_state, "m.room.join_rules");
+    assert_eq!(join_rules.len(), 1, "exactly one join-rules event");
+    assert_eq!(
+        join_rules[0]
+            .get("content")
+            .and_then(|content| content.get("join_rule"))
+            .and_then(serde_json::Value::as_str),
+        Some("restricted")
+    );
+    assert_eq!(
+        join_rules[0]
+            .get("content")
+            .and_then(|content| content.get("allow"))
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+    let allow = join_rules[0]
+        .get("content")
+        .and_then(|content| content.get("allow"))
+        .and_then(serde_json::Value::as_array)
+        .expect("allow array");
+    assert_eq!(
+        allow[0].get("room_id").and_then(serde_json::Value::as_str),
+        Some("!selected:example.invalid"),
+        "the selected allow Space wins over the attachment"
+    );
+    // The attachment stays independent and the explicit policy never writes a
+    // child link; that remains the separate `SetSpaceChild` command.
+    assert!(initial_state.iter().any(|event| {
+        event.get("type").and_then(serde_json::Value::as_str) == Some("m.space.parent")
+            && event.get("state_key").and_then(serde_json::Value::as_str)
+                == Some("!attached:example.invalid")
+    }));
+    assert!(!initial_state.iter().any(|event| {
+        event.get("type").and_then(serde_json::Value::as_str) == Some("m.space.child")
+    }));
+}
+
+#[test]
+fn create_room_request_sends_exactly_one_explicit_history_event() {
+    let request = create_room_request(MatrixCreateRoomOptions {
+        access_policy: Some(create_room_access_policy(
+            MatrixRoomJoinRule::Restricted,
+            &["!selected:example.invalid"],
+        )),
+        history: Some(MatrixRoomHistoryVisibility::Joined),
+        ..private_space_room_options(None, None)
+    })
+    .expect("request should build");
+
+    let initial_state = initial_state_json(&request);
+    let history = initial_state_events_of_type(&initial_state, "m.room.history_visibility");
+    assert_eq!(history.len(), 1, "exactly one history event");
+    assert_eq!(
+        history[0]
+            .get("content")
+            .and_then(|content| content.get("history_visibility"))
+            .and_then(serde_json::Value::as_str),
+        Some("joined")
+    );
+}
+
+#[test]
+fn create_room_request_explicit_restricted_policy_pins_a_supported_room_version() {
+    let restricted = create_room_request(MatrixCreateRoomOptions {
+        access_policy: Some(create_room_access_policy(
+            MatrixRoomJoinRule::Restricted,
+            &["!selected:example.invalid"],
+        )),
+        ..private_space_room_options(None, None)
+    })
+    .expect("request should build");
+    assert_eq!(
+        restricted
+            .room_version
+            .as_ref()
+            .map(|version| version.as_str()),
+        Some("9"),
+        "a restricted rule needs a room version >= 8"
+    );
+
+    // An explicit non-restricted policy does not pin a version.
+    let invite = create_room_request(MatrixCreateRoomOptions {
+        access_policy: Some(create_room_access_policy(MatrixRoomJoinRule::Invite, &[])),
+        ..private_space_room_options(None, None)
+    })
+    .expect("request should build");
+    assert!(invite.room_version.is_none());
+}
+
+#[test]
+fn create_room_request_omitting_the_policy_reproduces_the_legacy_private_space_preset() {
+    let request =
+        create_room_request(private_space_room_options(None, None)).expect("request should build");
+    let initial_state = initial_state_json(&request);
+    let types: Vec<&str> = initial_state
+        .iter()
+        .filter_map(|event| event.get("type").and_then(serde_json::Value::as_str))
+        .collect();
+    assert_eq!(
+        types,
+        vec![
+            "m.room.encryption",
+            "m.space.parent",
+            "m.room.join_rules",
+            "m.room.history_visibility"
+        ],
+        "the legacy preset keeps its byte-for-byte event order"
+    );
+    assert_eq!(
+        request
+            .room_version
+            .as_ref()
+            .map(|version| version.as_str()),
+        Some("9")
+    );
+}
+
+#[test]
+fn create_room_request_keeps_the_private_encryption_draft_and_strips_effective_public_values() {
+    // The dialog keeps the private encryption choice while public is selected;
+    // only the effective submitted values are stripped.
+    let private = create_room_request(MatrixCreateRoomOptions {
+        access_policy: Some(create_room_access_policy(
+            MatrixRoomJoinRule::Restricted,
+            &["!selected:example.invalid"],
+        )),
+        ..private_space_room_options(None, None)
+    })
+    .expect("request should build");
+    assert!(initial_state_json(&private).iter().any(|event| {
+        event.get("type").and_then(serde_json::Value::as_str) == Some("m.room.encryption")
+    }));
+
+    let public = create_room_request(MatrixCreateRoomOptions {
+        name: String::new(),
+        topic: None,
+        alias_localpart: None,
+        encrypted: true,
+        invited_only: false,
+        visibility: MatrixCreateRoomVisibility::Public,
+        parent_space: None,
+        access_policy: None,
+        history: None,
+    })
+    .expect("request should build");
+    assert!(!initial_state_json(&public).iter().any(|event| {
+        event.get("type").and_then(serde_json::Value::as_str) == Some("m.room.encryption")
     }));
 }
 
@@ -566,6 +842,7 @@ fn room_management_wrappers_use_settings_privacy_and_moderation_apis() {
         canonical_alias: None,
         alternate_aliases: Vec::new(),
         join_rule: MatrixRoomJoinRule::Invite,
+        access: crate::MatrixRoomAccessFacts::default(),
         history_visibility: MatrixRoomHistoryVisibility::Shared,
         permissions: MatrixRoomPermissionFacts {
             can_edit_settings: true,
@@ -610,6 +887,7 @@ fn room_setting_update_projects_the_sent_change_into_the_success_snapshot() {
         canonical_alias: None,
         alternate_aliases: Vec::new(),
         join_rule: MatrixRoomJoinRule::Invite,
+        access: crate::MatrixRoomAccessFacts::default(),
         history_visibility: MatrixRoomHistoryVisibility::Shared,
         permissions: MatrixRoomPermissionFacts {
             can_edit_settings: true,
@@ -673,6 +951,7 @@ fn room_member_power_level_projection_updates_role_in_success_snapshot() {
         canonical_alias: None,
         alternate_aliases: Vec::new(),
         join_rule: MatrixRoomJoinRule::Invite,
+        access: crate::MatrixRoomAccessFacts::default(),
         history_visibility: MatrixRoomHistoryVisibility::Shared,
         permissions: MatrixRoomPermissionFacts {
             can_edit_settings: true,
