@@ -373,11 +373,21 @@ impl RoomActor {
         }])
         .await;
         if !settings.permissions.allows_setting_change(&change) {
-            self.reduce_reliable(vec![AppAction::RoomSettingUpdateRequested {
-                request_id: request_id.sequence,
-                room_id,
-                change,
-            }])
+            // #1177: a pre-send rejection is a settled failure transition, not a
+            // pending request with only a broadcast failure event; otherwise the
+            // reducer's preserved snapshot could leave the operation pending.
+            self.reduce_reliable(vec![
+                AppAction::RoomSettingUpdateRequested {
+                    request_id: request_id.sequence,
+                    room_id: room_id.clone(),
+                    change,
+                },
+                AppAction::RoomSettingUpdateFailed {
+                    request_id: request_id.sequence,
+                    room_id,
+                    kind: koushi_state::OperationFailureKind::Forbidden,
+                },
+            ])
             .await;
             self.emit_failure(
                 request_id,
@@ -408,11 +418,20 @@ impl RoomActor {
                 }
             };
             if let Some(kind) = rejection {
-                self.reduce_reliable(vec![AppAction::RoomSettingUpdateRequested {
-                    request_id: request_id.sequence,
-                    room_id,
-                    change,
-                }])
+                // #1177: settle the raw pre-send rejection so the operation does
+                // not stay pending behind a presentation-preserved snapshot.
+                self.reduce_reliable(vec![
+                    AppAction::RoomSettingUpdateRequested {
+                        request_id: request_id.sequence,
+                        room_id: room_id.clone(),
+                        change,
+                    },
+                    AppAction::RoomSettingUpdateFailed {
+                        request_id: request_id.sequence,
+                        room_id,
+                        kind,
+                    },
+                ])
                 .await;
                 self.emit_failure(
                     request_id,

@@ -47,6 +47,11 @@ pub enum MatrixRoomOperationError {
     /// (#1177).
     #[error("A restricted access policy needs at least one allow target")]
     EmptyAccessPolicyTargets,
+    /// The server returned a directory visibility this client does not model
+    /// (#1177). An unknown value must not become a confirmed non-listing claim;
+    /// the publication is unavailable instead.
+    #[error("Matrix room directory visibility is unavailable")]
+    DirectoryVisibilityUnavailable,
     #[error("Matrix room operation failed: {0}")]
     Sdk(MatrixRoomOperationFailureKind),
 }
@@ -65,7 +70,8 @@ impl MatrixRoomOperationError {
             | Self::InvalidInvite
             | Self::PublicRoomWithRestrictedAccess
             | Self::ExplicitAccessPolicyWithInvitedOnly
-            | Self::EmptyAccessPolicyTargets => None,
+            | Self::EmptyAccessPolicyTargets
+            | Self::DirectoryVisibilityUnavailable => None,
         }
     }
 
@@ -402,7 +408,7 @@ pub async fn get_room_directory_visibility(
     Ok(match visibility {
         Visibility::Public => MatrixRoomDirectoryVisibility::Public,
         Visibility::Private => MatrixRoomDirectoryVisibility::Private,
-        _ => MatrixRoomDirectoryVisibility::Private,
+        _ => return Err(MatrixRoomOperationError::DirectoryVisibilityUnavailable),
     })
 }
 

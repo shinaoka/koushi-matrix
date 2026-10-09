@@ -8,6 +8,7 @@
 
 use super::super::event_wait::wait_for_space_child_projection;
 use super::super::fixtures::set_space_child_for_qa;
+use super::super::scenario_identity::cleanup_qa_auditor_device;
 use super::*;
 use koushi_state::{RestrictedConditions, RoomAccessPolicy, RoomHistoryVisibility, RoomJoinRule};
 
@@ -15,6 +16,31 @@ pub(super) async fn verify(
     config: &QaConfig,
     conn_a: &mut CoreConnection,
     conn_b: &mut CoreConnection,
+) -> Result<(), String> {
+    // A disposable auditor device of account A reads the homeserver's own state:
+    // the initial history event count and the persisted parent links are
+    // asserted from the server, not from the local projection.
+    let auditor = koushi_sdk::login_with_password(&koushi_state::LoginRequest {
+        homeserver: config.homeserver.clone(),
+        username: config.user_a.clone(),
+        password: super::super::AuthSecret::new(config.password_a.clone()),
+        device_display_name: Some("Koushi Space Access Auditor".to_owned()),
+    })
+    .await
+    .map_err(|_| "space_access: auditor login failed".to_owned())?;
+    let result = verify_with_auditor(config, conn_a, conn_b, &auditor).await;
+    let cleanup = cleanup_qa_auditor_device(&auditor, &config.password_a).await;
+    let _ = koushi_sdk::close_session_stores(&auditor).await;
+    drop(auditor);
+    result?;
+    cleanup.map_err(|error| format!("space_access: {error}"))
+}
+
+async fn verify_with_auditor(
+    config: &QaConfig,
+    conn_a: &mut CoreConnection,
+    conn_b: &mut CoreConnection,
+    auditor: &koushi_sdk::MatrixClientSession,
 ) -> Result<(), String> {
     let space_id = create_space_for_qa(conn_a, "QA Space Access", "space_access create").await?;
     wait_for_space_in_space_list(conn_a, &space_id, "space_access A space list").await?;
@@ -215,6 +241,29 @@ pub(super) async fn verify(
             membership.history_visibility
         ));
     }
+    // The explicit `history` must send exactly one initial-state event, read from
+    // the homeserver by the auditor rather than trusted from the success
+    // snapshot.
+    let history_event_count =
+        count_room_state_events(auditor, &membership_room_id, "m.room.history_visibility").await?;
+    if history_event_count != 1 {
+        return Err(format!(
+            "space_access: the created room has {history_event_count} \
+             m.room.history_visibility events, expected exactly 1"
+        ));
+    }
+    // The selected target Space is owned by B; A, the creator, has no edit
+    // permission there, so the membership route provably does not depend on
+    // permission over the named target.
+    let allow_space_settings = load_room_settings_for_qa(
+        conn_a,
+        &allow_space_id,
+        "space_access A allow target settings",
+    )
+    .await?;
+    if allow_space_settings.permissions.can_edit_settings {
+        return Err("space_access: the creator can edit the selected target Space".to_owned());
+    }
     println!("space_access_create_membership=ok");
     println!("space_access_target_without_permission=ok");
     println!("space_access_history=ok");
@@ -235,14 +284,16 @@ pub(super) async fn verify(
             }))
             .await
             .map_err(|e| format!("space_access: submit history {target:?} failed: {e}"))?;
-        let updated =
-            wait_for_room_setting_updated(conn_a, update_id, "space_access history update").await?;
-        if updated.history_visibility != target {
-            return Err(format!(
-                "space_access: the saved snapshot carries history {:?}, not {target:?}",
-                updated.history_visibility
-            ));
-        }
+        wait_for_room_setting_updated(conn_a, update_id, "space_access history update").await?;
+        // Read the synced value back independently instead of trusting the
+        // success snapshot.
+        wait_for_room_settings_history(
+            conn_a,
+            &membership_room_id,
+            target,
+            "space_access history read-back",
+        )
+        .await?;
     }
     println!("space_access_history_values=ok");
 
@@ -304,11 +355,13 @@ pub(super) async fn verify(
         .await
         .map_err(|e| format!("space_access: submit observed allow change failed: {e}"))?;
     wait_for_room_setting_updated(conn_a, allow_id, "space_access observed allow change").await?;
-    wait_for_room_access_allow_target(
+    // Inspect B's OPEN settings and assert the EXACT canonical target set, not
+    // containment.
+    wait_for_open_settings_exact_targets(
         conn_b,
         &membership_room_id,
         RoomJoinRule::Restricted,
-        &space_id,
+        &[space_id.as_str()],
         "space_access B observes allow target",
     )
     .await?;
@@ -368,7 +421,9 @@ pub(super) async fn verify(
     println!("space_access_restricted_restore=ok");
 
     // #1177: a second parent attachment, added through the existing link
-    // command, leaves the allow content exactly the selected target.
+    // command, leaves the allow content exactly the selected target. Both
+    // attachments must be projected AND persisted on the homeserver before the
+    // token is awarded.
     let second_parent_id = create_space_for_qa(
         conn_a,
         "QA Space Access Second Parent",
@@ -380,6 +435,28 @@ pub(super) async fn verify(
         &second_parent_id,
         &membership_room_id,
         "space_access second parent link",
+    )
+    .await?;
+    wait_for_space_child_projection(
+        conn_a,
+        &space_id,
+        std::slice::from_ref(&membership_room_id),
+        "space_access first parent projection",
+    )
+    .await?;
+    wait_for_space_child_projection(
+        conn_a,
+        &second_parent_id,
+        std::slice::from_ref(&membership_room_id),
+        "space_access second parent projection",
+    )
+    .await?;
+    assert_server_space_child(auditor, &space_id, &membership_room_id, "first parent").await?;
+    assert_server_space_child(
+        auditor,
+        &second_parent_id,
+        &membership_room_id,
+        "second parent",
     )
     .await?;
     wait_for_room_settings_exact_targets(
@@ -613,5 +690,181 @@ async fn wait_for_room_access_projection(
                 ));
             }
         }
+    }
+}
+
+/// Reload a room's settings until the synced history visibility matches
+/// `expected` (#1177). A fresh SDK read, not the success snapshot.
+async fn wait_for_room_settings_history(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    expected: RoomHistoryVisibility,
+    label: &str,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + ROOM_LIST_EVENT_TIMEOUT;
+    let mut latest = load_room_settings_for_qa(conn, room_id, label).await?;
+    while latest.history_visibility != expected {
+        match tokio::time::timeout_at(deadline, conn.recv_event()).await {
+            Ok(Ok(_)) => {
+                latest = load_room_settings_for_qa(conn, room_id, label).await?;
+            }
+            Ok(Err(lag)) => {
+                return Err(format!(
+                    "{label}: event stream lagged (skipped={})",
+                    lag.skipped
+                ));
+            }
+            Err(_) => break,
+        }
+    }
+    if latest.history_visibility != expected {
+        return Err(format!(
+            "{label}: expected history {expected:?}, got {:?}",
+            latest.history_visibility
+        ));
+    }
+    Ok(())
+}
+
+/// Wait until `conn`'s OPEN settings for `room_id` carry EXACTLY
+/// `expected_targets`, without a reload (#1177).
+async fn wait_for_open_settings_exact_targets(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    expected_rule: RoomJoinRule,
+    expected_targets: &[&str],
+    label: &str,
+) -> Result<(), String> {
+    let observed = |snapshot: &AppState| {
+        snapshot
+            .room_management
+            .settings
+            .as_ref()
+            .filter(|settings| settings.room_id == room_id)
+            .is_some_and(|settings| {
+                room_settings_carry_exact_targets(settings, expected_rule, expected_targets)
+            })
+    };
+    let deadline = tokio::time::Instant::now() + ROOM_LIST_EVENT_TIMEOUT;
+    loop {
+        if observed(&conn.snapshot()) {
+            return Ok(());
+        }
+        match tokio::time::timeout_at(deadline, conn.recv_event()).await {
+            Ok(Ok(_)) => continue,
+            Ok(Err(lag)) => {
+                return Err(format!(
+                    "{label}: event stream lagged (skipped={})",
+                    lag.skipped
+                ));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "{label}: timed out waiting for the open settings' exact allow set"
+                ));
+            }
+        }
+    }
+}
+
+/// Count the `event_type` state events the homeserver holds for a room, read by
+/// the auditor SDK session (#1177). Used to prove an explicit create `history`
+/// sends its initial state event exactly once.
+async fn count_room_state_events(
+    auditor: &koushi_sdk::MatrixClientSession,
+    room_id: &str,
+    event_type: &str,
+) -> Result<usize, String> {
+    use matrix_sdk::room::MessagesOptions;
+    let owned: matrix_sdk::ruma::OwnedRoomId = room_id
+        .try_into()
+        .map_err(|_| "space_access: invalid room id for the auditor".to_owned())?;
+    // The auditor did not create this room, so wait for its own sync to see it.
+    let mut room = auditor.client().get_room(&owned);
+    let deadline = tokio::time::Instant::now() + ROOM_LIST_EVENT_TIMEOUT;
+    while room.is_none() {
+        if tokio::time::timeout_at(deadline, koushi_sdk::sync_once(auditor))
+            .await
+            .is_err()
+        {
+            break;
+        }
+        room = auditor.client().get_room(&owned);
+    }
+    let room = room.ok_or_else(|| "space_access: the auditor cannot see the room".to_owned())?;
+    let mut options = MessagesOptions::backward();
+    options.limit = 256u32.into();
+    let messages = room
+        .messages(options)
+        .await
+        .map_err(|_| "space_access: the auditor could not read the room timeline".to_owned())?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut count = 0usize;
+    let mut count_event = |value: &serde_json::Value| {
+        if value.get("type").and_then(serde_json::Value::as_str) != Some(event_type) {
+            return;
+        }
+        // The `/messages` `state` field can repeat a timeline event; count each
+        // event id once.
+        let dedupe_key = value
+            .get("event_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| value.to_string());
+        if seen.insert(dedupe_key) {
+            count += 1;
+        }
+    };
+    for event in &messages.chunk {
+        let value: serde_json::Value = serde_json::from_str(event.raw().json().get())
+            .map_err(|_| "space_access: unreadable timeline event".to_owned())?;
+        count_event(&value);
+    }
+    for state in &messages.state {
+        let value: serde_json::Value = serde_json::from_str(state.json().get())
+            .map_err(|_| "space_access: unreadable state event".to_owned())?;
+        count_event(&value);
+    }
+    Ok(count)
+}
+
+/// Read one Space's `m.space.child` for `child_room_id` from the homeserver and
+/// require nonempty routing (#1177).
+async fn assert_server_space_child(
+    auditor: &koushi_sdk::MatrixClientSession,
+    space_id: &str,
+    child_room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    use matrix_sdk::ruma::api::client::state::get_state_event_for_key;
+    use matrix_sdk::ruma::events::StateEventType;
+    let space: matrix_sdk::ruma::OwnedRoomId = space_id
+        .try_into()
+        .map_err(|_| "space_access: invalid Space id".to_owned())?;
+    let request = get_state_event_for_key::v3::Request::new(
+        space,
+        StateEventType::SpaceChild,
+        child_room_id.to_owned(),
+    );
+    let response = auditor
+        .client()
+        .send(request)
+        .await
+        .map_err(|_| format!("space_access: {label} has no server-side m.space.child"))?;
+    let content: serde_json::Value = serde_json::from_str(response.event_or_content.get())
+        .map_err(|_| format!("space_access: {label} m.space.child is unreadable"))?;
+    let has_route = content
+        .get("via")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|via| {
+            via.iter()
+                .any(|server| server.as_str().is_some_and(|s| !s.is_empty()))
+        });
+    if has_route {
+        Ok(())
+    } else {
+        Err(format!(
+            "space_access: {label} m.space.child has no routing"
+        ))
     }
 }

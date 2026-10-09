@@ -133,7 +133,15 @@ fn observe(
             authoritative,
             observations: access
                 .into_iter()
-                .map(|(room_id, condition)| (room_id, condition.into()))
+                .map(|(room_id, condition)| {
+                    (
+                        room_id,
+                        RoomAccessObservation {
+                            access: condition,
+                            history_visibility: RoomHistoryVisibility::Shared,
+                        },
+                    )
+                })
                 .collect(),
         },
     )
@@ -476,6 +484,314 @@ fn a_history_save_then_an_access_save_survives_the_pre_send_read_and_held_echo()
     );
     assert_eq!(settings.access, accepted);
     assert_eq!(state.room_access.get(ROOM), Some(&accepted));
+}
+
+/// B1: the access echo arrives before the history echo, carrying the new
+/// access but the old history. The history save stays accepted because its own
+/// observation has not advanced.
+#[test]
+fn the_held_access_echo_with_an_old_history_does_not_undo_the_history_save() {
+    let mut state = ready_state();
+    ready_room_list(&mut state);
+    joined_space(&mut state, "!space:example.invalid");
+    let initial = observation(RoomJoinRule::Invite, None, &[]);
+    observe_observations(
+        &mut state,
+        true,
+        BTreeMap::from([(
+            ROOM.to_owned(),
+            RoomAccessObservation {
+                access: initial,
+                history_visibility: RoomHistoryVisibility::Shared,
+            },
+        )]),
+    );
+    open_settings(&mut state);
+
+    let accepted = observation(
+        RoomJoinRule::Restricted,
+        Some(RestrictedConditions::MembershipOnly),
+        &["!space:example.invalid"],
+    );
+    let policy = koushi_state::RoomAccessPolicy::new(
+        RoomJoinRule::Restricted,
+        vec!["!space:example.invalid".to_owned()],
+    );
+    // Access save: production pre-send read, requested, then the accepted echo.
+    reduce(
+        &mut state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: ROOM.to_owned(),
+            settings: editable_settings(ROOM),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateRequested {
+            request_id: 1,
+            room_id: ROOM.to_owned(),
+            change: RoomSettingChange::AccessPolicy(policy.clone()),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateSucceeded {
+            request_id: 1,
+            room_id: ROOM.to_owned(),
+            change: RoomSettingChange::AccessPolicy(policy),
+            settings: RoomSettingsSnapshot {
+                join_rule: RoomJoinRule::Restricted,
+                access: accepted.clone(),
+                ..editable_settings(ROOM)
+            },
+        },
+    );
+    // The history save starts while the access echo is still held; its own
+    // pre-send read still carries the old access content.
+    reduce(
+        &mut state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: ROOM.to_owned(),
+            settings: editable_settings(ROOM),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateRequested {
+            request_id: 2,
+            room_id: ROOM.to_owned(),
+            change: RoomSettingChange::HistoryVisibility(RoomHistoryVisibility::Joined),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateSucceeded {
+            request_id: 2,
+            room_id: ROOM.to_owned(),
+            change: RoomSettingChange::HistoryVisibility(RoomHistoryVisibility::Joined),
+            settings: RoomSettingsSnapshot {
+                history_visibility: RoomHistoryVisibility::Joined,
+                ..editable_settings(ROOM)
+            },
+        },
+    );
+
+    // The access echo arrives first: new access, unchanged old history.
+    observe_observations(
+        &mut state,
+        true,
+        BTreeMap::from([(
+            ROOM.to_owned(),
+            RoomAccessObservation {
+                access: accepted.clone(),
+                history_visibility: RoomHistoryVisibility::Shared,
+            },
+        )]),
+    );
+
+    let settings = state.room_management.settings.as_ref().expect("settings");
+    assert_eq!(settings.access, accepted, "the accepted access stays");
+    assert_eq!(
+        settings.history_visibility,
+        RoomHistoryVisibility::Joined,
+        "the accepted history save is not undone by the access echo's old history"
+    );
+    assert_eq!(state.room_access.get(ROOM), Some(&accepted));
+}
+
+/// B1: the reverse order. The history echo arrives first with the old access;
+/// it must not roll the accepted access change back.
+#[test]
+fn the_held_history_echo_with_an_old_access_does_not_undo_the_access_save() {
+    let mut state = ready_state();
+    ready_room_list(&mut state);
+    joined_space(&mut state, "!space:example.invalid");
+    let initial = observation(RoomJoinRule::Invite, None, &[]);
+    observe_observations(
+        &mut state,
+        true,
+        BTreeMap::from([(
+            ROOM.to_owned(),
+            RoomAccessObservation {
+                access: initial,
+                history_visibility: RoomHistoryVisibility::Shared,
+            },
+        )]),
+    );
+    open_settings(&mut state);
+
+    // History save first.
+    reduce(
+        &mut state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: ROOM.to_owned(),
+            settings: editable_settings(ROOM),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateRequested {
+            request_id: 1,
+            room_id: ROOM.to_owned(),
+            change: RoomSettingChange::HistoryVisibility(RoomHistoryVisibility::Joined),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateSucceeded {
+            request_id: 1,
+            room_id: ROOM.to_owned(),
+            change: RoomSettingChange::HistoryVisibility(RoomHistoryVisibility::Joined),
+            settings: RoomSettingsSnapshot {
+                history_visibility: RoomHistoryVisibility::Joined,
+                ..editable_settings(ROOM)
+            },
+        },
+    );
+
+    let accepted = observation(
+        RoomJoinRule::Restricted,
+        Some(RestrictedConditions::MembershipOnly),
+        &["!space:example.invalid"],
+    );
+    let policy = koushi_state::RoomAccessPolicy::new(
+        RoomJoinRule::Restricted,
+        vec!["!space:example.invalid".to_owned()],
+    );
+    // The access save's pre-send read still carries the old history.
+    reduce(
+        &mut state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: ROOM.to_owned(),
+            settings: RoomSettingsSnapshot {
+                history_visibility: RoomHistoryVisibility::Shared,
+                ..editable_settings(ROOM)
+            },
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateRequested {
+            request_id: 2,
+            room_id: ROOM.to_owned(),
+            change: RoomSettingChange::AccessPolicy(policy.clone()),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateSucceeded {
+            request_id: 2,
+            room_id: ROOM.to_owned(),
+            change: RoomSettingChange::AccessPolicy(policy),
+            settings: RoomSettingsSnapshot {
+                join_rule: RoomJoinRule::Restricted,
+                access: accepted.clone(),
+                ..editable_settings(ROOM)
+            },
+        },
+    );
+
+    // The history echo arrives first: new history, unchanged old access.
+    observe_observations(
+        &mut state,
+        true,
+        BTreeMap::from([(
+            ROOM.to_owned(),
+            RoomAccessObservation {
+                access: observation(RoomJoinRule::Invite, None, &[]),
+                history_visibility: RoomHistoryVisibility::Joined,
+            },
+        )]),
+    );
+
+    let settings = state.room_management.settings.as_ref().expect("settings");
+    assert_eq!(
+        settings.access, accepted,
+        "the accepted access save is not undone by the history echo's old access"
+    );
+    assert_eq!(
+        state.room_access.get(ROOM),
+        Some(&accepted),
+        "the shared projection is not rolled back either"
+    );
+    assert_eq!(settings.history_visibility, RoomHistoryVisibility::Joined);
+}
+
+/// B1: an access metadata/order-only advance must not release an unrelated old
+/// history value accepted locally but not yet observed.
+#[test]
+fn a_metadata_only_access_advance_does_not_release_an_unobserved_history() {
+    let mut state = ready_state();
+    ready_room_list(&mut state);
+    open_settings(&mut state);
+
+    let mut access = observation(
+        RoomJoinRule::Restricted,
+        Some(RestrictedConditions::MembershipOnly),
+        &["!space:example.invalid"],
+    );
+    access.allow_targets[0].kind = RoomAllowTargetKind::Unknown;
+    observe_observations(
+        &mut state,
+        true,
+        BTreeMap::from([(
+            ROOM.to_owned(),
+            RoomAccessObservation {
+                access,
+                history_visibility: RoomHistoryVisibility::Shared,
+            },
+        )]),
+    );
+
+    // The user accepts a history change; its echo has not landed.
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateRequested {
+            request_id: 1,
+            room_id: ROOM.to_owned(),
+            change: RoomSettingChange::HistoryVisibility(RoomHistoryVisibility::Joined),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateSucceeded {
+            request_id: 1,
+            room_id: ROOM.to_owned(),
+            change: RoomSettingChange::HistoryVisibility(RoomHistoryVisibility::Joined),
+            settings: RoomSettingsSnapshot {
+                history_visibility: RoomHistoryVisibility::Joined,
+                ..editable_settings(ROOM)
+            },
+        },
+    );
+
+    // The SDK verifies the target kind: only access metadata advanced.
+    observe_observations(
+        &mut state,
+        true,
+        BTreeMap::from([(
+            ROOM.to_owned(),
+            RoomAccessObservation {
+                access: observation(
+                    RoomJoinRule::Restricted,
+                    Some(RestrictedConditions::MembershipOnly),
+                    &["!space:example.invalid"],
+                ),
+                history_visibility: RoomHistoryVisibility::Shared,
+            },
+        )]),
+    );
+
+    let settings = state.room_management.settings.as_ref().expect("settings");
+    assert_eq!(
+        settings.access.allow_targets[0].kind,
+        RoomAllowTargetKind::Space
+    );
+    assert_eq!(
+        settings.history_visibility,
+        RoomHistoryVisibility::Joined,
+        "a metadata-only access advance does not release the unobserved history"
+    );
 }
 
 #[test]

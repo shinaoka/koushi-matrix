@@ -1054,6 +1054,75 @@ fn access_policy_edit_is_admitted_for_verified_membership_only_content() {
     );
 }
 
+#[test]
+fn a_pre_send_rejection_is_admitted_against_the_raw_read_not_the_preserved_value() {
+    let room = "!room:example.invalid";
+    let mut state = ready_state();
+    // A local access save was accepted and its echo has not landed.
+    let accepted = restricted_access(koushi_state::RestrictedConditions::MembershipOnly);
+    state.room_access.insert(room.to_owned(), accepted.clone());
+    state.room_access_observed.insert(
+        room.to_owned(),
+        koushi_state::RoomAccessObservation {
+            access: koushi_state::RoomAccessCondition {
+                join_rule: Some(RoomJoinRule::Invite),
+                restricted: None,
+                allow_targets: Vec::new(),
+            },
+            history_visibility: RoomHistoryVisibility::Shared,
+        },
+    );
+    state.room_management = RoomManagementState {
+        selected_room_id: Some(room.to_owned()),
+        settings: Some(settings_with_access(room, accepted.clone())),
+        ..RoomManagementState::default()
+    };
+    state.spaces = vec![joined_space("!space:example.invalid")];
+
+    // The pre-send read still carries the RAW current policy, whose condition is
+    // mixed-unsupported. The overlay keeps the accepted value for display.
+    reduce(
+        &mut state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: room.to_owned(),
+            settings: settings_with_access(
+                room,
+                restricted_access(koushi_state::RestrictedConditions::MembershipPlusUnsupported),
+            ),
+        },
+    );
+    assert_eq!(
+        state
+            .room_management
+            .settings
+            .as_ref()
+            .expect("settings")
+            .access,
+        accepted,
+        "the accepted local value stays displayed"
+    );
+
+    // Admission uses the raw read's facts, so the edit is rejected rather than
+    // left pending against the presentation-preserved value.
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateRequested {
+            request_id: 5,
+            room_id: room.to_owned(),
+            change: access_policy(),
+        },
+    );
+    assert_eq!(
+        state.room_management.operation,
+        RoomManagementOperationState::Failed {
+            request_id: 5,
+            room_id: room.to_owned(),
+            operation: RoomManagementOperationKind::Settings,
+            kind: OperationFailureKind::UnsupportedPolicyCondition,
+        }
+    );
+}
+
 fn scope(room_id: &str) -> koushi_state::RoomAccessDraftScope {
     koushi_state::RoomAccessDraftScope::Room {
         room_id: room_id.to_owned(),
@@ -1067,6 +1136,59 @@ fn load_settings(state: &mut AppState, room_id: &str) {
             room_id: room_id.to_owned(),
             settings: editable_settings(room_id),
         },
+    );
+}
+
+#[test]
+fn reopening_the_room_editor_restores_access_but_keeps_the_history_draft() {
+    let room = "!room:example.invalid";
+    let mut state = ready_state();
+    load_settings(&mut state, room);
+    state.room_management.settings = Some(settings_with_access(
+        room,
+        koushi_state::RoomAccessCondition {
+            join_rule: Some(RoomJoinRule::Invite),
+            restricted: None,
+            allow_targets: Vec::new(),
+        },
+    ));
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftOpened {
+            scope: scope(room),
+            create: None,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftRuleSet {
+            scope: scope(room),
+            rule: Some(RoomJoinRule::Public),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftHistorySet {
+            scope: scope(room),
+            history: Some(RoomHistoryVisibility::Joined),
+        },
+    );
+
+    // The access Cancel re-seeds only the access selection; the history draft
+    // must survive it (#1177).
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftOpened {
+            scope: scope(room),
+            create: None,
+        },
+    );
+    let draft = state.room_management.draft.as_ref().expect("draft");
+    assert_eq!(draft.rule, Some(RoomJoinRule::Invite));
+    assert_eq!(
+        draft.history,
+        Some(RoomHistoryVisibility::Joined),
+        "Cancel restores access without discarding the history selection"
     );
 }
 
@@ -1273,6 +1395,13 @@ fn a_retired_create_session_cannot_recreate_its_draft() {
     assert!(effects.is_empty());
     assert!(state.room_management.draft.is_none());
 
+    // A stale re-open of the retired session must not recreate the draft either.
+    open_create(&mut state, 1, None);
+    assert!(
+        state.room_management.draft.is_none(),
+        "a stale Open cannot recreate a retired session's draft"
+    );
+
     // Session zero is never admitted.
     open_create(&mut state, 0, None);
     assert!(state.room_management.draft.is_none());
@@ -1362,14 +1491,22 @@ fn a_newly_selected_target_must_be_a_joined_verified_space() {
     let mut state = ready_state();
     load_settings(&mut state, "!room:example.invalid");
     // A valid, editable confirmed condition, so the target check is what decides.
-    state.room_management.settings = Some(settings_with_access(
-        "!room:example.invalid",
-        koushi_state::RoomAccessCondition {
-            join_rule: Some(RoomJoinRule::Invite),
-            restricted: None,
-            allow_targets: Vec::new(),
+    // Dispatched as a read so the raw pre-send facts the admission consults move
+    // with it.
+    reduce(
+        &mut state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: "!room:example.invalid".to_owned(),
+            settings: settings_with_access(
+                "!room:example.invalid",
+                koushi_state::RoomAccessCondition {
+                    join_rule: Some(RoomJoinRule::Invite),
+                    restricted: None,
+                    allow_targets: Vec::new(),
+                },
+            ),
         },
-    ));
+    );
 
     // An ordinary room id that is not a joined Space is rejected.
     let effects = reduce(
@@ -1618,5 +1755,57 @@ fn two_rapid_room_target_edits_apply_against_the_current_draft() {
             "!space-b:example.invalid".to_owned(),
             "!space-c:example.invalid".to_owned()
         ]
+    );
+}
+
+#[test]
+fn the_draft_serializes_only_renderable_allow_targets() {
+    let room = "!room:example.invalid";
+    let mut state = ready_state();
+    state.room_management = RoomManagementState {
+        selected_room_id: Some(room.to_owned()),
+        settings: Some(settings_with_access(
+            room,
+            koushi_state::RoomAccessCondition {
+                join_rule: Some(RoomJoinRule::Restricted),
+                restricted: Some(koushi_state::RestrictedConditions::MembershipOnly),
+                allow_targets: vec![
+                    koushi_state::RoomAllowTarget {
+                        kind: koushi_state::RoomAllowTargetKind::Space,
+                        room_id: "!space:example.invalid".to_owned(),
+                    },
+                    koushi_state::RoomAllowTarget {
+                        kind: koushi_state::RoomAllowTargetKind::Room,
+                        room_id: "!ordinary:example.invalid".to_owned(),
+                    },
+                ],
+            },
+        )),
+        ..RoomManagementState::default()
+    };
+    state.spaces = vec![joined_space("!space:example.invalid")];
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftOpened {
+            scope: scope(room),
+            create: None,
+        },
+    );
+
+    let draft = state.room_management.draft.as_ref().expect("draft");
+    assert_eq!(
+        draft.allow_targets.len(),
+        2,
+        "the complete selected set stays inside Rust"
+    );
+    let wire = serde_json::to_value(draft).expect("draft wire");
+    assert_eq!(
+        wire["allowTargets"],
+        serde_json::json!(["!space:example.invalid"]),
+        "only a joined Space the picker can render is serialized"
+    );
+    assert!(
+        !wire.to_string().contains("!ordinary:example.invalid"),
+        "an ordinary-room identity never reaches the renderer: {wire}"
     );
 }

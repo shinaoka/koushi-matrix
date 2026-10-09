@@ -575,6 +575,8 @@ fn audit_app_state_delta_slices(state: &AppState) {
         room_interactions: _,
         room_access: _,
         room_access_observed: _,
+        room_access_pre_send: _,
+        create_access_session_watermark: _,
         composer_drafts: _,
         scheduled_sends: _,
         upload_staging: _,

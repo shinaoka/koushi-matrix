@@ -62,19 +62,6 @@ import type {
   RoomAccessPreview,
 } from "../domain/types";
 
-/**
- * The canonical key of one access policy (#1177): the rule plus its sorted,
- * deduplicated allow-target set. The Saved status compares this key, so an
- * allow-list-only edit on the same rule is attributed to the allow list, never
- * to the shared scalar rule.
- */
-export function canonicalAccessPolicyKey(
-  rule: RoomJoinRule | null,
-  allowTargets: readonly string[]
-): string {
-  return JSON.stringify([rule ?? "", [...allowTargets].sort()]);
-}
-
 export function RoomInfoPanel({
   room,
   roomManagement,
@@ -303,18 +290,13 @@ export function RoomInfoPanel({
     ) {
       return { kind: "failed", message: roomSettingFailureMessage(operation.failureKind) };
     }
-    // Saved only once Rust's snapshot carries the submitted value.
+    // Saved only once Rust confirms the FULL canonical policy, not the shared
+    // scalar rule: a restricted(A) -> restricted(B) edit must not read as saved
+    // from the scalar alone (#1177). The key is Rust-owned.
     if (field === "joinRule") {
-      // A join-rule save is proven only by the FULL canonical policy: a
-      // restricted(A) → restricted(B) edit must not read as saved from the
-      // shared scalar rule alone (#1177). Rust's preview reports whether the
-      // current draft still equals the confirmed policy; the draft key proves it
-      // is the policy we submitted.
-      const confirmedDraftKey =
-        accessDraft?.rule != null
-          ? canonicalAccessPolicyKey(accessDraft.rule, accessDraft.allowTargets ?? [])
-          : null;
-      return accessPreview?.confirmed === true && confirmedDraftKey === submission.target
+      return accessPreview?.confirmed === true &&
+        accessPreview.canonicalPolicyKey != null &&
+        accessPreview.canonicalPolicyKey === submission.target
         ? { kind: "saved" }
         : null;
     }
@@ -651,9 +633,9 @@ export function RoomInfoPanel({
                   }}
                   onSave={() => {
                     if (!accessScope) return;
-                    // The recorded target is the full canonical policy, so a
-                    // same-rule allow-list-only edit is attributed to the allow
-                    // list, not to the shared scalar (#1177).
+                    // The recorded target is Rust's canonical key for the full
+                    // policy, so a same-rule allow-list-only edit is attributed
+                    // to the allow list, not to the shared scalar (#1177).
                     submitSetting(
                       "joinRule",
                       {
@@ -663,7 +645,7 @@ export function RoomInfoPanel({
                             selectedJoinRule === "restricted" ? selectedAllowTargets : []
                         }
                       },
-                      canonicalAccessPolicyKey(selectedJoinRule, selectedAllowTargets)
+                      accessPreview?.canonicalPolicyKey ?? null
                     );
                   }}
                   onCancel={() => {

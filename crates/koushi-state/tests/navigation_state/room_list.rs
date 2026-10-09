@@ -1145,11 +1145,14 @@ fn room_access_projection_follows_its_room_list_snapshot() {
     fn condition(
         join_rule: koushi_state::RoomJoinRule,
         restricted: Option<RestrictedConditions>,
-    ) -> RoomAccessCondition {
-        RoomAccessCondition {
-            join_rule: Some(join_rule),
-            restricted,
-            allow_targets: Vec::new(),
+    ) -> koushi_state::RoomAccessObservation {
+        koushi_state::RoomAccessObservation {
+            access: RoomAccessCondition {
+                join_rule: Some(join_rule),
+                restricted,
+                allow_targets: Vec::new(),
+            },
+            history_visibility: koushi_state::RoomHistoryVisibility::Shared,
         }
     }
 
@@ -1184,12 +1187,11 @@ fn room_access_projection_follows_its_room_list_snapshot() {
                     condition(
                         koushi_state::RoomJoinRule::Restricted,
                         Some(RestrictedConditions::ConfirmedEmpty),
-                    )
-                    .into(),
+                    ),
                 ),
                 (
                     "global-room".to_owned(),
-                    condition(koushi_state::RoomJoinRule::Knock, None).into(),
+                    condition(koushi_state::RoomJoinRule::Knock, None),
                 ),
             ]),
         },
@@ -1246,7 +1248,7 @@ fn room_access_projection_follows_its_room_list_snapshot() {
                 authoritative: true,
                 observations: BTreeMap::from([(
                     "room-a".to_owned(),
-                    condition(koushi_state::RoomJoinRule::Invite, None).into(),
+                    condition(koushi_state::RoomJoinRule::Invite, None),
                 )]),
             },
         )
@@ -1286,8 +1288,7 @@ fn room_access_projection_follows_its_room_list_snapshot() {
                 condition(
                     koushi_state::RoomJoinRule::Restricted,
                     Some(RestrictedConditions::MembershipOnly),
-                )
-                .into(),
+                ),
             )]),
         },
     );
@@ -1343,11 +1344,11 @@ fn room_access_projection_follows_its_room_list_snapshot() {
             observations: BTreeMap::from([
                 (
                     "room-a".to_owned(),
-                    condition(koushi_state::RoomJoinRule::Public, None).into(),
+                    condition(koushi_state::RoomJoinRule::Public, None),
                 ),
                 (
                     "global-room".to_owned(),
-                    condition(koushi_state::RoomJoinRule::Invite, None).into(),
+                    condition(koushi_state::RoomJoinRule::Invite, None),
                 ),
             ]),
         },

@@ -26,6 +26,12 @@ pub(crate) fn handle_room_settings_snapshot_loaded(
         &state.profile,
         own_user_id.as_deref(),
     );
+    // #1177: remember the RAW access facts this pre-send read found before any
+    // presentation-preserving overlay, so the admission check below agrees with
+    // Core's own verdict instead of the locally accepted value it replaced.
+    state
+        .room_access_pre_send
+        .insert(room_id.clone(), settings.access.clone());
     let pending_operation = match &state.room_management.operation {
         RoomManagementOperationState::Pending {
             room_id: pending_room_id,
@@ -436,6 +442,7 @@ pub(crate) fn handle_room_access_draft_rule_set(
         return Vec::new();
     };
     draft.set_rule(rule);
+    sync_draft_renderable_targets(state);
     vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
 }
 
@@ -448,6 +455,7 @@ pub(crate) fn handle_room_access_draft_allow_targets_set(
         return Vec::new();
     };
     draft.set_allow_targets(allow_targets);
+    sync_draft_renderable_targets(state);
     vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
 }
 
@@ -461,6 +469,7 @@ pub(crate) fn handle_room_access_draft_allow_target_toggled(
         return Vec::new();
     };
     draft.toggle_allow_target(&target, selected);
+    sync_draft_renderable_targets(state);
     vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
 }
 
@@ -504,13 +513,30 @@ pub(crate) fn handle_room_access_draft_opened(
             {
                 draft.seed_room_selection(settings);
             }
+            // #1177: re-opening a room's editor restores one property's
+            // selection from the confirmed policy without discarding the other
+            // property's unsaved draft (an access Cancel keeps the history
+            // selection and vice versa).
+            if let Some(existing) = state
+                .room_management
+                .draft
+                .as_ref()
+                .filter(|existing| existing.scope == scope)
+            {
+                draft.history = existing.history;
+                draft.touched = existing.touched;
+                draft.revision = existing.revision;
+            }
             state.room_management.active_room_editor = Some(room_id.clone());
         }
         RoomAccessDraftScope::Create { session_id } => {
-            if *session_id == 0 {
-                // Create editor lifetimes are never session zero (#1177).
+            // A create editor lifetime is distinct per open and monotonic: a
+            // retired or stale `Open` is rejected and can neither recreate its
+            // draft nor replace a newer session's draft (#1177).
+            if *session_id == 0 || *session_id <= state.create_access_session_watermark {
                 return Vec::new();
             }
+            state.create_access_session_watermark = *session_id;
             state.room_management.active_create_session = Some(*session_id);
             if let Some(create) = create {
                 draft.seed_create_selection(
@@ -522,7 +548,22 @@ pub(crate) fn handle_room_access_draft_opened(
         }
     }
     state.room_management.draft = Some(draft);
+    sync_draft_renderable_targets(state);
     vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+}
+
+/// Recompute the renderable allow-target subset of the current draft (#1177),
+/// so only joined-Space ids the picker can render are ever serialized while the
+/// complete selected set stays inside Rust.
+pub(crate) fn sync_draft_renderable_targets(state: &mut AppState) {
+    let joined_space_ids: std::collections::BTreeSet<String> = state
+        .spaces
+        .iter()
+        .map(|space| space.space_id.clone())
+        .collect();
+    if let Some(draft) = state.room_management.draft.as_mut() {
+        draft.sync_renderable_allow_targets(&joined_space_ids);
+    }
 }
 
 pub(crate) fn handle_room_access_draft_reset(
@@ -612,7 +653,9 @@ fn room_access_draft_for_scope<'a>(
 
 /// The combined admission verdict for a requested access policy (#1177): the
 /// confirmed condition must be inspectable and rewrite-safe, and every newly
-/// selected target must be a joined, verified Space.
+/// selected target must be a joined, verified Space. The confirmed condition is
+/// the RAW pre-send read of this room, never the presentation-preserved
+/// `settings.access`, so this guard cannot disagree with Core's own verdict.
 fn room_access_policy_admission(
     state: &AppState,
     room_id: &str,
@@ -623,15 +666,17 @@ fn room_access_policy_admission(
         .settings
         .as_ref()
         .filter(|settings| settings.room_id == room_id)?;
-    settings.access_policy_rejection(policy).or_else(|| {
+    let confirmed = state
+        .room_access_pre_send
+        .get(room_id)
+        .unwrap_or(&settings.access);
+    confirmed.access_policy_rejection(policy).or_else(|| {
         let joined_space_ids: std::collections::BTreeSet<&str> = state
             .spaces
             .iter()
             .map(|space| space.space_id.as_str())
             .collect();
-        crate::state::access_policy_target_rejection(settings, policy, |target| {
-            joined_space_ids.contains(target)
-        })
+        confirmed.access_target_rejection(policy, |target| joined_space_ids.contains(target))
     })
 }
 

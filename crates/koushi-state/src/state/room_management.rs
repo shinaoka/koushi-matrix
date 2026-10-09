@@ -135,8 +135,20 @@ pub struct RoomAccessDraft {
     pub revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule: Option<RoomJoinRule>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// The complete selected allow set, including confirmed targets this editor
+    /// cannot render (ordinary rooms, unknown or unnamed ids) (#1177). Never
+    /// serialized: those identities stay inside Rust.
+    #[serde(skip)]
     pub allow_targets: Vec<String>,
+    /// The renderable subset of `allow_targets` (#1177): the joined Spaces the
+    /// picker offers, so React can restore checkbox state without seeing
+    /// unrenderable identities. The wire name stays `allowTargets`.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "allowTargets"
+    )]
+    pub selected_allow_targets: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<RoomHistoryVisibility>,
     /// Whether the user has made an explicit choice in this editor (#1177). An
@@ -167,9 +179,32 @@ impl RoomAccessDraft {
             revision: 0,
             rule: None,
             allow_targets: Vec::new(),
+            selected_allow_targets: Vec::new(),
             history: None,
             touched: false,
         }
+    }
+
+    /// Recompute the renderable subset of the selected allow set (#1177). The
+    /// full set stays inside Rust; only ids that name a joined Space the picker
+    /// can render are ever serialized.
+    pub fn sync_renderable_allow_targets(&mut self, joined_space_ids: &BTreeSet<String>) {
+        let renderable: Vec<String> = self
+            .allow_targets
+            .iter()
+            .filter(|target| joined_space_ids.contains(*target))
+            .cloned()
+            .collect();
+        self.selected_allow_targets = renderable;
+    }
+
+    /// The canonical key of the policy this draft would submit (#1177), or
+    /// `None` until a rule is chosen. Computed by Rust so the renderer never
+    /// re-implements canonicalization to attribute a save.
+    pub fn canonical_policy_key(&self) -> Option<String> {
+        self.rule.map(|rule| {
+            canonical_policy_key(&RoomAccessPolicy::new(rule, self.allow_targets.clone()))
+        })
     }
 
     /// Establish the effective creation selection from the legacy preset before
@@ -320,6 +355,13 @@ impl RoomAccessDraft {
     }
 }
 
+/// The canonical key of one access policy (#1177): the rule plus its sorted,
+/// deduplicated allow-target set. Rust owns this so the renderer attributes a
+/// save to the full policy instead of re-implementing canonicalization.
+pub fn canonical_policy_key(policy: &RoomAccessPolicy) -> String {
+    format!("{:?}|{}", policy.rule, policy.allow_targets.join(","))
+}
+
 /// The canonical confirmed policy of a settings snapshot (#1177).
 pub fn confirmed_access_policy(settings: &RoomSettingsSnapshot) -> RoomAccessPolicy {
     let rule = settings.access.join_rule.unwrap_or(settings.join_rule);
@@ -369,6 +411,11 @@ pub struct RoomAccessPreview {
     pub context: RoomAccessPreviewContext,
     pub confirmed: bool,
     pub outcome: RoomAccessOutcome,
+    /// The canonical key of the effective access policy (#1177), Rust-owned so
+    /// the renderer attributes a save to the full policy instead of
+    /// re-implementing canonicalization. `None` for a history preview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_policy_key: Option<String>,
 }
 
 /// The confirmed outcome of a room's access tuple (#1177).
@@ -415,16 +462,44 @@ impl RoomAccessDraft {
             .collect();
         let (rule, restricted, targets, history) = match context {
             RoomAccessPreviewContext::Access => match self.rule {
-                Some(RoomJoinRule::Restricted) | Some(RoomJoinRule::KnockRestricted) => (
-                    self.rule,
-                    Some(if self.allow_targets.is_empty() {
-                        RestrictedConditions::ConfirmedEmpty
+                Some(RoomJoinRule::Restricted) | Some(RoomJoinRule::KnockRestricted) => {
+                    let draft_policy = RoomAccessPolicy::new(
+                        self.rule.unwrap_or(RoomJoinRule::Restricted),
+                        self.allow_targets.clone(),
+                    );
+                    let confirmed_is_uneditable = matches!(
+                        settings.access.restricted,
+                        Some(RestrictedConditions::MembershipPlusUnsupported)
+                            | Some(RestrictedConditions::UnsupportedOnly)
+                            | Some(RestrictedConditions::NotInspected)
+                    ) || settings.access.join_rule.is_none();
+                    if draft_policy == confirmed_access_policy(settings) || confirmed_is_uneditable
+                    {
+                        // An unchanged draft resolves from the confirmed
+                        // completeness and target facts, never a recomputed
+                        // membership-only guess; and a proposed membership policy
+                        // does not erase facts about an uneditable confirmed
+                        // policy (its submission is rejected instead).
+                        (
+                            settings.access.join_rule,
+                            settings.access.restricted,
+                            settings.access.allow_targets.as_slice(),
+                            settings.history_visibility,
+                        )
                     } else {
-                        RestrictedConditions::MembershipOnly
-                    }),
-                    draft_targets.as_slice(),
-                    settings.history_visibility,
-                ),
+                        let restricted = if self.allow_targets.is_empty() {
+                            RestrictedConditions::ConfirmedEmpty
+                        } else {
+                            RestrictedConditions::MembershipOnly
+                        };
+                        (
+                            self.rule,
+                            Some(restricted),
+                            draft_targets.as_slice(),
+                            settings.history_visibility,
+                        )
+                    }
+                }
                 Some(rule) => (
                     Some(rule),
                     None,
@@ -547,11 +622,20 @@ pub fn preview_room_access_draft(
             true,
         ),
     };
+    let canonical_policy_key = match context {
+        RoomAccessPreviewContext::Access => draft
+            .and_then(|draft| draft.canonical_policy_key())
+            .or_else(|| {
+                settings.map(|settings| canonical_policy_key(&confirmed_access_policy(settings)))
+            }),
+        RoomAccessPreviewContext::History => None,
+    };
     RoomAccessPreview {
         scope: scope.clone(),
         context,
         confirmed,
         outcome,
+        canonical_policy_key,
     }
 }
 
@@ -981,13 +1065,26 @@ impl RoomSettingsSnapshot {
         &self,
         policy: &RoomAccessPolicy,
     ) -> Option<OperationFailureKind> {
+        self.access.access_policy_rejection(policy)
+    }
+}
+
+impl RoomAccessCondition {
+    /// Whether a settable access policy may be submitted against these
+    /// confirmed condition facts (#1177). `None` means admissible. The caller
+    /// passes the RAW confirmed condition, never a presentation-preserved local
+    /// accepted value, so the reducer agrees with Core's own pre-send verdict.
+    pub fn access_policy_rejection(
+        &self,
+        policy: &RoomAccessPolicy,
+    ) -> Option<OperationFailureKind> {
         if !policy.is_submittable() {
             return Some(OperationFailureKind::Invalid);
         }
-        match self.access.join_rule {
+        match self.join_rule {
             None => Some(OperationFailureKind::PolicyNotVerified),
             Some(RoomJoinRule::Restricted | RoomJoinRule::KnockRestricted) => {
-                match self.access.restricted {
+                match self.restricted {
                     Some(RestrictedConditions::MembershipOnly)
                     | Some(RestrictedConditions::ConfirmedEmpty) => None,
                     Some(RestrictedConditions::MembershipPlusUnsupported)
@@ -1001,6 +1098,42 @@ impl RoomSettingsSnapshot {
             }
             Some(_) => None,
         }
+    }
+
+    /// Whether every newly selected allow target may be admitted against these
+    /// confirmed condition facts (#1177). An existing non-Space condition, which
+    /// this editor cannot model, is preserved or its removal is rejected
+    /// explicitly, never silently dropped.
+    pub fn access_target_rejection(
+        &self,
+        policy: &RoomAccessPolicy,
+        is_joined_verified_space: impl Fn(&str) -> bool,
+    ) -> Option<OperationFailureKind> {
+        let confirmed_ids: BTreeSet<&str> = self
+            .allow_targets
+            .iter()
+            .map(|target| target.room_id.as_str())
+            .collect();
+        let has_non_space_confirmed = self
+            .allow_targets
+            .iter()
+            .any(|target| target.kind != RoomAllowTargetKind::Space);
+        if has_non_space_confirmed {
+            let policy_ids: BTreeSet<&str> =
+                policy.allow_targets.iter().map(String::as_str).collect();
+            if !confirmed_ids.is_subset(&policy_ids) {
+                return Some(OperationFailureKind::UnsupportedPolicyCondition);
+            }
+        }
+        for target in &policy.allow_targets {
+            if confirmed_ids.contains(target.as_str()) {
+                continue;
+            }
+            if !is_joined_verified_space(target) {
+                return Some(OperationFailureKind::PolicyNotVerified);
+            }
+        }
+        None
     }
 }
 
@@ -1016,32 +1149,9 @@ pub fn access_policy_target_rejection(
     policy: &RoomAccessPolicy,
     is_joined_verified_space: impl Fn(&str) -> bool,
 ) -> Option<OperationFailureKind> {
-    let confirmed_ids: BTreeSet<&str> = settings
+    settings
         .access
-        .allow_targets
-        .iter()
-        .map(|target| target.room_id.as_str())
-        .collect();
-    let has_non_space_confirmed = settings
-        .access
-        .allow_targets
-        .iter()
-        .any(|target| target.kind != RoomAllowTargetKind::Space);
-    if has_non_space_confirmed {
-        let policy_ids: BTreeSet<&str> = policy.allow_targets.iter().map(String::as_str).collect();
-        if !confirmed_ids.is_subset(&policy_ids) {
-            return Some(OperationFailureKind::UnsupportedPolicyCondition);
-        }
-    }
-    for target in &policy.allow_targets {
-        if confirmed_ids.contains(target.as_str()) {
-            continue;
-        }
-        if !is_joined_verified_space(target) {
-            return Some(OperationFailureKind::PolicyNotVerified);
-        }
-    }
-    None
+        .access_target_rejection(policy, is_joined_verified_space)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1158,15 +1268,6 @@ pub struct RoomAccessCondition {
 pub struct RoomAccessObservation {
     pub access: RoomAccessCondition,
     pub history_visibility: RoomHistoryVisibility,
-}
-
-impl From<RoomAccessCondition> for RoomAccessObservation {
-    fn from(access: RoomAccessCondition) -> Self {
-        Self {
-            access,
-            history_visibility: RoomHistoryVisibility::default(),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -1722,6 +1823,52 @@ mod tests {
         assert_eq!(
             private.outcome.directory.message_id,
             "room.accessOutcomeDirectoryWillBePrivate"
+        );
+    }
+
+    #[test]
+    fn an_untouched_confirmed_draft_resolves_from_confirmed_completeness() {
+        let scope = RoomAccessDraftScope::Room {
+            room_id: "!room:example.invalid".to_owned(),
+        };
+        let mut state = AppState::default();
+        state.room_management.settings = Some(snapshot_with_access(restricted(
+            RestrictedConditions::MembershipPlusUnsupported,
+        )));
+        let mut draft = RoomAccessDraft::new(scope.clone());
+        draft.seed_room_selection(state.room_management.settings.as_ref().unwrap());
+        state.room_management.draft = Some(draft);
+
+        let preview = preview_room_access_draft(&state, &scope, RoomAccessPreviewContext::Access);
+        assert!(
+            preview.confirmed,
+            "an untouched seeded draft is the confirmed policy"
+        );
+        assert_eq!(
+            preview.outcome.join.message_id, "room.accessOutcomeJoinConditionsUnverifiedContent",
+            "the confirmed completeness is not replaced by a membership-only guess"
+        );
+    }
+
+    #[test]
+    fn a_proposed_membership_policy_does_not_erase_a_confirmed_unsupported_condition() {
+        let scope = RoomAccessDraftScope::Room {
+            room_id: "!room:example.invalid".to_owned(),
+        };
+        let mut state = AppState::default();
+        state.room_management.settings = Some(snapshot_with_access(restricted(
+            RestrictedConditions::MembershipPlusUnsupported,
+        )));
+        let mut draft = RoomAccessDraft::new(scope.clone());
+        draft.seed_room_selection(state.room_management.settings.as_ref().unwrap());
+        draft.toggle_allow_target("!other:example.invalid", true);
+        state.room_management.draft = Some(draft);
+
+        let preview = preview_room_access_draft(&state, &scope, RoomAccessPreviewContext::Access);
+        assert!(!preview.confirmed, "the draft proposes a change");
+        assert_eq!(
+            preview.outcome.join.message_id, "room.accessOutcomeJoinConditionsUnverifiedContent",
+            "the proposed membership policy does not erase the uneditable condition"
         );
     }
 }

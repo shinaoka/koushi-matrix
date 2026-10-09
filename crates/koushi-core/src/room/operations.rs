@@ -259,7 +259,8 @@ pub(crate) fn classify_room_error(error: &MatrixRoomOperationError) -> RoomFailu
         | MatrixRoomOperationError::InvalidEventId
         | MatrixRoomOperationError::InvalidUserId
         | MatrixRoomOperationError::InvalidServerName
-        | MatrixRoomOperationError::RoomUnavailable => RoomFailureKind::NotFound,
+        | MatrixRoomOperationError::RoomUnavailable
+        | MatrixRoomOperationError::DirectoryVisibilityUnavailable => RoomFailureKind::NotFound,
         MatrixRoomOperationError::InvalidInvite => RoomFailureKind::InvalidInvite,
         MatrixRoomOperationError::Sdk(kind) => match kind {
             MatrixRoomOperationFailureKind::AliasInUse => RoomFailureKind::AliasInUse,

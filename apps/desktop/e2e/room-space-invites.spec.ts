@@ -3330,7 +3330,8 @@ test("the Room Info access editor dispatches typed draft commands over Rust-shap
   await gotoReadyShell(page);
   await page.evaluate((roomId) => {
     const outcome = {
-      join: { messageId: "room.accessOutcomeJoinSpaceMembers", substitutions: ["Alpha"] },
+      // Two targets: no single-Space route, so the generic membership line.
+      join: { messageId: "room.accessOutcomeJoinMembershipRoute" },
       history: { messageId: "room.accessOutcomeHistoryShared" },
       encryption: { messageId: "room.accessOutcomeNotEncrypted" },
       directory: { messageId: "room.accessOutcomeDirectoryPrivate" },
@@ -3340,6 +3341,7 @@ test("the Room Info access editor dispatches typed draft commands over Rust-shap
       scope: { kind: "room", roomId },
       context: "access",
       confirmed,
+      canonicalPolicyKey: "restricted|!space-a:example.invalid,!space-b:example.invalid",
       outcome
     });
     // The harness is fixture-only: the spec sets the Rust-shaped result fixture
@@ -3522,8 +3524,9 @@ test("the Room Info access editor dispatches typed draft commands over Rust-shap
         scope,
         context,
         confirmed: true,
+        canonicalPolicyKey: "restricted|!space-a:example.invalid,!space-b:example.invalid",
         outcome: {
-          join: { messageId: "room.accessOutcomeJoinSpaceMembers", substitutions: ["Alpha"] },
+          join: { messageId: "room.accessOutcomeJoinMembershipRoute" },
           history: { messageId: "room.accessOutcomeHistoryShared" },
           encryption: { messageId: "room.accessOutcomeNotEncrypted" },
           directory: { messageId: "room.accessOutcomeDirectoryPrivate" },

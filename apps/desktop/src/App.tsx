@@ -1596,6 +1596,14 @@ function AccountContent({
     snapshot?.state_generation,
     createDialog === "room"
   );
+  // #1177: only this open dialog's own create session may show or consume its
+  // draft; a stale draft from a previous lifetime is never rendered.
+  const createRoomAccessDraft = useMemo(() => {
+    const draft = snapshot?.state.domain.room_management.draft;
+    return draft?.scope.kind === "create" && draft.scope.sessionId === createAccessSessionId
+      ? draft
+      : null;
+  }, [snapshot?.state.domain.room_management.draft, createAccessSessionId]);
   const createRoomJoinedSpaces = useMemo(
     () => (snapshot?.state.domain.spaces ?? []).map((space) => ({
       id: space.space_id,
@@ -4520,7 +4528,10 @@ function AccountContent({
       // Only this create session's own draft may shape the submitted policy or
       // history; a Room Info draft left open elsewhere must not leak into it.
       const createRoomDraft =
-        createRoomDraftState?.scope.kind === "create" ? createRoomDraftState : null;
+        createRoomDraftState?.scope.kind === "create" &&
+        createRoomDraftState.scope.sessionId === createAccessSessionId
+          ? createRoomDraftState
+          : null;
       const createRoomRequest =
         kind === "room"
           ? createRoomRequestFromDraft(
@@ -7600,11 +7611,7 @@ function AccountContent({
           onOpenAddressHelp={(url) => runInBackground(openExternalHttpUrl(url))}
           value={createDraftName}
           onCancel={closeCreateDialog}
-          roomAccessDraft={
-            snapshot.state.domain.room_management.draft?.scope.kind === "create"
-              ? snapshot.state.domain.room_management.draft
-              : null
-          }
+          roomAccessDraft={createRoomAccessDraft}
           createAccessPreview={createRoomAccessPreview}
           createAccessSessionId={createAccessSessionId}
           joinedSpaces={createRoomJoinedSpaces}

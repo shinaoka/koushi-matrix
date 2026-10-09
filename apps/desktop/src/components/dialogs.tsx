@@ -336,10 +336,18 @@ export function CreateEntityDialog({
   // draft; this dialog only maps the rule to the legacy visibility flag the
   // create request still carries for the preset and address.
   const createScope = { kind: "create" as const, sessionId: createAccessSessionId };
+  // The Rust draft owns the effective selection once it has been seeded; while
+  // it is still loading, the dialog's own visibility choice is the selection
+  // being rendered, and the preview only supplies the private-in-Space
+  // restricted preset. This keeps the radio an optimistic control without
+  // re-deriving Create's normalization.
   const createRule: RoomJoinRule =
     roomAccessDraft?.rule ??
-    createAccessPreview?.effectiveRule ??
-    (effectiveRoomOptions.visibility === "public" ? "public" : "invite");
+    (effectiveRoomOptions.visibility === "public"
+      ? "public"
+      : createAccessPreview?.effectiveRule === "restricted"
+        ? "restricted"
+        : "invite");
   const createAllowTargets = roomAccessDraft?.allowTargets ?? [];
   const createHistory: RoomHistoryVisibility =
     roomAccessDraft?.history ?? createAccessPreview?.effectiveHistory ?? "shared";
@@ -451,6 +459,7 @@ export function CreateEntityDialog({
               }
               detailsConfirmed={false}
               canEdit
+              busy={isBusy}
               saveEnabled={false}
               saveLabel={submitLabel}
               rejection={createRejection}
@@ -481,6 +490,7 @@ export function CreateEntityDialog({
                             <input
                               type="checkbox"
                               checked={createAllowTargets.includes(space.id)}
+                              disabled={isBusy}
                               onChange={(event) => {
                                 onSetRoomAccessDraft({
                                   kind: "toggleAllowTarget",
@@ -502,6 +512,7 @@ export function CreateEntityDialog({
                         type="checkbox"
                         checked={effectiveRoomOptions.encrypted}
                         aria-label={t("dialog.encryptedRoom")}
+                        disabled={isBusy}
                         onChange={(event) =>
                           updateRoomOptions({ encrypted: event.currentTarget.checked })
                         }
@@ -543,6 +554,7 @@ export function CreateEntityDialog({
               }
               detailsConfirmed={false}
               canEdit
+              busy={isBusy}
               saveEnabled={false}
               saveLabel={submitLabel}
               chooseLabel={t("room.accessChooseHistory")}

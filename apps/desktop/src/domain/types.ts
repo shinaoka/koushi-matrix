@@ -1795,6 +1795,8 @@ export interface RoomAccessDraft {
   scope: RoomAccessDraftScope;
   revision: number;
   rule?: RoomJoinRule | null;
+  /** The renderable subset of the selected allow targets (#1177): only joined
+   * Spaces the picker offers. Unrenderable confirmed identities stay in Rust. */
   allowTargets?: string[];
   history?: RoomHistoryVisibility | null;
   /** Whether the user made an explicit choice; an untouched create draft keeps
@@ -1848,6 +1850,8 @@ export interface RoomAccessPreview {
   context: RoomAccessPreviewContext;
   confirmed: boolean;
   outcome: RoomAccessOutcome;
+  /** The canonical key of the effective access policy, Rust-owned (#1177). */
+  canonicalPolicyKey?: string;
 }
 
 /** Why a create proposal cannot be submitted (#1177). */

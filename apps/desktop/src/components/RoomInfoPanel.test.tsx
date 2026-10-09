@@ -974,6 +974,8 @@ function accessPreviewFixture(
     scope: { kind: "room", roomId: baseRoom.room_id },
     context,
     confirmed,
+    canonicalPolicyKey:
+      context === "access" ? "restricted|!space-b:example.invalid" : undefined,
     outcome: {
       join: { messageId: "room.accessOutcomeJoinInvite" },
       history: { messageId: "room.accessOutcomeHistoryShared" },
