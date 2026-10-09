@@ -1586,6 +1586,13 @@ fn tauri_command_routes_build_expected_core_commands() {
         ),
         (34, RoomSettingChange::JoinRule(RoomJoinRule::Invite)),
         (
+            137,
+            RoomSettingChange::AccessPolicy(koushi_state::RoomAccessPolicy::new(
+                RoomJoinRule::Restricted,
+                vec!["!space:example.org".to_owned()],
+            )),
+        ),
+        (
             35,
             RoomSettingChange::HistoryVisibility(RoomHistoryVisibility::Shared),
         ),

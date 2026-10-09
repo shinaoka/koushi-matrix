@@ -1117,3 +1117,27 @@ fn room_access_draft_ignores_a_stale_room_scope() {
     );
     assert!(state.room_management.draft.is_none());
 }
+
+#[test]
+fn access_policy_change_wire_shape_is_camel_case_and_canonical() {
+    let change = RoomSettingChange::AccessPolicy(koushi_state::RoomAccessPolicy::new(
+        RoomJoinRule::Restricted,
+        vec![
+            "!b:example.invalid".to_owned(),
+            "!a:example.invalid".to_owned(),
+        ],
+    ));
+    let value = serde_json::to_value(&change).expect("serialize access policy change");
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "accessPolicy": {
+                "rule": "restricted",
+                "allowTargets": ["!a:example.invalid", "!b:example.invalid"],
+            }
+        })
+    );
+    let round_tripped: RoomSettingChange =
+        serde_json::from_value(value).expect("deserialize access policy change");
+    assert_eq!(round_tripped, change);
+}
