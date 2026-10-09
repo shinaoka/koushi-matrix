@@ -27,7 +27,7 @@ function renderEditor(overrides: Partial<Parameters<typeof AccessChoiceDetail>[0
     label: "Join rule",
     choices,
     selected: "public",
-    details: <p>Rust details</p>,
+    details: <p />,
     detailsConfirmed: false,
     canEdit: true,
     saveEnabled: true,
