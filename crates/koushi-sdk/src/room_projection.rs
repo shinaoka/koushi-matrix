@@ -2007,7 +2007,7 @@ pub struct MatrixRoomAccessFacts {
 /// The condition is the room's own `m.room.join_rules` content; it is never
 /// derived from encryption, directory visibility, history visibility, parent
 /// Space privacy, `is_dm`, the viewer's membership or `can_join`.
-pub fn matrix_room_access_facts(room: &matrix_sdk::Room) -> MatrixRoomAccessFacts {
+pub async fn matrix_room_access_facts(room: &matrix_sdk::Room) -> MatrixRoomAccessFacts {
     use matrix_sdk::ruma::events::room::join_rules::{AllowRule, JoinRule};
     let Some(raw_rule) = room.join_rule() else {
         return MatrixRoomAccessFacts {
@@ -2041,7 +2041,7 @@ pub fn matrix_room_access_facts(room: &matrix_sdk::Room) -> MatrixRoomAccessFact
                 if seen.contains(&room_id) {
                     continue;
                 }
-                let kind = matrix_allow_target_kind(room, &membership_rule.room_id);
+                let kind = matrix_allow_target_kind(room, &membership_rule.room_id).await;
                 seen.push(room_id.clone());
                 allow_targets.push(MatrixAllowTarget { kind, room_id });
             }
@@ -2061,22 +2061,42 @@ pub fn matrix_room_access_facts(room: &matrix_sdk::Room) -> MatrixRoomAccessFact
     }
 }
 
-/// Classify one allow target from the local room's create event (#1220).
-fn matrix_allow_target_kind(
+/// Classify one allow target from the local room's own `m.room.create` (#1220).
+///
+/// `create_content()` cannot tell a redacted pre-v11 create event from an
+/// original one: the SDK keeps the redacted event with every field defaulted
+/// (so a redacted Space loses its type but stays available). For room versions
+/// before 11 only the raw state event still records the redaction, so the kind
+/// is verified through the public state-event API and an unproven type stays
+/// `Unknown` rather than becoming an ordinary room.
+async fn matrix_allow_target_kind(
     room: &matrix_sdk::Room,
     target: &matrix_sdk::ruma::RoomId,
 ) -> MatrixAllowTargetKind {
-    use matrix_sdk::ruma::room::RoomType;
+    use matrix_sdk::{
+        deserialized_responses::SyncOrStrippedState,
+        ruma::{
+            events::{EmptyStateKey, SyncStateEvent, room::create::RoomCreateEventContent},
+            room::RoomType,
+        },
+    };
     let Some(target) = room.client().get_room(target) else {
         return MatrixAllowTargetKind::Unknown;
     };
-    let Some(create) = target.create_content() else {
+    let Ok(Some(raw)) = target
+        .get_state_event_static_for_key::<RoomCreateEventContent, _>(&EmptyStateKey)
+        .await
+    else {
         return MatrixAllowTargetKind::Unknown;
     };
-    match create.room_type {
+    let Ok(SyncOrStrippedState::Sync(SyncStateEvent::Original(create))) = raw.deserialize() else {
+        // A redacted or stripped create event is not positive proof of any type.
+        return MatrixAllowTargetKind::Unknown;
+    };
+    match create.content.room_type {
         Some(RoomType::Space) => MatrixAllowTargetKind::Space,
-        // Only an available create event with no explicit (or a plain-room) type
-        // proves an ordinary room; any other type stays unknown to this client.
+        // Only an available, unredacted create event with no explicit (or a
+        // plain-room) type proves an ordinary room; any other type stays unknown.
         Some(_) => MatrixAllowTargetKind::Unknown,
         None => MatrixAllowTargetKind::Room,
     }

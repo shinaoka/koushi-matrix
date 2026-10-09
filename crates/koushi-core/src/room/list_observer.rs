@@ -1531,31 +1531,29 @@ async fn normalize_and_project_entries(
     // #1166: each joined room's own access condition. Collected from the SDK
     // rooms, then restricted to the rooms the completed snapshot actually
     // projects, so an action never describes a room normalization dropped.
-    let joined_access = joined_rooms
-        .iter()
-        .map(|room| {
-            let facts = koushi_sdk::matrix_room_access_facts(room);
-            (
-                room.room_id().to_string(),
-                koushi_state::RoomAccessCondition {
-                    join_rule: facts
-                        .join_rule
-                        .map(super::management::room_join_rule_from_sdk),
-                    restricted: facts
-                        .restricted
-                        .map(super::management::restricted_conditions_from_sdk),
-                    allow_targets: facts
-                        .allow_targets
-                        .into_iter()
-                        .map(|target| koushi_state::RoomAllowTarget {
-                            kind: super::management::allow_target_kind_from_sdk(target.kind),
-                            room_id: target.room_id,
-                        })
-                        .collect(),
-                },
-            )
-        })
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut joined_access = std::collections::BTreeMap::new();
+    for room in &joined_rooms {
+        let facts = koushi_sdk::matrix_room_access_facts(room).await;
+        joined_access.insert(
+            room.room_id().to_string(),
+            koushi_state::RoomAccessCondition {
+                join_rule: facts
+                    .join_rule
+                    .map(super::management::room_join_rule_from_sdk),
+                restricted: facts
+                    .restricted
+                    .map(super::management::restricted_conditions_from_sdk),
+                allow_targets: facts
+                    .allow_targets
+                    .into_iter()
+                    .map(|target| koushi_state::RoomAllowTarget {
+                        kind: super::management::allow_target_kind_from_sdk(target.kind),
+                        room_id: target.room_id,
+                    })
+                    .collect(),
+            },
+        );
+    }
     let mut snapshot = koushi_sdk::room_list_snapshot_from_sdk_rooms_with_direct_targets(
         joined_rooms,
         direct_targets_by_room,

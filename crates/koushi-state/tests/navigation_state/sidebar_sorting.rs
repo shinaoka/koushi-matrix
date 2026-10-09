@@ -1258,6 +1258,7 @@ fn sidebar_room_rows_carry_the_projected_access_condition() {
     state.rooms = {
         let mut room_list = rooms();
         room_list.push(active_sort_room("unprojected", false, &[], &[], None));
+        room_list.push(active_sort_room("mixed-unnamed", false, &[], &[], None));
         room_list
     };
     state.spaces = spaces();
@@ -1299,6 +1300,26 @@ fn sidebar_room_rows_carry_the_projected_access_condition() {
                     kind: koushi_state::RoomAllowTargetKind::Space,
                     room_id: "space-a".to_owned(),
                 }],
+            },
+        ),
+        (
+            "mixed-unnamed".to_owned(),
+            koushi_state::RoomAccessCondition {
+                join_rule: Some(koushi_state::RoomJoinRule::Restricted),
+                restricted: Some(koushi_state::RestrictedConditions::MembershipOnly),
+                // One named Space beside one target this projection cannot name:
+                // both count, so a regression that filtered unnamed targets
+                // before deciding cardinality would wrongly claim the route.
+                allow_targets: vec![
+                    koushi_state::RoomAllowTarget {
+                        kind: koushi_state::RoomAllowTargetKind::Space,
+                        room_id: "space-a".to_owned(),
+                    },
+                    koushi_state::RoomAllowTarget {
+                        kind: koushi_state::RoomAllowTargetKind::Unknown,
+                        room_id: "!invisible:example.invalid".to_owned(),
+                    },
+                ],
             },
         ),
         (
@@ -1370,6 +1391,15 @@ fn sidebar_room_rows_carry_the_projected_access_condition() {
         space_route_room.access_space_members_route.as_deref(),
         Some("Space A"),
         "the single verified Space route names the Space for the specific sentence"
+    );
+    let mixed_unnamed = sidebar
+        .space_rooms
+        .iter()
+        .find(|room| room.room_id == "mixed-unnamed")
+        .expect("mixed-unnamed should be in the room list");
+    assert_eq!(
+        mixed_unnamed.access_space_members_route, None,
+        "an unnamed target still counts, so a named-plus-unnamed pair is not the verified single-Space route"
     );
     let space_row = sidebar
         .space_rail

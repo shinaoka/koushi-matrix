@@ -275,23 +275,49 @@ describe("restricted allow-condition facts (#1166)", () => {
       access_allowed_room_names: ["Allowed Space"],
       access_space_members_route: "Allowed Space"
     };
-    const sidebar = {
-      space_rooms: [],
-      global_dms: [],
-      not_joined_space_rooms: [],
-      sections: {
-        favourites: [],
-        rooms: [row],
-        people: [],
-        low_priority: [],
-        not_joined: []
+    // A room can render from any lane, so the row is placed in each lane in turn
+    // rather than only in the one the reader happens to check.
+    const sidebarFor = (
+      lane:
+        | "space_rooms"
+        | "global_dms"
+        | "not_joined_space_rooms"
+        | "favourites"
+        | "rooms"
+        | "people"
+        | "low_priority"
+        | "not_joined"
+    ) => {
+      const sidebar: Parameters<typeof sidebarRoomAccess>[0] = {
+        space_rooms: [],
+        global_dms: [],
+        not_joined_space_rooms: [],
+        sections: { favourites: [], rooms: [], people: [], low_priority: [], not_joined: [] }
+      };
+      if (lane === "space_rooms" || lane === "global_dms" || lane === "not_joined_space_rooms") {
+        sidebar[lane] = [row];
+      } else {
+        sidebar.sections![lane] = [row];
       }
+      return sidebar;
     };
-    expect(sidebarRoomAccess(sidebar, row.room_id)).toEqual({
-      joinRule: "restricted",
-      restricted: "membershipOnly",
+    const expected = {
+      joinRule: "restricted" as const,
+      restricted: "membershipOnly" as const,
       spaceMembersRoute: "Allowed Space",
       allowedRoomNames: ["Allowed Space"]
-    });
+    };
+    for (const lane of [
+      "space_rooms",
+      "global_dms",
+      "not_joined_space_rooms",
+      "favourites",
+      "rooms",
+      "people",
+      "low_priority",
+      "not_joined"
+    ] as const) {
+      expect(sidebarRoomAccess(sidebarFor(lane), row.room_id), `${lane} lane`).toEqual(expected);
+    }
   });
 });

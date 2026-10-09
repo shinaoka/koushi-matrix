@@ -3770,7 +3770,9 @@ stateDiagram-v2
   only / membership plus unsupported / unsupported only) and must be carried to
   the pre-send settings read before a restricted rule is written. `allow_targets`
   keeps every distinct target with the kind its local `m.room.create` proves
-  (`Space` / `Room` / `Unknown`); the target id stays inside Rust. The sidebar
+  (`Space` / `Room` / `Unknown`); only an available, unredacted create event
+  with no other type proves an ordinary room, because a redacted pre-v11 create
+  event keeps its defaulted fields. The target id stays inside Rust. The sidebar
   resolves ids to display labels and derives `access_space_members_route`, the
   one fact that admits the specific "Space members can join" sentence: exactly
   one distinct target, verified a Space, with a resolvable non-id name. `private`

@@ -13,7 +13,7 @@ import {
   LockOpen,
   Users
 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { t } from "../i18n/messages";
 import { ImeSafeForm, ImeTextField } from "./ImeTextControl";
@@ -23,11 +23,14 @@ import {
   type PropertySaveStatus
 } from "./SettingsPropertyCard";
 import { EntityAvatar } from "./Shell";
-import { avatarInitial, roomDisplayLabel } from "../app/uiShared";
+import { avatarInitial, roomAccessTooltipLabel, roomDisplayLabel } from "../app/uiShared";
 import {
+  ROOM_ACCESS_CHECKING,
+  roomAccessHeaderBadges,
   roomAccessIndicator,
   type RoomAccessProjection
 } from "../domain/accessCondition";
+import { Tooltip, type TooltipTriggerProps } from "./Tooltip";
 import {
   HistoryExportSection,
   type HistoryExportControls
@@ -187,7 +190,7 @@ export function RoomInfoPanel({
     settings && !settings.permissions.can_change_join_rule
       ? t("room.settingNoPermission")
       : null;
-  const statusBadges = roomStatusBadges(isEncrypted, settings, access ?? null);
+  const statusBadges = roomStatusBadges(isEncrypted, settings, access);
 
   function submitSetting(field: RoomSettingField, change: RoomSettingChange, target: string | null) {
     const allowed = "joinRule" in change ? mayChangeJoinRule : canEditSettings;
@@ -238,6 +241,36 @@ export function RoomInfoPanel({
     heading?.scrollIntoView?.({ block: "nearest" });
     heading?.focus();
   }
+
+  function renderStatusBadge(badge: StatusBadge, triggerProps?: TooltipTriggerProps) {
+    if (!badge.setting) {
+      return (
+        <span className="room-status-badge" {...triggerProps}>
+          {badge.icon}
+          <span>{badge.label}</span>
+        </span>
+      );
+    }
+    return (
+      <button
+        className="room-status-badge room-status-badge-link"
+        type="button"
+        aria-label={t("room.statusShowSetting", { status: badge.label })}
+        onClick={() =>
+          revealSetting(
+            badge.setting === "joinRule"
+              ? joinRuleHeadingRef.current
+              : historyHeadingRef.current
+          )
+        }
+        {...triggerProps}
+      >
+        {badge.icon}
+        <span>{badge.label}</span>
+      </button>
+    );
+  }
+
   const nameStatus = fieldStatus("name");
 
   async function copyShareLink() {
@@ -323,29 +356,15 @@ export function RoomInfoPanel({
       <div className="room-status-bar" aria-label={t("room.status")}>
         <div className="room-status-badges">
           {statusBadges.map((badge) =>
-            badge.setting ? (
-              // Issue #1008: a summary of a setting leads to that setting.
-              <button
-                className="room-status-badge room-status-badge-link"
-                key={badge.label}
-                type="button"
-                aria-label={t("room.statusShowSetting", { status: badge.label })}
-                onClick={() =>
-                  revealSetting(
-                    badge.setting === "joinRule"
-                      ? joinRuleHeadingRef.current
-                      : historyHeadingRef.current
-                  )
-                }
-              >
-                {badge.icon}
-                <span>{badge.label}</span>
-              </button>
+            // #1220: a summary badge with its own route explanation explains it
+            // on hover and on keyboard focus, while the badge still navigates
+            // to the property it summarizes.
+            badge.description ? (
+              <Tooltip key={badge.label} label={badge.description}>
+                {(triggerProps) => renderStatusBadge(badge, triggerProps)}
+              </Tooltip>
             ) : (
-              <span className="room-status-badge" key={badge.label}>
-                {badge.icon}
-                <span>{badge.label}</span>
-              </span>
+              <Fragment key={badge.label}>{renderStatusBadge(badge)}</Fragment>
             )
           )}
         </div>
@@ -733,6 +752,8 @@ interface StatusBadge {
   icon: ReactNode;
   /** The setting this badge summarizes, when it is changed on this panel. */
   setting?: "joinRule" | "historyVisibility";
+  /** The route explanation this badge shows on hover and keyboard focus. */
+  description?: string;
 }
 
 const HISTORY_VISIBILITY_OPTIONS: readonly RoomHistoryVisibility[] = [
@@ -749,7 +770,7 @@ function roomSettingFailureMessage(kind: OperationFailureKind): string {
 function roomStatusBadges(
   isEncrypted: boolean,
   settings: RoomManagementState["settings"],
-  access: RoomAccessProjection | null
+  access: RoomAccessProjection | null | undefined
 ): StatusBadge[] {
   const badges: StatusBadge[] = [
     {
@@ -766,16 +787,41 @@ function roomStatusBadges(
     // #1220: the summary is the same people-facing condition the row and header
     // render, never a binary Public/Private that reads a restricted rule as
     // `private`. It is shown for DMs too, which have their own access condition.
-    const joinRule = access?.joinRule ?? settings.join_rule;
-    const indicator = roomAccessIndicator(joinRule, access?.restricted ?? null, {
-      spaceMembersRoute: access?.spaceMembersRoute ?? null,
-      allowedRoomNames: access?.allowedRoomNames ?? []
-    });
-    badges.push({
-      label: indicator ? t(indicator.labelMessageIds[0]) : roomJoinRuleLabel(joinRule),
-      icon: <Globe2 size={14} aria-hidden="true" />,
-      setting: "joinRule"
-    });
+    //
+    // A supplied access projection is authoritative, including an explicit
+    // `joinRule: null`: Room Info then shows the shared checking indicator
+    // instead of the settings snapshot's defaulted `invite`. Falling back to
+    // the snapshot is reserved for a caller that has no access projection at
+    // all.
+    const indicator = access
+      ? roomAccessIndicator(access.joinRule, access.restricted, {
+          spaceMembersRoute: access.spaceMembersRoute,
+          allowedRoomNames: access.allowedRoomNames
+        }) ?? ROOM_ACCESS_CHECKING
+      : roomAccessIndicator(settings.join_rule);
+    if (indicator) {
+      // One badge per shared route label, each with its own explanation and any
+      // Space-name substitution, so a knock-restricted room keeps both the
+      // membership and the request route here as it does in the row and header.
+      for (const badge of roomAccessHeaderBadges(indicator)) {
+        badges.push({
+          label: t(badge.labelMessageId),
+          description: roomAccessTooltipLabel(
+            badge.descriptionMessageId,
+            badge.descriptionAllowedRoomNames,
+            badge.descriptionSpaceName
+          ),
+          icon: <Globe2 size={14} aria-hidden="true" />,
+          setting: "joinRule"
+        });
+      }
+    } else {
+      badges.push({
+        label: roomJoinRuleLabel(settings.join_rule),
+        icon: <Globe2 size={14} aria-hidden="true" />,
+        setting: "joinRule"
+      });
+    }
     badges.push({
       label: roomHistoryStatusLabel(settings.history_visibility),
       icon: <History size={14} aria-hidden="true" />,

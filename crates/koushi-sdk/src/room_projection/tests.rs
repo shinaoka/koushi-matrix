@@ -1097,7 +1097,7 @@ async fn restricted_rule_completeness_distinguishes_the_five_cases() {
     // reported as an inspected `Invite`.
     let unavailable = synced("!unavailable:example.invalid", None).await;
     assert_eq!(
-        super::matrix_room_access_facts(&unavailable),
+        super::matrix_room_access_facts(&unavailable).await,
         super::MatrixRoomAccessFacts {
             join_rule: None,
             restricted: Some(super::MatrixRestrictedCompleteness::NotInspected),
@@ -1111,7 +1111,7 @@ async fn restricted_rule_completeness_distinguishes_the_five_cases() {
     )
     .await;
     assert_eq!(
-        super::matrix_room_access_facts(&empty).restricted,
+        super::matrix_room_access_facts(&empty).await.restricted,
         Some(super::MatrixRestrictedCompleteness::ConfirmedEmpty)
     );
 
@@ -1123,7 +1123,9 @@ async fn restricted_rule_completeness_distinguishes_the_five_cases() {
     )
     .await;
     assert_eq!(
-        super::matrix_room_access_facts(&membership_only).restricted,
+        super::matrix_room_access_facts(&membership_only)
+            .await
+            .restricted,
         Some(super::MatrixRestrictedCompleteness::MembershipOnly)
     );
 
@@ -1136,7 +1138,9 @@ async fn restricted_rule_completeness_distinguishes_the_five_cases() {
     )
     .await;
     assert_eq!(
-        super::matrix_room_access_facts(&unsupported_only).restricted,
+        super::matrix_room_access_facts(&unsupported_only)
+            .await
+            .restricted,
         Some(super::MatrixRestrictedCompleteness::UnsupportedOnly)
     );
 
@@ -1150,13 +1154,13 @@ async fn restricted_rule_completeness_distinguishes_the_five_cases() {
     )
     .await;
     assert_eq!(
-        super::matrix_room_access_facts(&mixed).restricted,
+        super::matrix_room_access_facts(&mixed).await.restricted,
         Some(super::MatrixRestrictedCompleteness::MembershipPlusUnsupported)
     );
 
     // A non-restricted rule claims nothing about allow lists.
     let public = synced("!public-rule:example.invalid", Some(JoinRule::Public)).await;
-    let public_facts = super::matrix_room_access_facts(&public);
+    let public_facts = super::matrix_room_access_facts(&public).await;
     assert_eq!(
         public_facts.join_rule,
         Some(super::MatrixRoomJoinRule::Public)
@@ -1223,7 +1227,7 @@ async fn restricted_allow_targets_verify_kind_and_keep_unnamed_identities() {
         .await;
     let host = client.get_room(host_id).expect("joined room");
 
-    let facts = super::matrix_room_access_facts(&host);
+    let facts = super::matrix_room_access_facts(&host).await;
     assert_eq!(
         facts.restricted,
         Some(super::MatrixRestrictedCompleteness::MembershipOnly)
@@ -1245,5 +1249,120 @@ async fn restricted_allow_targets_verify_kind_and_keep_unnamed_identities() {
             },
         ],
         "every distinct target is kept, including the one whose create event is missing"
+    );
+}
+
+/// #1220: a redacted pre-v11 create event keeps its defaulted fields, so
+/// `create_content()` alone would call the target an ordinary room. The raw
+/// state event still records the redaction, and an unproven kind is `Unknown`.
+#[tokio::test]
+async fn restricted_allow_targets_reject_a_redacted_create_event() {
+    use matrix_sdk::ruma::{
+        events::{
+            room::create::RoomCreateEventContent,
+            room::join_rules::{AllowRule, JoinRule, Restricted},
+        },
+        room_id,
+    };
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    use matrix_sdk_test::{JoinedRoomBuilder, event_factory::EventFactory};
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let own = client.user_id().expect("own user").to_owned();
+    let factory = EventFactory::new();
+
+    // A pre-v11 room whose Space create event was redacted: `create_content()`
+    // still returns it, but with every field defaulted, and the raw event
+    // carries `unsigned.redacted_because`.
+    let redacted_target = room_id!("!target-redacted:example.invalid");
+    server
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(redacted_target).add_state_event(factory.redacted_state(
+                &own,
+                "",
+                RoomCreateEventContent::new_v1(own.clone()),
+            )),
+        )
+        .await;
+
+    let rule = JoinRule::Restricted(Restricted::new(vec![AllowRule::room_membership(
+        redacted_target.to_owned(),
+    )]));
+    let host_id = room_id!("!host-redacted:example.invalid");
+    server
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(host_id)
+                .add_state_event(factory.room_join_rules(rule).sender(&own)),
+        )
+        .await;
+    let host = client.get_room(host_id).expect("joined room");
+
+    let facts = super::matrix_room_access_facts(&host).await;
+    assert_eq!(
+        facts.allow_targets,
+        vec![super::MatrixAllowTarget {
+            kind: super::MatrixAllowTargetKind::Unknown,
+            room_id: redacted_target.to_string(),
+        }],
+        "a redacted create event is not positive proof of an ordinary room"
+    );
+}
+
+/// #1220: the distinct-target count is what gates the specific sentence, so a
+/// rule that repeats one Space must still reduce to a single verified route.
+#[tokio::test]
+async fn restricted_allow_targets_count_one_space_once() {
+    use matrix_sdk::ruma::{
+        RoomVersionId,
+        events::room::join_rules::{AllowRule, JoinRule, Restricted},
+        room_id,
+    };
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    use matrix_sdk_test::{JoinedRoomBuilder, event_factory::EventFactory};
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let own = client.user_id().expect("own user").to_owned();
+    let factory = EventFactory::new();
+
+    let space_target = room_id!("!only-space:example.invalid");
+    server
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(space_target)
+                .add_state_event(factory.create(&own, RoomVersionId::V10).with_space_type()),
+        )
+        .await;
+
+    let rule = JoinRule::Restricted(Restricted::new(vec![
+        AllowRule::room_membership(space_target.to_owned()),
+        // The same Space twice is one distinct target, not two.
+        AllowRule::room_membership(space_target.to_owned()),
+    ]));
+    let host_id = room_id!("!host-single-space:example.invalid");
+    server
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(host_id)
+                .add_state_event(factory.room_join_rules(rule).sender(&own)),
+        )
+        .await;
+    let host = client.get_room(host_id).expect("joined room");
+
+    let facts = super::matrix_room_access_facts(&host).await;
+    assert_eq!(
+        facts.restricted,
+        Some(super::MatrixRestrictedCompleteness::MembershipOnly)
+    );
+    assert_eq!(
+        facts.allow_targets,
+        vec![super::MatrixAllowTarget {
+            kind: super::MatrixAllowTargetKind::Space,
+            room_id: space_target.to_string(),
+        }],
+        "a duplicate entry does not make a single Space two targets"
     );
 }
