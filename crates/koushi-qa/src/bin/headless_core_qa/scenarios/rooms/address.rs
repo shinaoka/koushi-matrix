@@ -23,6 +23,8 @@ pub(super) async fn verify(
         invited_only: false,
         visibility: CreateRoomVisibility::Public,
         parent_space: None,
+        access_policy: None,
+        history: None,
     };
     let request_id = conn_a.next_request_id();
     conn_a
@@ -174,6 +176,8 @@ async fn verify_space_prefixed_address(
         parent_space: Some(CreateRoomParentSpace {
             space_id: space_id.clone(),
         }),
+        access_policy: None,
+        history: None,
     };
 
     let conflict_id = conn_a.next_request_id();

@@ -155,6 +155,8 @@ async fn run_authenticated(
             invited_only: false,
             visibility: MatrixCreateRoomVisibility::Private,
             parent_space: None,
+            access_policy: None,
+            history: None,
         },
     )
     .await

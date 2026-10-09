@@ -148,7 +148,7 @@ pub(super) fn allow_target_kind_from_sdk(
     }
 }
 
-fn room_join_rule_to_sdk(join_rule: RoomJoinRule) -> MatrixRoomJoinRule {
+pub(super) fn room_join_rule_to_sdk(join_rule: RoomJoinRule) -> MatrixRoomJoinRule {
     match join_rule {
         RoomJoinRule::Public => MatrixRoomJoinRule::Public,
         RoomJoinRule::Invite => MatrixRoomJoinRule::Invite,
@@ -171,7 +171,7 @@ fn room_history_visibility_from_sdk(
     }
 }
 
-fn room_history_visibility_to_sdk(
+pub(super) fn room_history_visibility_to_sdk(
     history_visibility: RoomHistoryVisibility,
 ) -> MatrixRoomHistoryVisibility {
     match history_visibility {
@@ -348,14 +348,19 @@ impl RoomActor {
         }])
         .await;
 
-        match koushi_sdk::update_room_setting(session, &room_id, room_setting_change_to_sdk(change))
-            .await
+        match koushi_sdk::update_room_setting(
+            session,
+            &room_id,
+            room_setting_change_to_sdk(change.clone()),
+        )
+        .await
         {
             Ok(settings) => {
                 let settings = room_settings_snapshot_from_sdk(settings);
                 self.reduce_reliable(vec![AppAction::RoomSettingUpdateSucceeded {
                     request_id: request_id.sequence,
                     room_id,
+                    change,
                     settings: settings.clone(),
                 }])
                 .await;

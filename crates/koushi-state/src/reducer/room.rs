@@ -55,6 +55,17 @@ pub(crate) fn handle_room_access_updated(
         .into_iter()
         .filter(|(room_id, _)| retained.contains(room_id.as_str()))
         .collect::<std::collections::BTreeMap<_, _>>();
+    // #1177: capture the open room's previous observation so the settings
+    // reconciliation can tell an advancing observation from an unchanged old
+    // one that would revert a just-saved local value.
+    let open_room_id = state
+        .room_management
+        .settings
+        .as_ref()
+        .map(|settings| settings.room_id.clone());
+    let previous_observed = open_room_id
+        .as_ref()
+        .and_then(|room_id| state.room_access.get(room_id).cloned());
     if authoritative {
         if !room_list_authoritative_matches_current(&state.room_list.readiness, generation, source)
         {
@@ -79,7 +90,64 @@ pub(crate) fn handle_room_access_updated(
         }
         state.room_access = merged;
     }
-    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
+    if reconcile_open_settings_access(state, open_room_id.as_deref(), previous_observed.as_ref()) {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged));
+    }
+    effects
+}
+
+/// Reconcile the open settings snapshot from an advancing access observation
+/// (#1177).
+///
+/// The observation is the shared `room_access` projection, so ordinary rooms
+/// reconcile too, not only Spaces. The change test uses the full canonical
+/// policy (rule plus sorted, deduplicated allow targets): a reordered or
+/// duplicated server allow list is not a change and never replaces the locally
+/// held value. Only the access-relevant fields move; name, topic, avatar,
+/// history, permissions and members stay.
+fn reconcile_open_settings_access(
+    state: &mut AppState,
+    room_id: Option<&str>,
+    previous: Option<&crate::state::RoomAccessCondition>,
+) -> bool {
+    let Some(room_id) = room_id else {
+        return false;
+    };
+    let Some(observed) = state.room_access.get(room_id).cloned() else {
+        return false;
+    };
+    let Some(observed_policy) = crate::state::canonical_access_policy(&observed) else {
+        return false;
+    };
+    let Some(settings) = state
+        .room_management
+        .settings
+        .as_ref()
+        .filter(|settings| settings.room_id == room_id)
+    else {
+        return false;
+    };
+    // A reordered or duplicated server allow list is the same canonical policy,
+    // so it is not a change and never replaces the locally held value.
+    if crate::state::canonical_access_policy(&settings.access) == Some(observed_policy.clone()) {
+        return false;
+    }
+    // A different canonical policy is a real change only when the observation
+    // advanced; an unchanged old observation would revert a just-saved local
+    // value.
+    let previous_policy = previous.and_then(crate::state::canonical_access_policy);
+    if previous_policy == Some(observed_policy) {
+        return false;
+    }
+    let settings = state
+        .room_management
+        .settings
+        .as_mut()
+        .expect("checked above");
+    settings.join_rule = observed.join_rule.unwrap_or(settings.join_rule);
+    settings.access = observed;
+    true
 }
 
 pub(crate) fn handle_room_list_updated(

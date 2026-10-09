@@ -630,6 +630,7 @@ fn room_setting_update_records_pending_and_matching_completion_clears_it() {
         AppAction::RoomSettingUpdateSucceeded {
             request_id: 7,
             room_id: room_id.to_owned(),
+            change: RoomSettingChange::Topic(Some("New synthetic topic".to_owned())),
             settings: RoomSettingsSnapshot {
                 topic: Some("New synthetic topic".to_owned()),
                 ..editable_settings(room_id)
@@ -731,6 +732,7 @@ fn stale_room_management_completion_is_ignored() {
             AppAction::RoomSettingUpdateSucceeded {
                 request_id: 12,
                 room_id: room_id.to_owned(),
+                change: RoomSettingChange::Name(Some("Fresh name".to_owned())),
                 settings: editable_settings(room_id),
             },
         ),

@@ -90,6 +90,7 @@ pub(crate) fn handle_room_setting_update_succeeded(
     state: &mut AppState,
     request_id: u64,
     room_id: String,
+    change: &RoomSettingChange,
     settings: crate::state::RoomSettingsSnapshot,
 ) -> Vec<AppEffect> {
     if !room_management_operation_matches(
@@ -108,10 +109,73 @@ pub(crate) fn handle_room_setting_update_succeeded(
         &state.profile,
         own_user_id.as_deref(),
     );
-    state.room_management.selected_room_id = Some(room_id);
-    state.room_management.settings = Some(settings);
+    // #1177: install the accepted change as a delta, not a level copy. The
+    // pre-send read behind `settings` can still lag the SDK echo of the *other*
+    // property this client just saved, so that property keeps its locally
+    // accepted value until the shared access observation agrees.
+    let preserved = state
+        .room_management
+        .settings
+        .as_ref()
+        .filter(|current| current.room_id == room_id)
+        .map(|current| {
+            (
+                current.history_visibility,
+                current.access.clone(),
+                current.join_rule,
+            )
+        });
+    let access_is_observed = state.room_access.get(&room_id) == Some(&settings.access);
+    match change {
+        RoomSettingChange::AccessPolicy(_) => {
+            if let Some((history, _, _)) = preserved {
+                settings.history_visibility = history;
+            }
+        }
+        RoomSettingChange::JoinRule(rule) => {
+            if let Some((history, _, _)) = preserved {
+                settings.history_visibility = history;
+            }
+            // A settable scalar rule carries no allow policy; keep the access
+            // projection consistent with the new rule.
+            settings.access = crate::state::RoomAccessCondition {
+                join_rule: Some(*rule),
+                restricted: None,
+                allow_targets: Vec::new(),
+            };
+        }
+        RoomSettingChange::HistoryVisibility(_) => {
+            if !access_is_observed && let Some((_, access, join_rule)) = preserved {
+                settings.access = access;
+                settings.join_rule = join_rule;
+            }
+        }
+        _ => {
+            if !access_is_observed && let Some((_, access, join_rule)) = preserved.as_ref() {
+                settings.access = access.clone();
+                settings.join_rule = *join_rule;
+            }
+            if let Some((history, _, _)) = preserved {
+                settings.history_visibility = history;
+            }
+        }
+    }
+
+    state.room_management.selected_room_id = Some(room_id.clone());
     state.room_management.operation = RoomManagementOperationState::Idle;
-    vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+    let mut effects = Vec::new();
+    // A successful local access change reaches the shared projection without
+    // waiting for the SDK echo; the next authoritative observation replaces it.
+    if matches!(
+        change,
+        RoomSettingChange::AccessPolicy(_) | RoomSettingChange::JoinRule(_)
+    ) {
+        state.room_access.insert(room_id, settings.access.clone());
+        effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
+    }
+    state.room_management.settings = Some(settings);
+    effects.push(AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged));
+    effects
 }
 
 pub(crate) fn handle_room_setting_update_failed(

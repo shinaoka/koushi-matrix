@@ -232,3 +232,41 @@ fn room_management_commands_debug_redacts_room_user_and_settings_values() {
         assert!(!debug.contains("Private moderation reason"), "{debug}");
     }
 }
+
+#[test]
+fn create_room_options_serialize_the_explicit_policy_and_history() {
+    use koushi_state::{RoomAccessPolicy, RoomHistoryVisibility, RoomJoinRule};
+
+    let options = CreateRoomOptions {
+        name: "Synthetic".to_owned(),
+        topic: None,
+        alias_localpart: None,
+        encrypted: true,
+        invited_only: false,
+        visibility: CreateRoomVisibility::Private,
+        parent_space: None,
+        access_policy: Some(RoomAccessPolicy::new(
+            RoomJoinRule::Restricted,
+            vec![
+                "!b:example.invalid".to_owned(),
+                "!a:example.invalid".to_owned(),
+            ],
+        )),
+        history: Some(RoomHistoryVisibility::Joined),
+    };
+    let value = serde_json::to_value(&options).expect("serialize create options");
+    assert_eq!(
+        value["accessPolicy"],
+        serde_json::json!({
+            "rule": "restricted",
+            "allowTargets": ["!a:example.invalid", "!b:example.invalid"],
+        })
+    );
+    assert_eq!(value["history"], serde_json::json!("joined"));
+
+    let debug = format!("{options:?}");
+    assert!(debug.contains("RoomAccessPolicy"), "{debug}");
+    assert!(!debug.contains("!a:example.invalid"), "{debug}");
+    assert!(!debug.contains("!b:example.invalid"), "{debug}");
+    assert!(debug.contains("allow_target_count"), "{debug}");
+}

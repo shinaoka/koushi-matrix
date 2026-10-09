@@ -3789,6 +3789,43 @@ stateDiagram-v2
   reaches Space Info without a reload. A level-wise copy would revert a
   just-saved change while the room list still carries the old rule, so only a
   synced transition counts; permissions are left for Core to re-read (#935).
+- Create-room access is an explicit optional contract (#1177).
+  `CreateRoomOptions.access_policy` (rule plus selected allow Space ids) and
+  `history` are optional; omitting both reproduces the legacy presets
+  byte-for-byte, including the private-in-Space restricted rule naming the
+  attached Space, the V9 room-version pin and the `invited` history default. An
+  explicit policy controls the join content and its selected allow Spaces
+  independently of the attachment: a selected allow Space need not be the
+  attachment, requires no permission on it, and never writes `m.space.child`
+  (the separate link command owns that and keeps its own failure report). A
+  `public` create with an explicit restricted policy, an explicit policy with
+  `invitedOnly`, and an explicitly empty restricted allow list are each rejected
+  with a typed `RoomFailureKind` (`PublicRoomWithRestrictedAccess`,
+  `ExplicitAccessPolicyWithInvitedOnly`, `EmptyAccessPolicyTargets`) before any
+  request is sent. A restricted policy pins a room version that supports it
+  (>= 8, today V9). Supplying `history` sends exactly one initial-state event;
+  omitting it keeps the legacy default. The private option keeps its
+  encryption/invitation draft while public is selected; only the effective
+  submitted values are stripped. Membership selection is offered wherever the
+  viewer is joined to at least one Space; this is a product choice, not a Matrix
+  restriction, and the picker lists the viewer's joined Spaces.
+- The access observation reconciles the open settings snapshot (#1177). When a
+  `RoomAccessUpdated` advances the shared `room_access` condition for the open
+  room, the reducer copies the observation's rule and full condition into
+  `room_management.settings` and emits `RoomManagementChanged`; ordinary rooms
+  reconcile too, not only Spaces. The change test uses the full canonical policy
+  (rule plus sorted, deduplicated allow targets), so a reordered or duplicated
+  server allow list is not a change and never replaces the locally held value.
+  The `SpaceSummary.join_rule` transition above remains the rule-only carrier
+  for the room-list path.
+- A successful local settings change installs its accepted value as a delta, not
+  a level copy (#1177). The pre-send read may still lag the SDK echo of the other
+  locally editable property, so an access change keeps the locally held history
+  value and a history change keeps the locally held access value until the shared
+  observation agrees with the read. A successful access change (restricted policy
+  or scalar join rule) also reaches `room_access` immediately, so the sidebar and
+  header badges update without waiting for the echo; the next authoritative
+  observation replaces it.
 - SDK state-event mutation calls can return before the SDK room cache reflects
   the sent state event. The SDK adapter must project the submitted setting
   change or member power-level change into the success snapshot or otherwise

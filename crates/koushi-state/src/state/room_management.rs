@@ -172,6 +172,22 @@ pub fn confirmed_access_policy(settings: &RoomSettingsSnapshot) -> RoomAccessPol
     RoomAccessPolicy::new(rule, targets)
 }
 
+/// The canonical policy of one observed access condition (#1177), or `None`
+/// while the rule content is unavailable. Sorting and deduplicating the allow
+/// targets makes a reordered or duplicated server list the same value.
+pub fn canonical_access_policy(condition: &RoomAccessCondition) -> Option<RoomAccessPolicy> {
+    condition.join_rule.map(|rule| {
+        RoomAccessPolicy::new(
+            rule,
+            condition
+                .allow_targets
+                .iter()
+                .map(|target| target.room_id.clone())
+                .collect(),
+        )
+    })
+}
+
 /// The confirmed outcome of a room's access tuple (#1177).
 pub fn confirmed_room_access_outcome(
     settings: &RoomSettingsSnapshot,
@@ -602,11 +618,21 @@ impl RoomPermissionFacts {
 /// server allow list is not a change. `private` stays reserved and is never
 /// produced as the Space route; the ordinary `public`/`invite`/`knock` rules
 /// carry an empty target set and stay on `RoomSettingChange::JoinRule`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoomAccessPolicy {
     pub rule: RoomJoinRule,
     pub allow_targets: Vec<String>,
+}
+
+impl fmt::Debug for RoomAccessPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RoomAccessPolicy")
+            .field("rule", &self.rule)
+            .field("allow_target_count", &self.allow_targets.len())
+            .finish()
+    }
 }
 
 impl RoomAccessPolicy {

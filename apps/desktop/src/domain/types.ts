@@ -21,6 +21,19 @@ export interface CreateRoomRequest {
   invitedOnly: boolean;
   visibility: CreateRoomVisibility;
   parentSpace?: CreateRoomParentSpace | null;
+  /** An explicit access policy (#1177); omitted keeps the legacy presets. An
+   * explicitly selected allow Space need not be the attachment and never
+   * writes `m.space.child`. */
+  accessPolicy?: RoomAccessPolicy | null;
+  /** An explicit history visibility (#1177); omitted keeps the legacy
+   * private-in-Space `invited` default. */
+  history?: RoomHistoryVisibility | null;
+}
+
+/** A settable access policy: a join rule plus its canonical allow Space ids (#1177). */
+export interface RoomAccessPolicy {
+  rule: RoomJoinRule;
+  allowTargets: string[];
 }
 
 export type CreateRoomVisibility = "private" | "public";
@@ -1849,6 +1862,7 @@ export type RoomSettingChange =
   | { topic: string | null }
   | { avatarUrl: string | null }
   | { joinRule: RoomJoinRule }
+  | { accessPolicy: RoomAccessPolicy }
   | { historyVisibility: RoomHistoryVisibility };
 
 export type RoomModerationAction = "kick" | "ban" | "unban";

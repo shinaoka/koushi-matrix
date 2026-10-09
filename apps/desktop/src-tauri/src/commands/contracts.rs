@@ -1320,6 +1320,11 @@ fn tauri_command_routes_build_expected_core_commands() {
             parent_space: Some(CreateRoomParentSpace {
                 space_id: "!space:example.org".to_owned(),
             }),
+            access_policy: Some(koushi_state::RoomAccessPolicy::new(
+                RoomJoinRule::Invite,
+                Vec::new(),
+            )),
+            history: Some(RoomHistoryVisibility::Joined),
         },
     ) {
         CoreCommand::Room(RoomCommand::CreateRoom {
@@ -1339,6 +1344,14 @@ fn tauri_command_routes_build_expected_core_commands() {
                     .map(|parent| parent.space_id.as_str()),
                 Some("!space:example.org")
             );
+            assert_eq!(
+                options.access_policy,
+                Some(koushi_state::RoomAccessPolicy::new(
+                    RoomJoinRule::Invite,
+                    Vec::new(),
+                ))
+            );
+            assert_eq!(options.history, Some(RoomHistoryVisibility::Joined));
         }
         other => panic!("unexpected command: {other:?}"),
     }

@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{AccountKey, RequestId};
 use koushi_state::{
-    DirectoryQuery, InviteScopeSelection, RoomModerationAction, RoomSettingChange, RoomTagKind,
+    DirectoryQuery, InviteScopeSelection, RoomAccessPolicy, RoomHistoryVisibility,
+    RoomModerationAction, RoomSettingChange, RoomTagKind,
 };
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -23,6 +24,16 @@ pub struct CreateRoomOptions {
     pub visibility: CreateRoomVisibility,
     #[serde(default)]
     pub parent_space: Option<CreateRoomParentSpace>,
+    /// An explicit access policy (#1177): the join rule and the selected
+    /// membership allow Spaces. `None` keeps the legacy visibility/invite-only
+    /// presets. An explicitly selected allow Space need not be the attachment
+    /// Space and never writes an `m.space.child`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_policy: Option<RoomAccessPolicy>,
+    /// An explicit history visibility (#1177). `None` keeps the legacy
+    /// private-in-Space `invited` default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<RoomHistoryVisibility>,
 }
 
 impl fmt::Debug for CreateRoomOptions {
@@ -42,6 +53,8 @@ impl fmt::Debug for CreateRoomOptions {
             .field("invited_only", &self.invited_only)
             .field("visibility", &self.visibility)
             .field("parent_space", &self.parent_space)
+            .field("access_policy", &self.access_policy)
+            .field("history", &self.history)
             .finish()
     }
 }

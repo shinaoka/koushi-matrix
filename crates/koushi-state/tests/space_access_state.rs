@@ -223,6 +223,7 @@ fn a_room_list_still_carrying_the_old_rule_does_not_revert_a_saved_change() {
         AppAction::RoomSettingUpdateSucceeded {
             request_id: 5,
             room_id: SPACE_ID.to_owned(),
+            change: RoomSettingChange::JoinRule(RoomJoinRule::Public),
             settings: settings(RoomJoinRule::Public, join_rule_only()),
         },
     );

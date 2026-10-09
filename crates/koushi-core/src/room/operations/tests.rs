@@ -1,4 +1,4 @@
-use super::{classify_room_error, trace_room_operation};
+use super::{classify_room_error, matrix_create_room_options, trace_room_operation};
 
 use koushi_protocol::command::{CreateRoomOptions, CreateRoomVisibility, RoomCommand};
 
@@ -9,11 +9,63 @@ use koushi_protocol::failure::{CoreFailure, RoomFailureKind};
 use crate::room::actor::make_request_id;
 use crate::room::actor::{RoomActor, RoomMessage};
 
-use koushi_sdk::MatrixRoomOperationError;
+use koushi_sdk::{
+    MatrixCreateRoomAccessPolicy, MatrixRoomHistoryVisibility, MatrixRoomJoinRule,
+    MatrixRoomOperationError,
+};
+
+use koushi_state::{RoomAccessPolicy, RoomHistoryVisibility, RoomJoinRule};
 
 use koushi_state::RoomTagKind;
 
 use tokio::sync::{broadcast, mpsc};
+
+#[test]
+fn create_access_policy_and_history_route_to_the_sdk_options() {
+    let options = matrix_create_room_options(CreateRoomOptions {
+        name: "Synthetic".to_owned(),
+        topic: None,
+        alias_localpart: None,
+        encrypted: true,
+        invited_only: false,
+        visibility: CreateRoomVisibility::Private,
+        parent_space: None,
+        access_policy: Some(RoomAccessPolicy::new(
+            RoomJoinRule::Restricted,
+            vec!["!space:example.invalid".to_owned()],
+        )),
+        history: Some(RoomHistoryVisibility::Joined),
+    });
+    assert_eq!(
+        options.access_policy,
+        Some(MatrixCreateRoomAccessPolicy {
+            rule: MatrixRoomJoinRule::Restricted,
+            allow: vec!["!space:example.invalid".to_owned()],
+        })
+    );
+    assert_eq!(options.history, Some(MatrixRoomHistoryVisibility::Joined));
+    assert!(options.encrypted);
+}
+
+#[test]
+fn create_policy_rejections_classify_to_typed_room_failures() {
+    for (error, expected) in [
+        (
+            MatrixRoomOperationError::PublicRoomWithRestrictedAccess,
+            RoomFailureKind::PublicRoomWithRestrictedAccess,
+        ),
+        (
+            MatrixRoomOperationError::ExplicitAccessPolicyWithInvitedOnly,
+            RoomFailureKind::ExplicitAccessPolicyWithInvitedOnly,
+        ),
+        (
+            MatrixRoomOperationError::EmptyAccessPolicyTargets,
+            RoomFailureKind::EmptyAccessPolicyTargets,
+        ),
+    ] {
+        assert_eq!(classify_room_error(&error), expected);
+    }
+}
 
 #[test]
 fn room_operation_records_without_environment_switch() {
@@ -108,6 +160,8 @@ async fn create_room_without_session_emits_session_required() {
                 invited_only: false,
                 visibility: CreateRoomVisibility::Private,
                 parent_space: None,
+                access_policy: None,
+                history: None,
             },
         }))
         .await;

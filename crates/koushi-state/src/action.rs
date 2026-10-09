@@ -991,6 +991,7 @@ pub enum AppAction {
     RoomSettingUpdateSucceeded {
         request_id: u64,
         room_id: String,
+        change: RoomSettingChange,
         settings: RoomSettingsSnapshot,
     },
     RoomSettingUpdateFailed {
@@ -1887,10 +1888,13 @@ impl fmt::Debug for AppAction {
                 .field("room_id", &"RoomId(..)")
                 .field("change", change)
                 .finish(),
-            Self::RoomSettingUpdateSucceeded { request_id, .. } => formatter
+            Self::RoomSettingUpdateSucceeded {
+                request_id, change, ..
+            } => formatter
                 .debug_struct("RoomSettingUpdateSucceeded")
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
+                .field("change", change)
                 .field("settings", &"RoomSettingsSnapshot(..)")
                 .finish(),
             Self::RoomSettingUpdateFailed {

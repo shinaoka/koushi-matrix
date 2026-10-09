@@ -132,11 +132,11 @@ pub use qa_reports::{
 };
 
 pub use room_operations::{
-    MatrixCreateRoomOptions, MatrixCreateRoomParentSpace, MatrixCreateRoomVisibility,
-    MatrixJoinTarget, MatrixPreviewJoinability, MatrixPreviewMembership,
-    MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryResult, MatrixPublicRoomDirectoryRoom,
-    MatrixRoomAliasAvailability, MatrixRoomHistoryVisibility, MatrixRoomJoinRule,
-    MatrixRoomMemberRole, MatrixRoomModerationAction, MatrixRoomOperationError,
+    MatrixCreateRoomAccessPolicy, MatrixCreateRoomOptions, MatrixCreateRoomParentSpace,
+    MatrixCreateRoomVisibility, MatrixJoinTarget, MatrixPreviewJoinability,
+    MatrixPreviewMembership, MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryResult,
+    MatrixPublicRoomDirectoryRoom, MatrixRoomAliasAvailability, MatrixRoomHistoryVisibility,
+    MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomModerationAction, MatrixRoomOperationError,
     MatrixRoomOperationFailureKind, MatrixRoomPermissionFacts, MatrixRoomPreview,
     MatrixRoomSettingChange, MatrixRoomSettingsSnapshot, MatrixSpaceChildLinkOutcome,
     MatrixSpaceInviteCancellationOutcome, MatrixSpaceMemberRoleFailureKind,

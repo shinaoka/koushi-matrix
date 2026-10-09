@@ -48,6 +48,9 @@ fn mention_failure_kind(error: &MatrixRoomOperationError) -> MentionCandidatesFa
         | RoomFailureKind::NotFound
         | RoomFailureKind::UnsupportedPolicyCondition
         | RoomFailureKind::PolicyNotVerified
+        | RoomFailureKind::PublicRoomWithRestrictedAccess
+        | RoomFailureKind::ExplicitAccessPolicyWithInvitedOnly
+        | RoomFailureKind::EmptyAccessPolicyTargets
         | RoomFailureKind::Sdk => MentionCandidatesFailureKind::Sdk,
     }
 }

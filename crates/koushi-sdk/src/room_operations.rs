@@ -35,6 +35,18 @@ pub enum MatrixRoomOperationError {
     RoomUnavailable,
     #[error("Matrix invitation is invalid")]
     InvalidInvite,
+    /// A public create request cannot carry an explicit restricted policy
+    /// (#1177).
+    #[error("A public room cannot require a restricted join rule")]
+    PublicRoomWithRestrictedAccess,
+    /// An explicit create access policy cannot be combined with the legacy
+    /// invite-only flag (#1177).
+    #[error("An explicit access policy cannot be combined with an invite-only room")]
+    ExplicitAccessPolicyWithInvitedOnly,
+    /// A restricted create access policy needs at least one allow target
+    /// (#1177).
+    #[error("A restricted access policy needs at least one allow target")]
+    EmptyAccessPolicyTargets,
     #[error("Matrix room operation failed: {0}")]
     Sdk(MatrixRoomOperationFailureKind),
 }
@@ -50,7 +62,10 @@ impl MatrixRoomOperationError {
             | Self::InvalidUserId
             | Self::InvalidServerName
             | Self::RoomUnavailable
-            | Self::InvalidInvite => None,
+            | Self::InvalidInvite
+            | Self::PublicRoomWithRestrictedAccess
+            | Self::ExplicitAccessPolicyWithInvitedOnly
+            | Self::EmptyAccessPolicyTargets => None,
         }
     }
 
@@ -167,7 +182,7 @@ pub struct MatrixPublicRoomDirectoryRoom {
     pub guest_can_join: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct MatrixCreateRoomOptions {
     pub name: String,
     pub topic: Option<String>,
@@ -176,6 +191,61 @@ pub struct MatrixCreateRoomOptions {
     pub invited_only: bool,
     pub visibility: MatrixCreateRoomVisibility,
     pub parent_space: Option<MatrixCreateRoomParentSpace>,
+    /// An explicit access policy (#1177): the join rule and the selected
+    /// membership allow Spaces. `None` keeps the legacy visibility/invite-only
+    /// presets. An explicitly selected allow Space is independent of
+    /// `parent_space` and never writes an `m.space.child`.
+    pub access_policy: Option<MatrixCreateRoomAccessPolicy>,
+    /// An explicit history visibility (#1177). `None` keeps the legacy
+    /// private-in-Space `invited` default.
+    pub history: Option<MatrixRoomHistoryVisibility>,
+}
+
+impl fmt::Debug for MatrixCreateRoomOptions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MatrixCreateRoomOptions")
+            .field("name", &"RoomName(..)")
+            .field("topic", &self.topic.as_ref().map(|_| "RoomTopic(..)"))
+            .field(
+                "alias_localpart",
+                &self
+                    .alias_localpart
+                    .as_ref()
+                    .map(|_| "RoomAliasLocalpart(..)"),
+            )
+            .field("encrypted", &self.encrypted)
+            .field("invited_only", &self.invited_only)
+            .field("visibility", &self.visibility)
+            .field(
+                "has_parent_space",
+                &self
+                    .parent_space
+                    .as_ref()
+                    .map(|parent| !parent.space_id.is_empty()),
+            )
+            .field("access_policy", &self.access_policy)
+            .field("history", &self.history)
+            .finish()
+    }
+}
+
+/// An explicit create-room access policy (#1177).
+#[derive(Clone, Eq, PartialEq)]
+pub struct MatrixCreateRoomAccessPolicy {
+    pub rule: MatrixRoomJoinRule,
+    /// The selected allow Space ids, canonicalized on projection.
+    pub allow: Vec<String>,
+}
+
+impl fmt::Debug for MatrixCreateRoomAccessPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MatrixCreateRoomAccessPolicy")
+            .field("rule", &self.rule)
+            .field("allow_target_count", &self.allow.len())
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -844,6 +914,8 @@ pub async fn create_public_directory_room(
             invited_only: false,
             visibility: MatrixCreateRoomVisibility::Public,
             parent_space: None,
+            access_policy: None,
+            history: None,
         },
     )
     .await
@@ -863,7 +935,23 @@ pub(super) fn create_room_request(
         .map(ToOwned::to_owned);
 
     let is_public = matches!(options.visibility, MatrixCreateRoomVisibility::Public);
-    if is_public && options.invited_only {
+    let has_explicit_policy = options.access_policy.is_some();
+    // #1177: an explicit access policy is the create dialog's own choice; the
+    // legacy visibility/invite-only flags only apply when it is absent. Each
+    // rejected combination is a typed failure, never a silent ignore.
+    if let Some(policy) = &options.access_policy {
+        if options.invited_only {
+            return Err(MatrixRoomOperationError::ExplicitAccessPolicyWithInvitedOnly);
+        }
+        if is_public && matches!(policy.rule, MatrixRoomJoinRule::Restricted) {
+            return Err(MatrixRoomOperationError::PublicRoomWithRestrictedAccess);
+        }
+        if matches!(policy.rule, MatrixRoomJoinRule::Restricted)
+            && policy.allow.iter().all(|target| target.trim().is_empty())
+        {
+            return Err(MatrixRoomOperationError::EmptyAccessPolicyTargets);
+        }
+    } else if is_public && options.invited_only {
         return Err(MatrixRoomOperationError::InvalidRoomSetting);
     }
     if is_public {
@@ -905,9 +993,44 @@ pub(super) fn create_room_request(
         );
     }
 
+    // #1177: one initial-state projection serves both the explicit policy and
+    // the legacy private-in-Space preset. The preset derives a restricted rule
+    // naming the attached Space; an explicit policy names its own allow Spaces,
+    // whatever the attachment, and never writes `m.space.child`.
+    let parent_space_id = options
+        .parent_space
+        .as_ref()
+        .map(|parent_space| {
+            matrix_sdk::ruma::OwnedRoomId::try_from(parent_space.space_id.clone())
+                .map_err(|_| MatrixRoomOperationError::InvalidRoomId)
+        })
+        .transpose()?;
+    let policy_join_rule = options
+        .access_policy
+        .as_ref()
+        .map(|policy| sdk_join_rule_for_access_policy(policy.rule, &policy.allow))
+        .transpose()?;
+    let legacy_space_rule = policy_join_rule.is_none()
+        && !is_public
+        && !options.invited_only
+        && parent_space_id.is_some();
+    let join_rule = policy_join_rule.or_else(|| {
+        legacy_space_rule.then(|| {
+            matrix_sdk::ruma::events::room::join_rules::JoinRule::Restricted(
+                matrix_sdk::ruma::events::room::join_rules::Restricted::new(vec![
+                    matrix_sdk::ruma::events::room::join_rules::AllowRule::room_membership(
+                        parent_space_id.clone().expect("checked above"),
+                    ),
+                ]),
+            )
+        })
+    });
+    let restricted = matches!(
+        join_rule,
+        Some(matrix_sdk::ruma::events::room::join_rules::JoinRule::Restricted(_))
+    );
+
     if let Some(parent_space) = options.parent_space {
-        let parent_space_id = matrix_sdk::ruma::OwnedRoomId::try_from(parent_space.space_id)
-            .map_err(|_| MatrixRoomOperationError::InvalidRoomId)?;
         let via_servers = parent_space
             .via_servers
             .into_iter()
@@ -924,37 +1047,51 @@ pub(super) fn create_room_request(
         parent_content.canonical = true;
         request.initial_state.push(
             matrix_sdk::ruma::events::InitialStateEvent::new(
-                parent_space_id.clone(),
+                parent_space_id
+                    .clone()
+                    .expect("a parent space resolves to an id"),
                 parent_content,
             )
             .to_raw_any(),
         );
+    }
 
-        if !is_public {
-            request.room_version = Some(matrix_sdk::ruma::RoomVersionId::V9);
-            if !options.invited_only {
-                request.initial_state.push(
-                    matrix_sdk::ruma::events::InitialStateEvent::with_empty_state_key(
-                        matrix_sdk::ruma::events::room::join_rules::RoomJoinRulesEventContent::restricted(
-                            vec![
-                                matrix_sdk::ruma::events::room::join_rules::AllowRule::room_membership(
-                                    parent_space_id,
-                                ),
-                            ],
-                        ),
-                    )
-                    .to_raw_any(),
-                );
-            }
-            request.initial_state.push(
-                matrix_sdk::ruma::events::InitialStateEvent::with_empty_state_key(
-                    matrix_sdk::ruma::events::room::history_visibility::RoomHistoryVisibilityEventContent::new(
-                        matrix_sdk::ruma::events::room::history_visibility::HistoryVisibility::Invited,
-                    ),
-                )
-                .to_raw_any(),
-            );
-        }
+    // A restricted rule needs a room version that supports it (>= 8): the
+    // legacy private-in-Space preset pins V9, and an explicit restricted policy
+    // pins the same version. An explicit non-restricted policy does not pin.
+    let pin_v9 = if has_explicit_policy {
+        restricted
+    } else {
+        !is_public && parent_space_id.is_some()
+    };
+    if pin_v9 {
+        request.room_version = Some(matrix_sdk::ruma::RoomVersionId::V9);
+    }
+    if let Some(join_rule) = join_rule {
+        request.initial_state.push(
+            matrix_sdk::ruma::events::InitialStateEvent::with_empty_state_key(
+                matrix_sdk::ruma::events::room::join_rules::RoomJoinRulesEventContent::new(
+                    join_rule,
+                ),
+            )
+            .to_raw_any(),
+        );
+    }
+
+    // History is optional: an explicit value wins, otherwise the legacy
+    // private-in-Space `invited` default applies. Exactly one event is sent.
+    let history = options.history.or_else(|| {
+        (!is_public && parent_space_id.is_some()).then_some(MatrixRoomHistoryVisibility::Invited)
+    });
+    if let Some(history) = history {
+        request.initial_state.push(
+            matrix_sdk::ruma::events::InitialStateEvent::with_empty_state_key(
+                matrix_sdk::ruma::events::room::history_visibility::RoomHistoryVisibilityEventContent::new(
+                    sdk_history_visibility(history),
+                ),
+            )
+            .to_raw_any(),
+        );
     }
 
     Ok(request)

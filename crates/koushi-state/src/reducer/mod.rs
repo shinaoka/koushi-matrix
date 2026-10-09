@@ -1109,9 +1109,10 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::RoomSettingUpdateSucceeded {
             request_id,
             room_id,
+            change,
             settings,
         } => room_management::handle_room_setting_update_succeeded(
-            state, request_id, room_id, settings,
+            state, request_id, room_id, &change, settings,
         ),
         AppAction::RoomSettingUpdateFailed {
             request_id,

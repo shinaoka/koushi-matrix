@@ -199,7 +199,8 @@ pub use room_management::{
     RoomManagementOperationKind, RoomManagementOperationState, RoomManagementState,
     RoomMemberMembership, RoomMemberRole, RoomMemberRoleOption, RoomMemberSummary,
     RoomModerationAction, RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot,
-    UserTrustState, confirmed_access_policy, confirmed_room_access_outcome,
+    UserTrustState, canonical_access_policy, confirmed_access_policy,
+    confirmed_room_access_outcome,
 };
 
 // ── Re-exports: e2ee ────────────────────────────────────────────────────────
