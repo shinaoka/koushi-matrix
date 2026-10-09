@@ -3758,9 +3758,14 @@ stateDiagram-v2
   active membership.
 - Join rules are projected as the server holds them: `knockRestricted` and
   rules the client does not model (`unknown`) are distinct values, never folded
-  into `restricted` or `invite`. Only `public`, `invite`, `knock`, and
-  `private` can be sent back (`RoomJoinRule::is_settable`); the others fail as
-  an invalid setting.
+  into `restricted` or `invite`. The ordinary scalar `RoomSettingChange::JoinRule`
+  can carry `public`, `invite`, `knock`, and `private` (`RoomJoinRule::is_settable`);
+  the others fail as an invalid setting. A `restricted` rule is settable only
+  through `RoomSettingChange::AccessPolicy(RoomAccessPolicy { rule, allow_targets })`
+  (#1177): the allow list is canonical (sorted, deduplicated), must hold at
+  least one target for `restricted`, must be empty for a non-restricted rule,
+  and `knock_restricted`/`private`/`unknown` are not produced by that path.
+  `private` stays reserved and is never presented as the Space route.
 - Each joined room's own access condition (#1166, #1220) is projected from its
   `m.room.join_rules` as `RoomAccessCondition { join_rule, restricted,
   allow_targets }`. `join_rule` is `None` when the rule content is unavailable,
@@ -3790,6 +3795,25 @@ stateDiagram-v2
   wait for a refreshed cache before emitting `RoomSettingUpdated` /
   `RoomMemberRoleUpdated`; React must not patch the visible settings or role
   state locally.
+- The access/history editor owns its selection in Rust, not React (#1177).
+  `RoomManagementState.draft` is a serializable `RoomAccessDraft { scope,
+  revision, rule, allow_targets, history }` whose `revision` increments on every
+  accepted mutation and whose allow-target comparison against the confirmed
+  policy is canonical (sorted, deduplicated). Typed `RoomAccessDraftRuleSet`,
+  `RoomAccessDraftAllowTargetsSet`, `RoomAccessDraftHistorySet`, and
+  `RoomAccessDraftReset` actions mutate it; a room scope is admitted only for the
+  loaded room, so a stale editor's command is ignored. Outcome notes are derived
+  for the current draft by the pure `resolve_room_access_outcome`, never stored in
+  the draft; the raw allow-target ids stay inside Rust.
+- An access-policy edit is re-validated against the pre-send settings read
+  (#1177). `RoomSettingsSnapshot.access` carries the verified facts and is
+  serde-skipped from the IPC wire shape. `RoomSettingsSnapshot::access_policy_rejection`
+  admits the edit only when the current restricted allow content is
+  `MembershipOnly`/`ConfirmedEmpty` (or the rule is not restricted). It rejects a
+  mixed or unsupported-only current condition with
+  `RoomFailureKind::UnsupportedPolicyCondition` and an unavailable/uninspected
+  condition with `RoomFailureKind::PolicyNotVerified`, mapped to the matching
+  `OperationFailureKind`; either rejection writes no state event.
 - Failure state stores only coarse `RoomFailureKind` values. Room IDs, user IDs,
   room names/topics, avatar URLs, moderation reasons, raw SDK errors, and event
   identifiers must not appear in `Debug` output or QA stdout.
