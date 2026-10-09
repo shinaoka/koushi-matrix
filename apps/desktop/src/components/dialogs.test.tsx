@@ -664,6 +664,66 @@ describe("CreateEntityDialog room access", () => {
     expect(screen.getByText(t("room.accessRoomVersionPinned"))).toBeTruthy();
     expect((screen.getByRole("button", { name: t("dialog.submitCreateRoom") }) as HTMLButtonElement).disabled).toBe(true);
   });
+
+  it("disables the access controls while Create is pending", () => {
+    render(
+      <CreateEntityDialog
+        kind="room"
+        isBusy
+        value="papers"
+        roomOptions={{
+          aliasLocalpart: "papers",
+          encrypted: true,
+          invitedOnly: false,
+          topic: "",
+          visibility: "private"
+        }}
+        addressPreview={{
+          localpart: "papers",
+          full_alias: "#papers:example.invalid",
+          error: null,
+          server_name: "example.invalid"
+        }}
+        roomAccessDraft={{
+          scope: { kind: "create", sessionId: 1 },
+          revision: 1,
+          rule: "restricted",
+          allowTargets: ["!space:example.invalid"]
+        }}
+        createAccessPreview={{
+          scope: { kind: "create", sessionId: 1 },
+          confirmed: false,
+          rejection: null,
+          effectiveRule: "restricted",
+          effectiveHistory: "shared",
+          roomVersionPinned: true,
+          outcome: {
+            join: { messageId: "room.accessOutcomeJoinMembershipRoute" },
+            history: { messageId: "room.accessOutcomeHistoryShared" },
+            encryption: { messageId: "room.accessOutcomeEncrypted" },
+            directory: { messageId: "room.accessOutcomeDirectoryLoading" },
+            nonRetroactive: { messageId: "room.historyNonRetroactive" }
+          }
+        }}
+        createAccessSessionId={1}
+        joinedSpaces={[{ id: "!space:example.invalid", name: "Design" }]}
+        onCancel={vi.fn()}
+        onRoomOptionsChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onValueChange={vi.fn()}
+        onSetRoomAccessDraft={vi.fn()}
+      />
+    );
+
+    expect((screen.getByRole("radio", { name: /Public/ }) as HTMLInputElement).disabled).toBe(true);
+    expect(
+      (screen.getByRole("checkbox", { name: "Design" }) as HTMLInputElement).disabled
+    ).toBe(true);
+    expect(
+      (screen.getByRole("checkbox", { name: t("dialog.encryptedRoom") }) as HTMLInputElement)
+        .disabled
+    ).toBe(true);
+  });
 });
 
 describe("DirectoryPreviewDialog text direction", () => {
