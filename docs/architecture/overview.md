@@ -986,6 +986,12 @@ identity, sender/body/timestamp fields, `in_reply_to_event_id`,
 `latest_body_preview`, and `latest_timestamp_ms`; the `latest_*` fields are
 `None` when the SDK has not loaded the latest event details.
 
+Thread summaries describe aggregate presentation state, not complete per-thread
+unread state. Capability advertisement and room-badge changes do not prove
+thread-event delivery. Thread contributions must not be added to room totals
+without a proven non-overlapping decomposition: a homeserver whose own room
+counters already include thread replies would otherwise count them twice.
+
 A session-scoped Core thread-summary projection reconciles SDK/event-cache
 aggregates with accepted live reply activity once per `(room_id,
 root_event_id)`. The same checked activity/summary revisions and aggregate

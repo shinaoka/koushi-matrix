@@ -2038,6 +2038,14 @@ stateDiagram-v2
   open room/root event pair, and is cleared when the thread closes or navigation
   selects another room. React may render the DTO but must not scan timeline rows
   or thread chips to invent pane-level notification counts.
+- Thread summaries describe aggregate presentation state, not complete per-thread
+  unread state. Capability advertisement (a server advertising the thread
+  subscription extension) and a room-badge change do not prove that a thread
+  event reached the client: a homeserver may already include thread replies in
+  its own room counts. A per-thread unread contribution may therefore be added to
+  room totals only with a proven non-overlapping decomposition, and the evidence
+  for delivery must name the boundary (advertisement, subscription outcome, event
+  arrival, cache counters) rather than infer it from a badge.
 
 ```mermaid
 stateDiagram-v2
