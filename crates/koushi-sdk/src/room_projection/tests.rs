@@ -1102,6 +1102,7 @@ async fn restricted_rule_completeness_distinguishes_the_five_cases() {
             join_rule: None,
             restricted: Some(super::MatrixRestrictedCompleteness::NotInspected),
             allow_targets: Vec::new(),
+            history_visibility: crate::MatrixRoomHistoryVisibility::Shared,
         }
     );
 

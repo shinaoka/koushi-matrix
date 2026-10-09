@@ -1264,7 +1264,7 @@ async fn live_room_list_projects_each_rooms_own_access_condition() {
         loop {
             let actions = harness.action_rx.recv().await.expect("observer running");
             let access = actions.iter().find_map(|action| match action {
-                AppAction::RoomAccessUpdated { access, .. } => Some(access.clone()),
+                AppAction::RoomAccessUpdated { observations, .. } => Some(observations.clone()),
                 _ => None,
             });
             if let Some(access) = access
@@ -1281,28 +1281,28 @@ async fn live_room_list_projects_each_rooms_own_access_condition() {
     assert_eq!(
         projected
             .get(public_room.as_str())
-            .and_then(|access| access.join_rule),
+            .and_then(|observation| observation.access.join_rule),
         Some(koushi_state::RoomJoinRule::Public),
         "a public room keeps its own rule"
     );
     assert_eq!(
         projected
             .get(default_room.as_str())
-            .and_then(|access| access.join_rule),
+            .and_then(|observation| observation.access.join_rule),
         None,
         "a room whose m.room.join_rules was not inspected is not claimed invite-only"
     );
     assert_eq!(
         projected
             .get(default_room.as_str())
-            .and_then(|access| access.restricted),
+            .and_then(|observation| observation.access.restricted),
         Some(koushi_state::RestrictedConditions::NotInspected),
         "an unavailable rule is reported as not inspected"
     );
     assert_eq!(
         projected
             .get(public_room.as_str())
-            .and_then(|access| access.restricted),
+            .and_then(|observation| observation.access.restricted),
         None,
         "a non-restricted rule carries no allow-condition claim"
     );

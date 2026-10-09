@@ -1,8 +1,9 @@
 use crate::{
+    RoomDirectoryVisibility,
     effect::{AppEffect, UiEvent},
     state::{
-        AppState, OperationFailureKind, RoomAccessDraft, RoomAccessDraftScope,
-        RoomHistoryVisibility, RoomJoinRule, RoomManagementOperationKind,
+        AppState, CreateRoomAccessSeed, OperationFailureKind, RoomAccessDraft,
+        RoomAccessDraftScope, RoomHistoryVisibility, RoomJoinRule, RoomManagementOperationKind,
         RoomManagementOperationState, RoomMemberRole, RoomModerationAction, RoomSettingChange,
     },
 };
@@ -32,10 +33,75 @@ pub(crate) fn handle_room_settings_snapshot_loaded(
         } if pending_room_id == &room_id => Some(state.room_management.operation.clone()),
         _ => None,
     };
-    state.room_management.selected_room_id = Some(room_id);
+    // #1177: this read may be a pre-send read that still carries the values a
+    // property had before a write this client just accepted but has not yet
+    // observed. Keep the accepted local access/history for such a property; a
+    // fresh load with no pending local value (or an observation that has since
+    // advanced) replaces it.
+    if let Some(current) = state
+        .room_management
+        .settings
+        .as_ref()
+        .filter(|current| current.room_id == room_id)
+    {
+        let observed = state.room_access_observed.get(&room_id);
+        if let Some(accepted) = state.room_access.get(&room_id)
+            && accepted != &settings.access
+            && observed.map(|observed| &observed.access) != Some(accepted)
+        {
+            settings.access = accepted.clone();
+            settings.join_rule = accepted.join_rule.unwrap_or(settings.join_rule);
+        }
+        let observed_history = observed.map(|observed| observed.history_visibility);
+        if settings.history_visibility != current.history_visibility
+            && observed_history != Some(current.history_visibility)
+        {
+            settings.history_visibility = current.history_visibility;
+        }
+    }
+    state.room_management.selected_room_id = Some(room_id.clone());
+    // #1177: loading another room's settings synchronously invalidates the
+    // previous room's editor lifetime and draft.
+    let room_changed =
+        state.room_management.active_room_editor.as_deref() != Some(room_id.as_str());
+    if room_changed
+        && state
+            .room_management
+            .draft
+            .as_ref()
+            .and_then(|draft| draft.scope.room_id())
+            .is_some_and(|draft_room_id| draft_room_id != room_id)
+    {
+        state.room_management.draft = None;
+    }
+    state.room_management.active_room_editor = Some(room_id);
     state.room_management.settings = Some(settings);
+    // A pre-send read of the same room keeps the confirmed publication it
+    // already read; a room switch starts over until the read lands.
+    if room_changed {
+        state.room_management.directory = RoomDirectoryVisibility::Loading;
+    }
     state.room_management.operation =
         pending_operation.unwrap_or(RoomManagementOperationState::Idle);
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+}
+
+/// Install a confirmed room's directory publication for the open room (#1177).
+pub(crate) fn handle_room_directory_visibility_observed(
+    state: &mut AppState,
+    room_id: String,
+    visibility: RoomDirectoryVisibility,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    if state.room_management.selected_room_id.as_deref() != Some(room_id.as_str()) {
+        return Vec::new();
+    }
+    if state.room_management.directory == visibility {
+        return Vec::new();
+    }
+    state.room_management.directory = visibility;
     vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
 }
 
@@ -60,20 +126,16 @@ pub(crate) fn handle_room_setting_update_requested(
     }
 
     // #1177: a restricted policy edit is admitted only when the pre-send read
-    // verified the current allow content can be inspected and safely rewritten.
+    // verified the current allow content can be inspected and safely rewritten,
+    // and every newly selected target is a joined, verified Space.
     if let RoomSettingChange::AccessPolicy(policy) = change
-        && let Some(kind) = state
-            .room_management
-            .settings
-            .as_ref()
-            .filter(|settings| settings.room_id == room_id)
-            .and_then(|settings| settings.access_policy_rejection(policy))
+        && let Some(rejection) = room_access_policy_admission(state, &room_id, policy)
     {
         state.room_management.operation = RoomManagementOperationState::Failed {
             request_id,
             room_id,
             operation: RoomManagementOperationKind::Settings,
-            kind,
+            kind: rejection,
         };
         return vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)];
     }
@@ -401,11 +463,52 @@ pub(crate) fn handle_room_access_draft_history_set(
     vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
 }
 
+pub(crate) fn handle_room_access_draft_opened(
+    state: &mut AppState,
+    scope: RoomAccessDraftScope,
+    create: Option<CreateRoomAccessSeed>,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    let mut draft = RoomAccessDraft::new(scope.clone());
+    match &scope {
+        RoomAccessDraftScope::Room { room_id } => {
+            let is_loaded = state.room_management.selected_room_id.as_deref() == Some(room_id)
+                || state
+                    .room_management
+                    .settings
+                    .as_ref()
+                    .is_some_and(|settings| settings.room_id == *room_id);
+            if !is_loaded {
+                return Vec::new();
+            }
+            state.room_management.active_room_editor = Some(room_id.clone());
+        }
+        RoomAccessDraftScope::Create { session_id } => {
+            if *session_id == 0 {
+                // Create editor lifetimes are never session zero (#1177).
+                return Vec::new();
+            }
+            state.room_management.active_create_session = Some(*session_id);
+            if let Some(create) = create {
+                draft.seed_create_selection(
+                    create.visibility,
+                    create.invited_only,
+                    create.parent_space_id.as_deref(),
+                );
+            }
+        }
+    }
+    state.room_management.draft = Some(draft);
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+}
+
 pub(crate) fn handle_room_access_draft_reset(
     state: &mut AppState,
     scope: RoomAccessDraftScope,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if !is_session_ready(state) || !active_editor_matches(state, &scope) {
         return Vec::new();
     }
     if state
@@ -415,32 +518,54 @@ pub(crate) fn handle_room_access_draft_reset(
         .is_some_and(|draft| draft.scope == scope)
     {
         state.room_management.draft = None;
-        return vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)];
     }
-    Vec::new()
+    // A create session is retired so a later old mutation cannot recreate it.
+    // A room editor stays admitted for its room until another room loads.
+    if matches!(scope, RoomAccessDraftScope::Create { .. }) {
+        state.room_management.active_create_session = None;
+    }
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
 }
 
-/// The draft for `scope`, created (or replaced) when the editor moves to a
-/// different room or create session. A room scope is admitted only for the
-/// loaded room, so a stale editor's command is ignored rather than applied to
-/// another room.
+/// Whether `scope` names the editor lifetime Rust has admitted (#1177).
+fn active_editor_matches(state: &AppState, scope: &RoomAccessDraftScope) -> bool {
+    match scope {
+        RoomAccessDraftScope::Room { room_id } => {
+            state.room_management.active_room_editor.as_deref() == Some(room_id.as_str())
+        }
+        RoomAccessDraftScope::Create { session_id } => {
+            *session_id != 0 && state.room_management.active_create_session == Some(*session_id)
+        }
+    }
+}
+
+/// The draft for `scope`. A room scope is admitted only for the loaded room and
+/// the active editor; a create scope only for the session the Open admitted, so
+/// a retired editor's command is ignored rather than applied or recreated.
 fn room_access_draft_for_scope<'a>(
     state: &'a mut AppState,
     scope: &RoomAccessDraftScope,
 ) -> Option<&'a mut RoomAccessDraft> {
-    if !is_session_ready(state) {
+    if !is_session_ready(state) || !active_editor_matches(state, scope) {
         return None;
     }
-    if let Some(room_id) = scope.room_id() {
-        let is_loaded = state.room_management.selected_room_id.as_deref() == Some(room_id)
-            || state
-                .room_management
-                .settings
-                .as_ref()
-                .is_some_and(|settings| settings.room_id == room_id);
-        if !is_loaded {
-            return None;
-        }
+    if scope.room_id().is_none() {
+        // A create draft is established by its Open, never lazily recreated.
+        return state
+            .room_management
+            .draft
+            .as_mut()
+            .filter(|draft| &draft.scope == scope);
+    }
+    let room_id = scope.room_id()?;
+    let is_loaded = state.room_management.selected_room_id.as_deref() == Some(room_id)
+        || state
+            .room_management
+            .settings
+            .as_ref()
+            .is_some_and(|settings| settings.room_id == room_id);
+    if !is_loaded {
+        return None;
     }
     let needs_new = state
         .room_management
@@ -454,6 +579,31 @@ fn room_access_draft_for_scope<'a>(
 }
 
 // --- Private helpers ---
+
+/// The combined admission verdict for a requested access policy (#1177): the
+/// confirmed condition must be inspectable and rewrite-safe, and every newly
+/// selected target must be a joined, verified Space.
+fn room_access_policy_admission(
+    state: &AppState,
+    room_id: &str,
+    policy: &crate::state::RoomAccessPolicy,
+) -> Option<OperationFailureKind> {
+    let settings = state
+        .room_management
+        .settings
+        .as_ref()
+        .filter(|settings| settings.room_id == room_id)?;
+    settings.access_policy_rejection(policy).or_else(|| {
+        let joined_space_ids: std::collections::BTreeSet<&str> = state
+            .spaces
+            .iter()
+            .map(|space| space.space_id.as_str())
+            .collect();
+        crate::state::access_policy_target_rejection(settings, policy, |target| {
+            joined_space_ids.contains(target)
+        })
+    })
+}
 
 fn room_settings_permission_allows(
     state: &AppState,

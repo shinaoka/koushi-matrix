@@ -195,12 +195,13 @@ pub use directory::{
 // ── Re-exports: room_management ─────────────────────────────────────────────
 pub use room_management::{
     CreateRoomAccessPreview, CreateRoomAccessPreviewInput, CreateRoomAccessRejection,
-    RestrictedConditions, RoomAccessCondition, RoomAccessDraft, RoomAccessDraftScope,
-    RoomAccessPolicy, RoomAccessPreview, RoomAccessPreviewContext, RoomAllowTarget,
-    RoomAllowTargetKind, RoomHistoryVisibility, RoomJoinRule, RoomManagementOperationKind,
-    RoomManagementOperationState, RoomManagementState, RoomMemberMembership, RoomMemberRole,
-    RoomMemberRoleOption, RoomMemberSummary, RoomModerationAction, RoomPermissionFacts,
-    RoomSettingChange, RoomSettingsSnapshot, UserTrustState, canonical_access_policy,
+    CreateRoomAccessSeed, RestrictedConditions, RoomAccessCondition, RoomAccessDraft,
+    RoomAccessDraftScope, RoomAccessObservation, RoomAccessPolicy, RoomAccessPreview,
+    RoomAccessPreviewContext, RoomAllowTarget, RoomAllowTargetKind, RoomHistoryVisibility,
+    RoomJoinRule, RoomManagementOperationKind, RoomManagementOperationState, RoomManagementState,
+    RoomMemberMembership, RoomMemberRole, RoomMemberRoleOption, RoomMemberSummary,
+    RoomModerationAction, RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot,
+    UserTrustState, access_policy_target_rejection, canonical_access_policy,
     confirmed_access_policy, confirmed_room_access_outcome, preview_create_room_access,
     preview_room_access_draft,
 };
@@ -371,6 +372,12 @@ pub struct AppState {
     /// from encryption, DM status, the viewer's membership or `can_join`.
     #[serde(default)]
     pub room_access: BTreeMap<String, RoomAccessCondition>,
+    /// The last authoritative/provisional observation behind `room_access`,
+    /// per room (#1177). Kept apart from the displayed value so a locally
+    /// accepted access/history value that has not been observed is never
+    /// mistaken for an unchanged old observation.
+    #[serde(skip)]
+    pub room_access_observed: BTreeMap<String, RoomAccessObservation>,
     #[serde(skip)]
     pub composer_drafts: ComposerDraftStore,
     #[serde(skip)]
@@ -455,6 +462,7 @@ impl Default for AppState {
             room_notification_awaiting_echo: HashMap::new(),
             room_interactions: BTreeMap::new(),
             room_access: BTreeMap::new(),
+            room_access_observed: BTreeMap::new(),
             composer_drafts: ComposerDraftStore::default(),
             scheduled_sends: ScheduledSendStore::default(),
             upload_staging: UploadStagingStore::default(),

@@ -4,9 +4,9 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         AppError, AppState, OperationFailureKind, PinOp, PinOperationState, PinnedEvent,
-        RoomListFailureKind, RoomListFilter, RoomListReadiness, RoomListSource, RoomSummary,
-        RoomTagInfo, RoomTagKind, SpaceSummary, ThreadAttentionState, ThreadPaneState,
-        ThreadsListState, TimelinePaneState,
+        RoomAccessObservation, RoomListFailureKind, RoomListFilter, RoomListReadiness,
+        RoomListSource, RoomSummary, RoomTagInfo, RoomTagKind, SpaceSummary, ThreadAttentionState,
+        ThreadPaneState, ThreadsListState, TimelinePaneState,
     },
 };
 
@@ -36,7 +36,7 @@ pub(crate) fn handle_room_access_updated(
     generation: u64,
     source: RoomListSource,
     authoritative: bool,
-    access: std::collections::BTreeMap<String, crate::state::RoomAccessCondition>,
+    observations: std::collections::BTreeMap<String, crate::state::RoomAccessObservation>,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
@@ -51,103 +51,173 @@ pub(crate) fn handle_room_access_updated(
         .map(|room| room.room_id.as_str())
         .chain(state.spaces.iter().map(|space| space.space_id.as_str()))
         .collect();
-    let access = access
+    let observations = observations
         .into_iter()
         .filter(|(room_id, _)| retained.contains(room_id.as_str()))
         .collect::<std::collections::BTreeMap<_, _>>();
-    // #1177: capture the open room's previous observation so the settings
-    // reconciliation can tell an advancing observation from an unchanged old
-    // one that would revert a just-saved local value.
-    let open_room_id = state
-        .room_management
-        .settings
-        .as_ref()
-        .map(|settings| settings.room_id.clone());
-    let previous_observed = open_room_id
-        .as_ref()
-        .and_then(|room_id| state.room_access.get(room_id).cloned());
+
+    let mut advanced_rooms: Vec<String> = Vec::new();
+    let mut list_changed = false;
     if authoritative {
         if !room_list_authoritative_matches_current(&state.room_list.readiness, generation, source)
         {
             return Vec::new();
         }
-        if state.room_access == access {
-            return Vec::new();
+        // A room the accepted snapshot dropped leaves both ledgers.
+        let removed: Vec<String> = state
+            .room_access
+            .keys()
+            .chain(state.room_access_observed.keys())
+            .filter(|room_id| !observations.contains_key(room_id.as_str()))
+            .cloned()
+            .collect();
+        for room_id in &removed {
+            state.room_access.remove(room_id);
+            state.room_access_observed.remove(room_id);
         }
-        state.room_access = access;
+        list_changed = !removed.is_empty();
+        apply_room_access_observations(
+            state,
+            &observations,
+            &mut advanced_rooms,
+            &mut list_changed,
+        );
     } else {
         if !room_list_provisional_matches_current(&state.room_list.readiness, generation, source)
-            || access.is_empty()
+            || observations.is_empty()
         {
             return Vec::new();
         }
-        let mut merged = state.room_access.clone();
-        for (room_id, rule) in access {
-            merged.insert(room_id, rule);
-        }
-        if merged == state.room_access {
-            return Vec::new();
-        }
-        state.room_access = merged;
+        apply_room_access_observations(
+            state,
+            &observations,
+            &mut advanced_rooms,
+            &mut list_changed,
+        );
     }
-    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
-    if reconcile_open_settings_access(state, open_room_id.as_deref(), previous_observed.as_ref()) {
+    if advanced_rooms.is_empty() {
+        return Vec::new();
+    }
+    let mut effects = Vec::new();
+    if list_changed {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
+    }
+    let Some(open_room_id) = state
+        .room_management
+        .settings
+        .as_ref()
+        .map(|settings| settings.room_id.clone())
+    else {
+        return effects;
+    };
+    if advanced_rooms
+        .iter()
+        .any(|room_id| room_id == &open_room_id)
+        && let Some(observation) = state.room_access_observed.get(&open_room_id).cloned()
+        && reconcile_open_settings(state, &open_room_id, &observation)
+    {
         effects.push(AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged));
     }
     effects
 }
 
-/// Reconcile the open settings snapshot from an advancing access observation
-/// (#1177).
-///
-/// The observation is the shared `room_access` projection, so ordinary rooms
-/// reconcile too, not only Spaces. The change test uses the full canonical
-/// policy (rule plus sorted, deduplicated allow targets): a reordered or
-/// duplicated server allow list is not a change and never replaces the locally
-/// held value. Only the access-relevant fields move; name, topic, avatar,
-/// history, permissions and members stay.
-fn reconcile_open_settings_access(
+/// Apply the observations that advanced since the last one (#1177). An
+/// unchanged old observation is skipped, so it never rolls back a value this
+/// client accepted locally but has not yet observed. `list_changed` reports
+/// whether the access projection itself moved; a history-only advance still
+/// lands in `advanced_rooms` so the open settings can reconcile it.
+fn apply_room_access_observations(
     state: &mut AppState,
-    room_id: Option<&str>,
-    previous: Option<&crate::state::RoomAccessCondition>,
+    observations: &std::collections::BTreeMap<String, crate::state::RoomAccessObservation>,
+    advanced_rooms: &mut Vec<String>,
+    list_changed: &mut bool,
+) {
+    for (room_id, observation) in observations {
+        if state.room_access_observed.get(room_id) == Some(observation) {
+            continue;
+        }
+        state
+            .room_access_observed
+            .insert(room_id.clone(), observation.clone());
+        if state.room_access.get(room_id) != Some(&observation.access) {
+            state
+                .room_access
+                .insert(room_id.clone(), observation.access.clone());
+            *list_changed = true;
+        }
+        advanced_rooms.push(room_id.clone());
+    }
+}
+
+/// Reconcile the open settings snapshot from an advancing observation (#1177).
+///
+/// The observation is the shared `room_access_observed` tuple, so ordinary
+/// rooms reconcile too, not only Spaces. Canonical equality of the editable
+/// policy (rule plus sorted, deduplicated allow target ids) suppresses a false
+/// change, but it must not suppress authoritative metadata or availability
+/// advances: a target-kind advance (`unknown` -> verified `space`), a
+/// completeness advance and a join-rule availability advance all reach the
+/// open settings. Only the access-relevant fields move; name, topic, avatar,
+/// permissions and members stay.
+fn reconcile_open_settings(
+    state: &mut AppState,
+    room_id: &str,
+    observed: &RoomAccessObservation,
 ) -> bool {
-    let Some(room_id) = room_id else {
-        return false;
-    };
-    let Some(observed) = state.room_access.get(room_id).cloned() else {
-        return false;
-    };
-    let Some(observed_policy) = crate::state::canonical_access_policy(&observed) else {
-        return false;
-    };
     let Some(settings) = state
         .room_management
         .settings
-        .as_ref()
+        .as_mut()
         .filter(|settings| settings.room_id == room_id)
     else {
         return false;
     };
-    // A reordered or duplicated server allow list is the same canonical policy,
-    // so it is not a change and never replaces the locally held value.
-    if crate::state::canonical_access_policy(&settings.access) == Some(observed_policy.clone()) {
-        return false;
+    let mut changed = false;
+    if settings.access != observed.access {
+        let same_editable_policy = crate::state::canonical_access_policy(&settings.access)
+            .is_some()
+            && crate::state::canonical_access_policy(&settings.access)
+                == crate::state::canonical_access_policy(&observed.access);
+        if same_editable_policy {
+            // Same editable policy: advance the authoritative metadata in place
+            // and keep the locally held target order. A reordered server allow
+            // list with identical facts is not a change at all.
+            let before = settings.access.clone();
+            apply_observed_access_metadata(&mut settings.access, &observed.access);
+            if settings.access != before {
+                settings.join_rule = settings.access.join_rule.unwrap_or(settings.join_rule);
+                changed = true;
+            }
+        } else {
+            settings.access = observed.access.clone();
+            settings.join_rule = settings.access.join_rule.unwrap_or(settings.join_rule);
+            changed = true;
+        }
     }
-    // A different canonical policy is a real change only when the observation
-    // advanced; an unchanged old observation would revert a just-saved local
-    // value.
-    let previous_policy = previous.and_then(crate::state::canonical_access_policy);
-    if previous_policy == Some(observed_policy) {
-        return false;
+    if settings.history_visibility != observed.history_visibility {
+        settings.history_visibility = observed.history_visibility;
+        changed = true;
     }
-    let settings = state
-        .room_management
-        .settings
-        .as_mut()
-        .expect("checked above");
-    settings.join_rule = observed.join_rule.unwrap_or(settings.join_rule);
-    settings.access = observed;
-    true
+    changed
+}
+
+/// Advance the authoritative metadata of an equal editable policy: the rule
+/// availability, the restricted completeness and the verified target kinds.
+fn apply_observed_access_metadata(
+    current: &mut crate::state::RoomAccessCondition,
+    observed: &crate::state::RoomAccessCondition,
+) {
+    current.join_rule = observed.join_rule;
+    current.restricted = observed.restricted;
+    for target in &mut current.allow_targets {
+        if let Some(observed_target) = observed
+            .allow_targets
+            .iter()
+            .find(|candidate| candidate.room_id == target.room_id)
+        {
+            target.kind = observed_target.kind;
+        }
+    }
 }
 
 pub(crate) fn handle_room_list_updated(
@@ -180,6 +250,7 @@ pub(crate) fn handle_room_left_locally(state: &mut AppState, room_id: String) ->
         .insert(room_id.clone());
     // #1166: the room left the list, so its projected access condition goes with it.
     state.room_access.remove(&room_id);
+    state.room_access_observed.remove(&room_id);
     let joined_members_before_leave = state
         .rooms
         .iter()

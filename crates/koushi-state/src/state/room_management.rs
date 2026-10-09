@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,19 @@ pub struct RoomManagementState {
     /// state; every rule, target and history selection lives here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft: Option<RoomAccessDraft>,
+    /// Where the open room is published in the queried directory (#1177), read
+    /// with `get_room_visibility` for confirmed rooms. Kept off the wire; the
+    /// preview resolves it into a confirmed outcome line.
+    #[serde(skip)]
+    pub directory: RoomDirectoryVisibility,
+    /// The room whose access/history editor lifetime is currently admitted
+    /// (#1177). A mutation from any other room's editor is rejected.
+    #[serde(skip)]
+    pub active_room_editor: Option<String>,
+    /// The create session whose editor lifetime is currently admitted (#1177).
+    /// A mutation or reset from a retired session is rejected.
+    #[serde(skip)]
+    pub active_create_session: Option<u64>,
     pub operation: RoomManagementOperationState,
 }
 
@@ -34,6 +48,12 @@ impl fmt::Debug for RoomManagementState {
                 &self.settings.as_ref().map(|_| "RoomSettingsSnapshot(..)"),
             )
             .field("draft", &self.draft)
+            .field("directory", &self.directory)
+            .field(
+                "active_room_editor",
+                &self.active_room_editor.as_ref().map(|_| "RoomId(..)"),
+            )
+            .field("active_create_session", &self.active_create_session)
             .field("operation", &self.operation)
             .finish()
     }
@@ -76,6 +96,33 @@ impl RoomAccessDraftScope {
     }
 }
 
+/// The create dialog facts used to seed the effective selection when its editor
+/// opens (#1177). These are the user's own dialog choices, not trusted Matrix
+/// facts; the preview resolves authoritative facts itself.
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateRoomAccessSeed {
+    pub visibility: CreateRoomVisibility,
+    #[serde(default)]
+    pub invited_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_space_id: Option<String>,
+}
+
+impl fmt::Debug for CreateRoomAccessSeed {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CreateRoomAccessSeed")
+            .field("visibility", &self.visibility)
+            .field("invited_only", &self.invited_only)
+            .field(
+                "parent_space_id",
+                &self.parent_space_id.as_ref().map(|_| "RoomId(..)"),
+            )
+            .finish()
+    }
+}
+
 /// The Rust-owned, serializable access/history draft (#1177).
 ///
 /// `revision` increments on every accepted mutation and fences any preview
@@ -92,6 +139,11 @@ pub struct RoomAccessDraft {
     pub allow_targets: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<RoomHistoryVisibility>,
+    /// Whether the user has made an explicit choice in this editor (#1177). An
+    /// untouched creation draft leaves the legacy preset path to Create. The
+    /// initial legacy selection is seeded without touching it.
+    #[serde(default)]
+    pub touched: bool,
 }
 
 impl fmt::Debug for RoomAccessDraft {
@@ -103,6 +155,7 @@ impl fmt::Debug for RoomAccessDraft {
             .field("rule", &self.rule)
             .field("allow_target_count", &self.allow_targets.len())
             .field("history", &self.history)
+            .field("touched", &self.touched)
             .finish()
     }
 }
@@ -115,7 +168,40 @@ impl RoomAccessDraft {
             rule: None,
             allow_targets: Vec::new(),
             history: None,
+            touched: false,
         }
+    }
+
+    /// Establish the effective creation selection from the legacy preset before
+    /// any target editing (#1177), without marking it as a user choice. A
+    /// private room in a Space starts restricted to that attachment Space, so a
+    /// target edit carries a rule and the attachment is never silently kept
+    /// while another target is added.
+    pub fn seed_create_selection(
+        &mut self,
+        visibility: CreateRoomVisibility,
+        invited_only: bool,
+        parent_space_id: Option<&str>,
+    ) {
+        let rule = if visibility == CreateRoomVisibility::Public {
+            RoomJoinRule::Public
+        } else if invited_only || parent_space_id.is_none() {
+            RoomJoinRule::Invite
+        } else {
+            RoomJoinRule::Restricted
+        };
+        self.rule = Some(rule);
+        self.allow_targets = if rule == RoomJoinRule::Restricted {
+            RoomAccessPolicy::new(
+                rule,
+                parent_space_id.map(str::to_owned).into_iter().collect(),
+            )
+            .allow_targets
+        } else {
+            Vec::new()
+        };
+        self.history = None;
+        self.touched = false;
     }
 
     fn touch(&mut self) {
@@ -126,6 +212,7 @@ impl RoomAccessDraft {
         if self.rule != rule {
             self.rule = rule;
             self.touch();
+            self.touched = true;
         }
     }
 
@@ -138,6 +225,7 @@ impl RoomAccessDraft {
         if self.allow_targets != canonical {
             self.allow_targets = canonical;
             self.touch();
+            self.touched = true;
         }
     }
 
@@ -145,6 +233,7 @@ impl RoomAccessDraft {
         if self.history != history {
             self.history = history;
             self.touch();
+            self.touched = true;
         }
     }
 
@@ -319,49 +408,6 @@ impl RoomAccessDraft {
             }
         }
     }
-
-    /// The outcome of this draft's access values (#1177): the draft's rule and
-    /// targets where set, otherwise the confirmed value. `history` may be an
-    /// unsaved draft value, so callers label the result accordingly.
-    pub fn outcome(
-        &self,
-        settings: &RoomSettingsSnapshot,
-        encrypted: bool,
-        directory: RoomDirectoryVisibility,
-        route: Option<&str>,
-        viewer: RoomAccessViewerFacts,
-    ) -> RoomAccessOutcome {
-        let (rule, restricted) = match self.rule {
-            Some(RoomJoinRule::Restricted) | Some(RoomJoinRule::KnockRestricted) => (
-                self.rule,
-                Some(if self.allow_targets.is_empty() {
-                    RestrictedConditions::ConfirmedEmpty
-                } else {
-                    RestrictedConditions::MembershipOnly
-                }),
-            ),
-            Some(rule) => (Some(rule), None),
-            None => (settings.access.join_rule, settings.access.restricted),
-        };
-        let targets: Vec<RoomAllowTarget> = self
-            .allow_targets
-            .iter()
-            .map(|room_id| RoomAllowTarget {
-                kind: RoomAllowTargetKind::Unknown,
-                room_id: room_id.clone(),
-            })
-            .collect();
-        resolve_room_access_outcome(RoomAccessResolveInput {
-            join_rule: rule,
-            restricted,
-            allow_targets: &targets,
-            space_members_route: route,
-            history: self.history.unwrap_or(settings.history_visibility),
-            encrypted,
-            directory,
-            viewer,
-        })
-    }
 }
 
 /// A stateless Rust preview of one Room Info panel (#1177).
@@ -391,9 +437,14 @@ pub fn preview_room_access_draft(
     let encrypted = room_id
         .and_then(|id| state.rooms.iter().find(|room| room.room_id == id))
         .is_some_and(|room| room.is_encrypted);
-    // Directory publication is read separately from the SDK; until that read is
-    // wired the honest value is "not available", never a guessed listing.
-    let directory = RoomDirectoryVisibility::Unavailable;
+    // The confirmed directory publication is read from the SDK when the room's
+    // settings load; an open room without that read yet is "loading", and a
+    // room that is not loaded makes no claim at all.
+    let directory = if settings.is_some() {
+        state.room_management.directory
+    } else {
+        RoomDirectoryVisibility::Unavailable
+    };
     let viewer = RoomAccessViewerFacts::default();
     let (outcome, confirmed) = match (settings, draft) {
         (Some(settings), Some(draft)) => (
@@ -596,7 +647,11 @@ pub fn preview_create_room_access(
         space_members_route: route.as_deref(),
         history,
         encrypted,
-        directory: RoomDirectoryVisibility::Loading,
+        directory: if public {
+            RoomDirectoryVisibility::ProposedPublic
+        } else {
+            RoomDirectoryVisibility::ProposedPrivate
+        },
         viewer: RoomAccessViewerFacts::default(),
     });
     CreateRoomAccessPreview {
@@ -884,6 +939,46 @@ impl RoomSettingsSnapshot {
     }
 }
 
+/// Whether a requested access policy may be admitted for its room (#1177).
+///
+/// The requested policy is admitted only when every newly selected allow target
+/// is a joined, verified Space (the predicate is authoritative: the SDK client
+/// locally or the projected room list in the reducer). An existing non-Space
+/// condition, which this editor cannot model, is preserved or its removal is
+/// rejected explicitly, never silently dropped. `None` means admissible.
+pub fn access_policy_target_rejection(
+    settings: &RoomSettingsSnapshot,
+    policy: &RoomAccessPolicy,
+    is_joined_verified_space: impl Fn(&str) -> bool,
+) -> Option<OperationFailureKind> {
+    let confirmed_ids: BTreeSet<&str> = settings
+        .access
+        .allow_targets
+        .iter()
+        .map(|target| target.room_id.as_str())
+        .collect();
+    let has_non_space_confirmed = settings
+        .access
+        .allow_targets
+        .iter()
+        .any(|target| target.kind != RoomAllowTargetKind::Space);
+    if has_non_space_confirmed {
+        let policy_ids: BTreeSet<&str> = policy.allow_targets.iter().map(String::as_str).collect();
+        if !confirmed_ids.is_subset(&policy_ids) {
+            return Some(OperationFailureKind::UnsupportedPolicyCondition);
+        }
+    }
+    for target in &policy.allow_targets {
+        if confirmed_ids.contains(target.as_str()) {
+            continue;
+        }
+        if !is_joined_verified_space(target) {
+            return Some(OperationFailureKind::PolicyNotVerified);
+        }
+    }
+    None
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RoomMemberRole {
@@ -985,10 +1080,35 @@ pub struct RoomAccessCondition {
     pub allow_targets: Vec<RoomAllowTarget>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// One room's complete observed access/history tuple (#1177).
+///
+/// The shared access projection (`AppState::room_access`) carries only the
+/// condition for the room list; the history visibility rides the same
+/// observation so an external history change reaches an open Room Info editor
+/// through the one existing observation/reconciliation owner. The observed
+/// tuple is kept apart from the immediately displayed (possibly locally
+/// accepted) value so an unchanged old observation is distinguishable from a
+/// value this client just saved.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomAccessObservation {
+    pub access: RoomAccessCondition,
+    pub history_visibility: RoomHistoryVisibility,
+}
+
+impl From<RoomAccessCondition> for RoomAccessObservation {
+    fn from(access: RoomAccessCondition) -> Self {
+        Self {
+            access,
+            history_visibility: RoomHistoryVisibility::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RoomHistoryVisibility {
     WorldReadable,
+    #[default]
     Shared,
     Invited,
     Joined,
@@ -1284,45 +1404,6 @@ mod tests {
     }
 
     #[test]
-    fn draft_outcome_uses_the_draft_history_with_the_confirmed_encryption() {
-        let settings = snapshot_with_access(restricted(RestrictedConditions::MembershipOnly));
-        let mut draft = RoomAccessDraft::new(RoomAccessDraftScope::Room {
-            room_id: "!room:example.invalid".to_owned(),
-        });
-        draft.set_rule(Some(RoomJoinRule::Restricted));
-        draft.set_allow_targets(vec!["!space:example.invalid".to_owned()]);
-        draft.set_history(Some(RoomHistoryVisibility::Joined));
-        let outcome = draft.outcome(
-            &settings,
-            true,
-            RoomDirectoryVisibility::Private,
-            Some("Design Team"),
-            RoomAccessViewerFacts::default(),
-        );
-        assert_eq!(
-            outcome.join.message_id,
-            "room.accessOutcomeJoinSpaceMembers"
-        );
-        assert_eq!(
-            outcome.history.message_id,
-            "room.accessOutcomeHistoryJoined"
-        );
-        assert!(outcome.history_key_caveat.is_none());
-        assert_eq!(
-            confirmed_room_access_outcome(
-                &settings,
-                true,
-                RoomDirectoryVisibility::Private,
-                None,
-                RoomAccessViewerFacts::default(),
-            )
-            .join
-            .message_id,
-            "room.accessOutcomeJoinMembershipRoute"
-        );
-    }
-
-    #[test]
     fn access_policy_change_uses_the_join_rule_permission() {
         let change = RoomSettingChange::AccessPolicy(RoomAccessPolicy::new(
             RoomJoinRule::Restricted,
@@ -1501,6 +1582,81 @@ mod tests {
         assert_eq!(
             invited.rejection,
             Some(CreateRoomAccessRejection::ExplicitPolicyWithInvitedOnly)
+        );
+    }
+
+    #[test]
+    fn preview_reports_confirmed_and_proposed_directory_publication() {
+        let scope = RoomAccessDraftScope::Room {
+            room_id: "!room:example.invalid".to_owned(),
+        };
+        let mut state = AppState::default();
+        state.room_management.settings = Some(snapshot_with_access(restricted(
+            RestrictedConditions::MembershipOnly,
+        )));
+
+        state.room_management.directory = RoomDirectoryVisibility::Public;
+        assert_eq!(
+            preview_room_access_draft(&state, &scope, RoomAccessPreviewContext::Access)
+                .outcome
+                .directory
+                .message_id,
+            "room.accessOutcomeDirectoryPublic"
+        );
+        state.room_management.directory = RoomDirectoryVisibility::Private;
+        assert_eq!(
+            preview_room_access_draft(&state, &scope, RoomAccessPreviewContext::Access)
+                .outcome
+                .directory
+                .message_id,
+            "room.accessOutcomeDirectoryPrivate"
+        );
+        for (visibility, expected) in [
+            (
+                RoomDirectoryVisibility::Unavailable,
+                "room.accessOutcomeDirectoryUnavailable",
+            ),
+            (
+                RoomDirectoryVisibility::Loading,
+                "room.accessOutcomeDirectoryLoading",
+            ),
+            (
+                RoomDirectoryVisibility::Failed,
+                "room.accessOutcomeDirectoryFailed",
+            ),
+        ] {
+            state.room_management.directory = visibility;
+            assert_eq!(
+                preview_room_access_draft(&state, &scope, RoomAccessPreviewContext::Access)
+                    .outcome
+                    .directory
+                    .message_id,
+                expected
+            );
+        }
+
+        // Creation describes the proposal, never a confirmed listing.
+        let create_scope = RoomAccessDraftScope::Create { session_id: 1 };
+        let public = preview_create_room_access(
+            &state,
+            &create_scope,
+            CreateRoomAccessPreviewInput {
+                visibility: CreateRoomVisibility::Public,
+                ..CreateRoomAccessPreviewInput::default()
+            },
+        );
+        assert_eq!(
+            public.outcome.directory.message_id,
+            "room.accessOutcomeDirectoryWillBePublic"
+        );
+        let private = preview_create_room_access(
+            &state,
+            &create_scope,
+            CreateRoomAccessPreviewInput::default(),
+        );
+        assert_eq!(
+            private.outcome.directory.message_id,
+            "room.accessOutcomeDirectoryWillBePrivate"
         );
     }
 }

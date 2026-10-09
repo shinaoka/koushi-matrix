@@ -302,4 +302,30 @@ fn room_access_draft_wire_shape_is_camel_case() {
     let parsed: RoomAccessDraftCommand =
         serde_json::from_value(frontend).expect("frontend shape deserializes");
     assert_eq!(parsed, command);
+
+    // #1177: the open command and its create seed keep camelCase fields.
+    let open = RoomAccessDraftCommand::Open {
+        scope: koushi_state::RoomAccessDraftScope::Create { session_id: 4 },
+        create: Some(koushi_state::CreateRoomAccessSeed {
+            visibility: koushi_state::CreateRoomVisibility::Private,
+            invited_only: false,
+            parent_space_id: Some("!space:example.invalid".to_owned()),
+        }),
+    };
+    let open_wire = serde_json::json!({
+        "kind": "open",
+        "scope": { "kind": "create", "sessionId": 4 },
+        "create": {
+            "visibility": "private",
+            "invitedOnly": false,
+            "parentSpaceId": "!space:example.invalid",
+        },
+    });
+    assert_eq!(
+        serde_json::to_value(&open).expect("serialize open"),
+        open_wire
+    );
+    let parsed_open: RoomAccessDraftCommand =
+        serde_json::from_value(open_wire).expect("frontend open shape deserializes");
+    assert_eq!(parsed_open, open);
 }

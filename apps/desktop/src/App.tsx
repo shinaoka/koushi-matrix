@@ -430,7 +430,7 @@ function defaultCreateRoomDialogOptions(defaults?: CreateRoomDefaults | null): C
 /** Pause after the last address edit before the advisory lookup (#1006). */
 const ROOM_ADDRESS_CHECK_DEBOUNCE_MS = 400;
 
-function createRoomRequestFromDraft(
+export function createRoomRequestFromDraft(
   name: string,
   options: CreateRoomDialogOptions,
   activeSpaceId: string | null,
@@ -438,10 +438,11 @@ function createRoomRequestFromDraft(
 ): CreateRoomRequest {
   const visibility = options.visibility;
   // #1177: the access/history selections are Rust-owned; the request carries
-  // the draft's rule with its canonical allow list, or no explicit policy when
-  // the draft has none. A public selection still strips encryption and
-  // invitation mode for the submitted values.
-  const rule = accessDraft?.rule ?? null;
+  // the draft's rule with its canonical allow list only once the user has made
+  // an explicit choice. An untouched create draft keeps the legacy preset path
+  // (including its room-version pin). A public selection still strips encryption
+  // and invitation mode for the submitted values.
+  const rule = accessDraft?.touched ? (accessDraft.rule ?? null) : null;
   return {
     name,
     topic: options.topic.trim() || null,
@@ -1492,6 +1493,9 @@ function AccountContent({
   const [createDialog, setCreateDialog] = useState<"room" | "space" | null>(null);
   const [createDraftName, setCreateDraftName] = useState("");
   const createDialogEpochRef = useRef(0);
+  // A distinct access-editor lifetime per open create dialog (#1177); never 0.
+  const createAccessSessionRef = useRef(0);
+  const [createAccessSessionId, setCreateAccessSessionId] = useState(0);
   // The attempted address of a create that failed with AliasInUse (#1006),
   // kept with the localpart it applies to so an edit retires it.
   const [createRoomAliasCollision, setCreateRoomAliasCollision] = useState<
@@ -1566,8 +1570,11 @@ function AccountContent({
   // choices carry an explicit policy, so the effective submitted value is
   // always not-invite-only.
   const createRoomAccessScope = useMemo<RoomAccessDraftScope | null>(
-    () => (createDialog === "room" ? { kind: "create", sessionId: 0 } : null),
-    [createDialog]
+    () =>
+      createDialog === "room" && createAccessSessionId !== 0
+        ? { kind: "create", sessionId: createAccessSessionId }
+        : null,
+    [createDialog, createAccessSessionId]
   );
   const createRoomAccessInput = useMemo<CreateRoomAccessPreviewInput>(
     () => ({
@@ -4096,14 +4103,29 @@ function AccountContent({
     setCreateRoomAliasCollision(null);
     setCreateRoomManualAlias(null);
     setCreateDraftName("");
-    setCreateRoomDraftOptions(
-      defaultCreateRoomDialogOptions(snapshotRef.current?.sidebar.create_room_defaults)
+    const defaults = defaultCreateRoomDialogOptions(
+      snapshotRef.current?.sidebar.create_room_defaults
     );
-    // #1177: a fresh create session starts with no draft (Create ignores a
-    // mismatched scope, so resetting before or after is safe).
-    void api
-      .setRoomAccessDraft({ kind: "reset", scope: { kind: "create", sessionId: 0 } })
-      .catch(() => undefined);
+    setCreateRoomDraftOptions(defaults);
+    if (kind === "room") {
+      // #1177: a fresh, distinct access-editor lifetime. Rust seeds its effective
+      // selection from the legacy preset before target editing.
+      const sessionId = ++createAccessSessionRef.current;
+      setCreateAccessSessionId(sessionId);
+      void api
+        .setRoomAccessDraft({
+          kind: "open",
+          scope: { kind: "create", sessionId },
+          create: {
+            visibility: defaults.visibility,
+            invitedOnly: defaults.invitedOnly,
+            parentSpaceId: snapshotRef.current?.state.ui.navigation.active_space_id ?? null
+          }
+        })
+        .catch(() => undefined);
+    } else {
+      setCreateAccessSessionId(0);
+    }
     setCreateDialog(kind);
   }
 
@@ -4114,9 +4136,16 @@ function AccountContent({
     setCreateDialog(null);
     setCreateDraftName("");
     setCreateRoomDraftOptions(defaultCreateRoomDialogOptions());
-    void api
-      .setRoomAccessDraft({ kind: "reset", scope: { kind: "create", sessionId: 0 } })
-      .catch(() => undefined);
+    if (createAccessSessionId !== 0) {
+      // Retire exactly this session; an in-flight command from an older one is
+      // rejected by Rust rather than recreating its draft.
+      void api
+        .setRoomAccessDraft({
+          kind: "reset",
+          scope: { kind: "create", sessionId: createAccessSessionId }
+        })
+        .catch(() => undefined);
+    }
   }
 
   function openNewDmDialog() {
@@ -7559,6 +7588,7 @@ function AccountContent({
               : null
           }
           createAccessPreview={createRoomAccessPreview}
+          createAccessSessionId={createAccessSessionId}
           joinedSpaces={createRoomJoinedSpaces}
           onSetRoomAccessDraft={(command) => {
             runInBackground(api.setRoomAccessDraft(command).then(() => undefined));

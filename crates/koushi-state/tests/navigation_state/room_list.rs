@@ -1178,17 +1178,18 @@ fn room_access_projection_follows_its_room_list_snapshot() {
             generation: 1,
             source: koushi_state::RoomListSource::Live,
             authoritative: true,
-            access: BTreeMap::from([
+            observations: BTreeMap::from([
                 (
                     "room-a".to_owned(),
                     condition(
                         koushi_state::RoomJoinRule::Restricted,
                         Some(RestrictedConditions::ConfirmedEmpty),
-                    ),
+                    )
+                    .into(),
                 ),
                 (
                     "global-room".to_owned(),
-                    condition(koushi_state::RoomJoinRule::Knock, None),
+                    condition(koushi_state::RoomJoinRule::Knock, None).into(),
                 ),
             ]),
         },
@@ -1220,8 +1221,8 @@ fn room_access_projection_follows_its_room_list_snapshot() {
         "a non-restricted rule carries no allow-condition claim"
     );
 
-    // The same slice is not an event.
-    let unchanged = state.room_access.clone();
+    // The same observations are not an event.
+    let unchanged = state.room_access_observed.clone();
     assert!(
         reduce(
             &mut state,
@@ -1229,7 +1230,7 @@ fn room_access_projection_follows_its_room_list_snapshot() {
                 generation: 1,
                 source: koushi_state::RoomListSource::Live,
                 authoritative: true,
-                access: unchanged,
+                observations: unchanged,
             },
         )
         .is_empty()
@@ -1243,9 +1244,9 @@ fn room_access_projection_follows_its_room_list_snapshot() {
                 generation: 0,
                 source: koushi_state::RoomListSource::Live,
                 authoritative: true,
-                access: BTreeMap::from([(
+                observations: BTreeMap::from([(
                     "room-a".to_owned(),
-                    condition(koushi_state::RoomJoinRule::Invite, None),
+                    condition(koushi_state::RoomJoinRule::Invite, None).into(),
                 )]),
             },
         )
@@ -1280,12 +1281,13 @@ fn room_access_projection_follows_its_room_list_snapshot() {
             generation: 2,
             source: koushi_state::RoomListSource::Live,
             authoritative: false,
-            access: BTreeMap::from([(
+            observations: BTreeMap::from([(
                 "room-a".to_owned(),
                 condition(
                     koushi_state::RoomJoinRule::Restricted,
                     Some(RestrictedConditions::MembershipOnly),
-                ),
+                )
+                .into(),
             )]),
         },
     );
@@ -1338,14 +1340,14 @@ fn room_access_projection_follows_its_room_list_snapshot() {
             generation: 3,
             source: koushi_state::RoomListSource::Live,
             authoritative: false,
-            access: BTreeMap::from([
+            observations: BTreeMap::from([
                 (
                     "room-a".to_owned(),
-                    condition(koushi_state::RoomJoinRule::Public, None),
+                    condition(koushi_state::RoomJoinRule::Public, None).into(),
                 ),
                 (
                     "global-room".to_owned(),
-                    condition(koushi_state::RoomJoinRule::Invite, None),
+                    condition(koushi_state::RoomJoinRule::Invite, None).into(),
                 ),
             ]),
         },
@@ -1377,12 +1379,15 @@ fn room_access_projection_is_ignored_without_a_ready_session() {
             generation: 0,
             source: koushi_state::RoomListSource::Cache,
             authoritative: false,
-            access: BTreeMap::from([(
+            observations: BTreeMap::from([(
                 "room-a".to_owned(),
-                koushi_state::RoomAccessCondition {
-                    join_rule: Some(koushi_state::RoomJoinRule::Public),
-                    restricted: None,
-                    allow_targets: Vec::new(),
+                koushi_state::RoomAccessObservation {
+                    access: koushi_state::RoomAccessCondition {
+                        join_rule: Some(koushi_state::RoomJoinRule::Public),
+                        restricted: None,
+                        allow_targets: Vec::new(),
+                    },
+                    history_visibility: koushi_state::RoomHistoryVisibility::Joined,
                 },
             )]),
         },

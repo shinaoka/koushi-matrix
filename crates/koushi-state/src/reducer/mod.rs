@@ -949,8 +949,14 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             generation,
             source,
             authoritative,
-            access,
-        } => room::handle_room_access_updated(state, generation, source, authoritative, access),
+            observations,
+        } => {
+            room::handle_room_access_updated(state, generation, source, authoritative, observations)
+        }
+        AppAction::RoomDirectoryVisibilityObserved {
+            room_id,
+            visibility,
+        } => room_management::handle_room_directory_visibility_observed(state, room_id, visibility),
         AppAction::RoomListFilterSelected { filter } => {
             room::handle_room_list_filter_selected(state, filter)
         }
@@ -1133,6 +1139,9 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         }
         AppAction::RoomAccessDraftReset { scope } => {
             room_management::handle_room_access_draft_reset(state, scope)
+        }
+        AppAction::RoomAccessDraftOpened { scope, create } => {
+            room_management::handle_room_access_draft_opened(state, scope, create)
         }
         AppAction::RoomModerationRequested {
             request_id,
@@ -2137,6 +2146,7 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.spaces.clear();
     state.rooms.clear();
     state.room_access.clear();
+    state.room_access_observed.clear();
     state.invites.clear();
     state.room_list = Default::default();
     state.room_interactions.clear();

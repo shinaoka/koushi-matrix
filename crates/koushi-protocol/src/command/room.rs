@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{AccountKey, RequestId};
 use koushi_state::{
-    DirectoryQuery, InviteScopeSelection, RoomAccessDraftScope, RoomAccessPolicy,
-    RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomSettingChange, RoomTagKind,
+    CreateRoomAccessSeed, DirectoryQuery, InviteScopeSelection, RoomAccessDraftScope,
+    RoomAccessPolicy, RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomSettingChange,
+    RoomTagKind,
 };
 
 /// A typed mutation of the Rust-owned access/history draft (#1177).
@@ -34,6 +35,13 @@ pub enum RoomAccessDraftCommand {
     Reset {
         scope: RoomAccessDraftScope,
     },
+    /// Admit a new editor lifetime for `scope` (#1177). The create variant seeds
+    /// the effective selection from the legacy preset before target editing.
+    Open {
+        scope: RoomAccessDraftScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        create: Option<CreateRoomAccessSeed>,
+    },
 }
 
 impl fmt::Debug for RoomAccessDraftCommand {
@@ -61,6 +69,11 @@ impl fmt::Debug for RoomAccessDraftCommand {
             Self::Reset { scope } => formatter
                 .debug_struct("Reset")
                 .field("scope", scope)
+                .finish(),
+            Self::Open { scope, create } => formatter
+                .debug_struct("Open")
+                .field("scope", scope)
+                .field("create", &create.is_some())
                 .finish(),
         }
     }

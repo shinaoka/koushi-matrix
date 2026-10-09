@@ -285,6 +285,7 @@ export function CreateEntityDialog({
   onValueChange,
   roomAccessDraft = null,
   createAccessPreview = null,
+  createAccessSessionId = 0,
   joinedSpaces = [],
   onSetRoomAccessDraft = () => undefined
 }: {
@@ -309,6 +310,8 @@ export function CreateEntityDialog({
   roomAccessDraft?: RoomAccessDraft | null;
   /** The Rust effective-proposed-tuple preview for the create draft (#1177). */
   createAccessPreview?: CreateRoomAccessPreview | null;
+  /** The editor lifetime of this open create dialog (#1177); never 0. */
+  createAccessSessionId?: number;
   /** The viewer's joined Spaces, for the membership allow-target picker. */
   joinedSpaces?: { id: string; name: string }[];
   onSetRoomAccessDraft?: (command: RoomAccessDraftCommand) => void;
@@ -332,7 +335,7 @@ export function CreateEntityDialog({
   // #1177: the create dialog's access/history choices live in the Rust-owned
   // draft; this dialog only maps the rule to the legacy visibility flag the
   // create request still carries for the preset and address.
-  const createScope = { kind: "create" as const, sessionId: 0 };
+  const createScope = { kind: "create" as const, sessionId: createAccessSessionId };
   const createRule: RoomJoinRule =
     roomAccessDraft?.rule ??
     createAccessPreview?.effectiveRule ??

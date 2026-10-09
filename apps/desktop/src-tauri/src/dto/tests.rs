@@ -1721,6 +1721,9 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
             }],
         }),
         draft: None,
+        directory: koushi_state::RoomDirectoryVisibility::Loading,
+        active_room_editor: None,
+        active_create_session: None,
         operation: RoomManagementOperationState::Idle,
     };
 

@@ -1797,6 +1797,16 @@ export interface RoomAccessDraft {
   rule?: RoomJoinRule | null;
   allowTargets?: string[];
   history?: RoomHistoryVisibility | null;
+  /** Whether the user made an explicit choice; an untouched create draft keeps
+   * the legacy preset path to Create. */
+  touched?: boolean;
+}
+
+/** The create dialog facts that seed an opened create editor (#1177). */
+export interface CreateRoomAccessSeed {
+  visibility: CreateRoomVisibility;
+  invitedOnly?: boolean;
+  parentSpaceId?: string | null;
 }
 
 /** A typed mutation of the Rust-owned access/history draft (#1177). */
@@ -1804,7 +1814,8 @@ export type RoomAccessDraftCommand =
   | { kind: "rule"; scope: RoomAccessDraftScope; rule?: RoomJoinRule | null }
   | { kind: "allowTargets"; scope: RoomAccessDraftScope; allowTargets: string[] }
   | { kind: "history"; scope: RoomAccessDraftScope; history?: RoomHistoryVisibility | null }
-  | { kind: "reset"; scope: RoomAccessDraftScope };
+  | { kind: "reset"; scope: RoomAccessDraftScope }
+  | { kind: "open"; scope: RoomAccessDraftScope; create?: CreateRoomAccessSeed };
 
 /** Which property a Rust access preview describes (#1177). */
 export type RoomAccessPreviewContext = "access" | "history";

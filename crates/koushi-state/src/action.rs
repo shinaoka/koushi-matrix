@@ -1015,6 +1015,13 @@ pub enum AppAction {
     RoomAccessDraftReset {
         scope: RoomAccessDraftScope,
     },
+    /// Admit a new access/history editor lifetime (#1177). A mutation or reset
+    /// from any other scope is rejected, so a retired editor's command can never
+    /// recreate its draft. `create` seeds the effective creation selection.
+    RoomAccessDraftOpened {
+        scope: RoomAccessDraftScope,
+        create: Option<crate::state::CreateRoomAccessSeed>,
+    },
     RoomModerationRequested {
         request_id: u64,
         room_id: String,
@@ -1277,15 +1284,22 @@ pub enum AppAction {
     ScheduledSendCapabilityChanged {
         capability: ScheduledSendCapability,
     },
-    /// Each joined room's authoritative access condition (#1166). Sent in the
-    /// same batch as the room-list snapshot it describes and fenced by the same
-    /// generation/source decision, so a rejected snapshot cannot overwrite it.
-    /// An absent room means "not yet known".
+    /// Each joined room's authoritative access/history observation (#1166,
+    /// #1177). Sent in the same batch as the room-list snapshot it describes
+    /// and fenced by the same generation/source decision, so a rejected
+    /// snapshot cannot overwrite it. An absent room means "not yet known".
     RoomAccessUpdated {
         generation: u64,
         source: RoomListSource,
         authoritative: bool,
-        access: std::collections::BTreeMap<String, crate::state::RoomAccessCondition>,
+        observations: std::collections::BTreeMap<String, crate::state::RoomAccessObservation>,
+    },
+    /// A confirmed room's directory publication, read with `get_room_visibility`
+    /// (#1177). Only the open room's value is kept, and a join-rule write never
+    /// changes it implicitly.
+    RoomDirectoryVisibilityObserved {
+        room_id: String,
+        visibility: crate::RoomDirectoryVisibility,
     },
     ScheduledSendsLoaded {
         scheduled_sends: crate::state::ScheduledSendStore,
@@ -1926,6 +1940,11 @@ impl fmt::Debug for AppAction {
             Self::RoomAccessDraftReset { scope } => formatter
                 .debug_struct("RoomAccessDraftReset")
                 .field("scope", scope)
+                .finish(),
+            Self::RoomAccessDraftOpened { scope, create } => formatter
+                .debug_struct("RoomAccessDraftOpened")
+                .field("scope", scope)
+                .field("create", &create.is_some())
                 .finish(),
             Self::RoomModerationRequested {
                 request_id, action, ..

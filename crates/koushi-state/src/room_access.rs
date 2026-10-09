@@ -27,6 +27,10 @@ pub enum RoomDirectoryVisibility {
     Private,
     Unavailable,
     Failed,
+    /// The create dialog's proposed listing. Never a confirmed observation.
+    ProposedPublic,
+    /// The create dialog's proposed non-listing. Never a confirmed observation.
+    ProposedPrivate,
 }
 
 /// One resolved outcome line: a catalog id plus ordered substitutions.
@@ -195,6 +199,12 @@ pub fn resolve_room_access_outcome(input: RoomAccessResolveInput<'_>) -> RoomAcc
         }
         RoomDirectoryVisibility::Loading => {
             RoomAccessOutcomeLine::new("room.accessOutcomeDirectoryLoading")
+        }
+        RoomDirectoryVisibility::ProposedPublic => {
+            RoomAccessOutcomeLine::new("room.accessOutcomeDirectoryWillBePublic")
+        }
+        RoomDirectoryVisibility::ProposedPrivate => {
+            RoomAccessOutcomeLine::new("room.accessOutcomeDirectoryWillBePrivate")
         }
     };
 

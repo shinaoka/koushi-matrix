@@ -398,7 +398,7 @@ async fn project_room_list_snapshot(
     generation: u64,
     source: RoomListSource,
     authoritative: bool,
-    room_access: std::collections::BTreeMap<String, koushi_state::RoomAccessCondition>,
+    room_access: std::collections::BTreeMap<String, koushi_state::RoomAccessObservation>,
 ) -> bool {
     let spaces = normalize_spaces(snapshot);
     let previous_dm_rooms = known_dm_rooms
@@ -472,7 +472,7 @@ async fn project_room_list_snapshot(
                 generation,
                 source,
                 authoritative,
-                access: room_access,
+                observations: room_access,
             },
         ])
         .await
@@ -1536,21 +1536,26 @@ async fn normalize_and_project_entries(
         let facts = koushi_sdk::matrix_room_access_facts(room).await;
         joined_access.insert(
             room.room_id().to_string(),
-            koushi_state::RoomAccessCondition {
-                join_rule: facts
-                    .join_rule
-                    .map(super::management::room_join_rule_from_sdk),
-                restricted: facts
-                    .restricted
-                    .map(super::management::restricted_conditions_from_sdk),
-                allow_targets: facts
-                    .allow_targets
-                    .into_iter()
-                    .map(|target| koushi_state::RoomAllowTarget {
-                        kind: super::management::allow_target_kind_from_sdk(target.kind),
-                        room_id: target.room_id,
-                    })
-                    .collect(),
+            koushi_state::RoomAccessObservation {
+                access: koushi_state::RoomAccessCondition {
+                    join_rule: facts
+                        .join_rule
+                        .map(super::management::room_join_rule_from_sdk),
+                    restricted: facts
+                        .restricted
+                        .map(super::management::restricted_conditions_from_sdk),
+                    allow_targets: facts
+                        .allow_targets
+                        .into_iter()
+                        .map(|target| koushi_state::RoomAllowTarget {
+                            kind: super::management::allow_target_kind_from_sdk(target.kind),
+                            room_id: target.room_id,
+                        })
+                        .collect(),
+                },
+                history_visibility: super::management::room_history_visibility_from_sdk(
+                    facts.history_visibility,
+                ),
             },
         );
     }

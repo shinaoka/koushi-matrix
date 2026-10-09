@@ -348,6 +348,9 @@ fn room_management_debug_output_redacts_private_values() {
                 selected_room_id: Some("!private-room:example.invalid".to_owned()),
                 settings: Some(settings.clone()),
                 draft: None,
+                directory: koushi_state::RoomDirectoryVisibility::Loading,
+                active_room_editor: None,
+                active_create_session: None,
                 operation: RoomManagementOperationState::Pending {
                     request_id: 30,
                     room_id: "!private-room:example.invalid".to_owned(),
@@ -518,6 +521,9 @@ fn room_settings_snapshot_replaces_existing_room_management_state() {
         selected_room_id: Some("!old:example.invalid".to_owned()),
         settings: Some(editable_settings("!old:example.invalid")),
         draft: None,
+        directory: koushi_state::RoomDirectoryVisibility::Loading,
+        active_room_editor: None,
+        active_create_session: None,
         operation: RoomManagementOperationState::Pending {
             request_id: 1,
             room_id: "!old:example.invalid".to_owned(),
@@ -539,6 +545,9 @@ fn room_settings_snapshot_replaces_existing_room_management_state() {
             selected_room_id: Some("!new:example.invalid".to_owned()),
             settings: Some(editable_settings("!new:example.invalid")),
             draft: None,
+            directory: koushi_state::RoomDirectoryVisibility::Loading,
+            active_room_editor: Some("!new:example.invalid".to_owned()),
+            active_create_session: None,
             operation: RoomManagementOperationState::Idle,
         }
     );
@@ -556,6 +565,9 @@ fn room_settings_snapshot_preserves_same_room_pending_operation() {
         selected_room_id: Some(room_id.to_owned()),
         settings: Some(editable_settings(room_id)),
         draft: None,
+        directory: koushi_state::RoomDirectoryVisibility::Loading,
+        active_room_editor: None,
+        active_create_session: None,
         operation: RoomManagementOperationState::Pending {
             request_id: 7,
             room_id: room_id.to_owned(),
@@ -937,6 +949,9 @@ fn access_policy_edit_is_rejected_with_the_unsupported_condition_kind() {
             restricted_access(koushi_state::RestrictedConditions::MembershipPlusUnsupported),
         )),
         draft: None,
+        directory: koushi_state::RoomDirectoryVisibility::Loading,
+        active_room_editor: None,
+        active_create_session: None,
         operation: RoomManagementOperationState::Idle,
     };
 
@@ -978,6 +993,9 @@ fn access_policy_edit_is_rejected_when_the_current_policy_is_unverified() {
             },
         )),
         draft: None,
+        directory: koushi_state::RoomDirectoryVisibility::Loading,
+        active_room_editor: None,
+        active_create_session: None,
         operation: RoomManagementOperationState::Idle,
     };
 
@@ -1011,6 +1029,9 @@ fn access_policy_edit_is_admitted_for_verified_membership_only_content() {
             restricted_access(koushi_state::RestrictedConditions::MembershipOnly),
         )),
         draft: None,
+        directory: koushi_state::RoomDirectoryVisibility::Loading,
+        active_room_editor: None,
+        active_create_session: None,
         operation: RoomManagementOperationState::Idle,
     };
 
@@ -1142,4 +1163,343 @@ fn access_policy_change_wire_shape_is_camel_case_and_canonical() {
     let round_tripped: RoomSettingChange =
         serde_json::from_value(value).expect("deserialize access policy change");
     assert_eq!(round_tripped, change);
+}
+
+fn joined_space(space_id: &str) -> koushi_state::SpaceSummary {
+    koushi_state::SpaceSummary {
+        space_id: space_id.to_owned(),
+        raw_name: Some("Design Team".to_owned()),
+        display_name: "Design Team".to_owned(),
+        avatar: None,
+        join_rule: None,
+        child_room_ids: Vec::new(),
+        parent_side_child_room_ids: Vec::new(),
+    }
+}
+
+fn open_create(state: &mut AppState, session_id: u64, parent_space: Option<&str>) {
+    reduce(
+        state,
+        AppAction::RoomAccessDraftOpened {
+            scope: koushi_state::RoomAccessDraftScope::Create { session_id },
+            create: Some(koushi_state::CreateRoomAccessSeed {
+                visibility: koushi_state::CreateRoomVisibility::Private,
+                invited_only: false,
+                parent_space_id: parent_space.map(str::to_owned),
+            }),
+        },
+    );
+}
+
+#[test]
+fn opening_a_create_session_seeds_the_legacy_preset_and_its_target_set() {
+    let mut state = ready_state();
+    open_create(&mut state, 1, Some("!space:example.invalid"));
+
+    let draft = state.room_management.draft.as_ref().expect("create draft");
+    assert_eq!(
+        draft.scope,
+        koushi_state::RoomAccessDraftScope::Create { session_id: 1 }
+    );
+    assert_eq!(draft.rule, Some(RoomJoinRule::Restricted));
+    assert_eq!(
+        draft.allow_targets,
+        vec!["!space:example.invalid".to_owned()]
+    );
+    assert!(
+        !draft.touched,
+        "the seeded legacy selection is not a user choice"
+    );
+
+    // A target edit carries the seeded rule and marks the selection touched.
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftAllowTargetsSet {
+            scope: koushi_state::RoomAccessDraftScope::Create { session_id: 1 },
+            allow_targets: vec![
+                "!space:example.invalid".to_owned(),
+                "!space-b:example.invalid".to_owned(),
+            ],
+        },
+    );
+    let draft = state.room_management.draft.as_ref().expect("create draft");
+    assert_eq!(draft.rule, Some(RoomJoinRule::Restricted));
+    assert_eq!(
+        draft.allow_targets,
+        vec![
+            "!space-b:example.invalid".to_owned(),
+            "!space:example.invalid".to_owned()
+        ]
+    );
+    assert!(draft.touched);
+}
+
+#[test]
+fn a_retired_create_session_cannot_recreate_its_draft() {
+    let mut state = ready_state();
+    open_create(&mut state, 1, None);
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftRuleSet {
+            scope: koushi_state::RoomAccessDraftScope::Create { session_id: 1 },
+            rule: Some(RoomJoinRule::Public),
+        },
+    );
+    assert!(
+        state
+            .room_management
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.rule == Some(RoomJoinRule::Public))
+    );
+
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftReset {
+            scope: koushi_state::RoomAccessDraftScope::Create { session_id: 1 },
+        },
+    );
+    assert!(state.room_management.draft.is_none());
+    assert_eq!(state.room_management.active_create_session, None);
+
+    // An old mutation from the retired session is ignored, not recreated.
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomAccessDraftRuleSet {
+            scope: koushi_state::RoomAccessDraftScope::Create { session_id: 1 },
+            rule: Some(RoomJoinRule::Knock),
+        },
+    );
+    assert!(effects.is_empty());
+    assert!(state.room_management.draft.is_none());
+
+    // Session zero is never admitted.
+    open_create(&mut state, 0, None);
+    assert!(state.room_management.draft.is_none());
+
+    open_create(&mut state, 2, None);
+    assert_eq!(
+        state
+            .room_management
+            .draft
+            .as_ref()
+            .map(|draft| draft.scope.clone()),
+        Some(koushi_state::RoomAccessDraftScope::Create { session_id: 2 })
+    );
+}
+
+#[test]
+fn a_retired_create_session_mutation_never_replaces_the_current_draft() {
+    let mut state = ready_state();
+    open_create(&mut state, 1, Some("!space:example.invalid"));
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftRuleSet {
+            scope: koushi_state::RoomAccessDraftScope::Create { session_id: 1 },
+            rule: Some(RoomJoinRule::Public),
+        },
+    );
+    // A second dialog opens before the first one's close lands.
+    open_create(&mut state, 2, Some("!space:example.invalid"));
+    let current = state
+        .room_management
+        .draft
+        .as_ref()
+        .expect("session 2 draft");
+    assert_eq!(current.rule, Some(RoomJoinRule::Restricted));
+
+    // The retired session 1 mutation must not replace session 2's draft.
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomAccessDraftRuleSet {
+            scope: koushi_state::RoomAccessDraftScope::Create { session_id: 1 },
+            rule: Some(RoomJoinRule::Knock),
+        },
+    );
+    assert!(effects.is_empty());
+    let draft = state
+        .room_management
+        .draft
+        .as_ref()
+        .expect("session 2 draft survives");
+    assert_eq!(
+        draft.scope,
+        koushi_state::RoomAccessDraftScope::Create { session_id: 2 }
+    );
+    assert_eq!(draft.rule, Some(RoomJoinRule::Restricted));
+    assert_eq!(
+        draft.allow_targets,
+        vec!["!space:example.invalid".to_owned()]
+    );
+}
+
+#[test]
+fn loading_another_room_invalidates_the_previous_rooms_draft() {
+    let mut state = ready_state();
+    load_settings(&mut state, "!room:example.invalid");
+    reduce(
+        &mut state,
+        AppAction::RoomAccessDraftRuleSet {
+            scope: scope("!room:example.invalid"),
+            rule: Some(RoomJoinRule::Public),
+        },
+    );
+    assert!(state.room_management.draft.is_some());
+
+    load_settings(&mut state, "!other:example.invalid");
+    assert!(
+        state.room_management.draft.is_none(),
+        "the previous room's draft is invalidated synchronously"
+    );
+    assert_eq!(
+        state.room_management.active_room_editor.as_deref(),
+        Some("!other:example.invalid")
+    );
+}
+
+#[test]
+fn a_newly_selected_target_must_be_a_joined_verified_space() {
+    let mut state = ready_state();
+    load_settings(&mut state, "!room:example.invalid");
+    // A valid, editable confirmed condition, so the target check is what decides.
+    state.room_management.settings = Some(settings_with_access(
+        "!room:example.invalid",
+        koushi_state::RoomAccessCondition {
+            join_rule: Some(RoomJoinRule::Invite),
+            restricted: None,
+            allow_targets: Vec::new(),
+        },
+    ));
+
+    // An ordinary room id that is not a joined Space is rejected.
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateRequested {
+            request_id: 1,
+            room_id: "!room:example.invalid".to_owned(),
+            change: access_policy_with_target("!ordinary:example.invalid"),
+        },
+    );
+    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)));
+    assert_eq!(
+        state.room_management.operation,
+        RoomManagementOperationState::Failed {
+            request_id: 1,
+            room_id: "!room:example.invalid".to_owned(),
+            operation: RoomManagementOperationKind::Settings,
+            kind: OperationFailureKind::PolicyNotVerified,
+        }
+    );
+
+    // A joined verified Space is admitted.
+    state.spaces = vec![joined_space("!space-b:example.invalid")];
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateRequested {
+            request_id: 2,
+            room_id: "!room:example.invalid".to_owned(),
+            change: access_policy_with_target("!space-b:example.invalid"),
+        },
+    );
+    assert_eq!(
+        state.room_management.operation,
+        RoomManagementOperationState::Pending {
+            request_id: 2,
+            room_id: "!room:example.invalid".to_owned(),
+            operation: RoomManagementOperationKind::Settings,
+        }
+    );
+}
+
+#[test]
+fn an_existing_non_space_condition_is_rejected_when_its_edit_would_drop_it() {
+    let mut state = ready_state();
+    state.room_management = RoomManagementState {
+        selected_room_id: Some("!room:example.invalid".to_owned()),
+        settings: Some(settings_with_access(
+            "!room:example.invalid",
+            koushi_state::RoomAccessCondition {
+                join_rule: Some(RoomJoinRule::Restricted),
+                restricted: Some(koushi_state::RestrictedConditions::MembershipOnly),
+                allow_targets: vec![koushi_state::RoomAllowTarget {
+                    kind: koushi_state::RoomAllowTargetKind::Room,
+                    room_id: "!ordinary:example.invalid".to_owned(),
+                }],
+            },
+        )),
+        draft: None,
+        directory: koushi_state::RoomDirectoryVisibility::Loading,
+        active_room_editor: None,
+        active_create_session: None,
+        operation: RoomManagementOperationState::Idle,
+    };
+    state.spaces = vec![joined_space("!space-b:example.invalid")];
+
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateRequested {
+            request_id: 1,
+            room_id: "!room:example.invalid".to_owned(),
+            change: access_policy_with_target("!space-b:example.invalid"),
+        },
+    );
+    assert_eq!(
+        state.room_management.operation,
+        RoomManagementOperationState::Failed {
+            request_id: 1,
+            room_id: "!room:example.invalid".to_owned(),
+            operation: RoomManagementOperationKind::Settings,
+            kind: OperationFailureKind::UnsupportedPolicyCondition,
+        },
+        "dropping an unmodelled non-Space condition is rejected explicitly"
+    );
+}
+
+fn access_policy_with_target(target: &str) -> RoomSettingChange {
+    RoomSettingChange::AccessPolicy(koushi_state::RoomAccessPolicy::new(
+        RoomJoinRule::Restricted,
+        vec![target.to_owned()],
+    ))
+}
+
+#[test]
+fn directory_visibility_observation_only_applies_to_the_open_room() {
+    let mut state = ready_state();
+    load_settings(&mut state, "!room:example.invalid");
+    assert_eq!(
+        state.room_management.directory,
+        koushi_state::RoomDirectoryVisibility::Loading
+    );
+
+    reduce(
+        &mut state,
+        AppAction::RoomDirectoryVisibilityObserved {
+            room_id: "!other:example.invalid".to_owned(),
+            visibility: koushi_state::RoomDirectoryVisibility::Public,
+        },
+    );
+    assert_eq!(
+        state.room_management.directory,
+        koushi_state::RoomDirectoryVisibility::Loading,
+        "another room's publication does not describe the open room"
+    );
+
+    reduce(
+        &mut state,
+        AppAction::RoomDirectoryVisibilityObserved {
+            room_id: "!room:example.invalid".to_owned(),
+            visibility: koushi_state::RoomDirectoryVisibility::Public,
+        },
+    );
+    assert_eq!(
+        state.room_management.directory,
+        koushi_state::RoomDirectoryVisibility::Public
+    );
+
+    // A same-room pre-send read keeps the confirmed publication it already read.
+    load_settings(&mut state, "!room:example.invalid");
+    assert_eq!(
+        state.room_management.directory,
+        koushi_state::RoomDirectoryVisibility::Public
+    );
 }

@@ -584,6 +584,8 @@ export type MessageId =
   | "room.accessOutcomeDirectoryUnavailable"
   | "room.accessOutcomeDirectoryFailed"
   | "room.accessOutcomeDirectoryLoading"
+  | "room.accessOutcomeDirectoryWillBePublic"
+  | "room.accessOutcomeDirectoryWillBePrivate"
   | "room.copyShareLink"
   | "room.directMessage"
   | "room.dmList"
@@ -2436,6 +2438,8 @@ const en: Catalog = {
   "room.accessOutcomeDirectoryUnavailable": "Directory listing unavailable",
   "room.accessOutcomeDirectoryFailed": "Could not check the directory listing",
   "room.accessOutcomeDirectoryLoading": "Checking the directory listing",
+  "room.accessOutcomeDirectoryWillBePublic": "Will be listed in the public directory",
+  "room.accessOutcomeDirectoryWillBePrivate": "Will not be listed in the directory",
   "room.dmList": "DM list",
   "room.editRoles": "Edit roles",
   "room.editSettings": "Edit settings",
@@ -4202,6 +4206,8 @@ const ja: Catalog = {
   "room.accessOutcomeDirectoryUnavailable": "ディレクトリ掲載状況は不明",
   "room.accessOutcomeDirectoryFailed": "ディレクトリ掲載状況を確認できませんでした",
   "room.accessOutcomeDirectoryLoading": "ディレクトリ掲載状況を確認中",
+  "room.accessOutcomeDirectoryWillBePublic": "公開ディレクトリに掲載予定",
+  "room.accessOutcomeDirectoryWillBePrivate": "ディレクトリに未掲載予定",
   "room.dmList": "DM一覧",
   "room.editRoles": "ロールを編集",
   "room.editSettings": "設定を編集",

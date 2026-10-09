@@ -311,9 +311,10 @@ pub enum MatrixRoomJoinRule {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MatrixRoomHistoryVisibility {
     WorldReadable,
+    #[default]
     Shared,
     Invited,
     Joined,
@@ -376,6 +377,33 @@ pub async fn get_room_settings_snapshot(
 ) -> Result<MatrixRoomSettingsSnapshot, MatrixRoomOperationError> {
     let room = matrix_room(session, room_id)?;
     Ok(matrix_room_settings_snapshot(&room).await)
+}
+
+/// Where a confirmed room is published in the queried server directory (#1177).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixRoomDirectoryVisibility {
+    Public,
+    Private,
+}
+
+/// Read a confirmed room's directory publication (#1177). This is the only read
+/// of `m.room.directory` state; a join-rule write never changes it implicitly.
+pub async fn get_room_directory_visibility(
+    session: &MatrixClientSession,
+    room_id: &str,
+) -> Result<MatrixRoomDirectoryVisibility, MatrixRoomOperationError> {
+    use matrix_sdk::ruma::api::client::room::Visibility;
+    let room = matrix_room(session, room_id)?;
+    let visibility = room
+        .privacy_settings()
+        .get_room_visibility()
+        .await
+        .map_err(MatrixRoomOperationError::from_sdk_error)?;
+    Ok(match visibility {
+        Visibility::Public => MatrixRoomDirectoryVisibility::Public,
+        Visibility::Private => MatrixRoomDirectoryVisibility::Private,
+        _ => MatrixRoomDirectoryVisibility::Private,
+    })
 }
 
 pub async fn update_room_setting(

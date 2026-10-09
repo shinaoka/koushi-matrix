@@ -2028,6 +2028,9 @@ pub struct MatrixRoomAccessFacts {
     pub join_rule: Option<MatrixRoomJoinRule>,
     pub restricted: Option<MatrixRestrictedCompleteness>,
     pub allow_targets: Vec<MatrixAllowTarget>,
+    /// The room's own history visibility, read with the same facts so an
+    /// external history change rides the same observation (#1177).
+    pub history_visibility: MatrixRoomHistoryVisibility,
 }
 
 /// Project a joined room's own access facts (#1220).
@@ -2037,11 +2040,13 @@ pub struct MatrixRoomAccessFacts {
 /// Space privacy, `is_dm`, the viewer's membership or `can_join`.
 pub async fn matrix_room_access_facts(room: &matrix_sdk::Room) -> MatrixRoomAccessFacts {
     use matrix_sdk::ruma::events::room::join_rules::{AllowRule, JoinRule};
+    let history_visibility = matrix_room_history_visibility(&room.history_visibility_or_default());
     let Some(raw_rule) = room.join_rule() else {
         return MatrixRoomAccessFacts {
             join_rule: None,
             restricted: Some(MatrixRestrictedCompleteness::NotInspected),
             allow_targets: Vec::new(),
+            history_visibility,
         };
     };
     let join_rule = matrix_room_join_rule(&raw_rule);
@@ -2054,6 +2059,7 @@ pub async fn matrix_room_access_facts(room: &matrix_sdk::Room) -> MatrixRoomAcce
                 join_rule: Some(join_rule),
                 restricted: None,
                 allow_targets: Vec::new(),
+                history_visibility,
             };
         }
     };
@@ -2086,6 +2092,7 @@ pub async fn matrix_room_access_facts(room: &matrix_sdk::Room) -> MatrixRoomAcce
         join_rule: Some(join_rule),
         restricted: Some(restricted),
         allow_targets,
+        history_visibility,
     }
 }
 
@@ -2101,6 +2108,13 @@ async fn matrix_allow_target_kind(
     room: &matrix_sdk::Room,
     target: &matrix_sdk::ruma::RoomId,
 ) -> MatrixAllowTargetKind {
+    matrix_allow_target_kind_for_client(&room.client(), target).await
+}
+
+async fn matrix_allow_target_kind_for_client(
+    client: &matrix_sdk::Client,
+    target: &matrix_sdk::ruma::RoomId,
+) -> MatrixAllowTargetKind {
     use matrix_sdk::{
         deserialized_responses::SyncOrStrippedState,
         ruma::{
@@ -2108,7 +2122,7 @@ async fn matrix_allow_target_kind(
             room::RoomType,
         },
     };
-    let Some(target) = room.client().get_room(target) else {
+    let Some(target) = client.get_room(target) else {
         return MatrixAllowTargetKind::Unknown;
     };
     let Ok(Some(raw)) = target
@@ -2128,6 +2142,26 @@ async fn matrix_allow_target_kind(
         Some(_) => MatrixAllowTargetKind::Unknown,
         None => MatrixAllowTargetKind::Room,
     }
+}
+
+/// Whether `target` is a Space this account has joined, verified from the
+/// target's own create event (#1177). Used to admit a newly selected restricted
+/// allow target before it is forwarded to the server. A typed direct command
+/// cannot select an ordinary room, a Space the account has not joined, or an
+/// unknown target.
+pub async fn matrix_is_joined_verified_space(session: &MatrixClientSession, target: &str) -> bool {
+    use matrix_sdk::RoomState;
+    let Ok(target) = target.parse::<matrix_sdk::ruma::OwnedRoomId>() else {
+        return false;
+    };
+    let client = session.client();
+    let Some(room) = client.get_room(&target) else {
+        return false;
+    };
+    if room.state() != RoomState::Joined {
+        return false;
+    }
+    matrix_allow_target_kind_for_client(&client, &target).await == MatrixAllowTargetKind::Space
 }
 
 pub(super) fn matrix_room_join_rule(

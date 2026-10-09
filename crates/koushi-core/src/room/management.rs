@@ -161,7 +161,7 @@ pub(super) fn room_join_rule_to_sdk(join_rule: RoomJoinRule) -> MatrixRoomJoinRu
     }
 }
 
-fn room_history_visibility_from_sdk(
+pub(super) fn room_history_visibility_from_sdk(
     history_visibility: MatrixRoomHistoryVisibility,
 ) -> RoomHistoryVisibility {
     match history_visibility {
@@ -180,6 +180,19 @@ pub(super) fn room_history_visibility_to_sdk(
         RoomHistoryVisibility::Shared => MatrixRoomHistoryVisibility::Shared,
         RoomHistoryVisibility::Invited => MatrixRoomHistoryVisibility::Invited,
         RoomHistoryVisibility::Joined => MatrixRoomHistoryVisibility::Joined,
+    }
+}
+
+pub(super) fn room_directory_visibility_from_sdk(
+    visibility: koushi_sdk::MatrixRoomDirectoryVisibility,
+) -> koushi_state::RoomDirectoryVisibility {
+    match visibility {
+        koushi_sdk::MatrixRoomDirectoryVisibility::Public => {
+            koushi_state::RoomDirectoryVisibility::Public
+        }
+        koushi_sdk::MatrixRoomDirectoryVisibility::Private => {
+            koushi_state::RoomDirectoryVisibility::Private
+        }
     }
 }
 
@@ -252,6 +265,24 @@ fn room_moderation_allowed(
 }
 
 impl RoomActor {
+    /// Read the open room's confirmed directory publication and install it for
+    /// the preview (#1177). A failed read is a distinct `Failed`, never a guess.
+    async fn observe_room_directory_visibility(
+        &self,
+        session: &koushi_sdk::MatrixClientSession,
+        room_id: &str,
+    ) {
+        let visibility = match koushi_sdk::get_room_directory_visibility(session, room_id).await {
+            Ok(visibility) => room_directory_visibility_from_sdk(visibility),
+            Err(_) => koushi_state::RoomDirectoryVisibility::Failed,
+        };
+        self.reduce_reliable(vec![AppAction::RoomDirectoryVisibilityObserved {
+            room_id: room_id.to_owned(),
+            visibility,
+        }])
+        .await;
+    }
+
     pub(super) async fn handle_load_room_settings(&self, request_id: RequestId, room_id: String) {
         let Some(session) = &self.session else {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
@@ -265,10 +296,12 @@ impl RoomActor {
                 // idempotent reload, so the authoritative reduction must complete before the
                 // correlated RoomSettingsLoaded event is emitted.
                 self.reduce_reliable(vec![AppAction::RoomSettingsSnapshotLoaded {
-                    room_id,
+                    room_id: room_id.clone(),
                     settings: settings.clone(),
                 }])
                 .await;
+                self.observe_room_directory_visibility(session, &room_id)
+                    .await;
                 self.emit(CoreEvent::Room(RoomEvent::RoomSettingsLoaded {
                     request_id,
                     settings,
@@ -299,6 +332,9 @@ impl RoomActor {
                 AppAction::RoomAccessDraftHistorySet { scope, history }
             }
             RoomAccessDraftCommand::Reset { scope } => AppAction::RoomAccessDraftReset { scope },
+            RoomAccessDraftCommand::Open { scope, create } => {
+                AppAction::RoomAccessDraftOpened { scope, create }
+            }
         };
         self.reduce_reliable(vec![action]).await;
     }
@@ -344,24 +380,39 @@ impl RoomActor {
         }
 
         // #1177: re-validate the current access content from this pre-send read.
-        // An unmodelled or uninspectable policy is rejected before any state
-        // event is sent.
-        if let RoomSettingChange::AccessPolicy(policy) = &change
-            && let Some(kind) = settings.access_policy_rejection(policy)
-        {
-            self.reduce_reliable(vec![AppAction::RoomSettingUpdateRequested {
-                request_id: request_id.sequence,
-                room_id,
-                change,
-            }])
-            .await;
-            self.emit_failure(
-                request_id,
-                CoreFailure::RoomOperationFailed {
-                    kind: access_policy_failure_kind(kind),
-                },
-            );
-            return;
+        // An unmodelled or uninspectable policy, or a newly selected target that
+        // is not a joined verified Space, is rejected before any state event is
+        // sent.
+        if let RoomSettingChange::AccessPolicy(policy) = &change {
+            let rejection = match settings.access_policy_rejection(policy) {
+                Some(kind) => Some(kind),
+                None => {
+                    let mut joined_targets = std::collections::BTreeSet::new();
+                    for target in &policy.allow_targets {
+                        if koushi_sdk::matrix_is_joined_verified_space(session, target).await {
+                            joined_targets.insert(target.clone());
+                        }
+                    }
+                    koushi_state::access_policy_target_rejection(&settings, policy, |target| {
+                        joined_targets.contains(target)
+                    })
+                }
+            };
+            if let Some(kind) = rejection {
+                self.reduce_reliable(vec![AppAction::RoomSettingUpdateRequested {
+                    request_id: request_id.sequence,
+                    room_id,
+                    change,
+                }])
+                .await;
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::RoomOperationFailed {
+                        kind: access_policy_failure_kind(kind),
+                    },
+                );
+                return;
+            }
         }
 
         self.reduce_reliable(vec![AppAction::RoomSettingUpdateRequested {
