@@ -800,7 +800,10 @@ pub async fn set_room_access_draft(
     let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
     submit_core_command_with_admission(
         state.inner(),
-        CoreCommand::Room(RoomCommand::SetRoomAccessDraft { request_id, command }),
+        CoreCommand::Room(RoomCommand::SetRoomAccessDraft {
+            request_id,
+            command,
+        }),
     )
     .await
 }
@@ -813,11 +816,9 @@ pub async fn preview_room_access(
     context: koushi_state::RoomAccessPreviewContext,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<koushi_state::RoomAccessPreview, String> {
-    Ok(
-        account_connection(state.inner(), account_tab_id.as_deref())
-            .await?
-            .preview_room_access(&scope, context),
-    )
+    Ok(account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
+        .preview_room_access(&scope, context))
 }
 
 /// A stateless Rust preview of the create dialog's effective proposed tuple
@@ -829,11 +830,9 @@ pub async fn preview_create_room_access(
     input: koushi_state::CreateRoomAccessPreviewInput,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<koushi_state::CreateRoomAccessPreview, String> {
-    Ok(
-        account_connection(state.inner(), account_tab_id.as_deref())
-            .await?
-            .preview_create_room_access(&scope, input),
-    )
+    Ok(account_connection(state.inner(), account_tab_id.as_deref())
+        .await?
+        .preview_create_room_access(&scope, input))
 }
 
 #[tauri::command]

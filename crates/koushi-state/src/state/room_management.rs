@@ -269,7 +269,12 @@ impl RoomAccessDraft {
                     Some(rule) => (Some(rule), None),
                     None => (settings.access.join_rule, settings.access.restricted),
                 };
-                (rule, restricted, draft_targets.as_slice(), settings.history_visibility)
+                (
+                    rule,
+                    restricted,
+                    draft_targets.as_slice(),
+                    settings.history_visibility,
+                )
             }
             RoomAccessPreviewContext::History => (
                 settings.access.join_rule,
@@ -297,9 +302,7 @@ impl RoomAccessDraft {
         settings: &RoomSettingsSnapshot,
     ) -> bool {
         match context {
-            RoomAccessPreviewContext::Access => {
-                self.rule.is_none() || !self.differs_from(settings)
-            }
+            RoomAccessPreviewContext::Access => self.rule.is_none() || !self.differs_from(settings),
             RoomAccessPreviewContext::History => {
                 self.history.is_none() || self.history == Some(settings.history_visibility)
             }
@@ -487,15 +490,20 @@ pub fn preview_create_room_access(
     let parent_id = input.parent_space_id.as_deref();
     let draft_rule = draft.and_then(|draft| draft.rule);
     let (rule, restricted, target_ids, route) = if let Some(rule) = draft_rule {
-        let targets = draft.map(|draft| draft.allow_targets.clone()).unwrap_or_default();
-        let restricted = matches!(rule, RoomJoinRule::Restricted | RoomJoinRule::KnockRestricted)
-            .then(|| {
-                if targets.is_empty() {
-                    RestrictedConditions::ConfirmedEmpty
-                } else {
-                    RestrictedConditions::MembershipOnly
-                }
-            });
+        let targets = draft
+            .map(|draft| draft.allow_targets.clone())
+            .unwrap_or_default();
+        let restricted = matches!(
+            rule,
+            RoomJoinRule::Restricted | RoomJoinRule::KnockRestricted
+        )
+        .then(|| {
+            if targets.is_empty() {
+                RestrictedConditions::ConfirmedEmpty
+            } else {
+                RestrictedConditions::MembershipOnly
+            }
+        });
         let route = single_space_route_name(state, &targets);
         (Some(rule), restricted, targets, route)
     } else if public {
@@ -611,14 +619,18 @@ fn single_space_route_name(state: &AppState, ids: &[String]) -> Option<String> {
         return None;
     }
     let id = ids[0].as_str();
-    state.spaces.iter().find(|space| space.space_id == id).and_then(|space| {
-        let name = space
-            .raw_name
-            .as_deref()
-            .unwrap_or(space.display_name.as_str())
-            .trim();
-        (!name.is_empty() && name != id).then(|| name.to_owned())
-    })
+    state
+        .spaces
+        .iter()
+        .find(|space| space.space_id == id)
+        .and_then(|space| {
+            let name = space
+                .raw_name
+                .as_deref()
+                .unwrap_or(space.display_name.as_str())
+                .trim();
+            (!name.is_empty() && name != id).then(|| name.to_owned())
+        })
 }
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -1303,15 +1315,17 @@ mod tests {
         state.room_management.draft = Some(draft);
 
         let access = preview_room_access_draft(&state, &scope, RoomAccessPreviewContext::Access);
-        assert_eq!(access.outcome.join.message_id, "room.accessOutcomeJoinPublic");
+        assert_eq!(
+            access.outcome.join.message_id,
+            "room.accessOutcomeJoinPublic"
+        );
         assert_eq!(
             access.outcome.history.message_id,
             "room.accessOutcomeHistoryShared"
         );
         assert!(!access.confirmed, "the access panel shows an unsaved rule");
 
-        let history =
-            preview_room_access_draft(&state, &scope, RoomAccessPreviewContext::History);
+        let history = preview_room_access_draft(&state, &scope, RoomAccessPreviewContext::History);
         assert_eq!(
             history.outcome.join.message_id,
             "room.accessOutcomeJoinMembershipRoute"
@@ -1320,7 +1334,10 @@ mod tests {
             history.outcome.history.message_id,
             "room.accessOutcomeHistoryInvited"
         );
-        assert!(!history.confirmed, "the history panel shows an unsaved value");
+        assert!(
+            !history.confirmed,
+            "the history panel shows an unsaved value"
+        );
     }
 
     #[test]

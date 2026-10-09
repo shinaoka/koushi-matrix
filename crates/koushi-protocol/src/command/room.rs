@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{AccountKey, RequestId};
 use koushi_state::{
-    DirectoryQuery, InviteScopeSelection, RoomAccessDraftScope, RoomAccessPolicy, RoomHistoryVisibility,
-    RoomJoinRule, RoomModerationAction, RoomSettingChange, RoomTagKind,
+    DirectoryQuery, InviteScopeSelection, RoomAccessDraftScope, RoomAccessPolicy,
+    RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomSettingChange, RoomTagKind,
 };
 
 /// A typed mutation of the Rust-owned access/history draft (#1177).
@@ -41,7 +41,9 @@ impl fmt::Debug for RoomAccessDraftCommand {
                 .field("rule", rule)
                 .finish(),
             Self::AllowTargets {
-                scope, allow_targets, ..
+                scope,
+                allow_targets,
+                ..
             } => formatter
                 .debug_struct("AllowTargets")
                 .field("scope", scope)
@@ -52,9 +54,10 @@ impl fmt::Debug for RoomAccessDraftCommand {
                 .field("scope", scope)
                 .field("history", history)
                 .finish(),
-            Self::Reset { scope } => {
-                formatter.debug_struct("Reset").field("scope", scope).finish()
-            }
+            Self::Reset { scope } => formatter
+                .debug_struct("Reset")
+                .field("scope", scope)
+                .finish(),
         }
     }
 }
@@ -589,7 +592,9 @@ impl fmt::Debug for RoomCommand {
                 .field("room_id", &"RoomId(..)")
                 .finish(),
             Self::SetRoomAccessDraft {
-                request_id, command, ..
+                request_id,
+                command,
+                ..
             } => formatter
                 .debug_struct("SetRoomAccessDraft")
                 .field("request_id", request_id)

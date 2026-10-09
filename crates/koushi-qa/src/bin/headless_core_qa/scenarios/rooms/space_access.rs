@@ -151,8 +151,19 @@ pub(super) async fn verify(
         .map_err(|e| format!("space_access: submit membership room create failed: {e}"))?;
     let membership_room_id =
         wait_for_room_created(conn_a, membership_room_id, "space_access membership create").await?;
-    wait_for_room_access_projection(conn_a, &membership_room_id, RoomJoinRule::Restricted, "space_access membership projection").await?;
-    let membership = load_room_settings_for_qa(conn_a, &membership_room_id, "space_access membership settings").await?;
+    wait_for_room_access_projection(
+        conn_a,
+        &membership_room_id,
+        RoomJoinRule::Restricted,
+        "space_access membership projection",
+    )
+    .await?;
+    let membership = load_room_settings_for_qa(
+        conn_a,
+        &membership_room_id,
+        "space_access membership settings",
+    )
+    .await?;
     if membership.access.restricted != Some(RestrictedConditions::MembershipOnly) {
         return Err(format!(
             "space_access: the created membership room reports {:?}",
@@ -191,8 +202,19 @@ pub(super) async fn verify(
         .await
         .map_err(|e| format!("space_access: submit restricted restore failed: {e}"))?;
     wait_for_room_setting_updated(conn_a, restore_id, "space_access restore").await?;
-    wait_for_room_access_projection(conn_a, &membership_room_id, RoomJoinRule::Restricted, "space_access restore projection").await?;
-    let restored = load_room_settings_for_qa(conn_a, &membership_room_id, "space_access restored settings").await?;
+    wait_for_room_access_projection(
+        conn_a,
+        &membership_room_id,
+        RoomJoinRule::Restricted,
+        "space_access restore projection",
+    )
+    .await?;
+    let restored = load_room_settings_for_qa(
+        conn_a,
+        &membership_room_id,
+        "space_access restored settings",
+    )
+    .await?;
     if restored.access.restricted != Some(RestrictedConditions::MembershipOnly)
         || !restored
             .access
