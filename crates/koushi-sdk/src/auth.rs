@@ -915,12 +915,17 @@ pub fn map_login_flows_to_desktop(flows: Vec<MatrixLoginFlow>) -> Vec<LoginFlow>
     flows
         .into_iter()
         .map(|flow| LoginFlow {
-            kind: match flow.kind {
-                MatrixLoginFlowKind::Password => LoginFlowKind::Password,
-                MatrixLoginFlowKind::Sso => LoginFlowKind::Sso,
-                MatrixLoginFlowKind::Oidc => LoginFlowKind::Oidc,
-                MatrixLoginFlowKind::Token => LoginFlowKind::Token,
-                MatrixLoginFlowKind::Unknown(value) => LoginFlowKind::Unknown(value),
+            kind: match (flow.kind, flow.delegated_oidc_compatibility) {
+                // MSC3824 advertises the stable login endpoint as `m.login.sso`
+                // for legacy clients while telling OAuth-aware clients to use
+                // delegated OIDC. The desktop supports that OAuth path, so its
+                // user-facing flow must be OIDC rather than legacy SSO.
+                (MatrixLoginFlowKind::Sso, true) => LoginFlowKind::Oidc,
+                (MatrixLoginFlowKind::Password, _) => LoginFlowKind::Password,
+                (MatrixLoginFlowKind::Sso, _) => LoginFlowKind::Sso,
+                (MatrixLoginFlowKind::Oidc, _) => LoginFlowKind::Oidc,
+                (MatrixLoginFlowKind::Token, _) => LoginFlowKind::Token,
+                (MatrixLoginFlowKind::Unknown(value), _) => LoginFlowKind::Unknown(value),
             },
             delegated_oidc_compatibility: flow.delegated_oidc_compatibility,
             display_name: flow.display_name,
