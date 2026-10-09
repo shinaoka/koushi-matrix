@@ -10,7 +10,11 @@ use koushi_state::{
 
 /// A typed mutation of the Rust-owned access/history draft (#1177).
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum RoomAccessDraftCommand {
     Rule {
         scope: RoomAccessDraftScope,

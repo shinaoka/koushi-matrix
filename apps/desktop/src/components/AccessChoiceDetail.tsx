@@ -47,6 +47,7 @@ export function AccessChoiceDetail({
   status = null,
   saveEnabled = true,
   saveLabel,
+  chooseLabel,
   notes,
   onSelect,
   onSave,
@@ -73,6 +74,8 @@ export function AccessChoiceDetail({
   saveEnabled?: boolean;
   /** Accessible name of the Save button. */
   saveLabel: string;
+  /** Accessible name of the choice group; distinct per property. */
+  chooseLabel?: string;
   /** Extra property-specific notes (encryption/history caveats). */
   notes?: ReactNode;
   onSelect: (value: string) => void;
@@ -83,6 +86,7 @@ export function AccessChoiceDetail({
   const detailsId = useId();
   const heading = useRef<HTMLHeadingElement>(null);
   useImperativeHandle(headingRef, () => heading.current as HTMLHeadingElement);
+  const groupsName = chooseLabel ?? t("room.accessChooseLabel");
 
   function onKeyDown(event: KeyboardEvent<HTMLFieldSetElement>) {
     if (event.key === "Escape" && !event.nativeEvent.isComposing && onCancel) {
@@ -133,8 +137,8 @@ export function AccessChoiceDetail({
         aria-describedby={detailsId}
         onKeyDown={onKeyDown}
       >
-        <legend className="access-choice-detail-legend">{t("room.accessChooseLabel")}</legend>
-        <div className="access-choice-list" role="radiogroup" aria-label={t("room.accessChooseLabel")}>
+        <legend className="access-choice-detail-legend">{groupsName}</legend>
+        <div className="access-choice-list" role="radiogroup" aria-label={groupsName}>
           {choices.map((choice) => {
             const choiceId = `${groupId}-${choice.value}`;
             return (

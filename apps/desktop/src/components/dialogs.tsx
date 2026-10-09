@@ -334,9 +334,12 @@ export function CreateEntityDialog({
   // create request still carries for the preset and address.
   const createScope = { kind: "create" as const, sessionId: 0 };
   const createRule: RoomJoinRule =
-    roomAccessDraft?.rule ?? (effectiveRoomOptions.visibility === "public" ? "public" : "invite");
+    roomAccessDraft?.rule ??
+    createAccessPreview?.effectiveRule ??
+    (effectiveRoomOptions.visibility === "public" ? "public" : "invite");
   const createAllowTargets = roomAccessDraft?.allowTargets ?? [];
-  const createHistory: RoomHistoryVisibility = roomAccessDraft?.history ?? "shared";
+  const createHistory: RoomHistoryVisibility =
+    roomAccessDraft?.history ?? createAccessPreview?.effectiveHistory ?? "shared";
   const createAccessChoices: readonly AccessChoiceDetailChoice[] = [
     {
       value: "public",
@@ -370,12 +373,20 @@ export function CreateEntityDialog({
   // including "no address" for an unnamed room (#1023). A rejected access
   // proposal (public plus restricted, or a restricted rule with no route)
   // blocks Create too.
+  // A create proposal with an explicit draft requires a current Rust preview:
+  // its rejection (public plus restricted, or an empty allow list) must be known
+  // before Create is enabled. With no draft the legacy preset path is taken and
+  // always valid.
+  const createHasDraft = roomAccessDraft?.rule != null || roomAccessDraft?.history != null;
+  const createAccessValid =
+    createAccessPreview?.rejection == null &&
+    (createAccessPreview != null || !createHasDraft);
   const canSubmit =
     (isSpace
       ? value.trim().length > 0
       : effectiveRoomOptions.visibility === "private" ||
         (addressPreview !== null && addressPreview.error === null)) &&
-    (isSpace || createAccessPreview?.rejection == null) &&
+    (isSpace || createAccessValid) &&
     !isBusy;
 
   function updateRoomOptions(patch: Partial<CreateRoomDialogOptions>) {
@@ -505,7 +516,17 @@ export function CreateEntityDialog({
               }
               onSelect={(value) => {
                 const rule = value as RoomJoinRule;
+                const restricted = rule === "restricted";
                 onSetRoomAccessDraft({ kind: "rule", scope: createScope, rule });
+                // A non-restricted rule carries no allow list; clear any targets
+                // retained from a previous restricted selection.
+                if (!restricted) {
+                  onSetRoomAccessDraft({
+                    kind: "allowTargets",
+                    scope: createScope,
+                    allowTargets: []
+                  });
+                }
                 updateRoomOptions({
                   visibility: rule === "public" ? "public" : "private",
                   invitedOnly: false
@@ -532,6 +553,7 @@ export function CreateEntityDialog({
               canEdit
               saveEnabled={false}
               saveLabel={submitLabel}
+              chooseLabel={t("room.accessChooseHistory")}
               onSelect={(value) =>
                 onSetRoomAccessDraft({
                   kind: "history",

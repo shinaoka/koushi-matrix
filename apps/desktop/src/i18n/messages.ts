@@ -538,6 +538,7 @@ export type MessageId =
   | "room.accessAndHistory"
   | "room.accessAndHistoryHint"
   | "room.accessChooseLabel"
+  | "room.accessChooseHistory"
   | "room.accessDetailsLabel"
   | "room.accessDetailsConfirmed"
   | "room.accessDetailsUnsaved"
@@ -648,6 +649,8 @@ export type MessageId =
   | "room.operationFailed"
   | "room.settingForbidden"
   | "room.settingNoPermission"
+  | "room.settingUnsupportedPolicyCondition"
+  | "room.settingPolicyNotVerified"
   | "room.people"
   | "room.rolePermissions"
   | "room.memberRole"
@@ -2387,6 +2390,7 @@ const en: Catalog = {
   "room.accessAndHistory": "Access and history",
   "room.accessAndHistoryHint": "Join rules decide who may enter; history visibility decides what they can see. These settings are independent.",
   "room.accessChooseLabel": "Choose who can join",
+  "room.accessChooseHistory": "Choose who can read history",
   "room.accessDetailsLabel": "What this means",
   "room.accessDetailsConfirmed": "These details describe the saved values.",
   "room.accessDetailsUnsaved": "These details describe unsaved changes.",
@@ -2490,6 +2494,8 @@ const en: Catalog = {
   "room.notifyModeMute": "Mute",
   "room.operationFailed": "Operation failed",
   "room.settingForbidden": "You no longer have permission to change this setting.",
+  "room.settingUnsupportedPolicyCondition": "This room's current conditions include content this app does not model, so it cannot rewrite them safely.",
+  "room.settingPolicyNotVerified": "This room's current conditions could not be verified, so the change was not attempted.",
   "room.settingNoPermission": "Your role in this room cannot change this setting.",
   "room.people": "People",
   "room.roleAdministrator": "Administrator",
@@ -4150,6 +4156,7 @@ const ja: Catalog = {
   "room.accessAndHistory": "アクセスと履歴",
   "room.accessAndHistoryHint": "参加ルールは入室できる人を、履歴の表示範囲は見える内容を決めます。両者は独立しています。",
   "room.accessChooseLabel": "参加できる人を選ぶ",
+  "room.accessChooseHistory": "履歴を読める人を選ぶ",
   "room.accessDetailsLabel": "この設定の意味",
   "room.accessDetailsConfirmed": "この内容は保存済みの値を示しています。",
   "room.accessDetailsUnsaved": "この内容は未保存の変更を示しています。",
@@ -4253,6 +4260,8 @@ const ja: Catalog = {
   "room.notifyModeMute": "ミュート",
   "room.operationFailed": "操作に失敗しました",
   "room.settingForbidden": "この設定を変更する権限がありません。",
+  "room.settingUnsupportedPolicyCondition": "現在の参加条件にこのアプリが扱えない内容が含まれるため、安全に書き換えられません。",
+  "room.settingPolicyNotVerified": "現在の参加条件を確認できなかったため、変更は行われませんでした。",
   "room.settingNoPermission": "このルームでのあなたの役割では、この設定を変更できません。",
   "room.people": "ユーザー",
   "room.roleAdministrator": "管理者",

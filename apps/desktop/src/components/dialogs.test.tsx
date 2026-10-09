@@ -643,6 +643,8 @@ describe("CreateEntityDialog room access", () => {
           scope: { kind: "create", sessionId: 0 },
           confirmed: false,
           rejection,
+          effectiveRule: "restricted",
+          effectiveHistory: "shared",
           roomVersionPinned: true,
           outcome: {
             join: { messageId: "room.accessOutcomeJoinSpaceMembers", substitutions: ["Design"] },

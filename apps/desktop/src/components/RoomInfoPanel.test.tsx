@@ -245,6 +245,33 @@ describe("RoomInfoPanel", () => {
     ).toBeTruthy();
   });
 
+  test("ignores a draft that belongs to another editor's scope", () => {
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={{
+          selected_room_id: baseRoom.room_id,
+          settings: roomSettings(),
+          draft: { scope: { kind: "create", sessionId: 0 }, revision: 1, rule: "public" },
+          operation: { kind: "idle" }
+        }}
+        accessPreview={accessPreviewFixture("access", true)}
+        onUpdateRoomSetting={vi.fn()}
+        onSetAccessDraft={vi.fn()}
+      />
+    );
+    const card = propertyCard("join-rule");
+    // The confirmed invite rule is selected; the create draft's public rule is not.
+    expect(
+      (within(card).getByRole("radio", { name: /Invite only/ }) as HTMLInputElement).checked
+    ).toBe(true);
+    expect(
+      (within(card).getByRole("radio", { name: /Public/ }) as HTMLInputElement).checked
+    ).toBe(false);
+  });
+
   test("enables Save only for a valid real access change", () => {
     const onUpdateRoomSetting = vi.fn();
     const scope = { kind: "room" as const, roomId: baseRoom.room_id };

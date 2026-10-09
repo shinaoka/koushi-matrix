@@ -329,6 +329,11 @@ export function operationFailureLabel(kind: OperationFailureKind): string {
       return t("directory.failureInvalid");
     case "sdk":
       return t("directory.failureSdk");
+    // Policy-edit failure kinds are shown on the Room Info property card, not
+    // in the directory lane; the directory label uses the generic SDK failure.
+    case "unsupportedPolicyCondition":
+    case "policyNotVerified":
+      return t("directory.failureSdk");
   }
 }
 

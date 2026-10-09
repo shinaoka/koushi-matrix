@@ -186,10 +186,10 @@ Open **Room info**. Each property is shown, changed, and confirmed in one card:
   removes the topic or avatar. The avatar card shows the room's picture and its
   `mxc://` address.
 - **Access and history**: **Join rule** and **History visibility** each show a
-  list of choices on the left and, on the right, what the current selection
-  means: who can join, who can read which history, whether the room is
-  encrypted, and whether it is listed in the public directory. The selected
-  choice is marked, and the details say whether they describe the saved values
+  list of choices and, below it, what the current selection means: who can
+  join, who can read which history, whether the room is encrypted, and whether
+  it is listed in the public directory. The selected choice is marked, and the
+  details say whether they describe the saved values
   or unsaved changes. Choose a value and then **Save** (or **Cancel**, or press
   **Esc**) to restore the saved value. Changing the join rule needs permission
   to change join rules, which is separate from permission to rename the room,

@@ -1566,7 +1566,11 @@ export type OperationFailureKind =
   | "network"
   | "timeout"
   | "invalid"
-  | "sdk";
+  | "sdk"
+  /** The current join-rule content has allow conditions this client does not model (#1177). */
+  | "unsupportedPolicyCondition"
+  /** The current join-rule policy could not be read before the write (#1177). */
+  | "policyNotVerified";
 
 export interface MediaTransferProgress {
   current: number;
@@ -1848,6 +1852,10 @@ export interface CreateRoomAccessPreview {
   scope: RoomAccessDraftScope;
   confirmed: boolean;
   outcome: RoomAccessOutcome;
+  /** The effective join rule Create would submit (legacy preset included). */
+  effectiveRule: RoomJoinRule | null;
+  /** The effective history visibility Create would submit. */
+  effectiveHistory: RoomHistoryVisibility;
   rejection?: CreateRoomAccessRejection;
   roomVersionPinned: boolean;
 }

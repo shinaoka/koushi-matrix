@@ -187,8 +187,27 @@ pub(super) async fn verify(
     println!("space_access_create_membership=ok");
     println!("space_access_history=ok");
 
-    // #1177: restore a restricted rule through the real update command and read
-    // back the synced allow content; B observes it without reloading.
+    // #1177: move a genuinely different policy (Public) first, then restore a
+    // restricted rule through the real update command and read back the exact
+    // synced allow content.
+    let public_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(RoomCommand::UpdateRoomSetting {
+            request_id: public_id,
+            room_id: membership_room_id.clone(),
+            change: RoomSettingChange::JoinRule(RoomJoinRule::Public),
+        }))
+        .await
+        .map_err(|e| format!("space_access: submit public move failed: {e}"))?;
+    wait_for_room_setting_updated(conn_a, public_id, "space_access public move").await?;
+    wait_for_room_access_projection(
+        conn_a,
+        &membership_room_id,
+        RoomJoinRule::Public,
+        "space_access public projection",
+    )
+    .await?;
+
     let restore_id = conn_a.next_request_id();
     conn_a
         .command(CoreCommand::Room(RoomCommand::UpdateRoomSetting {
@@ -216,15 +235,18 @@ pub(super) async fn verify(
     )
     .await?;
     if restored.access.restricted != Some(RestrictedConditions::MembershipOnly)
-        || !restored
-            .access
-            .allow_targets
-            .iter()
-            .any(|target| target.room_id == space_id)
+        || restored.access.allow_targets.len() != 1
+        || restored.access.allow_targets[0].room_id != space_id
     {
-        return Err(
-            "space_access: a restored restricted rule lost its synced allow content".to_owned(),
-        );
+        return Err(format!(
+            "space_access: a restored restricted rule has {} allow targets, first names the Space: {}",
+            restored.access.allow_targets.len(),
+            restored
+                .access
+                .allow_targets
+                .first()
+                .is_some_and(|target| target.room_id == space_id),
+        ));
     }
     println!("space_access_restricted_restore=ok");
     println!("space_access=ok");

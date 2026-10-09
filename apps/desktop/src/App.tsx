@@ -449,7 +449,13 @@ function createRoomRequestFromDraft(
     encrypted: visibility === "private" ? options.encrypted : false,
     invitedOnly: visibility === "private" ? options.invitedOnly : false,
     visibility,
-    accessPolicy: rule ? { rule, allowTargets: accessDraft?.allowTargets ?? [] } : null,
+    accessPolicy: rule
+      ? {
+          rule,
+          // A non-restricted rule carries no allow list; the writer rejects one.
+          allowTargets: rule === "restricted" ? accessDraft?.allowTargets ?? [] : []
+        }
+      : null,
     history: accessDraft?.history ?? null,
     // Core derives the relationship routing (#1007); a room version 12 Space
     // ID has no server name to extract here.
@@ -4463,7 +4469,11 @@ function AccountContent({
     }
     setIsBusy(true);
     try {
-      const createRoomDraft = snapshotRef.current?.state.domain.room_management.draft ?? null;
+      const createRoomDraftState = snapshotRef.current?.state.domain.room_management.draft ?? null;
+      // Only this create session's own draft may shape the submitted policy or
+      // history; a Room Info draft left open elsewhere must not leak into it.
+      const createRoomDraft =
+        createRoomDraftState?.scope.kind === "create" ? createRoomDraftState : null;
       const createRoomRequest =
         kind === "room"
           ? createRoomRequestFromDraft(
@@ -7543,7 +7553,11 @@ function AccountContent({
           onOpenAddressHelp={(url) => runInBackground(openExternalHttpUrl(url))}
           value={createDraftName}
           onCancel={closeCreateDialog}
-          roomAccessDraft={snapshot.state.domain.room_management.draft ?? null}
+          roomAccessDraft={
+            snapshot.state.domain.room_management.draft?.scope.kind === "create"
+              ? snapshot.state.domain.room_management.draft
+              : null
+          }
           createAccessPreview={createRoomAccessPreview}
           joinedSpaces={createRoomJoinedSpaces}
           onSetRoomAccessDraft={(command) => {

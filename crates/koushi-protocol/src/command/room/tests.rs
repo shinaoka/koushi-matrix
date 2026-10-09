@@ -270,3 +270,36 @@ fn create_room_options_serialize_the_explicit_policy_and_history() {
     assert!(!debug.contains("!b:example.invalid"), "{debug}");
     assert!(debug.contains("allow_target_count"), "{debug}");
 }
+
+#[test]
+fn room_access_draft_wire_shape_is_camel_case() {
+    let scope = koushi_state::RoomAccessDraftScope::Room {
+        room_id: "!room:example.invalid".to_owned(),
+    };
+    assert_eq!(
+        serde_json::to_value(&scope).expect("serialize scope"),
+        serde_json::json!({ "kind": "room", "roomId": "!room:example.invalid" })
+    );
+    assert_eq!(
+        serde_json::to_value(koushi_state::RoomAccessDraftScope::Create { session_id: 7 })
+            .expect("serialize scope"),
+        serde_json::json!({ "kind": "create", "sessionId": 7 })
+    );
+
+    let command = RoomAccessDraftCommand::AllowTargets {
+        scope: scope.clone(),
+        allow_targets: vec!["!a:example.invalid".to_owned()],
+    };
+    let frontend = serde_json::json!({
+        "kind": "allowTargets",
+        "scope": { "kind": "room", "roomId": "!room:example.invalid" },
+        "allowTargets": ["!a:example.invalid"],
+    });
+    assert_eq!(
+        serde_json::to_value(&command).expect("serialize command"),
+        frontend
+    );
+    let parsed: RoomAccessDraftCommand =
+        serde_json::from_value(frontend).expect("frontend shape deserializes");
+    assert_eq!(parsed, command);
+}

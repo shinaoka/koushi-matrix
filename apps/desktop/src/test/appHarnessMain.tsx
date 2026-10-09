@@ -1350,6 +1350,8 @@ mock.setCommandResponse("preview_create_room_access", ({ scope }: { scope: unkno
   scope,
   confirmed: false,
   outcome: harnessAccessOutcome(),
+  effectiveRule: "invite",
+  effectiveHistory: "shared",
   roomVersionPinned: false
 }));
 mock.setCommandResponse("list_account_tabs", harnessAccountTabsSnapshot);

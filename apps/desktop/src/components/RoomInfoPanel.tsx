@@ -128,7 +128,13 @@ export function RoomInfoPanel({
   const managementForRoom =
     roomManagement?.selected_room_id === roomId ? roomManagement : null;
   const settings = managementForRoom?.settings ?? null;
-  const accessDraft = managementForRoom?.draft ?? null;
+  // The draft is applied only when it belongs to this room's editor; a create
+  // draft left open elsewhere must never be shown or submitted as this room's.
+  const accessDraft =
+    managementForRoom?.draft?.scope.kind === "room" &&
+    managementForRoom.draft.scope.roomId === roomId
+      ? managementForRoom.draft
+      : null;
   const shareLink = settings?.share_link?.trim() || null;
   const operation = managementForRoom?.operation ?? { kind: "idle" as const };
   const settingsPending = operation.kind === "pending" && operation.operation === "settings";
@@ -236,12 +242,13 @@ export function RoomInfoPanel({
     name: space.display_name
   }));
   const accessSaveEnabled =
+    accessPreview != null &&
+    !accessPreview.confirmed &&
     draftRule != null &&
-    (accessPreview == null || !accessPreview.confirmed) &&
     !(draftRule === "restricted" && selectedAllowTargets.length === 0) &&
     !accessRejectionReason;
   const historySaveEnabled =
-    draftHistory != null && (historyPreview == null || !historyPreview.confirmed);
+    historyPreview != null && !historyPreview.confirmed && draftHistory != null;
 
   function submitSetting(field: RoomSettingField, change: RoomSettingChange, target: string | null) {
     const allowed =
@@ -568,6 +575,15 @@ export function RoomInfoPanel({
                               const next = target.checked
                                 ? [...selectedAllowTargets, space.id]
                                 : selectedAllowTargets.filter((id) => id !== space.id);
+                              // A target edit on the confirmed restricted rule must
+                              // also establish that rule, or Save stays disabled.
+                              if (draftRule == null) {
+                                onSetAccessDraft?.({
+                                  kind: "rule",
+                                  scope: accessScope,
+                                  rule: "restricted"
+                                });
+                              }
                               onSetAccessDraft?.({
                                 kind: "allowTargets",
                                 scope: accessScope,
@@ -606,11 +622,21 @@ export function RoomInfoPanel({
                   notes={allowPicker}
                   onSelect={(value) => {
                     if (!accessScope) return;
+                    const rule = value as RoomJoinRule;
                     onSetAccessDraft?.({
                       kind: "rule",
                       scope: accessScope,
-                      rule: value as RoomJoinRule
+                      rule
                     });
+                    // A non-restricted rule carries no allow list; clear any
+                    // targets retained from a previous restricted selection.
+                    if (rule !== "restricted") {
+                      onSetAccessDraft?.({
+                        kind: "allowTargets",
+                        scope: accessScope,
+                        allowTargets: []
+                      });
+                    }
                   }}
                   onSave={() => {
                     if (!accessScope) return;
@@ -619,7 +645,8 @@ export function RoomInfoPanel({
                       {
                         accessPolicy: {
                           rule: selectedJoinRule,
-                          allowTargets: selectedAllowTargets
+                          allowTargets:
+                            selectedJoinRule === "restricted" ? selectedAllowTargets : []
                         }
                       },
                       selectedJoinRule
@@ -628,6 +655,11 @@ export function RoomInfoPanel({
                   onCancel={() => {
                     if (!accessScope) return;
                     onSetAccessDraft?.({ kind: "rule", scope: accessScope, rule: null });
+                    onSetAccessDraft?.({
+                      kind: "allowTargets",
+                      scope: accessScope,
+                      allowTargets: []
+                    });
                   }}
                 />
               );
@@ -655,6 +687,7 @@ export function RoomInfoPanel({
               readOnlyReason={readOnlyReason}
               saveEnabled={historySaveEnabled}
               saveLabel={t("room.saveHistoryVisibility")}
+              chooseLabel={t("room.accessChooseHistory")}
               status={fieldStatus("historyVisibility")}
               notes={
                 selectedHistory === "worldReadable" ? (
@@ -925,7 +958,16 @@ interface StatusBadge {
 }
 
 function roomSettingFailureMessage(kind: OperationFailureKind): string {
-  return kind === "forbidden" ? t("room.settingForbidden") : t("room.operationFailed");
+  switch (kind) {
+    case "forbidden":
+      return t("room.settingForbidden");
+    case "unsupportedPolicyCondition":
+      return t("room.settingUnsupportedPolicyCondition");
+    case "policyNotVerified":
+      return t("room.settingPolicyNotVerified");
+    default:
+      return t("room.operationFailed");
+  }
 }
 
 function roomStatusBadges(
