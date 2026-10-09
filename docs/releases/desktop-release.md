@@ -51,6 +51,8 @@ Claude Code and OpenCode have equivalent discovery entry points under
   an Intel Mac artifact.
 - The Windows x64 NSIS installer remains explicitly unsigned until a Windows
   certificate and signing gate are approved.
+- The Windows installer requires WebView2 `155.0.4283.45` or newer and invokes
+  the Evergreen bootstrapper when the installed runtime is older.
 - The Windows signing preparation is tracked in the [draft code signing
   policy](../security/code-signing-policy.md); this draft does not make the
   current unsigned artifact signed or approved for public distribution.
