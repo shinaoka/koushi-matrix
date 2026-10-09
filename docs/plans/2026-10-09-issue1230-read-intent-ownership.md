@@ -1,6 +1,10 @@
 # #1230: manager-owned read intent, then bounded Room actor retention
 
-Status: **revision 2 — reviewed and not yet implementable; nothing implemented.**
+Status: **archived — closed as not planned by maintainer decision; nothing
+implemented.** Kept because it is the most complete statement of the problem, and
+because the eight open specification items below are the starting point if the
+work is ever reopened. It is not an implementation brief.
+
 The first review rejected the retirement-policy design outright and prescribed
 this ownership move; this revision is that ownership move, and the second review
 answered "revise the design, not the architecture wholesale" with a concrete gap
