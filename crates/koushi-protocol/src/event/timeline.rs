@@ -46,8 +46,8 @@ pub enum ThreadsListEvent {
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TimelineEvent {
     InitialItems {
-        /// Stable projection identity retained until the WebView acknowledges
-        /// this actor generation's initial projection.
+        /// Stable actor-owned projection identity retained across replay for
+        /// this actor generation.
         request_id: Option<RequestId>,
         /// Exact command that caused this delivery. Recovery projections have
         /// no command cause and therefore use `None`.
