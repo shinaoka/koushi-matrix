@@ -138,6 +138,37 @@ describe("scheduled messages right panel", () => {
     expect(within(items[1]!).getByText(t("scheduled.threadReply"))).toBeTruthy();
   });
 
+  it("isolates the destination direction and separates the thread marker", () => {
+    const threaded = scheduledItem({
+      scheduled_id: "scheduled-threaded",
+      thread_root_event_id: "$root:example.invalid"
+    });
+    render(
+      <ContextualRightPanel
+        {...panelProps({ snapshot: openSnapshot([threaded]) })}
+      />
+    );
+
+    // Remote/user text: the room label must isolate its direction at the UI
+    // boundary so a bidi room name cannot reorder the surrounding metadata.
+    const destination = screen.getByText("synthetic-room");
+    expect(destination.getAttribute("dir")).toBe("auto");
+    expect(destination.className).toContain("scheduled-message-room");
+
+    const context = destination.closest(".scheduled-message-context");
+    expect(context).not.toBeNull();
+    const separator = context!.querySelector<HTMLElement>(".scheduled-message-separator");
+    expect(separator).not.toBeNull();
+    expect(separator!.getAttribute("aria-hidden")).toBe("true");
+    const thread = context!.querySelector<HTMLElement>(".scheduled-message-thread");
+    expect(thread).not.toBeNull();
+    // The separator sits between the destination and the thread marker.
+    expect(destination.compareDocumentPosition(separator!)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    );
+    expect(separator!.compareDocumentPosition(thread!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
   it("shows the panel's own projected capability, not a selected room's", () => {
     const snapshot = openSnapshot([scheduledItem({})]);
     snapshot.state.ui.timeline.scheduled_send_capability = "unknown";

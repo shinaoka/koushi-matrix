@@ -3751,6 +3751,36 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+/* Destination metadata sits below the preview: the room label may be a long
+   local name or a room-address fallback, so it truncates instead of widening
+   the panel; the thread marker is separated and stays intact. The room label is
+   remote/user text, so it carries `dir="auto"` at the render boundary. */
+.scheduled-message-context {
+  display: flex;
+  min-width: 0;
+  gap: var(--scheduled-action-gap);
+  align-items: baseline;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.scheduled-message-room {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scheduled-message-separator {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+.scheduled-message-thread {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .scheduled-message-actions,
 .scheduled-send-form-actions {
   display: flex;

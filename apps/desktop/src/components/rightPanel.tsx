@@ -930,13 +930,21 @@ export function ContextualRightPanel({
               );
               return (
                 <span className="scheduled-message-context">
-                  <span className="scheduled-message-room">
+                  {/* Remote/user text: direction is isolated per the i18n
+                      contract, and the name may be long or an address
+                      fallback. */}
+                  <span className="scheduled-message-room" dir="auto">
                     {destination ? roomDisplayLabel(destination) : item.room_id}
                   </span>
                   {item.thread_root_event_id ? (
-                    <span className="scheduled-message-thread">
-                      {t("scheduled.threadReply")}
-                    </span>
+                    <>
+                      <span className="scheduled-message-separator" aria-hidden="true">
+                        ·
+                      </span>
+                      <span className="scheduled-message-thread">
+                        {t("scheduled.threadReply")}
+                      </span>
+                    </>
                   ) : null}
                 </span>
               );
