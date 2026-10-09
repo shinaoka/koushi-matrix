@@ -4,10 +4,11 @@ use crate::room_projection::{
     matrix_public_room_from_chunk, matrix_room, matrix_room_operation_failure_kind,
     matrix_room_settings_snapshot, matrix_space_members_projection, non_empty_name,
     room_settings_snapshot_with_change, room_settings_snapshot_with_member_power_level,
-    sdk_history_visibility, sdk_join_rule_for_update,
+    sdk_history_visibility, sdk_join_rule_for_access_policy, sdk_join_rule_for_update,
 };
 use crate::{
-    MatrixClientSession, MatrixRoomMemberSummary, MatrixRoomTagKind, MatrixSpaceMembersProjection,
+    MatrixClientSession, MatrixRoomAccessFacts, MatrixRoomMemberSummary, MatrixRoomTagKind,
+    MatrixSpaceMembersProjection,
 };
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
 #[cfg(test)]
@@ -202,6 +203,10 @@ pub struct MatrixRoomSettingsSnapshot {
     pub alternate_aliases: Vec<String>,
     pub share_link: Option<String>,
     pub join_rule: MatrixRoomJoinRule,
+    /// The room's verified access facts (#1220): rule availability, restricted
+    /// allow-condition completeness and target kinds. The editor re-validates
+    /// an edit against this pre-send read.
+    pub access: MatrixRoomAccessFacts,
     pub history_visibility: MatrixRoomHistoryVisibility,
     pub permissions: MatrixRoomPermissionFacts,
     pub members: Vec<MatrixRoomMemberSummary>,
@@ -263,6 +268,12 @@ pub enum MatrixRoomSettingChange {
     Topic(Option<String>),
     AvatarUrl(Option<String>),
     JoinRule(MatrixRoomJoinRule),
+    /// Set a restricted rule with its canonical membership allow list, or a
+    /// non-restricted rule that carries none (#1177).
+    AccessPolicy {
+        rule: MatrixRoomJoinRule,
+        allow: Vec<String>,
+    },
     HistoryVisibility(MatrixRoomHistoryVisibility),
 }
 
@@ -328,6 +339,13 @@ pub async fn update_room_setting(
         }
         MatrixRoomSettingChange::JoinRule(join_rule) => {
             let join_rule = sdk_join_rule_for_update(*join_rule)?;
+            room.privacy_settings()
+                .update_join_rule(join_rule)
+                .await
+                .map_err(MatrixRoomOperationError::from_sdk_error)?;
+        }
+        MatrixRoomSettingChange::AccessPolicy { rule, allow } => {
+            let join_rule = sdk_join_rule_for_access_policy(*rule, allow)?;
             room.privacy_settings()
                 .update_join_rule(join_rule)
                 .await

@@ -1366,3 +1366,50 @@ async fn restricted_allow_targets_count_one_space_once() {
         "a duplicate entry does not make a single Space two targets"
     );
 }
+
+#[test]
+fn access_policy_builds_a_restricted_join_rule_with_canonical_membership_targets() {
+    use matrix_sdk::ruma::events::room::join_rules::{AllowRule, JoinRule};
+
+    let rule = super::sdk_join_rule_for_access_policy(
+        super::MatrixRoomJoinRule::Restricted,
+        &[
+            "!b:example.invalid".to_owned(),
+            "!a:example.invalid".to_owned(),
+            "!a:example.invalid".to_owned(),
+            String::new(),
+        ],
+    )
+    .expect("restricted with a target is settable");
+    let JoinRule::Restricted(restricted) = rule else {
+        panic!("expected a restricted rule, got {rule:?}");
+    };
+    assert_eq!(
+        restricted.allow,
+        vec![
+            AllowRule::room_membership(matrix_sdk::ruma::room_id!("!a:example.invalid").into()),
+            AllowRule::room_membership(matrix_sdk::ruma::room_id!("!b:example.invalid").into()),
+        ]
+    );
+
+    assert!(
+        super::sdk_join_rule_for_access_policy(super::MatrixRoomJoinRule::Restricted, &[]).is_err(),
+        "an explicitly empty allow list is rejected"
+    );
+    assert!(
+        super::sdk_join_rule_for_access_policy(
+            super::MatrixRoomJoinRule::Public,
+            &["!a:example.invalid".to_owned()],
+        )
+        .is_err(),
+        "a non-restricted rule carries no allow list"
+    );
+    assert!(
+        super::sdk_join_rule_for_access_policy(super::MatrixRoomJoinRule::Private, &[]).is_err(),
+        "private stays reserved"
+    );
+    assert!(matches!(
+        super::sdk_join_rule_for_access_policy(super::MatrixRoomJoinRule::Public, &[]),
+        Ok(JoinRule::Public)
+    ));
+}

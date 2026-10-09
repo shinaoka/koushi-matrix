@@ -269,7 +269,10 @@ impl ReplyQuoteHydration {
                 OperationFailureKind::NotFound | OperationFailureKind::Forbidden,
             ) => Some(placeholder_quote(event_id, ReplyQuoteState::Missing)),
             OriginalLookupOutcome::Failed(
-                OperationFailureKind::Invalid | OperationFailureKind::Sdk,
+                OperationFailureKind::Invalid
+                | OperationFailureKind::Sdk
+                | OperationFailureKind::UnsupportedPolicyCondition
+                | OperationFailureKind::PolicyNotVerified,
             ) => Some(placeholder_quote(event_id, ReplyQuoteState::Unsupported)),
             OriginalLookupOutcome::Failed(
                 OperationFailureKind::Network | OperationFailureKind::Timeout,

@@ -65,6 +65,7 @@ fn editable_settings(room_id: &str) -> RoomSettingsSnapshot {
         share_link: None,
         join_rule: RoomJoinRule::Invite,
         history_visibility: RoomHistoryVisibility::Shared,
+        access: koushi_state::RoomAccessCondition::default(),
         permissions: RoomPermissionFacts {
             can_edit_settings: true,
             can_change_join_rule: true,
@@ -878,6 +879,7 @@ fn avatar_metadata_debug_redacts_mxc_and_user_room_associations() {
         share_link: None,
         join_rule: RoomJoinRule::Invite,
         history_visibility: RoomHistoryVisibility::Shared,
+        access: koushi_state::RoomAccessCondition::default(),
         permissions: RoomPermissionFacts::default(),
         members: vec![member],
     };
@@ -887,4 +889,137 @@ fn avatar_metadata_debug_redacts_mxc_and_user_room_associations() {
         "{settings_debug}"
     );
     assert!(settings_debug.contains("MxcUri(..)"), "{settings_debug}");
+}
+
+fn settings_with_access(
+    room_id: &str,
+    access: koushi_state::RoomAccessCondition,
+) -> RoomSettingsSnapshot {
+    RoomSettingsSnapshot {
+        access,
+        ..editable_settings(room_id)
+    }
+}
+
+fn restricted_access(
+    completeness: koushi_state::RestrictedConditions,
+) -> koushi_state::RoomAccessCondition {
+    koushi_state::RoomAccessCondition {
+        join_rule: Some(RoomJoinRule::Restricted),
+        restricted: Some(completeness),
+        allow_targets: vec![koushi_state::RoomAllowTarget {
+            kind: koushi_state::RoomAllowTargetKind::Space,
+            room_id: "!space:example.invalid".to_owned(),
+        }],
+    }
+}
+
+fn access_policy() -> RoomSettingChange {
+    RoomSettingChange::AccessPolicy(koushi_state::RoomAccessPolicy::new(
+        RoomJoinRule::Restricted,
+        vec!["!space:example.invalid".to_owned()],
+    ))
+}
+
+#[test]
+fn access_policy_edit_is_rejected_with_the_unsupported_condition_kind() {
+    let mut state = ready_state();
+    state.room_management = RoomManagementState {
+        selected_room_id: Some("!room:example.invalid".to_owned()),
+        settings: Some(settings_with_access(
+            "!room:example.invalid",
+            restricted_access(koushi_state::RestrictedConditions::MembershipPlusUnsupported),
+        )),
+        operation: RoomManagementOperationState::Idle,
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateRequested {
+            request_id: 7,
+            room_id: "!room:example.invalid".to_owned(),
+            change: access_policy(),
+        },
+    );
+
+    assert_eq!(
+        state.room_management.operation,
+        RoomManagementOperationState::Failed {
+            request_id: 7,
+            room_id: "!room:example.invalid".to_owned(),
+            operation: RoomManagementOperationKind::Settings,
+            kind: OperationFailureKind::UnsupportedPolicyCondition,
+        }
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+    );
+}
+
+#[test]
+fn access_policy_edit_is_rejected_when_the_current_policy_is_unverified() {
+    let mut state = ready_state();
+    state.room_management = RoomManagementState {
+        selected_room_id: Some("!room:example.invalid".to_owned()),
+        settings: Some(settings_with_access(
+            "!room:example.invalid",
+            koushi_state::RoomAccessCondition {
+                join_rule: None,
+                restricted: Some(koushi_state::RestrictedConditions::NotInspected),
+                allow_targets: Vec::new(),
+            },
+        )),
+        operation: RoomManagementOperationState::Idle,
+    };
+
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateRequested {
+            request_id: 8,
+            room_id: "!room:example.invalid".to_owned(),
+            change: access_policy(),
+        },
+    );
+
+    assert_eq!(
+        state.room_management.operation,
+        RoomManagementOperationState::Failed {
+            request_id: 8,
+            room_id: "!room:example.invalid".to_owned(),
+            operation: RoomManagementOperationKind::Settings,
+            kind: OperationFailureKind::PolicyNotVerified,
+        }
+    );
+}
+
+#[test]
+fn access_policy_edit_is_admitted_for_verified_membership_only_content() {
+    let mut state = ready_state();
+    state.room_management = RoomManagementState {
+        selected_room_id: Some("!room:example.invalid".to_owned()),
+        settings: Some(settings_with_access(
+            "!room:example.invalid",
+            restricted_access(koushi_state::RestrictedConditions::MembershipOnly),
+        )),
+        operation: RoomManagementOperationState::Idle,
+    };
+
+    reduce(
+        &mut state,
+        AppAction::RoomSettingUpdateRequested {
+            request_id: 9,
+            room_id: "!room:example.invalid".to_owned(),
+            change: access_policy(),
+        },
+    );
+
+    assert_eq!(
+        state.room_management.operation,
+        RoomManagementOperationState::Pending {
+            request_id: 9,
+            room_id: "!room:example.invalid".to_owned(),
+            operation: RoomManagementOperationKind::Settings,
+        }
+    );
 }

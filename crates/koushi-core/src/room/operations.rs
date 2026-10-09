@@ -193,6 +193,10 @@ pub(super) fn operation_failure_kind(kind: RoomFailureKind) -> OperationFailureK
         RoomFailureKind::Network => OperationFailureKind::Network,
         RoomFailureKind::NotFound => OperationFailureKind::NotFound,
         RoomFailureKind::Sdk => OperationFailureKind::Sdk,
+        RoomFailureKind::UnsupportedPolicyCondition => {
+            OperationFailureKind::UnsupportedPolicyCondition
+        }
+        RoomFailureKind::PolicyNotVerified => OperationFailureKind::PolicyNotVerified,
     }
 }
 
@@ -256,6 +260,8 @@ fn room_failure_token(kind: RoomFailureKind) -> &'static str {
         RoomFailureKind::Network => "failed_network",
         RoomFailureKind::NotFound => "failed_not_found",
         RoomFailureKind::Sdk => "failed_sdk",
+        RoomFailureKind::UnsupportedPolicyCondition => "failed_unsupported_policy_condition",
+        RoomFailureKind::PolicyNotVerified => "failed_policy_not_verified",
     }
 }
 

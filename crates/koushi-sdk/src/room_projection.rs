@@ -1666,6 +1666,7 @@ pub(super) async fn matrix_room_settings_snapshot(
             .ok()
             .map(|uri| uri.to_string()),
         join_rule: matrix_room_join_rule_or_default(room),
+        access: matrix_room_access_facts(room).await,
         history_visibility: matrix_room_history_visibility(&room.history_visibility_or_default()),
         permissions: MatrixRoomPermissionFacts {
             can_edit_settings,
@@ -1919,6 +1920,33 @@ pub(super) fn room_settings_snapshot_with_change(
         MatrixRoomSettingChange::JoinRule(join_rule) => {
             snapshot.join_rule = *join_rule;
         }
+        MatrixRoomSettingChange::AccessPolicy { rule, allow } => {
+            snapshot.join_rule = *rule;
+            snapshot.access.join_rule = Some(*rule);
+            snapshot.access.restricted = match rule {
+                MatrixRoomJoinRule::Restricted => {
+                    Some(MatrixRestrictedCompleteness::MembershipOnly)
+                }
+                _ => None,
+            };
+            let mut targets: Vec<&str> = allow
+                .iter()
+                .map(String::as_str)
+                .filter(|target| !target.is_empty())
+                .collect();
+            targets.sort_unstable();
+            targets.dedup();
+            // The target kinds are verified from the local create events on the
+            // next observation; an optimistic projection stays `Unknown` rather
+            // than claiming a Space route.
+            snapshot.access.allow_targets = targets
+                .into_iter()
+                .map(|room_id| MatrixAllowTarget {
+                    kind: MatrixAllowTargetKind::Unknown,
+                    room_id: room_id.to_owned(),
+                })
+                .collect();
+        }
         MatrixRoomSettingChange::HistoryVisibility(history_visibility) => {
             snapshot.history_visibility = *history_visibility;
         }
@@ -2130,6 +2158,64 @@ pub(super) fn sdk_join_rule_for_update(
         // name a rule this client cannot write back faithfully.
         MatrixRoomJoinRule::Restricted
         | MatrixRoomJoinRule::KnockRestricted
+        | MatrixRoomJoinRule::Unknown => Err(MatrixRoomOperationError::InvalidRoomSetting),
+    }
+}
+
+/// Build the `m.room.join_rules` content for a settable access policy (#1177).
+///
+/// A restricted rule is accepted only with at least one canonical membership
+/// target, and a non-restricted rule only with none. `knock_restricted`,
+/// `private` and an unknown rule are not settable through this path; a
+/// reserved `private` is never produced as the Space route.
+pub(super) fn sdk_join_rule_for_access_policy(
+    rule: MatrixRoomJoinRule,
+    allow: &[String],
+) -> Result<matrix_sdk::ruma::events::room::join_rules::JoinRule, MatrixRoomOperationError> {
+    use matrix_sdk::ruma::events::room::join_rules::{AllowRule, JoinRule, Restricted};
+    let mut targets: Vec<&str> = allow
+        .iter()
+        .map(String::as_str)
+        .filter(|target| !target.is_empty())
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+    match rule {
+        MatrixRoomJoinRule::Restricted => {
+            if targets.is_empty() {
+                return Err(MatrixRoomOperationError::InvalidRoomSetting);
+            }
+            let mut rules = Vec::with_capacity(targets.len());
+            for target in targets {
+                let room_id = matrix_sdk::ruma::RoomId::parse(target)
+                    .map_err(|_| MatrixRoomOperationError::InvalidRoomSetting)?;
+                rules.push(AllowRule::room_membership(room_id));
+            }
+            Ok(JoinRule::Restricted(Restricted::new(rules)))
+        }
+        MatrixRoomJoinRule::Public => {
+            if targets.is_empty() {
+                Ok(JoinRule::Public)
+            } else {
+                Err(MatrixRoomOperationError::InvalidRoomSetting)
+            }
+        }
+        MatrixRoomJoinRule::Invite => {
+            if targets.is_empty() {
+                Ok(JoinRule::Invite)
+            } else {
+                Err(MatrixRoomOperationError::InvalidRoomSetting)
+            }
+        }
+        MatrixRoomJoinRule::Knock => {
+            if targets.is_empty() {
+                Ok(JoinRule::Knock)
+            } else {
+                Err(MatrixRoomOperationError::InvalidRoomSetting)
+            }
+        }
+        MatrixRoomJoinRule::KnockRestricted
+        | MatrixRoomJoinRule::Private
         | MatrixRoomJoinRule::Unknown => Err(MatrixRoomOperationError::InvalidRoomSetting),
     }
 }

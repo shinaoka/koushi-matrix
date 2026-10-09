@@ -1697,6 +1697,7 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
             share_link: None,
             join_rule: RoomJoinRule::Invite,
             history_visibility: RoomHistoryVisibility::Shared,
+            access: koushi_state::RoomAccessCondition::default(),
             permissions: RoomPermissionFacts {
                 can_edit_settings: true,
                 can_change_join_rule: true,

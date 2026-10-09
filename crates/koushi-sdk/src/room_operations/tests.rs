@@ -566,6 +566,7 @@ fn room_management_wrappers_use_settings_privacy_and_moderation_apis() {
         canonical_alias: None,
         alternate_aliases: Vec::new(),
         join_rule: MatrixRoomJoinRule::Invite,
+        access: crate::MatrixRoomAccessFacts::default(),
         history_visibility: MatrixRoomHistoryVisibility::Shared,
         permissions: MatrixRoomPermissionFacts {
             can_edit_settings: true,
@@ -610,6 +611,7 @@ fn room_setting_update_projects_the_sent_change_into_the_success_snapshot() {
         canonical_alias: None,
         alternate_aliases: Vec::new(),
         join_rule: MatrixRoomJoinRule::Invite,
+        access: crate::MatrixRoomAccessFacts::default(),
         history_visibility: MatrixRoomHistoryVisibility::Shared,
         permissions: MatrixRoomPermissionFacts {
             can_edit_settings: true,
@@ -673,6 +675,7 @@ fn room_member_power_level_projection_updates_role_in_success_snapshot() {
         canonical_alias: None,
         alternate_aliases: Vec::new(),
         join_rule: MatrixRoomJoinRule::Invite,
+        access: crate::MatrixRoomAccessFacts::default(),
         history_visibility: MatrixRoomHistoryVisibility::Shared,
         permissions: MatrixRoomPermissionFacts {
             can_edit_settings: true,

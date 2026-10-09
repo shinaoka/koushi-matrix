@@ -46,6 +46,8 @@ fn mention_failure_kind(error: &MatrixRoomOperationError) -> MentionCandidatesFa
         RoomFailureKind::AliasInUse
         | RoomFailureKind::InvalidInvite
         | RoomFailureKind::NotFound
+        | RoomFailureKind::UnsupportedPolicyCondition
+        | RoomFailureKind::PolicyNotVerified
         | RoomFailureKind::Sdk => MentionCandidatesFailureKind::Sdk,
     }
 }

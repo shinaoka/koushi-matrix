@@ -100,6 +100,11 @@ pub struct RoomSettingsSnapshot {
     pub share_link: Option<String>,
     pub join_rule: RoomJoinRule,
     pub history_visibility: RoomHistoryVisibility,
+    /// The verified access facts (#1220): the rule's availability, its
+    /// restricted allow-condition completeness and its target kinds. The
+    /// editor reads this instead of trusting the scalar `join_rule`.
+    #[serde(default)]
+    pub access: RoomAccessCondition,
     pub permissions: RoomPermissionFacts,
     pub members: Vec<RoomMemberSummary>,
 }
@@ -126,6 +131,9 @@ impl fmt::Debug for RoomSettingsSnapshot {
             )
             .field("join_rule", &self.join_rule)
             .field("history_visibility", &self.history_visibility)
+            .field("access_rule", &self.access.join_rule)
+            .field("access_restricted", &self.access.restricted)
+            .field("access_target_count", &self.access.allow_targets.len())
             .field("permissions", &self.permissions)
             .field("members", &self.members.len())
             .finish()
@@ -197,6 +205,41 @@ pub enum UserTrustState {
     Unverified,
     Verified,
     IdentityReset,
+}
+
+impl RoomSettingsSnapshot {
+    /// Whether a settable access policy may be submitted against this
+    /// snapshot's verified access facts (#1177). `None` means admissible.
+    ///
+    /// A restricted edit is rejected when the current allow content has entries
+    /// this client does not model (rewriting would silently drop them) or could
+    /// not be inspected at all. The two are kept apart so the renderer can say
+    /// which condition it is.
+    pub fn access_policy_rejection(
+        &self,
+        policy: &RoomAccessPolicy,
+    ) -> Option<OperationFailureKind> {
+        if !policy.is_submittable() {
+            return Some(OperationFailureKind::Invalid);
+        }
+        match self.access.join_rule {
+            None => Some(OperationFailureKind::PolicyNotVerified),
+            Some(RoomJoinRule::Restricted | RoomJoinRule::KnockRestricted) => {
+                match self.access.restricted {
+                    Some(RestrictedConditions::MembershipOnly)
+                    | Some(RestrictedConditions::ConfirmedEmpty) => None,
+                    Some(RestrictedConditions::MembershipPlusUnsupported)
+                    | Some(RestrictedConditions::UnsupportedOnly) => {
+                        Some(OperationFailureKind::UnsupportedPolicyCondition)
+                    }
+                    Some(RestrictedConditions::NotInspected) | None => {
+                        Some(OperationFailureKind::PolicyNotVerified)
+                    }
+                }
+            }
+            Some(_) => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -289,7 +332,7 @@ pub struct RoomAllowTarget {
 /// rule is never defaulted to `Invite` and reported as inspected. The
 /// restricted facts are carried only when the rule is
 /// `restricted`/`knock_restricted`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RoomAccessCondition {
     pub join_rule: Option<RoomJoinRule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -331,11 +374,55 @@ impl RoomPermissionFacts {
     /// the pending operation, so the two can never disagree.
     pub fn allows_setting_change(&self, change: &RoomSettingChange) -> bool {
         match change {
-            RoomSettingChange::JoinRule(_) => self.can_change_join_rule,
+            RoomSettingChange::JoinRule(_) | RoomSettingChange::AccessPolicy(_) => {
+                self.can_change_join_rule
+            }
             RoomSettingChange::Name(_)
             | RoomSettingChange::Topic(_)
             | RoomSettingChange::AvatarUrl(_)
             | RoomSettingChange::HistoryVisibility(_) => self.can_edit_settings,
+        }
+    }
+}
+
+/// A settable access policy: a join rule plus its canonical membership
+/// allow-target set (#1177).
+///
+/// The targets are sorted and deduplicated so a reordered and/or duplicated
+/// server allow list is not a change. `private` stays reserved and is never
+/// produced as the Space route; the ordinary `public`/`invite`/`knock` rules
+/// carry an empty target set and stay on `RoomSettingChange::JoinRule`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomAccessPolicy {
+    pub rule: RoomJoinRule,
+    pub allow_targets: Vec<String>,
+}
+
+impl RoomAccessPolicy {
+    /// Canonicalize a raw rule/target pair: drop empties, sort, deduplicate.
+    pub fn new(rule: RoomJoinRule, allow_targets: Vec<String>) -> Self {
+        let mut allow_targets = allow_targets;
+        allow_targets.retain(|target| !target.is_empty());
+        allow_targets.sort();
+        allow_targets.dedup();
+        Self {
+            rule,
+            allow_targets,
+        }
+    }
+
+    /// Whether this policy may be submitted to the SDK. A restricted rule
+    /// needs at least one verified membership target; a non-restricted rule
+    /// carries none; `knock_restricted`, `private` and `unknown` are not
+    /// settable through this path.
+    pub fn is_submittable(&self) -> bool {
+        match self.rule {
+            RoomJoinRule::Restricted => !self.allow_targets.is_empty(),
+            RoomJoinRule::Public | RoomJoinRule::Invite | RoomJoinRule::Knock => {
+                self.allow_targets.is_empty()
+            }
+            RoomJoinRule::KnockRestricted | RoomJoinRule::Private | RoomJoinRule::Unknown => false,
         }
     }
 }
@@ -347,6 +434,9 @@ pub enum RoomSettingChange {
     Topic(Option<String>),
     AvatarUrl(Option<String>),
     JoinRule(RoomJoinRule),
+    /// Set a restricted rule together with its membership allow list, or move
+    /// to a rule that carries none (#1177). The allow list is canonical.
+    AccessPolicy(RoomAccessPolicy),
     HistoryVisibility(RoomHistoryVisibility),
 }
 
@@ -366,6 +456,11 @@ impl fmt::Debug for RoomSettingChange {
                 .field(&value.as_ref().map(|_| "MxcUri(..)"))
                 .finish(),
             Self::JoinRule(rule) => formatter.debug_tuple("JoinRule").field(rule).finish(),
+            Self::AccessPolicy(policy) => formatter
+                .debug_struct("AccessPolicy")
+                .field("rule", &policy.rule)
+                .field("allow_target_count", &policy.allow_targets.len())
+                .finish(),
             Self::HistoryVisibility(visibility) => formatter
                 .debug_tuple("HistoryVisibility")
                 .field(visibility)
@@ -380,4 +475,136 @@ pub enum RoomModerationAction {
     Kick,
     Ban,
     Unban,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::errors::OperationFailureKind;
+
+    fn snapshot_with_access(access: RoomAccessCondition) -> RoomSettingsSnapshot {
+        RoomSettingsSnapshot {
+            room_id: "!room:example.invalid".to_owned(),
+            name: None,
+            topic: None,
+            avatar_url: None,
+            canonical_alias: None,
+            alternate_aliases: Vec::new(),
+            share_link: None,
+            join_rule: access.join_rule.unwrap_or(RoomJoinRule::Invite),
+            history_visibility: RoomHistoryVisibility::Shared,
+            access,
+            permissions: RoomPermissionFacts::default(),
+            members: Vec::new(),
+        }
+    }
+
+    fn restricted(completeness: RestrictedConditions) -> RoomAccessCondition {
+        RoomAccessCondition {
+            join_rule: Some(RoomJoinRule::Restricted),
+            restricted: Some(completeness),
+            allow_targets: vec![RoomAllowTarget {
+                kind: RoomAllowTargetKind::Space,
+                room_id: "!space:example.invalid".to_owned(),
+            }],
+        }
+    }
+
+    #[test]
+    fn access_policy_is_canonical_and_submittable() {
+        let policy = RoomAccessPolicy::new(
+            RoomJoinRule::Restricted,
+            vec![
+                "!b:example.invalid".to_owned(),
+                "!a:example.invalid".to_owned(),
+                "!a:example.invalid".to_owned(),
+                String::new(),
+            ],
+        );
+        assert_eq!(
+            policy.allow_targets,
+            vec![
+                "!a:example.invalid".to_owned(),
+                "!b:example.invalid".to_owned()
+            ]
+        );
+        assert!(policy.is_submittable());
+        assert!(!RoomAccessPolicy::new(RoomJoinRule::Restricted, Vec::new()).is_submittable());
+        assert!(
+            !RoomAccessPolicy::new(RoomJoinRule::Public, vec!["!a:example.invalid".to_owned()])
+                .is_submittable()
+        );
+        assert!(!RoomAccessPolicy::new(RoomJoinRule::Private, Vec::new()).is_submittable());
+        assert!(!RoomAccessPolicy::new(RoomJoinRule::KnockRestricted, Vec::new()).is_submittable());
+    }
+
+    #[test]
+    fn access_policy_rejection_separates_unsupported_from_unverified() {
+        let policy = RoomAccessPolicy::new(
+            RoomJoinRule::Restricted,
+            vec!["!s:example.invalid".to_owned()],
+        );
+
+        assert_eq!(
+            snapshot_with_access(restricted(RestrictedConditions::MembershipOnly))
+                .access_policy_rejection(&policy),
+            None
+        );
+        assert_eq!(
+            snapshot_with_access(restricted(RestrictedConditions::ConfirmedEmpty))
+                .access_policy_rejection(&policy),
+            None
+        );
+        assert_eq!(
+            snapshot_with_access(restricted(RestrictedConditions::MembershipPlusUnsupported))
+                .access_policy_rejection(&policy),
+            Some(OperationFailureKind::UnsupportedPolicyCondition)
+        );
+        assert_eq!(
+            snapshot_with_access(restricted(RestrictedConditions::UnsupportedOnly))
+                .access_policy_rejection(&policy),
+            Some(OperationFailureKind::UnsupportedPolicyCondition)
+        );
+        assert_eq!(
+            snapshot_with_access(RoomAccessCondition {
+                join_rule: None,
+                restricted: Some(RestrictedConditions::NotInspected),
+                allow_targets: Vec::new(),
+            })
+            .access_policy_rejection(&policy),
+            Some(OperationFailureKind::PolicyNotVerified)
+        );
+        assert_eq!(
+            snapshot_with_access(RoomAccessCondition {
+                join_rule: Some(RoomJoinRule::Public),
+                restricted: None,
+                allow_targets: Vec::new(),
+            })
+            .access_policy_rejection(&policy),
+            None
+        );
+        assert_eq!(
+            snapshot_with_access(restricted(RestrictedConditions::MembershipOnly))
+                .access_policy_rejection(&RoomAccessPolicy::new(
+                    RoomJoinRule::Restricted,
+                    Vec::new()
+                )),
+            Some(OperationFailureKind::Invalid)
+        );
+    }
+
+    #[test]
+    fn access_policy_change_uses_the_join_rule_permission() {
+        let change = RoomSettingChange::AccessPolicy(RoomAccessPolicy::new(
+            RoomJoinRule::Restricted,
+            vec!["!s:example.invalid".to_owned()],
+        ));
+        let mut permissions = RoomPermissionFacts {
+            can_change_join_rule: true,
+            ..RoomPermissionFacts::default()
+        };
+        assert!(permissions.allows_setting_change(&change));
+        permissions.can_change_join_rule = false;
+        assert!(!permissions.allows_setting_change(&change));
+    }
 }

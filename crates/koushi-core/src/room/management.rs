@@ -9,9 +9,10 @@ use koushi_sdk::{
     MatrixRoomSettingsSnapshot, MatrixUserTrustState,
 };
 use koushi_state::{
-    AppAction, RestrictedConditions, RoomAllowTargetKind, RoomHistoryVisibility, RoomJoinRule,
-    RoomMemberRole, RoomMemberRoleOption, RoomMemberSummary, RoomModerationAction,
-    RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot, UserTrustState,
+    AppAction, RestrictedConditions, RoomAccessCondition, RoomAllowTarget, RoomAllowTargetKind,
+    RoomHistoryVisibility, RoomJoinRule, RoomMemberRole, RoomMemberRoleOption, RoomMemberSummary,
+    RoomModerationAction, RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot,
+    UserTrustState,
 };
 
 fn room_settings_snapshot_from_sdk(settings: MatrixRoomSettingsSnapshot) -> RoomSettingsSnapshot {
@@ -24,6 +25,7 @@ fn room_settings_snapshot_from_sdk(settings: MatrixRoomSettingsSnapshot) -> Room
         alternate_aliases: settings.alternate_aliases,
         share_link: settings.share_link,
         join_rule: room_join_rule_from_sdk(settings.join_rule),
+        access: room_access_condition_from_sdk(settings.access),
         history_visibility: room_history_visibility_from_sdk(settings.history_visibility),
         permissions: room_permission_facts_from_sdk(settings.permissions),
         members: settings
@@ -90,6 +92,25 @@ pub(super) fn room_join_rule_from_sdk(join_rule: MatrixRoomJoinRule) -> RoomJoin
         MatrixRoomJoinRule::KnockRestricted => RoomJoinRule::KnockRestricted,
         MatrixRoomJoinRule::Private => RoomJoinRule::Private,
         MatrixRoomJoinRule::Unknown => RoomJoinRule::Unknown,
+    }
+}
+
+/// Mirror of the SDK's verified access facts (#1177): the rule's availability,
+/// the restricted allow-condition completeness and the target kinds.
+pub(super) fn room_access_condition_from_sdk(
+    facts: koushi_sdk::MatrixRoomAccessFacts,
+) -> RoomAccessCondition {
+    RoomAccessCondition {
+        join_rule: facts.join_rule.map(room_join_rule_from_sdk),
+        restricted: facts.restricted.map(restricted_conditions_from_sdk),
+        allow_targets: facts
+            .allow_targets
+            .into_iter()
+            .map(|target| RoomAllowTarget {
+                kind: allow_target_kind_from_sdk(target.kind),
+                room_id: target.room_id,
+            })
+            .collect(),
     }
 }
 
@@ -181,11 +202,32 @@ fn room_setting_change_to_sdk(change: RoomSettingChange) -> MatrixRoomSettingCha
         RoomSettingChange::JoinRule(join_rule) => {
             MatrixRoomSettingChange::JoinRule(room_join_rule_to_sdk(join_rule))
         }
+        RoomSettingChange::AccessPolicy(policy) => MatrixRoomSettingChange::AccessPolicy {
+            rule: room_join_rule_to_sdk(policy.rule),
+            allow: policy.allow_targets,
+        },
         RoomSettingChange::HistoryVisibility(history_visibility) => {
             MatrixRoomSettingChange::HistoryVisibility(room_history_visibility_to_sdk(
                 history_visibility,
             ))
         }
+    }
+}
+
+/// Map a state-level access-policy rejection to the public failure kind (#1177).
+fn access_policy_failure_kind(kind: koushi_state::OperationFailureKind) -> RoomFailureKind {
+    use koushi_state::OperationFailureKind;
+    match kind {
+        OperationFailureKind::UnsupportedPolicyCondition => {
+            RoomFailureKind::UnsupportedPolicyCondition
+        }
+        OperationFailureKind::PolicyNotVerified => RoomFailureKind::PolicyNotVerified,
+        OperationFailureKind::Forbidden => RoomFailureKind::Forbidden,
+        OperationFailureKind::NotFound => RoomFailureKind::NotFound,
+        OperationFailureKind::Network => RoomFailureKind::Network,
+        OperationFailureKind::Timeout
+        | OperationFailureKind::Invalid
+        | OperationFailureKind::Sdk => RoomFailureKind::Sdk,
     }
 }
 
@@ -273,6 +315,27 @@ impl RoomActor {
                 request_id,
                 CoreFailure::RoomOperationFailed {
                     kind: RoomFailureKind::Forbidden,
+                },
+            );
+            return;
+        }
+
+        // #1177: re-validate the current access content from this pre-send read.
+        // An unmodelled or uninspectable policy is rejected before any state
+        // event is sent.
+        if let RoomSettingChange::AccessPolicy(policy) = &change
+            && let Some(kind) = settings.access_policy_rejection(policy)
+        {
+            self.reduce_reliable(vec![AppAction::RoomSettingUpdateRequested {
+                request_id: request_id.sequence,
+                room_id,
+                change,
+            }])
+            .await;
+            self.emit_failure(
+                request_id,
+                CoreFailure::RoomOperationFailed {
+                    kind: access_policy_failure_kind(kind),
                 },
             );
             return;
@@ -530,6 +593,7 @@ mod tests {
             canonical_alias: Some("#private:example.invalid".to_owned()),
             alternate_aliases: vec!["#alternate:example.invalid".to_owned()],
             join_rule: MatrixRoomJoinRule::Invite,
+            access: koushi_sdk::MatrixRoomAccessFacts::default(),
             history_visibility: MatrixRoomHistoryVisibility::Shared,
             permissions: MatrixRoomPermissionFacts {
                 can_edit_settings: true,

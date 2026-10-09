@@ -58,6 +58,25 @@ pub(crate) fn handle_room_setting_update_requested(
         return vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)];
     }
 
+    // #1177: a restricted policy edit is admitted only when the pre-send read
+    // verified the current allow content can be inspected and safely rewritten.
+    if let RoomSettingChange::AccessPolicy(policy) = change
+        && let Some(kind) = state
+            .room_management
+            .settings
+            .as_ref()
+            .filter(|settings| settings.room_id == room_id)
+            .and_then(|settings| settings.access_policy_rejection(policy))
+    {
+        state.room_management.operation = RoomManagementOperationState::Failed {
+            request_id,
+            room_id,
+            operation: RoomManagementOperationKind::Settings,
+            kind,
+        };
+        return vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)];
+    }
+
     state.room_management.operation = RoomManagementOperationState::Pending {
         request_id,
         room_id,

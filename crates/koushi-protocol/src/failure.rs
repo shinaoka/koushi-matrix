@@ -82,6 +82,12 @@ pub enum RoomFailureKind {
     NotFound,
     Network,
     Sdk,
+    /// The current join-rule content has allow conditions this client does not
+    /// model, so rewriting it would drop them (#1177).
+    UnsupportedPolicyCondition,
+    /// The current join-rule policy could not be read from the store before
+    /// the write, so the edit was not attempted (#1177).
+    PolicyNotVerified,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

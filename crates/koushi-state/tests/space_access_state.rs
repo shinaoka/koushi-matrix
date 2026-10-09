@@ -45,6 +45,7 @@ fn settings(join_rule: RoomJoinRule, permissions: RoomPermissionFacts) -> RoomSe
         share_link: None,
         join_rule,
         history_visibility: RoomHistoryVisibility::Shared,
+        access: koushi_state::RoomAccessCondition::default(),
         permissions,
         members: Vec::new(),
     }

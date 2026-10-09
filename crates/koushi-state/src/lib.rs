@@ -109,7 +109,7 @@ pub use state::{
     ProfileResolutionInput, ProfileResolutionSource, ProfileState, ProfileUpdateRequest,
     ProfileUpdateState, ProvisionalPhase, QrLoginState, RecoveryKeyDeliveryState,
     RecoveryKeyMaterial, RecoveryMethod, ReplyQuote, ReplyQuoteCodeBlock, ReplyQuoteFormattedBody,
-    ReplyQuoteState, RestrictedConditions, RoomAccessCondition, RoomAllowTarget,
+    ReplyQuoteState, RestrictedConditions, RoomAccessCondition, RoomAccessPolicy, RoomAllowTarget,
     RoomAllowTargetKind, RoomAttentionKind, RoomAttentionProjection, RoomAttentionSummary,
     RoomHistoryVisibility, RoomInteractionState, RoomJoinRule, RoomKeyExportState,
     RoomKeyImportState, RoomLatestEventSummary, RoomListEntryKind, RoomListFailureKind,
