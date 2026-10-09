@@ -655,7 +655,7 @@ export function CreateEntityDialog({
             ) : null}
           </div>
         ) : null}
-        <div className="dialog-actions">
+        <div className="dialog-actions create-dialog-actions">
           <button
             className="dialog-button"
             type="button"

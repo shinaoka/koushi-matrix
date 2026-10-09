@@ -6480,6 +6480,16 @@ dialog.timeline-media-viewer-overlay::backdrop { background: transparent; }
   gap: 8px;
 }
 
+/* #1177: the create dialog's access/history choices make it tall, and the
+   dialog box scrolls at short window heights. Pin the actions to the bottom of
+   the scrollport so Create and Cancel stay reachable without scrolling. */
+.create-dialog-actions {
+  position: sticky;
+  bottom: 0;
+  padding-block: 8px;
+  background: var(--surface);
+}
+
 .dialog-button {
   min-width: 84px;
   height: 34px;
