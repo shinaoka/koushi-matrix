@@ -19,6 +19,7 @@ const packagePath = join(repoRoot, "apps/desktop/package.json");
 const tauriConfig = JSON.parse(readFileSync(tauriConfigPath, "utf8"));
 const tauriMacosConfig = JSON.parse(readFileSync(tauriMacosConfigPath, "utf8"));
 const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
+const minimumSecureWebView2Version = "155.0.4283.45";
 const failures = [];
 const notes = [];
 
@@ -64,6 +65,11 @@ requireCheck(windows.digestAlgorithm === "sha256", "windows.digestAlgorithm", "S
 requireCheck(Boolean(windows.timestampUrl), "windows.timestampUrl", "timestamp server configured");
 requireCheck("signCommand" in windows, "windows.signCommand", "Windows signing hook is explicit");
 requireCheck(windows.allowDowngrades === false, "windows.allowDowngrades", "downgrade install blocked");
+requireCheck(
+  windows.minimumWebview2Version === minimumSecureWebView2Version,
+  "windows.minimumWebview2Version",
+  `WebView2 security floor fixed at ${minimumSecureWebView2Version}`
+);
 requireCheck(Boolean(windows.wix), "windows.wix", "MSI/WiX configuration present");
 requireCheck(Boolean(windows.wix?.upgradeCode), "windows.wix.upgradeCode", "stable MSI upgrade code fixed");
 requireCheck(Boolean(windows.nsis), "windows.nsis", "NSIS configuration present");
