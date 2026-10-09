@@ -1340,13 +1340,13 @@ mock.setCommandResponse("get_snapshot", () => currentSnapshot);
 // #1177: the shared access/history editor's Rust previews. The harness returns
 // a well-formed outcome so the editor renders in the browser specs; the real
 // Rust resolver owns the wording and substitutions.
-mock.setCommandResponse("preview_room_access", ({ scope, context }) => ({
+mock.setCommandResponse("preview_room_access", ({ scope, context }: { scope: unknown; context: unknown }) => ({
   scope,
   context,
   confirmed: false,
   outcome: harnessAccessOutcome()
 }));
-mock.setCommandResponse("preview_create_room_access", ({ scope }) => ({
+mock.setCommandResponse("preview_create_room_access", ({ scope }: { scope: unknown }) => ({
   scope,
   confirmed: false,
   outcome: harnessAccessOutcome(),
