@@ -305,6 +305,25 @@ pub(crate) fn default_true() -> bool {
 }
 
 // ── AppState ─────────────────────────────────────────────────────────────────
+/// #1238 diagnostic (temporary): where an unopened thread's replies stop being
+/// delivered to this client. Recorded once per room from the authenticated client
+/// so the QA can name the boundary instead of inferring it from a badge.
+/// Session-scoped and never serialized to the webview.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ThreadDeliveryDiagnostic {
+    /// The server advertises `org.matrix.msc4306` and the client opted in.
+    pub capability_advertised: Option<bool>,
+    /// A thread subscription request was sent for a root the room window exposed.
+    pub subscribe_attempted: bool,
+    /// That request was accepted.
+    pub subscribe_succeeded: Option<bool>,
+    /// The SDK thread cache was read for that root.
+    pub thread_cache_read: bool,
+    pub thread_cache_unread: u64,
+    pub thread_cache_notifications: u64,
+    pub thread_cache_mentions: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AppState {
     pub session: SessionState,
@@ -316,6 +335,9 @@ pub struct AppState {
     pub sliding_sync_account_epoch: u64,
     #[serde(skip)]
     pub sliding_sync_capability: SlidingSyncCapabilityState,
+    /// #1238 diagnostic (temporary): see [`ThreadDeliveryDiagnostic`].
+    #[serde(skip)]
+    pub thread_delivery: ThreadDeliveryDiagnostic,
     #[serde(default)]
     pub device_cleanup: DeviceCleanupState,
     #[serde(default)]
@@ -452,6 +474,7 @@ impl Default for AppState {
             secure_backup_gate: SecureBackupGateState::Inactive,
             sliding_sync_account_epoch: 0,
             sliding_sync_capability: SlidingSyncCapabilityState::Unknown,
+            thread_delivery: ThreadDeliveryDiagnostic::default(),
             device_cleanup: DeviceCleanupState::Idle,
             current_session_status: CurrentSessionStatusState::Idle,
             current_session_status_schedule: SessionStatusSchedule::default(),

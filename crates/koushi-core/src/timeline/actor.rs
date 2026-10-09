@@ -900,6 +900,9 @@ pub(super) struct TimelineActor {
     /// timelines update it, and React reads its projection through
     /// `AppState.thread_attention`.
     pub(super) thread_attention: ThreadAttentionTracker,
+    /// #1238 diagnostic (temporary): the unopened-thread delivery boundary is
+    /// measured once per room actor.
+    pub(super) thread_delivery_diagnosed: bool,
     /// Rust-owned navigation projection source. The webview reports viewport
     /// facts; item ordering, unread marker semantics, and counts stay here.
     pub(super) navigation_items: Vec<TimelineItem>,
@@ -1915,6 +1918,7 @@ impl TimelineActor {
             media_download_tasks: HashMap::new(),
             search_index_tx,
             thread_attention,
+            thread_delivery_diagnosed: false,
             navigation_items,
             receipt_endpoints,
             display_projection,
