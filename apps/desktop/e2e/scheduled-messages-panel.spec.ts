@@ -18,7 +18,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { AccountTabsSnapshot } from "../src/domain/types";
 import { t } from "../src/i18n/messages";
-import { gotoReadyShell, HARNESS_ROOM_ID } from "./support/basicOperations";
+import { gotoReadyShell } from "./support/basicOperations";
 import { pushDelta } from "./support/stateUpdates";
 
 const HARNESS_SPACE_ID = "!harness-space:example.invalid";
