@@ -1002,6 +1002,7 @@ fn e2ee_recovery_required_after_failed_login_clears_login_error() {
             code: "login_failed".to_owned(),
             message: "Invalid username or password".to_owned(),
             recoverable: true,
+            reason: None,
         }],
         ..AppState::default()
     };

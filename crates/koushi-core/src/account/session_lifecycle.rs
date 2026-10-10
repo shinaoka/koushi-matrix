@@ -12,7 +12,9 @@ use koushi_key::{LocalStoreId, StoredMatrixSession};
 use koushi_protocol::SessionKeyId;
 use koushi_sdk::{MatrixClientSession, PendingOidcLogin, PersistableMatrixSession};
 use koushi_state::{
-    AppAction, AuthFailureKind, LoginAttemptId, LoginRequest, SessionInfo, SlidingSyncAdmission,
+    AppAction, AuthFailureDetail, AuthFailureKind, AuthFailureStage, AuthFailureTransport,
+    AuthMatrixErrorKind, AuthMethod, DelegatedAuthMethod, LoginAttemptId, LoginRequest,
+    SessionInfo, SlidingSyncAdmission,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -164,8 +166,6 @@ pub(super) struct LockedSessionRecord {
 pub(super) struct PendingOidcAttempt {
     pub(super) start_request_id: RequestId,
     pub(super) flow: PendingOidcFlow,
-    pub(super) authorization_url: String,
-    pub(super) state: String,
 }
 
 pub(super) enum PendingOidcFlow {
@@ -183,6 +183,19 @@ impl PendingOidcFlow {
             Self::Sdk { pending, .. } => pending.homeserver(),
             #[cfg(test)]
             Self::Synthetic { homeserver } => homeserver,
+        }
+    }
+
+    /// The bounded authentication method actually started, used to classify a
+    /// callback failure with the right method token (#1268).
+    fn method(&self) -> AuthMethod {
+        match self {
+            Self::Sdk { pending, .. } => match pending {
+                PendingOidcLogin::OAuth { .. } => AuthMethod::OAuth,
+                PendingOidcLogin::Sso { .. } => AuthMethod::Sso,
+            },
+            #[cfg(test)]
+            Self::Synthetic { .. } => AuthMethod::OAuth,
         }
     }
 }
@@ -289,43 +302,74 @@ async fn run_session_change_observation(
     }
 }
 
-/// Map a `PasswordLoginError` to a coarse `LoginFailureKind` without exposing
-/// raw SDK error text in public events.
-fn classify_login_error(error: &koushi_sdk::PasswordLoginError) -> LoginFailureKind {
-    use koushi_sdk::{LoginDiscoveryError, PasswordLoginError};
-    match error {
-        PasswordLoginError::InvalidHomeserver(discovery_err) => match discovery_err {
-            LoginDiscoveryError::RequestFailed(_) | LoginDiscoveryError::HttpStatus { .. } => {
-                LoginFailureKind::Network
-            }
+/// Map a typed `AuthFailureDetail` to the coarse `LoginFailureKind`. The
+/// classification is by typed variants only (#1268): no error text is ever
+/// searched, so incidental status digits cannot change the outcome.
+fn login_failure_kind(detail: AuthFailureDetail) -> LoginFailureKind {
+    match detail.transport {
+        AuthFailureTransport::Timeout => LoginFailureKind::Timeout,
+        AuthFailureTransport::NoResponse => LoginFailureKind::Network,
+        AuthFailureTransport::Local => match detail.stage {
+            AuthFailureStage::LocalStore => LoginFailureKind::Store,
             _ => LoginFailureKind::Server,
         },
-        PasswordLoginError::Sdk(message) => {
-            if message.contains("401")
-                || message.contains("403")
-                || message.contains("M_FORBIDDEN")
-                || message.contains("M_UNAUTHORIZED")
-            {
-                LoginFailureKind::InvalidCredentials
-            } else if message.contains("429") || message.contains("M_LIMIT_EXCEEDED") {
-                LoginFailureKind::RateLimited
-            } else {
-                LoginFailureKind::Server
+        AuthFailureTransport::HttpResponse => {
+            if let Some(kind) = detail.matrix_error_kind {
+                match kind {
+                    AuthMatrixErrorKind::Forbidden | AuthMatrixErrorKind::Unauthorized => {
+                        return LoginFailureKind::InvalidCredentials;
+                    }
+                    AuthMatrixErrorKind::LimitExceeded => return LoginFailureKind::RateLimited,
+                    _ => {}
+                }
             }
-        }
-        PasswordLoginError::Runtime(_) => LoginFailureKind::Server,
-        PasswordLoginError::MissingSession => LoginFailureKind::Server,
-        PasswordLoginError::Serialization(_) | PasswordLoginError::SavedCryptoStore(_) => {
-            LoginFailureKind::Store
+            match detail.http_status {
+                Some(401 | 403) => LoginFailureKind::InvalidCredentials,
+                Some(429) => LoginFailureKind::RateLimited,
+                _ => LoginFailureKind::Server,
+            }
         }
     }
 }
 
+/// Map a typed `AuthFailureDetail` to the coarse auth/UI `AuthFailureKind`.
+fn auth_failure_kind(detail: AuthFailureDetail) -> AuthFailureKind {
+    match detail.transport {
+        AuthFailureTransport::Timeout => AuthFailureKind::Timeout,
+        AuthFailureTransport::NoResponse => AuthFailureKind::Network,
+        AuthFailureTransport::Local => match detail.stage {
+            AuthFailureStage::LocalStore => AuthFailureKind::Store,
+            _ => AuthFailureKind::Sdk,
+        },
+        AuthFailureTransport::HttpResponse => {
+            if let Some(kind) = detail.matrix_error_kind {
+                match kind {
+                    AuthMatrixErrorKind::Forbidden | AuthMatrixErrorKind::Unauthorized => {
+                        return AuthFailureKind::Forbidden;
+                    }
+                    AuthMatrixErrorKind::LimitExceeded => return AuthFailureKind::RateLimited,
+                    _ => {}
+                }
+            }
+            match detail.http_status {
+                Some(401 | 403) => AuthFailureKind::Forbidden,
+                Some(429) => AuthFailureKind::RateLimited,
+                _ => AuthFailureKind::Sdk,
+            }
+        }
+    }
+}
+
+/// Classify a login-discovery failure without inspecting error text. Used by
+/// the reducer-facing discovery commands, which carry the raw discovery error.
 fn login_discovery_failure_kind(error: &koushi_sdk::LoginDiscoveryError) -> AuthFailureKind {
     match error {
         koushi_sdk::LoginDiscoveryError::RequestFailed(_) => AuthFailureKind::Network,
-        koushi_sdk::LoginDiscoveryError::HttpStatus { status: 403, .. } => {
-            AuthFailureKind::Forbidden
+        koushi_sdk::LoginDiscoveryError::HttpStatus {
+            status: 401 | 403, ..
+        } => AuthFailureKind::Forbidden,
+        koushi_sdk::LoginDiscoveryError::HttpStatus { status: 429, .. } => {
+            AuthFailureKind::RateLimited
         }
         koushi_sdk::LoginDiscoveryError::HttpStatus { .. }
         | koushi_sdk::LoginDiscoveryError::MissingFlows
@@ -336,46 +380,64 @@ fn login_discovery_failure_kind(error: &koushi_sdk::LoginDiscoveryError) -> Auth
     }
 }
 
-fn fresh_login_cleanup_evidence(
-    error: &koushi_sdk::PasswordLoginError,
-) -> Option<PendingLoginCleanupEvidence> {
-    match error {
-        koushi_sdk::PasswordLoginError::InvalidHomeserver(_) => {
-            Some(PendingLoginCleanupEvidence::NoRequestSent)
-        }
-        koushi_sdk::PasswordLoginError::Sdk(message)
-            if message.contains("401")
-                || message.contains("403")
-                || message.contains("M_UNAUTHORIZED")
-                || message.contains("M_FORBIDDEN") =>
-        {
-            Some(PendingLoginCleanupEvidence::ServerRejectedBeforeSession)
-        }
-        _ => None,
+/// The closed cleanup evidence for a failed fresh login. Only "no login request
+/// was sent" and "the server rejected before any session" may clean up
+/// immediately; every other failure stays resumable.
+fn fresh_login_cleanup_evidence(detail: AuthFailureDetail) -> Option<PendingLoginCleanupEvidence> {
+    match detail.stage {
+        AuthFailureStage::ResolveHomeserver => Some(PendingLoginCleanupEvidence::NoRequestSent),
+        _ => match detail.http_status {
+            Some(401 | 403) if detail.transport == AuthFailureTransport::HttpResponse => {
+                Some(PendingLoginCleanupEvidence::ServerRejectedBeforeSession)
+            }
+            _ => None,
+        },
     }
 }
 
-fn classify_auth_error(error: &koushi_sdk::PasswordLoginError) -> AuthFailureKind {
-    match error {
-        koushi_sdk::PasswordLoginError::InvalidHomeserver(discovery_err) => {
-            login_discovery_failure_kind(discovery_err)
-        }
-        koushi_sdk::PasswordLoginError::Sdk(message) => {
-            if message.contains("401")
-                || message.contains("403")
-                || message.contains("M_FORBIDDEN")
-                || message.contains("M_UNAUTHORIZED")
-            {
-                AuthFailureKind::Forbidden
-            } else {
-                AuthFailureKind::Sdk
-            }
-        }
-        koushi_sdk::PasswordLoginError::Runtime(_)
-        | koushi_sdk::PasswordLoginError::MissingSession
-        | koushi_sdk::PasswordLoginError::Serialization(_)
-        | koushi_sdk::PasswordLoginError::SavedCryptoStore(_) => AuthFailureKind::Sdk,
+/// Record the bounded, privacy-safe classification fields for an
+/// authentication failure. The event never carries credentials, tokens,
+/// callback URLs, raw SDK errors, response bodies, account identifiers, or
+/// server URLs.
+fn record_auth_failure_detail(stage: &'static str, detail: AuthFailureDetail) {
+    let mut event = DiagnosticEvent::new(DiagnosticLevel::Warn, "core.auth", stage)
+        .field(DiagnosticField::token("method", detail.method.token()))
+        .field(DiagnosticField::token(
+            "failure_stage",
+            detail.stage.token(),
+        ))
+        .field(DiagnosticField::token(
+            "transport",
+            detail.transport.token(),
+        ))
+        .field(DiagnosticField::boolean("retryable", detail.retryable));
+    if let Some(status) = detail.http_status {
+        event = event.field(DiagnosticField::count("http_status", u64::from(status)));
     }
+    if let Some(kind) = detail.matrix_error_kind {
+        event = event.field(DiagnosticField::token("matrix_error_kind", kind.token()));
+    }
+    record(event);
+}
+
+/// Derive the visible-guidance reason for a password-login failure.
+fn password_login_failure(
+    error: &koushi_sdk::PasswordLoginError,
+) -> (LoginFailureKind, AuthFailureKind, AuthFailureDetail) {
+    let detail = error.failure_detail(AuthMethod::Password);
+    (
+        login_failure_kind(detail),
+        auth_failure_kind(detail),
+        detail,
+    )
+}
+
+/// Derive the coarse auth failure kind for an OIDC/SSO failure.
+fn oidc_failure_detail(
+    error: &koushi_sdk::PasswordLoginError,
+    method: AuthMethod,
+) -> AuthFailureDetail {
+    error.failure_detail(method)
 }
 
 impl AccountActor {
@@ -544,6 +606,7 @@ impl AccountActor {
         &mut self,
         request_id: RequestId,
         homeserver: String,
+        method: DelegatedAuthMethod,
     ) {
         let homeserver = match koushi_sdk::resolve_homeserver(&homeserver).await {
             Ok(homeserver) => homeserver,
@@ -554,23 +617,12 @@ impl AccountActor {
             }
         };
         let normalized_homeserver = homeserver.normalized();
-        if let Some(pending) = self.pending_oidc_login.as_ref() {
-            if pending.flow.homeserver() == normalized_homeserver {
-                self.emit(CoreEvent::Account(AccountEvent::OidcAuthorizationCreated {
-                    request_id,
-                    authorization_url: pending.authorization_url.clone(),
-                    state: pending.state.clone(),
-                }));
-            } else {
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::AccountOperationFailed {
-                        kind: AuthFailureKind::Cancelled,
-                    },
-                );
-            }
-            return;
-        }
+        // #1267: a new start replaces any retained attempt. Retiring first
+        // advances the allocation generation with `BrowserCancellation`
+        // evidence, so a retry always builds fresh SDK authorization state and
+        // never replays an expired URL; a callback for the replaced generation
+        // is inert.
+        self.retire_pending_oidc_login();
 
         let (store_config, requested_device_id, allocation) =
             if let Some(locked) = self.locked_session_record.as_ref() {
@@ -617,6 +669,7 @@ impl AccountActor {
             store_config.as_ref(),
             requested_device_id.as_deref(),
             self.locked_session_record.is_some(),
+            method,
         )
         .await
         {
@@ -627,9 +680,22 @@ impl AccountActor {
                         pending,
                         allocation,
                     },
-                    authorization_url: authorization.authorization_url.clone(),
-                    state: authorization.state.clone(),
                 });
+                record(
+                    DiagnosticEvent::new(
+                        DiagnosticLevel::Info,
+                        "core.auth",
+                        "browser_authorization_created",
+                    )
+                    .field(DiagnosticField::token(
+                        "method",
+                        authorization.method.token(),
+                    ))
+                    .field(DiagnosticField::boolean(
+                        "legacy_sso_fallback",
+                        authorization.legacy_sso_fallback,
+                    )),
+                );
                 self.emit(CoreEvent::Account(AccountEvent::OidcAuthorizationCreated {
                     request_id,
                     authorization_url: authorization.authorization_url,
@@ -637,7 +703,9 @@ impl AccountActor {
                 }));
             }
             Err(error) => {
-                let kind = classify_auth_error(&error);
+                let detail = oidc_failure_detail(&error, method.auth_method());
+                let kind = auth_failure_kind(detail);
+                record_auth_failure_detail("browser_authorization_failed", detail);
                 self.send_actions(vec![AppAction::LoginDiscoveryFailed {
                     homeserver: normalized_homeserver,
                     kind,
@@ -645,6 +713,20 @@ impl AccountActor {
                 .await;
                 self.emit_failure(request_id, CoreFailure::AccountOperationFailed { kind });
             }
+        }
+    }
+
+    /// Retire the pending browser attempt on an explicit cancellation (#1267).
+    /// Idempotent and quiet when nothing is pending.
+    pub(super) fn handle_cancel_oidc_login(&mut self) {
+        let had_pending = self.pending_oidc_login.is_some();
+        self.retire_pending_oidc_login();
+        if had_pending {
+            record(DiagnosticEvent::new(
+                DiagnosticLevel::Info,
+                "core.auth",
+                "browser_authorization_cancelled",
+            ));
         }
     }
 
@@ -673,6 +755,7 @@ impl AccountActor {
             self.send_actions(vec![AppAction::LoginFailed {
                 attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
                 message: "login failed".to_owned(),
+                reason: Some(AuthFailureKind::Cancelled),
             }])
             .await;
             return;
@@ -683,6 +766,7 @@ impl AccountActor {
             ..
         } = pending_attempt;
         let homeserver = pending.homeserver().to_owned();
+        let method = pending.method();
         let allocation = match &pending {
             PendingOidcFlow::Sdk { allocation, .. } => allocation.clone(),
             #[cfg(test)]
@@ -731,7 +815,9 @@ impl AccountActor {
         let login_session = match login_result {
             Ok(session) => session,
             Err(error) => {
-                let kind = classify_auth_error(&error);
+                let detail = oidc_failure_detail(&error, method);
+                let kind = auth_failure_kind(detail);
+                record_auth_failure_detail("browser_callback_failed", detail);
                 self.send_actions(vec![AppAction::LoginDiscoveryFailed { homeserver, kind }])
                     .await;
                 self.emit_failure(request_id, CoreFailure::AccountOperationFailed { kind });
@@ -741,6 +827,7 @@ impl AccountActor {
                         request_id.sequence,
                     ),
                     message: "login failed".to_owned(),
+                    reason: Some(kind),
                 }])
                 .await;
                 return;
@@ -799,6 +886,7 @@ impl AccountActor {
                         request_id.sequence,
                     ),
                     message: "login failed".to_owned(),
+                    reason: None,
                 }])
                 .await;
                 return;
@@ -812,6 +900,7 @@ impl AccountActor {
             self.send_actions(vec![AppAction::LoginFailed {
                 attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
                 message: "login failed".to_owned(),
+                reason: None,
             }])
             .await;
             return;
@@ -879,18 +968,16 @@ impl AccountActor {
             }
             Err(error) => {
                 let error = koushi_sdk::PasswordLoginError::InvalidHomeserver(error);
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::LoginFailed {
-                        kind: classify_login_error(&error),
-                    },
-                );
+                let (login_kind, kind, detail) = password_login_failure(&error);
+                record_auth_failure_detail("login_homeserver_failed", detail);
+                self.emit_failure(request_id, CoreFailure::LoginFailed { kind: login_kind });
                 self.send_actions(vec![AppAction::LoginFailed {
                     attempt_id: LoginAttemptId::new(
                         request_id.connection_id.0,
                         request_id.sequence,
                     ),
                     message: "login failed".to_owned(),
+                    reason: Some(kind),
                 }])
                 .await;
                 return;
@@ -910,6 +997,7 @@ impl AccountActor {
                         request_id.sequence,
                     ),
                     message: "login failed".to_owned(),
+                    reason: None,
                 }])
                 .await;
                 return;
@@ -927,6 +1015,7 @@ impl AccountActor {
                             request_id.sequence,
                         ),
                         message: "login failed".to_owned(),
+                        reason: None,
                     }])
                     .await;
                     return;
@@ -946,6 +1035,7 @@ impl AccountActor {
                         request_id.sequence,
                     ),
                     message: "login failed".to_owned(),
+                    reason: None,
                 }])
                 .await;
                 return;
@@ -965,18 +1055,16 @@ impl AccountActor {
             {
                 Ok(session) => session,
                 Err(error) => {
-                    self.emit_failure(
-                        request_id,
-                        CoreFailure::LoginFailed {
-                            kind: classify_login_error(&error),
-                        },
-                    );
+                    let (login_kind, kind, detail) = password_login_failure(&error);
+                    record_auth_failure_detail("password_login_failed", detail);
+                    self.emit_failure(request_id, CoreFailure::LoginFailed { kind: login_kind });
                     self.send_actions(vec![AppAction::LoginFailed {
                         attempt_id: LoginAttemptId::new(
                             request_id.connection_id.0,
                             request_id.sequence,
                         ),
                         message: "login failed".to_owned(),
+                        reason: Some(kind),
                     }])
                     .await;
                     return;
@@ -998,6 +1086,7 @@ impl AccountActor {
                         request_id.sequence,
                     ),
                     message: "login failed".to_owned(),
+                    reason: None,
                 }])
                 .await;
                 return;
@@ -1020,6 +1109,7 @@ impl AccountActor {
                             request_id.sequence,
                         ),
                         message: "login failed".to_owned(),
+                        reason: None,
                     }])
                     .await;
                     return;
@@ -1035,6 +1125,7 @@ impl AccountActor {
                             request_id.sequence,
                         ),
                         message: "login failed".to_owned(),
+                        reason: None,
                     }])
                     .await;
                     return;
@@ -1049,25 +1140,23 @@ impl AccountActor {
             {
                 Ok(session) => session,
                 Err(error) => {
-                    if let Some(evidence) = fresh_login_cleanup_evidence(&error) {
+                    let (login_kind, kind, detail) = password_login_failure(&error);
+                    record_auth_failure_detail("password_login_failed", detail);
+                    if let Some(evidence) = fresh_login_cleanup_evidence(detail) {
                         let _ = self.store.pending_login_owner().cancel(
                             &pending.allocation_id,
                             pending.attempt_generation,
                             evidence,
                         );
                     }
-                    self.emit_failure(
-                        request_id,
-                        CoreFailure::LoginFailed {
-                            kind: classify_login_error(&error),
-                        },
-                    );
+                    self.emit_failure(request_id, CoreFailure::LoginFailed { kind: login_kind });
                     self.send_actions(vec![AppAction::LoginFailed {
                         attempt_id: LoginAttemptId::new(
                             request_id.connection_id.0,
                             request_id.sequence,
                         ),
                         message: "login failed".to_owned(),
+                        reason: Some(kind),
                     }])
                     .await;
                     return;
@@ -1092,6 +1181,7 @@ impl AccountActor {
                         request_id.sequence,
                     ),
                     message: "login failed".to_owned(),
+                    reason: None,
                 }])
                 .await;
                 return;
@@ -1126,6 +1216,7 @@ impl AccountActor {
                         request_id.sequence,
                     ),
                     message: "login failed".to_owned(),
+                    reason: None,
                 }])
                 .await;
                 return;
@@ -1139,6 +1230,7 @@ impl AccountActor {
             self.send_actions(vec![AppAction::LoginFailed {
                 attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
                 message: "login failed".to_owned(),
+                reason: None,
             }])
             .await;
             return;
@@ -1384,17 +1476,14 @@ impl AccountActor {
                     persistable: old_persistable,
                     binding: Some(binding),
                 });
+                let (login_kind, kind, detail) = password_login_failure(&error);
+                record_auth_failure_detail("soft_logout_reauth_failed", detail);
                 self.send_actions(vec![AppAction::SoftLogoutReauthFailed {
                     request_id: request_id.sequence,
-                    kind: classify_auth_error(&error),
+                    kind,
                 }])
                 .await;
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::LoginFailed {
-                        kind: classify_login_error(&error),
-                    },
-                );
+                self.emit_failure(request_id, CoreFailure::LoginFailed { kind: login_kind });
                 return;
             }
         };

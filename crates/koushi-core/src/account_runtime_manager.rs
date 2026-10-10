@@ -466,6 +466,17 @@ impl AccountRuntimeManager {
             .take(&correlation)
     }
 
+    /// Forget the adapter's one-shot mapping for a tab (#1267). After an
+    /// explicit cancel, a late callback for the retired attempt no longer
+    /// matches a pending login on any tab, so it is rejected instead of
+    /// completing a replaced attempt.
+    pub fn forget_oidc_attempts_for_tab(&self, id: &AccountTabId) {
+        self.oidc_attempts
+            .lock()
+            .expect("OIDC attempt mutex")
+            .retain(|_, tab_id| tab_id != id);
+    }
+
     pub fn media_cache_dir_for_tab(&self, id: &AccountTabId) -> Option<PathBuf> {
         let state = self.state.lock().expect("account runtime manager mutex");
         let key_id = state

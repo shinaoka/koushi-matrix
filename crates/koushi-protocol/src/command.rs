@@ -84,6 +84,7 @@ impl CoreCommand {
                 AccountCommand::LoginPassword { request_id, .. }
                 | AccountCommand::DiscoverLogin { request_id, .. }
                 | AccountCommand::StartOidcLogin { request_id, .. }
+                | AccountCommand::CancelOidcLogin { request_id }
                 | AccountCommand::CompleteOidcLogin { request_id, .. }
                 | AccountCommand::RestoreSession { request_id, .. }
                 | AccountCommand::RestoreLastSession { request_id }

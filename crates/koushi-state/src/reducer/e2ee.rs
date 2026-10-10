@@ -175,6 +175,7 @@ pub(crate) fn handle_e2ee_recovery_failed(state: &mut AppState, message: String)
         code: "e2ee_recovery_failed".to_owned(),
         message,
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::SessionChanged),

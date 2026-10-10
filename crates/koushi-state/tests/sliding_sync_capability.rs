@@ -274,6 +274,7 @@ fn retry_clears_only_the_current_capability_attempt() {
             code: "unrelated".to_owned(),
             message: "preserve this local failure".to_owned(),
             recoverable: true,
+            reason: None,
         }],
         ..AppState::default()
     };
@@ -340,6 +341,7 @@ fn blocking_preserves_local_identity_and_positive_support_evidence() {
             code: "local-store-marker".to_owned(),
             message: "local state must survive capability blocking".to_owned(),
             recoverable: true,
+            reason: None,
         }],
         ..AppState::default()
     };
@@ -857,6 +859,7 @@ fn cached_restore_revalidation_blocks_only_explicit_unsupported() {
         code: "scheduled_send_persistence_failed".to_owned(),
         message: "not saved".to_owned(),
         recoverable: true,
+        reason: None,
     });
     let blocked = reduce(
         &mut state,

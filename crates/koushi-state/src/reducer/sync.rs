@@ -87,6 +87,7 @@ pub(crate) fn handle_sync_failed(state: &mut AppState, reason: String) -> Vec<Ap
             code: "sync_auth_required".to_owned(),
             message: "sign-in required".to_owned(),
             recoverable: true,
+            reason: None,
         });
         // #1159: this transition retires the ready session without going through
         // `clear_session_views`, so the scheduled-send durability notice must be

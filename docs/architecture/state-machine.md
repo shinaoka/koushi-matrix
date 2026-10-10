@@ -4271,19 +4271,42 @@ stateDiagram-v2
   compatibility, optional display labels, and a delegated registration link.
   It never owns the authenticated session's account-management destination and
   does not carry access tokens, refresh tokens, or OAuth authorization artifacts.
-- `StartOidcLogin` creates an SDK-owned authorization-code flow with PKCE. The
-  internal Tauri waiter receives the full authorization event and opens its exact
-  HTTP(S), userinfo-free URL with the native opener; the WebView event projection
+- `StartOidcLogin` carries the user's bounded `DelegatedAuthMethod` (`OAuth` or
+  `Sso`) and creates the selected delegated flow through the SDK: an
+  authorization-code flow with PKCE, or the legacy SSO redirect. The internal
+  Tauri waiter receives the full authorization event and opens its exact HTTP(S),
+  userinfo-free URL with the native opener; the WebView event projection
   contains only `request_id`, and the command response contains only settlement
   plus `launched`, `invalid_authorization_url`, or `browser_launch_failed`.
-  Repeating the same homeserver replays the retained authorization; a different
-  homeserver is rejected without replacing it. `CompleteOidcLogin` consumes the
-  callback in `AccountActor`, persists the OAuth session in the credential
-  store, restores it into the encrypted per-account SDK store, and then emits
-  `LoginSucceeded`. Logout/change-homeserver retires the pending flow with
-  `BrowserCancellation` cleanup evidence.
+  `OAuth` falls back to the legacy SSO redirect **only** for the classified
+  unsupported-method condition (the authorization-server metadata endpoint
+  reports the endpoint is not implemented); transport, timeout,
+  metadata-validation, client-registration, and server-response failures are
+  surfaced as a typed, privacy-safe failure and never switch the method
+  silently. A new start always replaces a retained attempt: it retires the old
+  one with `BrowserCancellation` cleanup evidence and creates fresh SDK
+  authorization state, so an expired URL is never replayed. `CancelOidcLogin`
+  retires the pending attempt explicitly and idempotently, and a callback for a
+  retired attempt is fenced to `AuthFailureKind::Cancelled`. Changing the typed
+  Matrix ID / homeserver retires the pending attempt the same way.
+  `CompleteOidcLogin` consumes the callback in `AccountActor`, persists the
+  session in the credential store, restores it into the encrypted per-account
+  SDK store, and then emits `LoginSucceeded`. Logout/change-homeserver retires
+  the pending flow with `BrowserCancellation` cleanup evidence.
 - `LoginDiscoveryFailed` stores only `AuthFailureKind`; raw discovery responses,
   homeserver error bodies, and SDK errors do not enter snapshots.
+- Login failure classification (#1268): the SDK boundary classifies a password /
+  OAuth / SSO failure into a bounded `AuthFailureDetail` (authentication method,
+  stage, transport vs received response, optional HTTP status, optional
+  allowlisted Matrix error kind, retryable) instead of matching error text.
+  Core derives the coarse `LoginFailureKind`, the UI `AuthFailureKind`, the
+  cleanup evidence, and the diagnostic fields from that value; no substring of
+  an SDK error, response body, token, callback URL, account identifier, or server
+  URL is ever inspected, stored, or recorded. Visible guidance comes from the
+  bounded `reason` on the `login_failed` `AppError`, which React maps to
+  localized copy. The diagnostic event reuses the #1265 bounded vocabulary
+  (`method`, `stage`, `transport`, `httpStatus`, `matrixErrorKind`,
+  `retryable`).
 - Discovery completion actions are accepted only while the reducer is still
   `Discovering` the same homeserver. Late completions from older discovery
   requests are ignored.

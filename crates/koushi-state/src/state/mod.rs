@@ -9,6 +9,7 @@ pub mod search_crawler;
 // ── New per-feature submodules (#87 Phase 2) ────────────────────────────────
 mod account_notifications;
 mod activity;
+mod auth_failure;
 mod basic_operation;
 mod cjk;
 mod composer_draft;
@@ -72,6 +73,12 @@ pub use account_notifications::{
 
 // ── Re-exports: sync ────────────────────────────────────────────────────────
 pub use sync::{SyncLifecycleStatus, SyncState};
+
+// ── Re-exports: auth failure vocabulary (#1268) ─────────────────────────────
+pub use auth_failure::{
+    AuthFailureDetail, AuthFailureStage, AuthFailureTransport, AuthMatrixErrorKind, AuthMethod,
+    DelegatedAuthMethod,
+};
 
 // ── Re-exports: session ─────────────────────────────────────────────────────
 pub use session::{

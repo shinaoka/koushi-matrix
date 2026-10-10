@@ -30,6 +30,13 @@ sign-in method supplied by your account provider ready.
 4. Wait for your rooms to load. Older messages may take additional time to
    retrieve and decrypt.
 
+If you started browser sign-in and want to stop or restart it, select **Cancel
+browser sign-in**. Changing the Matrix ID or server also retires a pending
+browser attempt, so a stale authorization page cannot sign you in. When a
+sign-in attempt fails, Koushi names the cause it can confirm — incorrect Matrix
+ID or password, too many attempts, an unreachable server, a timeout, or a local
+encryption store problem — instead of a generic error.
+
 The server summary under **Matrix ID** names the server Koushi is using. To sign
 in with only your local username instead of a full Matrix ID, select **Change
 server**, enter the server address in **Homeserver**, and type the username

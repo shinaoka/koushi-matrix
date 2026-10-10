@@ -2,7 +2,7 @@ use crate::{
     action::LoginRequest,
     effect::{AppEffect, UiEvent},
     state::{
-        AppError, AppState, CurrentDeviceTrustState, DeviceCleanupAuthMode,
+        AppError, AppState, AuthFailureKind, CurrentDeviceTrustState, DeviceCleanupAuthMode,
         DeviceCleanupFailureKind, DeviceCleanupLocalMode, DeviceCleanupOfferReason,
         DeviceCleanupRemoteOutcome, DeviceCleanupState, LoginAttemptId, ProvisionalPhase,
         RecoveryKeyDeliveryState, RecoveryKeyMaterial, SecureBackupSetupState, SessionLockReason,
@@ -734,6 +734,7 @@ pub(crate) fn handle_restore_session_failed(
         code: "restore_failed".to_owned(),
         message,
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::SessionChanged),
@@ -793,6 +794,7 @@ pub(crate) fn handle_login_failed(
     state: &mut AppState,
     attempt_id: LoginAttemptId,
     message: String,
+    reason: Option<AuthFailureKind>,
 ) -> Vec<AppEffect> {
     if !matches!(
         state.session,
@@ -810,6 +812,7 @@ pub(crate) fn handle_login_failed(
         code: "login_failed".to_owned(),
         message,
         recoverable: true,
+        reason,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::SessionChanged),
@@ -891,6 +894,7 @@ pub(crate) fn handle_session_persistence_failed(
         code: "session_persistence_failed".to_owned(),
         message,
         recoverable: true,
+        reason: None,
     });
     vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
 }

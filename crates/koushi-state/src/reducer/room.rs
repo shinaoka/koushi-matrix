@@ -982,6 +982,7 @@ pub(crate) fn handle_pin_event_failed(
         code: "pin_event_failed".to_owned(),
         message: PIN_EVENT_FAILED_MESSAGE.to_owned(),
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged),
@@ -1077,6 +1078,7 @@ pub(crate) fn handle_unpin_event_failed(
         code: "unpin_event_failed".to_owned(),
         message: UNPIN_EVENT_FAILED_MESSAGE.to_owned(),
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged),
