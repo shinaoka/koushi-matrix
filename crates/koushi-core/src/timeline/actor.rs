@@ -214,6 +214,9 @@ pub(super) enum TimelineActorMessage {
     /// changed because another room was added/removed (issue #518). The actor
     /// must accept new-generation checkpoints after this message is processed.
     UpdateSubscriptionGeneration(u64),
+    /// #1259: re-overlay the room root items whose thread unread changed because a
+    /// read marker advanced outside this actor.
+    RefreshThreadUnread,
     GlobalResponseCommitted(GlobalResponseCommit),
     StartLiveTailRefresh {
         epoch: u64,
@@ -474,6 +477,7 @@ pub(super) enum TimelineActorControl {
     ReplayInitialItems {
         cause_request_id: RequestId,
     },
+    RefreshThreadUnread,
     StartLiveTailRefresh {
         epoch: u64,
         operation_generation: u64,
@@ -559,6 +563,7 @@ impl From<TimelineActorControl> for TimelineActorMessage {
                     cause_request_id: Some(cause_request_id),
                 }
             }
+            TimelineActorControl::RefreshThreadUnread => Self::RefreshThreadUnread,
             TimelineActorControl::StartLiveTailRefresh {
                 epoch,
                 operation_generation,
@@ -1217,6 +1222,44 @@ impl TimelineActor {
             }
         }
         true
+    }
+
+    /// #1259: a thread read advances the shared unread marker from the Thread actor,
+    /// so re-overlay this room's root items and emit a `Set` for the ones whose dot
+    /// cleared instead of waiting for the next diff batch.
+    fn refresh_thread_unread(&mut self) {
+        if !matches!(self.key.kind, TimelineKind::Room { .. }) {
+            return;
+        }
+        let mut core_diffs = Vec::new();
+        for (index, item) in self.navigation_items.iter_mut().enumerate() {
+            if item.thread_root.is_some() || item.thread_summary.is_none() {
+                continue;
+            }
+            let before = item
+                .thread_summary
+                .as_ref()
+                .map(|summary| summary.unread_count);
+            let overlaid = super::thread_projection::overlay_thread_summary_item(
+                &self.thread_root_projection_service,
+                &self.key,
+                item,
+            );
+            let after = overlaid
+                .thread_summary
+                .as_ref()
+                .map(|summary| summary.unread_count);
+            if before != after {
+                *item = overlaid.clone();
+                core_diffs.push(koushi_protocol::event::TimelineDiff::Set {
+                    index,
+                    item: overlaid,
+                });
+            }
+        }
+        if !core_diffs.is_empty() {
+            let _ = self.emit_non_sdk_item_sets(core_diffs);
+        }
     }
 
     fn drain_thread_summary_projection_wakes(&mut self) {
@@ -2835,6 +2878,9 @@ impl TimelineActor {
             TimelineActorMessage::SendQueueLagged => {
                 self.handle_send_queue_lagged().await;
                 self.publish_current_canonical_activity().await;
+            }
+            TimelineActorMessage::RefreshThreadUnread => {
+                self.refresh_thread_unread();
             }
             TimelineActorMessage::ReplayInitialItems { cause_request_id } => {
                 self.handle_replay_initial_items(cause_request_id);

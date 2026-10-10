@@ -2091,6 +2091,15 @@ impl TimelineActor {
                         let reply_count = aggregate.reply_count;
                         service.advance_thread_read_marker(room_id, root_event_id, reply_count);
                     }
+                    drop(service);
+                    // #1259: the chip dot lives on the room timeline's root item, so ask
+                    // that timeline to re-overlay it now. Best-effort: a room timeline that
+                    // is not retained simply has nothing to repaint.
+                    let _ = self.manager_tx.try_send(
+                        super::manager::TimelineMessage::RefreshThreadUnread {
+                            key: TimelineKey::room(self.key.account_key.clone(), room_id.clone()),
+                        },
+                    );
                 }
                 let snapshot = derive_timeline_navigation_snapshot(
                     &self.key.kind,
