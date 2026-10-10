@@ -48,6 +48,8 @@
 
 mod attachment_admission;
 #[cfg(test)]
+mod crawl_scheduling;
+#[cfg(test)]
 mod history_scale;
 
 use std::collections::{HashMap, HashSet, VecDeque};
