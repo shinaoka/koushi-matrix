@@ -91,3 +91,14 @@ from room-timeline items and the room badge, not from the diagnostic.
    next unconfirmed boundary.
 3. Only after event delivery is confirmed, design the per-thread indicator, with
    the room-badge decomposition proven first.
+
+## Correction (2026-10-10)
+
+The "no data" reading above was a measurement error. The diagnostic hook reads
+`navigation_items`, where a thread summary usually is not, so it rarely fired and
+the printed `cache_read=no unread=0` values were untouched defaults, not
+observations. In a run where it did fire, the SDK thread cache reported
+`unread=1 notifications=1` for the unopened thread on tuwunel — the per-thread
+counts are available, and the room timeline actor reads them for the chip dot
+(#1259). The boundary table above should be read as "the hook did not measure",
+not as "the client cannot know".
