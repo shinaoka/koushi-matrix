@@ -1783,6 +1783,9 @@ fn project_item(room_id: &str, item: &SdkThreadListItem) -> ThreadsListItem {
             .and_then(|e| body_preview(e.content.as_ref())),
         latest_timestamp_ms: item.latest_event.as_ref().map(|e| e.timestamp.0.into()),
         reply_count: item.num_replies,
+        // #1259: the per-root unread value is stamped by state from the SDK thread
+        // cache observation; the list service itself carries no unread information.
+        unread_count: 0,
     }
 }
 

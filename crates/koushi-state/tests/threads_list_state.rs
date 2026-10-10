@@ -74,6 +74,7 @@ fn thread_item(root_event_id: &str) -> ThreadsListItem {
         latest_body_preview: Some("Latest preview".to_owned()),
         latest_timestamp_ms: Some(1_700_000_100_000),
         reply_count: 3,
+        unread_count: 0,
     }
 }
 

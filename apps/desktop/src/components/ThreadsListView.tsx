@@ -100,6 +100,15 @@ function ThreadsListRow({
             {t("threads.replyCount", { count: item.reply_count })}
           </span>
         </span>
+        {/* #1259: the same per-root unread value the room timeline chip shows. */}
+        {item.unread_count > 0 ? (
+          <span
+            className="threads-list-row-unread"
+            aria-label={t("timeline.threadNotificationCount", { count: item.unread_count })}
+          >
+            {item.unread_count}
+          </span>
+        ) : null}
       </button>
     </li>
   );

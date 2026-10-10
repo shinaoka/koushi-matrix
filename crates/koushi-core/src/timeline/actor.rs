@@ -1260,8 +1260,21 @@ impl TimelineActor {
                 .thread_root_projection_service
                 .lock()
                 .expect("thread-root projection service lock must not be poisoned");
-            for (root_event_id, signature, counts) in refreshed {
-                service.apply_thread_unread(&room_id, &root_event_id, signature, counts);
+            for (root_event_id, signature, counts) in refreshed.iter() {
+                service.apply_thread_unread(&room_id, root_event_id, signature.clone(), *counts);
+            }
+        }
+        for (root_event_id, _, counts) in refreshed {
+            // #1259: the Threads list is state-rendered, so mirror the value there.
+            if !self
+                .emit_action_reliable(koushi_state::AppAction::ThreadUnreadObserved {
+                    room_id: room_id.clone(),
+                    root_event_id,
+                    unread: counts.unread,
+                })
+                .await
+            {
+                return;
             }
         }
         self.repaint_thread_unread();

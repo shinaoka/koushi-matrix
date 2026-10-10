@@ -670,6 +670,7 @@ pub(crate) fn handle_threads_list_opened(
         return Vec::new();
     }
     sort_threads_list_items(&mut items, state.settings.values.thread_list_order);
+    apply_thread_unread(state, &mut items);
     state.threads_list = ThreadsListState::Open {
         room_id,
         request_id,
@@ -695,6 +696,7 @@ pub(crate) fn handle_threads_list_updated(
         return Vec::new();
     }
     sort_threads_list_items(&mut items, state.settings.values.thread_list_order);
+    apply_thread_unread(state, &mut items);
     state.threads_list = ThreadsListState::Open {
         room_id,
         request_id,
@@ -719,6 +721,7 @@ pub(crate) fn handle_threads_list_pagination_completed(
         return Vec::new();
     }
     sort_threads_list_items(&mut items, state.settings.values.thread_list_order);
+    apply_thread_unread(state, &mut items);
     state.threads_list = ThreadsListState::Open {
         room_id,
         request_id,
@@ -747,6 +750,54 @@ pub(crate) fn handle_threads_list_failed(
         failure_kind,
     };
     vec![AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged)]
+}
+
+/// #1259: stamp the per-root SDK thread-cache unread onto the Threads-list rows.
+fn apply_thread_unread(
+    state: &crate::state::AppState,
+    items: &mut [crate::state::ThreadsListItem],
+) {
+    for item in items.iter_mut() {
+        item.unread_count = state
+            .thread_unread
+            .get(&(item.room_id.clone(), item.root_event_id.clone()))
+            .copied()
+            .unwrap_or(0);
+    }
+}
+
+pub(crate) fn handle_thread_unread_observed(
+    state: &mut AppState,
+    room_id: String,
+    root_event_id: String,
+    unread: u32,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    let key = (room_id, root_event_id);
+    let previous = state.thread_unread.get(&key).copied().unwrap_or(0);
+    if previous == unread {
+        return Vec::new();
+    }
+    if unread == 0 {
+        state.thread_unread.remove(&key);
+    } else {
+        state.thread_unread.insert(key.clone(), unread);
+    }
+    let mut changed = false;
+    if let ThreadsListState::Open { items, .. } = &mut state.threads_list {
+        for item in items.iter_mut() {
+            if item.room_id == key.0 && item.root_event_id == key.1 {
+                item.unread_count = unread;
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        return vec![AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged)];
+    }
+    Vec::new()
 }
 
 pub(crate) fn handle_paginate_threads_list(

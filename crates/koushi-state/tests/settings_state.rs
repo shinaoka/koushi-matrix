@@ -787,6 +787,7 @@ fn settings_loaded_recomputes_room_list_projection_and_sorts_open_threads() {
                     latest_body_preview: None,
                     latest_timestamp_ms: Some(200),
                     reply_count: 0,
+                    unread_count: 0,
                 },
                 koushi_state::ThreadsListItem {
                     room_id: "room-a".to_owned(),
@@ -801,6 +802,7 @@ fn settings_loaded_recomputes_room_list_projection_and_sorts_open_threads() {
                     latest_body_preview: None,
                     latest_timestamp_ms: Some(100),
                     reply_count: 0,
+                    unread_count: 0,
                 },
             ],
             is_paginating: false,
@@ -874,6 +876,7 @@ fn settings_update_recomputes_room_list_projection_and_resorts_open_threads() {
                     latest_body_preview: None,
                     latest_timestamp_ms: Some(200),
                     reply_count: 0,
+                    unread_count: 0,
                 },
                 koushi_state::ThreadsListItem {
                     room_id: "room-a".to_owned(),
@@ -888,6 +891,7 @@ fn settings_update_recomputes_room_list_projection_and_resorts_open_threads() {
                     latest_body_preview: None,
                     latest_timestamp_ms: Some(100),
                     reply_count: 0,
+                    unread_count: 0,
                 },
             ],
             is_paginating: false,

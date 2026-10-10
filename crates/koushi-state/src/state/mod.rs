@@ -338,6 +338,10 @@ pub struct AppState {
     /// #1238 diagnostic (temporary): see [`ThreadDeliveryDiagnostic`].
     #[serde(skip)]
     pub thread_delivery: ThreadDeliveryDiagnostic,
+    /// #1259: per-root SDK thread-cache unread values, keyed by
+    /// `(room_id, root_event_id)`, for the Threads list rows.
+    #[serde(skip)]
+    pub thread_unread: BTreeMap<(String, String), u32>,
     #[serde(default)]
     pub device_cleanup: DeviceCleanupState,
     #[serde(default)]
@@ -475,6 +479,7 @@ impl Default for AppState {
             sliding_sync_account_epoch: 0,
             sliding_sync_capability: SlidingSyncCapabilityState::Unknown,
             thread_delivery: ThreadDeliveryDiagnostic::default(),
+            thread_unread: BTreeMap::new(),
             device_cleanup: DeviceCleanupState::Idle,
             current_session_status: CurrentSessionStatusState::Idle,
             current_session_status_schedule: SessionStatusSchedule::default(),

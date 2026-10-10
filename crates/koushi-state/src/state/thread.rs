@@ -156,6 +156,10 @@ pub struct ThreadsListItem {
     pub latest_body_preview: Option<String>,
     pub latest_timestamp_ms: Option<u64>,
     pub reply_count: u32,
+    /// #1259: unread replies reported by the SDK thread cache for this root, the same
+    /// value the room timeline chip shows.
+    #[serde(default)]
+    pub unread_count: u32,
 }
 
 /// Projection state for a root event which is outside the Room timeline's

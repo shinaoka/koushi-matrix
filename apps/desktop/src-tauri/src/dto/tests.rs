@@ -2184,6 +2184,7 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
             latest_body_preview: Some("Latest reply preview".to_owned()),
             latest_timestamp_ms: Some(810_000),
             reply_count: 3,
+            unread_count: 0,
         }],
         is_paginating: false,
         end_reached: false,

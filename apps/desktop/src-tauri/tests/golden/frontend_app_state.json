@@ -1373,7 +1373,8 @@
             "root_event_id": "$thread-root:example.invalid",
             "root_sender": "@fixture:example.invalid",
             "root_sender_label": "Fixture User",
-            "root_timestamp_ms": 800000
+            "root_timestamp_ms": 800000,
+            "unread_count": 0
           }
         ],
         "kind": "open",
