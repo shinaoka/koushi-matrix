@@ -3656,10 +3656,11 @@ function AccountContent({
     includeMain: boolean,
     includeThread: boolean
   ): Promise<boolean> {
-    const account = readyComposerDraftAccountOwner(snapshot);
+    const currentSnapshot = snapshotRef.current;
+    const account = readyComposerDraftAccountOwner(currentSnapshot);
     if (!account) return true;
     const drains: Promise<boolean>[] = [];
-    const roomId = snapshot?.state.ui.timeline.room_id;
+    const roomId = currentSnapshot?.state.ui.timeline.room_id;
     if (includeMain && roomId) {
       drains.push(
         deactivateComposerScopeForNavigation(
@@ -3668,7 +3669,7 @@ function AccountContent({
         )
       );
     }
-    const thread = snapshot?.state.ui.thread;
+    const thread = currentSnapshot?.state.ui.thread;
     if (
       includeThread &&
       thread?.kind === "open" &&
