@@ -12,6 +12,10 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(1);
 /// so its effective network concurrency is the shared slot, not the avatar
 /// downloader's own per-account ceiling. An in-flight QA expectation sized from
 /// this hook must never exceed it.
+// Compile-time half of the guard: the published bound must never be zero, or a
+// lane deriving an in-flight expectation from it would wait for nothing.
+const _: () = assert!(super::MEDIA_PREFETCH_INFLIGHT_LIMIT >= 1);
+
 #[test]
 fn media_prefetch_inflight_limit_matches_shared_admission_policy() {
     assert!(
@@ -23,7 +27,6 @@ fn media_prefetch_inflight_limit_matches_shared_admission_policy() {
         super::SHARED_WORK_CONCURRENCY
             .min(AccountWorkKind::MediaPrefetch.policy().max_concurrency as usize)
     );
-    assert!(super::MEDIA_PREFETCH_INFLIGHT_LIMIT >= 1);
 }
 
 #[test]
