@@ -1101,6 +1101,33 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         print_room_badge_private_summary(&conn_a, &room_id, "after_thread_reply");
         println!("thread_room_badge=ok");
 
+        // #1238: A now reads only the main timeline, while the thread is still
+        // unopened and unsubscribed. A room-scoped receipt must never clear the
+        // thread's unread, so the badge has to survive it. This deliberately sends no
+        // extra reply: the thread stage's reply count feeds later scenario stages that
+        // assert their own counts.
+        send_main_timeline_read_receipt(
+            &mut conn_a,
+            &key_a,
+            &event1_id,
+            "A main read receipt after B thread reply",
+        )
+        .await?;
+        let settled_badge = settle_room_badge_unread_count(
+            &mut conn_a,
+            &room_id,
+            "room badge after main read receipt",
+        )
+        .await?;
+        if settled_badge != thread_badge_before + 1 {
+            return Err(format!(
+                "thread_room_badge_main_read_kept failed: badge settled at {settled_badge}, \
+                 expected the thread contribution to survive a main-timeline read"
+            ));
+        }
+        print_room_badge_private_summary(&conn_a, &room_id, "after_main_read");
+        println!("thread_room_badge_main_read_kept=ok");
+
         let thread_key_a = TimelineKey {
             account_key: account_key_a.clone(),
             kind: TimelineKind::Thread {
@@ -1191,66 +1218,6 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         .map_err(|error| format!("thread_room_badge_cleared failed: {error}"))?;
         print_room_badge_private_summary(&conn_a, &room_id, "after_threaded_read");
         println!("thread_room_badge_cleared=ok");
-
-        // #1238: a second remote reply re-arms the thread term, and then A reads only
-        // the main timeline. A main-scoped receipt must never clear the thread's
-        // unread, so both the chip and the badge have to survive it.
-        const SECOND_THREAD_REPLY_BODY: &str = "Phase 11 QA thread reply B after threaded read";
-        let second_reply_id = conn_b.next_request_id();
-        conn_b
-            .command(CoreCommand::Timeline(TimelineCommand::SendReply {
-                request_id: second_reply_id,
-                key: thread_key_b.clone(),
-                transaction_id: "qa-phase11-txn-b-thread-reply-2".to_owned(),
-                in_reply_to_event_id: event1_id.clone(),
-                document: ComposerDocument::from_plain_text(SECOND_THREAD_REPLY_BODY.to_owned()),
-            }))
-            .await
-            .map_err(|e| format!("submit second B thread reply: {e}"))?;
-        wait_for_send_completed(
-            &mut conn_b,
-            second_reply_id,
-            &thread_key_b,
-            "second B thread reply completed",
-        )
-        .await?;
-        let _second_chip_unread = wait_for_root_thread_unread(
-            &mut conn_a,
-            &key_a,
-            &[],
-            &event1_id,
-            "chip dot after second B thread reply",
-            |unread| unread > 0,
-        )
-        .await?;
-        let _armed_badge = wait_for_room_badge_unread_count(
-            &mut conn_a,
-            &room_id,
-            "room badge after second B thread reply",
-            |badge| badge == thread_badge_before + 1,
-        )
-        .await?;
-        send_main_timeline_read_receipt(
-            &mut conn_a,
-            &key_a,
-            &event1_id,
-            "A main read receipt after second thread reply",
-        )
-        .await?;
-        let settled_badge = settle_room_badge_unread_count(
-            &mut conn_a,
-            &room_id,
-            "room badge after main read receipt",
-        )
-        .await?;
-        if settled_badge != thread_badge_before + 1 {
-            return Err(format!(
-                "thread_room_badge_main_read_kept failed: badge settled at {settled_badge}, \
-                 expected the thread contribution to survive a main-timeline read"
-            ));
-        }
-        print_room_badge_private_summary(&conn_a, &room_id, "after_main_read");
-        println!("thread_room_badge_main_read_kept=ok");
 
         if scenario.should_run_stage(QaStage::RedactEditConvergence) {
             const LIVE_THREAD_BODY: &str = "Phase 11 QA live thread reply B";

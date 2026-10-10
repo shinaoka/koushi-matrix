@@ -2984,10 +2984,10 @@ where
 {
     let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
     loop {
-        if let Some(badge) = room_badge_unread_count(&conn.snapshot(), room_id) {
-            if predicate(badge) {
-                return Ok(badge);
-            }
+        if let Some(badge) = room_badge_unread_count(&conn.snapshot(), room_id)
+            && predicate(badge)
+        {
+            return Ok(badge);
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(format!("{label}: timed out waiting for the room badge"));
