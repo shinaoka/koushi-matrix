@@ -1304,8 +1304,8 @@ Low priority is an attention-suppression tag, not a mute and not a read action:
   Sessions"). It applies the same muted and low-priority exclusions as the Home
   aggregate; a room's notification mode (Mentions-only or otherwise) is not an
   aggregate exclusion, so a non-muted, non-low-priority Mentions-only room keeps
-  contributing its raw unread to Home, its Space rail and section totals, and the
-  account tab.
+  contributing its shared conversation attention to Home, its Space rail and
+  section totals, the account tab and the native persistent badge.
 - The room's own raw `unread_count`, notification/highlight counts, and read
   receipts are preserved, so the low-priority row still shows real unread state.
   Setting the tag never marks the room read and never writes a server push-rule

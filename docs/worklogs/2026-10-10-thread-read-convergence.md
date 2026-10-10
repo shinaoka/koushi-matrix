@@ -166,3 +166,11 @@ Verification: focused projection/account/reducer suites passed; the complete
 (0 ignored) across 79 test binaries/doc-test results.
 Scoped rustfmt, whitespace, Rust test-structure, agent-doc and frontend semantic
 owner guards passed. Dependency lockfile audit passed the high/critical gate.
+
+Local packaging of source `8b337f73` completed successfully and was installed as
+0.20.3 / bundle 3527.0 with the user's standing local-install authorization.
+Both staged and installed signatures verified; installed executable SHA-256
+matched the packaged source artifact. The preceding installed app was preserved
+in a temporary backup and the new app launched. No app-state, SDK store or
+account data files were edited by the installation procedure. This verifies
+installation and count projection, not the intermittent pre-restart badge cause.
