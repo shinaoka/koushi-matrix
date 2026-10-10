@@ -1237,7 +1237,7 @@ describe("TimelineView", () => {
               fully_read_event_id: null,
               typing_user_ids: [],
               typing_users: [],
-              receipts_by_event: {
+              focused_receipts_by_event: {}, thread_receipts_by_event: {}, receipts_by_event: {
                 "$seen:example.invalid": {
                   total_count: 1,
                   overflow_count: 0,

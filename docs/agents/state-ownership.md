@@ -451,15 +451,18 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
 - Thread unread per root is Rust-owned: the room timeline actor reads the SDK thread
   cache for every root whose room-side summary changed and mirrors the value to
   state (`ThreadUnreadObserved`), so the Threads-list rows show the same count as
-  the room-timeline chip. The value never joins a room total.
+  the room-timeline chip. The same per-root values feed the reducer-derived
+  `RoomSummary.thread_unread_count` / `thread_highlight_count` room totals under
+  the proven SDK event-cache decomposition (canon "Threads and attention"); a
+  thread count never enters the main-only `RoomSummary.unread_count`.
 - Thread-root lifecycle and placement are also Rust-owned. The session-scoped
   `ThreadRootProjectionService` retains canonical/hydrated root snapshots until
   authoritative aggregate/redaction clear, Room unsubscribe, or session teardown;
   a bounded display omission is dormant, never deletion. Thread summaries describe
   aggregate presentation state, not complete per-thread unread state: capability
-  advertisement and a room-badge change do not prove thread-event delivery, so a
-  thread contribution may be added to room totals only with a proven
-  non-overlapping decomposition. Rust State mirrors only
+  advertisement and a room-badge change do not prove thread-event delivery, so the
+  thread contribution to a room badge rests on the named SDK event-cache filters,
+  not on a badge. Rust State mirrors only
   explicit Core lifecycle actions. The Room actor's `DisplayProjectionState`
   applies root-event/latest-reply order, standalone-reply suppression, stable row
   identity and display-relative diffs. `TimelineItem` display metadata is a
@@ -1366,6 +1369,14 @@ normal QA-title mode and cannot change product title semantics.
   WebView Core-event projection contains only `request_id`, and React receives
   only coarse launch outcome plus settlement. Never return the provider URL or
   OAuth state to React or add an SSO `window.open` fallback.
+- Browser callback correlation is Rust-owned as well. `AccountRuntimeManager`
+  keeps at most one pending sign-in attempt per account tab and decides which tab
+  a callback may complete. Tauri only classifies the callback URL shape: an
+  OAuth/MAS CSRF `state`, or the stateless legacy `m.login.sso` `loginToken`
+  callback, which completes a tab only while exactly one legacy attempt is
+  pending (#1266). A legacy callback never completes an OAuth attempt. The login
+  token stays inside the callback URL string handed to the core command and is
+  never projected, logged, or persisted.
 - Trust GUI controls are transport clients only. Add Tauri commands as thin
   `CoreCommand::Account` submitters and keep SDK calls, UIAA/OAuth continuation
   handles, and verification handles inside Rust actors. React must render

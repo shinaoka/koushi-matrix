@@ -99,6 +99,11 @@ pub use sliding_sync_diagnostics::{
 };
 pub use state_delta::build_state_delta;
 
+/// Effective media-prefetch admission bound for QA in-flight expectations.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use account_work::MEDIA_PREFETCH_INFLIGHT_LIMIT;
+
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub fn project_timeline_event_for_qa(

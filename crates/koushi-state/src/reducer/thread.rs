@@ -2,11 +2,12 @@ use crate::{ComposerDraftRevision, SubmissionId};
 use crate::{
     effect::{AppEffect, UiEvent},
     state::{
-        AppError, AppState, FocusedContextState, PendingComposerSendKind, ThreadAttentionState,
-        ThreadOpenIntent, ThreadPaneState, ThreadsListScope, ThreadsListState,
-        sort_threads_list_items,
+        AppError, AppState, FocusedContextState, PendingComposerSendKind, RoomSummary,
+        ThreadAttentionState, ThreadOpenIntent, ThreadPaneState, ThreadRootAttention,
+        ThreadsListScope, ThreadsListState, sort_threads_list_items,
     },
 };
+use std::collections::BTreeMap;
 
 use super::is_session_ready;
 
@@ -237,6 +238,7 @@ pub(crate) fn handle_thread_reply_failed(
                 code: "send_text_failed".to_owned(),
                 message,
                 recoverable: true,
+                reason: None,
             });
             vec![
                 AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
@@ -430,6 +432,7 @@ pub(crate) fn handle_thread_subscription_failed(
         code: "thread_subscription_failed".to_owned(),
         message: "Matrix thread subscription failed".to_owned(),
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
@@ -553,6 +556,7 @@ pub(crate) fn handle_focused_context_subscription_failed(
         code: "focused_context_subscription_failed".to_owned(),
         message: "Matrix focused context subscription failed".to_owned(),
         recoverable: true,
+        reason: None,
     });
     vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
 }
@@ -761,8 +765,49 @@ fn apply_thread_unread(
         item.unread_count = state
             .thread_unread
             .get(&(item.room_id.clone(), item.root_event_id.clone()))
-            .copied()
+            .map(|attention| attention.unread)
             .unwrap_or(0);
+    }
+}
+
+/// #1238: recompute one room's thread badge fields from the per-root values the
+/// reducer holds. Only the summed room totals reach a badge; the per-root values
+/// themselves are the Threads-list projection.
+pub(crate) fn refresh_room_thread_badge_totals(state: &mut AppState, room_id: &str) {
+    let mut unread = 0u64;
+    let mut highlight = 0u64;
+    for ((entry_room_id, _), attention) in state.thread_unread.iter() {
+        if entry_room_id != room_id {
+            continue;
+        }
+        unread += u64::from(attention.unread);
+        highlight += u64::from(attention.highlight);
+    }
+    if let Some(room) = state.rooms.iter_mut().find(|room| room.room_id == room_id) {
+        room.thread_unread_count = unread;
+        room.thread_highlight_count = highlight;
+    }
+}
+
+/// #1238: apply the reducer-held thread totals to a freshly projected room list.
+/// A room-list snapshot never carries these fields, so they are re-derived rather
+/// than dropped; rooms that left the list simply stop carrying a total.
+pub(crate) fn apply_thread_badge_totals(
+    thread_unread: &BTreeMap<(String, String), ThreadRootAttention>,
+    rooms: &mut [RoomSummary],
+) {
+    for room in rooms.iter_mut() {
+        let mut unread = 0u64;
+        let mut highlight = 0u64;
+        for ((room_id, _), attention) in thread_unread.iter() {
+            if room_id != &room.room_id {
+                continue;
+            }
+            unread += u64::from(attention.unread);
+            highlight += u64::from(attention.highlight);
+        }
+        room.thread_unread_count = unread;
+        room.thread_highlight_count = highlight;
     }
 }
 
@@ -771,19 +816,21 @@ pub(crate) fn handle_thread_unread_observed(
     room_id: String,
     root_event_id: String,
     unread: u32,
+    highlight: u32,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
     }
     let key = (room_id, root_event_id);
-    let previous = state.thread_unread.get(&key).copied().unwrap_or(0);
-    if previous == unread {
+    let next = ThreadRootAttention { unread, highlight };
+    let previous = state.thread_unread.get(&key).copied().unwrap_or_default();
+    if previous == next {
         return Vec::new();
     }
-    if unread == 0 {
+    if next.is_empty() {
         state.thread_unread.remove(&key);
     } else {
-        state.thread_unread.insert(key.clone(), unread);
+        state.thread_unread.insert(key.clone(), next);
     }
     let mut changed = false;
     if let ThreadsListState::Open { items, .. } = &mut state.threads_list {
@@ -794,10 +841,31 @@ pub(crate) fn handle_thread_unread_observed(
             }
         }
     }
-    if changed {
-        return vec![AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged)];
+    let room_before = state
+        .rooms
+        .iter()
+        .find(|room| room.room_id == key.0)
+        .map(|room| (room.thread_unread_count, room.thread_highlight_count));
+    refresh_room_thread_badge_totals(state, &key.0);
+    let room_changed = room_before.is_some_and(|(unread_before, highlight_before)| {
+        state
+            .rooms
+            .iter()
+            .find(|room| room.room_id == key.0)
+            .is_some_and(|room| {
+                (room.thread_unread_count, room.thread_highlight_count)
+                    != (unread_before, highlight_before)
+            })
+    });
+    let mut effects = Vec::new();
+    if room_changed {
+        super::recompute_room_list_projection(state);
+        effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
     }
-    Vec::new()
+    if changed {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged));
+    }
+    effects
 }
 
 pub(crate) fn handle_paginate_threads_list(

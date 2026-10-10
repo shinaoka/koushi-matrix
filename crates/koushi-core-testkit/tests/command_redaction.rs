@@ -214,6 +214,7 @@ fn auth_discovery_and_oidc_commands_redact_debug_and_do_not_require_ready_sessio
         CoreCommand::Account(AccountCommand::StartOidcLogin {
             request_id,
             homeserver: homeserver.clone(),
+            method: koushi_state::DelegatedAuthMethod::OAuth,
         }),
         CoreCommand::Account(AccountCommand::CompleteOidcLogin {
             request_id,

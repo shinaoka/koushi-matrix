@@ -15,7 +15,19 @@ test("seeds 1500 distinct avatars and receipts with bounded traffic and no retur
   const uploadedImages: Buffer[] = [];
   let joined = 0;
   let receipts = 0;
+  let storedReadbacks = 0;
+  let slidingReadbacks = 0;
   const profiles = new Set<string>();
+  // The seeded population as the server reports it back: one m.receipt event
+  // naming every reader of the target event.
+  const readerReceiptContent = () => ({
+    $target: {
+      "m.read": Object.fromEntries(Array.from({ length: AVATAR_FIXTURE_READERS }, (_, index) => [
+        `@reader${index + 1}:example.invalid`,
+        { ts: 1 }
+      ]))
+    }
+  });
   vi.stubGlobal("fetch", vi.fn(async (url: string, options: RequestInit) => {
     active += 1;
     peak = Math.max(peak, active);
@@ -48,6 +60,27 @@ test("seeds 1500 distinct avatars and receipts with bounded traffic and no retur
         expect(JSON.parse(options.body as string)).toEqual({ fully_read: "$target", "m.read": "$target" });
         receipts += 1;
         body = {};
+      } else if (url.includes("simplified_msc3575/sync")) {
+        // The readback the stage projects reader windows from.
+        expect(JSON.parse(options.body as string).extensions.receipts.enabled).toBe(true);
+        slidingReadbacks += 1;
+        body = {
+          extensions: {
+            receipts: { rooms: { "!fixture:example.invalid": { content: readerReceiptContent() } } }
+          }
+        };
+      } else if (url.includes("/_matrix/client/v3/sync")) {
+        // Storage truth, read the plain way.
+        storedReadbacks += 1;
+        body = {
+          rooms: {
+            join: {
+              "!fixture:example.invalid": {
+                ephemeral: { events: [{ type: "m.receipt", content: readerReceiptContent() }] }
+              }
+            }
+          }
+        };
       } else {
         throw new Error("unexpected fixture endpoint");
       }
@@ -59,8 +92,14 @@ test("seeds 1500 distinct avatars and receipts with bounded traffic and no retur
   const result = await seedAvatarDemandFixture({
     homeserver: "http://example.invalid", ownerAccessToken: "owner-secret", runId: "unit"
   });
-  expect(result).toEqual({ roomId: "!fixture:example.invalid", eventId: "$target", readerCount: 1500 });
+  expect(result).toEqual({
+    roomId: "!fixture:example.invalid",
+    eventId: "$target",
+    readerCount: 1500,
+    receiptReadback: { stored: 1500, packed: 1500 }
+  });
   expect([registered, uploaded, joined, receipts]).toEqual([1500, 1500, 1500, 1500]);
+  expect([storedReadbacks, slidingReadbacks]).toEqual([1, 1]);
   expect(peak).toBeLessThanOrEqual(8);
   const png = uploadedImages[0];
   expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));

@@ -23,6 +23,8 @@ fn room(id: &str, label: &str, is_dm: bool, tags: RoomTags, timestamp_ms: u64) -
         unread_count: 0,
         notification_count: 0,
         highlight_count: 0,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
         marked_unread: false,
         recency_stamp: Some(timestamp_ms),
         conversation_activity: Some(ConversationActivity {

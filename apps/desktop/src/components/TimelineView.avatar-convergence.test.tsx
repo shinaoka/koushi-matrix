@@ -38,6 +38,8 @@ function liveSignals(thumbnail: AvatarThumbnailState): LiveSignalsState {
           }
         },
         fully_read_event_id: null,
+        focused_receipts_by_event: {},
+        thread_receipts_by_event: {},
         typing_user_ids: [],
         typing_users: []
       }

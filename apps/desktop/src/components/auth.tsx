@@ -7,6 +7,7 @@ import { t } from "../i18n/messages";
 import type {
   AppError,
   AuthFailureKind,
+  DelegatedAuthMethod,
   DesktopSnapshot,
   LoginFlow,
   SessionState
@@ -156,6 +157,8 @@ export function AuthScreen({
   onPasswordPresenceChange,
   onServerOverrideChange,
   onStartOidcLogin,
+  onCancelOidcLogin,
+  browserAttemptPending,
   onSubmit
 }: {
   deviceName: string;
@@ -168,12 +171,14 @@ export function AuthScreen({
   snapshot: DesktopSnapshot;
   transportError?: string | null;
   onCancel?: () => void;
+  onCancelOidcLogin: () => void;
+  browserAttemptPending: boolean;
   onDeviceNameChange: (value: string) => void;
   onDiscoverLoginMethods: () => void;
   onMatrixIdChange: (value: string) => void;
   onPasswordPresenceChange: (value: boolean) => void;
   onServerOverrideChange: (value: string | null) => void;
-  onStartOidcLogin: () => void;
+  onStartOidcLogin: (method: DelegatedAuthMethod) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const primaryError = latestAuthError(snapshot.state.ui.errors);
@@ -232,7 +237,7 @@ export function AuthScreen({
             </label>
             {primaryError ? (
               <div className="auth-error" role="alert">
-                {primaryError.message}
+                {authErrorMessage(primaryError)}
               </div>
             ) : null}
             <button
@@ -247,7 +252,7 @@ export function AuthScreen({
                 className="auth-secondary"
                 disabled={isBusy}
                 type="button"
-                onClick={onStartOidcLogin}
+                onClick={() => onStartOidcLogin(oidcFlow.kind === "sso" ? "sso" : "oauth")}
               >
                 {isBusy ? t("auth.connecting") : authFlowLabel(oidcFlow)}
               </button>
@@ -324,13 +329,23 @@ export function AuthScreen({
                   className="auth-sso-button"
                   disabled={isBusy}
                   type="button"
-                  onClick={onStartOidcLogin}
+                  onClick={() => onStartOidcLogin(oidcFlow.kind === "sso" ? "sso" : "oauth")}
                 >
                   {isBusy
                     ? t("auth.connecting")
                     : t("auth.continueWithMethod", { method: authFlowLabel(oidcFlow) })}
                 </button>
                 <p className="auth-field-help">{t("auth.ssoHelp")}</p>
+                {browserAttemptPending ? (
+                  <button
+                    className="auth-link-button auth-cancel-browser"
+                    disabled={isBusy}
+                    type="button"
+                    onClick={onCancelOidcLogin}
+                  >
+                    {t("auth.cancelBrowserSignIn")}
+                  </button>
+                ) : null}
                 {registrationUrl ? (
                   <a className="auth-create-account" href={registrationUrl}>
                     {t("auth.createAccount")}
@@ -371,7 +386,7 @@ export function AuthScreen({
             )}
             {primaryError ? (
               <div className="auth-error" role="alert">
-                {primaryError.message}
+                {authErrorMessage(primaryError)}
                 {primaryError.code === "login_failed" ? (
                   <p className="auth-error-help">{t("auth.loginFailureMatrixIdHint")}</p>
                 ) : null}
@@ -401,6 +416,13 @@ export function AuthScreen({
       </ImeSafeForm>
     </main>
   );
+}
+
+// Prefer the Rust-classified reason so the visible copy names the cause
+// (wrong credentials, rate limit, transport, store) instead of the generic
+// fallback message (#1268).
+function authErrorMessage(error: AppError): string {
+  return error.reason ? authFailureLabel(error.reason) : error.message;
 }
 
 function latestAuthError(errors: AppError[]): AppError | undefined {
@@ -462,6 +484,12 @@ function authFailureLabel(kind: AuthFailureKind): string {
       return t("auth.notChecked");
     case "forbidden":
       return t("auth.failureForbidden");
+    case "invalidCredentials":
+      return t("auth.failureInvalidCredentials");
+    case "rateLimited":
+      return t("auth.failureRateLimited");
+    case "store":
+      return t("auth.failureStore");
     case "timeout":
       return t("auth.failureTimeout");
     case "sdk":

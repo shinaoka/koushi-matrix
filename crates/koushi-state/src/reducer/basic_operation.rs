@@ -68,6 +68,7 @@ pub(crate) fn handle_basic_operation_failed(
         code: "basic_operation_failed".to_owned(),
         message,
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::RoomListChanged),

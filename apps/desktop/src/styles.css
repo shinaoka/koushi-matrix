@@ -8026,6 +8026,14 @@ kbd {
   padding: 32px;
 }
 
+/* Suggested next action for a typed gate failure, e.g. the Secure Backup
+   failure detail's transport-specific guidance. */
+.session-verification-gate-action {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .recovery-key-reveal {
   display: grid;
   gap: 10px;

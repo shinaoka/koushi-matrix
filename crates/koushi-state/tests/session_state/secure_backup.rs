@@ -1,7 +1,9 @@
 use super::support::session_info;
 use koushi_state::{
-    AppAction, AppEffect, AppState, PendingKeyCountBucket, SecureBackupGateFailureKind,
-    SecureBackupGateState, SessionState, UiEvent, encrypted_messaging_is_admitted, reduce,
+    AppAction, AppEffect, AppState, PendingKeyCountBucket, SecureBackupFailureDetail,
+    SecureBackupFailureStage, SecureBackupFailureTransport, SecureBackupGateFailureKind,
+    SecureBackupGateState, SecureBackupMatrixErrorKind, SessionState, UiEvent,
+    encrypted_messaging_is_admitted, reduce,
 };
 
 #[test]
@@ -34,12 +36,14 @@ fn secure_backup_gate_is_closed_until_authoritative_ready_and_can_degrade() {
         &mut state,
         AppAction::SecureBackupGateChanged(SecureBackupGateState::DegradedRetrying {
             failure: SecureBackupGateFailureKind::Network,
+            detail: None,
         }),
     );
     assert!(matches!(
         state.secure_backup_gate,
         SecureBackupGateState::DegradedRetrying {
-            failure: SecureBackupGateFailureKind::Network
+            failure: SecureBackupGateFailureKind::Network,
+            ..
         }
     ));
     assert_eq!(state.session, SessionState::Ready(session_info()));
@@ -72,6 +76,7 @@ fn configured_backup_upload_health_does_not_close_encrypted_admission() {
         SecureBackupGateState::RecoveryKeyDeliveryRequired,
         SecureBackupGateState::BlockedFailed {
             failure: SecureBackupGateFailureKind::Sdk,
+            detail: None,
         },
     ];
     for gate in blocking {
@@ -93,6 +98,7 @@ fn configured_backup_upload_health_does_not_close_encrypted_admission() {
         },
         SecureBackupGateState::DegradedRetrying {
             failure: SecureBackupGateFailureKind::Network,
+            detail: None,
         },
     ] {
         let state = AppState {
@@ -137,6 +143,7 @@ fn duplicate_ready_is_quiet_and_degradation_preserves_a_nonempty_draft() {
         &mut state,
         AppAction::SecureBackupGateChanged(SecureBackupGateState::DegradedRetrying {
             failure: SecureBackupGateFailureKind::RateLimited,
+            detail: None,
         }),
     );
     assert_eq!(state.composer_drafts, draft_before);
@@ -179,12 +186,27 @@ fn secure_backup_gate_wire_is_closed_privacy_safe_and_legacy_defaults_inactive()
         (
             SecureBackupGateState::DegradedRetrying {
                 failure: SecureBackupGateFailureKind::Network,
+                detail: None,
             },
             "degradedRetrying",
         ),
         (
             SecureBackupGateState::BlockedFailed {
                 failure: SecureBackupGateFailureKind::Forbidden,
+                detail: None,
+            },
+            "blockedFailed",
+        ),
+        (
+            SecureBackupGateState::BlockedFailed {
+                failure: SecureBackupGateFailureKind::ServerResponse,
+                detail: Some(SecureBackupFailureDetail {
+                    stage: SecureBackupFailureStage::InspectServerTrust,
+                    transport: SecureBackupFailureTransport::HttpResponse,
+                    http_status: Some(503),
+                    matrix_error_kind: Some(SecureBackupMatrixErrorKind::Unknown),
+                    retryable: true,
+                }),
             },
             "blockedFailed",
         ),
@@ -200,6 +222,59 @@ fn secure_backup_gate_wire_is_closed_privacy_safe_and_legacy_defaults_inactive()
             serde_json::from_value(value).expect("gate round trips");
         assert_eq!(restored, gate);
     }
+
+    // The exact wire shape the TypeScript mirror consumes (#1265).
+    let detailed = serde_json::to_value(SecureBackupGateState::BlockedFailed {
+        failure: SecureBackupGateFailureKind::ServerResponse,
+        detail: Some(SecureBackupFailureDetail {
+            stage: SecureBackupFailureStage::InspectServerTrust,
+            transport: SecureBackupFailureTransport::HttpResponse,
+            http_status: Some(503),
+            matrix_error_kind: Some(SecureBackupMatrixErrorKind::Unknown),
+            retryable: true,
+        }),
+    })
+    .expect("gate serializes");
+    assert_eq!(
+        detailed,
+        serde_json::json!({
+            "kind": "blockedFailed",
+            "failure": "serverResponse",
+            "detail": {
+                "stage": "inspectServerTrust",
+                "transport": "httpResponse",
+                "httpStatus": 503,
+                "matrixErrorKind": "unknown",
+                "retryable": true
+            }
+        })
+    );
+    // A detail that carries no server response omits the status and kind.
+    let transport_only = serde_json::to_value(SecureBackupGateState::DegradedRetrying {
+        failure: SecureBackupGateFailureKind::Network,
+        detail: Some(SecureBackupFailureDetail {
+            stage: SecureBackupFailureStage::InspectServerTrust,
+            transport: SecureBackupFailureTransport::NoResponse,
+            http_status: None,
+            matrix_error_kind: None,
+            retryable: true,
+        }),
+    })
+    .expect("gate serializes");
+    assert_eq!(
+        transport_only,
+        serde_json::json!({
+            "kind": "degradedRetrying",
+            "failure": "network",
+            "detail": {
+                "stage": "inspectServerTrust",
+                "transport": "noResponse",
+                "httpStatus": null,
+                "matrixErrorKind": null,
+                "retryable": true
+            }
+        })
+    );
 
     let state = AppState {
         session: SessionState::Ready(session_info()),

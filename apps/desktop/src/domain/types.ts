@@ -540,8 +540,14 @@ export type AuthFailureKind =
   | "unsupported"
   | "cancelled"
   | "forbidden"
+  | "rateLimited"
+  | "invalidCredentials"
+  | "store"
   | "timeout"
   | "sdk";
+
+/** The user's bounded chosen method for a browser sign-in start (#1267). */
+export type DelegatedAuthMethod = "oauth" | "sso";
 
 export type AccountManagementState =
   | { kind: "idle" }
@@ -758,7 +764,45 @@ export type SecureBackupGateFailureKind =
   | "artifactDelivery"
   | "forbidden"
   | "timeout"
-  | "sdk";
+  | "sdk"
+  | "serverResponse"
+  | "unauthorized";
+
+/** Mirror of the Rust `SecureBackupFailureStage` vocabulary. */
+export type SecureBackupFailureStage =
+  | "inspectServerTrust"
+  | "roomKeyCounts"
+  | "recoveryKeyDelivery"
+  | "crossSigningStatus"
+  | "inspectionDeadline"
+  | "unknown";
+
+/** Mirror of the Rust `SecureBackupFailureTransport` vocabulary. */
+export type SecureBackupFailureTransport =
+  | "noResponse"
+  | "httpResponse"
+  | "timeout"
+  | "local";
+
+/** Mirror of the Rust `SecureBackupMatrixErrorKind` allowlist. */
+export type SecureBackupMatrixErrorKind =
+  | "forbidden"
+  | "unknownToken"
+  | "missingToken"
+  | "limitExceeded"
+  | "unrecognized"
+  | "badJson"
+  | "notFound"
+  | "unknown";
+
+/** Bounded, privacy-safe Secure Backup failure facts (Rust-owned). */
+export interface SecureBackupFailureDetail {
+  stage: SecureBackupFailureStage;
+  transport: SecureBackupFailureTransport;
+  httpStatus?: number | null;
+  matrixErrorKind?: SecureBackupMatrixErrorKind | null;
+  retryable: boolean;
+}
 
 export type PendingKeyCountBucket =
   | "zero"
@@ -781,8 +825,16 @@ export type SecureBackupGateState =
   | { kind: "creatingBackup" }
   | { kind: "recoveryKeyDeliveryRequired" }
   | { kind: "uploadingExistingKeys"; pending: PendingKeyCountBucket }
-  | { kind: "degradedRetrying"; failure: SecureBackupGateFailureKind }
-  | { kind: "blockedFailed"; failure: SecureBackupGateFailureKind }
+  | {
+      kind: "degradedRetrying";
+      failure: SecureBackupGateFailureKind;
+      detail?: SecureBackupFailureDetail | null;
+    }
+  | {
+      kind: "blockedFailed";
+      failure: SecureBackupGateFailureKind;
+      detail?: SecureBackupFailureDetail | null;
+    }
   | { kind: "ready" };
 
 export type VerificationMethodCapability = "existingDeviceSas" | "recoveryKey" | "securityPhrase" | "bootstrap";
@@ -1354,6 +1406,10 @@ export interface RoomSummary {
   unread_count: number;
   notification_count?: number;
   highlight_count?: number;
+  /** #1238: summed per-root SDK thread-cache unread replies; `unread_count` stays main-only navigation state. */
+  thread_unread_count?: number;
+  /** #1238: summed per-root SDK thread-cache unread mentions, so a thread mention renders mention styling. */
+  thread_highlight_count?: number;
   marked_unread?: boolean;
   recency_stamp?: number | null;
   conversation_activity?: ConversationActivity | null;
@@ -2237,6 +2293,8 @@ export interface RoomLiveSignalMetadata {
 
 export interface RoomLiveSignals {
   receipts_by_event: Record<string, LiveEventReceiptSummary>;
+  focused_receipts_by_event: Record<string, Record<string, LiveEventReceiptSummary>>;
+  thread_receipts_by_event: Record<string, Record<string, LiveEventReceiptSummary>>;
   fully_read_event_id: string | null;
   typing_user_ids: string[];
   typing_users: LiveTypingUser[];
@@ -2866,6 +2924,8 @@ export interface AppError {
   code: string;
   message: string;
   recoverable: boolean;
+  /** Bounded, Rust-classified cause for visible guidance (#1268). */
+  reason?: AuthFailureKind;
 }
 
 export interface SidebarModel {

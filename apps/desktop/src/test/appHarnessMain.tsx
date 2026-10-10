@@ -818,9 +818,16 @@ function receiptReaderRows(source: ReceiptSourceRef): {
   rows: ReaderRow[];
   totalCount: number;
 } {
+  const roomSignals =
+    currentSnapshot.state.domain.live_signals.rooms[receiptSourceRoomId(source)];
+  // Issue #1255: read the summary for this source's own scope.
+  const kind = source.key.kind;
   const summary =
-    currentSnapshot.state.domain.live_signals.rooms[receiptSourceRoomId(source)]
-      ?.receipts_by_event[source.event_id];
+    "Thread" in kind
+      ? roomSignals?.thread_receipts_by_event?.[kind.Thread.root_event_id]?.[source.event_id]
+      : "Focused" in kind
+        ? roomSignals?.focused_receipts_by_event?.[kind.Focused.event_id]?.[source.event_id]
+        : roomSignals?.receipts_by_event[source.event_id];
   const locale = currentSnapshot.state.domain.locale_profile.catalog_locale === "ja" ? "ja" : "en";
   const rows = (summary?.readers ?? []).map((reader): ReaderRow => {
     const displayLabel = (reader.display_name ?? reader.original_display_label) || reader.user_id;

@@ -9,6 +9,7 @@ import type {
   CommandReceipt,
   DesktopSnapshot,
   PendingKeyCountBucket,
+  SecureBackupFailureDetail,
   SecureBackupGateFailureKind,
   SecureBackupGateState,
   SecureBackupSetupIntent
@@ -112,7 +113,9 @@ export function secureBackupFailureLabel(kind: SecureBackupGateFailureKind): str
       artifactDelivery: "gate.secureBackupFailureArtifactDelivery",
       forbidden: "gate.secureBackupFailureForbidden",
       timeout: "gate.secureBackupFailureTimeout",
-      sdk: "gate.secureBackupFailureSdk"
+      sdk: "gate.secureBackupFailureSdk",
+      serverResponse: "gate.secureBackupFailureServerResponse",
+      unauthorized: "gate.secureBackupFailureUnauthorized"
     } as const)[kind]
   );
 }
@@ -157,6 +160,72 @@ export function secureBackupGateFailure(
     return gate.failure;
   }
   return null;
+}
+
+/** The structured, privacy-safe cause of a gate failure, when Rust recorded one. */
+export function secureBackupGateFailureDetail(
+  gate: SecureBackupGateState
+): SecureBackupFailureDetail | null {
+  if (gate.kind === "degradedRetrying" || gate.kind === "blockedFailed") {
+    return gate.detail ?? null;
+  }
+  return null;
+}
+
+/**
+ * Specific, understandable gate copy. A structured detail distinguishes a
+ * request that never received a response from one that timed out and one that
+ * received a server response; without a detail the coarse kind's copy is used.
+ * No SDK error text, URL, identifier, status body, or credential is rendered.
+ */
+export function secureBackupFailurePresentation(
+  kind: SecureBackupGateFailureKind,
+  detail: SecureBackupFailureDetail | null
+): { explanation: string; action: string | null } {
+  if (!detail) {
+    return { explanation: secureBackupFailureLabel(kind), action: null };
+  }
+  const status = typeof detail.httpStatus === "number" ? detail.httpStatus : null;
+  switch (detail.transport) {
+    case "httpResponse": {
+      const explanation =
+        kind === "rateLimited"
+          ? t("gate.secureBackupFailureRateLimited")
+          : kind === "forbidden"
+            ? t("gate.secureBackupFailureForbidden")
+            : kind === "unauthorized"
+              ? t("gate.secureBackupFailureUnauthorized")
+              : status !== null
+                ? t("gate.secureBackupDetailHttpStatus", { status })
+                : t("gate.secureBackupDetailHttpResponse");
+      const action =
+        kind === "unauthorized"
+          ? t("gate.secureBackupActionSignInAgain")
+          : kind === "forbidden"
+            ? t("gate.secureBackupActionContactAdmin")
+            : kind === "rateLimited"
+              ? t("gate.secureBackupActionWaitAndRetry")
+              : detail.retryable
+                ? t("gate.secureBackupActionRetryLater")
+                : t("gate.secureBackupActionContactAdmin");
+      return { explanation, action };
+    }
+    case "timeout":
+      return {
+        explanation: t("gate.secureBackupDetailTimeout"),
+        action: t("gate.secureBackupActionRetry")
+      };
+    case "noResponse":
+      return {
+        explanation: t("gate.secureBackupDetailNoResponse"),
+        action: t("gate.secureBackupActionRetry")
+      };
+    default:
+      return {
+        explanation: t("gate.secureBackupDetailLocal"),
+        action: t("gate.secureBackupActionLocalRetry")
+      };
+  }
 }
 
 export function SessionVerificationGate({
@@ -408,6 +477,11 @@ export function SessionVerificationGate({
           ? t("gate.verifying")
           : t("gate.title");
   const secureBackupFailureKind = secureBackupGateFailure(secureBackupGate);
+  const secureBackupFailureDetail = secureBackupGateFailureDetail(secureBackupGate);
+  const secureBackupFailureCopy =
+    secureBackupFailureKind !== null
+      ? secureBackupFailurePresentation(secureBackupFailureKind, secureBackupFailureDetail)
+      : null;
   // The reveal follows the Rust-held key, not the gate: a transient gate
   // projection (for example `checking` after a retry) must not hide a key
   // that is still awaiting the saved confirmation.
@@ -433,8 +507,11 @@ export function SessionVerificationGate({
     {secureBackupGateRequired && secureBackupNeedsRecovery && (
       <p>{t("gate.secureBackupNeedsRecovery")}</p>
     )}
-    {secureBackupGateRequired && secureBackupFailureKind && (
-      <p role="alert">{secureBackupFailureLabel(secureBackupFailureKind)}</p>
+    {secureBackupGateRequired && secureBackupFailureCopy && (
+      <p role="alert">{secureBackupFailureCopy.explanation}</p>
+    )}
+    {secureBackupGateRequired && secureBackupFailureCopy?.action && (
+      <p className="session-verification-gate-action">{secureBackupFailureCopy.action}</p>
     )}
     {secureBackupGateRequired && secureBackupOperationError && (
       <p role="alert">{t("gate.secureBackupCommandFailed")}</p>

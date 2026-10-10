@@ -144,14 +144,15 @@ describe("TauriDesktopApi", () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 
     const api = new TauriDesktopApi();
-    await api.startOidcLogin("https://example.test");
+    await api.startOidcLogin("https://example.test", "oauth");
     await api.completeOidcLogin(
       "https://example.test",
       "koushi-desktop://auth/callback?code=synthetic"
     );
 
     expect(invoke).toHaveBeenCalledWith("start_oidc_login", {
-      homeserver: "https://example.test"
+      homeserver: "https://example.test",
+      method: "oauth"
     });
     expect(invoke).toHaveBeenCalledWith("complete_oidc_login", {
       homeserver: "https://example.test",
@@ -164,15 +165,16 @@ describe("TauriDesktopApi", () => {
     setRendererSelectedAccountTabId("add:2");
 
     const api = new TauriDesktopApi().forAccountTab("add:2");
-    await api.startOidcLogin("https://example.test");
+    await api.startOidcLogin("https://example.test", "oauth");
 
     expect(invoke).toHaveBeenCalledWith("start_oidc_login", {
       homeserver: "https://example.test",
+      method: "oauth",
       accountTabId: "add:2"
     });
 
     setRendererSelectedAccountTabId("account:other");
-    await expect(api.startOidcLogin("https://example.test")).rejects.toThrow(
+    await expect(api.startOidcLogin("https://example.test", "oauth")).rejects.toThrow(
       "account tab is no longer selected"
     );
     expect(invoke).toHaveBeenCalledTimes(1);

@@ -202,6 +202,78 @@ test("secure backup gate actions retain the selected account API receiver", asyn
   await expect(page.locator("body")).not.toContainText(secret);
 });
 
+test("secure backup gate explains a server response and opens diagnostics", async ({ page }) => {
+  await page.goto("/appHarness.html");
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          secure_backup_gate: {
+            kind: "blockedFailed",
+            failure: "serverResponse",
+            detail: {
+              stage: "inspectServerTrust",
+              transport: "httpResponse",
+              httpStatus: 503,
+              matrixErrorKind: "unknown",
+              retryable: true
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateUpdate();
+  });
+
+  await expect(page.locator("main.session-verification-gate")).toBeVisible();
+  // The gate distinguishes a server response from a transport failure and
+  // offers a next action; it never renders raw DTO or SDK text.
+  await expect(page.getByRole("alert")).toHaveText(
+    "The homeserver answered this secure backup request with an error (HTTP 503)."
+  );
+  await expect(page.getByText("Try again in a few minutes.")).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("inspectServerTrust");
+  await expect(page.locator("body")).not.toContainText("matrixErrorKind");
+
+  // The diagnostics button is actionable while the gate blocks the shell.
+  await expect(page.getByRole("dialog", { name: "Diagnostics" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Open secure backup diagnostics" }).click();
+  await expect(page.getByRole("dialog", { name: "Diagnostics" })).toBeVisible();
+  await expect.poll(() => page.evaluate(
+    () => window.__harness.invocationsOf("get_diagnostic_snapshot").length
+  )).toBe(1);
+});
+
+test("secure backup diagnostics opens even when the snapshot fetch fails", async ({ page }) => {
+  await page.goto("/appHarness.html");
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          secure_backup_gate: { kind: "blockedFailed", failure: "network" }
+        }
+      }
+    });
+    window.__harness.pushStateUpdate();
+    window.__harness.clearInvocations();
+    window.__harness.setCommandResponse("get_diagnostic_snapshot", () =>
+      Promise.reject(new Error("synthetic diagnostics unavailable"))
+    );
+  });
+
+  await page.getByRole("button", { name: "Open secure backup diagnostics" }).click();
+  await expect(page.getByRole("dialog", { name: "Diagnostics" })).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("synthetic diagnostics unavailable");
+});
+
 test("device cleanup is explicit, remote-first, and keeps UIA secrets out of observable state", async ({ page }) => {
   await page.goto("/appHarness.html");
   await page.evaluate(() => {

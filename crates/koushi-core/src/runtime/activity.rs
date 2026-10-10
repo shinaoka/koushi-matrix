@@ -1061,10 +1061,18 @@ fn room_activity_unread_count_for_mode(
     room: &RoomSummary,
     mode: Option<RoomNotificationMode>,
 ) -> u64 {
-    if matches!(mode, Some(RoomNotificationMode::Mentions)) && room.highlight_count == 0 {
+    // #1238: this is the notification-side counter behind the Activity Unread
+    // inbox, not the shared badge helper. A mention inside a thread is still a
+    // highlight, so the thread highlight term joins the client mention counter;
+    // plain thread unread deliberately does not, because the inbox keeps plain
+    // unread messages sidebar-only (canon, "Unread Source Of Truth").
+    let highlight_total = room
+        .highlight_count
+        .saturating_add(room.thread_highlight_count);
+    if matches!(mode, Some(RoomNotificationMode::Mentions)) && highlight_total == 0 {
         0
     } else {
-        let count = room.notification_count.max(room.highlight_count);
+        let count = room.notification_count.max(highlight_total);
         if count > 0 {
             count
         } else if room.marked_unread {

@@ -23,20 +23,128 @@ impl fmt::Debug for LiveSignalsState {
     }
 }
 
+/// Receipt-summary scope. Each timeline publishes only the scope its own
+/// timeline key owns: the Room timeline the main scope, a permalink/context
+/// timeline its focused scope, and a Thread timeline its root's thread scope.
+/// The SDK resolves each timeline's receipt thread independently, so the scopes
+/// are stored separately and never merged.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ReceiptScope {
+    /// The unthreaded room timeline scope (`RoomLiveSignals.receipts_by_event`).
+    #[default]
+    Main,
+    /// One permalink/context timeline scope keyed by its target event ID.
+    Focused { event_id: String },
+    /// One thread timeline scope keyed by its root event ID.
+    Thread { root_event_id: String },
+}
+
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RoomLiveSignals {
+    /// Main scope: receipt summaries published by the Room timeline.
     pub receipts_by_event: BTreeMap<String, LiveEventReceiptSummary>,
+    /// Focused scopes, keyed by the permalink/context timeline's target event.
+    #[serde(default)]
+    pub focused_receipts_by_event: BTreeMap<String, BTreeMap<String, LiveEventReceiptSummary>>,
+    /// Thread scopes, keyed by thread root event ID.
+    #[serde(default)]
+    pub thread_receipts_by_event: BTreeMap<String, BTreeMap<String, LiveEventReceiptSummary>>,
     pub fully_read_event_id: Option<String>,
     pub typing_user_ids: Vec<String>,
     #[serde(default)]
     pub typing_users: Vec<LiveTypingUser>,
 }
 
+impl RoomLiveSignals {
+    /// Read the receipt map for `scope` without creating it.
+    pub fn receipts_for_scope(
+        &self,
+        scope: &ReceiptScope,
+    ) -> Option<&BTreeMap<String, LiveEventReceiptSummary>> {
+        match scope {
+            ReceiptScope::Main => Some(&self.receipts_by_event),
+            ReceiptScope::Focused { event_id } => self.focused_receipts_by_event.get(event_id),
+            ReceiptScope::Thread { root_event_id } => {
+                self.thread_receipts_by_event.get(root_event_id)
+            }
+        }
+    }
+
+    /// Mutable receipt map for `scope`, creating the focused/thread entry when
+    /// the scope has not been observed yet.
+    pub fn receipts_for_scope_mut(
+        &mut self,
+        scope: &ReceiptScope,
+    ) -> &mut BTreeMap<String, LiveEventReceiptSummary> {
+        match scope {
+            ReceiptScope::Main => &mut self.receipts_by_event,
+            ReceiptScope::Focused { event_id } => self
+                .focused_receipts_by_event
+                .entry(event_id.clone())
+                .or_default(),
+            ReceiptScope::Thread { root_event_id } => self
+                .thread_receipts_by_event
+                .entry(root_event_id.clone())
+                .or_default(),
+        }
+    }
+
+    /// Every receipt summary in every scope, for read-only projection refreshes.
+    pub fn receipt_summaries(&self) -> impl Iterator<Item = &LiveEventReceiptSummary> {
+        self.receipts_by_event
+            .values()
+            .chain(
+                self.focused_receipts_by_event
+                    .values()
+                    .flat_map(BTreeMap::values),
+            )
+            .chain(
+                self.thread_receipts_by_event
+                    .values()
+                    .flat_map(BTreeMap::values),
+            )
+    }
+
+    /// Every receipt summary in every scope, for display/avatar refreshes.
+    pub fn receipt_summaries_mut(&mut self) -> impl Iterator<Item = &mut LiveEventReceiptSummary> {
+        self.receipts_by_event
+            .values_mut()
+            .chain(
+                self.focused_receipts_by_event
+                    .values_mut()
+                    .flat_map(BTreeMap::values_mut),
+            )
+            .chain(
+                self.thread_receipts_by_event
+                    .values_mut()
+                    .flat_map(BTreeMap::values_mut),
+            )
+    }
+
+    /// Number of event entries across every scope (redacted diagnostics only).
+    pub fn receipt_event_count(&self) -> usize {
+        self.receipts_by_event.len()
+            + self
+                .focused_receipts_by_event
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+            + self
+                .thread_receipts_by_event
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+    }
+}
+
 impl fmt::Debug for RoomLiveSignals {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RoomLiveSignals")
-            .field("receipt_event_count", &self.receipts_by_event.len())
+            .field("receipt_event_count", &self.receipt_event_count())
+            .field("focused_scope_count", &self.focused_receipts_by_event.len())
+            .field("thread_scope_count", &self.thread_receipts_by_event.len())
             .field(
                 "fully_read_event_present",
                 &self.fully_read_event_id.is_some(),
@@ -226,6 +334,8 @@ impl LiveRoomSignalUpdate {
             .collect();
         RoomLiveSignals {
             receipts_by_event,
+            focused_receipts_by_event: BTreeMap::new(),
+            thread_receipts_by_event: BTreeMap::new(),
             fully_read_event_id: self.fully_read_event_id,
             typing_user_ids,
             typing_users,
@@ -298,7 +408,7 @@ pub fn refresh_live_receipt_display_projection(
     let mut changed = false;
     for (room_id, room) in live_signals.rooms.iter_mut() {
         let relevant_room_profiles = profiles.room_users.get(room_id);
-        for summary in room.receipts_by_event.values_mut() {
+        for summary in room.receipt_summaries_mut() {
             for receipt in &mut summary.readers {
                 let enriched = enrich_live_receipt(
                     receipt.clone(),

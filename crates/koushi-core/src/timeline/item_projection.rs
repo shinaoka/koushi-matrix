@@ -11,7 +11,8 @@ use koushi_state::UserProfile;
 use koushi_state::{
     AppAction, AttachmentKind, AvatarImage, AvatarThumbnailState, ComposerDocument, ComposerInline,
     LiveEventReceiptSummaryUpdate, LiveEventReceipts, LiveReadReceipt, MentionIntent,
-    MentionTarget, ReplyQuote, ReplyQuoteCodeBlock, ReplyQuoteFormattedBody, ReplyQuoteState,
+    MentionTarget, ReceiptScope, ReplyQuote, ReplyQuoteCodeBlock, ReplyQuoteFormattedBody,
+    ReplyQuoteState,
 };
 
 use matrix_sdk::attachment::{AttachmentInfo, BaseFileInfo, BaseImageInfo, Thumbnail};
@@ -1855,10 +1856,54 @@ pub(super) fn live_event_receipts_from_sdk_items<'a>(
         .collect()
 }
 
+/// Receipt observation target. Both arms carry the observing timeline's receipt
+/// scope and the event IDs the observation replaces in that scope.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ReceiptObservationTarget {
-    Live,
-    Authoritative { scoped_event_ids: Vec<String> },
+    /// Bounded compact summaries. A live diff passes an empty `scoped_event_ids`;
+    /// an actor start names its initial window.
+    Live {
+        scope: ReceiptScope,
+        scoped_event_ids: Vec<String>,
+    },
+    /// Authoritative window replacement.
+    Authoritative {
+        scope: ReceiptScope,
+        scoped_event_ids: Vec<String>,
+    },
+}
+
+/// The receipt scope owned by a timeline key. Room timelines publish the main
+/// scope, a permalink/context timeline its own focused scope, and a thread
+/// timeline its root's thread scope. The timeline key — not the SDK's resolved
+/// receipt thread — is the authority, so a focused permalink whose target is a
+/// thread reply still writes only its focused scope.
+pub(super) fn receipt_scope_for_timeline_kind(kind: &TimelineKind) -> ReceiptScope {
+    match kind {
+        TimelineKind::Room { .. } => ReceiptScope::Main,
+        TimelineKind::Focused { event_id, .. } => ReceiptScope::Focused {
+            event_id: event_id.clone(),
+        },
+        TimelineKind::Thread { root_event_id, .. } => ReceiptScope::Thread {
+            root_event_id: root_event_id.clone(),
+        },
+    }
+}
+
+/// Event IDs of an SDK timeline window, used as the reconcile scope of an
+/// actor's initial receipt observation.
+pub(super) fn live_event_window_ids_from_sdk_items<'a>(
+    items: impl IntoIterator<Item = &'a Arc<SdkTimelineItem>>,
+) -> Vec<String> {
+    items
+        .into_iter()
+        .filter_map(|item| match item.kind() {
+            TimelineItemKind::Event(event) => event.event_id().map(ToString::to_string),
+            TimelineItemKind::Virtual(_) => None,
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn profile_actions(profiles: Vec<MatrixUserProfile>) -> Vec<UserProfile> {
@@ -1908,6 +1953,7 @@ fn profile_actions_to_actions(
 
 fn build_receipt_observation_actions(
     room_id: &str,
+    scope: ReceiptScope,
     receipts_by_event: Vec<LiveEventReceipts>,
     profiles: Vec<MatrixUserProfile>,
     scoped_event_ids: Vec<String>,
@@ -1916,6 +1962,7 @@ fn build_receipt_observation_actions(
     actions.reserve(usize::from(has_profiles) + 1);
     actions.push(AppAction::LiveRoomReceiptsWindowReconciled {
         room_id: room_id.to_owned(),
+        scope,
         scoped_event_ids,
         receipts_by_event,
     });
@@ -1966,6 +2013,8 @@ fn compact_live_receipt_summaries(
 
 fn build_live_receipt_summary_actions(
     room_id: &str,
+    scope: ReceiptScope,
+    scoped_event_ids: Vec<String>,
     receipts_by_event: Vec<LiveEventReceiptSummaryUpdate>,
     profiles: Vec<MatrixUserProfile>,
 ) -> Vec<AppAction> {
@@ -1973,6 +2022,8 @@ fn build_live_receipt_summary_actions(
     actions.reserve(usize::from(has_profiles) + 1);
     actions.push(AppAction::LiveRoomReceiptSummariesUpdated {
         room_id: room_id.to_owned(),
+        scope,
+        scoped_event_ids,
         receipts_by_event,
     });
     actions
@@ -1986,6 +2037,8 @@ pub(super) fn build_live_receipt_observation_actions(
 ) -> Vec<AppAction> {
     build_live_receipt_summary_actions(
         room_id,
+        ReceiptScope::Main,
+        Vec::new(),
         compact_live_receipt_summaries(receipts_by_event, None),
         profiles,
     )
@@ -2001,7 +2054,10 @@ pub(super) async fn live_receipt_observation_actions_from_sdk_receipts(
         session,
         room_id,
         receipts_by_event,
-        ReceiptObservationTarget::Live,
+        ReceiptObservationTarget::Live {
+            scope: ReceiptScope::Main,
+            scoped_event_ids: Vec::new(),
+        },
     )
     .await
 }
@@ -2012,40 +2068,59 @@ async fn receipt_observation_actions_from_sdk_receipts(
     receipts_by_event: Vec<LiveEventReceipts>,
     target: ReceiptObservationTarget,
 ) -> Vec<AppAction> {
-    if matches!(&target, ReceiptObservationTarget::Live) {
-        let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
-        let summaries = compact_live_receipt_summaries(
-            receipts_by_event,
-            own_user_id.as_ref().map(|user_id| user_id.as_str()),
-        );
-        let lookup_user_ids = summaries
-            .iter()
-            .flat_map(|entry| entry.readers.iter())
-            .map(|receipt| receipt.user_id.clone())
-            .collect::<Vec<_>>();
-        let receipt_count = summaries
-            .iter()
-            .map(|entry| entry.total_count as usize)
-            .sum();
-        let profiles =
-            receipt_profiles_for_users(session, room_id, &lookup_user_ids, receipt_count).await;
-        return build_live_receipt_summary_actions(room_id, summaries, profiles);
+    match target {
+        ReceiptObservationTarget::Live {
+            scope,
+            scoped_event_ids,
+        } => {
+            let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
+            let summaries = compact_live_receipt_summaries(
+                receipts_by_event,
+                own_user_id.as_ref().map(|user_id| user_id.as_str()),
+            );
+            let lookup_user_ids = summaries
+                .iter()
+                .flat_map(|entry| entry.readers.iter())
+                .map(|receipt| receipt.user_id.clone())
+                .collect::<Vec<_>>();
+            let receipt_count = summaries
+                .iter()
+                .map(|entry| entry.total_count as usize)
+                .sum();
+            let profiles =
+                receipt_profiles_for_users(session, room_id, &lookup_user_ids, receipt_count).await;
+            build_live_receipt_summary_actions(
+                room_id,
+                scope,
+                scoped_event_ids,
+                summaries,
+                profiles,
+            )
+        }
+        ReceiptObservationTarget::Authoritative {
+            scope,
+            scoped_event_ids,
+        } => {
+            let user_ids = receipts_by_event
+                .iter()
+                .flat_map(|entry| entry.receipts.iter())
+                .map(|receipt| receipt.user_id.clone())
+                .collect::<Vec<_>>();
+            let receipt_count = receipts_by_event
+                .iter()
+                .map(|entry| entry.receipts.len())
+                .sum();
+            let profiles =
+                receipt_profiles_for_users(session, room_id, &user_ids, receipt_count).await;
+            build_receipt_observation_actions(
+                room_id,
+                scope,
+                receipts_by_event,
+                profiles,
+                scoped_event_ids,
+            )
+        }
     }
-
-    let user_ids = receipts_by_event
-        .iter()
-        .flat_map(|entry| entry.receipts.iter())
-        .map(|receipt| receipt.user_id.clone())
-        .collect::<Vec<_>>();
-    let receipt_count = receipts_by_event
-        .iter()
-        .map(|entry| entry.receipts.len())
-        .sum();
-    let profiles = receipt_profiles_for_users(session, room_id, &user_ids, receipt_count).await;
-    let ReceiptObservationTarget::Authoritative { scoped_event_ids } = target else {
-        unreachable!("live receipt observation returns through the bounded branch");
-    };
-    build_receipt_observation_actions(room_id, receipts_by_event, profiles, scoped_event_ids)
 }
 
 pub(super) async fn prepare_receipt_window_profiles(
@@ -2137,7 +2212,11 @@ pub(super) async fn emit_live_receipt_observation_actions(
         actor_generation,
         room_id,
         receipts_by_event,
-        ReceiptObservationTarget::Live,
+        ReceiptObservationTarget::Live {
+            scope: receipt_scope_for_timeline_kind(&key.kind),
+            // An incremental live diff observed only changes, so it merges.
+            scoped_event_ids: Vec::new(),
+        },
     )
     .await
 }
@@ -4360,3 +4439,6 @@ mod tests;
 
 #[cfg(test)]
 mod content_policy_tests;
+
+#[cfg(test)]
+mod receipt_scope_tests;

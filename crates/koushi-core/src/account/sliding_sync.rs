@@ -391,6 +391,7 @@ impl AccountActor {
                         core_request_id.sequence,
                     ),
                     message: "login failed".to_owned(),
+                    reason: None,
                 }])
                 .await;
             }

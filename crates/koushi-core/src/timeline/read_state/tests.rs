@@ -2458,6 +2458,7 @@ async fn local_receipt_observation_helper_builds_profile_then_receipt_actions() 
         &mut state,
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: room_id.to_string(),
+            scope: koushi_state::ReceiptScope::Main,
             scoped_event_ids: Vec::new(),
             receipts_by_event: vec![observed_receipts.clone()],
         },
@@ -2569,6 +2570,7 @@ async fn production_receipt_diff_delivery_refreshes_unknown_with_room_profile() 
         &mut state,
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: room_id.to_string(),
+            scope: koushi_state::ReceiptScope::Main,
             scoped_event_ids: Vec::new(),
             receipts_by_event: receipts.clone(),
         },

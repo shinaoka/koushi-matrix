@@ -966,6 +966,38 @@ fn verification_state_matches_target(
     expected_target.is_none_or(|target| verification_state_target(state) == Some(target))
 }
 
+/// #1279: token-only description of the receiver's own projection, so that a
+/// request the SDK never surfaced and a request the waiter rejects as belonging to
+/// the wrong target can be told apart in the next failing run. State kinds, one
+/// boolean, and the sync lifecycle only — never ids, request ids, or error text
+/// (the sync variants carry a free-form reason, so they are not formatted).
+pub(super) fn incoming_request_timeout_context(
+    state: &VerificationFlowState,
+    expected_target: Option<&VerificationTarget>,
+    sync: &koushi_state::SyncState,
+) -> String {
+    let flow = match state {
+        VerificationFlowState::Idle => "idle",
+        VerificationFlowState::Requested { .. } => "requested",
+        VerificationFlowState::Accepted { .. } => "accepted",
+        VerificationFlowState::SasPresented { .. } => "sas_presented",
+        VerificationFlowState::Confirming { .. } => "confirming",
+        VerificationFlowState::Done { .. } => "done",
+        VerificationFlowState::Failed { .. } => "failed",
+    };
+    let sync = match sync {
+        koushi_state::SyncState::Stopped => "stopped",
+        koushi_state::SyncState::Starting => "starting",
+        koushi_state::SyncState::Running => "running",
+        koushi_state::SyncState::Failed { .. } => "failed",
+        koushi_state::SyncState::Reconnecting { .. } => "reconnecting",
+    };
+    format!(
+        "b_flow={flow} b_target_matched={} b_sync={sync}",
+        verification_state_matches_target(state, expected_target)
+    )
+}
+
 /// Data directory for QA runs.
 pub(super) fn qa_data_dir(suffix: &str) -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("KOUSHI_QA_DATA_DIR") {

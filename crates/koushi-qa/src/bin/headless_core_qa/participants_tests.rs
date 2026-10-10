@@ -1,6 +1,6 @@
 use super::{
-    SecondarySasObservation, after_receiver_device_known, observe_secondary_sas,
-    requested_verification_flow_id,
+    SecondarySasObservation, after_receiver_device_known, incoming_request_timeout_context,
+    observe_secondary_sas, requested_verification_flow_id,
 };
 use crate::registry::{QaScenario, should_run_normal_secondary_participant};
 use crate::{
@@ -133,4 +133,27 @@ async fn receiver_device_checkpoint_holds_start_once_until_ack_and_skips_it_on_f
     .await;
     assert_eq!(failed, Err("device unknown"));
     assert_eq!(failed_starts.load(Ordering::SeqCst), 0);
+}
+
+/// #1279: the receiver-side timeout context must name state kinds and one
+/// boolean, and must never echo the free-form reasons the sync variants carry.
+#[test]
+fn incoming_request_timeout_context_is_token_only() {
+    let idle = incoming_request_timeout_context(
+        &VerificationFlowState::Idle,
+        None,
+        &koushi_state::SyncState::Running,
+    );
+    assert_eq!(idle, "b_flow=idle b_target_matched=true b_sync=running");
+
+    let reconnecting = incoming_request_timeout_context(
+        &VerificationFlowState::Idle,
+        None,
+        &koushi_state::SyncState::Reconnecting {
+            reason: "@alice:example.invalid leaked-secret".to_owned(),
+        },
+    );
+    assert!(reconnecting.contains("b_sync=reconnecting"));
+    assert!(!reconnecting.contains("leaked-secret"));
+    assert!(!reconnecting.contains("@alice"));
 }

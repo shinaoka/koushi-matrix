@@ -59,6 +59,19 @@ pub struct RoomSummary {
     pub unread_count: u64,
     pub notification_count: u64,
     pub highlight_count: u64,
+    /// #1238: the room's summed per-root SDK thread-cache unread replies.
+    ///
+    /// This is the thread half of the proven client-side decomposition
+    /// (`RoomReadReceiptEventFilter` excludes thread replies from
+    /// `unread_count`, each `ThreadReadReceiptEventFilter` counts one thread);
+    /// it is deliberately a separate field from the main-only `unread_count`,
+    /// which stays the navigation value for read markers and first-unread.
+    #[serde(default)]
+    pub thread_unread_count: u64,
+    /// #1238: the room's summed per-root SDK thread-cache unread mentions, so a
+    /// mention inside a thread renders mention styling instead of a plain count.
+    #[serde(default)]
+    pub thread_highlight_count: u64,
     #[serde(default)]
     pub marked_unread: bool,
     #[serde(default)]
@@ -93,6 +106,8 @@ impl fmt::Debug for RoomSummary {
             .field("unread_count", &self.unread_count)
             .field("notification_count", &self.notification_count)
             .field("highlight_count", &self.highlight_count)
+            .field("thread_unread_count", &self.thread_unread_count)
+            .field("thread_highlight_count", &self.thread_highlight_count)
             .field("marked_unread", &self.marked_unread)
             .field("has_recency_stamp", &self.recency_stamp.is_some())
             .field("conversation_activity", &self.conversation_activity)
@@ -357,11 +372,23 @@ pub fn room_attention_kind(
 
 /// Persistent conversation attention shared by room/sidebar, account and native
 /// badges. SDK message, notification and mention counters remain separate inputs.
+///
+/// #1238: the badge is the only place the main-timeline and thread counts meet.
+/// Thread replies are excluded from `unread_count` by the SDK's room read-receipt
+/// filter and counted per thread by the thread filters, so
+/// `unread_count + thread_unread_count` is the non-overlapping client
+/// decomposition. A homeserver's own `notification_count` may already include
+/// thread replies, so it is max'd in and never summed with a thread term.
+/// `unread_count` itself stays main-only for navigation.
 pub fn room_activity_unread_count(room: &RoomSummary) -> u64 {
     let count = room
         .unread_count
+        .saturating_add(room.thread_unread_count)
         .max(room.notification_count)
-        .max(room.highlight_count);
+        .max(
+            room.highlight_count
+                .saturating_add(room.thread_highlight_count),
+        );
     if count > 0 {
         count
     } else if room.marked_unread {
@@ -388,24 +415,26 @@ pub fn room_attention_projection(
     mode: Option<RoomNotificationMode>,
 ) -> RoomAttentionProjection {
     let is_muted = mode == Some(RoomNotificationMode::Mute);
+    let thread_highlight_count = room.thread_highlight_count;
+    let highlight_total = room.highlight_count.saturating_add(thread_highlight_count);
     let has_unread_content = room.unread_count > 0
+        || room.thread_unread_count > 0
         || room.notification_count > 0
-        || room.highlight_count > 0
+        || highlight_total > 0
         || room.marked_unread;
     let unread_count = room_activity_unread_count(room);
-    let highlight_count = if is_muted { 0 } else { room.highlight_count };
-    let has_unread_mention = !is_muted && room.highlight_count > 0;
-    let is_attention_highlighted = !is_muted
-        && (room.notification_count > 0 || room.highlight_count > 0 || room.marked_unread);
-    let notification_count = if is_muted
-        || (mode == Some(RoomNotificationMode::Mentions) && room.highlight_count == 0)
-    {
-        0
-    } else {
-        room.notification_count
-    };
+    let highlight_count = if is_muted { 0 } else { highlight_total };
+    let has_unread_mention = !is_muted && highlight_total > 0;
+    let is_attention_highlighted =
+        !is_muted && (room.notification_count > 0 || highlight_total > 0 || room.marked_unread);
+    let notification_count =
+        if is_muted || (mode == Some(RoomNotificationMode::Mentions) && highlight_total == 0) {
+            0
+        } else {
+            room.notification_count
+        };
     let display_count = if is_muted {
-        room.unread_count
+        room.unread_count.saturating_add(room.thread_unread_count)
     } else {
         notification_count
     };

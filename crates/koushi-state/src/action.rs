@@ -69,13 +69,16 @@ pub enum AppAction {
     ThreadDeliveryDiagnosticRecorded {
         diagnostic: crate::state::ThreadDeliveryDiagnostic,
     },
-    /// #1259: the SDK thread cache's unread value for one thread root, so the Threads
-    /// list can show the same dot as the room timeline chip. It never contributes to a
-    /// room total.
+    /// #1259/#1238: the SDK thread cache's attention for one thread root: `unread` is
+    /// the same dot the room timeline chip shows, and `highlight` is its unread
+    /// mention count. The reducer mirrors both into the Threads list and sums them
+    /// into the room's thread badge fields under the proven event-cache
+    /// decomposition; neither is ever added to the main-only `unread_count`.
     ThreadUnreadObserved {
         room_id: String,
         root_event_id: String,
         unread: u32,
+        highlight: u32,
     },
     SlidingSyncCapabilityRevalidationStarted {
         account_epoch: u64,
@@ -806,6 +809,8 @@ pub enum AppAction {
     LoginFailed {
         attempt_id: LoginAttemptId,
         message: String,
+        /// Bounded Rust-classified reason for visible guidance (#1268).
+        reason: Option<AuthFailureKind>,
     },
     SessionPersistenceFailed {
         message: String,
@@ -1742,10 +1747,18 @@ pub enum AppAction {
     },
     LiveRoomReceiptSummariesUpdated {
         room_id: String,
+        /// Receipt scope of the observing timeline. Room and Thread actors send
+        /// only their own scope; the reducer never merges scopes.
+        scope: crate::state::ReceiptScope,
+        /// Event IDs in `scope` whose summaries this observation replaces before
+        /// merging. A live diff passes an empty list.
+        scoped_event_ids: Vec<String>,
         receipts_by_event: Vec<LiveEventReceiptSummaryUpdate>,
     },
     LiveRoomReceiptsWindowReconciled {
         room_id: String,
+        /// Receipt scope of the observing timeline.
+        scope: crate::state::ReceiptScope,
         scoped_event_ids: Vec<String>,
         receipts_by_event: Vec<LiveEventReceipts>,
     },

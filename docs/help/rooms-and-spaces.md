@@ -134,6 +134,12 @@ when there is something unread, shows `99+` above 99, and disappears at zero. It
 stays on the Rust-reported total for the whole view, so filtering the list or
 collapsing the section does not change it.
 
+A conversation's own unread badge counts unread replies in its threads as well as
+messages in the main timeline, so a room can show unread while the main timeline
+has nothing new; reading the thread clears its share. Read markers, the
+first-unread position and event navigation stay on the main timeline and ignore
+thread replies.
+
 A **Low priority** section appears below **DMs** when any conversation in the
 current view carries the low-priority tag. Low-priority rooms and DMs are listed
 there instead of in **Rooms** or **DMs**. Set or clear the tag from a

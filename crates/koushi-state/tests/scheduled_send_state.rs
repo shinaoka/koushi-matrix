@@ -28,6 +28,8 @@ fn room(room_id: &str) -> RoomSummary {
         unread_count: 0,
         notification_count: 0,
         highlight_count: 0,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
         marked_unread: false,
         recency_stamp: None,
         conversation_activity: None,
@@ -487,6 +489,7 @@ fn scheduled_send_persistence_failure_is_reported_once_and_cleared_on_success() 
         code: "other".to_owned(),
         message: "other".to_owned(),
         recoverable: true,
+        reason: None,
     });
 
     let cleared = reduce(&mut state, AppAction::ScheduledSendPersisted);

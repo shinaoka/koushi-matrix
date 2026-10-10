@@ -175,9 +175,15 @@ the lane that shows the symptom. Lane commands are in
   [`pack_receipts`](https://github.com/matrix-construct/tuwunel/blob/v1.7.1/src/service/rooms/read_receipt/mod.rs#L276-L304)
   inserts each receipt map by event ID, replacing previous users for that event
   instead of merging the nested receipt-type/user maps. Seed HTTP success is not
-  receipt-readback proof. Keep the failing population gate; do not
-  manufacture readers in Core or add a sync fallback. The active investigation
-  and exact evidence are in the 2026-09-09 remaining-issues batch worklog.
+  receipt-readback proof. The fixture now reads the seeded population back
+  through both a plain `/sync` and the Simplified Sliding Sync receipts
+  extension, and the per-server capability table declares the limitation
+  (`multiReaderReceipts` in `scripts/lib/local-homeserver-qa.mjs`). A declared
+  limitation is re-checked: an unreadable population or a server that starts
+  reporting the full population fails the lane instead of staying silently
+  skipped. Do not manufacture readers in Core or add a sync fallback. The active
+  investigation and exact evidence are in the 2026-09-09 remaining-issues batch
+  worklog.
 
 - **Synapse returns 429 while populating one room despite high local/remote join limits.**
   `rc_joins_per_room` is separate from `rc_joins.local` and `.remote`; the pinned
