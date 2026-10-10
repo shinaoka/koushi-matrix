@@ -47,6 +47,9 @@ sign-in flow. Existing accounts remain available while the new account signs in
 or waits for verification. Pressing **+** again focuses the unfinished sign-in
 tab instead of creating another one. To give up, select the close button on
 that tab (**Cancel adding account**); Koushi returns to your previous account.
+Complete browser sign-in for one account at a time: when another account also
+waits on **Single sign-on**, finish or cancel it before retrying from the tab
+you want.
 
 Select a tab to view that account. Switching tabs does not sign out the other
 accounts: they continue syncing and can receive notifications. Koushi restores

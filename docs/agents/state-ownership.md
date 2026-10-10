@@ -1366,6 +1366,14 @@ normal QA-title mode and cannot change product title semantics.
   WebView Core-event projection contains only `request_id`, and React receives
   only coarse launch outcome plus settlement. Never return the provider URL or
   OAuth state to React or add an SSO `window.open` fallback.
+- Browser callback correlation is Rust-owned as well. `AccountRuntimeManager`
+  keeps at most one pending sign-in attempt per account tab and decides which tab
+  a callback may complete. Tauri only classifies the callback URL shape: an
+  OAuth/MAS CSRF `state`, or the stateless legacy `m.login.sso` `loginToken`
+  callback, which completes a tab only while exactly one legacy attempt is
+  pending (#1266). A legacy callback never completes an OAuth attempt. The login
+  token stays inside the callback URL string handed to the core command and is
+  never projected, logged, or persisted.
 - Trust GUI controls are transport clients only. Add Tauri commands as thin
   `CoreCommand::Account` submitters and keep SDK calls, UIAA/OAuth continuation
   handles, and verification handles inside Rust actors. React must render
