@@ -69,3 +69,51 @@ acknowledged, and event ordering is retained when notification counts are
 filtered. No real-account writes, desktop replacement, release build, or
 homeserver QA has been performed. The application symptom still needs
 confirmation in a build containing these changes.
+
+## Re-entry lifecycle correction after follow-up
+
+The initial patch was too narrow to establish that the reported behavior was
+fixed. The follow-up describes edits/reactions, no visible deletion, and an
+intermittent divider at the root after reopening. No deletion attribution is
+established by that observation; the independently reproduced SDK redaction
+counter bug above remains a candidate, not proof of the residual badge's cause.
+
+The renderer retained timeline rows at App scope but discarded NavigationUpdated
+in that store. Navigation lived only in the mounted TimelineView. A replay
+received before the panel listener mounted was lost; cached rows then suppressed
+the subscription fallback. The view borrowed the room's fully-read marker for
+the Thread, reproducing a divider under the root. Retain the verbatim Rust
+navigation projection in the same per-key row mirror, clear it on resync or
+actor/timeline generation replacement, and preserve it on same-generation replay.
+Remove the component-local owner and the Thread room-marker fallback. Focused
+and Room fallback behavior is unchanged. The existing Core emission generation
+gate and FIFO InitialItems-before-Navigation delivery remain authoritative.
+
+Core projection now chooses the newer loaded local/confirmed boundary and maps
+it once to a visible in-scope predecessor before unread processing. This replaces
+both the older special case and this task's initial hidden-event-only fallback.
+The own-message-tail rule remains separate and preserves its existing behavior.
+No receipt is advanced and no unread count is hidden by the renderer.
+
+Verification:
+
+- Renderer RED: four assertions showed the root divider instead of the requested
+  thread position or no divider; fixtures contain only synthetic edited replies
+  and reactions.
+- Core RED: hidden confirmed receipt followed by unread content failed with no
+  display anchor instead of the visible predecessor.
+- GREEN: 277 tests across all TimelineView suites and timelineStore; 60 Core
+  navigation tests; the retired actor emission gate regression passed separately.
+- Existing frontend navigation fixtures now follow production's InitialItems then
+  NavigationUpdated order; their behavioral assertions are unchanged.
+- Typecheck passed. Independent read-only design review approved the mirror and
+  projection consolidation. Integrated review identified an unintended Focused
+  fallback change; it was corrected to exclude only Thread. Tests additionally
+  cover account/root switches, missing navigation, resync and actor/generation
+  replacement.
+
+User requested local installation of this revision. Dependency lockfile audit
+passed the high/critical gate (one low advisory); local packaging and installation
+results will be recorded separately. No release or upstream publication is
+implied. The notification badge source remains unconfirmed until fresh diagnostics
+from a build with the added event-type boolean are available.

@@ -2734,7 +2734,10 @@ fn navigation_display_anchor_stays_at_marker_when_no_own_messages_after() {
     );
 
     assert_eq!(snapshot.first_unread_event_id, Some("$remote".to_owned()));
-    assert_eq!(snapshot.read_marker_display_event_id, None);
+    assert_eq!(
+        snapshot.read_marker_display_event_id.as_deref(),
+        Some("$other")
+    );
 }
 
 #[test]
@@ -2825,7 +2828,8 @@ fn room_navigation_preserves_hidden_receipt_position_and_thread_scope() {
         Some("@me:test"),
     );
     assert_eq!(
-        read_room.read_marker_display_event_id, None,
+        read_room.read_marker_display_event_id.as_deref(),
+        Some("$later:test"),
         "an own hidden reply must not move the room divider"
     );
     let thread = derive_timeline_navigation_snapshot(

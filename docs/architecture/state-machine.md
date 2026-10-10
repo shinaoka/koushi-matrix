@@ -1190,15 +1190,23 @@ Rust keeps the local viewed boundary separate from server-confirmed read state.
 For the displayed read divider, comparable local and confirmed boundaries in the
 same canonical window use the newer position, mapped to a visible event at or
 before that position. A stale local boundary cannot override a newer confirmed
-one. When re-entering a timeline without a local viewed boundary, a confirmed
-hidden event is mapped to the nearest visible in-scope event at or before it;
-the receipt itself is unchanged. Missing positions retain conservative fallback
-behavior. This display choice does not acknowledge unsent receipts or change
+one. Every loaded boundary (including a hidden local or confirmed event) maps
+to the nearest visible in-scope event at or before it, even when unread events
+follow. Without a loaded local boundary and with no remote unread events, the
+existing own-message-tail display advancement remains valid. The receipt itself
+is unchanged. Missing positions retain conservative fallback behavior. This display choice does not acknowledge unsent receipts or change
 server-based unread counts.
 Replaying `InitialItems` for a new or returning subscriber also republishes the
 current `NavigationUpdated` snapshot, even when it is unchanged within the actor.
 An earlier consumer having received that snapshot is not evidence that the new
 consumer has it; room-level fallback must not substitute for thread read state.
+The renderer retains the Rust navigation snapshot alongside rows by TimelineKey,
+so mounting after a replay does not lose the snapshot. Same-owner/same-generation
+row replays preserve it; resync or changed actor/timeline generation clears it.
+Navigation is accepted only after rows initialize, and is never reconstructed
+from room read state for a Thread. This mirror relies on the existing Core actor
+generation emission gate and ordered InitialItems/NavigationUpdated delivery;
+it does not infer receipt ordering or acknowledge reads.
 Only a current Room or Thread actor may admit an at-bottom, gap-free, latest
 attention-eligible event with exact position and actor-generation evidence.
 Room observations require the atomic fully-read/private-unthreaded key and, when

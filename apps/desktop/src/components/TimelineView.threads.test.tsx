@@ -1703,6 +1703,17 @@ describe("TimelineView", () => {
       emit({
         kind: "Timeline",
         event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$before:example.invalid", "Before"), rootAtActivity]
+          }
+        }
+      });
+      emit({
+        kind: "Timeline",
+        event: {
           NavigationUpdated: {
             key: KEY,
             snapshot: navigationSnapshot({
@@ -1710,17 +1721,6 @@ describe("TimelineView", () => {
               unread_event_count: 1,
               unread_position: "insideViewport"
             })
-          }
-        }
-      });
-      emit({
-        kind: "Timeline",
-        event: {
-          InitialItems: {
-            request_id: null,
-            key: KEY,
-            generation: 1,
-            items: [message("$before:example.invalid", "Before"), rootAtActivity]
           }
         }
       });
@@ -1774,6 +1774,17 @@ describe("TimelineView", () => {
       emit({
         kind: "Timeline",
         event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$before:example.invalid", "Before"), rootAtActivity]
+          }
+        }
+      });
+      emit({
+        kind: "Timeline",
+        event: {
           NavigationUpdated: {
             key: KEY,
             snapshot: navigationSnapshot({
@@ -1781,17 +1792,6 @@ describe("TimelineView", () => {
               unread_event_count: 1,
               unread_position: "belowViewport"
             })
-          }
-        }
-      });
-      emit({
-        kind: "Timeline",
-        event: {
-          InitialItems: {
-            request_id: null,
-            key: KEY,
-            generation: 1,
-            items: [message("$before:example.invalid", "Before"), rootAtActivity]
           }
         }
       });

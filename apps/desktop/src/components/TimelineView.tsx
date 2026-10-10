@@ -132,7 +132,6 @@ TimelineBottomArrival,
 TimelineItem,
 TimelineKey,
 TimelineMessageSource,
-TimelineNavigationSnapshot,
 TimelineReadStateSync
 } from "../domain/coreEvents";
 import {
@@ -476,8 +475,6 @@ export const TimelineView = memo(function TimelineView({
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
   const [mediaViewerItem, setMediaViewerItem] = useState<TimelineMediaViewerItem | null>(null);
   const mediaViewerReturnFocusRef = useRef<HTMLElement | null>(null);
-  const [navigationSnapshot, setNavigationSnapshot] =
-    useState<TimelineNavigationSnapshot | null>(null);
   const [viewportAtBottom, setViewportAtBottom] = useState(false);
   const [aliasTarget, setAliasTarget] = useState<TimelineAliasTarget | null>(null);
   const [aliasDraft, setAliasDraft] = useState("");
@@ -635,6 +632,7 @@ export const TimelineView = memo(function TimelineView({
   const focusedTimelineTargetEventId =
     "Focused" in timelineKey.kind ? timelineKey.kind.Focused.event_id : null;
   const items = getItems(store, timelineKey);
+  const navigationSnapshot = store.keys.get(timelineKeyHash)?.navigation ?? null;
   // Issue #460: immediate acknowledgment on the user's "Request keys and
   // retry" click: a toast + a local pending marker, until Rust publishes a
   // terminal request state via the timeline DTO. Presentation-only.
@@ -1285,7 +1283,6 @@ export const TimelineView = memo(function TimelineView({
         resetActiveMeasurementDeferral({ clearMountedIds: true });
         lastPersistedViewportAnchorSignatureRef.current = null;
         restoredRoomScrollAnchorSignatureRef.current = null;
-        setNavigationSnapshot(null);
         if (!isAppLevelStore) {
           setStore((current) => applyGlobalResync(current));
         }
@@ -1535,7 +1532,6 @@ export const TimelineView = memo(function TimelineView({
         userScrollInputPendingRef.current = false;
         resetActiveMeasurementDeferral({ clearMountedIds: true });
         lastPersistedViewportAnchorSignatureRef.current = null;
-        setNavigationSnapshot(null);
       }
 
       if ("MessageSourceLoaded" in event) {
@@ -1544,11 +1540,6 @@ export const TimelineView = memo(function TimelineView({
       }
 
       if ("MessageForwarded" in event) {
-        return;
-      }
-
-      if ("NavigationUpdated" in event) {
-        setNavigationSnapshot(event.NavigationUpdated.snapshot);
         return;
       }
 
@@ -1656,7 +1647,6 @@ export const TimelineView = memo(function TimelineView({
       sessionViewport?.mode === "anchor" ? sessionViewport.anchor : null
     );
     roomReentryDiagnosticKeyRef.current = null;
-    setNavigationSnapshot(null);
     setViewportAtBottom(false);
     lastViewportObservationRef.current = null;
     downloadedEventIdsRef.current = new Set();
@@ -3371,7 +3361,7 @@ export const TimelineView = memo(function TimelineView({
   const readMarkerDisplayEventId =
     navigationSnapshot?.read_marker_display_event_id ??
     navigationSnapshot?.read_marker_event_id ??
-    roomSignals?.fully_read_event_id ??
+    ("Thread" in timelineKey.kind ? null : roomSignals?.fully_read_event_id) ??
     null;
 
   return (

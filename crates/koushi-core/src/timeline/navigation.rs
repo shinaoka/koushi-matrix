@@ -2068,25 +2068,20 @@ pub(super) fn derive_timeline_navigation_snapshot_with_read_state(
     let confirmed_position = server_confirmed_read_event_id
         .as_deref()
         .and_then(|event_id| item_index_for_event_id(items, event_id));
-    let display_marker = match (local_position, confirmed_position) {
-        (Some(local), Some(confirmed)) if confirmed > local => {
-            // A stored local observation may predate a successful receipt from
-            // this or another view. Never place the divider behind that receipt.
-            // Hidden edits remain boundaries but are not rendered divider rows.
-            items[local..=confirmed]
-                .iter()
-                .rev()
-                .find(|item| {
-                    !item.is_hidden
-                        && navigation_item_in_scope(kind, item)
-                        && timeline_item_event_id(item).is_some()
-                })
-                .and_then(timeline_item_event_id)
-                .map(ToOwned::to_owned)
-        }
-        (Some(_), _) => local_viewed_event_id.clone(),
-        _ => None,
-    };
+    // Resolve all loaded boundaries once, before unread processing can return.
+    // Hidden edits and out-of-scope replies are ordering facts, not divider rows.
+    let display_marker = local_position.max(confirmed_position).and_then(|position| {
+        items[..=position]
+            .iter()
+            .rev()
+            .find(|item| {
+                !item.is_hidden
+                    && navigation_item_in_scope(kind, item)
+                    && timeline_item_event_id(item).is_some()
+            })
+            .and_then(timeline_item_event_id)
+            .map(ToOwned::to_owned)
+    });
     let mut snapshot = TimelineNavigationSnapshot {
         read_marker_event_id: server_confirmed_read_event_id.clone(),
         read_marker_display_event_id: display_marker,
@@ -2132,30 +2127,16 @@ pub(super) fn derive_timeline_navigation_snapshot_with_read_state(
     // No remote unread events after the marker. Advance the display anchor to the
     // current user's latest visible own message at or after the marker so the
     // "Read up to here" separator is rendered after it, not before.
-    if snapshot.read_marker_display_event_id.is_none() {
-        snapshot.read_marker_display_event_id = items
+    if local_position.is_none()
+        && let Some(own_event_id) = items
             .iter()
-            .enumerate()
             .skip(read_marker_index)
-            .rfind(|(_, item)| {
+            .rfind(|item| {
                 navigation_item_in_scope(kind, item) && is_own_visible_event(item, own_user_id)
             })
-            .and_then(|(_, item)| timeline_item_event_id(item).map(ToOwned::to_owned));
-    }
-    // A newly created actor has no local viewed boundary. Its confirmed receipt
-    // can point at a hidden edit or redacted row, which the renderer cannot use
-    // as a divider. Resolve that boundary against the canonical window too.
-    if snapshot.read_marker_display_event_id.is_none() && items[read_marker_index].is_hidden {
-        snapshot.read_marker_display_event_id = items[..=read_marker_index]
-            .iter()
-            .rev()
-            .find(|item| {
-                !item.is_hidden
-                    && navigation_item_in_scope(kind, item)
-                    && timeline_item_event_id(item).is_some()
-            })
             .and_then(timeline_item_event_id)
-            .map(ToOwned::to_owned);
+    {
+        snapshot.read_marker_display_event_id = Some(own_event_id.to_owned());
     }
     snapshot
 }
