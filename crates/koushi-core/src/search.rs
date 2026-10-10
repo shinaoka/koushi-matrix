@@ -48,6 +48,8 @@
 
 mod attachment_admission;
 #[cfg(test)]
+mod crawl_scheduling;
+#[cfg(test)]
 mod history_scale;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -612,8 +614,10 @@ impl Drop for SearchActorHandle {
 pub(crate) struct SearchActor {
     session: Arc<MatrixClientSession>,
     document_store: SearchDocumentStore,
-    // Body-free retries are bounded by the mutation queue. A single completed
-    // crawl page waits separately; no next page starts while either is pending.
+    // Body-free retries are bounded by the mutation queue and settled by a Files
+    // query; they do not gate the background crawl. A single completed crawl
+    // page waits separately: no next page starts while its index queue is
+    // pending.
     attachment_retries: VecDeque<SearchIndexMessage>,
     queued_crawl_index: VecDeque<SearchIndexMessage>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
@@ -656,6 +660,10 @@ pub(crate) struct SearchActor {
     crawl_settings_generation: u64,
     /// True once the startup delay has elapsed (automatic crawls may start).
     crawl_delay_elapsed: bool,
+    /// Last `(queued_crawl_index, attachment_retries)` counts emitted as a
+    /// token-only `crawl_pump_held` diagnostic, so an unchanged backlog is
+    /// recorded once instead of on every pump call (#1276).
+    last_crawl_backlog_counts: Option<(usize, usize)>,
     /// One-shot startup-delay timer; its completion is awaited in `run`.
     crawl_delay_timer: Option<executor::JoinHandle<()>>,
     /// Bumped whenever the account's content policy changes.
@@ -738,6 +746,7 @@ impl SearchActor {
             latest_event_ids: std::collections::BTreeMap::new(),
             crawl_settings_generation: 0,
             crawl_delay_elapsed: false,
+            last_crawl_backlog_counts: None,
             crawl_delay_timer: None,
             content_policy_generation: 0,
             crawler_settings: restricted_crawler_settings(),
@@ -820,6 +829,10 @@ impl SearchActor {
                         continue;
                     };
                     self.handle_index(index_msg).await;
+                    // Index work can leave body-free retries or an unapplied page
+                    // queue behind; re-run the pump so the crawler resumes as soon
+                    // as the index lane goes quiet (#1276).
+                    self.start_next_history_crawl_page();
                 }
             }
         }
@@ -1460,11 +1473,41 @@ impl SearchActor {
                 .is_some_and(|checkpoint| checkpoint.room_id == room_id)
     }
 
+    /// Record the pending body-free index backlog whenever the pump is consulted
+    /// and the counts changed (#1276).
+    ///
+    /// The nightly `crawl_backfill_timeout` token reports these counts so a
+    /// stalled crawler is decidable from the log alone. Counts only: no room,
+    /// event, user, body, or query data can appear here.
+    fn record_crawl_backlog(&mut self) {
+        let counts = (self.queued_crawl_index.len(), self.attachment_retries.len());
+        if self.last_crawl_backlog_counts == Some(counts) {
+            return;
+        }
+        self.last_crawl_backlog_counts = Some(counts);
+        if counts == (0, 0) {
+            return;
+        }
+        record(
+            DiagnosticEvent::new(DiagnosticLevel::Debug, "core.search", "crawl_pump_held")
+                .field(DiagnosticField::count("queued_index", counts.0 as u64))
+                .field(DiagnosticField::count("pending_retries", counts.1 as u64))
+                .field(DiagnosticField::count(
+                    "queued_rooms",
+                    self.crawl_queue.len() as u64,
+                )),
+        );
+    }
+
     fn start_next_history_crawl_page(&mut self) {
-        if self.active_crawl_page.is_some()
-            || !self.queued_crawl_index.is_empty()
-            || !self.attachment_retries.is_empty()
-        {
+        self.record_crawl_backlog();
+        // Serialization covers the crawler's own work only: at most one page in
+        // flight, and no next page until the completed page's body-free index
+        // queue has been applied. Pending Files-admission retries are a separate
+        // concern: they are bounded by the mutation queue and settled by a Files
+        // query, so letting them gate the background crawl starves it for as long
+        // as no Files view is opened (#1276).
+        if self.active_crawl_page.is_some() || !self.queued_crawl_index.is_empty() {
             return;
         }
         // Startup delay: hold AUTOMATIC crawls until the delay elapses; manual
