@@ -163,8 +163,10 @@ fn persistent_badges_share_mute_exclusions_and_keep_mentions_only_attention() {
         (RoomNotificationMode::Mute, 0),
         (RoomNotificationMode::Mentions, 1),
     ] {
-        let mut state = AppState::default();
-        state.rooms = vec![room("!room:example.invalid", "Room", false, 0, 1, 0)];
+        let mut state = AppState {
+            rooms: vec![room("!room:example.invalid", "Room", false, 0, 1, 0)],
+            ..AppState::default()
+        };
         state.room_notification_settings.insert(
             "!room:example.invalid".into(),
             RoomNotificationSettings {
