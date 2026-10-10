@@ -156,7 +156,14 @@ impl WindowStatePersistenceGate {
                 *expected_maximized_observed = true;
                 return WindowStatePersistenceAction::Suppress;
             }
-            if *expected_maximized_observed {
+            let size_matches = current.logical_size == initial.logical_size
+                || current.logical_size == expected.logical_size;
+            let position_matches = current.physical_position == initial.physical_position
+                || current.physical_position == expected.physical_position;
+            // Native maximize can finish without a geometry event reporting
+            // `maximized`. Keep startup echoes fenced, but let a later geometry
+            // outside that finite fence retire it.
+            if *expected_maximized_observed || !size_matches || !position_matches {
                 *self = Self::Ready;
                 return WindowStatePersistenceAction::Persist;
             }
