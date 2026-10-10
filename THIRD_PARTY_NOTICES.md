@@ -23,7 +23,7 @@ Notes:
 
 Project: matrix-rust-sdk
 Repository: https://github.com/matrix-org/matrix-rust-sdk
-Upstream commit: `f5d8028e07079f8de4255b554ad28704cc6f3a29` (vendored submodule; bump this and the parent gitlink together when the fork commit changes)
+Upstream commit: `6b420b8b4b22e8a1b04de96e9c6337549ce8b27e` (vendored submodule; the Koushi fork's `chore/upstream-0.19.1` branch, which merges upstream `matrix-sdk-0.19.1`; bump this and the parent gitlink together when the fork commit changes)
 Source path: `crates/` in the upstream repository
 Local path: `vendor/matrix-rust-sdk`
 License: Apache-2.0

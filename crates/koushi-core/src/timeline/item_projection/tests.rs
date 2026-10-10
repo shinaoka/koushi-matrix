@@ -13,7 +13,7 @@ use matrix_sdk::ruma::events::{
     Mentions, StateEventContentChange, room::name::RoomNameEventContent,
 };
 
-use matrix_sdk_ui::timeline::{MembershipChange, ReactionStatus, ReactionsByKeyBySender};
+use matrix_sdk_ui::timeline::{EventSendState, MembershipChange, ReactionsByKeyBySender};
 
 use crate::event_projection::message_actions_for_timeline_item;
 use koushi_protocol::command::TimelineCommand;
@@ -197,7 +197,8 @@ fn reaction_groups_fixture() -> ReactionsByKeyBySender {
         OwnedUserId::try_from("@me:test").expect("user id"),
         ReactionInfo {
             timestamp: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch(uint!(1)),
-            status: ReactionStatus::RemoteToRemote(
+            send_state: None,
+            event_id: Some(
                 matrix_sdk::ruma::OwnedEventId::try_from("$reaction:me").expect("event id"),
             ),
         },
@@ -206,21 +207,30 @@ fn reaction_groups_fixture() -> ReactionsByKeyBySender {
         OwnedUserId::try_from("@alice:test").expect("user id"),
         ReactionInfo {
             timestamp: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch(uint!(2)),
-            status: ReactionStatus::LocalToRemote(None),
+            send_state: None,
+            event_id: Some(
+                matrix_sdk::ruma::OwnedEventId::try_from("$reaction:alice").expect("event id"),
+            ),
         },
     );
     thumbs.insert(
         OwnedUserId::try_from("@bob:test").expect("user id"),
         ReactionInfo {
             timestamp: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch(uint!(3)),
-            status: ReactionStatus::LocalToRemote(None),
+            send_state: None,
+            event_id: Some(
+                matrix_sdk::ruma::OwnedEventId::try_from("$reaction:bob").expect("event id"),
+            ),
         },
     );
     thumbs.insert(
         OwnedUserId::try_from("@carol:test").expect("user id"),
         ReactionInfo {
             timestamp: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch(uint!(4)),
-            status: ReactionStatus::LocalToRemote(None),
+            send_state: None,
+            event_id: Some(
+                matrix_sdk::ruma::OwnedEventId::try_from("$reaction:carol").expect("event id"),
+            ),
         },
     );
 
@@ -898,6 +908,30 @@ fn reaction_groups_project_my_sender_and_remote_event_id() {
 }
 
 #[test]
+fn reaction_groups_report_no_event_id_for_an_unsent_local_echo() {
+    // Ported from the pre-0.19 `ReactionStatus::LocalToRemote` shape: the SDK
+    // only knows a reaction's own event ID once the server assigned it, so an
+    // own local echo can be counted but not yet redacted by event ID.
+    let own_user_id = OwnedUserId::try_from("@me:test").expect("user id");
+    let mut reactions = ReactionsByKeyBySender::default();
+    reactions.entry("👍".to_owned()).or_default().insert(
+        own_user_id.clone(),
+        ReactionInfo {
+            timestamp: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch(uint!(1)),
+            send_state: Some(EventSendState::NotSentYet { progress: None }),
+            event_id: None,
+        },
+    );
+
+    let groups = reaction_groups_from_sdk(&reactions, Some(own_user_id.as_ref()));
+
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].count, 1);
+    assert!(groups[0].reacted_by_me);
+    assert_eq!(groups[0].my_reaction_event_id, None);
+}
+
+#[test]
 fn reaction_groups_count_unique_senders_after_sdk_deduplication() {
     let mut reactions = ReactionsByKeyBySender::default();
     let thumbs = reactions.entry("👍".to_owned()).or_default();
@@ -906,7 +940,8 @@ fn reaction_groups_count_unique_senders_after_sdk_deduplication() {
         alice.clone(),
         ReactionInfo {
             timestamp: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch(uint!(1)),
-            status: ReactionStatus::RemoteToRemote(
+            send_state: None,
+            event_id: Some(
                 matrix_sdk::ruma::OwnedEventId::try_from("$reaction:old").expect("event id"),
             ),
         },
@@ -915,7 +950,8 @@ fn reaction_groups_count_unique_senders_after_sdk_deduplication() {
         alice,
         ReactionInfo {
             timestamp: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch(uint!(2)),
-            status: ReactionStatus::RemoteToRemote(
+            send_state: None,
+            event_id: Some(
                 matrix_sdk::ruma::OwnedEventId::try_from("$reaction:new").expect("event id"),
             ),
         },

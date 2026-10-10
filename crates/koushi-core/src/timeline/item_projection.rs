@@ -31,7 +31,7 @@ use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, SendHandle};
 use matrix_sdk_ui::timeline::{
     AnyOtherStateEventContentChange, EmbeddedEvent, EncryptedMessage,
     EventSendState as SdkEventSendState, EventTimelineItem, InReplyToDetails, MembershipChange,
-    Profile, ReactionStatus, ReactionsByKeyBySender, TimelineDetails, TimelineEventItemId,
+    Profile, ReactionsByKeyBySender, TimelineDetails, TimelineEventItemId,
     TimelineItem as SdkTimelineItem, TimelineItemContent, TimelineItemKind,
 };
 use tokio::sync::mpsc;
@@ -4265,12 +4265,10 @@ pub(crate) fn reaction_groups_from_sdk(
             my_reaction_event_id: own_user_id.and_then(|user_id| {
                 senders.iter().find_map(|(sender, info)| {
                     if sender.as_str() == user_id.as_str() {
-                        match &info.status {
-                            ReactionStatus::RemoteToRemote(event_id) => Some(event_id.to_string()),
-                            ReactionStatus::LocalToLocal(_) | ReactionStatus::LocalToRemote(_) => {
-                                None
-                            }
-                        }
+                        // 0.19: the SDK reports the reaction's own event ID only
+                        // once it is known; a local echo has none yet, exactly as
+                        // the previous `LocalTo*` reaction statuses did.
+                        info.event_id.as_ref().map(ToString::to_string)
                     } else {
                         None
                     }
