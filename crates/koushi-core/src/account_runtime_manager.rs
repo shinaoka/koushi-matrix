@@ -471,10 +471,10 @@ impl AccountRuntimeManager {
     /// matches a pending login on any tab, so it is rejected instead of
     /// completing a replaced attempt.
     pub fn forget_oidc_attempts_for_tab(&self, id: &AccountTabId) {
-        self.oidc_attempts
+        self.sign_in_attempts
             .lock()
-            .expect("OIDC attempt mutex")
-            .retain(|_, tab_id| tab_id != id);
+            .expect("sign-in attempt mutex")
+            .forget(id);
     }
 
     pub fn media_cache_dir_for_tab(&self, id: &AccountTabId) -> Option<PathBuf> {
