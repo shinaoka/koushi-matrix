@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{StreamExt, future::join_all};
-use koushi_state::{AppAction, OperationFailureKind, ThreadsListItem, ThreadsListScope};
+use koushi_state::{
+    AppAction, OperationFailureKind, ThreadRootAttention, ThreadsListItem, ThreadsListScope,
+};
 use matrix_sdk::ruma::RoomId;
 use matrix_sdk_ui::timeline::thread_list_service::{
     ThreadListItem as SdkThreadListItem, ThreadListServiceError, ThreadRelationAggregate,
@@ -224,9 +226,9 @@ pub(crate) struct ThreadRootProjectionService {
     active_root_event_ids: HashMap<String, HashSet<String>>,
     canonical_root_event_ids: HashMap<String, HashSet<String>>,
     diagnostic_ordinals: ThreadSummaryDiagnosticOrdinals,
-    /// #1259: the SDK's per-root thread unread, read from the thread cache's own
-    /// threaded receipts, keyed by `(room_id, root_event_id)`.
-    thread_unread: HashMap<(String, String), u32>,
+    /// #1259/#1238: the SDK's per-root thread attention, read from the thread
+    /// cache's own threaded receipts, keyed by `(room_id, root_event_id)`.
+    thread_unread: HashMap<(String, String), ThreadRootAttention>,
     /// The room-side summary identity the unread value was read against, so an
     /// unchanged summary never re-reads the thread cache.
     thread_unread_signatures: HashMap<(String, String), String>,
@@ -279,26 +281,32 @@ impl ThreadRootProjectionService {
             .collect()
     }
 
-    /// #1259: store a freshly read unread value.
+    /// #1259/#1238: store a freshly read attention value.
     ///
-    /// The value is the SDK thread cache's own threaded unread count, and is deliberately
-    /// never added to a room total: the canon requires a proven non-overlapping
-    /// decomposition before a thread contribution may join a room count, and a homeserver
-    /// whose room counters already include thread replies would otherwise count them twice.
+    /// The value is the SDK thread cache's own threaded counters. It contributes
+    /// to a room total only through the proven non-overlapping decomposition the
+    /// canon records (the room read-receipt filter excludes thread replies and
+    /// each thread filter counts exactly one thread), and the room-level
+    /// `notification_count` is max'd in rather than summed, because a homeserver's
+    /// own room counters may already include thread replies.
     pub(crate) fn apply_thread_unread(
         &mut self,
         room_id: &str,
         root_event_id: &str,
         signature: String,
-        unread: u32,
+        attention: ThreadRootAttention,
     ) {
         let key = (room_id.to_owned(), root_event_id.to_owned());
         self.thread_unread_signatures.insert(key.clone(), signature);
-        self.thread_unread.insert(key, unread);
+        self.thread_unread.insert(key, attention);
     }
 
-    /// #1259: one root's stored unread value.
-    pub(crate) fn thread_unread_for(&self, room_id: &str, root_event_id: &str) -> u32 {
+    /// #1259/#1238: one root's stored attention value.
+    pub(crate) fn thread_unread_for(
+        &self,
+        room_id: &str,
+        root_event_id: &str,
+    ) -> ThreadRootAttention {
         self.thread_unread
             .get(&(room_id.to_owned(), root_event_id.to_owned()))
             .copied()
@@ -891,7 +899,7 @@ impl ThreadRootProjectionService {
             .collect::<Vec<_>>();
         roots.sort_by(|left, right| left.root_event_id.cmp(&right.root_event_id));
         for root in roots.iter_mut() {
-            root.unread = self.thread_unread_for(room_id, &root.root_event_id);
+            root.unread = self.thread_unread_for(room_id, &root.root_event_id).unread;
         }
         roots
     }

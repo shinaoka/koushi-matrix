@@ -84,6 +84,11 @@ pub(super) fn normalize_rooms_with_previous(
                 unread_count: room.unread_count,
                 notification_count: room.notification_count,
                 highlight_count: room.highlight_count,
+                // #1238: a room-list snapshot has no thread-cache facts. The reducer
+                // re-derives both fields from the per-root values it already holds
+                // when this projection is installed, so they start empty here.
+                thread_unread_count: 0,
+                thread_highlight_count: 0,
                 marked_unread: room.marked_unread,
                 recency_stamp: room.recency_stamp,
                 conversation_activity: room.conversation_activity.map(|activity| {

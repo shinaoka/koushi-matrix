@@ -201,6 +201,8 @@ mod tests {
             unread_count: 3,
             notification_count: 2,
             highlight_count: 1,
+            thread_unread_count: 0,
+            thread_highlight_count: 0,
             marked_unread: true,
             recency_stamp: Some(42),
             conversation_activity: None,

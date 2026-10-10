@@ -1261,6 +1261,8 @@ fn ready_session_ignores_recovery_availability_as_an_admission_signal() {
             unread_count: 3,
             notification_count: 3,
             highlight_count: 0,
+            thread_unread_count: 0,
+            thread_highlight_count: 0,
             marked_unread: false,
             recency_stamp: None,
             conversation_activity: None,

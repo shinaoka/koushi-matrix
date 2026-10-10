@@ -162,6 +162,26 @@ pub struct ThreadsListItem {
     pub unread_count: u32,
 }
 
+/// #1238: one thread root's SDK thread-cache attention, as observed by the room
+/// timeline actor.
+///
+/// `unread` and `highlight` are the thread cache's own `num_unread` /
+/// `num_mentions`. The reducer sums these per room into
+/// `RoomSummary.thread_unread_count` / `thread_highlight_count`, which the shared
+/// badge helper maxes against the main-timeline counters; a root's value never
+/// enters the main-only `RoomSummary.unread_count`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ThreadRootAttention {
+    pub unread: u32,
+    pub highlight: u32,
+}
+
+impl ThreadRootAttention {
+    pub fn is_empty(self) -> bool {
+        self.unread == 0 && self.highlight == 0
+    }
+}
+
 /// Projection state for a root event which is outside the Room timeline's
 /// canonical loaded window. This is deliberately separate from
 /// [`ThreadsListState`]: opening/paginating the Threads panel must never

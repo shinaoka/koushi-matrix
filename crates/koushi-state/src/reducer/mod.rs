@@ -109,7 +109,10 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             root_event_id,
             unread,
-        } => thread::handle_thread_unread_observed(state, room_id, root_event_id, unread),
+            highlight,
+        } => {
+            thread::handle_thread_unread_observed(state, room_id, root_event_id, unread, highlight)
+        }
         AppAction::ThreadDeliveryDiagnosticRecorded { diagnostic } => {
             state.thread_delivery = diagnostic;
             Vec::new()
@@ -2192,6 +2195,9 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.timeline = Default::default();
     state.thread = ThreadPaneState::Closed;
     state.thread_attention = ThreadAttentionState::Closed;
+    // #1238: the per-root thread-cache values feed room badges, so they must not
+    // survive the session that observed them.
+    state.thread_unread.clear();
     state.focused_context = FocusedContextState::Closed;
     state.search_request_connection_id = None;
     state.search = SearchState::Closed;

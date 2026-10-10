@@ -115,3 +115,73 @@ Two consequences the hook's silence hid:
   bounded number of times, which is what makes the dot actually clear.
 - The value is per root and still contributes to nothing room-level; the canon
   boundary above stands as written.
+
+## Product change (2026-10-10): the proven decomposition
+
+The canon now carries the proof, so the badge half of the issue is implemented
+rather than deferred.
+
+### Decomposition
+
+The proof is the SDK event-cache boundary, not a badge:
+
+- `RoomReadReceiptEventFilter` (`vendor/matrix-rust-sdk/crates/matrix-sdk/src/
+  event_cache/caches/read_receipts.rs`) filters an event out when
+  `extract_thread_root` finds a thread root, and also filters edits/reactions whose
+  relation target is a known thread reply; `receipt_thread_matches` accepts only
+  `ReceiptThread::Unthreaded | Main`.
+- `ThreadReadReceiptEventFilter` is built from one thread's own cache state and
+  accepts only `ReceiptThread::Thread(thread_id)` for that thread.
+
+The room counters (`num_unread_messages` / `num_unread_notifications` /
+`num_unread_mentions`, computed by `compute_unread_counts` with the room filter)
+and the per-thread counters therefore describe disjoint scopes: every reply
+belongs to exactly one thread and to no room-cache unread. A mirror of the
+per-thread counters can be stale and undercount a thread, but it can never invent
+or duplicate a reply.
+
+### Composition
+
+`koushi_state::room_activity_unread_count` is the single badge helper:
+
+```
+max(unread_count + thread_unread_count,
+    notification_count,
+    highlight_count + thread_highlight_count)
+```
+
+with `marked_unread` still the zero-count fallback. `notification_count` is
+max'd, never summed: a homeserver whose own room counter already includes thread
+replies (the Synapse measurement above) must not double count, while a server
+with dummy zeros (Synapse Simplified Sliding Sync, tuwunel before a client
+receipt is anchored) leaves the client decomposition in charge.
+
+`RoomSummary.unread_count` stays the main-only navigation value; read markers,
+"Read up to here" and first-unread keep excluding thread replies. The per-room
+`thread_unread_count` / `thread_highlight_count` are reducer-derived sums of the
+per-root `ThreadUnreadObserved` values the room timeline actors already read for
+the Threads-list chip, so React renders them and never computes them.
+
+### Evidence
+
+Focused unit RED (`cargo test -p koushi-state --test thread_badge_state`), with
+the badge fold temporarily reverted to the pre-#1238 formula: 4 of 8 tests fail,
+including "main unread 1 plus thread unread 3 badges 4" (observed 1). Restored:
+8 pass. The same file pins the max-not-sum server counter, the muted display
+count, mention styling, the main-read-never-clears-thread rule, and that a
+room-list snapshot re-derives rather than drops the thread totals.
+
+Headless QA RED/GREEN (`--server=tuwunel --core --scenario=thread`), with the
+tuwunel room badge measured on a room whose main counters are all zero:
+
+| Token | Meaning | Observed |
+| --- | --- | --- |
+| `thread_room_badge=ok` | a remote thread reply alone raises the badge 0 -> 1 | `badge=1 thread_unread=1 notifications=0` |
+| `thread_room_badge_cleared=ok` | the threaded read takes it back to 0 | `badge=0 thread_unread=0` |
+| `thread_room_badge_main_read_kept=ok` | a second reply re-arms it, then a room-scoped receipt leaves it at 1 | `badge=1 thread_unread=1` |
+
+The stage anchors one main-timeline read receipt before the thread reply, so
+`latest_active` is set and the #1176 server top-up cannot contribute; the
+`notifications=0` column is that check. With the badge fold reverted, the same
+scenario fails at `thread_room_badge` because `unread_count` never moves. All
+diagnostics print counts and booleans only.

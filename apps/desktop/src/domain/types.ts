@@ -1354,6 +1354,10 @@ export interface RoomSummary {
   unread_count: number;
   notification_count?: number;
   highlight_count?: number;
+  /** #1238: summed per-root SDK thread-cache unread replies; `unread_count` stays main-only navigation state. */
+  thread_unread_count?: number;
+  /** #1238: summed per-root SDK thread-cache unread mentions, so a thread mention renders mention styling. */
+  thread_highlight_count?: number;
   marked_unread?: boolean;
   recency_stamp?: number | null;
   conversation_activity?: ConversationActivity | null;
