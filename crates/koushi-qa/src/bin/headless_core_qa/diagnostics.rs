@@ -192,6 +192,28 @@ pub(super) fn diagnostic_count_field(
     })
 }
 
+/// Latest pending body-free index backlog the crawler reported (#1276):
+/// `(queued_crawl_index, attachment_retries)`. Counts only; the actor records
+/// them token-only, so a stalled crawl is decidable from the log without room,
+/// event, or body data. `None` when the actor never reported a backlog.
+pub(super) fn search_crawl_backlog_summary(
+    snapshot: &koushi_diagnostics::DiagnosticSnapshot,
+) -> Option<(u64, u64)> {
+    snapshot
+        .records
+        .iter()
+        .rev()
+        .find(|record| {
+            record.event.source == "core.search" && record.event.stage == "crawl_pump_held"
+        })
+        .map(|record| {
+            (
+                diagnostic_count_field(&record.event, "queued_index").unwrap_or(0),
+                diagnostic_count_field(&record.event, "pending_retries").unwrap_or(0),
+            )
+        })
+}
+
 fn diagnostic_boolean_field(
     event: &koushi_diagnostics::DiagnosticEvent,
     key: &'static str,

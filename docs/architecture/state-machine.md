@@ -5341,6 +5341,22 @@ stateDiagram-v2
   `TimelineActor` pagination. The gate allows only one `/messages` page fetch
   per account at a time, and timeline pagination has priority over background
   crawler work.
+- **Pump scheduling and pending-index ownership (#1276)**: The `SearchActor`
+  starts the next checkpoint only at explicit pump points: a crawl page result,
+  the startup-delay timer, the internal completed-page index queue drain, an
+  index message received from the timeline, an explicit `StartHistoryCrawl`, and
+  a `RoomsAvailable` notification. The pump holds on the crawler's own work
+  only: at most one page in flight, and no next page while the completed page's
+  body-free index queue (`queued_crawl_index`) is unapplied. Pending body-free
+  Files-admission retries (`attachment_retries`) are a separate concern: they
+  are bounded by the mutation queue and settled by a Files query, so they hold
+  the Files read, never the background crawl. An unresolved retry must not leave
+  every queued room `Queued` with no page running. Whenever the pump is
+  consulted and the backlog changed, the actor records a token-only
+  `core.search` / `crawl_pump_held` diagnostic with `queued_index`,
+  `pending_retries`, and `queued_rooms` counts only (never room, event, user,
+  body, or query data); the headless crawl waiter reports it in its
+  `crawl_backfill_timeout` token.
 - **Paused → active**: When `SettingsUpdateRequested` changes speed from
   `Paused` to any active value, the reducer emits
   `NotifySearchCrawlerRoomsAvailable` with all known rooms so previously-paused

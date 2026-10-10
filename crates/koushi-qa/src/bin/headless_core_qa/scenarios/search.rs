@@ -64,8 +64,14 @@ pub(super) async fn run_search_crawler_stage(
                 Some(SearchCrawlerRoomState::Failed { .. }) => "failed",
                 None => "absent",
             };
+            // The crawler records its pending body-free index backlog token-only
+            // (#1276); reporting it here makes a stall decidable from this token
+            // alone. Counts only — never room, event, user, or body data.
+            let (index_pending, retry_pending) =
+                super::diagnostics::search_crawl_backlog_summary(&koushi_diagnostics::snapshot())
+                    .unwrap_or((0, 0));
             println!(
-                "crawl_backfill_timeout target={target} rooms={} idle={idle} queued={queued} running={running} completed={completed} failed={failed} last_active={}",
+                "crawl_backfill_timeout target={target} rooms={} idle={idle} queued={queued} running={running} completed={completed} failed={failed} last_active={} index_pending={index_pending} retry_pending={retry_pending}",
                 snap.search_crawler.rooms.len(),
                 snap.search_crawler.last_active.is_some(),
             );

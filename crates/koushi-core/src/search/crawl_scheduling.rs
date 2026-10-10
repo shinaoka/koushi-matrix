@@ -79,7 +79,11 @@ fn crawl_page_ran(actions: &[AppAction]) -> bool {
         .any(|action| matches!(action, AppAction::HistoryCrawlFailed { .. }))
 }
 
-async fn spawn_fixture() -> (MatrixMockServer, SearchActorHandle, mpsc::Receiver<Vec<AppAction>>) {
+async fn spawn_fixture() -> (
+    MatrixMockServer,
+    SearchActorHandle,
+    mpsc::Receiver<Vec<AppAction>>,
+) {
     let (server, session) = session_fixture().await;
     let (action_tx, action_rx) = mpsc::channel(64);
     let (event_tx, _) = broadcast::channel(32);
