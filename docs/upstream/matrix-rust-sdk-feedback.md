@@ -13,7 +13,8 @@ previous pin `a04792c7a` plus the retained Koushi customizations. The
 2026-07-27 snapshot below described the state before that upgrade. The fork is expected to be managed and
 maintained for a while; local SDK patches should therefore stay as small topic
 commits with clear upstream intent instead of being squashed into an opaque
-vendor snapshot. The gitlink has moved since; see the 2026-10-09 section.
+vendor snapshot. The gitlink has moved since; see the 2026-10-09 and 2026-10-10
+(#1188) sections.
 
 The current Koushi-required SDK topic stack is:
 
@@ -33,6 +34,7 @@ The current Koushi-required SDK topic stack is:
 - `fix(crypto): harden async delivery ownership`
 - `fix: avoid identity query Olm lock deadlock`
 - `Handle stale order tracker readers`
+- `fix(ui): keep the reaction's own event id on the timeline item`
 
 These are retained because Koushi currently depends on their public or
 behavioral contracts for verification delivery, restricted verification sync,
@@ -1144,6 +1146,44 @@ mentions behind. A wrapper cannot correct SDK-owned aggregate counts without
 duplicating cache ownership. This minimal fork fix is intended for upstream
 submission with its production-redaction and cache-restoration regression.
 See [reproduction and historical limits](2026-09-15-redacted-notifications.md).
+
+## 2026-10-10 (#1188): upstream base moves to `matrix-sdk-0.19.1`
+
+The vendored fork's upstream base moved from `6602de58e` (upstream `main`,
+2026-09-11, crates at 0.18.0) to the `matrix-sdk-0.19.1` tag
+(`b18166c68`, 2026-09-18). The merge is `6cb0a85c1` on the fork branch
+`chore/upstream-0.19.1`; the pinned tip is `6b420b8b4`. Every fork topic listed
+in the snapshot above survives. Eight files conflicted and were resolved to keep
+the Koushi contract (search, event-cache gap repair/live tail, validated edit
+selection, receipt counting, secret-storage helpers); the full list and each
+resolution are in the merge commit message and in
+[the worklog](../../docs/worklogs/2026-10-10-issue1188-sdk-0191.md).
+
+One upstream change did not preserve a Koushi requirement, so this adds a new
+topic to the stack:
+
+- `fix(ui): keep the reaction's own event id on the timeline item` (`66a32c747`,
+  marker-aligned by `6b420b8b4`). Upstream 0.19.0 deleted `ReactionStatus`;
+  `ReactionInfo::status` became `ReactionInfo::send_state`, and the reaction
+  event's own ID — previously `ReactionStatus::RemoteToRemote(event_id)` — is no
+  longer exposed anywhere public. Koushi's timeline projection publishes
+  `my_reaction_event_id` so the UI can redact the user's own reaction, and the
+  `RedactReaction` command validates the ID it displayed against the one it
+  would redact; Element X does not need the ID because its FFI
+  `toggle_reaction` adds or removes by key. `ReactionInfo` therefore gains an
+  additive `event_id: Option<OwnedEventId>`, populated from the aggregation's own
+  ID (`Some` for a server event, `None` for a local echo that has no ID yet) and
+  included in the "already applied" identity check so a server echo replaces the
+  local echo even when timestamp and send state match. No upstream behaviour
+  changes. Upstreaming intent: submit as an additive accessor; the downstream
+  patch retires if upstream exposes the aggregation's own ID.
+
+Two dependency declarations in `crates/koushi-sdk/Cargo.toml` followed upstream
+away from its git forks: `ruma` moved from the pinned `ruma/ruma` revision to
+`0.17` and the `vodozemac` dev-dependency from the pinned
+`matrix-org/vodozemac` revision to `0.11`, matching the versions the 0.19.1
+crates require. Keeping the old git pins left two `ruma-common`/`vodozemac`
+crates in the graph and broke koushi type compatibility.
 
 ## 2026-10-10: Redaction events retain cached notification actions
 

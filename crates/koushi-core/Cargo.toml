@@ -28,7 +28,7 @@ tempfile = "3"
 thiserror = "2"
 unicode-segmentation = "1"
 url = "2"
-vodozemac = { git = "https://github.com/matrix-org/vodozemac/", rev = "cfc4eee", features = ["insecure-pk-encryption", "experimental-session-config"] }
+vodozemac = { version = "0.11", features = ["insecure-pk-encryption", "experimental-session-config"] }
 # Confined to executor.rs and channel plumbing per Platform Portability rule 2.
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 # Test/QA-only: locates the real desktop profile so test stores can refuse it.
