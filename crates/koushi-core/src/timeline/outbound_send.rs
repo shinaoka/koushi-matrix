@@ -17,6 +17,7 @@ use koushi_state::{
 };
 
 use crate::send_diagnostics::{SendFailureDiagnostic, classify_send_failure};
+use crate::threads_list::ThreadRootProjectionService;
 use matrix_sdk::attachment::AttachmentConfig;
 use matrix_sdk::ruma::events::Mentions;
 use matrix_sdk::ruma::events::relation::{Reply, Thread};
@@ -154,6 +155,9 @@ pub(super) struct MatrixTimelineSendEnqueueContext {
     pub(super) session: Arc<MatrixClientSession>,
     pub(super) cleanup: TimelineActorCleanupIngress,
     pub(super) diagnostic_trace: Option<SendLifecycleTrace>,
+    /// #1259: the shared thread read-marker owner, so an own thread reply can be
+    /// recorded without a product round trip.
+    pub(super) projection_service: Arc<Mutex<ThreadRootProjectionService>>,
 }
 
 #[derive(Clone)]
@@ -589,7 +593,7 @@ async fn enqueue_document_send(
         formatting_options,
     )?;
     make_offline_thread_content(&mut content, &context.key)?;
-    context
+    let result = context
         .timeline
         .send(content.into())
         .await
@@ -598,7 +602,22 @@ async fn enqueue_document_send(
             handle: Some(handle),
             media_queued: None,
         })
-        .map_err(|error| classify_timeline_send_error(&error))
+        .map_err(|error| classify_timeline_send_error(&error));
+    if result.is_ok()
+        && let TimelineKind::Thread {
+            room_id,
+            root_event_id,
+        } = &context.key.kind
+    {
+        // #1259: an own reply into the thread must never show a dot, and must never
+        // clear a remote reply that is still unread.
+        context
+            .projection_service
+            .lock()
+            .expect("thread-root projection service lock must not be poisoned")
+            .record_own_thread_reply(room_id, root_event_id);
+    }
+    result
 }
 
 fn make_offline_thread_content(

@@ -119,6 +119,7 @@ fn thread_and_focused_items_do_not_claim_room_canonical_summary_ownership() {
     let mut root = timeline_item("$root:test", Some("root"), "@root:test", false);
     root.thread_summary = Some(ThreadSummaryDto {
         reply_count: 1,
+        unread_count: 0,
         latest_event_id: Some("$reply:test".to_owned()),
         latest_sender: None,
         latest_sender_label: None,
@@ -142,6 +143,7 @@ fn newer_sdk_summary_is_detected_before_overlay_and_repaired_by_exact_aggregate(
     let mut root_a = timeline_item("$root:test", Some("root"), "@root:test", false);
     root_a.thread_summary = Some(ThreadSummaryDto {
         reply_count: 1,
+        unread_count: 0,
         latest_event_id: Some("$reply-a:test".to_owned()),
         latest_sender: Some("@a:test".to_owned()),
         latest_sender_label: Some("A".to_owned()),
@@ -153,6 +155,7 @@ fn newer_sdk_summary_is_detected_before_overlay_and_repaired_by_exact_aggregate(
     let mut root_b = root_a.clone();
     root_b.thread_summary = Some(ThreadSummaryDto {
         reply_count: 2,
+        unread_count: 0,
         latest_event_id: Some("$reply-b:test".to_owned()),
         latest_sender: Some("@b:test".to_owned()),
         latest_sender_label: Some("B".to_owned()),
@@ -1440,6 +1443,7 @@ fn thread_attention_acknowledgement_clears_without_changing_total_reply_count() 
     let mut root = timeline_message_item("$root:test", "@alice:test");
     root.thread_summary = Some(ThreadSummaryDto {
         reply_count: 2,
+        unread_count: 0,
         latest_event_id: Some("$live:test".to_owned()),
         latest_sender: Some("@bob:test".to_owned()),
         latest_sender_label: Some("Bob".to_owned()),

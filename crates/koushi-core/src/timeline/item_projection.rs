@@ -2622,6 +2622,7 @@ pub(super) fn thread_summary_from_sdk(
 ) -> ThreadSummaryDto {
     let mut dto = ThreadSummaryDto {
         reply_count: summary.num_replies,
+        unread_count: 0,
         latest_event_id: None,
         latest_sender: None,
         latest_sender_label: None,

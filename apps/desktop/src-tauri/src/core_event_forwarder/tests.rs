@@ -337,6 +337,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
         thread_root: None,
         thread_summary: Some(ThreadSummaryDto {
             reply_count: 2,
+            unread_count: 0,
             latest_event_id: Some("$thread-reply:example.test".to_owned()),
             latest_sender: Some("@thread:example.test".to_owned()),
             latest_sender_label: None,
@@ -689,6 +690,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
                 "thread_root": null,
                 "thread_summary": {
                     "reply_count": 2,
+                    "unread_count": 0,
                     "latest_event_id": "$thread-reply:example.test",
                     "latest_sender": "@thread:example.test",
                     "latest_sender_label": null,

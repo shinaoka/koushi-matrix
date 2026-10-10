@@ -2076,6 +2076,22 @@ impl TimelineActor {
                 {
                     return false;
                 }
+                // #1259: a confirmed threaded read advances the session read marker, so
+                // the chip and Threads-list dot clear without touching any room total.
+                if let TimelineKind::Thread {
+                    room_id,
+                    root_event_id,
+                } = &self.key.kind
+                {
+                    let mut service = self
+                        .thread_root_projection_service
+                        .lock()
+                        .expect("thread-root projection service lock must not be poisoned");
+                    if let Some(aggregate) = service.current_aggregate(room_id, root_event_id) {
+                        let reply_count = aggregate.reply_count;
+                        service.advance_thread_read_marker(room_id, root_event_id, reply_count);
+                    }
+                }
                 let snapshot = derive_timeline_navigation_snapshot(
                     &self.key.kind,
                     &self.navigation_items,

@@ -444,6 +444,7 @@ fn canonical_sdk_summary_is_provisional_until_live_observation_or_refresh() {
             "$root:example.invalid",
             ThreadSummaryDto {
                 reply_count: 1,
+                unread_count: 0,
                 latest_event_id: Some("$reply-a:example.invalid".to_owned()),
                 latest_sender: Some("@a:example.invalid".to_owned()),
                 latest_sender_label: Some("A".to_owned()),
@@ -467,6 +468,7 @@ fn canonical_sdk_summary_is_provisional_until_live_observation_or_refresh() {
             "$root:example.invalid",
             ThreadSummaryDto {
                 reply_count: 1,
+                unread_count: 0,
                 latest_event_id: Some(activity_b.activity_event_id.clone()),
                 latest_sender: activity_b.activity_sender.clone(),
                 latest_sender_label: activity_b.activity_sender_label.clone(),
@@ -676,6 +678,7 @@ fn older_bundled_summary_rolls_back_only_after_event_cache_confirmation() {
     let mut service = ThreadRootProjectionService::default();
     let summary_a = ThreadSummaryDto {
         reply_count: 1,
+        unread_count: 0,
         latest_event_id: Some("$reply-a:example.invalid".to_owned()),
         latest_sender: Some("@a:example.invalid".to_owned()),
         latest_sender_label: Some("A".to_owned()),
@@ -701,6 +704,7 @@ fn older_bundled_summary_rolls_back_only_after_event_cache_confirmation() {
             "$root:example.invalid",
             ThreadSummaryDto {
                 reply_count: 1,
+                unread_count: 0,
                 latest_event_id: Some(activity_b.activity_event_id.clone()),
                 latest_sender: activity_b.activity_sender.clone(),
                 latest_sender_label: activity_b.activity_sender_label.clone(),
@@ -1332,4 +1336,31 @@ fn ready_snapshot_remains_reemittable_after_temporary_canonical_root_overlap() {
         service.observe(activity),
         ThreadRootProjectionDecision::Existing(record) if record.item().is_some()
     ));
+}
+
+/// #1259: the read marker seeds on first sight, counts only remote replies, never
+/// shows an own reply, never lets one clear an unread remote reply, and clears on
+/// a confirmed threaded read.
+#[test]
+fn thread_read_marker_counts_remote_replies_only() {
+    let mut service = ThreadRootProjectionService::default();
+    let room = "!room:test";
+    let root = "$root:test";
+
+    // First sight seeds the baseline, so an existing thread is not unread after a
+    // restart.
+    assert_eq!(service.thread_unread_replies(room, root, 3), 0);
+    // A remote reply arrives.
+    assert_eq!(service.thread_unread_replies(room, root, 4), 1);
+    // An own reply must not show a dot...
+    service.record_own_thread_reply(room, root);
+    assert_eq!(service.thread_unread_replies(room, root, 5), 1);
+    // ...and a second own reply must not erase the unread remote one either.
+    service.record_own_thread_reply(room, root);
+    assert_eq!(service.thread_unread_replies(room, root, 6), 1);
+    // Reading the thread clears the dot and resets the own counter.
+    service.advance_thread_read_marker(room, root, 6);
+    assert_eq!(service.thread_unread_replies(room, root, 6), 0);
+    // The next remote reply shows again.
+    assert_eq!(service.thread_unread_replies(room, root, 7), 1);
 }

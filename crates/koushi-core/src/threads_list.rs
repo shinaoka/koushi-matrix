@@ -220,6 +220,69 @@ pub(crate) struct ThreadRootProjectionService {
     active_root_event_ids: HashMap<String, HashSet<String>>,
     canonical_root_event_ids: HashMap<String, HashSet<String>>,
     diagnostic_ordinals: ThreadSummaryDiagnosticOrdinals,
+    /// #1259: the session-scoped "last read" marker per thread root, keyed by
+    /// `(room_id, root_event_id)`.
+    thread_read_markers: HashMap<(String, String), ThreadReadMarker>,
+}
+
+/// #1259: the last-read marker for one thread root.
+///
+/// The bundled root summary is the only thread signal the client receives for a
+/// thread it has not opened (#1258), so the unread value is
+/// `reply_count - seen_reply_count - own_reply_count`. `seen_reply_count` advances
+/// only on a confirmed threaded read receipt, and `own_reply_count` counts the
+/// user's own sends into that thread, so an own send can neither create a dot nor
+/// erase a remote reply that is still unread.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ThreadReadMarker {
+    /// `None` until the root is first observed: the first observation seeds it to
+    /// the summary's current count, so a restart does not turn every existing
+    /// thread into unread.
+    seen_reply_count: Option<u32>,
+    own_reply_count: u32,
+}
+
+impl ThreadRootProjectionService {
+    /// #1259: unread replies for one root, seeding the baseline on first sight.
+    pub(crate) fn thread_unread_replies(
+        &mut self,
+        room_id: &str,
+        root_event_id: &str,
+        reply_count: u32,
+    ) -> u32 {
+        let marker = self
+            .thread_read_markers
+            .entry((room_id.to_owned(), root_event_id.to_owned()))
+            .or_default();
+        let seen = *marker.seen_reply_count.get_or_insert(reply_count);
+        reply_count
+            .saturating_sub(seen)
+            .saturating_sub(marker.own_reply_count)
+    }
+
+    /// #1259: a confirmed threaded read advances the marker to the current count.
+    pub(crate) fn advance_thread_read_marker(
+        &mut self,
+        room_id: &str,
+        root_event_id: &str,
+        reply_count: u32,
+    ) {
+        let marker = self
+            .thread_read_markers
+            .entry((room_id.to_owned(), root_event_id.to_owned()))
+            .or_default();
+        marker.seen_reply_count = Some(reply_count);
+        marker.own_reply_count = 0;
+    }
+
+    /// #1259: record one own reply so it never shows or clears a dot.
+    pub(crate) fn record_own_thread_reply(&mut self, room_id: &str, root_event_id: &str) {
+        let marker = self
+            .thread_read_markers
+            .entry((room_id.to_owned(), root_event_id.to_owned()))
+            .or_default();
+        marker.own_reply_count = marker.own_reply_count.saturating_add(1);
+    }
 }
 
 #[derive(Default)]

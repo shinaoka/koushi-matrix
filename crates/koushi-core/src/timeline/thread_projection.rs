@@ -856,14 +856,23 @@ pub(super) fn overlay_thread_summary_item(
     if item.thread_root.is_some() {
         return item.clone();
     }
-    let Some(aggregate) = service
-        .lock()
-        .expect("thread-root projection service lock must not be poisoned")
-        .current_aggregate(key.room_id(), event_id)
-    else {
-        return item.clone();
-    };
-    thread_root_item_with_authoritative_aggregate(item, &aggregate)
+    {
+        let mut service = service
+            .lock()
+            .expect("thread-root projection service lock must not be poisoned");
+        let Some(aggregate) = service.current_aggregate(key.room_id(), event_id) else {
+            return item.clone();
+        };
+        // #1259: the bundled summary is the only thread signal for an unopened thread,
+        // so the dot is that summary's reply count minus this session's read marker.
+        let unread_count =
+            service.thread_unread_replies(key.room_id(), event_id, aggregate.reply_count);
+        let mut overlaid = thread_root_item_with_authoritative_aggregate(item, &aggregate);
+        if let Some(summary) = overlaid.thread_summary.as_mut() {
+            summary.unread_count = unread_count;
+        }
+        overlaid
+    }
 }
 
 pub(super) fn overlay_thread_summary_diff(
@@ -896,6 +905,7 @@ pub(super) fn thread_root_item_with_authoritative_aggregate(
     let mut item = item.clone();
     let summary = item.thread_summary.get_or_insert(ThreadSummaryDto {
         reply_count: 0,
+        unread_count: 0,
         latest_event_id: None,
         latest_sender: None,
         latest_sender_label: None,
@@ -1457,6 +1467,7 @@ fn thread_summary_from_loaded_root_raw(raw: &serde_json::Value) -> Option<Thread
             .and_then(serde_json::Value::as_u64)
             .and_then(|count| u32::try_from(count).ok())
             .unwrap_or(0),
+        unread_count: 0,
         latest_event_id: latest
             .and_then(|event| event.get("event_id"))
             .and_then(serde_json::Value::as_str)

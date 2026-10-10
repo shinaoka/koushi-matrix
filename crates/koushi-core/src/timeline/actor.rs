@@ -1868,6 +1868,7 @@ impl TimelineActor {
                 session: Arc::clone(&session),
                 cleanup: actor_cleanup_tx,
                 diagnostic_trace: None,
+                projection_service: Arc::clone(&thread_root_projection_service),
             });
         let (position_tx, position_rx) = watch::channel(Arc::new(
             TimelinePositionIndex::from_items(actor_generation, generation, &navigation_items),

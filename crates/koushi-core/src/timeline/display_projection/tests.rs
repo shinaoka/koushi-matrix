@@ -1627,6 +1627,7 @@ fn edited_thread_root_keeps_latest_document_through_service_and_display() {
     );
     root.thread_summary = Some(koushi_protocol::event::ThreadSummaryDto {
         reply_count: 1,
+        unread_count: 0,
         latest_event_id: Some("$reply:example.test".into()),
         latest_sender: Some("@bob:example.test".into()),
         latest_sender_label: None,
