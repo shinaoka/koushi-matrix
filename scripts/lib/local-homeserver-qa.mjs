@@ -109,8 +109,17 @@ trusted_servers = []
  */
 
 /**
+ * @typedef {object} MultiReaderReceiptsCapability
+ * @property {boolean} supported Whether the Simplified Sliding Sync receipts
+ *   extension can report more than one reader for the same event.
+ * @property {string} limitation Private-data-free reason token when
+ *   `supported` is false.
+ */
+
+/**
  * @typedef {object} HomeserverFixtureCapabilities
  * @property {SimplifiedSlidingSyncCapability} simplifiedSlidingSync
+ * @property {MultiReaderReceiptsCapability} multiReaderReceipts
  */
 
 /**
@@ -135,12 +144,22 @@ export function homeserverFixtureCapabilities(
     throw new Error(`unknown local homeserver kind: ${serverKind}`);
   }
 
+  // tuwunel 1.7.1 packs every receipt row of one event into a single user
+  // (`pack_receipts` inserts by event ID and replaces the sibling entries), so
+  // the 1500-reader avatar fixture can never be read back there. See
+  // docs/agents/troubleshooting.md. Synapse reports the full population.
+  const multiReaderReceipts =
+    serverKind === "tuwunel"
+      ? { supported: false, limitation: "sss_receipt_packing_single_reader" }
+      : { supported: true, limitation: "" };
+
   return {
     simplifiedSlidingSync: {
       unstableFeature: "org.matrix.simplified_msc3575",
       enabled,
       configuration
-    }
+    },
+    multiReaderReceipts
   };
 }
 

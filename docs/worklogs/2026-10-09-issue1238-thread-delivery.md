@@ -56,9 +56,15 @@ node scripts/desktop-headless-local-qa.mjs --run --server=<tuwunel|synapse> \
 The badge rise on Synapse is not evidence of thread delivery. Disabling the
 thread subscription entirely produced the identical token sequence
 (`thread_room_badge=ok before=0 after_reply=1`, `main_read=ok badge=1`,
-`cleared=ok`), and tuwunel, which reports dummy zero server counts, did not move
-at all. The rise is the room-level homeserver count that the #1176 top-up reads,
-and that count already includes the thread reply.
+`cleared=ok`), and tuwunel did not move at all in this experiment. The rise is
+the room-level homeserver count that the #1176 top-up reads, and that count
+already includes the thread reply.
+
+> Correction (2026-10-10): the server roles above were misread. Measured, tuwunel
+> reports real thread-inclusive `notification_count` values while Synapse
+> v1.157.0 reports dummy zeros, so the "dummy zero server counts" attribution
+> belongs to Synapse, not tuwunel. See `docs/architecture/state-machine.md` and
+> #1176; do not reuse the original attribution.
 
 ## Boundary reached
 

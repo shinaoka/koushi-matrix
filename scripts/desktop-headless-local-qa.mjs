@@ -36,7 +36,11 @@ import {
 } from "./lib/qa-token-contract.mjs";
 import { writeValidatedQaOutputFiles } from "./lib/qa-output-artifacts.mjs";
 import { assertSdkSubmoduleSynced } from "./lib/sdk-submodule-status.mjs";
-import { setFixtureAvatar, seedAvatarDemandFixture } from "./lib/avatar-demand-fixture.mjs";
+import {
+  classifyAvatarReceiptReadback,
+  setFixtureAvatar,
+  seedAvatarDemandFixture
+} from "./lib/avatar-demand-fixture.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localSecretsRoot = join(repoRoot, ".local-secrets", "headless-local-qa");
@@ -272,6 +276,21 @@ async function runForServer(serverKind, scenario) {
 
     if (runCoreQa) {
       const coreUsers = fixture ?? (await registerQaUsers(homeserver, "core", scenario));
+      if (coreUsers.avatarFixture) {
+        // A declared server limitation is re-verified against the measured
+        // readback before it is honored, so neither an unreadable population nor
+        // a server that starts reporting it can pass silently (#1168).
+        const classification = classifyAvatarReceiptReadback({
+          serverKind,
+          capability: fixtureCapabilities.multiReaderReceipts,
+          readback: coreUsers.avatarFixture.receiptReadback,
+          expected: coreUsers.avatarFixture.readerCount
+        });
+        if (classification.limited) {
+          console.log(classification.token);
+          return;
+        }
+      }
       if (!fixture && serverKind === "synapse") {
         writeQaFixture(runDir, {
           serverKind,

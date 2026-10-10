@@ -7,6 +7,28 @@ use koushi_state::SearchCrawlerSpeed;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// The published QA in-flight bound must stay tied to the admission policy it
+/// models (#1171): media prefetch shares the cross-account background budget,
+/// so its effective network concurrency is the shared slot, not the avatar
+/// downloader's own per-account ceiling. An in-flight QA expectation sized from
+/// this hook must never exceed it.
+// Compile-time half of the guard: the published bound must never be zero, or a
+// lane deriving an in-flight expectation from it would wait for nothing.
+const _: () = assert!(super::MEDIA_PREFETCH_INFLIGHT_LIMIT >= 1);
+
+#[test]
+fn media_prefetch_inflight_limit_matches_shared_admission_policy() {
+    assert!(
+        AccountWorkKind::MediaPrefetch.uses_shared_background_budget(),
+        "media prefetch must keep sharing the cross-account budget the QA bound models"
+    );
+    assert_eq!(
+        super::MEDIA_PREFETCH_INFLIGHT_LIMIT,
+        super::SHARED_WORK_CONCURRENCY
+            .min(AccountWorkKind::MediaPrefetch.policy().max_concurrency as usize)
+    );
+}
+
 #[test]
 fn policy_bands_are_ordered_from_interactive_to_maintenance() {
     let ordered = [
