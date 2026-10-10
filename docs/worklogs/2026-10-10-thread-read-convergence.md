@@ -117,3 +117,14 @@ passed the high/critical gate (one low advisory); local packaging and installati
 results will be recorded separately. No release or upstream publication is
 implied. The notification badge source remains unconfirmed until fresh diagnostics
 from a build with the added event-type boolean are available.
+
+## Local installation
+
+With user authorization, packaged source commit `58b74d16` as macOS app/DMG
+(version 0.20.3, bundle 3525.0) using the repository build entry point. App and
+DMG generation completed; `codesign --verify --deep --strict` passed for the
+built and installed app. The installed executable's SHA-256 matches the built
+one. The prior app was preserved in a temporary backup, the installed app was
+replaced, and a new process launched successfully. No application data was
+modified by the installation procedure. This local build is signed, not
+notarized or published. The real-account badge outcome remains to be observed.
