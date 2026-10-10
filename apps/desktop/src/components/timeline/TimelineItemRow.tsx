@@ -775,9 +775,15 @@ export function TimelineItemRow({
     eventId && threadAttention?.rootEventId === eventId
       ? threadAttention.notificationCount
       : 0;
+  // #1259: the session read marker's reply delta is what shows a dot for a thread
+  // whose pane is not open. There is no mention information and no room-badge
+  // contribution.
+  const projectedThreadUnread = item.thread_summary?.unread_count ?? 0;
+  const paneTracksRoot = Boolean(eventId) && threadAttention?.rootEventId === eventId;
+  const threadUnreadCount = paneTracksRoot ? threadNotificationCount : projectedThreadUnread;
   const threadNotificationsText =
-    threadNotificationCount > 0
-      ? t("timeline.threadNotificationCount", { count: threadNotificationCount })
+    threadUnreadCount > 0
+      ? t("timeline.threadNotificationCount", { count: threadUnreadCount })
       : "";
   const spoilerState = { revealed: revealedSpoilers, reveal: revealSpoiler };
   const displayBody = localizedTimelineItemBody(item);
@@ -1170,7 +1176,7 @@ export function TimelineItemRow({
             )}
           </p>
         ) : null}
-        {threadNotificationCount > 0 ? (
+        {threadUnreadCount > 0 ? (
           <button
             className="thread-summary-chip thread-new-replies-chip"
             type="button"

@@ -986,6 +986,11 @@ identity, sender/body/timestamp fields, `in_reply_to_event_id`,
 `latest_body_preview`, and `latest_timestamp_ms`; the `latest_*` fields are
 `None` when the SDK has not loaded the latest event details.
 
+`ThreadSummaryDto.unread_count` is the SDK thread cache's own unread value for that
+root, projected by Core for the room-timeline chip: it is not derived from the
+bundled summary, it carries no room-level meaning, and it never contributes to a
+room total.
+
 Thread summaries describe aggregate presentation state, not complete per-thread
 unread state. Capability advertisement and room-badge changes do not prove
 thread-event delivery. Thread contributions must not be added to room totals

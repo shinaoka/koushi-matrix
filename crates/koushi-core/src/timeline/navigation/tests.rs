@@ -2307,6 +2307,7 @@ fn unread_consistency_diagnostic_correlates_thread_receipt_with_latest_reply_pro
     let mut root = timeline_item("$root:test", Some("root"), "@me:test", false);
     root.thread_summary = Some(ThreadSummaryDto {
         reply_count: 1,
+        unread_count: 0,
         latest_event_id: Some("$reply:test".to_owned()),
         latest_sender: Some("@alice:test".to_owned()),
         latest_sender_label: Some("Alice".to_owned()),

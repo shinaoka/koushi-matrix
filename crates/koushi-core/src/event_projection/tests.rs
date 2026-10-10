@@ -112,6 +112,7 @@ fn timeline_item_serializes_thread_fields_reactions_and_redaction_affordances() 
         thread_root: Some("$root:test".to_owned()),
         thread_summary: Some(ThreadSummaryDto {
             reply_count: 2,
+            unread_count: 0,
             latest_event_id: Some("$latest-reply:test".to_owned()),
             latest_sender: Some("@bob:example.invalid".to_owned()),
             latest_sender_label: None,
@@ -178,7 +179,8 @@ fn timeline_item_serializes_thread_fields_reactions_and_redaction_affordances() 
                 "latest_sender": "@bob:example.invalid",
                 "latest_sender_label": null,
                 "latest_body_preview": "latest reply",
-                "latest_timestamp_ms": 1456
+                "latest_timestamp_ms": 1456,
+                "unread_count": 0
         })
     );
 }

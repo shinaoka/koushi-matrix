@@ -448,6 +448,10 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   stale non-null summary. Replay/restart rehydrates the same Core projection
   from the SDK event cache; no frontend or first-party plaintext summary store
   exists.
+- Thread unread per root is Rust-owned: the room timeline actor reads the SDK thread
+  cache for every root whose room-side summary changed and mirrors the value to
+  state (`ThreadUnreadObserved`), so the Threads-list rows show the same count as
+  the room-timeline chip. The value never joins a room total.
 - Thread-root lifecycle and placement are also Rust-owned. The session-scoped
   `ThreadRootProjectionService` retains canonical/hydrated root snapshots until
   authoritative aggregate/redaction clear, Room unsubscribe, or session teardown;

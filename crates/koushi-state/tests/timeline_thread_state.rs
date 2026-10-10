@@ -2617,6 +2617,7 @@ fn thread_item(root_event_id: &str, root_ts: u64, latest_ts: Option<u64>) -> Thr
         latest_body_preview: None,
         latest_timestamp_ms: latest_ts,
         reply_count: 0,
+        unread_count: 0,
     }
 }
 

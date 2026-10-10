@@ -33,6 +33,7 @@ fn project_root_slot(pending: bool, failure_kind: Option<OperationFailureKind>) 
         TimelineThreadRootOrder::LatestReply,
         vec![crate::threads_list::ThreadRootDisplayData {
             root_event_id: "$root:example.invalid".to_owned(),
+            unread: 0,
             activity_event_id: "$reply:example.invalid".to_owned(),
             activity_timestamp_ms: Some(1),
             item: None,

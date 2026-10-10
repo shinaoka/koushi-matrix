@@ -1143,6 +1143,12 @@ pub struct ThreadSummaryDto {
     pub latest_sender_label: Option<String>,
     pub latest_body_preview: Option<String>,
     pub latest_timestamp_ms: Option<u64>,
+    /// #1259: replies posted since this client last read the thread, derived from the
+    /// bundled summary's `reply_count` and a session-scoped read marker. `0` when the
+    /// thread is read or has no new remote replies. It is not the homeserver's own
+    /// unread count and carries no mention information.
+    #[serde(default)]
+    pub unread_count: u32,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
