@@ -4634,6 +4634,15 @@ stateDiagram-v2
   own-user verification also counts as active and owns the shared request
   observer/continuation slots; because it exposes no incoming replay identity,
   every incoming request conflicts and is cancelled before adoption.
+- Incoming SDK-originated verification request admission is fenced by session
+  identity, not by observer-instance generation. A request is admitted exactly
+  while it was observed for the current session; restarting that session's
+  verification observer does not retire a request already observed for the same
+  session. A request observed for a session that is no longer current, or
+  observed with no current session, is discarded and never adopted. A discard
+  records a token-only diagnostic (event `core.verification`, action
+  `incoming_request_dropped`) with a bounded reason token and a `has_session`
+  boolean; it records no room, user, device, event, target, or handle value.
 - A valid to-device verification request whose sender device is not yet in the
   crypto store is not terminally discarded. The crypto machine retains it in a
   bounded FIFO pending set, deduplicated by sender and flow and governed by the
@@ -4714,8 +4723,9 @@ stateDiagram-v2
   handler is removed to prevent new dispatch. Any handler future already
   dispatched remains owned and awaited by the SDK sync dispatcher; stopping and
   joining the old `SyncActor` is that callback's settlement barrier.
-  Observer-to-actor messages carry a dedicated session generation and are
-  ignored before adoption when stale or when no session is active. A blocked
+  Observer-to-actor messages are fenced before adoption, by a dedicated session
+  generation or, for incoming verification requests, by the observed session
+  identity, and are ignored when stale or when no session is active. A blocked
   actor-mailbox send is stop-aware with stop priority, and join uses a bounded
   timeout followed by abort and owned settlement. Eventual task exit after
   dropping the owner is insufficient because it permits stale old-client
