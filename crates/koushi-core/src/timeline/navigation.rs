@@ -2142,6 +2142,21 @@ pub(super) fn derive_timeline_navigation_snapshot_with_read_state(
             })
             .and_then(|(_, item)| timeline_item_event_id(item).map(ToOwned::to_owned));
     }
+    // A newly created actor has no local viewed boundary. Its confirmed receipt
+    // can point at a hidden edit or redacted row, which the renderer cannot use
+    // as a divider. Resolve that boundary against the canonical window too.
+    if snapshot.read_marker_display_event_id.is_none() && items[read_marker_index].is_hidden {
+        snapshot.read_marker_display_event_id = items[..=read_marker_index]
+            .iter()
+            .rev()
+            .find(|item| {
+                !item.is_hidden
+                    && navigation_item_in_scope(kind, item)
+                    && timeline_item_event_id(item).is_some()
+            })
+            .and_then(timeline_item_event_id)
+            .map(ToOwned::to_owned);
+    }
     snapshot
 }
 
@@ -2504,6 +2519,10 @@ fn classify_pagination_error(err: &matrix_sdk_ui::timeline::Error) -> TimelineFa
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "navigation/read_marker_reentry_tests.rs"]
+mod read_marker_reentry_tests;
 
 #[cfg(test)]
 #[path = "navigation/replay_identity_tests.rs"]

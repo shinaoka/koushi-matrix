@@ -1028,6 +1028,10 @@ local flag:
 - `m.marked_unread` is separate from read receipts/read markers. Marking a room
   read must also clear the explicit unread marker, while marking unread must not
   move the fully-read marker.
+- Redacted events and the `m.room.redaction` events that delete them do not
+  contribute unread notifications or mentions, even when cached push actions
+  still say notify/highlight. Both remain valid receipt ordering boundaries;
+  later unread messages retain their own counts.
 
 Activity may temporarily suppress rows to keep the panel responsive, but that
 suppression is not an authoritative read state. Any reducer action that clears
@@ -1186,8 +1190,11 @@ Rust keeps the local viewed boundary separate from server-confirmed read state.
 For the displayed read divider, comparable local and confirmed boundaries in the
 same canonical window use the newer position, mapped to a visible event at or
 before that position. A stale local boundary cannot override a newer confirmed
-one. Missing positions retain conservative fallback behavior. This display
-choice does not acknowledge unsent receipts or change server-based unread counts.
+one. When re-entering a timeline without a local viewed boundary, a confirmed
+hidden event is mapped to the nearest visible in-scope event at or before it;
+the receipt itself is unchanged. Missing positions retain conservative fallback
+behavior. This display choice does not acknowledge unsent receipts or change
+server-based unread counts.
 Replaying `InitialItems` for a new or returning subscriber also republishes the
 current `NavigationUpdated` snapshot, even when it is unchanged within the actor.
 An earlier consumer having received that snapshot is not evidence that the new
