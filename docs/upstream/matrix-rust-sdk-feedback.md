@@ -1145,6 +1145,20 @@ duplicating cache ownership. This minimal fork fix is intended for upstream
 submission with its production-redaction and cache-restoration regression.
 See [reproduction and historical limits](2026-09-15-redacted-notifications.md).
 
+## 2026-10-10: Redaction events retain cached notification actions
+
+The earlier guard excluded the redacted target but still admitted the
+`m.room.redaction` event itself when cached push actions requested notify or
+highlight. `ReadReceipts::process_event` now excludes both from counters while
+keeping their receipt-ordering identities. This SDK-owned cache aggregate cannot
+be corrected through the public wrapper without duplicating receipt accounting.
+The minimal fork patch is `1298b0c07` on
+`codex/ignore-redaction-notifications`, intended for upstream submission alongside
+the earlier redacted-target fix. A RED-then-GREEN regression checks notification
+and mention removal, preservation of a subsequent unread message, and a receipt
+on the redaction itself. This independently reproduced defect does not establish
+the cause of an intermittent application badge that cleared after restart.
+
 ## 2026-10-09: the #1150 search/index revision lands on the fork's `main`
 
 Fork PR #19 (`feat/1150-literal-bounded-search`) was the SDK half of #1150 and

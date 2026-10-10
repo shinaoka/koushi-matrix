@@ -223,6 +223,9 @@ describe("TimelineView", () => {
       server_confirmed_read_event_id: "$server:example.invalid"
     };
     act(() => {
+      emit({ kind: "Timeline", event: { InitialItems: {
+        key: KEY, generation: 1, request_id: null, items: []
+      } } });
       emit({
         kind: "Timeline",
         event: {
@@ -814,6 +817,17 @@ describe("TimelineView", () => {
     emit({
       kind: "Timeline",
       event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [other, own1, own2]
+        }
+      }
+    });
+    emit({
+      kind: "Timeline",
+      event: {
         NavigationUpdated: {
           key: KEY,
           snapshot: {
@@ -828,17 +842,6 @@ describe("TimelineView", () => {
             newer_event_count: 0,
             can_jump_to_bottom: false
           }
-        }
-      }
-    });
-    emit({
-      kind: "Timeline",
-      event: {
-        InitialItems: {
-          request_id: null,
-          key: KEY,
-          generation: 1,
-          items: [other, own1, own2]
         }
       }
     });
@@ -877,6 +880,17 @@ describe("TimelineView", () => {
     emit({
       kind: "Timeline",
       event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [own1, own2]
+        }
+      }
+    });
+    emit({
+      kind: "Timeline",
+      event: {
         NavigationUpdated: {
           key: KEY,
           snapshot: {
@@ -891,17 +905,6 @@ describe("TimelineView", () => {
             newer_event_count: 0,
             can_jump_to_bottom: false
           }
-        }
-      }
-    });
-    emit({
-      kind: "Timeline",
-      event: {
-        InitialItems: {
-          request_id: null,
-          key: KEY,
-          generation: 1,
-          items: [own1, own2]
         }
       }
     });
@@ -937,6 +940,17 @@ describe("TimelineView", () => {
     emit({
       kind: "Timeline",
       event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [other, unread, own1]
+        }
+      }
+    });
+    emit({
+      kind: "Timeline",
+      event: {
         NavigationUpdated: {
           key: KEY,
           snapshot: {
@@ -951,17 +965,6 @@ describe("TimelineView", () => {
             newer_event_count: 0,
             can_jump_to_bottom: false
           }
-        }
-      }
-    });
-    emit({
-      kind: "Timeline",
-      event: {
-        InitialItems: {
-          request_id: null,
-          key: KEY,
-          generation: 1,
-          items: [other, unread, own1]
         }
       }
     });

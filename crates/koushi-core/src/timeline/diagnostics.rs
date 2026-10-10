@@ -1770,6 +1770,15 @@ fn event_cache_item_diagnostic_event(
     ))
     .field(DiagnosticField::boolean("sender_present", sender_present))
     .field(DiagnosticField::boolean(
+        "redaction_event",
+        item.raw()
+            .get_field::<String>("type")
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some("m.room.redaction"),
+    ))
+    .field(DiagnosticField::boolean(
         "redacted",
         item.raw()
             .deserialize()

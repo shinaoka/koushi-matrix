@@ -21,7 +21,7 @@
  *   anchor (stable item id + pixel offset). After the diff is applied and
  *   React commits, it restores the anchor in a layout effect and only then
  *   allows the next automatic fill request. This store does no DOM work; it
- *   only tracks the item list.
+ *   retains Rust row and navigation projections without deriving read state.
  *
  * Pagination suppression:
  *   The store exposes paginationState per (key, direction). Callers must not
@@ -43,6 +43,7 @@ import type {
   TimelineItem,
   TimelineGapPosition,
   TimelineKey,
+  TimelineNavigationSnapshot,
   RequestId
 } from "./coreEvents";
 import {
@@ -58,6 +59,8 @@ import {
 export interface TimelineKeyState {
   /** Current known Core timeline generation. 0 is a valid first generation. */
   generation: number;
+  /** Verbatim Rust navigation projection, retained across view remounts. */
+  navigation: TimelineNavigationSnapshot | null;
   /** Monotonic Core actor owner generation for replacement fencing. */
   actorGeneration: number;
   /** Stable actor-owned projection identity, preserved across replay. */
@@ -218,6 +221,7 @@ export function timelineStoreKeyId(key: TimelineKey): string {
 function emptyKeyState(): TimelineKeyState {
   return {
     generation: 0,
+    navigation: null,
     actorGeneration: 0,
     projectionRequestId: null,
     items: [],
@@ -251,6 +255,17 @@ export function applyTimelineEvent(
 ): TimelineStoreState {
   if ("InitialItems" in event) {
     return applyInitialItems(store, event.InitialItems);
+  }
+  if ("NavigationUpdated" in event) {
+    const { key, snapshot } = event.NavigationUpdated;
+    const k = keyStr(key);
+    const existing = store.keys.get(k);
+    // Core emits InitialItems before navigation and fences retired actors.
+    // A navigation event alone cannot initialize a missing/resyncing timeline.
+    if (!existing || existing.awaitingResync) return store;
+    const next = new Map(store.keys);
+    next.set(k, { ...existing, navigation: snapshot });
+    return withKeys(store, next);
   }
   if ("ItemsUpdated" in event) {
     return applyItemsUpdated(store, event.ItemsUpdated);
@@ -389,6 +404,7 @@ export function applyGlobalResync(store: TimelineStoreState): TimelineStoreState
       itemIdsByTimestamp: new Map(),
       lastAppliedBatchId: null,
       awaitingResync: true,
+      navigation: null,
       mediaUploadProgress: new Map()
     });
   }
@@ -542,6 +558,8 @@ function applyInitialItems(
     ...existing,
     generation: payload.generation,
     actorGeneration: payload.actor_generation ?? 0,
+    navigation: actorChanged || existing.generation !== payload.generation
+      ? null : existing.navigation,
     // EndReached belongs to the previous actor's loaded window, not the key forever.
     paginationBackward: actorChanged ? "Idle" : existing.paginationBackward,
     paginationForward: actorChanged ? "Idle" : existing.paginationForward,
@@ -745,6 +763,7 @@ function applyResyncRequired(
     itemIndexById: new Map(),
     itemIdsByTimestamp: new Map(),
     awaitingResync: true,
+    navigation: null,
     mediaUploadProgress: new Map(),
     gapPositions: []
   });

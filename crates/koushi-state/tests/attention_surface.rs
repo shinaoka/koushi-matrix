@@ -257,7 +257,7 @@ fn native_attention_tracks_plain_unread_count_transitions() {
 }
 
 #[test]
-fn native_attention_badge_deduplicates_rooms_and_excludes_manual_marks() {
+fn native_attention_badge_deduplicates_rooms_and_includes_manual_marks() {
     let mut marked = room("!marked:example.invalid", "Marked", false, 0, 0, 0);
     marked.marked_unread = true;
     let rooms = vec![
@@ -286,7 +286,7 @@ fn native_attention_badge_deduplicates_rooms_and_excludes_manual_marks() {
         capabilities: available_capabilities(),
     });
 
-    assert_eq!(state.summary.badge_count, 3);
+    assert_eq!(state.summary.badge_count, 4);
 }
 
 #[test]
@@ -453,7 +453,7 @@ fn native_attention_projection_excludes_effectively_muted_rooms_from_badge() {
 }
 
 #[test]
-fn native_attention_badge_policy_preserves_non_muted_raw_unread() {
+fn native_attention_badge_policy_preserves_non_muted_conversation_attention() {
     let mut ignored_dm = room("!ignored:example.invalid", "Ignored", true, 4, 4, 0);
     ignored_dm.dm_user_ids = vec!["@ignored:example.invalid".to_owned()];
     let mut marked = room("!marked:example.invalid", "Marked", false, 0, 0, 0);
@@ -472,7 +472,7 @@ fn native_attention_badge_policy_preserves_non_muted_raw_unread() {
             2,
         ),
         (ignored_dm, None, true, 4),
-        (marked, None, false, 0),
+        (marked, None, false, 1),
     ];
 
     for (room, mode, candidate_suppressed, expected_badge) in cases {
