@@ -427,13 +427,12 @@ pub fn room_attention_projection(
     let has_unread_mention = !is_muted && highlight_total > 0;
     let is_attention_highlighted =
         !is_muted && (room.notification_count > 0 || highlight_total > 0 || room.marked_unread);
-    let notification_count = if is_muted
-        || (mode == Some(RoomNotificationMode::Mentions) && highlight_total == 0)
-    {
-        0
-    } else {
-        room.notification_count
-    };
+    let notification_count =
+        if is_muted || (mode == Some(RoomNotificationMode::Mentions) && highlight_total == 0) {
+            0
+        } else {
+            room.notification_count
+        };
     let display_count = if is_muted {
         room.unread_count.saturating_add(room.thread_unread_count)
     } else {
