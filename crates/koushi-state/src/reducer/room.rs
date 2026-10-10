@@ -340,6 +340,11 @@ fn handle_room_list_updated_with_crawler(
     let mut spaces = spaces;
     preserve_known_avatar_thumbnails(state, &mut spaces, &mut rooms);
     suppress_stale_unread_after_local_read(state, &mut rooms);
+    // #1238: a room-list snapshot never carries the thread counts, so re-derive
+    // them from the reducer-held per-root values before any projection reads the
+    // badge. `suppress_stale_unread_after_local_read` above deliberately leaves
+    // these fields alone: a main-timeline read never touches a threaded receipt.
+    super::thread::apply_thread_badge_totals(&state.thread_unread, &mut rooms);
     crate::state::refresh_room_summary_display_projection(
         &mut rooms,
         &state.profile,

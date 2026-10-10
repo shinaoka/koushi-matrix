@@ -356,6 +356,8 @@ fn invite_list_updated_preserves_avatar_thumbnails_from_room_snapshot_state() {
         unread_count: 0,
         notification_count: 0,
         highlight_count: 0,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
         marked_unread: false,
         recency_stamp: None,
         conversation_activity: None,

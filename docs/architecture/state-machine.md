@@ -981,8 +981,11 @@ stateDiagram-v2
 Unread state crosses three Matrix concepts that must not be collapsed into one
 local flag:
 
-- `RoomSummary.unread_count` is the effective unread-message count; notification
-  and mention counts are separate observations, as is `marked_unread`. The primary
+- `RoomSummary.unread_count` is the main-timeline unread-message count; thread
+  replies are a separate field (see "Threads and attention"), notification and
+  mention counts are separate observations, as is `marked_unread`, and no badge
+  surface reads this field directly: it reads
+  `koushi_state::room_activity_unread_count`. The primary
   source is the SDK's client-side `read_receipts` counters
   (`num_unread_messages` / `num_unread_notifications` / `num_unread_mentions`),
   because servers cannot classify encrypted mentions and Synapse 1.157.0 Sliding
@@ -2067,6 +2070,40 @@ stateDiagram-v2
   room totals only with a proven non-overlapping decomposition, and the evidence
   for delivery must name the boundary (advertisement, subscription outcome, event
   arrival, cache counters) rather than infer it from a badge.
+- That decomposition is now proven at the SDK event-cache boundary, so
+  per-thread unread contributes to room badges. The room event cache's
+  `RoomReadReceiptEventFilter` excludes thread replies (and edits/reactions that
+  target a reply) and matches only `Unthreaded`/`Main` receipts, while the
+  per-thread cache's `ThreadReadReceiptEventFilter` counts exactly one thread's
+  replies and matches only that thread's own receipt. The two scopes are therefore
+  complete and disjoint, so summing them double counts nothing:
+  `unread_count + thread_unread_count`. The per-root values are mirrors of the
+  SDK's own counters, so a mirror that has not been refreshed yet can only
+  undercount a thread; it can never invent or duplicate a reply.
+- Badge counts and navigation counts are separate fields, never one overloaded
+  number. `RoomSummary.unread_count` stays the main-only value: read markers,
+  "Read up to here", the first-unread position and event navigation keep
+  excluding thread replies. `RoomSummary.thread_unread_count` and
+  `RoomSummary.thread_highlight_count` carry the per-room sums of the per-root
+  SDK thread-cache counters for the rooms the reducer currently holds; a thread
+  count never enters `unread_count`.
+- `koushi_state::room_activity_unread_count` is the single Rust-owned badge
+  helper every surface reads (room list, Home total, Space rail, Activity
+  attention, native badge):
+  `max(unread_count + thread_unread_count, notification_count, highlight_count +
+  thread_highlight_count)`, with `marked_unread` still the zero-count fallback.
+  The homeserver's `notification_count` may already include thread replies, so it
+  is max'd in and never summed with a thread term; a server that reports dummy
+  zeros simply leaves the client decomposition in charge.
+- The reducer derives both thread fields from the per-root SDK thread-cache
+  values its room timeline actors observed (`ThreadUnreadObserved`), so the values
+  are session-scoped mirrors and are never persisted or computed in React. They
+  survive a room-list snapshot (which does not carry them) and are cleared with
+  the session. `RoomAttentionProjection.has_unread_content` and
+  `has_unread_mention` include them, so a thread-only unread room renders its dot
+  or mention affordance instead of looking read. A successful main-timeline read
+  clears only `unread_count`, `notification_count` and `highlight_count`: it
+  never moves a threaded receipt and must not clear the thread fields.
 
 ```mermaid
 stateDiagram-v2

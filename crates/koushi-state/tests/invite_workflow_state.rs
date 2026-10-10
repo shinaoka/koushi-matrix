@@ -32,6 +32,8 @@ fn room(room_id: &str, display_name: &str, parent_space_ids: Vec<String>) -> Roo
         unread_count: 0,
         notification_count: 0,
         highlight_count: 0,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
         marked_unread: false,
         recency_stamp: None,
         conversation_activity: None,

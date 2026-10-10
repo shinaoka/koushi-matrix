@@ -1205,6 +1205,8 @@ fn room_space_and_invite_summaries_surface_avatar_mxc() {
                 unread_count: 0,
                 notification_count: 0,
                 highlight_count: 0,
+                thread_unread_count: 0,
+                thread_highlight_count: 0,
                 marked_unread: false,
                 recency_stamp: None,
                 conversation_activity: None,
