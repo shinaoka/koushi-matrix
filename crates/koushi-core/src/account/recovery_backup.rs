@@ -324,6 +324,43 @@ pub(super) fn record_recovery_verification_event(event: DiagnosticEvent) {
     koushi_diagnostics::record_and_stderr(event);
 }
 
+/// Whether retrying an inspection that produced this failure could succeed.
+/// The structured detail is authoritative; the coarse kind is the fallback for
+/// failures that carry no structured cause.
+fn secure_backup_failure_is_retryable(
+    kind: koushi_state::SecureBackupGateFailureKind,
+    detail: Option<koushi_state::SecureBackupFailureDetail>,
+) -> bool {
+    use koushi_state::SecureBackupGateFailureKind;
+    detail.is_some_and(|detail| detail.retryable)
+        || matches!(
+            kind,
+            SecureBackupGateFailureKind::Network
+                | SecureBackupGateFailureKind::RateLimited
+                | SecureBackupGateFailureKind::Timeout
+        )
+}
+
+/// The bounded deadline for a deferred or in-flight inspection expired before
+/// the server answered.
+pub(super) fn secure_backup_inspection_deadline_failure()
+-> koushi_state::SecureBackupInspectionFailure {
+    use koushi_state::{
+        SecureBackupFailureDetail, SecureBackupFailureStage, SecureBackupFailureTransport,
+        SecureBackupGateFailureKind, SecureBackupInspectionFailure,
+    };
+    SecureBackupInspectionFailure {
+        kind: SecureBackupGateFailureKind::Timeout,
+        detail: Some(SecureBackupFailureDetail {
+            stage: SecureBackupFailureStage::InspectionDeadline,
+            transport: SecureBackupFailureTransport::Timeout,
+            http_status: None,
+            matrix_error_kind: None,
+            retryable: true,
+        }),
+    }
+}
+
 fn secure_backup_inspection_completion_action(
     current_generation: u64,
     session_promoted: bool,
@@ -331,36 +368,39 @@ fn secure_backup_inspection_completion_action(
     generation: u64,
     result: Result<
         koushi_sdk::MatrixSecureBackupInspection,
-        koushi_state::SecureBackupGateFailureKind,
+        koushi_state::SecureBackupInspectionFailure,
     >,
 ) -> Option<AppAction> {
+    use koushi_state::{
+        SecureBackupGateFailureKind, SecureBackupGateState, SecureBackupInspectionFailure,
+    };
+
     if generation != current_generation || !session_promoted {
         return None;
     }
-    let gate = match result {
+    let (kind, detail) = match result {
         Ok(inspection) => {
             let gate = inspection.recommended_gate_state();
-            if was_admitted && matches!(gate, koushi_state::SecureBackupGateState::Checking) {
+            if matches!(gate, SecureBackupGateState::Checking) {
                 // A server observation without authority is not evidence that
                 // the previously verified backup has become unsafe.
-                koushi_state::SecureBackupGateState::DegradedRetrying {
-                    failure: koushi_state::SecureBackupGateFailureKind::Network,
-                }
-            } else if !was_admitted && matches!(gate, koushi_state::SecureBackupGateState::Checking)
-            {
-                koushi_state::SecureBackupGateState::BlockedFailed {
-                    failure: koushi_state::SecureBackupGateFailureKind::Network,
-                }
+                (SecureBackupGateFailureKind::Network, None)
             } else {
-                gate
+                return Some(AppAction::SecureBackupGateChanged(gate));
             }
         }
-        Err(
-            failure @ (koushi_state::SecureBackupGateFailureKind::Network
-            | koushi_state::SecureBackupGateFailureKind::RateLimited
-            | koushi_state::SecureBackupGateFailureKind::Timeout),
-        ) if was_admitted => koushi_state::SecureBackupGateState::DegradedRetrying { failure },
-        Err(failure) => koushi_state::SecureBackupGateState::BlockedFailed { failure },
+        Err(SecureBackupInspectionFailure { kind, detail }) => (kind, detail),
+    };
+    let gate = if was_admitted && secure_backup_failure_is_retryable(kind, detail) {
+        SecureBackupGateState::DegradedRetrying {
+            failure: kind,
+            detail,
+        }
+    } else {
+        SecureBackupGateState::BlockedFailed {
+            failure: kind,
+            detail,
+        }
     };
     Some(AppAction::SecureBackupGateChanged(gate))
 }
@@ -403,6 +443,122 @@ fn secure_backup_gate_token(gate: &koushi_state::SecureBackupGateState) -> &'sta
         SecureBackupGateState::BlockedFailed { .. } => "blocked_failed",
         SecureBackupGateState::Ready => "ready",
     }
+}
+
+fn secure_backup_failure_kind_token(
+    kind: koushi_state::SecureBackupGateFailureKind,
+) -> &'static str {
+    use koushi_state::SecureBackupGateFailureKind;
+    match kind {
+        SecureBackupGateFailureKind::Network => "network",
+        SecureBackupGateFailureKind::RateLimited => "rate_limited",
+        SecureBackupGateFailureKind::InvalidRecoveryKey => "invalid_recovery_key",
+        SecureBackupGateFailureKind::BackupKeyMismatch => "backup_key_mismatch",
+        SecureBackupGateFailureKind::SecretStorageIncomplete => "secret_storage_incomplete",
+        SecureBackupGateFailureKind::ArtifactDelivery => "artifact_delivery",
+        SecureBackupGateFailureKind::Forbidden => "forbidden",
+        SecureBackupGateFailureKind::Timeout => "timeout",
+        SecureBackupGateFailureKind::Sdk => "sdk",
+        SecureBackupGateFailureKind::ServerResponse => "server_response",
+        SecureBackupGateFailureKind::Unauthorized => "unauthorized",
+    }
+}
+
+fn secure_backup_failure_stage_token(
+    stage: koushi_state::SecureBackupFailureStage,
+) -> &'static str {
+    use koushi_state::SecureBackupFailureStage;
+    match stage {
+        SecureBackupFailureStage::InspectServerTrust => "inspect_server_trust",
+        SecureBackupFailureStage::RoomKeyCounts => "room_key_counts",
+        SecureBackupFailureStage::RecoveryKeyDelivery => "recovery_key_delivery",
+        SecureBackupFailureStage::CrossSigningStatus => "cross_signing_status",
+        SecureBackupFailureStage::InspectionDeadline => "inspection_deadline",
+        SecureBackupFailureStage::Unknown => "unknown",
+    }
+}
+
+fn secure_backup_failure_transport_token(
+    transport: koushi_state::SecureBackupFailureTransport,
+) -> &'static str {
+    use koushi_state::SecureBackupFailureTransport;
+    match transport {
+        SecureBackupFailureTransport::NoResponse => "no_response",
+        SecureBackupFailureTransport::HttpResponse => "http_response",
+        SecureBackupFailureTransport::Timeout => "timeout",
+        SecureBackupFailureTransport::Local => "local",
+    }
+}
+
+fn secure_backup_matrix_error_kind_token(
+    kind: koushi_state::SecureBackupMatrixErrorKind,
+) -> &'static str {
+    use koushi_state::SecureBackupMatrixErrorKind;
+    match kind {
+        SecureBackupMatrixErrorKind::Forbidden => "forbidden",
+        SecureBackupMatrixErrorKind::UnknownToken => "unknown_token",
+        SecureBackupMatrixErrorKind::MissingToken => "missing_token",
+        SecureBackupMatrixErrorKind::LimitExceeded => "limit_exceeded",
+        SecureBackupMatrixErrorKind::Unrecognized => "unrecognized",
+        SecureBackupMatrixErrorKind::BadJson => "bad_json",
+        SecureBackupMatrixErrorKind::NotFound => "not_found",
+        SecureBackupMatrixErrorKind::Unknown => "unknown",
+    }
+}
+
+/// The bounded `inspection_settled` diagnostic record. It carries only the
+/// published failure vocabulary and its structured, privacy-safe detail: gate
+/// token, elapsed time, failure kind, stage, transport class, HTTP status,
+/// allowlisted Matrix error kind, and retryability. No SDK error text, URLs,
+/// identifiers, response bodies, or recovery material.
+pub(super) fn secure_backup_inspection_settled_event(
+    gate: &koushi_state::SecureBackupGateState,
+    elapsed_ms: u128,
+) -> DiagnosticEvent {
+    let mut event = DiagnosticEvent::new(
+        DiagnosticLevel::Info,
+        "core.secure_backup",
+        "inspection_settled",
+    )
+    .field(DiagnosticField::token(
+        "gate",
+        secure_backup_gate_token(gate),
+    ))
+    .field(DiagnosticField::milliseconds("elapsed_ms", elapsed_ms));
+    if let Some((kind, detail)) = gate.failure() {
+        event = event
+            .field(DiagnosticField::token(
+                "failure",
+                secure_backup_failure_kind_token(kind),
+            ))
+            .field(DiagnosticField::token(
+                "failure_stage",
+                detail.map_or("none", |detail| {
+                    secure_backup_failure_stage_token(detail.stage)
+                }),
+            ))
+            .field(DiagnosticField::token(
+                "failure_transport",
+                detail.map_or("none", |detail| {
+                    secure_backup_failure_transport_token(detail.transport)
+                }),
+            ))
+            .field(DiagnosticField::optional_count(
+                "http_status",
+                detail.and_then(|detail| detail.http_status).map(u32::from),
+            ))
+            .field(DiagnosticField::token(
+                "matrix_error_kind",
+                detail
+                    .and_then(|detail| detail.matrix_error_kind)
+                    .map_or("none", secure_backup_matrix_error_kind_token),
+            ))
+            .field(DiagnosticField::boolean(
+                "retryable",
+                detail.is_some_and(|detail| detail.retryable),
+            ));
+    }
+    event
 }
 
 fn recovery_result_is_current(
@@ -465,6 +621,23 @@ pub(super) fn classify_e2ee_trust_error(
             koushi_sdk::E2eeTrustFailureKind::Timeout => TrustOperationFailureKind::Timeout,
             koushi_sdk::E2eeTrustFailureKind::Sdk => TrustOperationFailureKind::Sdk,
         },
+        // Only the coarse kind is available here; the structured detail is
+        // consumed by the Secure Backup gate directly.
+        koushi_sdk::E2eeTrustError::SecureBackupInspection(failure) => match failure.kind {
+            koushi_state::SecureBackupGateFailureKind::Network => {
+                TrustOperationFailureKind::Network
+            }
+            koushi_state::SecureBackupGateFailureKind::Forbidden => {
+                TrustOperationFailureKind::Forbidden
+            }
+            koushi_state::SecureBackupGateFailureKind::Timeout => {
+                TrustOperationFailureKind::Timeout
+            }
+            koushi_state::SecureBackupGateFailureKind::BackupKeyMismatch => {
+                TrustOperationFailureKind::Mismatch
+            }
+            _ => TrustOperationFailureKind::Sdk,
+        },
         koushi_sdk::E2eeTrustError::NoOlmMachine
         | koushi_sdk::E2eeTrustError::SecureBackupInspectionInconclusive
         | koushi_sdk::E2eeTrustError::SecureBackupAlreadyExists
@@ -504,11 +677,15 @@ pub(super) fn classify_e2ee_trust_error(
 
 fn classify_secure_backup_gate_failure(
     error: &koushi_sdk::E2eeTrustError,
-) -> koushi_state::SecureBackupGateFailureKind {
+) -> koushi_state::SecureBackupInspectionFailure {
     use koushi_sdk::E2eeTrustError;
-    use koushi_state::SecureBackupGateFailureKind;
+    use koushi_state::{SecureBackupGateFailureKind, SecureBackupInspectionFailure};
 
-    match error {
+    let kind = match error {
+        // The inspection path already carries the structured, privacy-safe
+        // cause (operation/stage, transport class, status, Matrix error kind,
+        // retryability); never re-derive it from the coarse kind here.
+        E2eeTrustError::SecureBackupInspection(failure) => return *failure,
         E2eeTrustError::SecureBackupUploadFailed => SecureBackupGateFailureKind::Network,
         E2eeTrustError::SecureBackupRecoveryKeyDeliveryFailed => {
             SecureBackupGateFailureKind::ArtifactDelivery
@@ -537,7 +714,8 @@ fn classify_secure_backup_gate_failure(
                 SecureBackupGateFailureKind::Sdk
             }
         },
-    }
+    };
+    SecureBackupInspectionFailure { kind, detail: None }
 }
 
 pub(super) fn classify_e2ee_trust_auth_failure(
@@ -1106,7 +1284,7 @@ impl AccountActor {
             Err(error) => {
                 self.send_actions(vec![AppAction::SecureBackupGateChanged(
                     koushi_state::SecureBackupGateState::ExistingBackupNeedsRecovery {
-                        failure: Some(classify_secure_backup_gate_failure(&error)),
+                        failure: Some(classify_secure_backup_gate_failure(&error).kind),
                     },
                 )])
                 .await;
@@ -1851,7 +2029,7 @@ impl AccountActor {
             {
                 Ok(Ok(inspection)) => Ok(inspection),
                 Ok(Err(error)) => Err(classify_secure_backup_gate_failure(&error)),
-                Err(_) => Err(koushi_state::SecureBackupGateFailureKind::Timeout),
+                Err(_) => Err(secure_backup_inspection_deadline_failure()),
             };
             let _ = tx
                 .send(AccountMessage::SecureBackupInspectionFinished {
@@ -1869,7 +2047,7 @@ impl AccountActor {
         started_at: Instant,
         result: Result<
             koushi_sdk::MatrixSecureBackupInspection,
-            koushi_state::SecureBackupGateFailureKind,
+            koushi_state::SecureBackupInspectionFailure,
         >,
     ) {
         self.secure_backup_inspection_task = None;
@@ -1916,21 +2094,10 @@ impl AccountActor {
                 gate,
                 koushi_state::SecureBackupGateState::DegradedRetrying { .. }
             );
-            record(
-                DiagnosticEvent::new(
-                    DiagnosticLevel::Info,
-                    "core.secure_backup",
-                    "inspection_settled",
-                )
-                .field(DiagnosticField::token(
-                    "gate",
-                    secure_backup_gate_token(gate),
-                ))
-                .field(DiagnosticField::milliseconds(
-                    "elapsed_ms",
-                    started_at.elapsed().as_millis(),
-                )),
-            );
+            record(secure_backup_inspection_settled_event(
+                gate,
+                started_at.elapsed().as_millis(),
+            ));
             if retrying {
                 self.schedule_secure_backup_monitor(generation, true);
             } else if !matches!(
@@ -2110,7 +2277,7 @@ impl AccountActor {
             self.session_promoted,
             false,
             generation,
-            Err(koushi_state::SecureBackupGateFailureKind::Timeout),
+            Err(secure_backup_inspection_deadline_failure()),
         ) else {
             return;
         };

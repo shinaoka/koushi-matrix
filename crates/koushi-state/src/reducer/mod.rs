@@ -109,7 +109,10 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             root_event_id,
             unread,
-        } => thread::handle_thread_unread_observed(state, room_id, root_event_id, unread),
+            highlight,
+        } => {
+            thread::handle_thread_unread_observed(state, room_id, root_event_id, unread, highlight)
+        }
         AppAction::ThreadDeliveryDiagnosticRecorded { diagnostic } => {
             state.thread_delivery = diagnostic;
             Vec::new()
@@ -473,7 +476,8 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::LoginFailed {
             attempt_id,
             message,
-        } => session::handle_login_failed(state, attempt_id, message),
+            reason,
+        } => session::handle_login_failed(state, attempt_id, message, reason),
         AppAction::LoginDiscoveryRequested { homeserver } => {
             session::handle_login_discovery_requested(state, homeserver)
         }
@@ -2017,10 +2021,14 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         ),
         AppAction::LiveRoomReceiptSummariesUpdated {
             room_id,
+            scope,
+            scoped_event_ids,
             receipts_by_event,
         } => live_signals::handle_live_room_receipt_summaries_updated(
             state,
             room_id,
+            scope,
+            scoped_event_ids,
             receipts_by_event,
         ),
         AppAction::LiveRoomProfilesObserved { room_id, profiles } => {
@@ -2028,11 +2036,13 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         }
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id,
+            scope,
             scoped_event_ids,
             receipts_by_event,
         } => live_signals::handle_live_room_receipts_window_reconciled(
             state,
             room_id,
+            scope,
             scoped_event_ids,
             receipts_by_event,
         ),
@@ -2186,6 +2196,9 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.timeline = Default::default();
     state.thread = ThreadPaneState::Closed;
     state.thread_attention = ThreadAttentionState::Closed;
+    // #1238: the per-root thread-cache values feed room badges, so they must not
+    // survive the session that observed them.
+    state.thread_unread.clear();
     state.focused_context = FocusedContextState::Closed;
     state.search_request_connection_id = None;
     state.search = SearchState::Closed;

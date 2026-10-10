@@ -36,7 +36,7 @@ function view(store: TimelineStoreState, key: TimelineKey = KEY) {
   return <TimelineView timelineKey={key} roomId="!room:example.invalid"
     transport={transport} timelineStore={store} onReply={vi.fn()}
     liveSignals={{ presence: {}, rooms: { "!room:example.invalid": {
-      fully_read_event_id: ROOT, typing_user_ids: [], typing_users: [], receipts_by_event: {}
+      fully_read_event_id: ROOT, typing_user_ids: [], typing_users: [], focused_receipts_by_event: {}, thread_receipts_by_event: {}, receipts_by_event: {}
     } } }} />;
 }
 

@@ -15,6 +15,6 @@ pub use event::*;
 pub use failure::*;
 pub use ids::*;
 pub use state_update::{
-    AppStateSnapshot, CoreCommandAdmission, RoomLiveSignalMetadata, StateDelta,
-    StateDeltaChangedSlices, VersionedAppStateSnapshot,
+    AppStateSnapshot, CoreCommandAdmission, RoomLiveSignalMetadata, ScopedReceiptSummaryChanges,
+    StateDelta, StateDeltaChangedSlices, VersionedAppStateSnapshot,
 };

@@ -449,6 +449,24 @@ stateDiagram-v2
   terminal blocking failure, and ready. Server existence, local enablement,
   recovery completeness, and upload health remain distinct SDK inspection
   facts and are not collapsed into a boolean.
+- **Canon amendment (#1265) — pending approval.** `DegradedRetrying` and
+  `BlockedFailed` carry an optional structured, privacy-safe failure detail
+  alongside the coarse `SecureBackupGateFailureKind`: `stage` (which operation
+  produced the failure), `transport` (`noResponse`, `httpResponse`, `timeout`,
+  `local`), `httpStatus` when a response arrived, an allowlisted
+  `matrixErrorKind` (`errcode`), and `retryable`. The coarse vocabulary gains
+  `ServerResponse` and `Unauthorized` so a received server response is never
+  published as `Network`; `Network`/`Timeout` now mean specifically "no
+  response" and "the deadline expired". The detail is a closed vocabulary
+  owned by Rust: it never carries an SDK error string, URL, response body,
+  token, or account/room identifier, and the same bounded facts (never the raw
+  error) are recorded in the `inspection_settled` diagnostic.
+  Retryability is authoritative from `detail.retryable` with the coarse kind
+  as fallback: an already-admitted gate degrades and schedules bounded backoff
+  for a retryable failure (including 429/5xx responses and timeouts) and
+  blocks otherwise, so a 401/403/404 response closes admission. Diagnostics
+  for the Secure Backup gate must remain reachable while the gate is active,
+  including when the diagnostic-snapshot fetch fails.
 - A transition from an operational backup state to recovery/setup, mismatch,
   or incomplete storage closes encrypted admission immediately but does not
   clear composer drafts or stop sync. Upload progress and transient runtime
@@ -465,13 +483,17 @@ stateDiagram-v2
   epoch admits one inspection. A deferred inspection always owns a bounded
   connectivity-wait deadline (30 seconds from the first defer; repeated
   defers coalesce onto the armed deadline instead of extending it): expiry
-  projects `BlockedFailed` (retryable, no automatic monitor) even when no
+  projects `BlockedFailed` with the structured deadline failure
+  (`stage: inspectionDeadline`, `transport: timeout`, `retryable: true`) and
+  no automatic monitor, even when no
   proven edge ever arrives, so `Checking` cannot wait forever. Proven
   connectivity before the expiry disarms the deadline and admits the
   inspection. The explicit typed retry re-enters inspection admission and,
   while connectivity is still unproven, also asks the sync owner to
   re-project its current status, so a missed `Running` projection cannot make
-  retry a permanent no-op. Post-authority recoverable failures use bounded
+  retry a permanent no-op. Post-authority recoverable failures — as decided by
+  the structured `detail.retryable` (or the coarse retryable kinds when no
+  detail exists) — use bounded
   exponential backoff with jitter (5 seconds through 5 minutes), preserving the
   attempt across connectivity flaps until a successful backup inspection resets
   the epoch. A pre-authority inconclusive inspection is `BlockedFailed`, has no
@@ -772,6 +794,23 @@ CSRF state are command/event artifacts only: they may be returned to the WebView
 so it can open the provider and correlate the callback, but they never enter
 `AppState`, normal `Debug`, QA title tokens, or persisted settings.
 
+A started interactive sign-in attempt is held by the account-tab manager as
+pending callback-correlation state, at most one attempt per tab. An OAuth/MAS
+attempt is correlated only by the exact nonempty CSRF state the SDK minted: a
+callback with a missing, blank, duplicated, or different state, an unsolicited
+callback, and an already-consumed attempt are all rejected. The legacy
+`m.login.sso` fallback has no CSRF state — the SDK authorization carries an empty
+state and the homeserver callback carries only `loginToken` — so such a callback
+is correlated by the stricter-of-one rule: it completes a tab only while exactly
+one legacy attempt is pending. A legacy callback never completes an OAuth
+attempt, two pending legacy tabs make the callback ambiguous and it is rejected
+rather than misrouted, and consuming the correlation makes a replay inert.
+Registering a new attempt for a tab retires that tab's previous attempt, and
+removing the tab drops its pending attempts. Classifying the callback URL shape
+belongs to the Tauri platform adapter; the account-tab manager, not the adapter,
+owns which tab a callback may complete. The login token and the callback URL
+never enter diagnostics, snapshots, QA artifacts, or persisted settings.
+
 ## Account Tabs And Concurrent Sessions
 
 The outer Rust-owned account-tab machine is independent from each account's
@@ -981,8 +1020,11 @@ stateDiagram-v2
 Unread state crosses three Matrix concepts that must not be collapsed into one
 local flag:
 
-- `RoomSummary.unread_count` is the effective unread-message count; notification
-  and mention counts are separate observations, as is `marked_unread`. The primary
+- `RoomSummary.unread_count` is the main-timeline unread-message count; thread
+  replies are a separate field (see "Threads and attention"), notification and
+  mention counts are separate observations, as is `marked_unread`, and no badge
+  surface reads this field directly: it reads
+  `koushi_state::room_activity_unread_count`. The primary
   source is the SDK's client-side `read_receipts` counters
   (`num_unread_messages` / `num_unread_notifications` / `num_unread_mentions`),
   because servers cannot classify encrypted mentions and Synapse 1.157.0 Sliding
@@ -2067,6 +2109,40 @@ stateDiagram-v2
   room totals only with a proven non-overlapping decomposition, and the evidence
   for delivery must name the boundary (advertisement, subscription outcome, event
   arrival, cache counters) rather than infer it from a badge.
+- That decomposition is now proven at the SDK event-cache boundary, so
+  per-thread unread contributes to room badges. The room event cache's
+  `RoomReadReceiptEventFilter` excludes thread replies (and edits/reactions that
+  target a reply) and matches only `Unthreaded`/`Main` receipts, while the
+  per-thread cache's `ThreadReadReceiptEventFilter` counts exactly one thread's
+  replies and matches only that thread's own receipt. The two scopes are therefore
+  complete and disjoint, so summing them double counts nothing:
+  `unread_count + thread_unread_count`. The per-root values are mirrors of the
+  SDK's own counters, so a mirror that has not been refreshed yet can only
+  undercount a thread; it can never invent or duplicate a reply.
+- Badge counts and navigation counts are separate fields, never one overloaded
+  number. `RoomSummary.unread_count` stays the main-only value: read markers,
+  "Read up to here", the first-unread position and event navigation keep
+  excluding thread replies. `RoomSummary.thread_unread_count` and
+  `RoomSummary.thread_highlight_count` carry the per-room sums of the per-root
+  SDK thread-cache counters for the rooms the reducer currently holds; a thread
+  count never enters `unread_count`.
+- `koushi_state::room_activity_unread_count` is the single Rust-owned badge
+  helper every surface reads (room list, Home total, Space rail, Activity
+  attention, native badge):
+  `max(unread_count + thread_unread_count, notification_count, highlight_count +
+  thread_highlight_count)`, with `marked_unread` still the zero-count fallback.
+  The homeserver's `notification_count` may already include thread replies, so it
+  is max'd in and never summed with a thread term; a server that reports dummy
+  zeros simply leaves the client decomposition in charge.
+- The reducer derives both thread fields from the per-root SDK thread-cache
+  values its room timeline actors observed (`ThreadUnreadObserved`), so the values
+  are session-scoped mirrors and are never persisted or computed in React. They
+  survive a room-list snapshot (which does not carry them) and are cleared with
+  the session. `RoomAttentionProjection.has_unread_content` and
+  `has_unread_mention` include them, so a thread-only unread room renders its dot
+  or mention affordance instead of looking read. A successful main-timeline read
+  clears only `unread_count`, `notification_count` and `highlight_count`: it
+  never moves a threaded receipt and must not clear the thread fields.
 
 ```mermaid
 stateDiagram-v2
@@ -3290,15 +3366,38 @@ stateDiagram-v2
 - `LiveRoomSignalsUpdated { room_id, update }` replaces the room's full
   live-signal snapshot. The reducer normalizes duplicate receipts by user,
   sorts receipt event entries, and sorts/deduplicates typing user ids.
-- `LiveRoomReceiptSummariesUpdated { room_id, receipts_by_event }` merges
-  bounded live summaries into the room receipt map. Each entry contains at most
-  the compact reader cap and an exact total; it does not clear typing users or
-  the fully-read marker.
-- `LiveRoomReceiptsWindowReconciled { room_id, scoped_event_ids,
+- Receipt summaries are scoped by the timeline that observed them, because the
+  SDK resolves each timeline's receipt thread independently. The room main scope
+  (`ReceiptScope::Main`) is published by the Room timeline, whose receipts are
+  unthreaded. A focused scope (`ReceiptScope::Focused { event_id }`) is published
+  by the permalink/context timeline for that target, and a thread scope
+  (`ReceiptScope::Thread { root_event_id }`) by that root's Thread timeline.
+  A focused timeline cannot share the main scope unconditionally: the SDK
+  resolves `TimelineFocus::Event` to unthreaded receipts only when the target is
+  not part of a thread, and to that thread's threaded receipts when it is. The
+  scopes are stored separately: `RoomLiveSignals.receipts_by_event` holds the
+  main scope, `RoomLiveSignals.focused_receipts_by_event[event_id]` holds one
+  focused scope, and `RoomLiveSignals.thread_receipts_by_event[root_event_id]`
+  holds one thread scope. Two actors that observe the same event ID in different
+  scopes therefore cannot overwrite each other's readers, and a pane reads only
+  the scope of its own timeline key. GUI code must not merge or fall back across
+  scopes.
+- `LiveRoomReceiptSummariesUpdated { room_id, scope, scoped_event_ids,
+  receipts_by_event }` first removes the entries named by `scoped_event_ids` in
+  `scope`, then merges the bounded live summaries into that scope. Each entry
+  contains at most the compact reader cap and an exact total; it does not clear
+  typing users or the fully-read marker. A live diff that observed only
+  incremental changes passes an empty `scoped_event_ids` and therefore only
+  merges.
+- `LiveRoomReceiptsWindowReconciled { room_id, scope, scoped_event_ids,
   receipts_by_event }` is an authoritative replacement only for the stable
-  event-ID union of the actor's old and replacement timeline windows. It first
-  removes receipt entries in that scope, then inserts the replacement snapshot;
-  receipt state outside the scope is preserved.
+  event-ID union of the actor's old and replacement timeline windows, within
+  `scope`. It first removes receipt entries in that scope, then inserts the
+  replacement snapshot; receipt state outside the scope is preserved.
+- A timeline actor's initial receipt observation is a reconcile of its own scope
+  over its own initial window, not a merge. When a reader moved while no actor
+  observed the room, the new actor's reconcile removes the retired actor's
+  summary on the old event instead of leaving stale readers behind.
 - Receipt reader display data is resolved in Rust before it reaches the GUI.
   `AvatarThumbnailUpdated` also settles already-enriched reader avatar copies by
   exact MXC URI and emits `LiveSignalsChanged` when at least one copy changes, so
@@ -4172,19 +4271,42 @@ stateDiagram-v2
   compatibility, optional display labels, and a delegated registration link.
   It never owns the authenticated session's account-management destination and
   does not carry access tokens, refresh tokens, or OAuth authorization artifacts.
-- `StartOidcLogin` creates an SDK-owned authorization-code flow with PKCE. The
-  internal Tauri waiter receives the full authorization event and opens its exact
-  HTTP(S), userinfo-free URL with the native opener; the WebView event projection
+- `StartOidcLogin` carries the user's bounded `DelegatedAuthMethod` (`OAuth` or
+  `Sso`) and creates the selected delegated flow through the SDK: an
+  authorization-code flow with PKCE, or the legacy SSO redirect. The internal
+  Tauri waiter receives the full authorization event and opens its exact HTTP(S),
+  userinfo-free URL with the native opener; the WebView event projection
   contains only `request_id`, and the command response contains only settlement
   plus `launched`, `invalid_authorization_url`, or `browser_launch_failed`.
-  Repeating the same homeserver replays the retained authorization; a different
-  homeserver is rejected without replacing it. `CompleteOidcLogin` consumes the
-  callback in `AccountActor`, persists the OAuth session in the credential
-  store, restores it into the encrypted per-account SDK store, and then emits
-  `LoginSucceeded`. Logout/change-homeserver retires the pending flow with
-  `BrowserCancellation` cleanup evidence.
+  `OAuth` falls back to the legacy SSO redirect **only** for the classified
+  unsupported-method condition (the authorization-server metadata endpoint
+  reports the endpoint is not implemented); transport, timeout,
+  metadata-validation, client-registration, and server-response failures are
+  surfaced as a typed, privacy-safe failure and never switch the method
+  silently. A new start always replaces a retained attempt: it retires the old
+  one with `BrowserCancellation` cleanup evidence and creates fresh SDK
+  authorization state, so an expired URL is never replayed. `CancelOidcLogin`
+  retires the pending attempt explicitly and idempotently, and a callback for a
+  retired attempt is fenced to `AuthFailureKind::Cancelled`. Changing the typed
+  Matrix ID / homeserver retires the pending attempt the same way.
+  `CompleteOidcLogin` consumes the callback in `AccountActor`, persists the
+  session in the credential store, restores it into the encrypted per-account
+  SDK store, and then emits `LoginSucceeded`. Logout/change-homeserver retires
+  the pending flow with `BrowserCancellation` cleanup evidence.
 - `LoginDiscoveryFailed` stores only `AuthFailureKind`; raw discovery responses,
   homeserver error bodies, and SDK errors do not enter snapshots.
+- Login failure classification (#1268): the SDK boundary classifies a password /
+  OAuth / SSO failure into a bounded `AuthFailureDetail` (authentication method,
+  stage, transport vs received response, optional HTTP status, optional
+  allowlisted Matrix error kind, retryable) instead of matching error text.
+  Core derives the coarse `LoginFailureKind`, the UI `AuthFailureKind`, the
+  cleanup evidence, and the diagnostic fields from that value; no substring of
+  an SDK error, response body, token, callback URL, account identifier, or server
+  URL is ever inspected, stored, or recorded. Visible guidance comes from the
+  bounded `reason` on the `login_failed` `AppError`, which React maps to
+  localized copy. The diagnostic event reuses the #1265 bounded vocabulary
+  (`method`, `stage`, `transport`, `httpStatus`, `matrixErrorKind`,
+  `retryable`).
 - Discovery completion actions are accepted only while the reducer is still
   `Discovering` the same homeserver. Late completions from older discovery
   requests are ignored.
@@ -4512,6 +4634,15 @@ stateDiagram-v2
   own-user verification also counts as active and owns the shared request
   observer/continuation slots; because it exposes no incoming replay identity,
   every incoming request conflicts and is cancelled before adoption.
+- Incoming SDK-originated verification request admission is fenced by session
+  identity, not by observer-instance generation. A request is admitted exactly
+  while it was observed for the current session; restarting that session's
+  verification observer does not retire a request already observed for the same
+  session. A request observed for a session that is no longer current, or
+  observed with no current session, is discarded and never adopted. A discard
+  records a token-only diagnostic (event `core.verification`, action
+  `incoming_request_dropped`) with a bounded reason token and a `has_session`
+  boolean; it records no room, user, device, event, target, or handle value.
 - A valid to-device verification request whose sender device is not yet in the
   crypto store is not terminally discarded. The crypto machine retains it in a
   bounded FIFO pending set, deduplicated by sender and flow and governed by the
@@ -4592,8 +4723,9 @@ stateDiagram-v2
   handler is removed to prevent new dispatch. Any handler future already
   dispatched remains owned and awaited by the SDK sync dispatcher; stopping and
   joining the old `SyncActor` is that callback's settlement barrier.
-  Observer-to-actor messages carry a dedicated session generation and are
-  ignored before adoption when stale or when no session is active. A blocked
+  Observer-to-actor messages are fenced before adoption, by a dedicated session
+  generation or, for incoming verification requests, by the observed session
+  identity, and are ignored when stale or when no session is active. A blocked
   actor-mailbox send is stop-aware with stop priority, and join uses a bounded
   timeout followed by abort and owned settlement. Eventual task exit after
   dropping the owner is insufficient because it permits stale old-client

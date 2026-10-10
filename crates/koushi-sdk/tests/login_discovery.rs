@@ -46,6 +46,8 @@ fn oauth_authorization_response_debug_redacts_url_and_state() {
     let authorization = koushi_sdk::OidcAuthorization {
         authorization_url: "https://issuer.example.test/auth?code=secret".to_owned(),
         state: "csrf-secret".to_owned(),
+        method: koushi_state::AuthMethod::OAuth,
+        legacy_sso_fallback: false,
     };
 
     let debug = format!("{authorization:?}");
@@ -335,6 +337,7 @@ fn sso_completion_keeps_the_pre_auth_persistent_store_and_requested_device() {
             Some(&config),
             Some("SSODEVICE"),
             false,
+            koushi_state::DelegatedAuthMethod::Sso,
         )
         .await
         .expect("persistent SSO authorization");
@@ -396,6 +399,7 @@ fn starts_legacy_sso_login_when_discovery_has_plain_sso_flow() {
         .block_on(koushi_sdk::start_oidc_login(
             &homeserver,
             "koushi-desktop://auth/callback",
+            koushi_state::DelegatedAuthMethod::Sso,
         ))
         .expect("legacy SSO should produce an authorization URL");
 
@@ -576,4 +580,131 @@ fn spawn_legacy_sso_server() -> String {
     });
 
     format!("http://{addr}")
+}
+
+#[derive(Clone, Copy)]
+enum OauthMetadataResponse {
+    /// The authorization-server metadata endpoint reports the endpoint is not
+    /// implemented (404 + M_UNRECOGNIZED).
+    NotImplemented,
+    /// The endpoint exists but the server rejects the metadata request. A
+    /// definitive 4xx response keeps the fixture fast (no SDK retry backoff)
+    /// while still proving a received response is surfaced, not swallowed.
+    Rejected,
+}
+
+/// A homeserver whose authorization-server metadata endpoint answers the given
+/// way, and which otherwise speaks plain legacy SSO.
+fn spawn_oauth_metadata_server(response: OauthMetadataResponse) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server should have an address");
+
+    thread::spawn(move || {
+        for _ in 0..32 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                continue;
+            };
+            let mut request = [0_u8; 2048];
+            let bytes_read = stream
+                .read(&mut request)
+                .expect("test server should read request");
+            let request = String::from_utf8_lossy(&request[..bytes_read]);
+            let (status, reason, body) = if request.contains("auth_metadata") {
+                match response {
+                    OauthMetadataResponse::NotImplemented => (
+                        404,
+                        "Not Found",
+                        r#"{"errcode":"M_UNRECOGNIZED","error":"Unrecognized request"}"#.to_owned(),
+                    ),
+                    OauthMetadataResponse::Rejected => (
+                        403,
+                        "Forbidden",
+                        r#"{"errcode":"M_FORBIDDEN","error":"rejected"}"#.to_owned(),
+                    ),
+                }
+            } else if request.starts_with("GET /_matrix/client/versions ") {
+                (200, "OK", r#"{"versions":["v1.7"]}"#.to_owned())
+            } else {
+                (
+                    200,
+                    "OK",
+                    r#"{"flows":[{"type":"m.login.sso"}]}"#.to_owned(),
+                )
+            };
+
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+
+    format!("http://{addr}")
+}
+
+/// #1267: an OAuth start falls back to legacy SSO only for the classified
+/// unsupported-method condition, and the resulting authorization says so.
+#[test]
+fn oauth_start_falls_back_to_legacy_sso_only_when_oauth_is_not_implemented() {
+    let homeserver = spawn_oauth_metadata_server(OauthMetadataResponse::NotImplemented);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build");
+
+    let (_pending, authorization) = runtime
+        .block_on(koushi_sdk::start_oidc_login(
+            &homeserver,
+            "koushi-desktop://auth/callback",
+            koushi_state::DelegatedAuthMethod::OAuth,
+        ))
+        .expect("an unsupported OAuth method should fall back to legacy SSO");
+
+    assert_eq!(authorization.method, koushi_state::AuthMethod::Sso);
+    assert!(authorization.legacy_sso_fallback);
+    assert!(
+        authorization
+            .authorization_url
+            .contains("/_matrix/client/v3/login/sso/redirect")
+    );
+}
+
+/// #1267: every other OAuth start failure is surfaced as a typed, privacy-safe
+/// error. It must not silently switch the sign-in method.
+#[test]
+fn oauth_start_surfaces_a_server_failure_without_switching_method() {
+    let homeserver = spawn_oauth_metadata_server(OauthMetadataResponse::Rejected);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build");
+
+    let error = runtime
+        .block_on(koushi_sdk::start_oidc_login(
+            &homeserver,
+            "koushi-desktop://auth/callback",
+            koushi_state::DelegatedAuthMethod::OAuth,
+        ))
+        .expect_err("a server failure must be surfaced, not hidden by a fallback");
+
+    let detail = error.typed_detail().expect("typed failure detail");
+    assert_eq!(detail.method, koushi_state::AuthMethod::OAuth);
+    assert_eq!(detail.stage, koushi_state::AuthFailureStage::OidcStart);
+    assert_eq!(
+        detail.transport,
+        koushi_state::AuthFailureTransport::HttpResponse
+    );
+    assert_eq!(detail.http_status, Some(403));
+    assert_eq!(
+        detail.matrix_error_kind,
+        Some(koushi_state::AuthMatrixErrorKind::Forbidden)
+    );
+    assert!(!detail.retryable);
+
+    let debug = format!("{error:?}");
+    assert!(!debug.contains("127.0.0.1"));
+    assert!(!debug.contains("rejected"));
 }

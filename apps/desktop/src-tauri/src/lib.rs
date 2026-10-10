@@ -44,7 +44,9 @@ use crate::window_state::{
 // koushi-core owns each account runtime. All session, credential, and Matrix
 // operations go through CoreCommand/CoreEvent; the adapter never touches the
 // credential store or SDK directly.
-use koushi_core::account_runtime_manager::{AccountRuntimeManager, AccountTabId};
+use koushi_core::account_runtime_manager::{
+    AccountRuntimeManager, AccountTabId, OidcCallbackCorrelation,
+};
 use koushi_core::renderable_thumbnail::{
     cleanup_legacy_media_downloads, cleanup_legacy_plaintext_thumbnail_dirs,
     lookup_renderable_thumbnail,
@@ -1217,17 +1219,47 @@ pub(crate) fn oidc_callback_state(callback_url: &str) -> Option<String> {
     }
 }
 
+/// Classify the shape of a sign-in callback so the account-tab manager can
+/// correlate it with a pending attempt.
+///
+/// This only reads the URL; it never decides account state. An OAuth/MAS
+/// callback must repeat exactly one nonempty CSRF `state` and no `loginToken`.
+/// A legacy `m.login.sso` callback carries exactly one nonempty `loginToken`
+/// and no `state` at all (#1266); anything else — a missing, empty, or
+/// duplicated parameter, or a hybrid of both shapes — is malformed and
+/// rejected before correlation.
+pub fn oidc_callback_correlation(callback_url: &str) -> Option<OidcCallbackCorrelation> {
+    let url = url::Url::parse(callback_url).ok()?;
+    let login_tokens: Vec<String> = url
+        .query_pairs()
+        .filter(|(key, _)| key == "loginToken")
+        .map(|(_, value)| value.into_owned())
+        .collect();
+    if !login_tokens.is_empty() {
+        // A legacy callback carries exactly one nonempty loginToken and none of
+        // the OAuth parameters; a hybrid shape matches neither provider flow.
+        let [token] = login_tokens.as_slice() else {
+            return None;
+        };
+        if token.is_empty() || url.query_pairs().any(|(key, _)| key == "state") {
+            return None;
+        }
+        return Some(OidcCallbackCorrelation::LegacySso);
+    }
+    oidc_callback_state(callback_url).map(OidcCallbackCorrelation::OAuthState)
+}
+
 fn submit_oidc_callback_url(app: tauri::AppHandle, callback_url: String) {
     if !is_oidc_callback_url(&callback_url) {
         return;
     }
 
-    let Some(oidc_state) = oidc_callback_state(&callback_url) else {
+    let Some(correlation) = oidc_callback_correlation(&callback_url) else {
         return;
     };
     tauri::async_runtime::spawn(async move {
         let core_state = app.state::<CoreRuntimeState>();
-        let Some(tab_id) = core_state.runtime.take_oidc_attempt(&oidc_state) else {
+        let Some(tab_id) = core_state.runtime.take_oidc_attempt(correlation) else {
             return;
         };
         let Ok((_, connection)) = core_state.connection.lock_for_tab_id(&tab_id).await else {
@@ -1598,6 +1630,7 @@ pub fn run() {
             commands::session::resync_snapshot,
             commands::session::discover_login_methods,
             commands::session::start_oidc_login,
+            commands::session::cancel_oidc_login,
             commands::session::complete_oidc_login,
             commands::session::submit_login,
             commands::session::submit_soft_logout_reauth,

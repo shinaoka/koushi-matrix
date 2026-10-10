@@ -56,6 +56,10 @@ pub enum LoginFailureKind {
     RateLimited,
     Server,
     Store,
+    /// The client gave up waiting for a response (#1268).
+    Timeout,
+    /// The server does not support the selected sign-in method (#1268).
+    Unsupported,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

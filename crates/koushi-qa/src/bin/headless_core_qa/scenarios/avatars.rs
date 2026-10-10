@@ -9,6 +9,14 @@ use koushi_protocol::view::{
     TimelineViewSource, ViewDelivery, ViewModel,
 };
 
+/// In-flight media reads the product admits for one cold reader window.
+///
+/// Sized from the published scheduler admission bound rather than a frozen
+/// per-account number (#1171): background media prefetch shares one
+/// cross-account scheduled-work slot, so a held-response wait that demands more
+/// than this can never be satisfied and always expires.
+const AVATAR_INFLIGHT_EXPECTATION: usize = koushi_core::MEDIA_PREFETCH_INFLIGHT_LIMIT;
+
 pub(super) async fn run_avatar_demand_scenario(config: &QaConfig) -> Result<(), String> {
     let metadata: serde_json::Value = serde_json::from_str(
         &std::env::var("KOUSHI_QA_AVATAR_FIXTURE")
@@ -311,8 +319,8 @@ async fn verify_shared_cancellation(
     first
         .observe_avatars(revision, 1, &targets[..8], &targets[8..])
         .map_err(|_| "avatar cancellation observation rejected".to_owned())?;
-    wait_media_connections(proxy, 6, closed_before).await?;
-    if proxy.media_read_forwarded_count() != before + 6 {
+    wait_media_connections(proxy, AVATAR_INFLIGHT_EXPECTATION, closed_before).await?;
+    if proxy.media_read_forwarded_count() != before + AVATAR_INFLIGHT_EXPECTATION {
         return Err("avatar active request bound exceeded".to_owned());
     }
     let mut shared = conn
@@ -333,22 +341,22 @@ async fn verify_shared_cancellation(
     first.close_handle().close();
     drop(first);
     tokio::time::sleep(Duration::from_millis(250)).await;
-    if proxy.media_read_forwarded_count() != before + 6
-        || proxy.media_responses_held_count() != 6
+    if proxy.media_read_forwarded_count() != before + AVATAR_INFLIGHT_EXPECTATION
+        || proxy.media_responses_held_count() != AVATAR_INFLIGHT_EXPECTATION
         || proxy.media_peer_closed_count() != closed_before
     {
         return Err("avatar shared active work was interrupted or duplicated".to_owned());
     }
     shared.close_handle().close();
     drop(shared);
-    wait_media_connections(proxy, 0, closed_before + 6).await?;
+    wait_media_connections(proxy, 0, closed_before + AVATAR_INFLIGHT_EXPECTATION).await?;
     proxy.release_media_responses();
     tokio::time::sleep(Duration::from_millis(250)).await;
-    if proxy.media_read_forwarded_count() != before + 6 {
+    if proxy.media_read_forwarded_count() != before + AVATAR_INFLIGHT_EXPECTATION {
         return Err("avatar queued work escaped cancellation".to_owned());
     }
     println!(
-        "avatar_shared_inflight=ok avatar_cancelled_connections=6 media_http_requests={}",
+        "avatar_shared_inflight=ok avatar_cancelled_connections={AVATAR_INFLIGHT_EXPECTATION} media_http_requests={}",
         proxy.media_read_forwarded_count()
     );
     Ok(())
@@ -367,8 +375,8 @@ async fn verify_account_retirement(
     reader
         .observe_avatars(revision, 1, &targets[..8], &targets[8..])
         .map_err(|_| "avatar retirement observation rejected".to_owned())?;
-    wait_media_connections(proxy, 6, closed_before).await?;
-    if proxy.media_read_forwarded_count() != before + 6 {
+    wait_media_connections(proxy, AVATAR_INFLIGHT_EXPECTATION, closed_before).await?;
+    if proxy.media_read_forwarded_count() != before + AVATAR_INFLIGHT_EXPECTATION {
         return Err("avatar retirement active bound exceeded".to_owned());
     }
     // Keep the owning subscription alive. Neither scope close/drop nor SyncStop
@@ -399,10 +407,10 @@ async fn verify_account_retirement(
     ) {
         return Err("avatar retired session accepted an observation".to_owned());
     }
-    wait_media_connections(proxy, 0, closed_before + 6).await?;
+    wait_media_connections(proxy, 0, closed_before + AVATAR_INFLIGHT_EXPECTATION).await?;
     proxy.release_media_responses();
     tokio::time::sleep(Duration::from_millis(250)).await;
-    if proxy.media_read_forwarded_count() != before + 6 {
+    if proxy.media_read_forwarded_count() != before + AVATAR_INFLIGHT_EXPECTATION {
         return Err("avatar work escaped account retirement".to_owned());
     }
     println!(

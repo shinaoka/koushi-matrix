@@ -284,6 +284,8 @@ fn test_room(room_id: &str, avatar: Option<AvatarImage>) -> crate::state::RoomSu
         unread_count: 0,
         notification_count: 0,
         highlight_count: 0,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
         marked_unread: false,
         recency_stamp: None,
         conversation_activity: None,
@@ -905,6 +907,8 @@ fn bounded_live_receipt_summary_preserves_exact_total() {
         &mut state,
         AppAction::LiveRoomReceiptSummariesUpdated {
             room_id: "!room:example.invalid".to_owned(),
+            scope: crate::state::ReceiptScope::Main,
+            scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceiptSummaryUpdate {
                 event_id: "$event:example.invalid".to_owned(),
                 readers,
@@ -927,6 +931,7 @@ fn live_signal_actions_update_rust_owned_state() {
         &mut state,
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: "!room:example.invalid".to_owned(),
+            scope: crate::state::ReceiptScope::Main,
             scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$event:example.invalid".to_owned(),
@@ -963,6 +968,8 @@ fn live_signal_actions_update_rust_owned_state() {
                 },
             )]
             .into(),
+            focused_receipts_by_event: Default::default(),
+            thread_receipts_by_event: Default::default(),
             fully_read_event_id: None,
             typing_user_ids: Vec::new(),
             typing_users: Vec::new(),
@@ -1543,6 +1550,7 @@ fn live_read_receipts_project_reader_profiles_order_and_overflow() {
         &mut state,
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: "!room:example.invalid".to_owned(),
+            scope: crate::state::ReceiptScope::Main,
             scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$event:example.invalid".to_owned(),
@@ -1799,6 +1807,7 @@ fn thread_unread_observation_stamps_the_threads_list_row() {
             room_id: "!r:example.invalid".to_owned(),
             root_event_id: "$root:example.invalid".to_owned(),
             unread: 2,
+            highlight: 0,
         },
     );
     let unread = |state: &AppState| match &state.threads_list {
@@ -1813,6 +1822,7 @@ fn thread_unread_observation_stamps_the_threads_list_row() {
             room_id: "!r:example.invalid".to_owned(),
             root_event_id: "$root:example.invalid".to_owned(),
             unread: 0,
+            highlight: 0,
         },
     );
     assert_eq!(unread(&state), 0);

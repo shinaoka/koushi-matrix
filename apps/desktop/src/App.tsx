@@ -205,6 +205,7 @@ import type {
   SearchScopeKind,
   SecureBackupSetupIntent,
   DisplayDensity,
+  DelegatedAuthMethod,
   HomeSelection,
   SpaceLocalPresentation,
   SettingsPatch,
@@ -1335,6 +1336,10 @@ function AccountContent({
   const [loginServerOverride, setLoginServerOverride] = useState<string | null>(
     () => loginAccount?.accountKey ? loginAccount.homeserver : null
   );
+  // #1267: a browser (OAuth/SSO) attempt is retired when the user cancels or
+  // changes the Matrix ID / homeserver, so a stale authorization is never
+  // silently reused for a different target.
+  const [browserAttemptPending, setBrowserAttemptPending] = useState(false);
   const loginServer = effectiveLoginServer(loginUsername, loginServerOverride);
   const loginSessionKind = snapshot?.state.domain.session.kind;
   const loginAuth = snapshot?.state.domain.auth;
@@ -3144,7 +3149,7 @@ function AccountContent({
     }
   }
 
-  async function startOidcLogin() {
+  async function startOidcLogin(method: DelegatedAuthMethod) {
     setIsBusy(true);
     setLoginTransportError(null);
     try {
@@ -3152,8 +3157,9 @@ function AccountContent({
         snapshot?.state.domain.session.kind === "locked"
           ? snapshot.state.domain.session.homeserver
           : loginServer;
-      const launch = await api.startOidcLogin(activeHomeserver);
+      const launch = await api.startOidcLogin(activeHomeserver, method);
       await applyCommandReceipt(launch.settlement);
+      setBrowserAttemptPending(true);
       if (launch.outcome === "invalid_authorization_url") {
         setLoginTransportError(t("auth.ssoInvalidAuthorizationUrl"));
       } else if (launch.outcome === "browser_launch_failed") {
@@ -3163,6 +3169,28 @@ function AccountContent({
       setLoginTransportError(t("auth.ssoAuthorizationFailed"));
     } finally {
       setIsBusy(false);
+    }
+  }
+
+  /** Retire the pending browser attempt and clear the local pending hint. */
+  function cancelBrowserAttempt() {
+    setBrowserAttemptPending(false);
+    runInBackground(
+      api.cancelOidcLogin().catch(() => undefined)
+    );
+  }
+
+  function changeLoginUsername(value: string) {
+    setLoginUsername(value);
+    if (browserAttemptPending) {
+      cancelBrowserAttempt();
+    }
+  }
+
+  function changeLoginServerOverride(value: string | null) {
+    setLoginServerOverride(value);
+    if (browserAttemptPending) {
+      cancelBrowserAttempt();
     }
   }
 
@@ -6781,6 +6809,9 @@ function AccountContent({
 
   const sessionKind = snapshot.state.domain.session.kind;
   const secureBackupGate = snapshot.state.domain.secure_backup_gate;
+  // Computed before the sign-in-gate early return: the diagnostics dialog must
+  // be renderable while the gate is active (#1265), and its report needs this.
+  const effectiveRightPanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
   const secureBackupStartupGateRequired =
     sessionKind === "ready" &&
     !secureBackupGateIsOperational &&
@@ -6812,24 +6843,32 @@ function AccountContent({
     secureBackupStartupGateRequired;
   if (verificationGate) {
     return (
-      <SessionVerificationGate
-        desktopApi={api}
-        snapshot={snapshot}
-        onReceipt={applyCommandReceipt}
-        onSignOut={() => runInBackground(requestLogout())}
-        operations={{
-          startOwnUserSas: () => api.startOwnUserSas(),
-          submitRecovery: (secret) => api.submitRecovery(secret),
-          recoverSecureBackup: api.recoverSecureBackup?.bind(api),
-          bootstrapSecureBackup: (passphrase, intent) =>
-            api.bootstrapSecureBackup(passphrase, intent),
-          saveSecureBackupRecoveryKey: requestSecureBackupRecoveryKeySave,
-          confirmSecureBackupRecoveryKeySaved: (revealRequestId) =>
-            api.confirmSecureBackupRecoveryKeySaved(revealRequestId),
-          retrySecureBackupInspection: api.retrySecureBackupInspection?.bind(api),
-          openSecureBackupDiagnostics: openDiagnostics
-        }}
-      />
+      <>
+        <SessionVerificationGate
+          desktopApi={api}
+          snapshot={snapshot}
+          onReceipt={applyCommandReceipt}
+          onSignOut={() => runInBackground(requestLogout())}
+          operations={{
+            startOwnUserSas: () => api.startOwnUserSas(),
+            submitRecovery: (secret) => api.submitRecovery(secret),
+            recoverSecureBackup: api.recoverSecureBackup?.bind(api),
+            bootstrapSecureBackup: (passphrase, intent) =>
+              api.bootstrapSecureBackup(passphrase, intent),
+            saveSecureBackupRecoveryKey: requestSecureBackupRecoveryKeySave,
+            confirmSecureBackupRecoveryKeySaved: (revealRequestId) =>
+              api.confirmSecureBackupRecoveryKeySaved(revealRequestId),
+            retrySecureBackupInspection: api.retrySecureBackupInspection?.bind(api),
+            openSecureBackupDiagnostics: openDiagnostics
+          }}
+        />
+        {diagnosticsOpen ? (
+          <DiagnosticDialog
+            report={diagnosticReportFor(snapshot, runtimeDiagnosticSnapshot)}
+            onClose={() => setDiagnosticsOpen(false)}
+          />
+        ) : null}
+      </>
     );
   }
 
@@ -6865,10 +6904,12 @@ function AccountContent({
         }
         onDiscoverLoginMethods={() => runInBackground(discoverLoginMethods())}
         onDeviceNameChange={setLoginDeviceName}
-        onMatrixIdChange={setLoginUsername}
+        onMatrixIdChange={changeLoginUsername}
         onPasswordPresenceChange={setLoginPasswordFilled}
-        onServerOverrideChange={setLoginServerOverride}
-        onStartOidcLogin={() => runInBackground(startOidcLogin())}
+        onServerOverrideChange={changeLoginServerOverride}
+        onStartOidcLogin={(method) => runInBackground(startOidcLogin(method))}
+        onCancelOidcLogin={cancelBrowserAttempt}
+        browserAttemptPending={browserAttemptPending}
         onSubmit={submitLogin}
       />
     );
@@ -6985,7 +7026,6 @@ function AccountContent({
     activeSearchState?.kind === "results" &&
     searchResults.length === 0 &&
     searchCrawlerHasPendingIndexing(snapshot.state.domain.search_crawler);
-  const effectiveRightPanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
   const rightPanelOpen = !["closed", "userSettings", "keyboardSettings"].includes(effectiveRightPanelMode);
   const fittedShellWidths = fitShellWidths(
     sidebarWidth,

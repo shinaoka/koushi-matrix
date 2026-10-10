@@ -32,6 +32,8 @@ fn room(id: &str, label: &str, is_dm: bool, unread: u64, highlight: u64) -> Room
         unread_count: unread,
         notification_count: unread,
         highlight_count: highlight,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
         marked_unread: false,
         recency_stamp: Some(10),
         conversation_activity: None,

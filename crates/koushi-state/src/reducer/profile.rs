@@ -233,6 +233,7 @@ pub(crate) fn handle_local_user_alias_update_failed(
         code: "local_user_alias_update_failed".to_owned(),
         message: LOCAL_USER_ALIAS_UPDATE_FAILED_MESSAGE.to_owned(),
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::ProfileChanged(Default::default())),
@@ -342,6 +343,7 @@ pub(crate) fn handle_ignored_user_update_failed(
         code: "ignored_user_update_failed".to_owned(),
         message: IGNORED_USER_UPDATE_FAILED_MESSAGE.to_owned(),
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::ProfileChanged(Default::default())),
@@ -431,6 +433,7 @@ pub(crate) fn handle_profile_update_failed(
         code: "profile_update_failed".to_owned(),
         message,
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::ProfileChanged(Default::default())),
@@ -485,7 +488,7 @@ pub(crate) fn handle_avatar_thumbnail_updated(
             update_avatar_thumbnail(&mut invite.avatar, &mxc_uri, thumbnail.clone());
     }
     for room in state.live_signals.rooms.values_mut() {
-        for summary in room.receipts_by_event.values_mut() {
+        for summary in room.receipt_summaries_mut() {
             for reader in &mut summary.readers {
                 if update_avatar_thumbnail(&mut reader.avatar, &mxc_uri, thumbnail.clone()) {
                     live_signals_changed = true;

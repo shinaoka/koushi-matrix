@@ -158,6 +158,7 @@ pub async fn discover_login_methods(
 #[tauri::command]
 pub async fn start_oidc_login(
     homeserver: String,
+    method: koushi_state::DelegatedAuthMethod,
     account_tab_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
@@ -184,7 +185,9 @@ pub async fn start_oidc_login(
     let request_id = submit_conn.next_request_id();
     tokio::time::timeout(
         CORE_COMMAND_SUBMIT_TIMEOUT,
-        submit_conn.command(build_start_oidc_login_command(request_id, homeserver)),
+        submit_conn.command(build_start_oidc_login_command(
+            request_id, homeserver, method,
+        )),
     )
     .await
     .map_err(|_| "command submit timed out".to_owned())?
@@ -246,6 +249,47 @@ pub async fn start_oidc_login(
     })
 }
 
+/// Retire the pending browser (OAuth/SSO) attempt for a tab (#1267). The
+/// adapter mapping is cleared first, so a callback for the retired attempt no
+/// longer matches any pending login, then Core retires the SDK/state side.
+#[tauri::command]
+pub async fn cancel_oidc_login(
+    account_tab_id: Option<String>,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    use koushi_core::account_runtime_manager::AccountTabId;
+    let (tab_id, request_id) = match account_tab_id.as_deref() {
+        Some(id) => {
+            let requested = AccountTabId::from_string(id.to_owned());
+            let (resolved, connection) =
+                state.inner().connection.lock_for_tab_id(&requested).await?;
+            (
+                AccountTabId::from_string(resolved),
+                connection.next_request_id(),
+            )
+        }
+        None => {
+            let (resolved, connection) = state.inner().connection.lock_with_tab_id().await;
+            (
+                AccountTabId::from_string(resolved),
+                connection.next_request_id(),
+            )
+        }
+    };
+    state.inner().runtime.forget_oidc_attempts_for_tab(&tab_id);
+    let admission = submit_core_command_with_admission(
+        state.inner(),
+        build_cancel_oidc_login_command(request_id),
+    )
+    .await?;
+    record(DiagnosticEvent::new(
+        DiagnosticLevel::Info,
+        "desktop.oidc_browser",
+        "authorization_cancelled",
+    ));
+    Ok(admission)
+}
+
 fn launch_oidc_browser(
     app: &AppHandle,
     authorization_url: &str,
@@ -301,12 +345,16 @@ pub async fn complete_oidc_login(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let oidc_state = crate::oidc_callback_state(&callback_url)
-        .ok_or_else(|| "OIDC callback has no unique state".to_owned())?;
+    // The callback shape decides the correlation kind; the account-tab manager
+    // decides whether it matches a pending attempt. OAuth callbacks must repeat
+    // their CSRF state, while a legacy `m.login.sso` callback carries only
+    // `loginToken` and is accepted only for the single pending legacy attempt.
+    let correlation = crate::oidc_callback_correlation(&callback_url)
+        .ok_or_else(|| "OIDC callback is malformed or unsolicited".to_owned())?;
     let tab_id = state
         .inner()
         .runtime
-        .oidc_attempt_tab(&oidc_state)
+        .oidc_attempt_tab(&correlation)
         .ok_or_else(|| "OIDC callback does not match a pending login".to_owned())?;
     if account_tab_id
         .as_deref()
@@ -317,7 +365,7 @@ pub async fn complete_oidc_login(
     let tab_id = state
         .inner()
         .runtime
-        .take_oidc_attempt(&oidc_state)
+        .take_oidc_attempt(correlation)
         .ok_or_else(|| "OIDC callback was already consumed".to_owned())?;
     let (_, submit_conn) = state.inner().connection.lock_for_tab_id(&tab_id).await?;
     let mut wait_conn = state
@@ -767,11 +815,19 @@ pub(super) fn build_discover_login_command(
 pub(super) fn build_start_oidc_login_command(
     request_id: koushi_protocol::RequestId,
     homeserver: String,
+    method: koushi_state::DelegatedAuthMethod,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::StartOidcLogin {
         request_id,
         homeserver,
+        method,
     })
+}
+
+pub(crate) fn build_cancel_oidc_login_command(
+    request_id: koushi_protocol::RequestId,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::CancelOidcLogin { request_id })
 }
 
 pub(crate) fn build_complete_oidc_login_command(

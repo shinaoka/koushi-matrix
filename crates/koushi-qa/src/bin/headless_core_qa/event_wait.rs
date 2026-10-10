@@ -9,10 +9,10 @@ use super::registry::{
 };
 use super::{
     AccountEvent, AccountKey, AppState, BTreeSet, CoreCommand, CoreConnection, CoreEvent,
-    CoreFailure, Duration, EventStreamLag, Future, PaginationState, Pin, RequestId, RoomEvent,
-    SessionState, SettingsPersistenceState, SyncCommand, SyncEvent, TimelineCommand, TimelineDiff,
-    TimelineEvent, TimelineItem, TimelineItemId, TimelineKey, TimelineMessageActions,
-    TimelineSendState,
+    CoreFailure, Duration, EventStreamLag, Future, LiveSignalsEvent, PaginationState, Pin,
+    RequestId, RoomEvent, SessionState, SettingsPersistenceState, SyncCommand, SyncEvent,
+    TimelineCommand, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineKey,
+    TimelineMessageActions, TimelineSendState,
 };
 
 pub(super) type QaEventFuture<'a> =
@@ -2920,3 +2920,150 @@ mod tests;
 #[cfg(test)]
 #[path = "event_wait_send_flow_reset_tests.rs"]
 mod send_flow_reset_tests;
+
+/// #1238: one room's badge exactly as the shared state helper computes it.
+///
+/// The helper is the single fold over `unread_count + thread_unread_count`,
+/// `notification_count`, and `highlight_count + thread_highlight_count`, so this is
+/// the same number every badge surface (room list, Home total, Space rail, native
+/// attention) renders.
+pub(super) fn room_badge_unread_count(snapshot: &AppState, room_id: &str) -> Option<u64> {
+    snapshot
+        .rooms
+        .iter()
+        .find(|room| room.room_id == room_id)
+        .map(koushi_state::room_activity_unread_count)
+}
+
+/// #1238: private-data-free view of the badge boundary for one room:
+/// `(badge, unread_count, notification_count, highlight_count, thread_unread,
+/// thread_highlight)`. Counts only; callers print the phase label, never an id.
+pub(super) fn room_badge_private_summary(
+    snapshot: &AppState,
+    room_id: &str,
+) -> Option<(u64, u64, u64, u64, u64, u64)> {
+    snapshot
+        .rooms
+        .iter()
+        .find(|room| room.room_id == room_id)
+        .map(|room| {
+            (
+                koushi_state::room_activity_unread_count(room),
+                room.unread_count,
+                room.notification_count,
+                room.highlight_count,
+                room.thread_unread_count,
+                room.thread_highlight_count,
+            )
+        })
+}
+
+/// #1238: prints the badge boundary for `phase` without any Matrix identifier.
+pub(super) fn print_room_badge_private_summary(conn: &CoreConnection, room_id: &str, phase: &str) {
+    match room_badge_private_summary(&conn.snapshot(), room_id) {
+        Some((badge, unread, notifications, highlights, thread_unread, thread_highlights)) => {
+            println!(
+                "room_badge_detail phase={phase} badge={badge} unread={unread} \
+                 notifications={notifications} highlights={highlights} \
+                 thread_unread={thread_unread} thread_highlights={thread_highlights}"
+            );
+        }
+        None => println!("room_badge_detail phase={phase} room=absent"),
+    }
+}
+
+/// #1238: waits until one room's badge satisfies `predicate`, and reports it.
+pub(super) async fn wait_for_room_badge_unread_count<F>(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    label: &str,
+    predicate: F,
+) -> Result<u64, String>
+where
+    F: Fn(u64) -> bool,
+{
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    loop {
+        if let Some(badge) = room_badge_unread_count(&conn.snapshot(), room_id)
+            && predicate(badge)
+        {
+            return Ok(badge);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!("{label}: timed out waiting for the room badge"));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// #1238: waits until one room's badge has stopped moving.
+///
+/// Used where the assertion is that a read receipt did *not* change the badge: a
+/// single sample could pass before the receipt lands, so the value must hold still
+/// across a short window first.
+pub(super) async fn settle_room_badge_unread_count(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    label: &str,
+) -> Result<u64, String> {
+    const SETTLE_SAMPLES: u32 = 5;
+    const SETTLE_INTERVAL: Duration = Duration::from_millis(200);
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    let mut last = room_badge_unread_count(&conn.snapshot(), room_id)
+        .ok_or_else(|| format!("{label}: room is absent from the room list"))?;
+    let mut stable = 0;
+    loop {
+        tokio::time::sleep(SETTLE_INTERVAL).await;
+        let current = room_badge_unread_count(&conn.snapshot(), room_id)
+            .ok_or_else(|| format!("{label}: room is absent from the room list"))?;
+        if current == last {
+            stable += 1;
+            if stable >= SETTLE_SAMPLES {
+                return Ok(current);
+            }
+        } else {
+            last = current;
+            stable = 0;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!("{label}: room badge never settled"));
+        }
+    }
+}
+
+/// #1238: sends a main-timeline read receipt and waits for its own confirmation.
+///
+/// Scoped to the room timeline key, so it is not a threaded receipt: it is the
+/// "reading only the main timeline" action the canon says must never clear a
+/// thread's unread.
+pub(super) async fn send_main_timeline_read_receipt(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    event_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::SendReadReceipt {
+        request_id,
+        key: key.clone(),
+        event_id: event_id.to_owned(),
+    }))
+    .await
+    .map_err(|error| format!("{label}: submit read receipt: {error}"))?;
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for the read receipt"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        match event {
+            CoreEvent::LiveSignals(LiveSignalsEvent::ReadReceiptSent { .. }) => return Ok(()),
+            CoreEvent::OperationFailed {
+                request_id: failed_id,
+                failure,
+            } if failed_id == request_id => {
+                return Err(format!("{label}: read receipt failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}

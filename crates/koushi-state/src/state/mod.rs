@@ -9,6 +9,7 @@ pub mod search_crawler;
 // ── New per-feature submodules (#87 Phase 2) ────────────────────────────────
 mod account_notifications;
 mod activity;
+mod auth_failure;
 mod basic_operation;
 mod cjk;
 mod composer_draft;
@@ -73,6 +74,12 @@ pub use account_notifications::{
 // ── Re-exports: sync ────────────────────────────────────────────────────────
 pub use sync::{SyncLifecycleStatus, SyncState};
 
+// ── Re-exports: auth failure vocabulary (#1268) ─────────────────────────────
+pub use auth_failure::{
+    AuthFailureDetail, AuthFailureStage, AuthFailureTransport, AuthMatrixErrorKind, AuthMethod,
+    DelegatedAuthMethod,
+};
+
 // ── Re-exports: session ─────────────────────────────────────────────────────
 pub use session::{
     AccountManagementCapabilities, AccountManagementOperation, AccountManagementState,
@@ -80,12 +87,13 @@ pub use session::{
     CurrentDeviceTrustState, DelegatedAuthLinks, DeviceCleanupAuthMode, DeviceCleanupFailureKind,
     DeviceCleanupLocalMode, DeviceCleanupOfferReason, DeviceCleanupRemoteOutcome,
     DeviceCleanupState, LoginAttemptId, LoginFlow, LoginFlowKind, PendingKeyCountBucket,
-    ProvisionalPhase, QrLoginState, RecoveryMethod, SecureBackupGateFailureKind,
-    SecureBackupGateState, SecureBackupSetupAdmission, SecureBackupSetupIntent,
-    SessionAuthenticationMethod, SessionInfo, SessionLockReason, SessionState,
-    SoftLogoutReauthState, VerificationAccountKind, VerificationGateFailureKind,
-    VerificationGateRejectReason, VerificationGateState, VerificationMethod,
-    VerificationMethodCapability,
+    ProvisionalPhase, QrLoginState, RecoveryMethod, SecureBackupFailureDetail,
+    SecureBackupFailureStage, SecureBackupFailureTransport, SecureBackupGateFailureKind,
+    SecureBackupGateState, SecureBackupInspectionFailure, SecureBackupMatrixErrorKind,
+    SecureBackupSetupAdmission, SecureBackupSetupIntent, SessionAuthenticationMethod, SessionInfo,
+    SessionLockReason, SessionState, SoftLogoutReauthState, VerificationAccountKind,
+    VerificationGateFailureKind, VerificationGateRejectReason, VerificationGateState,
+    VerificationMethod, VerificationMethodCapability,
 };
 pub use session_status::{
     ArmedSessionStatusCheck, CurrentSessionBackupState, CurrentSessionStatusDetails,
@@ -254,9 +262,9 @@ pub use timeline::{
 
 // ── Re-exports: thread ──────────────────────────────────────────────────────
 pub use thread::{
-    ThreadAttentionState, ThreadOpenIntent, ThreadPaneState, ThreadRootProjectionState,
-    ThreadRootProjectionStatus, ThreadsListItem, ThreadsListScope, ThreadsListState,
-    sort_threads_list_items,
+    ThreadAttentionState, ThreadOpenIntent, ThreadPaneState, ThreadRootAttention,
+    ThreadRootProjectionState, ThreadRootProjectionStatus, ThreadsListItem, ThreadsListScope,
+    ThreadsListState, sort_threads_list_items,
 };
 
 // ── Re-exports: search ──────────────────────────────────────────────────────
@@ -287,8 +295,8 @@ pub use basic_operation::{
 // ── Re-exports: live_signals ────────────────────────────────────────────────
 pub use live_signals::{
     LiveEventReceiptSummary, LiveEventReceiptSummaryUpdate, LiveEventReceipts, LiveReadReceipt,
-    LiveRoomSignalUpdate, LiveSignalsState, LiveTypingUser, PresenceKind, RoomLiveSignals,
-    enrich_live_receipt, refresh_live_receipt_display_projection,
+    LiveRoomSignalUpdate, LiveSignalsState, LiveTypingUser, PresenceKind, ReceiptScope,
+    RoomLiveSignals, enrich_live_receipt, refresh_live_receipt_display_projection,
     refresh_live_typing_user_display_projection, resolve_live_receipt_profile,
 };
 
@@ -338,10 +346,11 @@ pub struct AppState {
     /// #1238 diagnostic (temporary): see [`ThreadDeliveryDiagnostic`].
     #[serde(skip)]
     pub thread_delivery: ThreadDeliveryDiagnostic,
-    /// #1259: per-root SDK thread-cache unread values, keyed by
-    /// `(room_id, root_event_id)`, for the Threads list rows.
+    /// #1259/#1238: per-root SDK thread-cache attention, keyed by
+    /// `(room_id, root_event_id)`. The Threads list rows read the unread half and
+    /// the reducer sums both halves into the room's thread badge fields.
     #[serde(skip)]
-    pub thread_unread: BTreeMap<(String, String), u32>,
+    pub thread_unread: BTreeMap<(String, String), ThreadRootAttention>,
     #[serde(default)]
     pub device_cleanup: DeviceCleanupState,
     #[serde(default)]

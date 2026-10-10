@@ -27,16 +27,23 @@ fn live_receipt_source_changes(action: &AppAction) -> Option<(String, Vec<String
     match action {
         AppAction::LiveRoomReceiptSummariesUpdated {
             room_id,
+            scope: _,
+            scoped_event_ids,
             receipts_by_event,
-        } => Some((
-            room_id.clone(),
-            receipts_by_event
-                .iter()
-                .map(|summary| summary.event_id.clone())
-                .collect(),
-        )),
+        } => {
+            let mut event_ids = scoped_event_ids.clone();
+            event_ids.extend(
+                receipts_by_event
+                    .iter()
+                    .map(|summary| summary.event_id.clone()),
+            );
+            event_ids.sort_unstable();
+            event_ids.dedup();
+            Some((room_id.clone(), event_ids))
+        }
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id,
+            scope: _,
             scoped_event_ids,
             receipts_by_event,
         } => {

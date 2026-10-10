@@ -30,6 +30,27 @@ const DIAGNOSTIC_SOURCE: &str = "core.account_work";
 /// sets the shared interval between background permits.
 const SHARED_WORK_CONCURRENCY: usize = 1;
 
+/// Effective number of media-prefetch fetches this scheduler admits at once:
+/// the shared cross-account slot capped by [`AccountWorkKind::MediaPrefetch`]'s
+/// own ceiling.
+///
+/// Published as a QA sizing hook so an in-flight avatar expectation is derived
+/// from the documented admission policy instead of a frozen per-account number
+/// (#1171). Background media prefetch shares the single shared slot, so at most
+/// one avatar fetch reaches the network even though the avatar downloader may
+/// hold more tasks active.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub const MEDIA_PREFETCH_INFLIGHT_LIMIT: usize = min_usize(
+    SHARED_WORK_CONCURRENCY,
+    AccountWorkKind::MediaPrefetch.policy().max_concurrency as usize,
+);
+
+#[cfg(any(test, feature = "test-hooks"))]
+const fn min_usize(left: usize, right: usize) -> usize {
+    if left < right { left } else { right }
+}
+
 /// Semantic classification every scheduled or interactive caller submits.
 ///
 /// Call sites name the work, never a number.

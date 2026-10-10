@@ -215,6 +215,12 @@ Crate responsibilities:
   browser handoff, but access tokens, refresh tokens, PKCE verifiers, raw OAuth
   errors, and provider callback details never enter reducer state or normal
   diagnostics.
+  The delegated start selection is the user's bounded method (OAuth or legacy
+  SSO). OAuth falls back to legacy SSO only for the classified
+  unsupported-method condition; every other start failure crosses the boundary
+  as a bounded `AuthFailureDetail` (method, stage, transport, HTTP status,
+  allowlisted Matrix error kind, retryable), so Core and the UI never classify
+  by error text (#1267, #1268).
   E2EE key-backup restore wrappers consume recovery secrets internally and
   return private-data-free restore summaries whose scope is explicitly
   `JoinedRooms`; they do not expose SDK backup keys, room keys, or raw backup
@@ -331,7 +337,10 @@ It adds no `AppState`, `AppAction`, reducer or reducer transition and does not y
 remove the watch or complete the full scoped-publication migration. Room-local
 live-signal metadata changes use the `live_signals_rooms` state-delta slice,
 while receipt-only changes use nested `live_signals_receipts_by_room_event`
-replacements so moving one receipt does not clone other events in that room.
+replacements (main scope) plus its `live_signals_focused_receipts_by_room_event`
+and `live_signals_thread_receipts_by_room_event` siblings for the focused and
+thread scopes, so moving one receipt does not clone other events in that room
+and the scopes are never merged together.
 Room additions/removals and typing/fully-read metadata retain the full room
 fallback; account-level presence changes use `live_signals_presence_by_user`.
 All replacement maps carry explicit removals. The frontend merges these slices
@@ -988,14 +997,21 @@ identity, sender/body/timestamp fields, `in_reply_to_event_id`,
 
 `ThreadSummaryDto.unread_count` is the SDK thread cache's own unread value for that
 root, projected by Core for the room-timeline chip: it is not derived from the
-bundled summary, it carries no room-level meaning, and it never contributes to a
-room total.
+bundled summary. The same per-root cache value is mirrored into Rust state as
+`RoomSummary.thread_unread_count`, which feeds the shared badge helper below.
 
 Thread summaries describe aggregate presentation state, not complete per-thread
 unread state. Capability advertisement and room-badge changes do not prove
-thread-event delivery. Thread contributions must not be added to room totals
-without a proven non-overlapping decomposition: a homeserver whose own room
-counters already include thread replies would otherwise count them twice.
+thread-event delivery. The non-overlapping decomposition that lets a thread
+contribution join a room badge is proven at the SDK event-cache boundary: the room
+cache's `RoomReadReceiptEventFilter` excludes thread replies while each thread
+cache's `ThreadReadReceiptEventFilter` counts exactly one thread's replies, so the
+client counters partition into `unread_count` (main timeline, also the navigation
+value) plus `thread_unread_count` (threads). A homeserver's own room counters may
+already include thread replies, so the server `notification_count` is max'd in,
+never summed: the badge is
+`max(unread_count + thread_unread_count, notification_count, highlight_count +
+thread_highlight_count)`.
 
 A session-scoped Core thread-summary projection reconciles SDK/event-cache
 aggregates with accepted live reply activity once per `(room_id,

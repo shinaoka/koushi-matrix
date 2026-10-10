@@ -2041,6 +2041,16 @@ export const TimelineView = memo(function TimelineView({
     }
   }, [mediaDownloads, roomId, sideEffectItems, transport]);
   const roomSignals = liveSignals?.rooms[roomId] ?? null;
+  // Issue #1255: each timeline reads receipts from its own scope. The timeline
+  // key is authoritative, so a focused permalink on a thread reply reads its
+  // focused scope and never the thread root's.
+  const scopedReceiptsByEvent = roomSignals
+    ? "Thread" in timelineKey.kind
+      ? roomSignals.thread_receipts_by_event?.[timelineKey.kind.Thread.root_event_id] ?? {}
+      : "Focused" in timelineKey.kind
+        ? roomSignals.focused_receipts_by_event?.[timelineKey.kind.Focused.event_id] ?? {}
+        : roomSignals.receipts_by_event
+    : null;
   // Read receipts and fully-read state remain canonical timeline facts. A
   // moved root only changes presentation; it must not cause the root id to be
   // sent as the room's latest readable event.
@@ -3626,7 +3636,7 @@ export const TimelineView = memo(function TimelineView({
                 mediaDownload={contentEventId ? mediaDownloads[contentEventId] : undefined}
                 receipts={
                   contentEventId
-                    ? roomSignals?.receipts_by_event[contentEventId]?.readers ?? []
+                    ? scopedReceiptsByEvent?.[contentEventId]?.readers ?? []
                     : []
                 }
                 receiptSource={
@@ -3644,12 +3654,12 @@ export const TimelineView = memo(function TimelineView({
                 }
                 receiptTotalCount={
                   contentEventId
-                    ? roomSignals?.receipts_by_event[contentEventId]?.total_count ?? 0
+                    ? scopedReceiptsByEvent?.[contentEventId]?.total_count ?? 0
                     : 0
                 }
                 receiptOverflowCount={
                   contentEventId
-                    ? roomSignals?.receipts_by_event[contentEventId]?.overflow_count ?? 0
+                    ? scopedReceiptsByEvent?.[contentEventId]?.overflow_count ?? 0
                     : 0
                 }
                 />

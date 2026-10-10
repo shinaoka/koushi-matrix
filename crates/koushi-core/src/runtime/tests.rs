@@ -591,6 +591,8 @@ pub(super) fn unread_diagnostic_room(room_id: &str) -> RoomSummary {
         unread_count: 3,
         notification_count: 2,
         highlight_count: 1,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
         marked_unread: true,
         recency_stamp: Some(42),
         conversation_activity: None,
@@ -1998,6 +2000,7 @@ fn oidc_authorization_start_only_projects_discovery() {
         account_command_projected_action(&AccountCommand::StartOidcLogin {
             request_id,
             homeserver: "https://matrix.example.org".to_owned(),
+            method: koushi_state::DelegatedAuthMethod::OAuth,
         }),
         Some(AppAction::LoginDiscoveryRequested {
             homeserver: "https://matrix.example.org".to_owned(),
@@ -3073,6 +3076,7 @@ async fn receipt_resolution_borrows_current_alias_without_publishing_global_stat
         let (receipt_effects, _) =
             actor.reduce_app_action_state(AppAction::LiveRoomReceiptsWindowReconciled {
                 room_id: "!room:example.org".into(),
+                scope: koushi_state::ReceiptScope::Main,
                 scoped_event_ids: vec!["$event".into()],
                 receipts_by_event: Vec::new(),
             });
@@ -5308,6 +5312,8 @@ async fn scheduled_sends_open_command_emits_the_projection_through_the_runtime()
         unread_count: 0,
         notification_count: 0,
         highlight_count: 0,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
         marked_unread: false,
         recency_stamp: None,
         conversation_activity: None,

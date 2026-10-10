@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::AuthFailureKind;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OperationFailureKind {
@@ -22,4 +24,20 @@ pub struct AppError {
     pub code: String,
     pub message: String,
     pub recoverable: bool,
+    /// Bounded, Rust-classified reason for the visible guidance when the error
+    /// carries one (#1268). Absent for legacy/generic errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<AuthFailureKind>,
+}
+
+impl AppError {
+    /// Build a generic error with no classified reason.
+    pub fn new(code: impl Into<String>, message: impl Into<String>, recoverable: bool) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            recoverable,
+            reason: None,
+        }
+    }
 }

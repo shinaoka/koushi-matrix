@@ -560,8 +560,42 @@
         },
         "rooms": {
           "!room:example.invalid": {
+            "focused_receipts_by_event": {
+              "$target:example.invalid": {
+                "$focused-reply:example.invalid": {
+                  "overflow_count": 0,
+                  "readers": [
+                    {
+                      "avatar": null,
+                      "display_name": "Focused Reader",
+                      "original_display_label": "Focused Reader",
+                      "timestamp_ms": 7,
+                      "user_id": "@focused-reader:example.invalid"
+                    }
+                  ],
+                  "total_count": 1
+                }
+              }
+            },
             "fully_read_event_id": "$read:example.invalid",
             "receipts_by_event": {},
+            "thread_receipts_by_event": {
+              "$root:example.invalid": {
+                "$thread-reply:example.invalid": {
+                  "overflow_count": 0,
+                  "readers": [
+                    {
+                      "avatar": null,
+                      "display_name": "Thread Reader",
+                      "original_display_label": "Thread Reader",
+                      "timestamp_ms": 9,
+                      "user_id": "@thread-reader:example.invalid"
+                    }
+                  ],
+                  "total_count": 1
+                }
+              }
+            },
             "typing_user_ids": [
               "@other:example.invalid"
             ],
@@ -830,6 +864,8 @@
             "favourite": null,
             "low_priority": null
           },
+          "thread_highlight_count": 0,
+          "thread_unread_count": 0,
           "unread_count": 3
         },
         {
@@ -858,6 +894,8 @@
               "order": "0.25"
             }
           },
+          "thread_highlight_count": 0,
+          "thread_unread_count": 0,
           "unread_count": 7
         },
         {
@@ -901,6 +939,8 @@
             "favourite": null,
             "low_priority": null
           },
+          "thread_highlight_count": 0,
+          "thread_unread_count": 0,
           "unread_count": 0
         }
       ],

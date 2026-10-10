@@ -485,6 +485,8 @@ fn attention_room(room_id: &str, is_dm: bool, unread_count: u64) -> koushi_state
         unread_count,
         notification_count: 0,
         highlight_count: 0,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
         marked_unread: false,
         recency_stamp: None,
         conversation_activity: None,

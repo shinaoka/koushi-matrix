@@ -59,7 +59,8 @@ use super::gap_repair::{
 use super::item_projection::{
     ReceiptObservationTarget, apply_link_previews_to_item, apply_timeline_item_visibility,
     cache_sdk_item_media_source, emit_receipt_observation_actions,
-    live_event_receipts_from_sdk_items, remember_local_echo, sdk_item_to_timeline_item,
+    live_event_receipts_from_sdk_items, live_event_window_ids_from_sdk_items,
+    receipt_scope_for_timeline_kind, remember_local_echo, sdk_item_to_timeline_item,
     thread_auto_requestable_event_id, timeline_room_id, withheld_update_should_publish,
 };
 use super::manager::TimelineMessage;
@@ -1246,14 +1247,14 @@ impl TimelineActor {
         };
         let mut refreshed = Vec::new();
         for (root_event_id, signature) in candidates {
-            if let Some(unread) = super::thread_projection::sdk_thread_unread_counts(
+            if let Some(attention) = super::thread_projection::sdk_thread_unread_counts(
                 &self.session,
                 &room_id,
                 &root_event_id,
             )
             .await
             {
-                refreshed.push((root_event_id, signature, unread));
+                refreshed.push((root_event_id, signature, attention));
             }
         }
         if refreshed.is_empty() {
@@ -1264,17 +1265,19 @@ impl TimelineActor {
                 .thread_root_projection_service
                 .lock()
                 .expect("thread-root projection service lock must not be poisoned");
-            for (root_event_id, signature, unread) in refreshed.iter() {
-                service.apply_thread_unread(&room_id, root_event_id, signature.clone(), *unread);
+            for (root_event_id, signature, attention) in refreshed.iter() {
+                service.apply_thread_unread(&room_id, root_event_id, signature.clone(), *attention);
             }
         }
-        for (root_event_id, _, unread) in refreshed {
-            // #1259: the Threads list is state-rendered, so mirror the value there.
+        for (root_event_id, _, attention) in refreshed {
+            // #1259/#1238: the Threads list is state-rendered, so mirror the value
+            // there; the reducer also sums it into the room's thread badge fields.
             if !self
                 .emit_action_reliable(koushi_state::AppAction::ThreadUnreadObserved {
                     room_id: room_id.clone(),
                     root_event_id,
-                    unread,
+                    unread: attention.unread,
+                    highlight: attention.highlight,
                 })
                 .await
             {
@@ -1312,7 +1315,7 @@ impl TimelineActor {
             .expect("thread-root projection service lock must not be poisoned");
         crate::threads_list::window_thread_roots(&self.navigation_items)
             .into_iter()
-            .any(|(root_event_id, _)| service.thread_unread_for(room_id, &root_event_id) > 0)
+            .any(|(root_event_id, _)| service.thread_unread_for(room_id, &root_event_id).unread > 0)
     }
 
     /// #1259: re-overlay the root items whose dot changed and emit a `Set` for each, so
@@ -1741,6 +1744,9 @@ impl TimelineActor {
         let initial_media_gallery_items =
             media_gallery_items_from_timeline_items(&key, &initial_items);
         let initial_receipts = live_event_receipts_from_sdk_items(initial_sdk_items.iter());
+        let initial_receipt_scope = receipt_scope_for_timeline_kind(&key.kind);
+        let initial_window_event_ids =
+            live_event_window_ids_from_sdk_items(initial_sdk_items.iter());
         let receipt_endpoints =
             super::receipt_endpoints::ReceiptEndpointMirror::new(initial_sdk_items.iter());
 
@@ -1947,7 +1953,11 @@ impl TimelineActor {
             )));
 
             let room_id = room_id_str.clone();
-            if initial_emitted && !initial_receipts.is_empty() {
+            // The actor's initial receipt observation reconciles its own scope
+            // over its own initial window. It must run even when the initial
+            // snapshot has no receipt entries, so a retired actor's summaries
+            // inside that window are removed instead of merged over.
+            if initial_emitted && !initial_window_event_ids.is_empty() {
                 let _ = emit_receipt_observation_actions(
                     session.as_ref(),
                     &action_tx,
@@ -1956,7 +1966,10 @@ impl TimelineActor {
                     actor_generation,
                     &room_id,
                     initial_receipts,
-                    ReceiptObservationTarget::Live,
+                    ReceiptObservationTarget::Live {
+                        scope: initial_receipt_scope,
+                        scoped_event_ids: initial_window_event_ids,
+                    },
                 )
                 .await;
             }

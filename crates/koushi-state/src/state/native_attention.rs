@@ -265,9 +265,12 @@ pub fn native_attention_projection_from_rooms(
             continue;
         }
 
+        let highlight_total = room
+            .highlight_count
+            .saturating_add(room.thread_highlight_count);
         let activity_unread_count = room_notification_unread_count(room);
         let effective_unread_count =
-            if mode == RoomNotificationMode::Mentions && room.highlight_count == 0 {
+            if mode == RoomNotificationMode::Mentions && highlight_total == 0 {
                 0
             } else {
                 activity_unread_count
@@ -280,9 +283,9 @@ pub fn native_attention_projection_from_rooms(
 
         unread_count += effective_unread_count;
         notification_count += effective_notification_count;
-        highlight_count += room.highlight_count;
+        highlight_count += highlight_total;
 
-        if mode == RoomNotificationMode::Mentions && room.highlight_count == 0 {
+        if mode == RoomNotificationMode::Mentions && highlight_total == 0 {
             continue;
         }
 
@@ -290,7 +293,7 @@ pub fn native_attention_projection_from_rooms(
             room.display_label.clone(),
             room.is_dm,
             effective_notification_count,
-            room.highlight_count,
+            highlight_total,
             effective_unread_count,
         ) {
             candidates.push(NativeAttentionCandidateEntry {
@@ -482,7 +485,14 @@ fn truncate_notification_preview(text: String) -> String {
 }
 
 fn room_notification_unread_count(room: &RoomSummary) -> u64 {
-    let count = room.notification_count.max(room.highlight_count);
+    // #1238: a mention inside a thread is still a highlight, so the thread
+    // highlight term joins the client mention counter. Thread plain unread is
+    // deliberately absent: this is the notification-side count, and the
+    // notification inbox keeps plain unread messages sidebar-only.
+    let count = room.notification_count.max(
+        room.highlight_count
+            .saturating_add(room.thread_highlight_count),
+    );
     if count > 0 {
         count
     } else if room.marked_unread {
@@ -679,6 +689,8 @@ mod tests {
             unread_count: 2,
             notification_count: 2,
             highlight_count: 0,
+            thread_unread_count: 0,
+            thread_highlight_count: 0,
             marked_unread: false,
             recency_stamp: Some(42),
             conversation_activity: None,

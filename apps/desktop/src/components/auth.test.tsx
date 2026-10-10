@@ -27,20 +27,24 @@ function renderAuth(overrides: Partial<AuthScreenProps> = {}) {
     onPasswordPresenceChange: vi.fn(),
     onServerOverrideChange: vi.fn(),
     onStartOidcLogin: vi.fn(),
+    onCancelOidcLogin: vi.fn(),
+    browserAttemptPending: false,
     onSubmit: vi.fn(),
     ...overrides,
   };
   return { props, ...render(<AuthScreen {...props} />) };
 }
 
-function oidcAuth(homeserver: string, flows: Array<"oidc" | "password">) {
+function oidcAuth(homeserver: string, flows: Array<"oidc" | "sso" | "password">) {
   return {
     kind: "ready",
     homeserver,
     flows: flows.map((kind) =>
       kind === "oidc"
         ? { kind, delegated_oidc_compatibility: true, display_name: "Example ID" }
-        : { kind, delegated_oidc_compatibility: false, display_name: null },
+        : kind === "sso"
+          ? { kind, delegated_oidc_compatibility: true, display_name: "Example SSO" }
+          : { kind, delegated_oidc_compatibility: false, display_name: null },
     ),
     delegated: { registration_url: "https://auth.example.test/register" },
   } as const;
@@ -108,6 +112,7 @@ describe("AuthScreen", () => {
 
     sso.click();
     expect(props.onStartOidcLogin).toHaveBeenCalledTimes(1);
+    expect(props.onStartOidcLogin).toHaveBeenCalledWith("oauth");
   });
 
   it("hides password sign-in when the server only offers single sign-on", () => {
@@ -188,6 +193,68 @@ describe("AuthScreen", () => {
     expect(screen.getByRole("alert").textContent).toContain(
       "Check your Matrix ID, for example @alice:matrix.org, and your password.",
     );
+  });
+
+  it("shows classified guidance instead of the raw failure text", () => {
+    renderAuth({
+      matrixId: "@alice:matrix.org",
+      passwordFilled: true,
+      snapshot: snapshot({
+        session: { kind: "signedOut" },
+        errors: [
+          {
+            code: "login_failed",
+            message: "raw transport text with 429 and M_LIMIT_EXCEEDED",
+            recoverable: true,
+            reason: "rateLimited",
+          },
+        ],
+      }),
+    });
+
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("Too many sign-in attempts");
+    expect(alert.textContent).not.toContain("M_LIMIT_EXCEEDED");
+    expect(alert.textContent).not.toContain("429");
+  });
+
+  it("offers to cancel a pending browser attempt", () => {
+    const { props } = renderAuth({
+      browserAttemptPending: true,
+      snapshot: snapshot({
+        session: { kind: "signedOut" },
+        auth: oidcAuth("matrix.org", ["oidc", "password"]),
+      }),
+    });
+
+    const cancel = screen.getByRole("button", { name: "Cancel browser sign-in" });
+    cancel.click();
+    expect(props.onCancelOidcLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the cancel action when no browser attempt is pending", () => {
+    renderAuth({
+      browserAttemptPending: false,
+      snapshot: snapshot({
+        session: { kind: "signedOut" },
+        auth: oidcAuth("matrix.org", ["oidc", "password"]),
+      }),
+    });
+
+    expect(screen.queryByRole("button", { name: "Cancel browser sign-in" })).toBeNull();
+  });
+
+  it("starts the method the server actually offers", () => {
+    const { props } = renderAuth({
+      effectiveServer: "matrix.org",
+      snapshot: snapshot({
+        session: { kind: "signedOut" },
+        auth: oidcAuth("matrix.org", ["sso", "password"]),
+      }),
+    });
+
+    screen.getByRole("button", { name: "Continue with Example SSO" }).click();
+    expect(props.onStartOidcLogin).toHaveBeenCalledWith("sso");
   });
 
   it("shows sync auth failures on the sign-in screen", () => {
@@ -352,7 +419,12 @@ function snapshot({
 }: {
   session: Record<string, unknown>;
   auth?: Record<string, unknown>;
-  errors?: Array<{ code: string; message: string; recoverable: boolean }>;
+  errors?: Array<{
+    code: string;
+    message: string;
+    recoverable: boolean;
+    reason?: string;
+  }>;
 }): DesktopSnapshot {
   return {
     state: {

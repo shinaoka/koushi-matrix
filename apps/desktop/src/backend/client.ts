@@ -25,6 +25,7 @@ import type {
   ComposerDraftRevision,
   ComposerDraftAcceptanceResponse,
   PreparedUploadSendResponse,
+  DelegatedAuthMethod,
   DirectoryQuery,
   MentionSurface,
   NavigationPreferenceUpdate,
@@ -195,11 +196,21 @@ export class TauriDesktopApi implements DesktopApi {
     return this.invokeCommand<CommandSettlement>("discover_login_methods", { homeserver });
   }
 
-  async startOidcLogin(homeserver: string): Promise<OidcBrowserLaunchResponse> {
+  async startOidcLogin(
+    homeserver: string,
+    method: DelegatedAuthMethod
+  ): Promise<OidcBrowserLaunchResponse> {
     const args = this.accountTabId === undefined
-      ? { homeserver }
-      : { homeserver, accountTabId: this.accountTabId };
+      ? { homeserver, method }
+      : { homeserver, method, accountTabId: this.accountTabId };
     return this.invokeCommand<OidcBrowserLaunchResponse>("start_oidc_login", args);
+  }
+
+  async cancelOidcLogin(): Promise<CommandAdmission> {
+    const args = this.accountTabId === undefined
+      ? {}
+      : { accountTabId: this.accountTabId };
+    return this.invokeCommand<CommandAdmission>("cancel_oidc_login", args);
   }
 
   async completeOidcLogin(

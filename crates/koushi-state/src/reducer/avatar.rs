@@ -17,7 +17,7 @@ pub(crate) fn collect_known_avatar_thumbnails(
         }
     }
     for room_signals in state.live_signals.rooms.values() {
-        for receipts in room_signals.receipts_by_event.values() {
+        for receipts in room_signals.receipt_summaries() {
             for reader in &receipts.readers {
                 remember_known_avatar_thumbnail(&mut known_thumbnails, reader.avatar.as_ref());
             }

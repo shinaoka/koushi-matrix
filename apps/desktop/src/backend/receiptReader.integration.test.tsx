@@ -53,7 +53,7 @@ it.each([true, false])("shows reader timestamps on hover (committed source: %s)"
     transport={baseTransport({ listenCoreEvents(listener) { emit = listener; return () => undefined; } })}
     liveSignals={{ presence: {}, rooms: { "!room:example.invalid": {
       fully_read_event_id: null, typing_user_ids: [], typing_users: [],
-      receipts_by_event: { "$seen": { total_count: 1, overflow_count: 0, readers: [{
+      focused_receipts_by_event: {}, thread_receipts_by_event: {}, receipts_by_event: { "$seen": { total_count: 1, overflow_count: 0, readers: [{
         user_id: "@reader:example.invalid", display_name: "Reader One",
         original_display_label: "Reader One", avatar: null, timestamp_ms: timestamp
       }] } }

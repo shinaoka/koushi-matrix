@@ -24,6 +24,22 @@ fn crawler_state_counts(
     counts
 }
 
+/// Per-room crawl budget the stage leaves the crawler after the product's
+/// automatic-crawl startup hold. Measured: the focused tuwunel and synapse lanes
+/// reach `crawl_backfill=ok` well inside this budget once the hold has elapsed,
+/// while the previous 60s deadline expired with 20 rooms still queued (#1198).
+const CRAWL_BUDGET_SECS: u64 = 60;
+
+/// Deadline for one automatic crawl of the target room, measured from the
+/// moment the stage starts. The product starts no automatic crawl until
+/// [`koushi_core::search::CRAWLER_STARTUP_DELAY`] has elapsed, so the deadline
+/// is that published hold plus [`CRAWL_BUDGET_SECS`]; the sum is structurally
+/// never smaller than the hold it waits out. Deriving it from the product
+/// constant keeps the waiter and the product from drifting apart (#1198): a
+/// deadline inside the hold expires with every room still queued.
+const CRAWL_TIMEOUT_SECS: u64 =
+    koushi_core::search::CRAWLER_STARTUP_DELAY.as_secs() + CRAWL_BUDGET_SECS;
+
 /// Prove the search-history crawler contract through token-only stdout.
 ///
 /// Proofs:
@@ -46,8 +62,6 @@ pub(super) async fn run_search_crawler_stage(
     _account_key: &AccountKey,
     room_id: &str,
 ) -> Result<(), String> {
-    const CRAWL_TIMEOUT_SECS: u64 = 60;
-
     // 1. crawl_backfill — wait for the room to reach Completed in the snapshot.
     //    The auto-start fires when sync/room-list runs after login; we just poll.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(CRAWL_TIMEOUT_SECS);

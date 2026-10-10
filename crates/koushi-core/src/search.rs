@@ -95,7 +95,12 @@ const SEARCH_ACTOR_SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 /// has work, so it does not contend with user-visible pagination during the
 /// startup window. Crawler timing is Rust-owned (not a user setting). The
 /// maintainer confirmed a ~1 minute delay is fully acceptable (#123).
-const CRAWLER_STARTUP_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
+///
+/// Published so a QA waiter that proves automatic crawl completion can size its
+/// own deadline against the documented product hold instead of a frozen number
+/// (#1198): a deadline inside this hold expires while every crawl is still
+/// queued. Manual `StartHistoryCrawl` checkpoints are not held.
+pub const CRAWLER_STARTUP_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn search_scope_trace_label(scope: &SearchScope) -> &'static str {
     match scope {

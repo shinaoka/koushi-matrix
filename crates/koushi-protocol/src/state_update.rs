@@ -54,6 +54,12 @@ pub struct StateDelta {
 pub type RoomProfileReplacementsDelta =
     BTreeMap<String, Option<BTreeMap<String, Option<UserProfile>>>>;
 
+/// Focused- or thread-scope receipt-summary replacement delta:
+/// room id -> scope key (permalink target or thread root) -> event id ->
+/// replacement, where `None` removes the entry at that level.
+pub type ScopedReceiptSummaryChanges =
+    BTreeMap<String, BTreeMap<String, BTreeMap<String, Option<LiveEventReceiptSummary>>>>;
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StateDeltaChangedSlices {
     pub session: Option<SessionState>,
@@ -138,6 +144,12 @@ pub struct StateDeltaChangedSlices {
     /// cloning the other events in a room for a receipt move/update.
     pub live_signals_receipts_by_room_event:
         Option<BTreeMap<String, BTreeMap<String, Option<LiveEventReceiptSummary>>>>,
+    /// Focused-scope receipt-summary replacements nested by room, permalink
+    /// target event, and event. The main scope is never merged into it.
+    pub live_signals_focused_receipts_by_room_event: Option<ScopedReceiptSummaryChanges>,
+    /// Thread-scope receipt-summary replacements nested by room, thread root
+    /// event, and event. The main scope is never merged into it.
+    pub live_signals_thread_receipts_by_room_event: Option<ScopedReceiptSummaryChanges>,
     /// Non-receipt room metadata replacements for existing room entries.
     pub live_signals_room_metadata_by_id: Option<BTreeMap<String, Option<RoomLiveSignalMetadata>>>,
     /// User-local presence replacements; `None` removes a user entry.

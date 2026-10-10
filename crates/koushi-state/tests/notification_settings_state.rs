@@ -33,6 +33,8 @@ fn ready_state() -> AppState {
         unread_count: 0,
         notification_count: 0,
         highlight_count: 0,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
         marked_unread: false,
         recency_stamp: None,
         conversation_activity: None,
@@ -271,6 +273,8 @@ fn loaded_notification_preferences_recompute_activity_projection_with_effective_
         unread_count: 0,
         notification_count: 0,
         highlight_count: 0,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
         marked_unread: false,
         recency_stamp: Some(timestamp_ms),
         conversation_activity: Some(ConversationActivity {
