@@ -3290,15 +3290,38 @@ stateDiagram-v2
 - `LiveRoomSignalsUpdated { room_id, update }` replaces the room's full
   live-signal snapshot. The reducer normalizes duplicate receipts by user,
   sorts receipt event entries, and sorts/deduplicates typing user ids.
-- `LiveRoomReceiptSummariesUpdated { room_id, receipts_by_event }` merges
-  bounded live summaries into the room receipt map. Each entry contains at most
-  the compact reader cap and an exact total; it does not clear typing users or
-  the fully-read marker.
-- `LiveRoomReceiptsWindowReconciled { room_id, scoped_event_ids,
+- Receipt summaries are scoped by the timeline that observed them, because the
+  SDK resolves each timeline's receipt thread independently. The room main scope
+  (`ReceiptScope::Main`) is published by the Room timeline, whose receipts are
+  unthreaded. A focused scope (`ReceiptScope::Focused { event_id }`) is published
+  by the permalink/context timeline for that target, and a thread scope
+  (`ReceiptScope::Thread { root_event_id }`) by that root's Thread timeline.
+  A focused timeline cannot share the main scope unconditionally: the SDK
+  resolves `TimelineFocus::Event` to unthreaded receipts only when the target is
+  not part of a thread, and to that thread's threaded receipts when it is. The
+  scopes are stored separately: `RoomLiveSignals.receipts_by_event` holds the
+  main scope, `RoomLiveSignals.focused_receipts_by_event[event_id]` holds one
+  focused scope, and `RoomLiveSignals.thread_receipts_by_event[root_event_id]`
+  holds one thread scope. Two actors that observe the same event ID in different
+  scopes therefore cannot overwrite each other's readers, and a pane reads only
+  the scope of its own timeline key. GUI code must not merge or fall back across
+  scopes.
+- `LiveRoomReceiptSummariesUpdated { room_id, scope, scoped_event_ids,
+  receipts_by_event }` first removes the entries named by `scoped_event_ids` in
+  `scope`, then merges the bounded live summaries into that scope. Each entry
+  contains at most the compact reader cap and an exact total; it does not clear
+  typing users or the fully-read marker. A live diff that observed only
+  incremental changes passes an empty `scoped_event_ids` and therefore only
+  merges.
+- `LiveRoomReceiptsWindowReconciled { room_id, scope, scoped_event_ids,
   receipts_by_event }` is an authoritative replacement only for the stable
-  event-ID union of the actor's old and replacement timeline windows. It first
-  removes receipt entries in that scope, then inserts the replacement snapshot;
-  receipt state outside the scope is preserved.
+  event-ID union of the actor's old and replacement timeline windows, within
+  `scope`. It first removes receipt entries in that scope, then inserts the
+  replacement snapshot; receipt state outside the scope is preserved.
+- A timeline actor's initial receipt observation is a reconcile of its own scope
+  over its own initial window, not a merge. When a reader moved while no actor
+  observed the room, the new actor's reconcile removes the retired actor's
+  summary on the old event instead of leaving stale readers behind.
 - Receipt reader display data is resolved in Rust before it reaches the GUI.
   `AvatarThumbnailUpdated` also settles already-enriched reader avatar copies by
   exact MXC URI and emits `LiveSignalsChanged` when at least one copy changes, so

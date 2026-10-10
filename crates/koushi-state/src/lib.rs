@@ -114,7 +114,7 @@ pub use state::{
     PendingKeyCountBucket, PendingNotificationEmail, PinOp, PinOperationState, PinnedEvent,
     PinnedEventState, PreparedUploadFormat, PreparedUploadVariant, PresenceKind, ProfileResolution,
     ProfileResolutionInput, ProfileResolutionSource, ProfileState, ProfileUpdateRequest,
-    ProfileUpdateState, ProvisionalPhase, QrLoginState, RecoveryKeyDeliveryState,
+    ProfileUpdateState, ProvisionalPhase, QrLoginState, ReceiptScope, RecoveryKeyDeliveryState,
     RecoveryKeyMaterial, RecoveryMethod, ReplyQuote, ReplyQuoteCodeBlock, ReplyQuoteFormattedBody,
     ReplyQuoteState, RestrictedConditions, RoomAccessCondition, RoomAccessDraft,
     RoomAccessDraftScope, RoomAccessObservation, RoomAccessPolicy, RoomAccessPreview,

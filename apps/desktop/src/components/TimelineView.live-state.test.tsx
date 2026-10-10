@@ -279,6 +279,8 @@ describe("TimelineView", () => {
           rooms: {
             "!room:example.invalid": {
               fully_read_event_id: null,
+              focused_receipts_by_event: {},
+              thread_receipts_by_event: {},
               typing_user_ids: [],
               typing_users: [],
               receipts_by_event: {
@@ -367,6 +369,8 @@ describe("TimelineView", () => {
           rooms: {
             "!room:example.invalid": {
               fully_read_event_id: null,
+              focused_receipts_by_event: {},
+              thread_receipts_by_event: {},
               typing_user_ids: [],
               typing_users: [],
               receipts_by_event: {
@@ -454,6 +458,8 @@ describe("TimelineView", () => {
           rooms: {
             "!room:example.invalid": {
               fully_read_event_id: null,
+              focused_receipts_by_event: {},
+              thread_receipts_by_event: {},
               typing_user_ids: [],
               typing_users: [],
               receipts_by_event: {
@@ -1016,6 +1022,8 @@ describe("TimelineView", () => {
             }
           },
           fully_read_event_id: null,
+          focused_receipts_by_event: {},
+          thread_receipts_by_event: {},
           typing_user_ids: [],
           typing_users: []
         }
@@ -1064,6 +1072,8 @@ describe("TimelineView", () => {
         "!room:example.invalid": {
           receipts_by_event: {},
           fully_read_event_id: null,
+          focused_receipts_by_event: {},
+          thread_receipts_by_event: {},
           typing_user_ids: ["@hironeishida:matrix.org"],
           typing_users: [
             {
@@ -1108,6 +1118,8 @@ describe("TimelineView", () => {
         "!room:example.invalid": {
           receipts_by_event: {},
           fully_read_event_id: null,
+          focused_receipts_by_event: {},
+          thread_receipts_by_event: {},
           typing_user_ids: ["@unknown:example.invalid"],
           typing_users: [
             {

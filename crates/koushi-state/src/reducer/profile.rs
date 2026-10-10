@@ -485,7 +485,7 @@ pub(crate) fn handle_avatar_thumbnail_updated(
             update_avatar_thumbnail(&mut invite.avatar, &mxc_uri, thumbnail.clone());
     }
     for room in state.live_signals.rooms.values_mut() {
-        for summary in room.receipts_by_event.values_mut() {
+        for summary in room.receipt_summaries_mut() {
             for reader in &mut summary.readers {
                 if update_avatar_thumbnail(&mut reader.avatar, &mxc_uri, thumbnail.clone()) {
                     live_signals_changed = true;

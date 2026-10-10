@@ -12,7 +12,8 @@
 use std::collections::BTreeMap;
 
 use koushi_protocol::{
-    CoreCommandAdmission, RoomLiveSignalMetadata, StateDelta, VersionedAppStateSnapshot,
+    CoreCommandAdmission, RoomLiveSignalMetadata, ScopedReceiptSummaryChanges, StateDelta,
+    VersionedAppStateSnapshot,
 };
 use koushi_state::{
     AccountManagementCapabilities, AccountManagementState, AccountManagementUrl, ActivityState,
@@ -337,6 +338,10 @@ pub struct FrontendDomainStateChangedSlices {
     pub live_signals_receipts_by_room_event:
         Option<BTreeMap<String, BTreeMap<String, Option<LiveEventReceiptSummary>>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_signals_focused_receipts_by_room_event: Option<ScopedReceiptSummaryChanges>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_signals_thread_receipts_by_room_event: Option<ScopedReceiptSummaryChanges>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub live_signals_room_metadata_by_id: Option<BTreeMap<String, Option<RoomLiveSignalMetadata>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_signals_presence_by_user: Option<BTreeMap<String, Option<PresenceKind>>>,
@@ -405,6 +410,8 @@ impl FrontendDomainStateChangedSlices {
             && self.live_signals.is_none()
             && self.live_signals_rooms.is_none()
             && self.live_signals_receipts_by_room_event.is_none()
+            && self.live_signals_focused_receipts_by_room_event.is_none()
+            && self.live_signals_thread_receipts_by_room_event.is_none()
             && self.live_signals_room_metadata_by_id.is_none()
             && self.live_signals_presence_by_user.is_none()
             && self.e2ee_trust.is_none()
@@ -527,6 +534,10 @@ impl From<StateDelta> for FrontendDesktopSnapshotDelta {
         domain.live_signals = changed.live_signals;
         domain.live_signals_rooms = changed.live_signals_rooms;
         domain.live_signals_receipts_by_room_event = changed.live_signals_receipts_by_room_event;
+        domain.live_signals_focused_receipts_by_room_event =
+            changed.live_signals_focused_receipts_by_room_event;
+        domain.live_signals_thread_receipts_by_room_event =
+            changed.live_signals_thread_receipts_by_room_event;
         domain.live_signals_room_metadata_by_id = changed.live_signals_room_metadata_by_id;
         domain.live_signals_presence_by_user = changed.live_signals_presence_by_user;
         domain.e2ee_trust = changed.e2ee_trust;

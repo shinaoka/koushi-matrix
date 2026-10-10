@@ -442,6 +442,8 @@ fn room_live_signal_delta_crosses_the_frontend_boundary() {
         value["changed"]["state"]["domain"]["live_signals_rooms"]["!room:example.invalid"],
         json!({
             "receipts_by_event": {},
+            "focused_receipts_by_event": {},
+            "thread_receipts_by_event": {},
             "fully_read_event_id": null,
             "typing_user_ids": [],
             "typing_users": []
@@ -485,6 +487,14 @@ fn room_live_signal_metadata_delta_crosses_the_frontend_boundary() {
     );
     assert!(domain["live_signals_rooms"].is_null());
     assert!(domain["live_signals_receipts_by_room_event"].is_null());
+    assert!(
+        domain["live_signals_focused_receipts_by_room_event"].is_null(),
+        "a metadata-only change must not publish a focused receipt slice"
+    );
+    assert!(
+        domain["live_signals_thread_receipts_by_room_event"].is_null(),
+        "a metadata-only change must not publish a thread receipt slice"
+    );
 }
 
 #[test]
@@ -524,6 +534,116 @@ fn receipt_event_delta_crosses_the_frontend_boundary_without_full_room() {
             ["total_count"],
         json!(2)
     );
+    assert!(domain["live_signals_rooms"].is_null());
+    assert!(domain["live_signals"].is_null());
+    assert!(domain["live_signals_focused_receipts_by_room_event"].is_null());
+    assert!(domain["live_signals_thread_receipts_by_room_event"].is_null());
+}
+
+#[test]
+fn thread_scoped_receipt_delta_crosses_the_frontend_boundary_without_full_room() {
+    let mut previous = booted_app_state();
+    previous.live_signals.rooms.insert(
+        "!room:example.invalid".to_owned(),
+        koushi_state::RoomLiveSignals {
+            thread_receipts_by_event: std::collections::BTreeMap::from([(
+                "$root:example.invalid".to_owned(),
+                std::collections::BTreeMap::from([(
+                    "$reply:example.invalid".to_owned(),
+                    koushi_state::LiveEventReceiptSummary {
+                        total_count: 1,
+                        ..Default::default()
+                    },
+                )]),
+            )]),
+            ..Default::default()
+        },
+    );
+    let mut next = previous.clone();
+    next.live_signals
+        .rooms
+        .get_mut("!room:example.invalid")
+        .unwrap()
+        .thread_receipts_by_event
+        .get_mut("$root:example.invalid")
+        .unwrap()
+        .get_mut("$reply:example.invalid")
+        .unwrap()
+        .total_count = 2;
+
+    let delta =
+        koushi_core::build_state_delta(10, &previous, &next).expect("thread receipt change");
+    let value = serde_json::to_value(FrontendDesktopSnapshotDelta::from(delta))
+        .expect("thread receipt delta should serialize");
+    let domain = &value["changed"]["state"]["domain"];
+
+    assert_eq!(
+        domain["live_signals_thread_receipts_by_room_event"]["!room:example.invalid"]["$root:example.invalid"]
+            ["$reply:example.invalid"]["total_count"],
+        json!(2)
+    );
+    assert!(domain["live_signals_focused_receipts_by_room_event"].is_null());
+    assert!(domain["live_signals_receipts_by_room_event"].is_null());
+    assert!(domain["live_signals_rooms"].is_null());
+    assert!(domain["live_signals"].is_null());
+}
+
+#[test]
+fn focused_scoped_receipt_delta_crosses_the_frontend_boundary_without_full_room() {
+    let mut previous = booted_app_state();
+    previous.live_signals.rooms.insert(
+        "!room:example.invalid".to_owned(),
+        koushi_state::RoomLiveSignals {
+            focused_receipts_by_event: std::collections::BTreeMap::from([(
+                "$target:example.invalid".to_owned(),
+                std::collections::BTreeMap::from([(
+                    "$reply:example.invalid".to_owned(),
+                    koushi_state::LiveEventReceiptSummary {
+                        total_count: 1,
+                        ..Default::default()
+                    },
+                )]),
+            )]),
+            // A same-room thread scope that is unchanged must stay out of this
+            // delta: the two scopes are never folded together.
+            thread_receipts_by_event: std::collections::BTreeMap::from([(
+                "$root:example.invalid".to_owned(),
+                std::collections::BTreeMap::from([(
+                    "$reply:example.invalid".to_owned(),
+                    koushi_state::LiveEventReceiptSummary {
+                        total_count: 5,
+                        ..Default::default()
+                    },
+                )]),
+            )]),
+            ..Default::default()
+        },
+    );
+    let mut next = previous.clone();
+    next.live_signals
+        .rooms
+        .get_mut("!room:example.invalid")
+        .unwrap()
+        .focused_receipts_by_event
+        .get_mut("$target:example.invalid")
+        .unwrap()
+        .get_mut("$reply:example.invalid")
+        .unwrap()
+        .total_count = 3;
+
+    let delta =
+        koushi_core::build_state_delta(10, &previous, &next).expect("focused receipt change");
+    let value = serde_json::to_value(FrontendDesktopSnapshotDelta::from(delta))
+        .expect("focused receipt delta should serialize");
+    let domain = &value["changed"]["state"]["domain"];
+
+    assert_eq!(
+        domain["live_signals_focused_receipts_by_room_event"]["!room:example.invalid"]["$target:example.invalid"]
+            ["$reply:example.invalid"]["total_count"],
+        json!(3)
+    );
+    assert!(domain["live_signals_thread_receipts_by_room_event"].is_null());
+    assert!(domain["live_signals_receipts_by_room_event"].is_null());
     assert!(domain["live_signals_rooms"].is_null());
     assert!(domain["live_signals"].is_null());
 }
@@ -1936,6 +2056,40 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
                 "!room:example.invalid".to_owned(),
                 RoomLiveSignals {
                     receipts_by_event: BTreeMap::new(),
+                    focused_receipts_by_event: BTreeMap::from([(
+                        "$target:example.invalid".to_owned(),
+                        BTreeMap::from([(
+                            "$focused-reply:example.invalid".to_owned(),
+                            koushi_state::LiveEventReceiptSummary {
+                                readers: vec![koushi_state::LiveReadReceipt {
+                                    user_id: "@focused-reader:example.invalid".to_owned(),
+                                    display_name: Some("Focused Reader".to_owned()),
+                                    original_display_label: "Focused Reader".to_owned(),
+                                    avatar: None,
+                                    timestamp_ms: Some(7),
+                                }],
+                                total_count: 1,
+                                overflow_count: 0,
+                            },
+                        )]),
+                    )]),
+                    thread_receipts_by_event: BTreeMap::from([(
+                        "$root:example.invalid".to_owned(),
+                        BTreeMap::from([(
+                            "$thread-reply:example.invalid".to_owned(),
+                            koushi_state::LiveEventReceiptSummary {
+                                readers: vec![koushi_state::LiveReadReceipt {
+                                    user_id: "@thread-reader:example.invalid".to_owned(),
+                                    display_name: Some("Thread Reader".to_owned()),
+                                    original_display_label: "Thread Reader".to_owned(),
+                                    avatar: None,
+                                    timestamp_ms: Some(9),
+                                }],
+                                total_count: 1,
+                                overflow_count: 0,
+                            },
+                        )]),
+                    )]),
                     fully_read_event_id: Some("$read:example.invalid".to_owned()),
                     typing_user_ids: vec!["@other:example.invalid".to_owned()],
                     typing_users: vec![koushi_state::LiveTypingUser {

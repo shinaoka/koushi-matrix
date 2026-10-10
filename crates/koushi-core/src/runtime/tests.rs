@@ -3073,6 +3073,7 @@ async fn receipt_resolution_borrows_current_alias_without_publishing_global_stat
         let (receipt_effects, _) =
             actor.reduce_app_action_state(AppAction::LiveRoomReceiptsWindowReconciled {
                 room_id: "!room:example.org".into(),
+                scope: koushi_state::ReceiptScope::Main,
                 scoped_event_ids: vec!["$event".into()],
                 receipts_by_event: Vec::new(),
             });

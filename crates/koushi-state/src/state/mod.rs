@@ -287,8 +287,8 @@ pub use basic_operation::{
 // ── Re-exports: live_signals ────────────────────────────────────────────────
 pub use live_signals::{
     LiveEventReceiptSummary, LiveEventReceiptSummaryUpdate, LiveEventReceipts, LiveReadReceipt,
-    LiveRoomSignalUpdate, LiveSignalsState, LiveTypingUser, PresenceKind, RoomLiveSignals,
-    enrich_live_receipt, refresh_live_receipt_display_projection,
+    LiveRoomSignalUpdate, LiveSignalsState, LiveTypingUser, PresenceKind, ReceiptScope,
+    RoomLiveSignals, enrich_live_receipt, refresh_live_receipt_display_projection,
     refresh_live_typing_user_display_projection, resolve_live_receipt_profile,
 };
 

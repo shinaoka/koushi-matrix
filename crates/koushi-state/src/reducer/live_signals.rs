@@ -55,6 +55,8 @@ pub(crate) fn handle_live_room_profiles_observed(
 pub(crate) fn handle_live_room_receipt_summaries_updated(
     state: &mut AppState,
     room_id: String,
+    scope: crate::state::ReceiptScope,
+    scoped_event_ids: Vec<String>,
     receipts_by_event: Vec<crate::state::LiveEventReceiptSummaryUpdate>,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
@@ -63,12 +65,16 @@ pub(crate) fn handle_live_room_receipt_summaries_updated(
 
     let own_user_id = session_user_id(state).map(str::to_owned);
     let relevant_room_profiles = state.profile.room_users.get(&room_id);
+    let previous_scope = state
+        .live_signals
+        .rooms
+        .get(&room_id)
+        .and_then(|room| room.receipts_for_scope(&scope));
+    let mut summaries = Vec::with_capacity(receipts_by_event.len());
     for mut entry in receipts_by_event {
-        let previous_readers = state
-            .live_signals
-            .rooms
-            .get(&room_id)
-            .and_then(|room| room.receipts_by_event.get(&entry.event_id))
+        let event_id = entry.event_id.clone();
+        let previous_readers = previous_scope
+            .and_then(|receipts| receipts.get(&event_id))
             .map(|summary| &summary.readers);
         for receipt in &mut entry.readers {
             if receipt.avatar.is_none() {
@@ -81,19 +87,23 @@ pub(crate) fn handle_live_room_receipt_summaries_updated(
                     .and_then(|reader| reader.avatar.clone());
             }
         }
-        let event_id = entry.event_id.clone();
         let summary = entry.into_summary_with_profiles(
             &state.profile,
             relevant_room_profiles,
             own_user_id.as_deref(),
         );
-        state
-            .live_signals
-            .rooms
-            .entry(room_id.clone())
-            .or_default()
-            .receipts_by_event
-            .insert(event_id, summary);
+        summaries.push((event_id, summary));
+    }
+
+    let room = state.live_signals.rooms.entry(room_id).or_default();
+    {
+        let scoped = room.receipts_for_scope_mut(&scope);
+        for event_id in scoped_event_ids {
+            scoped.remove(&event_id);
+        }
+        for (event_id, summary) in summaries {
+            scoped.insert(event_id, summary);
+        }
     }
     vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
 }
@@ -101,6 +111,7 @@ pub(crate) fn handle_live_room_receipt_summaries_updated(
 pub(crate) fn handle_live_room_receipts_window_reconciled(
     state: &mut AppState,
     room_id: String,
+    scope: crate::state::ReceiptScope,
     scoped_event_ids: Vec<String>,
     receipts_by_event: Vec<crate::state::LiveEventReceipts>,
 ) -> Vec<AppEffect> {
@@ -122,10 +133,13 @@ pub(crate) fn handle_live_room_receipts_window_reconciled(
         own_user_id.as_deref(),
     );
     let room = state.live_signals.rooms.entry(room_id).or_default();
-    for event_id in scoped_event_ids {
-        room.receipts_by_event.remove(&event_id);
+    {
+        let scoped = room.receipts_for_scope_mut(&scope);
+        for event_id in scoped_event_ids {
+            scoped.remove(&event_id);
+        }
+        scoped.extend(normalized.receipts_by_event);
     }
-    room.receipts_by_event.extend(normalized.receipts_by_event);
     vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
 }
 
