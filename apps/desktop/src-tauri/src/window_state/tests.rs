@@ -249,6 +249,32 @@ fn window_state_gate_suppresses_maximize_echo_then_persists_user_unmaximize() {
     assert_eq!(gate.phase(), WindowStatePersistencePhase::Ready);
 }
 #[test]
+fn window_state_gate_persists_user_resize_when_maximize_was_never_observed() {
+    let initial = geometry(10, 20, 1280, 820, 1.0, false);
+    let expected = geometry(40, 50, 1280, 820, 1.0, true);
+    let mut gate = WindowStatePersistenceGate::PreArm;
+    gate.arm(initial, expected);
+
+    // A native maximize can be deferred without emitting a maximized geometry
+    // event. Its startup size/position echoes must remain suppressed.
+    assert_eq!(
+        gate.observe(initial),
+        WindowStatePersistenceAction::Suppress
+    );
+    assert_eq!(
+        gate.observe(geometry(40, 50, 1280, 820, 1.0, false)),
+        WindowStatePersistenceAction::Suppress
+    );
+
+    // A later resize is user geometry even if the maximize acknowledgement
+    // never arrived. It must not leave the persistence gate stuck forever.
+    assert_eq!(
+        gate.observe(geometry(40, 50, 1100, 700, 1.0, false)),
+        WindowStatePersistenceAction::Persist
+    );
+    assert_eq!(gate.phase(), WindowStatePersistencePhase::Ready);
+}
+#[test]
 fn close_and_destroyed_persist_only_after_ready_gate() {
     let initial = geometry(10, 20, 1280, 820, 1.0, false);
     let mut gate = WindowStatePersistenceGate::PreArm;
