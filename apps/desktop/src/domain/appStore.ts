@@ -7,8 +7,10 @@ import { roomDisplayLabel } from "./roomDisplayLabel";
 import { getActiveLocale, type Locale } from "../i18n/messages";
 import type {
   ActivityRow,
+  AppDomainState,
   AppState,
   DesktopSnapshot,
+  LiveEventReceiptSummary,
   MentionCandidatesTarget,
   MentionSurface
 } from "./types";
@@ -198,6 +200,44 @@ function activityRowKey(row: ActivityRow): string {
   return row.event_id === null ? `room-unread:${row.room_id}` : `event:${row.event_id}`;
 }
 
+type ScopedReceiptDeltas = Record<
+  string,
+  Record<string, Record<string, LiveEventReceiptSummary | null>>
+>;
+
+/**
+ * Merge a focused- or thread-scope receipt delta into its own room map. The
+ * main scope is never read or written here: #1255 exists because the two scopes
+ * were once folded into one event-keyed map.
+ */
+function applyScopedReceiptDeltas(
+  domain: AppDomainState,
+  deltas: ScopedReceiptDeltas,
+  field: "focused_receipts_by_event" | "thread_receipts_by_event"
+): AppDomainState {
+  const rooms = { ...domain.live_signals.rooms };
+  for (const [roomId, scopes] of Object.entries(deltas)) {
+    const room = rooms[roomId];
+    if (!room) {
+      continue;
+    }
+    const scoped = { ...room[field] };
+    for (const [scopeKey, updates] of Object.entries(scopes)) {
+      const receipts = { ...(scoped[scopeKey] ?? {}) };
+      for (const [eventId, summary] of Object.entries(updates)) {
+        if (summary === null) {
+          delete receipts[eventId];
+        } else {
+          receipts[eventId] = summary;
+        }
+      }
+      scoped[scopeKey] = receipts;
+    }
+    rooms[roomId] = { ...room, [field]: scoped };
+  }
+  return { ...domain, live_signals: { ...domain.live_signals, rooms } };
+}
+
 function applyStateDelta(
   previous: AppState,
   changed: AppStateChangedSlices | undefined
@@ -210,6 +250,8 @@ function applyStateDelta(
     const {
       live_signals_rooms,
       live_signals_receipts_by_room_event,
+      live_signals_focused_receipts_by_room_event,
+      live_signals_thread_receipts_by_room_event,
       live_signals_room_metadata_by_id,
       live_signals_presence_by_user,
       rooms_by_id,
@@ -455,6 +497,20 @@ function applyStateDelta(
         ...domain,
         live_signals: { ...domain.live_signals, rooms }
       };
+    }
+    if (live_signals_focused_receipts_by_room_event) {
+      domain = applyScopedReceiptDeltas(
+        domain,
+        live_signals_focused_receipts_by_room_event,
+        "focused_receipts_by_event"
+      );
+    }
+    if (live_signals_thread_receipts_by_room_event) {
+      domain = applyScopedReceiptDeltas(
+        domain,
+        live_signals_thread_receipts_by_room_event,
+        "thread_receipts_by_event"
+      );
     }
   }
   return {

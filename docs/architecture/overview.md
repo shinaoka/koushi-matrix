@@ -331,7 +331,10 @@ It adds no `AppState`, `AppAction`, reducer or reducer transition and does not y
 remove the watch or complete the full scoped-publication migration. Room-local
 live-signal metadata changes use the `live_signals_rooms` state-delta slice,
 while receipt-only changes use nested `live_signals_receipts_by_room_event`
-replacements so moving one receipt does not clone other events in that room.
+replacements (main scope) plus its `live_signals_focused_receipts_by_room_event`
+and `live_signals_thread_receipts_by_room_event` siblings for the focused and
+thread scopes, so moving one receipt does not clone other events in that room
+and the scopes are never merged together.
 Room additions/removals and typing/fully-read metadata retain the full room
 fallback; account-level presence changes use `live_signals_presence_by_user`.
 All replacement maps carry explicit removals. The frontend merges these slices

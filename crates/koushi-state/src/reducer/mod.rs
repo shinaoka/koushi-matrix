@@ -2017,10 +2017,14 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         ),
         AppAction::LiveRoomReceiptSummariesUpdated {
             room_id,
+            scope,
+            scoped_event_ids,
             receipts_by_event,
         } => live_signals::handle_live_room_receipt_summaries_updated(
             state,
             room_id,
+            scope,
+            scoped_event_ids,
             receipts_by_event,
         ),
         AppAction::LiveRoomProfilesObserved { room_id, profiles } => {
@@ -2028,11 +2032,13 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         }
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id,
+            scope,
             scoped_event_ids,
             receipts_by_event,
         } => live_signals::handle_live_room_receipts_window_reconciled(
             state,
             room_id,
+            scope,
             scoped_event_ids,
             receipts_by_event,
         ),

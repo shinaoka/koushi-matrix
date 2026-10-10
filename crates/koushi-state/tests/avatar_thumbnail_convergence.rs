@@ -94,6 +94,7 @@ fn room_observation_and_receipt_prefer_authoritative_matching_ready_thumbnail() 
         &mut state,
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: ROOM_ID.to_owned(),
+            scope: koushi_state::ReceiptScope::Main,
             scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$event:example.invalid".to_owned(),
@@ -147,6 +148,7 @@ fn receipt_window_reuses_ready_thumbnail_from_existing_receipt_state() {
         &mut state,
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: ROOM_ID.to_owned(),
+            scope: koushi_state::ReceiptScope::Main,
             scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$new:example.invalid".to_owned(),
@@ -219,6 +221,7 @@ fn profile_and_receipt_observations_preserve_matching_ready_and_reset_changed_mx
         &mut state,
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: ROOM_ID.to_owned(),
+            scope: koushi_state::ReceiptScope::Main,
             scoped_event_ids: Vec::new(),
             receipts_by_event: vec![receipt("$event:example.invalid")],
         },
@@ -250,6 +253,7 @@ fn profile_and_receipt_observations_preserve_matching_ready_and_reset_changed_mx
         &mut state,
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: ROOM_ID.to_owned(),
+            scope: koushi_state::ReceiptScope::Main,
             scoped_event_ids: vec!["$event:example.invalid".to_owned()],
             receipts_by_event: vec![receipt("$event:example.invalid")],
         },

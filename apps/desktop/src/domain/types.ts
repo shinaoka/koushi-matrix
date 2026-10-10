@@ -2237,6 +2237,8 @@ export interface RoomLiveSignalMetadata {
 
 export interface RoomLiveSignals {
   receipts_by_event: Record<string, LiveEventReceiptSummary>;
+  focused_receipts_by_event: Record<string, Record<string, LiveEventReceiptSummary>>;
+  thread_receipts_by_event: Record<string, Record<string, LiveEventReceiptSummary>>;
   fully_read_event_id: string | null;
   typing_user_ids: string[];
   typing_users: LiveTypingUser[];

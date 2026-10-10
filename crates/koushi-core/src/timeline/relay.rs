@@ -1048,6 +1048,7 @@ impl TimelineActor {
                 room_id,
                 receipts_by_event: live_event_receipts_from_sdk_items(items.iter()),
                 target: ReceiptObservationTarget::Authoritative {
+                    scope: super::item_projection::receipt_scope_for_timeline_kind(&self.key.kind),
                     scoped_event_ids: reconciliation.scoped_event_ids.clone(),
                 },
             });
@@ -1469,6 +1470,7 @@ fn authoritative_receipts_action(
 ) -> AppAction {
     AppAction::LiveRoomReceiptsWindowReconciled {
         room_id: room_id.to_owned(),
+        scope: koushi_state::ReceiptScope::Main,
         scoped_event_ids: reconciliation.scoped_event_ids.clone(),
         receipts_by_event,
     }

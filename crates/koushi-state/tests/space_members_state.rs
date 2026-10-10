@@ -1159,6 +1159,7 @@ fn loading_projection_observes_non_empty_child_profiles_for_receipt_fallback() {
         &mut state,
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: CHILD_ROOM_ID.to_owned(),
+            scope: koushi_state::ReceiptScope::Main,
             scoped_event_ids: Vec::new(),
             receipts_by_event: vec![koushi_state::LiveEventReceipts {
                 event_id: "$event:example.invalid".to_owned(),

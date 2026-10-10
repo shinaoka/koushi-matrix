@@ -1742,10 +1742,18 @@ pub enum AppAction {
     },
     LiveRoomReceiptSummariesUpdated {
         room_id: String,
+        /// Receipt scope of the observing timeline. Room and Thread actors send
+        /// only their own scope; the reducer never merges scopes.
+        scope: crate::state::ReceiptScope,
+        /// Event IDs in `scope` whose summaries this observation replaces before
+        /// merging. A live diff passes an empty list.
+        scoped_event_ids: Vec<String>,
         receipts_by_event: Vec<LiveEventReceiptSummaryUpdate>,
     },
     LiveRoomReceiptsWindowReconciled {
         room_id: String,
+        /// Receipt scope of the observing timeline.
+        scope: crate::state::ReceiptScope,
         scoped_event_ids: Vec<String>,
         receipts_by_event: Vec<LiveEventReceipts>,
     },

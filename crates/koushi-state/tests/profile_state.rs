@@ -140,6 +140,7 @@ fn avatar_thumbnail_update_refreshes_all_matching_receipt_copies() {
             &mut state,
             AppAction::LiveRoomReceiptsWindowReconciled {
                 room_id: room_id.to_owned(),
+                scope: koushi_state::ReceiptScope::Main,
                 scoped_event_ids: Vec::new(),
                 receipts_by_event: vec![LiveEventReceipts {
                     event_id: event_id.to_owned(),
@@ -936,6 +937,7 @@ fn local_user_aliases_override_read_receipt_reader_labels() {
         &mut state,
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: "!room:localhost".to_owned(),
+            scope: koushi_state::ReceiptScope::Main,
             scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$event:localhost".to_owned(),
@@ -989,6 +991,7 @@ fn relevant_room_observation_precedes_global_cache_for_seen_receipts() {
         &mut state,
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: "!room:localhost".to_owned(),
+            scope: koushi_state::ReceiptScope::Main,
             scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$room-seen:localhost".to_owned(),
@@ -1019,6 +1022,7 @@ fn profile_cache_updates_existing_receipt_after_space_child_observation() {
         &mut state,
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: "!child:localhost".to_owned(),
+            scope: koushi_state::ReceiptScope::Main,
             scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$seen:localhost".to_owned(),
@@ -1133,6 +1137,7 @@ fn receipt_window_reconcile_clears_missing_scoped_events_and_preserves_outside_s
             &mut state,
             AppAction::LiveRoomReceiptsWindowReconciled {
                 room_id: "!room:localhost".to_owned(),
+                scope: koushi_state::ReceiptScope::Main,
                 scoped_event_ids: Vec::new(),
                 receipts_by_event: vec![LiveEventReceipts {
                     event_id: event_id.to_owned(),
@@ -1152,6 +1157,7 @@ fn receipt_window_reconcile_clears_missing_scoped_events_and_preserves_outside_s
         &mut state,
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: "!room:localhost".to_owned(),
+            scope: koushi_state::ReceiptScope::Main,
             scoped_event_ids: vec![
                 "$removed:localhost".to_owned(),
                 "$updated:localhost".to_owned(),

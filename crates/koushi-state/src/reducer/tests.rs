@@ -905,6 +905,8 @@ fn bounded_live_receipt_summary_preserves_exact_total() {
         &mut state,
         AppAction::LiveRoomReceiptSummariesUpdated {
             room_id: "!room:example.invalid".to_owned(),
+            scope: crate::state::ReceiptScope::Main,
+            scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceiptSummaryUpdate {
                 event_id: "$event:example.invalid".to_owned(),
                 readers,
@@ -927,6 +929,7 @@ fn live_signal_actions_update_rust_owned_state() {
         &mut state,
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: "!room:example.invalid".to_owned(),
+            scope: crate::state::ReceiptScope::Main,
             scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$event:example.invalid".to_owned(),
@@ -963,6 +966,8 @@ fn live_signal_actions_update_rust_owned_state() {
                 },
             )]
             .into(),
+            focused_receipts_by_event: Default::default(),
+            thread_receipts_by_event: Default::default(),
             fully_read_event_id: None,
             typing_user_ids: Vec::new(),
             typing_users: Vec::new(),
@@ -1543,6 +1548,7 @@ fn live_read_receipts_project_reader_profiles_order_and_overflow() {
         &mut state,
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: "!room:example.invalid".to_owned(),
+            scope: crate::state::ReceiptScope::Main,
             scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$event:example.invalid".to_owned(),
