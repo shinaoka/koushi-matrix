@@ -4,8 +4,8 @@ use super::cleanup::{
 };
 use super::diagnostics::room_list_summary;
 use super::event_wait::{
-    find_timeline_item_with_body, root_thread_unread, wait_for_bodies_and_pagination_settle,
-    wait_for_initial_items, wait_for_item_with_body, wait_for_logged_in, wait_for_logged_out,
+    find_timeline_item_with_body, wait_for_bodies_and_pagination_settle, wait_for_initial_items,
+    wait_for_item_with_body, wait_for_logged_in, wait_for_logged_out,
     wait_for_operation_failed_and_signed_out, wait_for_ready_snapshot, wait_for_room_created,
     wait_for_room_joined, wait_for_root_thread_unread, wait_for_send_completed,
     wait_for_send_flow_completion, wait_for_session_restored, wait_for_space_child_set,
@@ -1048,8 +1048,7 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         );
         println!("thread_delivery=recorded");
 
-        // #1259: the chip dot is the bundled summary's reply count minus the session
-        // read marker, so an unopened thread with a new remote reply must show it.
+        // #1259: an unopened thread with a new remote reply must show the chip dot.
         let _chip_unread = wait_for_root_thread_unread(
             &mut conn_a,
             &key_a,
@@ -1125,29 +1124,18 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
             }))
             .await
             .map_err(|e| format!("submit threaded read receipt: {e}"))?;
-        let _ = root_thread_unread;
-        let mut cleared = false;
-        for _ in 0..20 {
-            if wait_for_root_thread_unread(
-                &mut conn_a,
-                &key_a,
-                &refreshed_room_items,
-                &event1_id,
-                "chip dot after threaded read",
-                |unread| unread == 0,
-            )
-            .await
-            .is_ok()
-            {
-                cleared = true;
-                break;
-            }
-        }
-        if !cleared {
-            return Err(
-                "thread_chip_dot failed: reading the thread left the dot on the chip".to_owned(),
-            );
-        }
+        // An empty window: only a diff that actually carries the root can satisfy this,
+        // so a stale window cannot make the clear assertion pass vacuously.
+        wait_for_root_thread_unread(
+            &mut conn_a,
+            &key_a,
+            &[],
+            &event1_id,
+            "chip dot after threaded read",
+            |unread| unread == 0,
+        )
+        .await
+        .map_err(|error| format!("thread_chip_dot failed: {error}"))?;
         println!("thread_chip_dot_cleared=ok");
 
         if scenario.should_run_stage(QaStage::RedactEditConvergence) {

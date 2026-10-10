@@ -9217,6 +9217,14 @@ kbd {
 }
 
 .files-view-row-meta,
+.threads-list-row-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* #1259: the Threads-list row shows the same per-root unread value as the chip. */
 .threads-list-row-unread {
   flex: 0 0 auto;
@@ -9230,14 +9238,6 @@ kbd {
   font-size: 12px;
   font-weight: 700;
   text-align: center;
-}
-
-.threads-list-row-meta {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  color: var(--text-muted);
 }
 
 .threads-list-row-button {

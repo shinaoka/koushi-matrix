@@ -98,7 +98,20 @@ The "no data" reading above was a measurement error. The diagnostic hook reads
 `navigation_items`, where a thread summary usually is not, so it rarely fired and
 the printed `cache_read=no unread=0` values were untouched defaults, not
 observations. In a run where it did fire, the SDK thread cache reported
-`unread=1 notifications=1` for the unopened thread on tuwunel — the per-thread
-counts are available, and the room timeline actor reads them for the chip dot
-(#1259). The boundary table above should be read as "the hook did not measure",
-not as "the client cannot know".
+`unread=1 notifications=1` for the unopened thread on tuwunel.
+
+The #1259 chip dot reads the SDK thread cache directly (`EventCache::thread` ->
+`read_receipts`) and does not need the diagnostic: on both tuwunel and Synapse the
+headless thread QA now shows and clears the dot while the diagnostic reports
+`subscribe=no cache_read=no`, so no subscription this client makes is what fills
+the cache — the thread receipts arrive with ordinary room sync. The boundary table
+above should be read as "the hook did not measure", not as "the client cannot know".
+
+Two consequences the hook's silence hid:
+
+- The room timeline actor must re-read the cache *after* a threaded read: the SDK
+  learns the read only from the sync echo of its receipt, which lands after the
+  send success that triggers the refresh. The actor therefore retries the refresh a
+  bounded number of times, which is what makes the dot actually clear.
+- The value is per root and still contributes to nothing room-level; the canon
+  boundary above stands as written.

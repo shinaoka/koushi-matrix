@@ -226,29 +226,18 @@ pub(crate) struct ThreadRootProjectionService {
     diagnostic_ordinals: ThreadSummaryDiagnosticOrdinals,
     /// #1259: the SDK's per-root thread unread, read from the thread cache's own
     /// threaded receipts, keyed by `(room_id, root_event_id)`.
-    thread_unread: HashMap<(String, String), ThreadUnreadCounts>,
+    thread_unread: HashMap<(String, String), u32>,
     /// The room-side summary identity the unread value was read against, so an
     /// unchanged summary never re-reads the thread cache.
     thread_unread_signatures: HashMap<(String, String), String>,
 }
 
-/// #1259: the accurate per-thread unread the bundled room summary cannot give.
-///
-/// It is deliberately not added to any room total: the canon requires a proven
-/// non-overlapping decomposition before a thread contribution may join a room
-/// count, and a homeserver whose room counters already include thread replies
-/// would otherwise count them twice.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ThreadUnreadCounts {
-    pub(crate) unread: u32,
-    pub(crate) mentions: u32,
-}
-
 /// #1259: every root the room window exposes with a live thread summary, as
-/// `(root_event_id, signature, latest_reply_event_id)`.
+/// `(root_event_id, signature)`. The signature is the room-side identity the unread
+/// value was read against, so an unchanged summary never re-reads the thread cache.
 pub(crate) fn window_thread_roots(
     items: &[koushi_protocol::event::TimelineItem],
-) -> Vec<(String, String, Option<String>)> {
+) -> Vec<(String, String)> {
     let mut roots = Vec::new();
     for item in items {
         if item.thread_root.is_some() {
@@ -267,7 +256,6 @@ pub(crate) fn window_thread_roots(
                 summary.latest_event_id.as_deref().unwrap_or_default(),
                 summary.reply_count
             ),
-            summary.latest_event_id.clone(),
         ));
     }
     roots
@@ -280,10 +268,10 @@ impl ThreadRootProjectionService {
         &self,
         room_id: &str,
         items: &[koushi_protocol::event::TimelineItem],
-    ) -> Vec<(String, String, Option<String>)> {
+    ) -> Vec<(String, String)> {
         window_thread_roots(items)
             .into_iter()
-            .filter(|(root_event_id, signature, _)| {
+            .filter(|(root_event_id, signature)| {
                 self.thread_unread_signatures
                     .get(&(room_id.to_owned(), root_event_id.clone()))
                     .is_none_or(|known| known != signature)
@@ -292,24 +280,25 @@ impl ThreadRootProjectionService {
     }
 
     /// #1259: store a freshly read unread value.
+    ///
+    /// The value is the SDK thread cache's own threaded unread count, and is deliberately
+    /// never added to a room total: the canon requires a proven non-overlapping
+    /// decomposition before a thread contribution may join a room count, and a homeserver
+    /// whose room counters already include thread replies would otherwise count them twice.
     pub(crate) fn apply_thread_unread(
         &mut self,
         room_id: &str,
         root_event_id: &str,
         signature: String,
-        counts: ThreadUnreadCounts,
+        unread: u32,
     ) {
         let key = (room_id.to_owned(), root_event_id.to_owned());
         self.thread_unread_signatures.insert(key.clone(), signature);
-        self.thread_unread.insert(key, counts);
+        self.thread_unread.insert(key, unread);
     }
 
     /// #1259: one root's stored unread value.
-    pub(crate) fn thread_unread_for(
-        &self,
-        room_id: &str,
-        root_event_id: &str,
-    ) -> ThreadUnreadCounts {
+    pub(crate) fn thread_unread_for(&self, room_id: &str, root_event_id: &str) -> u32 {
         self.thread_unread
             .get(&(room_id.to_owned(), root_event_id.to_owned()))
             .copied()
@@ -902,7 +891,7 @@ impl ThreadRootProjectionService {
             .collect::<Vec<_>>();
         roots.sort_by(|left, right| left.root_event_id.cmp(&right.root_event_id));
         for root in roots.iter_mut() {
-            root.unread = self.thread_unread_for(room_id, &root.root_event_id).unread;
+            root.unread = self.thread_unread_for(room_id, &root.root_event_id);
         }
         roots
     }

@@ -15,7 +15,7 @@ use super::{
     ActiveSubscription, AggregateRefreshCause, AuthoritativeThreadAggregate, OperationFailureKind,
     SubscriptionTasks, THREAD_SUMMARY_PROJECTION_MAX_ROOTS, ThreadRootProjectionActivity,
     ThreadRootProjectionCompletion, ThreadRootProjectionDecision,
-    ThreadRootProjectionRefreshResult, ThreadRootProjectionService, ThreadUnreadCounts,
+    ThreadRootProjectionRefreshResult, ThreadRootProjectionService,
     authoritative_thread_aggregate_from_sdk, window_thread_roots,
 };
 
@@ -1363,16 +1363,8 @@ fn thread_unread_is_gated_on_the_room_side_summary_identity() {
     let stale = service.roots_needing_unread_refresh(room, &[summary_item("$reply:test", 1)]);
     assert_eq!(stale.len(), 1);
     assert_eq!(stale[0].0, "$root:test");
-    service.apply_thread_unread(
-        room,
-        "$root:test",
-        stale[0].1.clone(),
-        ThreadUnreadCounts {
-            unread: 1,
-            mentions: 0,
-        },
-    );
-    assert_eq!(service.thread_unread_for(room, "$root:test").unread, 1);
+    service.apply_thread_unread(room, "$root:test", stale[0].1.clone(), 1);
+    assert_eq!(service.thread_unread_for(room, "$root:test"), 1);
 
     // An unchanged summary never re-reads the cache...
     assert!(
@@ -1389,13 +1381,8 @@ fn thread_unread_is_gated_on_the_room_side_summary_identity() {
     );
 
     // A read clears the stored value.
-    service.apply_thread_unread(
-        room,
-        "$root:test",
-        "$newer:test:2".to_owned(),
-        ThreadUnreadCounts::default(),
-    );
-    assert_eq!(service.thread_unread_for(room, "$root:test").unread, 0);
+    service.apply_thread_unread(room, "$root:test", "$newer:test:2".to_owned(), 0);
+    assert_eq!(service.thread_unread_for(room, "$root:test"), 0);
     // The window enumerates exactly the roots a refresh would read.
     assert_eq!(
         window_thread_roots(&[summary_item("$newer:test", 2)]).len(),

@@ -827,7 +827,7 @@ pub(crate) async fn sdk_thread_unread_counts(
     session: &koushi_sdk::MatrixClientSession,
     room_id: &str,
     root_event_id: &str,
-) -> Option<crate::threads_list::ThreadUnreadCounts> {
+) -> Option<u32> {
     let room_id = matrix_sdk::ruma::RoomId::parse(room_id).ok()?;
     let root_event_id = matrix_sdk::ruma::EventId::parse(root_event_id).ok()?;
     let (cache, _drop_handles) = session
@@ -836,12 +836,10 @@ pub(crate) async fn sdk_thread_unread_counts(
         .thread(&room_id, &root_event_id)
         .await
         .ok()?;
+    // The SDK's threaded unread count already covers replies that also notify, so no
+    // separate notification count is needed here.
     let receipts = cache.read_receipts().await.ok()?;
-    Some(crate::threads_list::ThreadUnreadCounts {
-        unread: u32::try_from(receipts.num_unread.max(receipts.num_notifications))
-            .unwrap_or(u32::MAX),
-        mentions: u32::try_from(receipts.num_mentions).unwrap_or(u32::MAX),
-    })
+    Some(u32::try_from(receipts.num_unread).unwrap_or(u32::MAX))
 }
 
 pub(super) fn seed_thread_summary_diff(
@@ -887,10 +885,10 @@ pub(super) fn overlay_thread_summary_item(
         };
         // #1259: the chip dot is the SDK thread cache's own unread value for this root,
         // read by the actor whenever the room-side summary changed.
-        let counts = service.thread_unread_for(key.room_id(), event_id);
+        let unread = service.thread_unread_for(key.room_id(), event_id);
         let mut overlaid = thread_root_item_with_authoritative_aggregate(item, &aggregate);
         if let Some(summary) = overlaid.thread_summary.as_mut() {
-            summary.unread_count = counts.unread;
+            summary.unread_count = unread;
         }
         overlaid
     }

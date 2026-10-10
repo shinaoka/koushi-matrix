@@ -217,6 +217,10 @@ pub(super) enum TimelineActorMessage {
     /// #1259: re-overlay the room root items whose thread unread changed because a
     /// read marker advanced outside this actor.
     RefreshThreadUnread,
+    /// #1259: the same, retried while a threaded read's sync echo is still in flight.
+    RefreshThreadUnreadRetry {
+        attempt: u32,
+    },
     GlobalResponseCommitted(GlobalResponseCommit),
     StartLiveTailRefresh {
         epoch: u64,
@@ -1241,15 +1245,15 @@ impl TimelineActor {
                 .roots_needing_unread_refresh(&room_id, &self.navigation_items)
         };
         let mut refreshed = Vec::new();
-        for (root_event_id, signature, _latest_reply_id) in candidates {
-            if let Some(counts) = super::thread_projection::sdk_thread_unread_counts(
+        for (root_event_id, signature) in candidates {
+            if let Some(unread) = super::thread_projection::sdk_thread_unread_counts(
                 &self.session,
                 &room_id,
                 &root_event_id,
             )
             .await
             {
-                refreshed.push((root_event_id, signature, counts));
+                refreshed.push((root_event_id, signature, unread));
             }
         }
         if refreshed.is_empty() {
@@ -1260,17 +1264,17 @@ impl TimelineActor {
                 .thread_root_projection_service
                 .lock()
                 .expect("thread-root projection service lock must not be poisoned");
-            for (root_event_id, signature, counts) in refreshed.iter() {
-                service.apply_thread_unread(&room_id, root_event_id, signature.clone(), *counts);
+            for (root_event_id, signature, unread) in refreshed.iter() {
+                service.apply_thread_unread(&room_id, root_event_id, signature.clone(), *unread);
             }
         }
-        for (root_event_id, _, counts) in refreshed {
+        for (root_event_id, _, unread) in refreshed {
             // #1259: the Threads list is state-rendered, so mirror the value there.
             if !self
                 .emit_action_reliable(koushi_state::AppAction::ThreadUnreadObserved {
                     room_id: room_id.clone(),
                     root_event_id,
-                    unread: counts.unread,
+                    unread,
                 })
                 .await
             {
@@ -1278,6 +1282,37 @@ impl TimelineActor {
             }
         }
         self.repaint_thread_unread();
+    }
+
+    /// #1259: the SDK learns a threaded read only from the sync echo of its receipt,
+    /// which lands after the send success that asked for this refresh. Re-read a bounded
+    /// number of times so the dot clears on its own instead of waiting for unrelated room
+    /// activity. The task ends when the actor is gone (its send fails) or the value cleared.
+    fn schedule_thread_unread_recheck(&mut self, attempt: u32) {
+        const MAX_ATTEMPTS: u32 = 10;
+        const INTERVAL: std::time::Duration = std::time::Duration::from_millis(1_000);
+        if attempt > MAX_ATTEMPTS || !self.has_unread_thread_root() {
+            return;
+        }
+        let tx = self.msg_tx.clone();
+        executor::spawn(async move {
+            executor::sleep(INTERVAL).await;
+            let _ = tx
+                .send(TimelineActorMessage::RefreshThreadUnreadRetry { attempt })
+                .await;
+        });
+    }
+
+    /// #1259: whether any visible thread root still reports unread replies.
+    fn has_unread_thread_root(&self) -> bool {
+        let room_id = self.key.room_id();
+        let service = self
+            .thread_root_projection_service
+            .lock()
+            .expect("thread-root projection service lock must not be poisoned");
+        crate::threads_list::window_thread_roots(&self.navigation_items)
+            .into_iter()
+            .any(|(root_event_id, _)| service.thread_unread_for(room_id, &root_event_id) > 0)
     }
 
     /// #1259: re-overlay the root items whose dot changed and emit a `Set` for each, so
@@ -2935,6 +2970,11 @@ impl TimelineActor {
             }
             TimelineActorMessage::RefreshThreadUnread => {
                 self.refresh_thread_unread_counts(true).await;
+                self.schedule_thread_unread_recheck(1);
+            }
+            TimelineActorMessage::RefreshThreadUnreadRetry { attempt } => {
+                self.refresh_thread_unread_counts(true).await;
+                self.schedule_thread_unread_recheck(attempt + 1);
             }
             TimelineActorMessage::ReplayInitialItems { cause_request_id } => {
                 self.handle_replay_initial_items(cause_request_id);
