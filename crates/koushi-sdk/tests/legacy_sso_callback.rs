@@ -7,6 +7,7 @@
 //! correlation half is covered by `koushi-core`/`koushi-desktop` tests.
 
 use koushi_sdk::MatrixClientStoreConfig;
+use koushi_state::DelegatedAuthMethod;
 use std::{
     io::{Read, Write},
     net::TcpListener,
@@ -37,6 +38,7 @@ fn legacy_sso_start_has_no_oauth_state_and_stateless_callback_authenticates() {
             Some(&store_config(store.path(), 11)),
             Some("SSODEVICE"),
             false,
+            DelegatedAuthMethod::Sso,
         )
         .await
         .expect("legacy SSO authorization");
@@ -80,6 +82,7 @@ fn two_simultaneous_legacy_sso_tabs_complete_with_stateless_callbacks() {
             Some(&store_config(first_store.path(), 21)),
             Some("SSODEVICEONE"),
             false,
+            DelegatedAuthMethod::Sso,
         )
         .await
         .expect("first legacy SSO authorization");
@@ -89,6 +92,7 @@ fn two_simultaneous_legacy_sso_tabs_complete_with_stateless_callbacks() {
             Some(&store_config(second_store.path(), 22)),
             Some("SSODEVICETWO"),
             false,
+            DelegatedAuthMethod::Sso,
         )
         .await
         .expect("second legacy SSO authorization");
@@ -126,6 +130,7 @@ fn legacy_sso_callback_without_a_login_token_is_rejected() {
             Some(&store_config(store.path(), 31)),
             Some("SSODEVICE"),
             false,
+            DelegatedAuthMethod::Sso,
         )
         .await
         .expect("legacy SSO authorization");
