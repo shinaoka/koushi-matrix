@@ -631,6 +631,9 @@ impl TimelineActor {
             return;
         };
         drop(thread_summary_commit_lease);
+        // #1259: the batch committed; if a root's room-side summary changed, read the
+        // SDK thread cache for it and repaint the chip dot. Bounded to changed roots.
+        self.refresh_thread_unread_counts(false).await;
         if matches!(self.key.kind, TimelineKind::Room { .. })
             && sdk_diffs
                 .iter()

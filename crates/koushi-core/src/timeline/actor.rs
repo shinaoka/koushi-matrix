@@ -1224,10 +1224,52 @@ impl TimelineActor {
         true
     }
 
-    /// #1259: a thread read advances the shared unread marker from the Thread actor,
-    /// so re-overlay this room's root items and emit a `Set` for the ones whose dot
-    /// cleared instead of waiting for the next diff batch.
-    fn refresh_thread_unread(&mut self) {
+    /// #1259: read the SDK thread cache for this room's roots. `force` re-reads every
+    /// root the window shows, which is what a thread read needs because it changes the
+    /// counters without changing the room-side summary identity.
+    pub(super) async fn refresh_thread_unread_counts(&mut self, force: bool) {
+        if !matches!(self.key.kind, TimelineKind::Room { .. }) {
+            return;
+        }
+        let room_id = self.key.room_id().to_owned();
+        let candidates = if force {
+            crate::threads_list::window_thread_roots(&self.navigation_items)
+        } else {
+            self.thread_root_projection_service
+                .lock()
+                .expect("thread-root projection service lock must not be poisoned")
+                .roots_needing_unread_refresh(&room_id, &self.navigation_items)
+        };
+        let mut refreshed = Vec::new();
+        for (root_event_id, signature, _latest_reply_id) in candidates {
+            if let Some(counts) = super::thread_projection::sdk_thread_unread_counts(
+                &self.session,
+                &room_id,
+                &root_event_id,
+            )
+            .await
+            {
+                refreshed.push((root_event_id, signature, counts));
+            }
+        }
+        if refreshed.is_empty() {
+            return;
+        }
+        {
+            let mut service = self
+                .thread_root_projection_service
+                .lock()
+                .expect("thread-root projection service lock must not be poisoned");
+            for (root_event_id, signature, counts) in refreshed {
+                service.apply_thread_unread(&room_id, &root_event_id, signature, counts);
+            }
+        }
+        self.repaint_thread_unread();
+    }
+
+    /// #1259: re-overlay the root items whose dot changed and emit a `Set` for each, so
+    /// a read clears the chip without waiting for the next diff batch.
+    fn repaint_thread_unread(&mut self) {
         if !matches!(self.key.kind, TimelineKind::Room { .. }) {
             return;
         }
@@ -1911,7 +1953,6 @@ impl TimelineActor {
                 session: Arc::clone(&session),
                 cleanup: actor_cleanup_tx,
                 diagnostic_trace: None,
-                projection_service: Arc::clone(&thread_root_projection_service),
             });
         let (position_tx, position_rx) = watch::channel(Arc::new(
             TimelinePositionIndex::from_items(actor_generation, generation, &navigation_items),
@@ -2880,7 +2921,7 @@ impl TimelineActor {
                 self.publish_current_canonical_activity().await;
             }
             TimelineActorMessage::RefreshThreadUnread => {
-                self.refresh_thread_unread();
+                self.refresh_thread_unread_counts(true).await;
             }
             TimelineActorMessage::ReplayInitialItems { cause_request_id } => {
                 self.handle_replay_initial_items(cause_request_id);

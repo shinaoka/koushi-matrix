@@ -1091,6 +1091,7 @@ fn room_latest_reply_projection_emits_one_stable_root_and_suppresses_reply() {
         TimelineThreadRootOrder::LatestReply,
         vec![crate::threads_list::ThreadRootDisplayData {
             root_event_id: "$root:test".to_owned(),
+            unread: 0,
             activity_event_id: "$reply:test".to_owned(),
             activity_timestamp_ms: Some(400),
             item: Some(root),
@@ -1142,6 +1143,7 @@ fn reset_push_and_reordered_batches_converge_without_root_disappearance() {
     reply.timestamp_ms = Some(400);
     let root_data = crate::threads_list::ThreadRootDisplayData {
         root_event_id: "$root:test".to_owned(),
+        unread: 0,
         activity_event_id: "$reply:test".to_owned(),
         activity_timestamp_ms: Some(400),
         item: Some(root.clone()),
@@ -1226,6 +1228,7 @@ fn latest_reply_keeps_retained_root_visible_after_root_leaves_window() {
         TimelineThreadRootOrder::LatestReply,
         vec![crate::threads_list::ThreadRootDisplayData {
             root_event_id: "$root:test".to_owned(),
+            unread: 0,
             activity_event_id: "$reply:test".to_owned(),
             activity_timestamp_ms: Some(400),
             item: Some(root.clone()),
@@ -1294,6 +1297,7 @@ fn thread_timeline_preserves_ordinary_reply_rows_even_when_room_roots_exist() {
         TimelineThreadRootOrder::LatestReply,
         vec![crate::threads_list::ThreadRootDisplayData {
             root_event_id: "$root:test".to_owned(),
+            unread: 0,
             activity_event_id: "$reply:test".to_owned(),
             activity_timestamp_ms: Some(1),
             item: None,
@@ -1318,6 +1322,7 @@ fn metadata_only_thread_activity_change_emits_one_stable_set() {
     let mut state = DisplayProjectionState::from_canonical_window(&canonical, 0..1);
     let display_data = |timestamp| crate::threads_list::ThreadRootDisplayData {
         root_event_id: "$root:test".to_owned(),
+        unread: 0,
         activity_event_id: "$reply:test".to_owned(),
         activity_timestamp_ms: Some(timestamp),
         item: Some(root.clone()),

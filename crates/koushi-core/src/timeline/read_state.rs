@@ -2076,25 +2076,9 @@ impl TimelineActor {
                 {
                     return false;
                 }
-                // #1259: a confirmed threaded read advances the session read marker, so
-                // the chip and Threads-list dot clear without touching any room total.
-                if let TimelineKind::Thread {
-                    room_id,
-                    root_event_id,
-                } = &self.key.kind
-                {
-                    let mut service = self
-                        .thread_root_projection_service
-                        .lock()
-                        .expect("thread-root projection service lock must not be poisoned");
-                    if let Some(aggregate) = service.current_aggregate(room_id, root_event_id) {
-                        let reply_count = aggregate.reply_count;
-                        service.advance_thread_read_marker(room_id, root_event_id, reply_count);
-                    }
-                    drop(service);
-                    // #1259: the chip dot lives on the room timeline's root item, so ask
-                    // that timeline to re-overlay it now. Best-effort: a room timeline that
-                    // is not retained simply has nothing to repaint.
+                // #1259: the read changed this thread's SDK receipts, so ask the room
+                // timeline to re-read the thread cache and clear the chip dot now.
+                if let TimelineKind::Thread { room_id, .. } = &self.key.kind {
                     let _ = self.manager_tx.try_send(
                         super::manager::TimelineMessage::RefreshThreadUnread {
                             key: TimelineKey::room(self.key.account_key.clone(), room_id.clone()),

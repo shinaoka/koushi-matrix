@@ -153,6 +153,9 @@ pub(crate) struct ThreadRootProjectionRecord {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ThreadRootDisplayData {
     pub root_event_id: String,
+    /// #1259: the SDK thread cache's unread value for this root, filled by
+    /// [`ThreadRootProjectionService::display_data_for_room`].
+    pub unread: u32,
     pub activity_event_id: String,
     pub activity_timestamp_ms: Option<u64>,
     pub item: Option<TimelineItem>,
@@ -165,6 +168,7 @@ impl ThreadRootProjectionRecord {
     pub(crate) fn display_data(&self) -> ThreadRootDisplayData {
         ThreadRootDisplayData {
             root_event_id: self.activity.root_event_id.clone(),
+            unread: 0,
             activity_event_id: self.activity.activity_event_id.clone(),
             activity_timestamp_ms: self.activity.activity_timestamp_ms,
             item: self.root_item.clone(),
@@ -220,68 +224,96 @@ pub(crate) struct ThreadRootProjectionService {
     active_root_event_ids: HashMap<String, HashSet<String>>,
     canonical_root_event_ids: HashMap<String, HashSet<String>>,
     diagnostic_ordinals: ThreadSummaryDiagnosticOrdinals,
-    /// #1259: the session-scoped "last read" marker per thread root, keyed by
-    /// `(room_id, root_event_id)`.
-    thread_read_markers: HashMap<(String, String), ThreadReadMarker>,
+    /// #1259: the SDK's per-root thread unread, read from the thread cache's own
+    /// threaded receipts, keyed by `(room_id, root_event_id)`.
+    thread_unread: HashMap<(String, String), ThreadUnreadCounts>,
+    /// The room-side summary identity the unread value was read against, so an
+    /// unchanged summary never re-reads the thread cache.
+    thread_unread_signatures: HashMap<(String, String), String>,
 }
 
-/// #1259: the last-read marker for one thread root.
+/// #1259: the accurate per-thread unread the bundled room summary cannot give.
 ///
-/// The bundled root summary is the only thread signal the client receives for a
-/// thread it has not opened (#1258), so the unread value is
-/// `reply_count - seen_reply_count - own_reply_count`. `seen_reply_count` advances
-/// only on a confirmed threaded read receipt, and `own_reply_count` counts the
-/// user's own sends into that thread, so an own send can neither create a dot nor
-/// erase a remote reply that is still unread.
+/// It is deliberately not added to any room total: the canon requires a proven
+/// non-overlapping decomposition before a thread contribution may join a room
+/// count, and a homeserver whose room counters already include thread replies
+/// would otherwise count them twice.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct ThreadReadMarker {
-    /// `None` until the root is first observed: the first observation seeds it to
-    /// the summary's current count, so a restart does not turn every existing
-    /// thread into unread.
-    seen_reply_count: Option<u32>,
-    own_reply_count: u32,
+pub(crate) struct ThreadUnreadCounts {
+    pub(crate) unread: u32,
+    pub(crate) mentions: u32,
+}
+
+/// #1259: every root the room window exposes with a live thread summary, as
+/// `(root_event_id, signature, latest_reply_event_id)`.
+pub(crate) fn window_thread_roots(
+    items: &[koushi_protocol::event::TimelineItem],
+) -> Vec<(String, String, Option<String>)> {
+    let mut roots = Vec::new();
+    for item in items {
+        if item.thread_root.is_some() {
+            continue;
+        }
+        let koushi_protocol::event::TimelineItemId::Event { event_id } = &item.id else {
+            continue;
+        };
+        let Some(summary) = item.thread_summary.as_ref() else {
+            continue;
+        };
+        roots.push((
+            event_id.clone(),
+            format!(
+                "{}:{}",
+                summary.latest_event_id.as_deref().unwrap_or_default(),
+                summary.reply_count
+            ),
+            summary.latest_event_id.clone(),
+        ));
+    }
+    roots
 }
 
 impl ThreadRootProjectionService {
-    /// #1259: unread replies for one root, seeding the baseline on first sight.
-    pub(crate) fn thread_unread_replies(
-        &mut self,
+    /// #1259: the roots whose room-side summary changed, so the caller can read their
+    /// SDK thread caches without holding this lock across an await.
+    pub(crate) fn roots_needing_unread_refresh(
+        &self,
         room_id: &str,
-        root_event_id: &str,
-        reply_count: u32,
-    ) -> u32 {
-        let marker = self
-            .thread_read_markers
-            .entry((room_id.to_owned(), root_event_id.to_owned()))
-            .or_default();
-        let seen = *marker.seen_reply_count.get_or_insert(reply_count);
-        reply_count
-            .saturating_sub(seen)
-            .saturating_sub(marker.own_reply_count)
+        items: &[koushi_protocol::event::TimelineItem],
+    ) -> Vec<(String, String, Option<String>)> {
+        window_thread_roots(items)
+            .into_iter()
+            .filter(|(root_event_id, signature, _)| {
+                self.thread_unread_signatures
+                    .get(&(room_id.to_owned(), root_event_id.clone()))
+                    .is_none_or(|known| known != signature)
+            })
+            .collect()
     }
 
-    /// #1259: a confirmed threaded read advances the marker to the current count.
-    pub(crate) fn advance_thread_read_marker(
+    /// #1259: store a freshly read unread value.
+    pub(crate) fn apply_thread_unread(
         &mut self,
         room_id: &str,
         root_event_id: &str,
-        reply_count: u32,
+        signature: String,
+        counts: ThreadUnreadCounts,
     ) {
-        let marker = self
-            .thread_read_markers
-            .entry((room_id.to_owned(), root_event_id.to_owned()))
-            .or_default();
-        marker.seen_reply_count = Some(reply_count);
-        marker.own_reply_count = 0;
+        let key = (room_id.to_owned(), root_event_id.to_owned());
+        self.thread_unread_signatures.insert(key.clone(), signature);
+        self.thread_unread.insert(key, counts);
     }
 
-    /// #1259: record one own reply so it never shows or clears a dot.
-    pub(crate) fn record_own_thread_reply(&mut self, room_id: &str, root_event_id: &str) {
-        let marker = self
-            .thread_read_markers
-            .entry((room_id.to_owned(), root_event_id.to_owned()))
-            .or_default();
-        marker.own_reply_count = marker.own_reply_count.saturating_add(1);
+    /// #1259: one root's stored unread value.
+    pub(crate) fn thread_unread_for(
+        &self,
+        room_id: &str,
+        root_event_id: &str,
+    ) -> ThreadUnreadCounts {
+        self.thread_unread
+            .get(&(room_id.to_owned(), root_event_id.to_owned()))
+            .copied()
+            .unwrap_or_default()
     }
 }
 
@@ -869,6 +901,9 @@ impl ThreadRootProjectionService {
             .map(|((_entry_room_id, _), record)| record.display_data())
             .collect::<Vec<_>>();
         roots.sort_by(|left, right| left.root_event_id.cmp(&right.root_event_id));
+        for root in roots.iter_mut() {
+            root.unread = self.thread_unread_for(room_id, &root.root_event_id).unread;
+        }
         roots
     }
 

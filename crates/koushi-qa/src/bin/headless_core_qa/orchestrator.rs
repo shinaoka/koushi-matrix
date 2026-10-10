@@ -4,12 +4,13 @@ use super::cleanup::{
 };
 use super::diagnostics::room_list_summary;
 use super::event_wait::{
-    find_timeline_item_with_body, wait_for_bodies_and_pagination_settle, wait_for_initial_items,
-    wait_for_item_with_body, wait_for_logged_in, wait_for_logged_out,
+    find_timeline_item_with_body, root_thread_unread, wait_for_bodies_and_pagination_settle,
+    wait_for_initial_items, wait_for_item_with_body, wait_for_logged_in, wait_for_logged_out,
     wait_for_operation_failed_and_signed_out, wait_for_ready_snapshot, wait_for_room_created,
-    wait_for_room_joined, wait_for_send_completed, wait_for_send_flow_completion,
-    wait_for_session_restored, wait_for_space_child_set, wait_for_space_created,
-    wait_for_sync_started_and_running, wait_for_sync_stopped, wait_for_user_invited,
+    wait_for_room_joined, wait_for_root_thread_unread, wait_for_send_completed,
+    wait_for_send_flow_completion, wait_for_session_restored, wait_for_space_child_set,
+    wait_for_space_created, wait_for_sync_started_and_running, wait_for_sync_stopped,
+    wait_for_user_invited,
 };
 use super::fixtures::private_room_options;
 use super::participants::{
@@ -1047,6 +1048,19 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         );
         println!("thread_delivery=recorded");
 
+        // #1259: the chip dot is the bundled summary's reply count minus the session
+        // read marker, so an unopened thread with a new remote reply must show it.
+        let _chip_unread = wait_for_root_thread_unread(
+            &mut conn_a,
+            &key_a,
+            &refreshed_room_items,
+            &event1_id,
+            "chip dot after B thread reply",
+            |unread| unread > 0,
+        )
+        .await?;
+        println!("thread_chip_dot=ok");
+
         let thread_key_a = TimelineKey {
             account_key: account_key_a.clone(),
             kind: TimelineKind::Thread {
@@ -1091,6 +1105,50 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         };
         assert_thread_reply_relation(&thread_item, &event1_id)?;
         println!("thread_recv=ok");
+
+        // #1259: reading the thread must clear the dot without waiting for new room
+        // activity, so the room window is re-read until it settles.
+        let reply_event_id = match &thread_item.id {
+            super::TimelineItemId::Event { event_id } => event_id.clone(),
+            _ => {
+                return Err(
+                    "thread_chip_dot failed: the thread reply carried no event id".to_owned(),
+                );
+            }
+        };
+        let thread_read_id = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::Timeline(TimelineCommand::SendReadReceipt {
+                request_id: thread_read_id,
+                key: thread_key_a.clone(),
+                event_id: reply_event_id,
+            }))
+            .await
+            .map_err(|e| format!("submit threaded read receipt: {e}"))?;
+        let _ = root_thread_unread;
+        let mut cleared = false;
+        for _ in 0..20 {
+            if wait_for_root_thread_unread(
+                &mut conn_a,
+                &key_a,
+                &refreshed_room_items,
+                &event1_id,
+                "chip dot after threaded read",
+                |unread| unread == 0,
+            )
+            .await
+            .is_ok()
+            {
+                cleared = true;
+                break;
+            }
+        }
+        if !cleared {
+            return Err(
+                "thread_chip_dot failed: reading the thread left the dot on the chip".to_owned(),
+            );
+        }
+        println!("thread_chip_dot_cleared=ok");
 
         if scenario.should_run_stage(QaStage::RedactEditConvergence) {
             const LIVE_THREAD_BODY: &str = "Phase 11 QA live thread reply B";

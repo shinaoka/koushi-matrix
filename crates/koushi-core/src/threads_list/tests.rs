@@ -15,8 +15,8 @@ use super::{
     ActiveSubscription, AggregateRefreshCause, AuthoritativeThreadAggregate, OperationFailureKind,
     SubscriptionTasks, THREAD_SUMMARY_PROJECTION_MAX_ROOTS, ThreadRootProjectionActivity,
     ThreadRootProjectionCompletion, ThreadRootProjectionDecision,
-    ThreadRootProjectionRefreshResult, ThreadRootProjectionService,
-    authoritative_thread_aggregate_from_sdk,
+    ThreadRootProjectionRefreshResult, ThreadRootProjectionService, ThreadUnreadCounts,
+    authoritative_thread_aggregate_from_sdk, window_thread_roots,
 };
 
 fn pending_task(settled: oneshot::Sender<()>) -> crate::executor::JoinHandle<()> {
@@ -1338,29 +1338,67 @@ fn ready_snapshot_remains_reemittable_after_temporary_canonical_root_overlap() {
     ));
 }
 
-/// #1259: the read marker seeds on first sight, counts only remote replies, never
-/// shows an own reply, never lets one clear an unread remote reply, and clears on
-/// a confirmed threaded read.
+/// #1259: the SDK thread cache's unread value is stored per root and only re-read
+/// when the room-side summary identity changes.
 #[test]
-fn thread_read_marker_counts_remote_replies_only() {
+fn thread_unread_is_gated_on_the_room_side_summary_identity() {
     let mut service = ThreadRootProjectionService::default();
     let room = "!room:test";
-    let root = "$root:test";
+    let summary_item = |latest: &str, replies: u32| {
+        canonical_timeline_item(
+            "$root:test",
+            ThreadSummaryDto {
+                reply_count: replies,
+                unread_count: 0,
+                latest_event_id: Some(latest.to_owned()),
+                latest_sender: None,
+                latest_sender_label: None,
+                latest_body_preview: None,
+                latest_timestamp_ms: Some(1),
+            },
+        )
+    };
 
-    // First sight seeds the baseline, so an existing thread is not unread after a
-    // restart.
-    assert_eq!(service.thread_unread_replies(room, root, 3), 0);
-    // A remote reply arrives.
-    assert_eq!(service.thread_unread_replies(room, root, 4), 1);
-    // An own reply must not show a dot...
-    service.record_own_thread_reply(room, root);
-    assert_eq!(service.thread_unread_replies(room, root, 5), 1);
-    // ...and a second own reply must not erase the unread remote one either.
-    service.record_own_thread_reply(room, root);
-    assert_eq!(service.thread_unread_replies(room, root, 6), 1);
-    // Reading the thread clears the dot and resets the own counter.
-    service.advance_thread_read_marker(room, root, 6);
-    assert_eq!(service.thread_unread_replies(room, root, 6), 0);
-    // The next remote reply shows again.
-    assert_eq!(service.thread_unread_replies(room, root, 7), 1);
+    // First sight of the root: its thread cache is read once.
+    let stale = service.roots_needing_unread_refresh(room, &[summary_item("$reply:test", 1)]);
+    assert_eq!(stale.len(), 1);
+    assert_eq!(stale[0].0, "$root:test");
+    service.apply_thread_unread(
+        room,
+        "$root:test",
+        stale[0].1.clone(),
+        ThreadUnreadCounts {
+            unread: 1,
+            mentions: 0,
+        },
+    );
+    assert_eq!(service.thread_unread_for(room, "$root:test").unread, 1);
+
+    // An unchanged summary never re-reads the cache...
+    assert!(
+        service
+            .roots_needing_unread_refresh(room, &[summary_item("$reply:test", 1)])
+            .is_empty()
+    );
+    // ...while a newer summary does.
+    assert_eq!(
+        service
+            .roots_needing_unread_refresh(room, &[summary_item("$newer:test", 2)])
+            .len(),
+        1
+    );
+
+    // A read clears the stored value.
+    service.apply_thread_unread(
+        room,
+        "$root:test",
+        "$newer:test:2".to_owned(),
+        ThreadUnreadCounts::default(),
+    );
+    assert_eq!(service.thread_unread_for(room, "$root:test").unread, 0);
+    // The window enumerates exactly the roots a refresh would read.
+    assert_eq!(
+        window_thread_roots(&[summary_item("$newer:test", 2)]).len(),
+        1
+    );
 }

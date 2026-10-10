@@ -1275,6 +1275,9 @@ fn root_display_item(
             latest_timestamp_ms: None,
         });
     summary.reply_count = root.aggregate.reply_count;
+    // #1259: the chip dot comes from the root's stored SDK thread-cache unread, so the
+    // initial window carries it too.
+    summary.unread_count = root.unread;
     summary.latest_event_id = root.aggregate.latest_event_id.clone();
     summary.latest_sender = root.aggregate.latest_sender.clone();
     summary.latest_sender_label = root.aggregate.latest_sender_label.clone();
