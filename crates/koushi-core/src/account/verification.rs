@@ -196,12 +196,35 @@ fn classify_incoming_verification_request(
     }
 }
 
+/// Incoming verification requests are fenced by session identity, not by the
+/// observer instance that observed them. Restarting the same session's observer
+/// (session promotion and the login/start path both do) must not retire a
+/// request already observed for that still-current session. A request observed
+/// for a replaced session, or with no current session, is not admitted.
 pub(super) fn incoming_verification_request_is_current(
-    message_generation: u64,
-    current_generation: u64,
-    has_session: bool,
+    current: Option<&Arc<MatrixClientSession>>,
+    observed: &Arc<MatrixClientSession>,
 ) -> bool {
-    has_session && message_generation == current_generation
+    current.is_some_and(|current| Arc::ptr_eq(current, observed))
+}
+
+/// Token-only diagnostic for an incoming verification request that the session
+/// fence discarded before adoption.
+pub(super) fn incoming_verification_request_dropped_event(has_session: bool) -> DiagnosticEvent {
+    DiagnosticEvent::new(
+        DiagnosticLevel::Info,
+        "core.verification",
+        "incoming_request_dropped",
+    )
+    .field(DiagnosticField::token(
+        "reason",
+        if has_session {
+            "stale_session"
+        } else {
+            "no_session"
+        },
+    ))
+    .field(DiagnosticField::boolean("has_session", has_session))
 }
 
 fn classify_sas_adoption(
@@ -518,16 +541,13 @@ impl AccountActor {
         &mut self,
         session: Arc<MatrixClientSession>,
     ) {
-        self.incoming_verification_session_generation = self
-            .incoming_verification_session_generation
-            .wrapping_add(1);
-        let generation = self.incoming_verification_session_generation;
         let (stop_tx, mut stop_rx) = oneshot::channel();
         let mut observer = koushi_sdk::observe_incoming_verification_requests(&session).await;
         let mut receiver = observer
             .take_receiver()
             .expect("incoming verification observer receiver is available once");
         let tx = self.self_tx.clone();
+        let observed_session = Arc::clone(&session);
         let task = crate::executor::spawn(async move {
             loop {
                 tokio::select! {
@@ -538,7 +558,7 @@ impl AccountActor {
                         if !send_observer_output_until_stopped(
                             &tx,
                             AccountMessage::IncomingVerificationRequest {
-                                generation,
+                                session: Arc::clone(&observed_session),
                                 target,
                                 handle,
                             },
@@ -569,9 +589,6 @@ impl AccountActor {
     }
 
     pub(super) async fn stop_incoming_verification_observer(&mut self) {
-        self.incoming_verification_session_generation = self
-            .incoming_verification_session_generation
-            .wrapping_add(1);
         if let Some(observation) = self.incoming_verification_observer.take() {
             stop_incoming_verification_observation(observation).await;
         }

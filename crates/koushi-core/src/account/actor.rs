@@ -79,7 +79,8 @@ use super::trust_gate::{
 use super::verification::{
     INCOMING_VERIFICATION_FLOW_ID_BASE, IncomingVerificationObservation, PendingSasVerification,
     PendingVerificationRequest, SasVerificationWaitState, VerificationObservation,
-    VerificationTerminal, incoming_verification_request_is_current, record_sas_verification_event,
+    VerificationTerminal, incoming_verification_request_dropped_event,
+    incoming_verification_request_is_current, record_sas_verification_event,
     sas_verification_event,
 };
 #[cfg(test)]
@@ -601,7 +602,10 @@ pub(crate) enum AccountMessage {
         flow_id: u64,
     },
     IncomingVerificationRequest {
-        generation: u64,
+        /// The session this request was observed for. Admission is fenced by
+        /// pointer identity against the actor's current session, so restarting
+        /// the same session's observer does not retire an observed request.
+        session: Arc<MatrixClientSession>,
         target: VerificationTarget,
         handle: koushi_sdk::MatrixVerificationRequestHandle,
     },
@@ -1191,8 +1195,6 @@ pub struct AccountActor {
     pub(super) pending_contact_verification_send:
         Option<super::contact_security::PendingContactVerificationSend>,
     pub(super) contact_verification_send_generation: u64,
-    /// Epoch attached to incoming verification messages from the active SDK client.
-    pub(super) incoming_verification_session_generation: u64,
     /// SDK session-change observer for auth invalidation / soft logout.
     pub(super) session_change_observer: Option<SessionChangeObservation>,
     /// Optional profile/account-data hydration task for the active session.
@@ -1460,7 +1462,6 @@ impl AccountActor {
             contact_security_load_task: None,
             pending_contact_verification_send: None,
             contact_verification_send_generation: 0,
-            incoming_verification_session_generation: 0,
             session_change_observer: None,
             account_hydration_task: None,
             account_management_discovery_task: None,
@@ -2711,18 +2712,18 @@ impl AccountActor {
                     }
                 }
                 AccountMessage::IncomingVerificationRequest {
-                    generation,
+                    session,
                     target,
                     handle,
                 } => {
-                    if incoming_verification_request_is_current(
-                        generation,
-                        self.incoming_verification_session_generation,
-                        self.session.is_some(),
-                    ) {
+                    if incoming_verification_request_is_current(self.session.as_ref(), &session) {
                         let request_id = self.next_incoming_verification_request_id();
                         self.handle_incoming_verification_request(request_id, target, handle)
                             .await;
+                    } else {
+                        record(incoming_verification_request_dropped_event(
+                            self.session.is_some(),
+                        ));
                     }
                 }
                 AccountMessage::SessionInvalidated { reason } => {
