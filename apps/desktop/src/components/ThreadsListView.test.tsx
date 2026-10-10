@@ -29,8 +29,7 @@ describe("ThreadsListView", () => {
               latest_sender_label: null,
               latest_body_preview: "Reply",
               latest_timestamp_ms: 1_800_000_000_100,
-reply_count: 1,
-
+              reply_count: 1,
               unread_count: 0,
             }
           ],
@@ -72,8 +71,7 @@ reply_count: 1,
               latest_sender_label: latestSender,
               latest_body_preview: latestPreview,
               latest_timestamp_ms: 1_800_000_000_100,
-reply_count: 2,
-
+              reply_count: 2,
               unread_count: 0,
             }
           ],
@@ -119,8 +117,7 @@ reply_count: 2,
               latest_sender_label: null,
               latest_body_preview: null,
               latest_timestamp_ms: null,
-reply_count: 1,
-
+              reply_count: 1,
               unread_count: 0,
             }
           ],
