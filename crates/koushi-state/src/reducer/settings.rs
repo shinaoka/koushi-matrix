@@ -142,6 +142,7 @@ pub(crate) fn handle_settings_load_failed(
         code: "settings_load_failed".to_owned(),
         message: SETTINGS_LOAD_FAILED_MESSAGE.to_owned(),
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
@@ -280,6 +281,7 @@ pub(crate) fn handle_settings_persist_failed(
         code: "settings_persist_failed".to_owned(),
         message: SETTINGS_PERSIST_FAILED_MESSAGE.to_owned(),
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::SettingsChanged),

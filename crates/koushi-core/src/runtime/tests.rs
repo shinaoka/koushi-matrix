@@ -1998,6 +1998,7 @@ fn oidc_authorization_start_only_projects_discovery() {
         account_command_projected_action(&AccountCommand::StartOidcLogin {
             request_id,
             homeserver: "https://matrix.example.org".to_owned(),
+            method: koushi_state::DelegatedAuthMethod::OAuth,
         }),
         Some(AppAction::LoginDiscoveryRequested {
             homeserver: "https://matrix.example.org".to_owned(),

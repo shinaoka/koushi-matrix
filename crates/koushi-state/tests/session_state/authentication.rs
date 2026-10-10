@@ -1,9 +1,9 @@
 use super::support::{alternate_session_info, recovery_gate, session_info};
 use koushi_state::{
-    AppAction, AppEffect, AppState, AuthDiscoveryState, AuthFailureKind, AuthSecret,
-    DelegatedAuthLinks, LoginAttemptId, LoginFlow, LoginFlowKind, LoginRequest, ProvisionalPhase,
-    RecoveryMethod, SessionState, SyncState, UiEvent, VerificationGateRejectReason,
-    VerificationMethod, reduce,
+    AppAction, AppEffect, AppState, AuthDiscoveryState, AuthFailureDetail, AuthFailureKind,
+    AuthFailureStage, AuthMatrixErrorKind, AuthMethod, AuthSecret, DelegatedAuthLinks,
+    LoginAttemptId, LoginFlow, LoginFlowKind, LoginRequest, ProvisionalPhase, RecoveryMethod,
+    SessionState, SyncState, UiEvent, VerificationGateRejectReason, VerificationMethod, reduce,
 };
 
 fn login_attempt_id() -> LoginAttemptId {
@@ -122,6 +122,7 @@ fn same_homeserver_login_attempts_reject_stale_success_and_failure() {
             AppAction::LoginFailed {
                 attempt_id: attempt_a,
                 message: "stale failure".to_owned(),
+                reason: None,
             },
         )
         .is_empty()
@@ -169,6 +170,7 @@ fn same_sequence_from_another_connection_is_a_stale_login_terminal() {
             AppAction::LoginFailed {
                 attempt_id: stale_attempt,
                 message: "stale failure".to_owned(),
+                reason: None,
             },
         )
         .is_empty()
@@ -259,6 +261,7 @@ fn oidc_pending_flow_homeserver_wins_over_mutated_discovery_state() {
         AppAction::LoginFailed {
             attempt_id,
             message: "login failed".to_owned(),
+            reason: None,
         },
     );
     assert!(matches!(state.session, SessionState::SignedOut));
@@ -653,6 +656,7 @@ fn login_failure_returns_to_signed_out_and_records_error() {
         AppAction::LoginFailed {
             attempt_id: login_attempt_id(),
             message: "invalid password".to_owned(),
+            reason: None,
         },
     );
 
@@ -687,4 +691,109 @@ fn session_persistence_failure_records_error_without_leaving_ready_session() {
     assert_eq!(state.errors[0].code, "session_persistence_failed");
     assert!(state.errors[0].recoverable);
     assert_eq!(effects, vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]);
+}
+
+/// #1268: the bounded reason from the typed Rust classification is preserved on
+/// the visible `login_failed` error so the UI can render classified guidance
+/// instead of the generic message.
+#[test]
+fn login_failed_preserves_the_bounded_reason() {
+    let attempt_id = login_attempt_id();
+    let mut state = AppState {
+        session: SessionState::Authenticating {
+            homeserver: "https://flow-a.invalid".to_owned(),
+            attempt_id,
+        },
+        ..Default::default()
+    };
+
+    reduce(
+        &mut state,
+        AppAction::LoginFailed {
+            attempt_id,
+            message: "login failed".to_owned(),
+            reason: Some(AuthFailureKind::RateLimited),
+        },
+    );
+
+    let error = state
+        .errors
+        .iter()
+        .rev()
+        .find(|error| error.code == "login_failed")
+        .expect("login failure error");
+    assert_eq!(error.reason, Some(AuthFailureKind::RateLimited));
+    assert!(error.recoverable);
+}
+
+/// #1268: a failure with no classified reason omits the field entirely.
+#[test]
+fn login_failed_without_a_reason_omits_it() {
+    let attempt_id = login_attempt_id();
+    let mut state = AppState {
+        session: SessionState::Authenticating {
+            homeserver: "https://flow-a.invalid".to_owned(),
+            attempt_id,
+        },
+        ..Default::default()
+    };
+
+    reduce(
+        &mut state,
+        AppAction::LoginFailed {
+            attempt_id,
+            message: "login failed".to_owned(),
+            reason: None,
+        },
+    );
+
+    let error = state
+        .errors
+        .iter()
+        .rev()
+        .find(|error| error.code == "login_failed")
+        .expect("login failure error");
+    assert_eq!(error.reason, None);
+}
+
+/// #1268: the bounded detail serializes with the same vocabulary the
+/// secure-backup diagnostics work (#1265) established, so there is one bounded
+/// failure shape in the product rather than a parallel one.
+#[test]
+fn auth_failure_detail_mirrors_the_bounded_secure_backup_shape() {
+    let value = serde_json::to_value(AuthFailureDetail::http_response(
+        AuthMethod::Password,
+        AuthFailureStage::PasswordLogin,
+        Some(403),
+        Some(AuthMatrixErrorKind::Forbidden),
+        false,
+    ))
+    .expect("detail serializes");
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "method": "password",
+            "stage": "passwordLogin",
+            "transport": "httpResponse",
+            "httpStatus": 403,
+            "matrixErrorKind": "forbidden",
+            "retryable": false
+        })
+    );
+
+    // A failure that produced no response omits the status and kind entirely.
+    let transport_only = serde_json::to_value(AuthFailureDetail::no_response(
+        AuthMethod::OAuth,
+        AuthFailureStage::OidcStart,
+    ))
+    .expect("detail serializes");
+    assert_eq!(
+        transport_only,
+        serde_json::json!({
+            "method": "oauth",
+            "stage": "oidcStart",
+            "transport": "noResponse",
+            "retryable": true
+        })
+    );
 }

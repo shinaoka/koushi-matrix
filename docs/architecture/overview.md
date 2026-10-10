@@ -215,6 +215,12 @@ Crate responsibilities:
   browser handoff, but access tokens, refresh tokens, PKCE verifiers, raw OAuth
   errors, and provider callback details never enter reducer state or normal
   diagnostics.
+  The delegated start selection is the user's bounded method (OAuth or legacy
+  SSO). OAuth falls back to legacy SSO only for the classified
+  unsupported-method condition; every other start failure crosses the boundary
+  as a bounded `AuthFailureDetail` (method, stage, transport, HTTP status,
+  allowlisted Matrix error kind, retryable), so Core and the UI never classify
+  by error text (#1267, #1268).
   E2EE key-backup restore wrappers consume recovery secrets internally and
   return private-data-free restore summaries whose scope is explicitly
   `JoinedRooms`; they do not expose SDK backup keys, room keys, or raw backup

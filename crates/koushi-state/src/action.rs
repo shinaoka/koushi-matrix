@@ -806,6 +806,8 @@ pub enum AppAction {
     LoginFailed {
         attempt_id: LoginAttemptId,
         message: String,
+        /// Bounded Rust-classified reason for visible guidance (#1268).
+        reason: Option<AuthFailureKind>,
     },
     SessionPersistenceFailed {
         message: String,

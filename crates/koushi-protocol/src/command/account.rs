@@ -296,6 +296,15 @@ pub enum AccountCommand {
     StartOidcLogin {
         request_id: RequestId,
         homeserver: String,
+        /// The user's bounded chosen delegated method (#1267). Core maps this
+        /// choice plus validated discovery onto the SDK start selection.
+        method: koushi_state::DelegatedAuthMethod,
+    },
+    /// Retire the pending browser (OAuth/SSO) attempt without starting a new
+    /// one (#1267). Idempotent: cancelling when nothing is pending succeeds
+    /// quietly.
+    CancelOidcLogin {
+        request_id: RequestId,
     },
     CompleteOidcLogin {
         request_id: RequestId,
@@ -577,10 +586,17 @@ impl fmt::Debug for AccountCommand {
                 .field("request_id", request_id)
                 .field("homeserver", &"Homeserver(..)")
                 .finish(),
-            Self::StartOidcLogin { request_id, .. } => formatter
+            Self::StartOidcLogin {
+                request_id, method, ..
+            } => formatter
                 .debug_struct("StartOidcLogin")
                 .field("request_id", request_id)
                 .field("homeserver", &"Homeserver(..)")
+                .field("method", method)
+                .finish(),
+            Self::CancelOidcLogin { request_id } => formatter
+                .debug_struct("CancelOidcLogin")
+                .field("request_id", request_id)
                 .finish(),
             Self::CompleteOidcLogin { request_id, .. } => formatter
                 .debug_struct("CompleteOidcLogin")

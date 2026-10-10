@@ -39,6 +39,7 @@ pub(crate) fn handle_scheduled_send_persistence_failed(
         code: SCHEDULED_SEND_PERSISTENCE_FAILED.to_owned(),
         message,
         recoverable: true,
+        reason: None,
     });
     vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
 }
@@ -76,6 +77,7 @@ pub(crate) fn handle_timeline_subscription_failed(
         code: "timeline_subscription_failed".to_owned(),
         message: TIMELINE_SUBSCRIPTION_FAILED_MESSAGE.to_owned(),
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }),
@@ -956,6 +958,7 @@ pub(crate) fn handle_send_text_failed(
         code: "send_text_failed".to_owned(),
         message,
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }),

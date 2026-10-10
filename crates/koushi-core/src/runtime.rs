@@ -5802,6 +5802,7 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
             Some(AppAction::RestoreSessionRequested)
         }
         AccountCommand::CompleteOidcLogin { .. }
+        | AccountCommand::CancelOidcLogin { .. }
         | AccountCommand::RetrySlidingSyncCapability { .. }
         | AccountCommand::ChangeHomeserver { .. }
         | AccountCommand::QuerySavedSessions { .. }

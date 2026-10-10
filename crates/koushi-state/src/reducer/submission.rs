@@ -188,6 +188,7 @@ pub(crate) fn handle_settled(
             code: "send_text_failed".to_owned(),
             message,
             recoverable: true,
+            reason: None,
         });
         effects.push(AppEffect::EmitUiEvent(UiEvent::ErrorChanged));
     }

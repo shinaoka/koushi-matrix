@@ -473,7 +473,8 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::LoginFailed {
             attempt_id,
             message,
-        } => session::handle_login_failed(state, attempt_id, message),
+            reason,
+        } => session::handle_login_failed(state, attempt_id, message, reason),
         AppAction::LoginDiscoveryRequested { homeserver } => {
             session::handle_login_discovery_requested(state, homeserver)
         }

@@ -4,15 +4,18 @@ use koushi_key::StoredMatrixSession;
 use koushi_protocol::SessionKeyId;
 use koushi_sdk::PersistableMatrixSession;
 use koushi_state::{
-    AppAction, AuthFailureKind, LoginAttemptId, LoginRequest, SlidingSyncAdmission,
-    SlidingSyncAdmissionSource, SlidingSyncCapabilityResult, SlidingSyncPositiveEvidence,
+    AppAction, AuthFailureDetail, AuthFailureKind, AuthFailureStage, AuthFailureTransport,
+    AuthMatrixErrorKind, AuthMethod, DelegatedAuthMethod, LoginAttemptId, LoginRequest,
+    SlidingSyncAdmission, SlidingSyncAdmissionSource, SlidingSyncCapabilityResult,
+    SlidingSyncPositiveEvidence,
 };
 
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use super::{
-    SESSION_NOT_FOUND_FAILURE, ServerLogoutOutcome, SessionInvalidationReason,
-    run_session_change_observation, wait_for_server_logout_best_effort,
+    SESSION_NOT_FOUND_FAILURE, ServerLogoutOutcome, SessionInvalidationReason, auth_failure_kind,
+    fresh_login_cleanup_evidence, login_failure_kind, oidc_failure_detail, password_login_failure,
+    record_auth_failure_detail, run_session_change_observation, wait_for_server_logout_best_effort,
 };
 use crate::account::actor::{AccountActor, AccountActorHandle, AccountMessage};
 use crate::account::test_support::{
@@ -29,10 +32,10 @@ use koushi_protocol::command::AccountCommand;
 use koushi_protocol::event::{AccountEvent, CoreEvent};
 
 use crate::link_preview::LinkPreviewContext;
-use koushi_protocol::failure::CoreFailure;
+use koushi_protocol::failure::{CoreFailure, LoginFailureKind};
 use koushi_protocol::ids::{AccountKey, RequestId, RuntimeConnectionId};
 
-use crate::store::{StoreActor, session_key_id_from_info};
+use crate::store::{PendingLoginCleanupEvidence, StoreActor, session_key_id_from_info};
 use koushi_store::CredentialStoreBackend;
 
 use tempfile::tempdir;
@@ -408,50 +411,6 @@ async fn oidc_completion_installs_only_a_provisional_quarantined_session() {
             })
             .await
     );
-    let replay_request_id = RequestId {
-        connection_id: koushi_protocol::ids::RuntimeConnectionId(41),
-        sequence: 5,
-    };
-    assert!(
-        handle
-            .send(AccountMessage::Command(AccountCommand::StartOidcLogin {
-                request_id: replay_request_id,
-                homeserver: homeserver.clone(),
-            }))
-            .await
-    );
-    assert!(matches!(
-        event_rx.recv().await.expect("replayed authorization event"),
-        CoreEvent::Account(AccountEvent::OidcAuthorizationCreated {
-            request_id,
-            authorization_url,
-            state,
-        }) if request_id == replay_request_id
-            && authorization_url == "https://synthetic.invalid/authorize?opaque=fixture"
-            && state == "synthetic-state"
-    ));
-
-    let rejected_request_id = RequestId {
-        connection_id: koushi_protocol::ids::RuntimeConnectionId(41),
-        sequence: 6,
-    };
-    assert!(
-        handle
-            .send(AccountMessage::Command(AccountCommand::StartOidcLogin {
-                request_id: rejected_request_id,
-                homeserver: "https://different.example.invalid".to_owned(),
-            }))
-            .await
-    );
-    assert!(matches!(
-        event_rx.recv().await.expect("different homeserver failure"),
-        CoreEvent::OperationFailed { request_id, failure }
-            if request_id == rejected_request_id
-                && failure == CoreFailure::AccountOperationFailed {
-                    kind: AuthFailureKind::Cancelled,
-                }
-    ));
-
     let completion_request_id = RequestId {
         connection_id: koushi_protocol::ids::RuntimeConnectionId(41),
         sequence: 7,
@@ -2306,5 +2265,278 @@ async fn query_saved_sessions_lists_seeded_identities() {
             assert!(!debug.contains("secret"));
         }
         other => panic!("expected SavedSessionsListed, got {other:?}"),
+    }
+}
+
+/// #1268: the coarse login/auth/guidance classification comes from typed
+/// details only. Every case below fixes one bounded field and asserts the
+/// outcome; none of them inspects error text.
+#[test]
+fn login_failure_kinds_come_from_typed_details() {
+    let forbidden = AuthFailureDetail::http_response(
+        AuthMethod::Password,
+        AuthFailureStage::PasswordLogin,
+        Some(401),
+        Some(AuthMatrixErrorKind::Forbidden),
+        false,
+    );
+    assert_eq!(
+        login_failure_kind(forbidden),
+        LoginFailureKind::InvalidCredentials
+    );
+    assert_eq!(auth_failure_kind(forbidden), AuthFailureKind::Forbidden);
+
+    // M_LIMIT_EXCEEDED with a 429 is rate limiting, and retryable.
+    let limited = AuthFailureDetail::http_response(
+        AuthMethod::Password,
+        AuthFailureStage::PasswordLogin,
+        Some(429),
+        Some(AuthMatrixErrorKind::LimitExceeded),
+        true,
+    );
+    assert_eq!(login_failure_kind(limited), LoginFailureKind::RateLimited);
+    assert_eq!(auth_failure_kind(limited), AuthFailureKind::RateLimited);
+    assert!(limited.retryable);
+
+    // A received 5xx response is a server failure, never a transport failure.
+    let server = AuthFailureDetail::http_response(
+        AuthMethod::Password,
+        AuthFailureStage::PasswordLogin,
+        Some(503),
+        None,
+        true,
+    );
+    assert_eq!(login_failure_kind(server), LoginFailureKind::Server);
+    assert_eq!(auth_failure_kind(server), AuthFailureKind::Sdk);
+    assert_eq!(server.transport, AuthFailureTransport::HttpResponse);
+
+    // Connection refusal produced no response at all.
+    let refused =
+        AuthFailureDetail::no_response(AuthMethod::Password, AuthFailureStage::PasswordLogin);
+    assert_eq!(login_failure_kind(refused), LoginFailureKind::Network);
+    assert_eq!(auth_failure_kind(refused), AuthFailureKind::Network);
+    assert_eq!(refused.http_status, None);
+
+    // A timeout is its own retryable kind.
+    let timeout = AuthFailureDetail::timeout(AuthMethod::Password, AuthFailureStage::PasswordLogin);
+    assert_eq!(login_failure_kind(timeout), LoginFailureKind::Timeout);
+    assert_eq!(auth_failure_kind(timeout), AuthFailureKind::Timeout);
+
+    // A local store failure is reported as a store failure.
+    let store = AuthFailureDetail::local(AuthMethod::Password, AuthFailureStage::LocalStore);
+    assert_eq!(login_failure_kind(store), LoginFailureKind::Store);
+    assert_eq!(auth_failure_kind(store), AuthFailureKind::Store);
+}
+
+/// #1268: a synthetic SDK message that happens to contain status digits and
+/// Matrix error tokens must not change the classification, because the SDK
+/// boundary no longer classifies by text.
+#[test]
+fn incidental_status_digits_in_sdk_text_do_not_change_classification() {
+    let error = koushi_sdk::PasswordLoginError::Sdk(
+        "request failed with 401 / M_FORBIDDEN and 429 / M_LIMIT_EXCEEDED in prose".to_owned(),
+    );
+    let (login_kind, auth_kind, detail) = password_login_failure(&error);
+
+    assert_eq!(detail.transport, AuthFailureTransport::Local);
+    assert_eq!(detail.http_status, None);
+    assert_eq!(detail.matrix_error_kind, None);
+    assert!(!detail.retryable);
+    assert_eq!(auth_kind, AuthFailureKind::Sdk);
+    assert_eq!(login_kind, LoginFailureKind::Server);
+}
+
+/// #1268: only a received 401/403 response is "server rejected before a
+/// session" cleanup evidence; a discovery failure never sent a login request.
+#[test]
+fn cleanup_evidence_is_derived_from_typed_details() {
+    let rejected = AuthFailureDetail::http_response(
+        AuthMethod::Password,
+        AuthFailureStage::PasswordLogin,
+        Some(403),
+        Some(AuthMatrixErrorKind::Forbidden),
+        false,
+    );
+    assert_eq!(
+        fresh_login_cleanup_evidence(rejected),
+        Some(PendingLoginCleanupEvidence::ServerRejectedBeforeSession)
+    );
+
+    let refused =
+        AuthFailureDetail::no_response(AuthMethod::Password, AuthFailureStage::PasswordLogin);
+    assert_eq!(fresh_login_cleanup_evidence(refused), None);
+
+    let discovery =
+        AuthFailureDetail::no_response(AuthMethod::Password, AuthFailureStage::ResolveHomeserver);
+    assert_eq!(
+        fresh_login_cleanup_evidence(discovery),
+        Some(PendingLoginCleanupEvidence::NoRequestSent)
+    );
+}
+
+/// #1267: an explicit cancel retires the pending browser attempt, so a later
+/// callback for it is fenced instead of completing a replaced authorization.
+#[tokio::test]
+async fn cancel_oidc_login_retires_the_pending_attempt() {
+    let cred_dir = tempdir().expect("tempdir");
+    let data_dir = tempdir().expect("tempdir");
+    let (handle, _action_rx, mut event_rx) =
+        spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    assert!(
+        handle
+            .send(AccountMessage::ConfigurePendingOidc {
+                start_request_id: test_request_id(),
+                homeserver: "https://original.example.invalid".to_owned(),
+            })
+            .await
+    );
+
+    let cancel_request_id = RequestId {
+        connection_id: RuntimeConnectionId(43),
+        sequence: 1,
+    };
+    assert!(
+        handle
+            .send(AccountMessage::Command(AccountCommand::CancelOidcLogin {
+                request_id: cancel_request_id,
+            }))
+            .await
+    );
+
+    let completion_request_id = RequestId {
+        connection_id: RuntimeConnectionId(43),
+        sequence: 2,
+    };
+    assert!(
+        handle
+            .send(AccountMessage::Command(AccountCommand::CompleteOidcLogin {
+                request_id: completion_request_id,
+                callback_url: "http://127.0.0.1/callback?code=fixture".to_owned(),
+                platform: koushi_state::DisplayPlatform::Linux,
+            }))
+            .await
+    );
+    assert!(matches!(
+        event_rx.recv().await.expect("retired callback"),
+        CoreEvent::OperationFailed { request_id, failure }
+            if request_id == completion_request_id
+                && failure == CoreFailure::AccountOperationFailed {
+                    kind: AuthFailureKind::Cancelled,
+                }
+    ));
+    let _ = handle.send(AccountMessage::Shutdown).await;
+}
+
+/// #1267: starting again never replays the retained authorization. It retires
+/// the prior attempt and creates fresh SDK authorization state, even for the
+/// same homeserver.
+#[tokio::test]
+async fn starting_again_does_not_replay_a_retained_authorization() {
+    let homeserver = spawn_quarantine_password_server();
+    let cred_dir = tempdir().expect("tempdir");
+    let data_dir = tempdir().expect("tempdir");
+    let (handle, _action_rx, mut event_rx) =
+        spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    assert!(
+        handle
+            .send(AccountMessage::ConfigurePendingOidc {
+                start_request_id: test_request_id(),
+                homeserver: homeserver.clone(),
+            })
+            .await
+    );
+
+    let second_request_id = RequestId {
+        connection_id: RuntimeConnectionId(44),
+        sequence: 1,
+    };
+    assert!(
+        handle
+            .send(AccountMessage::Command(AccountCommand::StartOidcLogin {
+                request_id: second_request_id,
+                homeserver,
+                method: DelegatedAuthMethod::Sso,
+            }))
+            .await
+    );
+    assert!(matches!(
+        event_rx.recv().await.expect("fresh authorization"),
+        CoreEvent::Account(AccountEvent::OidcAuthorizationCreated {
+            request_id,
+            authorization_url,
+            ..
+        }) if request_id == second_request_id
+            && authorization_url != "https://synthetic.invalid/authorize?opaque=fixture"
+            && authorization_url.contains("/login/sso/redirect")
+    ));
+    let _ = handle.send(AccountMessage::Shutdown).await;
+}
+
+/// #1268 verification: an OAuth callback / token-exchange failure is classified
+/// from its typed stage, so it can never be reported as a transport failure or
+/// as a user cancellation.
+#[test]
+fn oauth_callback_failures_are_classified_from_their_typed_stage() {
+    let detail = oidc_failure_detail(
+        &koushi_sdk::PasswordLoginError::Auth(AuthFailureDetail::http_response(
+            AuthMethod::OAuth,
+            AuthFailureStage::OidcCallback,
+            Some(400),
+            Some(AuthMatrixErrorKind::Unrecognized),
+            false,
+        )),
+        AuthMethod::OAuth,
+    );
+
+    assert_eq!(detail.stage, AuthFailureStage::OidcCallback);
+    assert_eq!(detail.transport, AuthFailureTransport::HttpResponse);
+    assert_eq!(auth_failure_kind(detail), AuthFailureKind::Sdk);
+    assert_eq!(login_failure_kind(detail), LoginFailureKind::Server);
+    assert_ne!(auth_failure_kind(detail), AuthFailureKind::Cancelled);
+    assert_ne!(auth_failure_kind(detail), AuthFailureKind::Network);
+}
+
+/// #1268 verification: the diagnostic event carries exactly the bounded fields
+/// (method, stage, transport, status, allowlisted kind, retryable) and nothing
+/// that could leak a server URL, token, or raw SDK error.
+#[tokio::test]
+async fn auth_failure_diagnostics_carry_only_bounded_fields() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
+
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
+    record_auth_failure_detail(
+        "browser_authorization_failed",
+        AuthFailureDetail::http_response(
+            AuthMethod::OAuth,
+            AuthFailureStage::OidcStart,
+            Some(403),
+            Some(AuthMatrixErrorKind::Forbidden),
+            false,
+        ),
+    );
+
+    let formatted: Vec<String> =
+        koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
+            .iter()
+            .map(|record| koushi_diagnostics::format_event(&record.event))
+            .collect();
+    let event = formatted
+        .iter()
+        .find(|line| line.contains("stage=browser_authorization_failed"))
+        .expect("bounded auth failure diagnostic");
+
+    assert_eq!(
+        *event,
+        "stage=browser_authorization_failed method=oauth failure_stage=oidcStart \
+         transport=httpResponse retryable=false http_status=403 matrix_error_kind=forbidden"
+    );
+    for leaked in [
+        "https",
+        "example.invalid",
+        "token",
+        "secret",
+        "access_token",
+    ] {
+        assert!(!event.contains(leaked), "leaked {leaked} in {event}");
     }
 }

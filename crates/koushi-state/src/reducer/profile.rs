@@ -233,6 +233,7 @@ pub(crate) fn handle_local_user_alias_update_failed(
         code: "local_user_alias_update_failed".to_owned(),
         message: LOCAL_USER_ALIAS_UPDATE_FAILED_MESSAGE.to_owned(),
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::ProfileChanged(Default::default())),
@@ -342,6 +343,7 @@ pub(crate) fn handle_ignored_user_update_failed(
         code: "ignored_user_update_failed".to_owned(),
         message: IGNORED_USER_UPDATE_FAILED_MESSAGE.to_owned(),
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::ProfileChanged(Default::default())),
@@ -431,6 +433,7 @@ pub(crate) fn handle_profile_update_failed(
         code: "profile_update_failed".to_owned(),
         message,
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::ProfileChanged(Default::default())),

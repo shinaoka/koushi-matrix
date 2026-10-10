@@ -444,6 +444,12 @@ pub enum AuthFailureKind {
     Forbidden,
     Timeout,
     Sdk,
+    /// Wrong credentials were presented (typed `M_FORBIDDEN` / 401, #1268).
+    InvalidCredentials,
+    /// The homeserver rate-limited the attempt (typed `M_LIMIT_EXCEEDED` / 429).
+    RateLimited,
+    /// A local credential or crypto store operation failed.
+    Store,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

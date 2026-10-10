@@ -2596,9 +2596,6 @@ impl AccountActor {
                     self.pending_oidc_login = Some(PendingOidcAttempt {
                         start_request_id,
                         flow: PendingOidcFlow::Synthetic { homeserver },
-                        authorization_url: "https://synthetic.invalid/authorize?opaque=fixture"
-                            .to_owned(),
-                        state: "synthetic-state".to_owned(),
                     });
                     self.oidc_completion_override = Some(session);
                 }
@@ -2610,9 +2607,6 @@ impl AccountActor {
                     self.pending_oidc_login = Some(PendingOidcAttempt {
                         start_request_id,
                         flow: PendingOidcFlow::Synthetic { homeserver },
-                        authorization_url: "https://synthetic.invalid/authorize?opaque=fixture"
-                            .to_owned(),
-                        state: "synthetic-state".to_owned(),
                     });
                 }
                 #[cfg(test)]
@@ -2789,8 +2783,13 @@ impl AccountActor {
             AccountCommand::StartOidcLogin {
                 request_id,
                 homeserver,
+                method,
             } => {
-                self.handle_start_oidc_login(request_id, homeserver).await;
+                self.handle_start_oidc_login(request_id, homeserver, method)
+                    .await;
+            }
+            AccountCommand::CancelOidcLogin { .. } => {
+                self.handle_cancel_oidc_login();
             }
             AccountCommand::CompleteOidcLogin {
                 request_id,

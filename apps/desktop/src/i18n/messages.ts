@@ -118,10 +118,14 @@ export type MessageId =
   | "menu.closeWindow"
   | "menu.quit"
   | "auth.failureForbidden"
+  | "auth.failureInvalidCredentials"
   | "auth.failureNetwork"
+  | "auth.failureRateLimited"
   | "auth.failureSdk"
+  | "auth.failureStore"
   | "auth.failureTimeout"
   | "auth.failureUnsupported"
+  | "auth.cancelBrowserSignIn"
   | "auth.flowOidc"
   | "auth.flowPassword"
   | "auth.flowSso"
@@ -1964,10 +1968,14 @@ const en: Catalog = {
   "menu.closeWindow": "Close Window",
   "menu.quit": "Quit Koushi",
   "auth.failureForbidden": "Login methods are not available for this account",
+  "auth.failureInvalidCredentials": "Incorrect Matrix ID or password",
   "auth.failureNetwork": "Could not reach the homeserver",
+  "auth.failureRateLimited": "Too many sign-in attempts. Wait a moment and try again",
   "auth.failureSdk": "Could not check login methods",
+  "auth.failureStore": "Could not open the local encryption store",
   "auth.failureTimeout": "Login method check timed out",
   "auth.failureUnsupported": "Unsupported homeserver",
+  "auth.cancelBrowserSignIn": "Cancel browser sign-in",
   "auth.flowOidc": "OIDC",
   "auth.flowPassword": "Password",
   "auth.flowSso": "Single sign-on",
@@ -3711,10 +3719,14 @@ const ja: Catalog = {
   "auth.deviceName": "デバイス名",
   "auth.encryptionRecovery": "暗号化リカバリ",
   "auth.failureForbidden": "このアカウントではログイン方法を利用できません",
+  "auth.failureInvalidCredentials": "Matrix ID またはパスワードが正しくありません",
   "auth.failureNetwork": "ホームサーバーに接続できませんでした",
+  "auth.failureRateLimited": "サインインの試行が多すぎます。しばらく待って再試行してください",
   "auth.failureSdk": "ログイン方法を確認できませんでした",
+  "auth.failureStore": "ローカルの暗号化ストアを開けませんでした",
   "auth.failureTimeout": "ログイン方法の確認がタイムアウトしました",
   "auth.failureUnsupported": "対応していないホームサーバーです",
+  "auth.cancelBrowserSignIn": "ブラウザーでのサインインを中止",
   "auth.flowPassword": "パスワード",
   "auth.flowSso": "シングルサインオン",
   "auth.flowUnknown": "不明な方法",

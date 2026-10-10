@@ -32,6 +32,7 @@ import type {
   AccountTabsSnapshot,
   DesktopSnapshot,
   DesktopUpdateState,
+  DelegatedAuthMethod,
   DirectoryQuery,
   DisplayPlatform,
   FilesViewScope,
@@ -143,7 +144,11 @@ export interface DesktopApi {
   getDiagnosticSnapshot(): Promise<DiagnosticLogSnapshot>;
   observeViewportSync(observation: ViewportSyncObservation): Promise<ViewportSyncReceipt>;
   discoverLoginMethods(homeserver: string): Promise<CommandSettlement>;
-  startOidcLogin(homeserver: string): Promise<OidcBrowserLaunchResponse>;
+  startOidcLogin(
+    homeserver: string,
+    method: DelegatedAuthMethod
+  ): Promise<OidcBrowserLaunchResponse>;
+  cancelOidcLogin(): Promise<CommandAdmission>;
   completeOidcLogin(homeserver: string, callbackUrl: string): Promise<CommandSettlement>;
   submitLogin(
     homeserver: string,

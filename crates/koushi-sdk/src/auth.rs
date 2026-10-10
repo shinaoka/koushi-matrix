@@ -1,7 +1,10 @@
 use crate::client_session::{build_client, oidc_client_registration_data};
 use crate::e2ee::install_room_key_diagnostic_observer;
 use crate::{MatrixClientSession, MatrixClientStoreConfig, logout};
-use koushi_state::{DelegatedAuthLinks, LoginFlow, LoginFlowKind, LoginRequest, SessionInfo};
+use koushi_state::{
+    AuthFailureDetail, AuthFailureStage, AuthMatrixErrorKind, AuthMethod, DelegatedAuthLinks,
+    DelegatedAuthMethod, LoginFlow, LoginFlowKind, LoginRequest, SessionInfo,
+};
 use matrix_sdk::utils::UrlOrQuery;
 use serde::Deserialize;
 use std::{fmt, net::IpAddr, time::Duration};
@@ -47,6 +50,12 @@ pub struct MatrixLoginDiscovery {
 pub struct OidcAuthorization {
     pub authorization_url: String,
     pub state: String,
+    /// The delegated method that actually started (#1267). `OAuth` for an
+    /// authorization-code flow, `Sso` for a legacy SSO redirect.
+    pub method: AuthMethod,
+    /// True only when the OAuth attempt was classified as unsupported and the
+    /// legacy SSO fallback was used.
+    pub legacy_sso_fallback: bool,
 }
 
 impl fmt::Debug for OidcAuthorization {
@@ -55,6 +64,7 @@ impl fmt::Debug for OidcAuthorization {
             .debug_struct("OidcAuthorization")
             .field("authorization_url", &"AuthorizationUrl(..)")
             .field("state", &"CsrfState(..)")
+            .field("method", &self.method)
             .finish()
     }
 }
@@ -306,6 +316,273 @@ pub enum PasswordLoginError {
     MissingSession,
     #[error("session serialization failed: {0}")]
     Serialization(String),
+    /// A typed, privacy-safe authentication failure (#1268). The detail carries
+    /// only bounded fields, so it is safe to classify, log, and project.
+    #[error("authentication failed")]
+    Auth(AuthFailureDetail),
+}
+
+impl PasswordLoginError {
+    /// The bounded, privacy-safe detail for this failure. `method` supplies the
+    /// authentication method for variants that do not carry one (local store,
+    /// runtime, and missing-session failures); a failure that already carries a
+    /// typed detail keeps it.
+    pub fn failure_detail(&self, method: AuthMethod) -> AuthFailureDetail {
+        match self {
+            Self::Auth(detail) => *detail,
+            Self::InvalidHomeserver(error) => classify_login_discovery_error(error, method),
+            Self::SavedCryptoStore(_) => {
+                AuthFailureDetail::local(method, AuthFailureStage::LocalStore)
+            }
+            Self::Serialization(_) => {
+                AuthFailureDetail::local(method, AuthFailureStage::LocalStore)
+            }
+            Self::Runtime(_) => {
+                AuthFailureDetail::local_retryable(method, AuthFailureStage::PasswordLogin)
+            }
+            Self::MissingSession => {
+                AuthFailureDetail::local(method, AuthFailureStage::PasswordLogin)
+            }
+            // Residual raw text is never inspected: it is reported as a local,
+            // unclassified failure with no status and no Matrix error kind.
+            Self::Sdk(_) => AuthFailureDetail::local(method, AuthFailureStage::PasswordLogin),
+        }
+    }
+
+    /// The typed detail when this failure was produced by the authentication
+    /// adapter. Used by tests and diagnostics to prove no raw text is carried.
+    pub fn typed_detail(&self) -> Option<AuthFailureDetail> {
+        match self {
+            Self::Auth(detail) => Some(*detail),
+            _ => None,
+        }
+    }
+}
+
+/// Map a server-reported Matrix error kind onto the bounded allowlist. Anything
+/// outside the allowlist is reported as `Unknown`; the raw kind is never
+/// carried, so server vocabulary cannot leak into the UI or diagnostics.
+fn map_matrix_error_kind(kind: &matrix_sdk::ruma::api::error::ErrorKind) -> AuthMatrixErrorKind {
+    use matrix_sdk::ruma::api::error::ErrorKind;
+    match kind {
+        ErrorKind::Forbidden => AuthMatrixErrorKind::Forbidden,
+        ErrorKind::Unauthorized => AuthMatrixErrorKind::Unauthorized,
+        ErrorKind::UnknownToken(_) => AuthMatrixErrorKind::UnknownToken,
+        ErrorKind::MissingToken => AuthMatrixErrorKind::MissingToken,
+        ErrorKind::LimitExceeded(_) => AuthMatrixErrorKind::LimitExceeded,
+        ErrorKind::NotFound => AuthMatrixErrorKind::NotFound,
+        ErrorKind::Unrecognized => AuthMatrixErrorKind::Unrecognized,
+        ErrorKind::BadJson => AuthMatrixErrorKind::BadJson,
+        _ => AuthMatrixErrorKind::Unknown,
+    }
+}
+
+/// Classify a received HTTP response failure. A response is never reported as
+/// a transport failure.
+fn classify_http_error(
+    error: &matrix_sdk::HttpError,
+    method: AuthMethod,
+    stage: AuthFailureStage,
+) -> AuthFailureDetail {
+    use matrix_sdk::HttpError;
+    use matrix_sdk::ruma::api::client::uiaa::UiaaResponse;
+    use matrix_sdk::ruma::api::error::FromHttpResponseError;
+
+    match error {
+        HttpError::Reqwest(error) => {
+            if error.is_timeout() {
+                AuthFailureDetail::timeout(method, stage)
+            } else {
+                AuthFailureDetail::no_response(method, stage)
+            }
+        }
+        HttpError::Api(error) => match error.as_ref() {
+            FromHttpResponseError::Server(UiaaResponse::MatrixError(error)) => {
+                let status = error.status_code.as_u16();
+                let retryable = status == 429 || status >= 500;
+                AuthFailureDetail::http_response(
+                    method,
+                    stage,
+                    Some(status),
+                    error.error_kind().map(map_matrix_error_kind),
+                    retryable,
+                )
+            }
+            // A user-interactive-auth response rejects the request as not
+            // (fully) authenticated.
+            FromHttpResponseError::Server(UiaaResponse::AuthResponse(_)) => {
+                AuthFailureDetail::http_response(
+                    method,
+                    stage,
+                    Some(401),
+                    Some(AuthMatrixErrorKind::Unauthorized),
+                    false,
+                )
+            }
+            FromHttpResponseError::Deserialization(_) => {
+                AuthFailureDetail::http_response(method, stage, None, None, false)
+            }
+            _ => AuthFailureDetail::http_response(method, stage, None, None, false),
+        },
+        HttpError::Cached(inner) => classify_http_error(inner, method, stage),
+        HttpError::IntoHttp(_) | HttpError::RefreshToken(_) => {
+            AuthFailureDetail::local(method, stage)
+        }
+    }
+}
+
+/// Classify a `matrix_sdk::Error` from an authentication request (password
+/// login, OAuth/SSO callback, SSO URL creation).
+fn classify_matrix_error(
+    error: &matrix_sdk::Error,
+    method: AuthMethod,
+    stage: AuthFailureStage,
+) -> AuthFailureDetail {
+    match error {
+        matrix_sdk::Error::Http(error) => classify_http_error(error, method, stage),
+        matrix_sdk::Error::OAuth(error) => classify_oauth_error(error, stage),
+        matrix_sdk::Error::Timeout => AuthFailureDetail::timeout(method, stage),
+        matrix_sdk::Error::Io(_) => AuthFailureDetail::no_response(method, stage),
+        matrix_sdk::Error::AuthenticationRequired => AuthFailureDetail::local(method, stage),
+        _ => AuthFailureDetail::local(method, stage),
+    }
+}
+
+/// Classify a login-discovery failure. Discovery is a plain HTTP exchange, so
+/// transport and status are preserved exactly, and the malformed/unsupported
+/// cases stay local with no server vocabulary.
+fn classify_login_discovery_error(
+    error: &LoginDiscoveryError,
+    method: AuthMethod,
+) -> AuthFailureDetail {
+    match error {
+        LoginDiscoveryError::RequestFailed(_) => {
+            AuthFailureDetail::no_response(method, AuthFailureStage::ResolveHomeserver)
+        }
+        LoginDiscoveryError::HttpStatus { status, .. } => {
+            let retryable = *status == 429 || *status >= 500;
+            AuthFailureDetail::http_response(
+                method,
+                AuthFailureStage::ResolveHomeserver,
+                Some(*status),
+                None,
+                retryable,
+            )
+        }
+        LoginDiscoveryError::MissingFlows | LoginDiscoveryError::InvalidResponse(_) => {
+            AuthFailureDetail::http_response(
+                method,
+                AuthFailureStage::ResolveHomeserver,
+                None,
+                None,
+                false,
+            )
+        }
+        LoginDiscoveryError::InvalidHomeserver(_)
+        | LoginDiscoveryError::UnsupportedHomeserverScheme
+        | LoginDiscoveryError::InsecureHomeserverScheme => {
+            AuthFailureDetail::local(method, AuthFailureStage::ResolveHomeserver)
+        }
+    }
+}
+
+/// The specific unsupported-method condition that may fall back from OAuth to
+/// legacy SSO: the homeserver's authorization-server metadata endpoint reports
+/// that OAuth is not implemented. Every other OAuth start failure is surfaced.
+fn is_unsupported_oauth_method(error: &matrix_sdk::authentication::oauth::OAuthError) -> bool {
+    use matrix_sdk::authentication::oauth::error::OAuthDiscoveryError;
+    matches!(
+        error,
+        matrix_sdk::authentication::oauth::OAuthError::Discovery(OAuthDiscoveryError::NotSupported)
+    )
+}
+
+/// Classify an OAuth start/callback failure into the bounded detail.
+fn classify_oauth_error(
+    error: &matrix_sdk::authentication::oauth::OAuthError,
+    stage: AuthFailureStage,
+) -> AuthFailureDetail {
+    use matrix_sdk::authentication::oauth::OAuthError;
+    use matrix_sdk::authentication::oauth::error::{
+        OAuthAuthorizationCodeError, OAuthClientRegistrationError, OAuthDiscoveryError,
+    };
+
+    let method = AuthMethod::OAuth;
+    match error {
+        OAuthError::Discovery(OAuthDiscoveryError::NotSupported) => {
+            // The classified unsupported method: not retryable as OAuth, and
+            // never classified as a transport/server failure.
+            AuthFailureDetail::local(method, stage)
+        }
+        OAuthError::Discovery(OAuthDiscoveryError::Http(error)) => {
+            classify_http_error(error, method, stage)
+        }
+        OAuthError::Discovery(OAuthDiscoveryError::Json(_)) => {
+            AuthFailureDetail::http_response(method, stage, None, None, false)
+        }
+        OAuthError::Discovery(OAuthDiscoveryError::Validation(_)) => {
+            AuthFailureDetail::http_response(method, stage, None, None, false)
+        }
+        OAuthError::Discovery(OAuthDiscoveryError::Url(_)) => {
+            AuthFailureDetail::local(method, stage)
+        }
+        OAuthError::Discovery(OAuthDiscoveryError::Oidc(_)) => {
+            AuthFailureDetail::http_response(method, stage, None, None, true)
+        }
+        OAuthError::ClientRegistration(
+            OAuthClientRegistrationError::NotSupported
+            | OAuthClientRegistrationError::IntoJson(_)
+            | OAuthClientRegistrationError::FromJson(_),
+        ) => AuthFailureDetail::local(method, stage),
+        OAuthError::ClientRegistration(OAuthClientRegistrationError::OAuth(_)) => {
+            AuthFailureDetail::http_response(method, stage, None, None, false)
+        }
+        OAuthError::AuthorizationCode(OAuthAuthorizationCodeError::Cancelled) => {
+            AuthFailureDetail::local(method, stage)
+        }
+        OAuthError::AuthorizationCode(OAuthAuthorizationCodeError::RequestToken(error)) => {
+            classify_oauth_request_error(error, method, stage)
+        }
+        OAuthError::AuthorizationCode(_) => {
+            AuthFailureDetail::http_response(method, stage, None, None, false)
+        }
+        OAuthError::RefreshToken(error) => classify_oauth_request_error(error, method, stage),
+        OAuthError::NotRegistered | OAuthError::NotAuthenticated | OAuthError::SessionMismatch => {
+            AuthFailureDetail::local(method, stage)
+        }
+        OAuthError::Logout(_) => AuthFailureDetail::local(method, stage),
+        _ => AuthFailureDetail::local(method, stage),
+    }
+}
+
+/// Classify an `oauth2` token request failure. The nested HTTP client error can
+/// distinguish a timeout from no response.
+fn classify_oauth_request_error(
+    error: &matrix_sdk::authentication::oauth::error::OAuthRequestError<
+        matrix_sdk::authentication::oauth::error::BasicErrorResponseType,
+    >,
+    method: AuthMethod,
+    stage: AuthFailureStage,
+) -> AuthFailureDetail {
+    use matrix_sdk::authentication::oauth::error::{HttpClientError, RequestTokenError};
+
+    match error {
+        RequestTokenError::ServerResponse(_) => {
+            AuthFailureDetail::http_response(method, stage, None, None, false)
+        }
+        RequestTokenError::Request(HttpClientError::Reqwest(error)) => {
+            if error.is_timeout() {
+                AuthFailureDetail::timeout(method, stage)
+            } else {
+                AuthFailureDetail::no_response(method, stage)
+            }
+        }
+        RequestTokenError::Request(_) => AuthFailureDetail::no_response(method, stage),
+        RequestTokenError::Parse(_, _) => {
+            AuthFailureDetail::http_response(method, stage, None, None, false)
+        }
+        RequestTokenError::Other(_) => AuthFailureDetail::local(method, stage),
+    }
 }
 
 #[derive(Deserialize)]
@@ -564,10 +841,13 @@ async fn login_with_password_on_store(
         login = login.initial_device_display_name(device_display_name);
     }
 
-    let response = login
-        .send()
-        .await
-        .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+    let response = login.send().await.map_err(|error| {
+        PasswordLoginError::Auth(classify_matrix_error(
+            &error,
+            AuthMethod::Password,
+            AuthFailureStage::PasswordLogin,
+        ))
+    })?;
     if requested_device_id.is_some_and(|expected| response.device_id.as_str() != expected)
         || request.username.starts_with('@') && response.user_id.as_str() != request.username
     {
@@ -610,18 +890,28 @@ async fn login_with_password_on_store(
 pub async fn start_oidc_login(
     homeserver: &str,
     redirect_uri: &str,
+    method: DelegatedAuthMethod,
 ) -> Result<(PendingOidcLogin, OidcAuthorization), PasswordLoginError> {
-    start_oidc_login_with_store(homeserver, redirect_uri, None, None, false).await
+    start_oidc_login_with_store(homeserver, redirect_uri, None, None, false, method).await
 }
 
 /// Start OAuth/SSO on one persistent client. The pending value owns that same
 /// client through callback completion; no second memory client is created.
+///
+/// The delegated method is the user's bounded choice (#1267): `Sso` starts the
+/// legacy SSO redirect directly, and `OAuth` starts the authorization-code
+/// flow. OAuth falls back to legacy SSO **only** for the classified
+/// unsupported-method condition (the authorization-server metadata endpoint
+/// reports OAuth is not implemented); transport, timeout, metadata-validation,
+/// registration, and server-response failures are surfaced as a typed,
+/// privacy-safe `PasswordLoginError::Auth`, never a silent method switch.
 pub async fn start_oidc_login_with_store(
     homeserver: &str,
     redirect_uri: &str,
     store_config: Option<&MatrixClientStoreConfig>,
     requested_device_id: Option<&str>,
     reuse_saved_device: bool,
+    method: DelegatedAuthMethod,
 ) -> Result<(PendingOidcLogin, OidcAuthorization), PasswordLoginError> {
     let homeserver = Homeserver::parse(homeserver)?;
     let verify_existing_identity = reuse_saved_device
@@ -652,41 +942,28 @@ pub async fn start_oidc_login_with_store(
     } else {
         None
     };
-    let redirect_uri =
-        Url::parse(redirect_uri).map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+    let redirect_uri = Url::parse(redirect_uri).map_err(|_| {
+        PasswordLoginError::Auth(AuthFailureDetail::local(
+            AuthMethod::OAuth,
+            AuthFailureStage::OidcStart,
+        ))
+    })?;
     let client = build_client(&homeserver, store_config).await?;
     let requested_device_id = requested_device_id.map(str::to_owned);
 
-    match client
-        .oauth()
-        .login(
-            redirect_uri.clone(),
-            requested_device_id.as_deref().map(Into::into),
-            Some(oidc_client_registration_data(redirect_uri.clone())),
-            None,
-        )
-        .build()
-        .await
-    {
-        Ok(authorization) => Ok((
-            PendingOidcLogin::OAuth {
-                client,
-                homeserver: homeserver.normalized(),
-                requested_device_id,
-                reused_saved_device: verify_existing_identity,
-                saved_identity,
-            },
-            OidcAuthorization {
-                authorization_url: authorization.url.to_string(),
-                state: authorization.state.secret().to_owned(),
-            },
-        )),
-        Err(_) => {
+    match method {
+        DelegatedAuthMethod::Sso => {
             let authorization_url = client
                 .matrix_auth()
                 .get_sso_login_url(redirect_uri.as_str(), None)
                 .await
-                .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+                .map_err(|error| {
+                    PasswordLoginError::Auth(classify_matrix_error(
+                        &error,
+                        AuthMethod::Sso,
+                        AuthFailureStage::SsoStart,
+                    ))
+                })?;
             Ok((
                 PendingOidcLogin::Sso {
                     client,
@@ -698,8 +975,74 @@ pub async fn start_oidc_login_with_store(
                 OidcAuthorization {
                     authorization_url,
                     state: String::new(),
+                    method: AuthMethod::Sso,
+                    legacy_sso_fallback: false,
                 },
             ))
+        }
+        DelegatedAuthMethod::OAuth => {
+            let built = client
+                .oauth()
+                .login(
+                    redirect_uri.clone(),
+                    requested_device_id.as_deref().map(Into::into),
+                    Some(oidc_client_registration_data(redirect_uri.clone())),
+                    None,
+                )
+                .build()
+                .await;
+            match built {
+                Ok(authorization) => Ok((
+                    PendingOidcLogin::OAuth {
+                        client,
+                        homeserver: homeserver.normalized(),
+                        requested_device_id,
+                        reused_saved_device: verify_existing_identity,
+                        saved_identity,
+                    },
+                    OidcAuthorization {
+                        authorization_url: authorization.url.to_string(),
+                        state: authorization.state.secret().to_owned(),
+                        method: AuthMethod::OAuth,
+                        legacy_sso_fallback: false,
+                    },
+                )),
+                Err(error) if is_unsupported_oauth_method(&error) => {
+                    // The one classified fallback: the server reports OAuth is
+                    // not implemented, so the legacy SSO redirect is the
+                    // compatible method this homeserver actually offers.
+                    let authorization_url = client
+                        .matrix_auth()
+                        .get_sso_login_url(redirect_uri.as_str(), None)
+                        .await
+                        .map_err(|error| {
+                            PasswordLoginError::Auth(classify_matrix_error(
+                                &error,
+                                AuthMethod::Sso,
+                                AuthFailureStage::SsoStart,
+                            ))
+                        })?;
+                    Ok((
+                        PendingOidcLogin::Sso {
+                            client,
+                            homeserver: homeserver.normalized(),
+                            requested_device_id,
+                            reused_saved_device: verify_existing_identity,
+                            saved_identity,
+                        },
+                        OidcAuthorization {
+                            authorization_url,
+                            state: String::new(),
+                            method: AuthMethod::Sso,
+                            legacy_sso_fallback: true,
+                        },
+                    ))
+                }
+                Err(error) => Err(PasswordLoginError::Auth(classify_oauth_error(
+                    &error,
+                    AuthFailureStage::OidcStart,
+                ))),
+            }
         }
     }
 }
@@ -708,8 +1051,12 @@ pub async fn finish_oidc_login(
     pending: PendingOidcLogin,
     callback_url: &str,
 ) -> Result<MatrixClientSession, PasswordLoginError> {
-    let callback_url =
-        Url::parse(callback_url).map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+    let callback_url = Url::parse(callback_url).map_err(|_| {
+        PasswordLoginError::Auth(AuthFailureDetail::local(
+            AuthMethod::OAuth,
+            AuthFailureStage::OidcCallback,
+        ))
+    })?;
     let (
         client,
         homeserver,
@@ -729,7 +1076,13 @@ pub async fn finish_oidc_login(
                 .oauth()
                 .finish_login(callback_url.into())
                 .await
-                .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+                .map_err(|error| {
+                    PasswordLoginError::Auth(classify_matrix_error(
+                        &error,
+                        AuthMethod::OAuth,
+                        AuthFailureStage::OidcCallback,
+                    ))
+                })?;
             (
                 client,
                 homeserver,
@@ -749,16 +1102,24 @@ pub async fn finish_oidc_login(
             let mut login = client
                 .matrix_auth()
                 .login_with_sso_callback(UrlOrQuery::Url(callback_url))
-                .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?
+                .map_err(|_| {
+                    PasswordLoginError::Auth(AuthFailureDetail::local(
+                        AuthMethod::Sso,
+                        AuthFailureStage::OidcCallback,
+                    ))
+                })?
                 .initial_device_display_name("Koushi")
                 .request_refresh_token();
             if let Some(device_id) = requested_device_id.as_deref() {
                 login = login.device_id(device_id);
             }
-            login
-                .send()
-                .await
-                .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+            login.send().await.map_err(|error| {
+                PasswordLoginError::Auth(classify_matrix_error(
+                    &error,
+                    AuthMethod::Sso,
+                    AuthFailureStage::OidcCallback,
+                ))
+            })?;
             (
                 client,
                 homeserver,

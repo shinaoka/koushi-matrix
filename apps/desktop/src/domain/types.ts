@@ -540,8 +540,14 @@ export type AuthFailureKind =
   | "unsupported"
   | "cancelled"
   | "forbidden"
+  | "rateLimited"
+  | "invalidCredentials"
+  | "store"
   | "timeout"
   | "sdk";
+
+/** The user's bounded chosen method for a browser sign-in start (#1267). */
+export type DelegatedAuthMethod = "oauth" | "sso";
 
 export type AccountManagementState =
   | { kind: "idle" }
@@ -2866,6 +2872,8 @@ export interface AppError {
   code: string;
   message: string;
   recoverable: boolean;
+  /** Bounded, Rust-classified cause for visible guidance (#1268). */
+  reason?: AuthFailureKind;
 }
 
 export interface SidebarModel {

@@ -237,6 +237,7 @@ pub(crate) fn handle_thread_reply_failed(
                 code: "send_text_failed".to_owned(),
                 message,
                 recoverable: true,
+                reason: None,
             });
             vec![
                 AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
@@ -430,6 +431,7 @@ pub(crate) fn handle_thread_subscription_failed(
         code: "thread_subscription_failed".to_owned(),
         message: "Matrix thread subscription failed".to_owned(),
         recoverable: true,
+        reason: None,
     });
     vec![
         AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
@@ -553,6 +555,7 @@ pub(crate) fn handle_focused_context_subscription_failed(
         code: "focused_context_subscription_failed".to_owned(),
         message: "Matrix focused context subscription failed".to_owned(),
         recoverable: true,
+        reason: None,
     });
     vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
 }

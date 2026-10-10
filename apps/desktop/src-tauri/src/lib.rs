@@ -1598,6 +1598,7 @@ pub fn run() {
             commands::session::resync_snapshot,
             commands::session::discover_login_methods,
             commands::session::start_oidc_login,
+            commands::session::cancel_oidc_login,
             commands::session::complete_oidc_login,
             commands::session::submit_login,
             commands::session::submit_soft_logout_reauth,
