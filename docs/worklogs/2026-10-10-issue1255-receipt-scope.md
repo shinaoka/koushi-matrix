@@ -91,7 +91,9 @@ matched exactly by the implementation and tests.
   because the two required `scope` fields pushed it to the 200-line inline test
   ceiling (Test Placement). No test logic changed.
 - `crates/koushi-core/src/state_delta.rs`: compute both scoped slices.
-- `crates/koushi-core/tests/receipt_scope_delta.rs`: new delta suite (3 tests).
+- `crates/koushi-core/src/state_delta/receipt_scope_tests.rs`: new delta suite
+  (3 tests), in-crate because `koushi-core` keeps only its five Core-local
+  integration targets (`scripts/check-leaf-crate-boundaries.mjs`).
 - `crates/koushi-protocol/src/state_update.rs`, `.../lib.rs`: add and export
   `ScopedReceiptSummaryChanges` and the two delta fields.
 - `apps/desktop/src-tauri/src/dto.rs`, `.../dto/tests.rs`: mirror both slices,

@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use koushi_core::build_state_delta;
+use crate::build_state_delta;
 use koushi_state::{AppState, LiveEventReceiptSummary, RoomLiveSignals};
 
 const ROOM_ID: &str = "!room:example.invalid";

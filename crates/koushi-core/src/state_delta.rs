@@ -684,6 +684,9 @@ fn audit_app_state_delta_slices(state: &AppState) {
 }
 
 #[cfg(test)]
+mod receipt_scope_tests;
+
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]
