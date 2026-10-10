@@ -13,9 +13,11 @@ use koushi_state::{
     AuthSecret, CrossSigningStatus, CurrentDeviceTrustState, CurrentSessionBackupState,
     DeviceCleanupAuthMode, DeviceCleanupFailureKind, DeviceCleanupRemoteOutcome, E2eeRecoveryState,
     IdentityResetAuthRequest, IdentityResetAuthType, KeyBackupStatus, OwnIdentityVerification,
-    PendingKeyCountBucket, RecoveryRequest, SasEmoji, SecureBackupGateFailureKind,
-    SecureBackupGateState, VerificationAccountKind, VerificationGateState,
-    VerificationMethodCapability, VerificationTarget,
+    PendingKeyCountBucket, RecoveryRequest, SasEmoji, SecureBackupFailureDetail,
+    SecureBackupFailureStage, SecureBackupFailureTransport, SecureBackupGateFailureKind,
+    SecureBackupGateState, SecureBackupInspectionFailure, SecureBackupMatrixErrorKind,
+    VerificationAccountKind, VerificationGateState, VerificationMethodCapability,
+    VerificationTarget,
 };
 use matrix_sdk::ruma::{events::AnySyncTimelineEvent, serde::Raw};
 use matrix_sdk_base::crypto::{CollectStrategy, IncomingVerificationRequestProtectionCounters};
@@ -348,6 +350,7 @@ impl MatrixSecureBackupInspection {
                     }
                     Upload::Failed => SecureBackupGateState::DegradedRetrying {
                         failure: SecureBackupGateFailureKind::Network,
+                        detail: None,
                     },
                     Upload::Unknown | Upload::Settled => SecureBackupGateState::Checking,
                 }
@@ -1280,6 +1283,8 @@ pub enum E2eeTrustError {
     SecureBackupRecoveryKeyDeliveryFailed,
     #[error("Matrix encryption operation failed")]
     Classified(E2eeTrustFailureKind),
+    #[error("secure backup inspection failed")]
+    SecureBackupInspection(SecureBackupInspectionFailure),
     #[error("Matrix SDK trust operation failed")]
     Sdk(String),
 }
@@ -1327,6 +1332,10 @@ impl fmt::Debug for E2eeTrustError {
                 formatter.write_str("SecureBackupRecoveryKeyDeliveryFailed")
             }
             Self::Classified(kind) => formatter.debug_tuple("Classified").field(kind).finish(),
+            Self::SecureBackupInspection(failure) => formatter
+                .debug_tuple("SecureBackupInspection")
+                .field(failure)
+                .finish(),
             Self::Sdk(_) => formatter.write_str("Sdk(..)"),
         }
     }
@@ -1367,6 +1376,180 @@ fn e2ee_trust_failure_kind(error: &matrix_sdk::Error) -> E2eeTrustFailureKind {
             E2eeTrustFailureKind::InvalidBackup
         }
         _ => E2eeTrustFailureKind::Sdk,
+    }
+}
+
+/// The bounded stage every failure surfaced by `inspect_secure_backup()`
+/// currently originates from: the server-trust inspection.
+const SECURE_BACKUP_INSPECTION_STAGE: SecureBackupFailureStage =
+    SecureBackupFailureStage::InspectServerTrust;
+
+fn secure_backup_inspection_failure(
+    kind: SecureBackupGateFailureKind,
+    transport: SecureBackupFailureTransport,
+    http_status: Option<u16>,
+    matrix_error_kind: Option<SecureBackupMatrixErrorKind>,
+    retryable: bool,
+) -> SecureBackupInspectionFailure {
+    SecureBackupInspectionFailure {
+        kind,
+        detail: Some(SecureBackupFailureDetail {
+            stage: SECURE_BACKUP_INSPECTION_STAGE,
+            transport,
+            http_status,
+            matrix_error_kind,
+            retryable,
+        }),
+    }
+}
+
+/// Map a server-reported Matrix error kind onto the bounded allowlist. Anything
+/// outside the allowlist is reported as `Unknown`; the raw kind is never
+/// carried, so server vocabulary cannot leak into the UI or diagnostics.
+fn map_secure_backup_matrix_error_kind(
+    kind: &matrix_sdk::ruma::api::error::ErrorKind,
+) -> SecureBackupMatrixErrorKind {
+    use matrix_sdk::ruma::api::error::ErrorKind;
+    match kind {
+        ErrorKind::Forbidden => SecureBackupMatrixErrorKind::Forbidden,
+        ErrorKind::UnknownToken(_) => SecureBackupMatrixErrorKind::UnknownToken,
+        ErrorKind::MissingToken => SecureBackupMatrixErrorKind::MissingToken,
+        ErrorKind::LimitExceeded(_) => SecureBackupMatrixErrorKind::LimitExceeded,
+        ErrorKind::Unrecognized => SecureBackupMatrixErrorKind::Unrecognized,
+        ErrorKind::BadJson => SecureBackupMatrixErrorKind::BadJson,
+        ErrorKind::NotFound => SecureBackupMatrixErrorKind::NotFound,
+        _ => SecureBackupMatrixErrorKind::Unknown,
+    }
+}
+
+/// Classify a `HttpError` from the backup inspector. A received server response
+/// is never reported as a transport failure.
+fn classify_secure_backup_http_error(
+    error: &matrix_sdk::HttpError,
+) -> SecureBackupInspectionFailure {
+    use matrix_sdk::HttpError;
+    use matrix_sdk::ruma::api::client::uiaa::UiaaResponse;
+    use matrix_sdk::ruma::api::error::FromHttpResponseError;
+
+    match error {
+        HttpError::Reqwest(error) => {
+            if error.is_timeout() {
+                secure_backup_inspection_failure(
+                    SecureBackupGateFailureKind::Timeout,
+                    SecureBackupFailureTransport::Timeout,
+                    None,
+                    None,
+                    true,
+                )
+            } else {
+                // No HTTP response was received.
+                secure_backup_inspection_failure(
+                    SecureBackupGateFailureKind::Network,
+                    SecureBackupFailureTransport::NoResponse,
+                    None,
+                    None,
+                    true,
+                )
+            }
+        }
+        HttpError::Api(error) => match error.as_ref() {
+            FromHttpResponseError::Server(UiaaResponse::MatrixError(error)) => {
+                let status = error.status_code.as_u16();
+                let kind = if status == 401 {
+                    SecureBackupGateFailureKind::Unauthorized
+                } else if status == 403 {
+                    SecureBackupGateFailureKind::Forbidden
+                } else if status == 429 {
+                    SecureBackupGateFailureKind::RateLimited
+                } else {
+                    SecureBackupGateFailureKind::ServerResponse
+                };
+                let retryable = status == 429 || status >= 500;
+                secure_backup_inspection_failure(
+                    kind,
+                    SecureBackupFailureTransport::HttpResponse,
+                    Some(status),
+                    error.error_kind().map(map_secure_backup_matrix_error_kind),
+                    retryable,
+                )
+            }
+            // A user-interactive-auth response is the server rejecting the
+            // request as not (fully) authenticated.
+            FromHttpResponseError::Server(UiaaResponse::AuthResponse(_)) => {
+                secure_backup_inspection_failure(
+                    SecureBackupGateFailureKind::Unauthorized,
+                    SecureBackupFailureTransport::HttpResponse,
+                    Some(401),
+                    None,
+                    false,
+                )
+            }
+            FromHttpResponseError::Deserialization(_) => secure_backup_inspection_failure(
+                SecureBackupGateFailureKind::ServerResponse,
+                SecureBackupFailureTransport::HttpResponse,
+                None,
+                None,
+                false,
+            ),
+            _ => secure_backup_inspection_failure(
+                SecureBackupGateFailureKind::ServerResponse,
+                SecureBackupFailureTransport::HttpResponse,
+                None,
+                None,
+                false,
+            ),
+        },
+        HttpError::Cached(inner) => classify_secure_backup_http_error(inner),
+        HttpError::IntoHttp(_) | HttpError::RefreshToken(_) => secure_backup_inspection_failure(
+            SecureBackupGateFailureKind::Sdk,
+            SecureBackupFailureTransport::Local,
+            None,
+            None,
+            false,
+        ),
+    }
+}
+
+/// Classify a Secure Backup inspection failure into the published gate kind
+/// plus a structured, privacy-safe cause: stage, transport class (no response,
+/// HTTP response, timeout, local), the HTTP status when a response arrived, an
+/// allowlisted Matrix error kind, and retryability.
+///
+/// The result never carries a server body, SDK error text, a URL, or any
+/// identifier, so it is safe to project into state, the UI, and diagnostics.
+pub fn classify_secure_backup_inspection_failure(
+    error: &matrix_sdk::Error,
+) -> SecureBackupInspectionFailure {
+    match error {
+        matrix_sdk::Error::Http(error) => classify_secure_backup_http_error(error),
+        matrix_sdk::Error::Timeout => secure_backup_inspection_failure(
+            SecureBackupGateFailureKind::Timeout,
+            SecureBackupFailureTransport::Timeout,
+            None,
+            None,
+            true,
+        ),
+        matrix_sdk::Error::Io(_) => secure_backup_inspection_failure(
+            SecureBackupGateFailureKind::Network,
+            SecureBackupFailureTransport::NoResponse,
+            None,
+            None,
+            true,
+        ),
+        matrix_sdk::Error::AuthenticationRequired => secure_backup_inspection_failure(
+            SecureBackupGateFailureKind::Unauthorized,
+            SecureBackupFailureTransport::Local,
+            None,
+            None,
+            false,
+        ),
+        _ => secure_backup_inspection_failure(
+            SecureBackupGateFailureKind::Sdk,
+            SecureBackupFailureTransport::Local,
+            None,
+            None,
+            false,
+        ),
     }
 }
 
@@ -2784,7 +2967,9 @@ impl MatrixClientSession {
                 MatrixSecureBackupTrustState::Unknown,
             ),
             Err(error) => {
-                return Err(E2eeTrustError::Classified(e2ee_trust_failure_kind(&error)));
+                return Err(E2eeTrustError::SecureBackupInspection(
+                    classify_secure_backup_inspection_failure(&error),
+                ));
             }
         };
         let local_sdk_state = backups.state();

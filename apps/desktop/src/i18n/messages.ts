@@ -1210,6 +1210,19 @@ export type MessageId =
   | "gate.secureBackupFailureForbidden"
   | "gate.secureBackupFailureTimeout"
   | "gate.secureBackupFailureSdk"
+  | "gate.secureBackupFailureServerResponse"
+  | "gate.secureBackupFailureUnauthorized"
+  | "gate.secureBackupDetailNoResponse"
+  | "gate.secureBackupDetailTimeout"
+  | "gate.secureBackupDetailHttpStatus"
+  | "gate.secureBackupDetailHttpResponse"
+  | "gate.secureBackupDetailLocal"
+  | "gate.secureBackupActionRetry"
+  | "gate.secureBackupActionWaitAndRetry"
+  | "gate.secureBackupActionRetryLater"
+  | "gate.secureBackupActionSignInAgain"
+  | "gate.secureBackupActionContactAdmin"
+  | "gate.secureBackupActionLocalRetry"
   | "gate.secureBackupRetry"
   | "gate.secureBackupDiagnostics"
   | "gate.secureBackupCommandFailed"
@@ -3089,6 +3102,19 @@ const en: Catalog = {
   "gate.secureBackupFailureForbidden": "This account is not allowed to use secure backup.",
   "gate.secureBackupFailureTimeout": "Secure backup took too long to respond.",
   "gate.secureBackupFailureSdk": "Secure backup failed.",
+  "gate.secureBackupFailureServerResponse": "The homeserver reported a problem with secure backup.",
+  "gate.secureBackupFailureUnauthorized": "The homeserver rejected the sign-in for secure backup.",
+  "gate.secureBackupDetailNoResponse": "The homeserver could not be reached, so this secure backup request never received a response.",
+  "gate.secureBackupDetailTimeout": "The homeserver did not answer this secure backup request in time.",
+  "gate.secureBackupDetailHttpStatus": "The homeserver answered this secure backup request with an error (HTTP {status}).",
+  "gate.secureBackupDetailHttpResponse": "The homeserver answered this secure backup request with an error.",
+  "gate.secureBackupDetailLocal": "Secure backup could not be prepared on this device.",
+  "gate.secureBackupActionRetry": "Check your connection, then retry.",
+  "gate.secureBackupActionWaitAndRetry": "Wait a few minutes, then retry.",
+  "gate.secureBackupActionRetryLater": "Try again in a few minutes.",
+  "gate.secureBackupActionSignInAgain": "Sign out and sign in again.",
+  "gate.secureBackupActionContactAdmin": "Ask your homeserver administrator to check secure backup.",
+  "gate.secureBackupActionLocalRetry": "Retry; if it keeps failing, sign out and sign in again.",
   "gate.secureBackupRetry": "Retry secure backup",
   "gate.secureBackupDiagnostics": "Open secure backup diagnostics",
   "gate.secureBackupCommandFailed": "Secure backup action failed. Try again.",
@@ -4861,6 +4887,19 @@ const ja: Catalog = {
   "gate.secureBackupFailureForbidden": "このアカウントでは安全なバックアップを使用できません。",
   "gate.secureBackupFailureTimeout": "安全なバックアップの応答がタイムアウトしました。",
   "gate.secureBackupFailureSdk": "安全なバックアップに失敗しました。",
+  "gate.secureBackupFailureServerResponse": "ホームサーバーが安全なバックアップの問題を報告しました。",
+  "gate.secureBackupFailureUnauthorized": "ホームサーバーが安全なバックアップのサインインを拒否しました。",
+  "gate.secureBackupDetailNoResponse": "ホームサーバーに到達できなかったため、この安全なバックアップの要求は応答を受け取りませんでした。",
+  "gate.secureBackupDetailTimeout": "ホームサーバーがこの安全なバックアップの要求に時間内に応答しませんでした。",
+  "gate.secureBackupDetailHttpStatus": "ホームサーバーがこの安全なバックアップの要求にエラーで応答しました（HTTP {status}）。",
+  "gate.secureBackupDetailHttpResponse": "ホームサーバーがこの安全なバックアップの要求にエラーで応答しました。",
+  "gate.secureBackupDetailLocal": "この端末で安全なバックアップを準備できませんでした。",
+  "gate.secureBackupActionRetry": "接続を確認してから再試行してください。",
+  "gate.secureBackupActionWaitAndRetry": "数分待ってから再試行してください。",
+  "gate.secureBackupActionRetryLater": "数分後に再試行してください。",
+  "gate.secureBackupActionSignInAgain": "サインアウトして、もう一度サインインしてください。",
+  "gate.secureBackupActionContactAdmin": "ホームサーバーの管理者に安全なバックアップの確認を依頼してください。",
+  "gate.secureBackupActionLocalRetry": "再試行してください。失敗が続く場合は、サインアウトして再度サインインしてください。",
   "gate.secureBackupRetry": "安全なバックアップを再試行",
   "gate.secureBackupDiagnostics": "安全なバックアップの診断を開く",
   "gate.secureBackupCommandFailed": "安全なバックアップの操作に失敗しました。もう一度お試しください。",
