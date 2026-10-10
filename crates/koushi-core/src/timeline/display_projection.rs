@@ -1267,6 +1267,7 @@ fn root_display_item(
         .thread_summary
         .get_or_insert(koushi_protocol::event::ThreadSummaryDto {
             reply_count: 0,
+            unread_count: 0,
             latest_event_id: None,
             latest_sender: None,
             latest_sender_label: None,
@@ -1274,6 +1275,9 @@ fn root_display_item(
             latest_timestamp_ms: None,
         });
     summary.reply_count = root.aggregate.reply_count;
+    // #1259: the chip dot comes from the root's stored SDK thread-cache unread, so the
+    // initial window carries it too.
+    summary.unread_count = root.unread;
     summary.latest_event_id = root.aggregate.latest_event_id.clone();
     summary.latest_sender = root.aggregate.latest_sender.clone();
     summary.latest_sender_label = root.aggregate.latest_sender_label.clone();
@@ -1333,6 +1337,7 @@ fn root_placeholder_item(root: &ThreadRootDisplayData) -> TimelineItem {
     };
     let summary = koushi_protocol::event::ThreadSummaryDto {
         reply_count: root.aggregate.reply_count,
+        unread_count: 0,
         latest_event_id: root.aggregate.latest_event_id.clone(),
         latest_sender: root.aggregate.latest_sender.clone(),
         latest_sender_label: root.aggregate.latest_sender_label.clone(),

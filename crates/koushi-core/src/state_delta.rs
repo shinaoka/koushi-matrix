@@ -548,6 +548,7 @@ fn audit_app_state_delta_slices(state: &AppState) {
         sliding_sync_account_epoch: _,
         sliding_sync_capability: _,
         thread_delivery: _,
+        thread_unread: _,
         current_session_status: _,
         current_session_status_schedule: _,
         auth: _,

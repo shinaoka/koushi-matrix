@@ -1754,3 +1754,66 @@ fn media_download_updated_ignored_without_ready_session() {
     assert!(effects.is_empty());
     assert!(state.timeline.media_downloads.is_empty());
 }
+
+/// #1259: the SDK thread-cache unread value stamps the Threads-list row and clears.
+#[test]
+fn thread_unread_observation_stamps_the_threads_list_row() {
+    fn row() -> crate::state::ThreadsListItem {
+        crate::state::ThreadsListItem {
+            room_id: "!r:example.invalid".to_owned(),
+            root_event_id: "$root:example.invalid".to_owned(),
+            root_sender: "@alice:example.invalid".to_owned(),
+            root_sender_label: Some("Alice".to_owned()),
+            root_body_preview: Some("Root".to_owned()),
+            root_timestamp_ms: Some(1_700_000_000_000),
+            latest_event_id: Some("$reply:example.invalid".to_owned()),
+            latest_sender: Some("@bob:example.invalid".to_owned()),
+            latest_sender_label: Some("Bob".to_owned()),
+            latest_body_preview: Some("Reply".to_owned()),
+            latest_timestamp_ms: Some(1_700_000_100_000),
+            reply_count: 1,
+            unread_count: 0,
+        }
+    }
+
+    let mut state = ready_state();
+    reduce(
+        &mut state,
+        AppAction::OpenThreadsList {
+            request_id: 1,
+            room_id: "home".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadsListOpened {
+            request_id: 1,
+            room_id: "home".to_owned(),
+            items: vec![row()],
+            end_reached: true,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadUnreadObserved {
+            room_id: "!r:example.invalid".to_owned(),
+            root_event_id: "$root:example.invalid".to_owned(),
+            unread: 2,
+        },
+    );
+    let unread = |state: &AppState| match &state.threads_list {
+        crate::state::ThreadsListState::Open { items, .. } => items[0].unread_count,
+        _ => panic!("threads list should be open"),
+    };
+    assert_eq!(unread(&state), 2);
+
+    reduce(
+        &mut state,
+        AppAction::ThreadUnreadObserved {
+            room_id: "!r:example.invalid".to_owned(),
+            root_event_id: "$root:example.invalid".to_owned(),
+            unread: 0,
+        },
+    );
+    assert_eq!(unread(&state), 0);
+}

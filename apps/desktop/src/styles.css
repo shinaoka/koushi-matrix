@@ -9225,6 +9225,21 @@ kbd {
   color: var(--text-muted);
 }
 
+/* #1259: the Threads-list row shows the same per-root unread value as the chip. */
+.threads-list-row-unread {
+  flex: 0 0 auto;
+  align-self: center;
+  min-inline-size: 20px;
+  padding-inline: 6px;
+  border: 1px solid var(--unread);
+  border-radius: var(--r-pill);
+  color: var(--brand);
+  background: var(--selected);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
 .threads-list-row-button {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

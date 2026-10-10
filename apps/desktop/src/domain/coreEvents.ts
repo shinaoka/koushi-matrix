@@ -403,6 +403,8 @@ export interface ThreadSummaryDto {
   latest_sender_label?: string | null;
   latest_body_preview: string | null;
   latest_timestamp_ms: number | null;
+  /** #1259: replies since this client last read the thread; 0 when read. */
+  unread_count?: number;
 }
 
 export type TimelineDisplayKind =

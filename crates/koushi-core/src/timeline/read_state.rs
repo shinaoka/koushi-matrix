@@ -2076,6 +2076,15 @@ impl TimelineActor {
                 {
                     return false;
                 }
+                // #1259: the read changed this thread's SDK receipts, so ask the room
+                // timeline to re-read the thread cache and clear the chip dot now.
+                if let TimelineKind::Thread { room_id, .. } = &self.key.kind {
+                    let _ = self.manager_tx.try_send(
+                        super::manager::TimelineMessage::RefreshThreadUnread {
+                            key: TimelineKey::room(self.key.account_key.clone(), room_id.clone()),
+                        },
+                    );
+                }
                 let snapshot = derive_timeline_navigation_snapshot(
                     &self.key.kind,
                     &self.navigation_items,

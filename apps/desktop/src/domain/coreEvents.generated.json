@@ -957,7 +957,8 @@
               "latest_sender": "@thread:example.test",
               "latest_sender_label": null,
               "latest_timestamp_ms": 124,
-              "reply_count": 2
+              "reply_count": 2,
+              "unread_count": 0
             },
             "timestamp_ms": 123
           },
@@ -1064,7 +1065,8 @@
               "latest_sender": "@thread:example.test",
               "latest_sender_label": null,
               "latest_timestamp_ms": 124,
-              "reply_count": 2
+              "reply_count": 2,
+              "unread_count": 0
             },
             "timestamp_ms": 123
           }
@@ -1190,7 +1192,8 @@
                   "latest_sender": "@thread:example.test",
                   "latest_sender_label": null,
                   "latest_timestamp_ms": 124,
-                  "reply_count": 2
+                  "reply_count": 2,
+                  "unread_count": 0
                 },
                 "timestamp_ms": 123
               }

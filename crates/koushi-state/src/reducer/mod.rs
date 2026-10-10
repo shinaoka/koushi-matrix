@@ -105,6 +105,11 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         | AppAction::SlidingSyncCapabilityRevalidationCompleted { .. }) => {
             sliding_sync::reduce(state, action)
         }
+        AppAction::ThreadUnreadObserved {
+            room_id,
+            root_event_id,
+            unread,
+        } => thread::handle_thread_unread_observed(state, room_id, root_event_id, unread),
         AppAction::ThreadDeliveryDiagnosticRecorded { diagnostic } => {
             state.thread_delivery = diagnostic;
             Vec::new()

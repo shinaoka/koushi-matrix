@@ -180,6 +180,12 @@ pub(crate) enum TimelineMessage {
         composer_permit: ForwardedComposerDraftPermit,
         formatting_options: ComposerFormattingOptions,
     },
+    /// #1259: a thread read advanced the shared thread-unread marker; ask the room's
+    /// timeline actor to re-overlay its root items. Best-effort: a key without a
+    /// retained timeline is a no-op.
+    RefreshThreadUnread {
+        key: TimelineKey,
+    },
     /// Sync started: carries the one live `RoomListService`. Subscribing a timeline must also
     /// subscribe its room with the live service so the server streams that
     /// room's new timeline events (canon: TimelineActor description; without
@@ -1034,6 +1040,16 @@ impl TimelineManagerActor {
                 } => {
                     self.handle_local_read_boundary_observed(key, actor_generation, target)
                         .await;
+                }
+                TimelineMessage::RefreshThreadUnread { key } => {
+                    if let Some(handle) = self.timelines.get(&key) {
+                        let deadline = executor::Instant::now() + LIVE_TAIL_CANCELLATION_DEADLINE;
+                        let _ = executor::timeout_at(
+                            deadline,
+                            handle.send_control(TimelineActorControl::RefreshThreadUnread),
+                        )
+                        .await;
+                    }
                 }
                 TimelineMessage::Command(command) => {
                     self.handle_command(command).await;

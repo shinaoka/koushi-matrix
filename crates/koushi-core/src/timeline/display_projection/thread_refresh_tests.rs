@@ -32,6 +32,7 @@ fn thread_refresh_keeps_loaded_root_visible_while_pending_and_after_failure() {
         );
         item.thread_summary = Some(ThreadSummaryDto {
             reply_count: 1,
+            unread_count: 0,
             latest_event_id: Some(activity.activity_event_id.clone()),
             latest_sender: None,
             latest_sender_label: None,

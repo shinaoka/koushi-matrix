@@ -380,6 +380,117 @@ pub(super) async fn wait_for_room_in_room_list(
     }
 }
 
+/// #1259: whether a room window item is the given thread root.
+fn is_root_thread_item(item: &koushi_protocol::event::TimelineItem, root_event_id: &str) -> bool {
+    matches!(
+        &item.id,
+        koushi_protocol::event::TimelineItemId::Event { event_id } if event_id == root_event_id
+    ) || item.display_metadata.as_ref().is_some_and(|metadata| {
+        metadata.content_event_id.as_deref() == Some(root_event_id)
+            || metadata.activity_event_id.as_deref() == Some(root_event_id)
+    })
+}
+
+/// #1259: one root's projected chip unread in a room window. A window that does not
+/// carry the root reads as 0, so callers must check [`contains_root_thread`] before
+/// treating the value as evidence.
+pub(super) fn root_thread_unread(
+    items: &[koushi_protocol::event::TimelineItem],
+    root_event_id: &str,
+) -> u32 {
+    items
+        .iter()
+        .find(|item| is_root_thread_item(item, root_event_id))
+        .and_then(|item| item.thread_summary.as_ref())
+        .map(|summary| summary.unread_count)
+        .unwrap_or(0)
+}
+
+/// #1259: whether the room window actually shows the given thread root.
+pub(super) fn contains_root_thread(
+    items: &[koushi_protocol::event::TimelineItem],
+    root_event_id: &str,
+) -> bool {
+    items
+        .iter()
+        .any(|item| is_root_thread_item(item, root_event_id))
+}
+
+/// #1259: waits until the room window's root item carries a chip unread value that
+/// satisfies `predicate`, and reports it. Only a window or diff that carries the root
+/// counts; an unrelated item or a window without the root would otherwise satisfy a
+/// "cleared" predicate vacuously.
+pub(super) async fn wait_for_root_thread_unread<F>(
+    conn: &mut CoreConnection,
+    key: &koushi_protocol::ids::TimelineKey,
+    initial_items: &[koushi_protocol::event::TimelineItem],
+    root_event_id: &str,
+    label: &str,
+    predicate: F,
+) -> Result<u32, String>
+where
+    F: Fn(u32) -> bool,
+{
+    if contains_root_thread(initial_items, root_event_id) {
+        let value = root_thread_unread(initial_items, root_event_id);
+        if predicate(value) {
+            return Ok(value);
+        }
+    }
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(format!(
+                "{label}: timed out waiting for the root's thread unread"
+            ));
+        }
+        let event =
+            tokio::time::timeout(deadline.saturating_duration_since(now), conn.recv_event())
+                .await
+                .map_err(|_| format!("{label}: timed out waiting for the root's thread unread"))?
+                .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref event_key,
+                items,
+                ..
+            }) if event_key == key => {
+                if !contains_root_thread(&items, root_event_id) {
+                    continue;
+                }
+                let value = root_thread_unread(&items, root_event_id);
+                if predicate(value) {
+                    return Ok(value);
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref event_key,
+                diffs,
+                ..
+            }) if event_key == key => {
+                for diff in &diffs {
+                    let item = match diff {
+                        koushi_protocol::event::TimelineDiff::PushFront { item }
+                        | koushi_protocol::event::TimelineDiff::PushBack { item }
+                        | koushi_protocol::event::TimelineDiff::Insert { item, .. }
+                        | koushi_protocol::event::TimelineDiff::Set { item, .. } => item,
+                        _ => continue,
+                    };
+                    if !is_root_thread_item(item, root_event_id) {
+                        continue;
+                    }
+                    let value = root_thread_unread(std::slice::from_ref(item), root_event_id);
+                    if predicate(value) {
+                        return Ok(value);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Whether an event is an explicit room-list publication. Only
 /// `RoomListUpdated` counts as a room-list reconciliation: a general state delta
 /// is not evidence that the room list reconciled anything.

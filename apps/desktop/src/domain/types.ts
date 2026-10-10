@@ -2568,6 +2568,8 @@ export interface ThreadsListItem {
   latest_body_preview: string | null;
   latest_timestamp_ms: number | null;
   reply_count: number;
+  /** #1259: unread replies from the SDK thread cache, the same value the chip shows. */
+  unread_count: number;
 }
 
 export type ThreadsListScope =

@@ -167,7 +167,7 @@ describe("diagnosticReport", () => {
             timestamp_ms: 1_800_000_000_000,
             body: "secret message body",
             attachment_filename: null,
-            reply_count: 0
+            reply_count: 0,
           }
         ],
         state: {
@@ -228,7 +228,8 @@ describe("diagnosticReport", () => {
                   latest_sender_label: "Alice",
                   latest_body_preview: "secret reply body",
                   latest_timestamp_ms: 1_800_000_001_000,
-                  reply_count: 2
+                  reply_count: 2,
+                  unread_count: 0,
                 }
               ],
               is_paginating: false,

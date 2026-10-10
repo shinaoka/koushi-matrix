@@ -29,7 +29,8 @@ describe("ThreadsListView", () => {
               latest_sender_label: null,
               latest_body_preview: "Reply",
               latest_timestamp_ms: 1_800_000_000_100,
-              reply_count: 1
+              reply_count: 1,
+              unread_count: 0,
             }
           ],
           is_paginating: false,
@@ -70,7 +71,8 @@ describe("ThreadsListView", () => {
               latest_sender_label: latestSender,
               latest_body_preview: latestPreview,
               latest_timestamp_ms: 1_800_000_000_100,
-              reply_count: 2
+              reply_count: 2,
+              unread_count: 0,
             }
           ],
           is_paginating: false,
@@ -115,7 +117,8 @@ describe("ThreadsListView", () => {
               latest_sender_label: null,
               latest_body_preview: null,
               latest_timestamp_ms: null,
-              reply_count: 1
+              reply_count: 1,
+              unread_count: 0,
             }
           ],
           is_paginating: false,
@@ -133,5 +136,61 @@ describe("ThreadsListView", () => {
       "$root-b:example.invalid",
       "existingThread"
     );
+  });
+});
+
+// #1259: a row shows the same per-root unread count as the room timeline chip.
+describe("ThreadsListView unread thread replies", () => {
+  it("renders the SDK thread-cache unread count on the row", () => {
+    render(
+      <ThreadsListView
+        scope={{ kind: "room", room_id: "!room:example.invalid" }}
+        threadsList={{
+          kind: "open",
+          room_id: "!room:example.invalid",
+          request_id: 1,
+          items: [
+            {
+              room_id: "!room:example.invalid",
+              root_event_id: "$root:example.invalid",
+              root_sender: "@alice:example.invalid",
+              root_sender_label: "Alice",
+              root_body_preview: "Root",
+              root_timestamp_ms: 1_800_000_000_000,
+              latest_event_id: "$reply:example.invalid",
+              latest_sender: "@bob:example.invalid",
+              latest_sender_label: "Bob",
+              latest_body_preview: "Reply",
+              latest_timestamp_ms: 1_800_000_000_100,
+              reply_count: 2,
+              unread_count: 2
+            },
+            {
+              room_id: "!room:example.invalid",
+              root_event_id: "$read-root:example.invalid",
+              root_sender: "@alice:example.invalid",
+              root_sender_label: "Alice",
+              root_body_preview: "Read root",
+              root_timestamp_ms: 1_800_000_000_000,
+              latest_event_id: null,
+              latest_sender: null,
+              latest_sender_label: null,
+              latest_body_preview: null,
+              latest_timestamp_ms: null,
+              reply_count: 1,
+              unread_count: 0
+            }
+          ],
+          is_paginating: false,
+          end_reached: true
+        }}
+        onClose={() => undefined}
+        onOpenThread={() => undefined}
+        onPaginate={() => undefined}
+      />
+    );
+
+    expect(screen.getByLabelText("Thread notifications · 2")).toBeTruthy();
+    expect(document.querySelectorAll(".threads-list-row-unread")).toHaveLength(1);
   });
 });
