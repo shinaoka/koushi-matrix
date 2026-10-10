@@ -988,14 +988,21 @@ identity, sender/body/timestamp fields, `in_reply_to_event_id`,
 
 `ThreadSummaryDto.unread_count` is the SDK thread cache's own unread value for that
 root, projected by Core for the room-timeline chip: it is not derived from the
-bundled summary, it carries no room-level meaning, and it never contributes to a
-room total.
+bundled summary. The same per-root cache value is mirrored into Rust state as
+`RoomSummary.thread_unread_count`, which feeds the shared badge helper below.
 
 Thread summaries describe aggregate presentation state, not complete per-thread
 unread state. Capability advertisement and room-badge changes do not prove
-thread-event delivery. Thread contributions must not be added to room totals
-without a proven non-overlapping decomposition: a homeserver whose own room
-counters already include thread replies would otherwise count them twice.
+thread-event delivery. The non-overlapping decomposition that lets a thread
+contribution join a room badge is proven at the SDK event-cache boundary: the room
+cache's `RoomReadReceiptEventFilter` excludes thread replies while each thread
+cache's `ThreadReadReceiptEventFilter` counts exactly one thread's replies, so the
+client counters partition into `unread_count` (main timeline, also the navigation
+value) plus `thread_unread_count` (threads). A homeserver's own room counters may
+already include thread replies, so the server `notification_count` is max'd in,
+never summed: the badge is
+`max(unread_count + thread_unread_count, notification_count, highlight_count +
+thread_highlight_count)`.
 
 A session-scoped Core thread-summary projection reconciles SDK/event-cache
 aggregates with accepted live reply activity once per `(room_id,

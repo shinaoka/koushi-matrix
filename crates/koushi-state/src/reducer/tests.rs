@@ -284,6 +284,8 @@ fn test_room(room_id: &str, avatar: Option<AvatarImage>) -> crate::state::RoomSu
         unread_count: 0,
         notification_count: 0,
         highlight_count: 0,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
         marked_unread: false,
         recency_stamp: None,
         conversation_activity: None,
@@ -1799,6 +1801,7 @@ fn thread_unread_observation_stamps_the_threads_list_row() {
             room_id: "!r:example.invalid".to_owned(),
             root_event_id: "$root:example.invalid".to_owned(),
             unread: 2,
+            highlight: 0,
         },
     );
     let unread = |state: &AppState| match &state.threads_list {
@@ -1813,6 +1816,7 @@ fn thread_unread_observation_stamps_the_threads_list_row() {
             room_id: "!r:example.invalid".to_owned(),
             root_event_id: "$root:example.invalid".to_owned(),
             unread: 0,
+            highlight: 0,
         },
     );
     assert_eq!(unread(&state), 0);

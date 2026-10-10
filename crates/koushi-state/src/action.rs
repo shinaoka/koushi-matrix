@@ -69,13 +69,16 @@ pub enum AppAction {
     ThreadDeliveryDiagnosticRecorded {
         diagnostic: crate::state::ThreadDeliveryDiagnostic,
     },
-    /// #1259: the SDK thread cache's unread value for one thread root, so the Threads
-    /// list can show the same dot as the room timeline chip. It never contributes to a
-    /// room total.
+    /// #1259/#1238: the SDK thread cache's attention for one thread root: `unread` is
+    /// the same dot the room timeline chip shows, and `highlight` is its unread
+    /// mention count. The reducer mirrors both into the Threads list and sums them
+    /// into the room's thread badge fields under the proven event-cache
+    /// decomposition; neither is ever added to the main-only `unread_count`.
     ThreadUnreadObserved {
         room_id: String,
         root_event_id: String,
         unread: u32,
+        highlight: u32,
     },
     SlidingSyncCapabilityRevalidationStarted {
         account_epoch: u64,

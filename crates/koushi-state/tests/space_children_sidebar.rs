@@ -29,6 +29,8 @@ fn joined_room(room_id: &str, label: &str) -> RoomSummary {
         unread_count: 3,
         notification_count: 3,
         highlight_count: 0,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
         marked_unread: false,
         recency_stamp: Some(10),
         conversation_activity: None,

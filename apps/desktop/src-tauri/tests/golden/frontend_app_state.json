@@ -830,6 +830,8 @@
             "favourite": null,
             "low_priority": null
           },
+          "thread_highlight_count": 0,
+          "thread_unread_count": 0,
           "unread_count": 3
         },
         {
@@ -858,6 +860,8 @@
               "order": "0.25"
             }
           },
+          "thread_highlight_count": 0,
+          "thread_unread_count": 0,
           "unread_count": 7
         },
         {
@@ -901,6 +905,8 @@
             "favourite": null,
             "low_priority": null
           },
+          "thread_highlight_count": 0,
+          "thread_unread_count": 0,
           "unread_count": 0
         }
       ],

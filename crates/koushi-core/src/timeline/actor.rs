@@ -1246,14 +1246,14 @@ impl TimelineActor {
         };
         let mut refreshed = Vec::new();
         for (root_event_id, signature) in candidates {
-            if let Some(unread) = super::thread_projection::sdk_thread_unread_counts(
+            if let Some(attention) = super::thread_projection::sdk_thread_unread_counts(
                 &self.session,
                 &room_id,
                 &root_event_id,
             )
             .await
             {
-                refreshed.push((root_event_id, signature, unread));
+                refreshed.push((root_event_id, signature, attention));
             }
         }
         if refreshed.is_empty() {
@@ -1264,17 +1264,19 @@ impl TimelineActor {
                 .thread_root_projection_service
                 .lock()
                 .expect("thread-root projection service lock must not be poisoned");
-            for (root_event_id, signature, unread) in refreshed.iter() {
-                service.apply_thread_unread(&room_id, root_event_id, signature.clone(), *unread);
+            for (root_event_id, signature, attention) in refreshed.iter() {
+                service.apply_thread_unread(&room_id, root_event_id, signature.clone(), *attention);
             }
         }
-        for (root_event_id, _, unread) in refreshed {
-            // #1259: the Threads list is state-rendered, so mirror the value there.
+        for (root_event_id, _, attention) in refreshed {
+            // #1259/#1238: the Threads list is state-rendered, so mirror the value
+            // there; the reducer also sums it into the room's thread badge fields.
             if !self
                 .emit_action_reliable(koushi_state::AppAction::ThreadUnreadObserved {
                     room_id: room_id.clone(),
                     root_event_id,
-                    unread,
+                    unread: attention.unread,
+                    highlight: attention.highlight,
                 })
                 .await
             {
@@ -1312,7 +1314,7 @@ impl TimelineActor {
             .expect("thread-root projection service lock must not be poisoned");
         crate::threads_list::window_thread_roots(&self.navigation_items)
             .into_iter()
-            .any(|(root_event_id, _)| service.thread_unread_for(room_id, &root_event_id) > 0)
+            .any(|(root_event_id, _)| service.thread_unread_for(room_id, &root_event_id).unread > 0)
     }
 
     /// #1259: re-overlay the root items whose dot changed and emit a `Set` for each, so

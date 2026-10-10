@@ -564,6 +564,8 @@ fn room_summary(
         unread_count,
         notification_count,
         highlight_count: 0,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
         marked_unread,
         recency_stamp: None,
         conversation_activity: None,

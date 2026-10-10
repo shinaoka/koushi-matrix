@@ -451,15 +451,18 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
 - Thread unread per root is Rust-owned: the room timeline actor reads the SDK thread
   cache for every root whose room-side summary changed and mirrors the value to
   state (`ThreadUnreadObserved`), so the Threads-list rows show the same count as
-  the room-timeline chip. The value never joins a room total.
+  the room-timeline chip. The same per-root values feed the reducer-derived
+  `RoomSummary.thread_unread_count` / `thread_highlight_count` room totals under
+  the proven SDK event-cache decomposition (canon "Threads and attention"); a
+  thread count never enters the main-only `RoomSummary.unread_count`.
 - Thread-root lifecycle and placement are also Rust-owned. The session-scoped
   `ThreadRootProjectionService` retains canonical/hydrated root snapshots until
   authoritative aggregate/redaction clear, Room unsubscribe, or session teardown;
   a bounded display omission is dormant, never deletion. Thread summaries describe
   aggregate presentation state, not complete per-thread unread state: capability
-  advertisement and a room-badge change do not prove thread-event delivery, so a
-  thread contribution may be added to room totals only with a proven
-  non-overlapping decomposition. Rust State mirrors only
+  advertisement and a room-badge change do not prove thread-event delivery, so the
+  thread contribution to a room badge rests on the named SDK event-cache filters,
+  not on a badge. Rust State mirrors only
   explicit Core lifecycle actions. The Room actor's `DisplayProjectionState`
   applies root-event/latest-reply order, standalone-reply suppression, stable row
   identity and display-relative diffs. `TimelineItem` display metadata is a

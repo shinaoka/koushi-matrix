@@ -749,6 +749,8 @@ fn test_room(room_id: &str, display_name: &str, activity_timestamp_ms: u64) -> R
         unread_count: 0,
         notification_count: 0,
         highlight_count: 0,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
         marked_unread: false,
         recency_stamp: Some(activity_timestamp_ms),
         conversation_activity: Some(koushi_state::ConversationActivity {
