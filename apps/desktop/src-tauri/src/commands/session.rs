@@ -301,12 +301,16 @@ pub async fn complete_oidc_login(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let oidc_state = crate::oidc_callback_state(&callback_url)
-        .ok_or_else(|| "OIDC callback has no unique state".to_owned())?;
+    // The callback shape decides the correlation kind; the account-tab manager
+    // decides whether it matches a pending attempt. OAuth callbacks must repeat
+    // their CSRF state, while a legacy `m.login.sso` callback carries only
+    // `loginToken` and is accepted only for the single pending legacy attempt.
+    let correlation = crate::oidc_callback_correlation(&callback_url)
+        .ok_or_else(|| "OIDC callback is malformed or unsolicited".to_owned())?;
     let tab_id = state
         .inner()
         .runtime
-        .oidc_attempt_tab(&oidc_state)
+        .oidc_attempt_tab(&correlation)
         .ok_or_else(|| "OIDC callback does not match a pending login".to_owned())?;
     if account_tab_id
         .as_deref()
@@ -317,7 +321,7 @@ pub async fn complete_oidc_login(
     let tab_id = state
         .inner()
         .runtime
-        .take_oidc_attempt(&oidc_state)
+        .take_oidc_attempt(correlation)
         .ok_or_else(|| "OIDC callback was already consumed".to_owned())?;
     let (_, submit_conn) = state.inner().connection.lock_for_tab_id(&tab_id).await?;
     let mut wait_conn = state

@@ -34,6 +34,11 @@ as the desktop session. Keep Koushi running until the provider redirects to
 the registered callback scheme. If Koushi shows a browser-launch error, fix
 the default-browser configuration and select **Single sign-on** again.
 
+Finish one browser sign-in at a time. When two account tabs are both waiting on
+**Single sign-on**, Koushi cannot tell which tab an incoming callback belongs to
+and ignores it. Complete or cancel the other unfinished sign-in, then select
+**Single sign-on** again in the tab you want.
+
 An expired or revoked session requires signing in again. A verification screen
 requires the [session verification flow](security-and-recovery.md#verify-a-session-after-sign-in),
 not repeated password attempts.

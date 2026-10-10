@@ -794,6 +794,23 @@ CSRF state are command/event artifacts only: they may be returned to the WebView
 so it can open the provider and correlate the callback, but they never enter
 `AppState`, normal `Debug`, QA title tokens, or persisted settings.
 
+A started interactive sign-in attempt is held by the account-tab manager as
+pending callback-correlation state, at most one attempt per tab. An OAuth/MAS
+attempt is correlated only by the exact nonempty CSRF state the SDK minted: a
+callback with a missing, blank, duplicated, or different state, an unsolicited
+callback, and an already-consumed attempt are all rejected. The legacy
+`m.login.sso` fallback has no CSRF state — the SDK authorization carries an empty
+state and the homeserver callback carries only `loginToken` — so such a callback
+is correlated by the stricter-of-one rule: it completes a tab only while exactly
+one legacy attempt is pending. A legacy callback never completes an OAuth
+attempt, two pending legacy tabs make the callback ambiguous and it is rejected
+rather than misrouted, and consuming the correlation makes a replay inert.
+Registering a new attempt for a tab retires that tab's previous attempt, and
+removing the tab drops its pending attempts. Classifying the callback URL shape
+belongs to the Tauri platform adapter; the account-tab manager, not the adapter,
+owns which tab a callback may complete. The login token and the callback URL
+never enter diagnostics, snapshots, QA artifacts, or persisted settings.
+
 ## Account Tabs And Concurrent Sessions
 
 The outer Rust-owned account-tab machine is independent from each account's

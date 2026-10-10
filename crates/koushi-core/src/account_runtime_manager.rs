@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -15,6 +14,10 @@ use crate::{
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticLevel, record};
 use koushi_protocol::{AccountKey, CoreCommand, SessionKeyId, command::AccountCommand};
 use koushi_state::{SessionInfo, SessionState};
+
+mod sign_in_attempts;
+
+pub use sign_in_attempts::{OidcCallbackCorrelation, PendingSignInAttempts};
 
 #[derive(
     Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
@@ -74,7 +77,7 @@ struct ManagerState {
 pub struct AccountRuntimeManager {
     state: Mutex<ManagerState>,
     operation_gate: tokio::sync::Mutex<()>,
-    oidc_attempts: Mutex<HashMap<String, AccountTabId>>,
+    sign_in_attempts: Mutex<PendingSignInAttempts>,
     store: StoreActor,
     settings: SettingsStore,
     account_work: AccountWorkScheduler,
@@ -138,7 +141,7 @@ impl AccountRuntimeManager {
                 shutdown_result: None,
             }),
             operation_gate: tokio::sync::Mutex::new(()),
-            oidc_attempts: Mutex::new(HashMap::new()),
+            sign_in_attempts: Mutex::new(PendingSignInAttempts::default()),
             store,
             settings,
             account_work,
@@ -434,25 +437,33 @@ impl AccountRuntimeManager {
             .collect()
     }
 
+    /// Register the pending sign-in attempt a browser callback for this tab must
+    /// repeat. `state` is the SDK-minted OAuth CSRF state, or empty on the
+    /// legacy `m.login.sso` fallback that carries no state (#1266).
     pub fn register_oidc_attempt(&self, id: &AccountTabId, state: String) {
-        let mut attempts = self.oidc_attempts.lock().expect("OIDC attempt mutex");
-        attempts.retain(|_, tab_id| tab_id != id);
-        attempts.insert(state, id.clone());
+        self.sign_in_attempts
+            .lock()
+            .expect("sign-in attempt mutex")
+            .register(id, state);
     }
 
-    pub fn oidc_attempt_tab(&self, state: &str) -> Option<AccountTabId> {
-        self.oidc_attempts
+    /// The tab a callback with this correlation belongs to, without consuming
+    /// the attempt. Returns `None` for a mismatch, an unsolicited callback, or
+    /// an ambiguous legacy callback with more than one pending attempt.
+    pub fn oidc_attempt_tab(&self, correlation: &OidcCallbackCorrelation) -> Option<AccountTabId> {
+        self.sign_in_attempts
             .lock()
-            .expect("OIDC attempt mutex")
-            .get(state)
-            .cloned()
+            .expect("sign-in attempt mutex")
+            .tab(correlation)
     }
 
-    pub fn take_oidc_attempt(&self, state: &str) -> Option<AccountTabId> {
-        self.oidc_attempts
+    /// Consume the attempt a callback with this correlation belongs to, so a
+    /// replayed callback is rejected.
+    pub fn take_oidc_attempt(&self, correlation: OidcCallbackCorrelation) -> Option<AccountTabId> {
+        self.sign_in_attempts
             .lock()
-            .expect("OIDC attempt mutex")
-            .remove(state)
+            .expect("sign-in attempt mutex")
+            .take(&correlation)
     }
 
     pub fn media_cache_dir_for_tab(&self, id: &AccountTabId) -> Option<PathBuf> {
@@ -608,10 +619,10 @@ impl AccountRuntimeManager {
         };
         self.account_work
             .set_selected_account(Some(selected_tab_id.as_str()));
-        self.oidc_attempts
+        self.sign_in_attempts
             .lock()
-            .expect("OIDC attempt mutex")
-            .retain(|_, tab_id| tab_id != id);
+            .expect("sign-in attempt mutex")
+            .forget(id);
         Ok(true)
     }
 
@@ -751,10 +762,10 @@ impl AccountRuntimeManager {
         };
         self.account_work
             .set_selected_account(Some(selected_tab_id.as_str()));
-        self.oidc_attempts
+        self.sign_in_attempts
             .lock()
-            .expect("OIDC attempt mutex")
-            .retain(|_, tab_id| tab_id != id);
+            .expect("sign-in attempt mutex")
+            .forget(id);
         if self.tab_descriptors().is_empty() {
             self.add_account_tab_locked()?;
         }
