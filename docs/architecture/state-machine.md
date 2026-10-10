@@ -849,8 +849,14 @@ stateDiagram-v2
   `AccountHomeItem.attention_count` is that value, and the Tauri account-tab
   snapshot reads the same function for every tab, selected or background, so Home
   and the tab cannot disagree and an invite-only account still badges. The native
-  Dock/taskbar `badge_count` and the transient notification candidate remain
-  separate policies: disabling badges does not change the tab badge.
+  Dock/taskbar `badge_count` uses the same per-room `room_activity_unread_count`
+  for its conversation contribution; notification-only, mention-only and manual
+  unread state cannot disappear solely at the native surface. The native total
+  deduplicates rooms, applies the same mute/low-priority exclusions and aggregates
+  across accounts. Pending invites remain Home/tab attention, separate from the
+  joined-conversation native badge. Disabling native badges or lacking platform
+  capability suppresses the native output, without changing in-app attention.
+  Transient notification candidates retain their own notification policy.
 
 ## Room List Filter
 
@@ -4965,18 +4971,19 @@ stateDiagram-v2
 - Windows taskbar overlay icon routing is represented by the
   `overlay_icon` capability, separate from generic badge count capability.
 - The Phase A core projection is `native_attention_state_from_rooms`. Its
-  persistent Dock badge sums raw unread messages once per unique non-muted,
-  non-low-priority room; a manual marked-unread flag without raw unread does not
-  fabricate a native count. Low-priority rooms are excluded from the persistent
-  raw account count as well as from transient candidates and
-  notification/highlight attention totals, matching the Home and Space
-  aggregates in "Sidebar Sections And Low Priority". Ignored-user DMs stay in
-  the persistent raw count and are excluded from candidates and attention totals
-  only. Muted rooms are excluded from both persistent and transient native
-  attention. Mention-only rooms retain their raw Dock contribution while
-  candidate eligibility still requires a highlight; the shared per-account
-  attention policy behind the account tab and Home counts the same raw
-  contribution, subject to the muted and low-priority exclusions.
+  persistent Dock badge uses `room_activity_unread_count`, shared with Home,
+  Space and account-tab conversation totals: the maximum of unread messages,
+  notifications and highlights, or one for an otherwise empty manually marked
+  unread room. Each unique non-muted, non-low-priority room contributes once.
+  Low-priority rooms are excluded from persistent badges, transient candidates
+  and notification/highlight attention totals, matching "Sidebar Sections And
+  Low Priority". Ignored-user DMs keep their persistent badge contribution and
+  are excluded from candidates and notification attention totals only. Muted
+  rooms are excluded from both persistent and transient native attention.
+  Mention-only rooms keep the shared persistent contribution while candidate
+  eligibility still requires a highlight. Native settings/capabilities and the
+  invitation scope distinction described under Accounts remain output gates;
+  they never select a different room counter.
   The projection prefers `mention` over `dm` over `message` candidates,
   suppresses initial sync/backfill/self/focused-room observations, suppresses
   duplicate candidates, and clears badge/candidate state when eligible unread

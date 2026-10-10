@@ -128,3 +128,41 @@ one. The prior app was preserved in a temporary backup, the installed app was
 replaced, and a new process launched successfully. No application data was
 modified by the installation procedure. This local build is signed, not
 notarized or published. The real-account badge outcome remains to be observed.
+
+## Persistent Dock count disagreement
+
+The next report shows an in-app conversation/account/Space count with no Dock
+badge. The user also reports that restarting the older application cleared the
+state. That restart is not evidence that either this task's initial patch or its
+later lifecycle correction fixed the residual count. Its source remains unknown.
+
+Code inspection independently establishes a counting disagreement: Home, Space,
+account tabs and room attention use `room_activity_unread_count` (the maximum of
+SDK message/notification/highlight counters, with a manual-unread fallback),
+while the native persistent badge used raw `room.unread_count` alone. A synthetic
+room with zero messages and one notification reproduces in-app one / native zero
+without any rendering or platform failure. Notification and message counters are
+separate valid SDK inputs; neither is discarded or overwritten by this change.
+
+Native persistent badges now reuse that shared Rust room calculation. This is a
+module-local projection change: adapter and wire DTOs remain unchanged. Native
+mute/low-priority/deduplication, settings/capability gates, and transient
+notification policy retain their existing ownership. Pending invitations remain
+Home/account attention rather than joined-conversation native attention. Canon
+Native Attention and Accounts paragraphs now name the shared conversation
+calculation and the remaining scope/output distinctions. Self-review approved
+this narrow canon amendment before implementation.
+
+Synthetic failing tests establish notification-only and mention-only badge
+agreement, plus mixed-counter/manual-unread combinations, Space/Home/account
+agreement, mute/mentions-only handling and the reducer's nonzero-to-zero
+transition. Existing assertions encoding raw-only/manual-mark exclusion were
+updated to the shared policy. Help workflow and settings locations do not change.
+This count-consistency correction does not claim to fix the intermittent stale
+SDK count that disappeared after restart.
+
+Verification: focused projection/account/reducer suites passed; the complete
+`cargo test --profile ci -p koushi-state` run passed 1103 tests
+(0 ignored) across 79 test binaries/doc-test results.
+Scoped rustfmt, whitespace, Rust test-structure, agent-doc and frontend semantic
+owner guards passed. Dependency lockfile audit passed the high/critical gate.

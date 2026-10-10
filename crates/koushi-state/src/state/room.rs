@@ -355,6 +355,8 @@ pub fn room_attention_kind(
     }
 }
 
+/// Persistent conversation attention shared by room/sidebar, account and native
+/// badges. SDK message, notification and mention counters remain separate inputs.
 pub fn room_activity_unread_count(room: &RoomSummary) -> u64 {
     let count = room
         .unread_count

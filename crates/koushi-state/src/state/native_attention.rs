@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use crate::locale_profile::DisplayPlatform;
 
 use super::errors::OperationFailureKind;
-use super::room::{RoomAttentionKind, RoomLatestEventSummary, RoomSummary, room_attention_summary};
+use super::room::{
+    RoomAttentionKind, RoomLatestEventSummary, RoomSummary, room_activity_unread_count,
+    room_attention_summary,
+};
 
 /// Longest preview the desktop adapter may render in an OS notification body.
 ///
@@ -249,9 +252,9 @@ pub fn native_attention_projection_from_rooms(
             continue;
         }
         badge_room_count += 1;
-        badge_count += room.unread_count;
+        badge_count += room_activity_unread_count(room);
 
-        // An ignored-user DM keeps its raw Dock contribution and is excluded
+        // An ignored-user DM keeps its shared Dock contribution and is excluded
         // from transient candidates and attention totals only.
         let ignored_user_dm = room.is_dm
             && room
