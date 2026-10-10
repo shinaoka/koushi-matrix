@@ -24,8 +24,8 @@ use super::fixtures::{
     accept_invite_for_qa, load_room_settings_for_qa, start_direct_message_for_qa,
 };
 use super::participants::{
-    authenticated_session_info, verification_state_sas, wait_for_verification_accepted,
-    wait_for_verification_requested_event_only,
+    authenticated_session_info, incoming_request_timeout_context, verification_state_sas,
+    wait_for_verification_accepted, wait_for_verification_requested_event_only,
 };
 use super::registry::{E2EE_EVENT_TIMEOUT, QaConfig};
 use super::{
@@ -356,12 +356,18 @@ pub(super) async fn run_user_verification_stage(
     {
         Ok(flow_b) => flow_b,
         Err(error) => {
-            // Say which half was missing: B never projected the request, and
-            // here is what A's flow reached instead.
+            // Say which half was missing: B's own projection first (#1279), then
+            // what A's flow reached instead.
+            let b_snapshot = conn_b.snapshot();
             return Err(format!(
-                "{error} a_send_state={} a_room_list_joined_members={}",
+                "{error} a_send_state={} a_room_list_joined_members={} {}",
                 outgoing_request_send_state(&conn_a.snapshot(), flow_a),
                 own_dm_joined_members(&conn_a.snapshot(), &user_b),
+                incoming_request_timeout_context(
+                    &b_snapshot.e2ee_trust.verification,
+                    Some(&target_a),
+                    &b_snapshot.sync,
+                ),
             ));
         }
     };
