@@ -449,6 +449,24 @@ stateDiagram-v2
   terminal blocking failure, and ready. Server existence, local enablement,
   recovery completeness, and upload health remain distinct SDK inspection
   facts and are not collapsed into a boolean.
+- **Canon amendment (#1265) — pending approval.** `DegradedRetrying` and
+  `BlockedFailed` carry an optional structured, privacy-safe failure detail
+  alongside the coarse `SecureBackupGateFailureKind`: `stage` (which operation
+  produced the failure), `transport` (`noResponse`, `httpResponse`, `timeout`,
+  `local`), `httpStatus` when a response arrived, an allowlisted
+  `matrixErrorKind` (`errcode`), and `retryable`. The coarse vocabulary gains
+  `ServerResponse` and `Unauthorized` so a received server response is never
+  published as `Network`; `Network`/`Timeout` now mean specifically "no
+  response" and "the deadline expired". The detail is a closed vocabulary
+  owned by Rust: it never carries an SDK error string, URL, response body,
+  token, or account/room identifier, and the same bounded facts (never the raw
+  error) are recorded in the `inspection_settled` diagnostic.
+  Retryability is authoritative from `detail.retryable` with the coarse kind
+  as fallback: an already-admitted gate degrades and schedules bounded backoff
+  for a retryable failure (including 429/5xx responses and timeouts) and
+  blocks otherwise, so a 401/403/404 response closes admission. Diagnostics
+  for the Secure Backup gate must remain reachable while the gate is active,
+  including when the diagnostic-snapshot fetch fails.
 - A transition from an operational backup state to recovery/setup, mismatch,
   or incomplete storage closes encrypted admission immediately but does not
   clear composer drafts or stop sync. Upload progress and transient runtime
@@ -465,13 +483,17 @@ stateDiagram-v2
   epoch admits one inspection. A deferred inspection always owns a bounded
   connectivity-wait deadline (30 seconds from the first defer; repeated
   defers coalesce onto the armed deadline instead of extending it): expiry
-  projects `BlockedFailed` (retryable, no automatic monitor) even when no
+  projects `BlockedFailed` with the structured deadline failure
+  (`stage: inspectionDeadline`, `transport: timeout`, `retryable: true`) and
+  no automatic monitor, even when no
   proven edge ever arrives, so `Checking` cannot wait forever. Proven
   connectivity before the expiry disarms the deadline and admits the
   inspection. The explicit typed retry re-enters inspection admission and,
   while connectivity is still unproven, also asks the sync owner to
   re-project its current status, so a missed `Running` projection cannot make
-  retry a permanent no-op. Post-authority recoverable failures use bounded
+  retry a permanent no-op. Post-authority recoverable failures — as decided by
+  the structured `detail.retryable` (or the coarse retryable kinds when no
+  detail exists) — use bounded
   exponential backoff with jitter (5 seconds through 5 minutes), preserving the
   attempt across connectivity flaps until a successful backup inspection resets
   the epoch. A pre-authority inconclusive inspection is `BlockedFailed`, has no

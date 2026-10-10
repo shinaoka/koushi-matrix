@@ -219,6 +219,7 @@ pub(super) fn decrypt_retry_backup_result_for_error(
         | koushi_sdk::E2eeTrustError::SecureBackupReenableConfirmationRequired
         | koushi_sdk::E2eeTrustError::SecureBackupUploadFailed
         | koushi_sdk::E2eeTrustError::SecureBackupRecoveryKeyDeliveryFailed
+        | koushi_sdk::E2eeTrustError::SecureBackupInspection(_)
         | koushi_sdk::E2eeTrustError::Sdk(_) => DecryptRetryBackupResult::Sdk,
     }
 }

@@ -32,9 +32,11 @@ fn secure_backup_setup_admission_covers_each_gate_and_intent() {
         },
         SecureBackupGateState::DegradedRetrying {
             failure: koushi_state::SecureBackupGateFailureKind::Network,
+            detail: None,
         },
         SecureBackupGateState::BlockedFailed {
             failure: koushi_state::SecureBackupGateFailureKind::Sdk,
+            detail: None,
         },
         SecureBackupGateState::Ready,
     ];

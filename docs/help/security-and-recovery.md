@@ -31,6 +31,12 @@ key is not shown again after that confirmation. If the app closes before you
 confirm, the unsaved key cannot be recovered; choose **Create new recovery
 key** to replace it (the previous key stops working).
 
+If the gate keeps reporting a problem after **Retry secure backup**, choose
+**Open secure backup diagnostics** to read what actually failed. The dialog
+opens while the gate is still in the way and says whether Koushi got no response
+at all, how long it waited, or which kind of server response came back, so you
+can tell a network problem from a server one.
+
 Do not give recovery keys, backup passphrases, or exported keys to an AI
 assistant or include them in an issue. These are credentials for encrypted
 history, not diagnostic information.

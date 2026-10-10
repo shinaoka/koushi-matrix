@@ -6781,6 +6781,9 @@ function AccountContent({
 
   const sessionKind = snapshot.state.domain.session.kind;
   const secureBackupGate = snapshot.state.domain.secure_backup_gate;
+  // Computed before the sign-in-gate early return: the diagnostics dialog must
+  // be renderable while the gate is active (#1265), and its report needs this.
+  const effectiveRightPanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
   const secureBackupStartupGateRequired =
     sessionKind === "ready" &&
     !secureBackupGateIsOperational &&
@@ -6812,24 +6815,32 @@ function AccountContent({
     secureBackupStartupGateRequired;
   if (verificationGate) {
     return (
-      <SessionVerificationGate
-        desktopApi={api}
-        snapshot={snapshot}
-        onReceipt={applyCommandReceipt}
-        onSignOut={() => runInBackground(requestLogout())}
-        operations={{
-          startOwnUserSas: () => api.startOwnUserSas(),
-          submitRecovery: (secret) => api.submitRecovery(secret),
-          recoverSecureBackup: api.recoverSecureBackup?.bind(api),
-          bootstrapSecureBackup: (passphrase, intent) =>
-            api.bootstrapSecureBackup(passphrase, intent),
-          saveSecureBackupRecoveryKey: requestSecureBackupRecoveryKeySave,
-          confirmSecureBackupRecoveryKeySaved: (revealRequestId) =>
-            api.confirmSecureBackupRecoveryKeySaved(revealRequestId),
-          retrySecureBackupInspection: api.retrySecureBackupInspection?.bind(api),
-          openSecureBackupDiagnostics: openDiagnostics
-        }}
-      />
+      <>
+        <SessionVerificationGate
+          desktopApi={api}
+          snapshot={snapshot}
+          onReceipt={applyCommandReceipt}
+          onSignOut={() => runInBackground(requestLogout())}
+          operations={{
+            startOwnUserSas: () => api.startOwnUserSas(),
+            submitRecovery: (secret) => api.submitRecovery(secret),
+            recoverSecureBackup: api.recoverSecureBackup?.bind(api),
+            bootstrapSecureBackup: (passphrase, intent) =>
+              api.bootstrapSecureBackup(passphrase, intent),
+            saveSecureBackupRecoveryKey: requestSecureBackupRecoveryKeySave,
+            confirmSecureBackupRecoveryKeySaved: (revealRequestId) =>
+              api.confirmSecureBackupRecoveryKeySaved(revealRequestId),
+            retrySecureBackupInspection: api.retrySecureBackupInspection?.bind(api),
+            openSecureBackupDiagnostics: openDiagnostics
+          }}
+        />
+        {diagnosticsOpen ? (
+          <DiagnosticDialog
+            report={diagnosticReportFor(snapshot, runtimeDiagnosticSnapshot)}
+            onClose={() => setDiagnosticsOpen(false)}
+          />
+        ) : null}
+      </>
     );
   }
 
@@ -6985,7 +6996,6 @@ function AccountContent({
     activeSearchState?.kind === "results" &&
     searchResults.length === 0 &&
     searchCrawlerHasPendingIndexing(snapshot.state.domain.search_crawler);
-  const effectiveRightPanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
   const rightPanelOpen = !["closed", "userSettings", "keyboardSettings"].includes(effectiveRightPanelMode);
   const fittedShellWidths = fitShellWidths(
     sidebarWidth,

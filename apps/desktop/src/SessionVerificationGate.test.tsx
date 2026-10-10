@@ -11,6 +11,8 @@ import type {
   DesktopSnapshot,
   ProvisionalPhase,
   RecoveryKeyDeliveryState,
+  SecureBackupFailureDetail,
+  SecureBackupGateFailureKind,
   SecureBackupGateState,
   SecureBackupSetupIntent
 } from "./domain/types";
@@ -1161,6 +1163,150 @@ describe("SessionVerificationGate interactions", () => {
 
     expect(screen.getByText("Uploading existing encrypted keys: 11–100 remaining.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry secure backup" })).toBeNull();
+  });
+
+  test("explains a structured secure backup failure without raw DTO or SDK text", async () => {
+    const cases: Array<{
+      label: string;
+      failure: SecureBackupGateFailureKind;
+      detail: SecureBackupFailureDetail;
+      explanation: string;
+      action: string;
+    }> = [
+      {
+        label: "no response",
+        failure: "network",
+        detail: { stage: "inspectServerTrust", transport: "noResponse", retryable: true },
+        explanation:
+          "The homeserver could not be reached, so this secure backup request never received a response.",
+        action: "Check your connection, then retry."
+      },
+      {
+        label: "timeout",
+        failure: "timeout",
+        detail: { stage: "inspectionDeadline", transport: "timeout", retryable: true },
+        explanation: "The homeserver did not answer this secure backup request in time.",
+        action: "Check your connection, then retry."
+      },
+      {
+        label: "unauthorized 401",
+        failure: "unauthorized",
+        detail: {
+          stage: "inspectServerTrust",
+          transport: "httpResponse",
+          httpStatus: 401,
+          matrixErrorKind: "unknownToken",
+          retryable: false
+        },
+        explanation: "The homeserver rejected the sign-in for secure backup.",
+        action: "Sign out and sign in again."
+      },
+      {
+        label: "forbidden 403",
+        failure: "forbidden",
+        detail: {
+          stage: "inspectServerTrust",
+          transport: "httpResponse",
+          httpStatus: 403,
+          matrixErrorKind: "forbidden",
+          retryable: false
+        },
+        explanation: "This account is not allowed to use secure backup.",
+        action: "Ask your homeserver administrator to check secure backup."
+      },
+      {
+        label: "not found 404",
+        failure: "serverResponse",
+        detail: {
+          stage: "inspectServerTrust",
+          transport: "httpResponse",
+          httpStatus: 404,
+          matrixErrorKind: "notFound",
+          retryable: false
+        },
+        explanation: "The homeserver answered this secure backup request with an error (HTTP 404).",
+        action: "Ask your homeserver administrator to check secure backup."
+      },
+      {
+        label: "rate limited 429",
+        failure: "rateLimited",
+        detail: {
+          stage: "inspectServerTrust",
+          transport: "httpResponse",
+          httpStatus: 429,
+          matrixErrorKind: "limitExceeded",
+          retryable: true
+        },
+        explanation: "Secure backup requests are being limited. Try again later.",
+        action: "Wait a few minutes, then retry."
+      },
+      {
+        label: "server error 503",
+        failure: "serverResponse",
+        detail: {
+          stage: "inspectServerTrust",
+          transport: "httpResponse",
+          httpStatus: 503,
+          matrixErrorKind: "unknown",
+          retryable: true
+        },
+        explanation: "The homeserver answered this secure backup request with an error (HTTP 503).",
+        action: "Try again in a few minutes."
+      },
+      {
+        label: "local preparation",
+        failure: "sdk",
+        detail: { stage: "crossSigningStatus", transport: "local", retryable: false },
+        explanation: "Secure backup could not be prepared on this device.",
+        action: "Retry; if it keeps failing, sign out and sign in again."
+      }
+    ];
+
+    for (const { label, failure, detail, explanation, action } of cases) {
+      const snapshot = secureBackupSnapshot(await createDesktopApiFixture().getSnapshot(), {
+        kind: "blockedFailed",
+        failure,
+        detail
+      });
+      const { unmount } = render(
+        <SessionVerificationGate
+          snapshot={snapshot}
+          onReceipt={async () => undefined}
+          onSignOut={() => undefined}
+        />
+      );
+      expect(screen.getByRole("alert").textContent, label).toBe(explanation);
+      expect(screen.getByText(action), label).toBeTruthy();
+      const rendered = document.body.textContent ?? "";
+      for (const raw of [
+        "synthetic",
+        "inspectServerTrust",
+        "httpResponse",
+        "unknownToken",
+        "matrixErrorKind",
+        "httpStatus",
+        "retryable",
+        "blockedFailed"
+      ]) {
+        expect(rendered, `${label} leaked ${raw}`).not.toContain(raw);
+      }
+      unmount();
+    }
+  });
+
+  test("falls back to the coarse failure copy when Rust records no detail", async () => {
+    const snapshot = secureBackupSnapshot(await createDesktopApiFixture().getSnapshot(), {
+      kind: "blockedFailed",
+      failure: "rateLimited"
+    });
+    render(
+      <SessionVerificationGate
+        snapshot={snapshot}
+        onReceipt={async () => undefined}
+        onSignOut={() => undefined}
+      />
+    );
+    expect(screen.getByRole("alert").textContent).toContain("limited");
   });
 
   test("shows typed failure, supports retry, and exposes diagnostics without raw errors", async () => {

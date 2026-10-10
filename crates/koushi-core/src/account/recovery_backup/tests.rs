@@ -11,6 +11,7 @@ use super::{
     project_reset_identity_auth_required, project_reset_identity_completed,
     project_restore_key_backup_result, recovery_result_is_current,
     secure_backup_inspection_admission, secure_backup_inspection_completion_action,
+    secure_backup_inspection_deadline_failure, secure_backup_inspection_settled_event,
     secure_backup_monitor_wakeup_is_current, secure_backup_retry_delay,
 };
 use crate::account::actor::{AccountActorHandle, AccountMessage};
@@ -144,11 +145,12 @@ fn secure_backup_completion_rejects_stale_or_unpromoted_sessions() {
             true,
             true,
             5,
-            Err(koushi_state::SecureBackupGateFailureKind::Timeout),
+            Err(secure_backup_inspection_deadline_failure()),
         ),
         Some(AppAction::SecureBackupGateChanged(
             koushi_state::SecureBackupGateState::DegradedRetrying {
-                failure: koushi_state::SecureBackupGateFailureKind::Timeout
+                failure: koushi_state::SecureBackupGateFailureKind::Timeout,
+                ..
             }
         ))
     ));
@@ -158,11 +160,12 @@ fn secure_backup_completion_rejects_stale_or_unpromoted_sessions() {
             true,
             false,
             5,
-            Err(koushi_state::SecureBackupGateFailureKind::Timeout),
+            Err(secure_backup_inspection_deadline_failure()),
         ),
         Some(AppAction::SecureBackupGateChanged(
             koushi_state::SecureBackupGateState::BlockedFailed {
-                failure: koushi_state::SecureBackupGateFailureKind::Timeout
+                failure: koushi_state::SecureBackupGateFailureKind::Timeout,
+                ..
             }
         ))
     ));
@@ -178,7 +181,8 @@ fn inconclusive_backup_probe_does_not_revoke_existing_send_admission() {
         secure_backup_inspection_completion_action(5, true, true, 5, Ok(inspection)),
         Some(AppAction::SecureBackupGateChanged(
             koushi_state::SecureBackupGateState::DegradedRetrying {
-                failure: koushi_state::SecureBackupGateFailureKind::Network
+                failure: koushi_state::SecureBackupGateFailureKind::Network,
+                ..
             }
         ))
     ));
@@ -188,6 +192,169 @@ fn inconclusive_backup_probe_does_not_revoke_existing_send_admission() {
             koushi_state::SecureBackupGateState::BlockedFailed { .. }
         ))
     ));
+}
+
+#[test]
+fn structured_inspection_failure_keeps_its_bounded_detail_on_the_gate() {
+    let detail = |http_status, matrix_error_kind, retryable| {
+        Some(koushi_state::SecureBackupFailureDetail {
+            stage: koushi_state::SecureBackupFailureStage::InspectServerTrust,
+            transport: koushi_state::SecureBackupFailureTransport::HttpResponse,
+            http_status,
+            matrix_error_kind,
+            retryable,
+        })
+    };
+
+    // A received 5xx response is retryable: admission is retained and the gate
+    // degrades without pretending the request never reached the server.
+    let action = secure_backup_inspection_completion_action(
+        5,
+        true,
+        true,
+        5,
+        Err(koushi_state::SecureBackupInspectionFailure {
+            kind: koushi_state::SecureBackupGateFailureKind::ServerResponse,
+            detail: detail(
+                Some(503),
+                Some(koushi_state::SecureBackupMatrixErrorKind::Unknown),
+                true,
+            ),
+        }),
+    )
+    .expect("gate action");
+    let AppAction::SecureBackupGateChanged(gate) = action else {
+        panic!("expected a gate change");
+    };
+    let (kind, structured) = gate.failure().expect("gate failure");
+    assert_eq!(
+        kind,
+        koushi_state::SecureBackupGateFailureKind::ServerResponse
+    );
+    let structured = structured.expect("structured detail survives");
+    assert_eq!(structured.http_status, Some(503));
+    assert_eq!(
+        structured.transport,
+        koushi_state::SecureBackupFailureTransport::HttpResponse
+    );
+    assert!(structured.retryable);
+    assert!(matches!(
+        gate,
+        koushi_state::SecureBackupGateState::DegradedRetrying { .. }
+    ));
+
+    // A non-retryable server response blocks instead of silently degrading.
+    let action = secure_backup_inspection_completion_action(
+        5,
+        true,
+        true,
+        5,
+        Err(koushi_state::SecureBackupInspectionFailure {
+            kind: koushi_state::SecureBackupGateFailureKind::Unauthorized,
+            detail: detail(
+                Some(401),
+                Some(koushi_state::SecureBackupMatrixErrorKind::UnknownToken),
+                false,
+            ),
+        }),
+    )
+    .expect("gate action");
+    let AppAction::SecureBackupGateChanged(gate) = action else {
+        panic!("expected a gate change");
+    };
+    assert!(matches!(
+        gate,
+        koushi_state::SecureBackupGateState::BlockedFailed { .. }
+    ));
+
+    // The inspection deadline is a structured timeout, not a bare kind.
+    let deadline = secure_backup_inspection_deadline_failure();
+    assert_eq!(
+        deadline.kind,
+        koushi_state::SecureBackupGateFailureKind::Timeout
+    );
+    let structured = deadline.detail.expect("deadline detail");
+    assert_eq!(
+        structured.stage,
+        koushi_state::SecureBackupFailureStage::InspectionDeadline
+    );
+    assert_eq!(
+        structured.transport,
+        koushi_state::SecureBackupFailureTransport::Timeout
+    );
+    assert!(structured.retryable);
+}
+
+#[test]
+fn inspection_settled_diagnostics_carry_only_bounded_failure_facts() {
+    use koushi_diagnostics::{DiagnosticValue, record};
+
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock();
+    let before = koushi_diagnostics::test_support::detail_cursor();
+    let gate = koushi_state::SecureBackupGateState::BlockedFailed {
+        failure: koushi_state::SecureBackupGateFailureKind::ServerResponse,
+        detail: Some(koushi_state::SecureBackupFailureDetail {
+            stage: koushi_state::SecureBackupFailureStage::InspectServerTrust,
+            transport: koushi_state::SecureBackupFailureTransport::HttpResponse,
+            http_status: Some(503),
+            matrix_error_kind: Some(koushi_state::SecureBackupMatrixErrorKind::Unknown),
+            retryable: true,
+        }),
+    };
+    record(secure_backup_inspection_settled_event(&gate, 1234));
+
+    let record = koushi_diagnostics::test_support::detail_records_since(before)
+        .into_iter()
+        .find(|record| {
+            record.event.source == "core.secure_backup"
+                && record.event.stage == "inspection_settled"
+        })
+        .expect("settled diagnostic");
+    let field = |key: &str| {
+        record
+            .event
+            .fields
+            .iter()
+            .find(|field| field.key == key)
+            .map(|field| field.value.clone())
+    };
+    assert_eq!(
+        field("gate"),
+        Some(DiagnosticValue::Token("blocked_failed"))
+    );
+    assert_eq!(
+        field("failure"),
+        Some(DiagnosticValue::Token("server_response"))
+    );
+    assert_eq!(
+        field("failure_stage"),
+        Some(DiagnosticValue::Token("inspect_server_trust"))
+    );
+    assert_eq!(
+        field("failure_transport"),
+        Some(DiagnosticValue::Token("http_response"))
+    );
+    assert_eq!(field("http_status"), Some(DiagnosticValue::Count(503)));
+    assert_eq!(
+        field("matrix_error_kind"),
+        Some(DiagnosticValue::Token("unknown"))
+    );
+    assert_eq!(field("retryable"), Some(DiagnosticValue::Boolean(true)));
+    assert_eq!(
+        field("elapsed_ms"),
+        Some(DiagnosticValue::Milliseconds(1234))
+    );
+
+    // No raw SDK/server text can appear: every recorded value is bounded.
+    for field in &record.event.fields {
+        match &field.value {
+            DiagnosticValue::Token(_)
+            | DiagnosticValue::Count(_)
+            | DiagnosticValue::Boolean(_)
+            | DiagnosticValue::Milliseconds(_) => {}
+            other => panic!("unbounded diagnostic value {other:?} for {}", field.key),
+        }
+    }
 }
 
 #[test]
@@ -931,7 +1098,8 @@ fn is_blocked_failed_timeout(gate: &koushi_state::SecureBackupGateState) -> bool
     matches!(
         gate,
         koushi_state::SecureBackupGateState::BlockedFailed {
-            failure: koushi_state::SecureBackupGateFailureKind::Timeout
+            failure: koushi_state::SecureBackupGateFailureKind::Timeout,
+            ..
         }
     )
 }

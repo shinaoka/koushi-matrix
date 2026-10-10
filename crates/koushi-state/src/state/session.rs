@@ -142,6 +142,86 @@ pub enum SecureBackupGateFailureKind {
     Forbidden,
     Timeout,
     Sdk,
+    /// The homeserver answered with an error response that no more specific
+    /// kind covers. Unlike `Network`, the request did reach the server.
+    ServerResponse,
+    /// The homeserver rejected the authentication for this request (for
+    /// example HTTP 401 / `M_UNKNOWN_TOKEN`). This records the request's
+    /// outcome; it does not itself invalidate the session.
+    Unauthorized,
+}
+
+/// Which Secure Backup operation or stage produced a failure. Closed,
+/// privacy-safe vocabulary; never an SDK error string or endpoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SecureBackupFailureStage {
+    /// `Backups::inspect_server_trust()`.
+    InspectServerTrust,
+    /// `Backups::room_key_counts()`.
+    RoomKeyCounts,
+    /// The `recovery_key_delivery_pending` marker read or write.
+    RecoveryKeyDelivery,
+    /// The local cross-signing completeness probe.
+    CrossSigningStatus,
+    /// The inspection did not finish inside its bounded deadline.
+    InspectionDeadline,
+    /// No structured stage could be attributed.
+    Unknown,
+}
+
+/// How a Secure Backup exchange failed. Distinguishes an answer from the
+/// server from a request that never received one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SecureBackupFailureTransport {
+    /// The request produced no response (connection, DNS, TLS, or I/O).
+    NoResponse,
+    /// The homeserver produced a response that rejected the request.
+    HttpResponse,
+    /// The client gave up waiting for a response.
+    Timeout,
+    /// A local SDK/crypto/state failure, not a network exchange.
+    Local,
+}
+
+/// Allowlisted Matrix error categories (`errcode`) carried by a server
+/// response. Anything outside this set is `Unknown`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SecureBackupMatrixErrorKind {
+    Forbidden,
+    UnknownToken,
+    MissingToken,
+    LimitExceeded,
+    Unrecognized,
+    BadJson,
+    NotFound,
+    Unknown,
+}
+
+/// Bounded, privacy-safe failure facts for the Secure Backup gate and
+/// diagnostics. It never carries SDK error text, URLs, account or room
+/// identifiers, response bodies, recovery material, or tokens.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SecureBackupFailureDetail {
+    pub stage: SecureBackupFailureStage,
+    pub transport: SecureBackupFailureTransport,
+    #[serde(default, rename = "httpStatus")]
+    pub http_status: Option<u16>,
+    #[serde(default, rename = "matrixErrorKind")]
+    pub matrix_error_kind: Option<SecureBackupMatrixErrorKind>,
+    /// Whether retrying the same inspection could succeed.
+    pub retryable: bool,
+}
+
+/// A coarse gate failure kind paired with its optional structured detail.
+/// The kind drives catalog copy and gate policy; the detail drives the
+/// specific explanation and the diagnostic report.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SecureBackupInspectionFailure {
+    pub kind: SecureBackupGateFailureKind,
+    pub detail: Option<SecureBackupFailureDetail>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -175,9 +255,13 @@ pub enum SecureBackupGateState {
     },
     DegradedRetrying {
         failure: SecureBackupGateFailureKind,
+        #[serde(default)]
+        detail: Option<SecureBackupFailureDetail>,
     },
     BlockedFailed {
         failure: SecureBackupGateFailureKind,
+        #[serde(default)]
+        detail: Option<SecureBackupFailureDetail>,
     },
     Ready,
 }
@@ -215,6 +299,23 @@ impl SecureBackupGateState {
             self,
             Self::Ready | Self::UploadingExistingKeys { .. } | Self::DegradedRetrying { .. }
         )
+    }
+
+    /// The gate's blocking/degraded failure kind and its optional structured
+    /// detail. `ExistingBackupNeedsRecovery` never carries structured detail
+    /// because it is a trust verdict, not a failed exchange.
+    pub fn failure(
+        &self,
+    ) -> Option<(
+        SecureBackupGateFailureKind,
+        Option<SecureBackupFailureDetail>,
+    )> {
+        match self {
+            Self::ExistingBackupNeedsRecovery { failure } => failure.map(|kind| (kind, None)),
+            Self::DegradedRetrying { failure, detail }
+            | Self::BlockedFailed { failure, detail } => Some((*failure, *detail)),
+            _ => None,
+        }
     }
 }
 

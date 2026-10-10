@@ -330,7 +330,7 @@ pub(crate) enum AccountMessage {
         started_at: Instant,
         result: Result<
             koushi_sdk::MatrixSecureBackupInspection,
-            koushi_state::SecureBackupGateFailureKind,
+            koushi_state::SecureBackupInspectionFailure,
         >,
     },
     RetrySecureBackupInspection {

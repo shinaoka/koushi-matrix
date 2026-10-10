@@ -758,7 +758,45 @@ export type SecureBackupGateFailureKind =
   | "artifactDelivery"
   | "forbidden"
   | "timeout"
-  | "sdk";
+  | "sdk"
+  | "serverResponse"
+  | "unauthorized";
+
+/** Mirror of the Rust `SecureBackupFailureStage` vocabulary. */
+export type SecureBackupFailureStage =
+  | "inspectServerTrust"
+  | "roomKeyCounts"
+  | "recoveryKeyDelivery"
+  | "crossSigningStatus"
+  | "inspectionDeadline"
+  | "unknown";
+
+/** Mirror of the Rust `SecureBackupFailureTransport` vocabulary. */
+export type SecureBackupFailureTransport =
+  | "noResponse"
+  | "httpResponse"
+  | "timeout"
+  | "local";
+
+/** Mirror of the Rust `SecureBackupMatrixErrorKind` allowlist. */
+export type SecureBackupMatrixErrorKind =
+  | "forbidden"
+  | "unknownToken"
+  | "missingToken"
+  | "limitExceeded"
+  | "unrecognized"
+  | "badJson"
+  | "notFound"
+  | "unknown";
+
+/** Bounded, privacy-safe Secure Backup failure facts (Rust-owned). */
+export interface SecureBackupFailureDetail {
+  stage: SecureBackupFailureStage;
+  transport: SecureBackupFailureTransport;
+  httpStatus?: number | null;
+  matrixErrorKind?: SecureBackupMatrixErrorKind | null;
+  retryable: boolean;
+}
 
 export type PendingKeyCountBucket =
   | "zero"
@@ -781,8 +819,16 @@ export type SecureBackupGateState =
   | { kind: "creatingBackup" }
   | { kind: "recoveryKeyDeliveryRequired" }
   | { kind: "uploadingExistingKeys"; pending: PendingKeyCountBucket }
-  | { kind: "degradedRetrying"; failure: SecureBackupGateFailureKind }
-  | { kind: "blockedFailed"; failure: SecureBackupGateFailureKind }
+  | {
+      kind: "degradedRetrying";
+      failure: SecureBackupGateFailureKind;
+      detail?: SecureBackupFailureDetail | null;
+    }
+  | {
+      kind: "blockedFailed";
+      failure: SecureBackupGateFailureKind;
+      detail?: SecureBackupFailureDetail | null;
+    }
   | { kind: "ready" };
 
 export type VerificationMethodCapability = "existingDeviceSas" | "recoveryKey" | "securityPhrase" | "bootstrap";
