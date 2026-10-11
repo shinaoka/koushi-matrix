@@ -774,6 +774,8 @@ export type MessageId =
   | "settings.updateUpToDate"
   | "settings.updateChecking"
   | "settings.updateAvailable"
+  | "settings.updateAvailableManual"
+  | "settings.updateReleasePage"
   | "settings.updateAvailableTitle"
   | "settings.updateAvailableConfirm"
   | "settings.updateDownload"
@@ -2527,7 +2529,7 @@ const en: Catalog = {
     "Keep Koushi running in the tray when the window is closed. Quit from the tray menu to exit.",
   "settings.autoUpdate": "Automatically check for updates",
   "settings.autoUpdateDescription":
-    "Notify you about verified macOS updates. You choose whether to download and restart.",
+    "Notify you when a newer Koushi release is available. Windows opens the Release page; macOS can download and restart after verification.",
   "settings.includePrereleases": "Include pre-release versions",
   "settings.includePrereleasesDescription":
     "Also check releases whose SemVer contains a pre-release identifier such as -beta.1 or -rc.1.",
@@ -2540,6 +2542,8 @@ const en: Catalog = {
   "settings.updateUpToDate": "Koushi is up to date (v{version}).",
   "settings.updateChecking": "Checking for updates…",
   "settings.updateAvailable": "Koushi {version} is available.",
+  "settings.updateAvailableManual": "Koushi {version} is available. Download it from the Release page.",
+  "settings.updateReleasePage": "Open Release page",
   "settings.updateAvailableTitle": "Update available",
   "settings.updateAvailableConfirm": "Download and install Koushi {version}?",
   "settings.updateDownload": "Download update",
@@ -4204,7 +4208,7 @@ const ja: Catalog = {
     "ウィンドウを閉じても Koushi をトレイで実行し続けます。終了するにはトレイメニューの終了を使います。",
   "settings.autoUpdate": "アップデートを自動確認",
   "settings.autoUpdateDescription":
-    "検証済みのmacOSアップデートを通知します。ダウンロードと再起動は選択できます。",
+    "Koushiの新しいリリースを通知します。WindowsではReleaseページを開き、macOSでは検証後にダウンロードと再起動を選択できます。",
   "settings.includePrereleases": "プレリリース版を含める",
   "settings.includePrereleasesDescription":
     "-beta.1 や -rc.1 など、SemVerのプレリリース識別子を含むリリースも確認します。",
@@ -4217,6 +4221,8 @@ const ja: Catalog = {
   "settings.updateUpToDate": "Koushiは最新です（v{version}）。",
   "settings.updateChecking": "アップデートを確認しています…",
   "settings.updateAvailable": "Koushi {version}が利用可能です。",
+  "settings.updateAvailableManual": "Koushi {version}を利用できます。Releaseページからダウンロードしてください。",
+  "settings.updateReleasePage": "Releaseページを開く",
   "settings.updateAvailableTitle": "アップデートがあります",
   "settings.updateAvailableConfirm": "Koushi {version}をダウンロードしてインストールしますか？",
   "settings.updateDownload": "アップデートをダウンロード",

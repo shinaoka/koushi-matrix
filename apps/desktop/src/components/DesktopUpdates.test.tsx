@@ -51,7 +51,7 @@ test("live updater events win over an older initial read and listeners are relea
   fixture.getState.mockImplementation(() => new Promise(resolve => { resolveInitial = resolve; }));
   const view = render(<DesktopUpdates />);
   await waitFor(() => expect(fixture.getState).toHaveBeenCalledOnce());
-  act(() => fixture.updateListeners.forEach(listener => listener({ kind: "available", version: "1.2.4", generation: 7 })));
+  act(() => fixture.updateListeners.forEach(listener => listener({ kind: "available", version: "1.2.4", generation: 7, notification_only: false })));
   await act(async () => resolveInitial({ kind: "idle" }));
   expect(screen.getByText("Koushi 1.2.4 is available.")).toBeTruthy();
   expect(fixture.download).not.toHaveBeenCalled();

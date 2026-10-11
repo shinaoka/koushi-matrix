@@ -22,6 +22,10 @@ mod channel_policy;
 mod macos_backend;
 #[cfg(target_os = "macos")]
 use macos_backend::{Candidate, MacosBackend as PlatformBackend};
+#[cfg(windows)]
+mod windows_backend;
+#[cfg(windows)]
+use windows_backend::{Candidate, WindowsBackend as PlatformBackend};
 
 pub const DESKTOP_UPDATE_EVENT_NAME: &str = "koushi-desktop://update";
 const UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
@@ -40,6 +44,7 @@ pub enum DesktopUpdateState {
     Available {
         version: String,
         generation: u64,
+        notification_only: bool,
     },
     Downloading {
         version: String,
@@ -81,6 +86,7 @@ pub enum DesktopUpdateFailureStage {
 
 struct PendingUpdate<C> {
     version: String,
+    notification_only: bool,
     // Read only by an install backend; unused where no backend is compiled.
     #[cfg_attr(not(koushi_updater_backend), allow(dead_code))]
     update: C,
@@ -236,6 +242,7 @@ impl<C> Lifecycle<C> {
         let DesktopUpdateState::Available {
             version,
             generation,
+            ..
         } = &self.state
         else {
             return Err(());
@@ -307,6 +314,7 @@ impl<C> Lifecycle<C> {
                 self.state = DesktopUpdateState::Available {
                     version: pending.version.clone(),
                     generation: operation.generation,
+                    notification_only: pending.notification_only,
                 };
                 self.pending = Some(pending);
             }
@@ -628,7 +636,9 @@ fn initial_state_for(marker: Option<&Path>) -> DesktopUpdateState {
         DesktopUpdateState::Unsupported {
             reason: DesktopUpdateUnsupportedReason::PackageManaged,
         }
-    } else if cfg!(koushi_updater_backend) && configured_updater_public_key().is_some() {
+    } else if cfg!(target_os = "windows")
+        || (cfg!(koushi_updater_backend) && configured_updater_public_key().is_some())
+    {
         DesktopUpdateState::Idle
     } else {
         DesktopUpdateState::Unsupported {
@@ -657,7 +667,7 @@ pub fn spawn_auto_update_loop(
     app: AppHandle,
     mut settings_updates: watch::Receiver<AppSettingsValues>,
 ) {
-    if configured_updater_public_key().is_none() {
+    if configured_updater_public_key().is_none() && !cfg!(target_os = "windows") {
         return;
     }
     let shared = app.state::<DesktopUpdateManager>().shared.clone();
@@ -717,6 +727,12 @@ pub async fn download_and_prepare(
     snapshot: koushi_protocol::state_update::VersionedAppStateSnapshot,
     expected_generation: u64,
 ) -> Result<(), ()> {
+    // Windows is notification-only until signed NSIS updater artifacts and
+    // their manifest entry are published. Never turn a release-page notice
+    // into an installer request through an old or malicious renderer.
+    if cfg!(target_os = "windows") {
+        return Err(());
+    }
     app.state::<DesktopUpdateManager>().shared.transition(
         |state| {
             let _ = app.emit(DESKTOP_UPDATE_EVENT_NAME, state);

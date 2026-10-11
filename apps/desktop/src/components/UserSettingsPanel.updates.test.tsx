@@ -97,7 +97,7 @@ describe("DesktopUpdateControls", () => {
     render(
       <DesktopUpdateControls
         current={{ auto_check: true, include_prereleases: false }}
-        state={{ kind: "available", version: "1.2.3", generation: 7 }}
+        state={{ kind: "available", version: "1.2.3", generation: 7, notification_only: false }}
         onSelect={() => undefined}
         onCheck={() => undefined}
         onDownload={onDownload}
@@ -107,6 +107,28 @@ describe("DesktopUpdateControls", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Download update" }));
     expect(onDownload).toHaveBeenCalledOnce();
+  });
+
+  test("opens the Release page for a notification-only update", () => {
+    const onDownload = vi.fn();
+    const onOpenReleasePage = vi.fn();
+    render(
+      <DesktopUpdateControls
+        current={{ auto_check: true, include_prereleases: false }}
+        state={{ kind: "available", version: "1.2.3", generation: 7, notification_only: true }}
+        onSelect={() => undefined}
+        onCheck={() => undefined}
+        onDownload={onDownload}
+        onRestart={() => undefined}
+        notificationOnly
+        onOpenReleasePage={onOpenReleasePage}
+      />
+    );
+
+    expect(screen.getByText("Koushi 1.2.3 is available. Download it from the Release page.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open Release page" }));
+    expect(onOpenReleasePage).toHaveBeenCalledOnce();
+    expect(onDownload).not.toHaveBeenCalled();
   });
 
   test("shows the latest version and offers another manual check", () => {
