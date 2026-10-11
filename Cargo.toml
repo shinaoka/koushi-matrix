@@ -48,7 +48,7 @@ heif-oxide = "0.1.0"
 # `CARGO_PROFILE_DEV_DEBUG=1` for a full-symbol LLDB/GDB session. `target/` is
 # disposable after such a change: `kache clean -n`, then `kache clean -y`.
 [profile.dev]
-debug = "line-tables-only"
+debug = 0                  # DWARF only enlarges target and build-cache output; see the note above
 
 [profile.dev.package."*"]
 debug = false
