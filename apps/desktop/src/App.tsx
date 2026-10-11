@@ -291,6 +291,7 @@ import {
   type RuntimeAlert
 } from "./components/Shell";
 import { ContextualRightPanel } from "./components/rightPanel";
+import type { RoomInfoRevealRequest } from "./components/RoomInfoPanel";
 import { AppSettingsDialog } from "./components/UserSettingsPanel";
 import type { AccountNotificationActions } from "./components/user-settings/AccountNotificationsSections";
 import type { ContactSecurityActions } from "./components/ContactSecurityDetails";
@@ -1365,6 +1366,10 @@ function AccountContent({
   const [rightPanelMode, setRightPanelModeState] = useState<RightPanelMode>(
     settingsScope === "account" ? "userSettings" : "closed"
   );
+  // #1327: the conversation header's access pill opens Room Info at the property
+  // it summarizes. The request is one-shot presentation intent, scoped to the
+  // room it was made for, and cleared once the panel has revealed it.
+  const [roomInfoReveal, setRoomInfoReveal] = useState<RoomInfoRevealRequest | null>(null);
   // #1160: the scheduled-messages projection is Rust-owned and body-bearing, so
   // every transition away from its panel closes the Rust projection while this
   // account still owns the bound API. `effectiveRightPanelModeForSnapshot` then
@@ -7428,6 +7433,12 @@ function AccountContent({
                 runInBackground(openThreadsListPanel({ kind: "room", room_id: roomId }));
               }
             }}
+            onOpenRoomInfoSetting={() => {
+              if (activeRoom) {
+                setRoomInfoReveal({ roomId: activeRoom.room_id, setting: "joinRule" });
+              }
+              setRightPanelMode("roomInfo");
+            }}
             onToggleRoomInfo={() => {
               if (rightPanelOpen) {
                 if (effectiveRightPanelMode === "thread") {
@@ -7758,6 +7769,8 @@ function AccountContent({
           onSetRoomAccessDraft={(command) => {
             runInBackground(api.setRoomAccessDraft(command).then(() => undefined));
           }}
+          roomInfoReveal={roomInfoReveal}
+          onRoomInfoRevealHandled={() => setRoomInfoReveal(null)}
           onUpdateSpaceJoinRule={(spaceId, joinRule) => updateRoomSetting(spaceId, { joinRule })}
           onIgnoreUser={(userId) => {
             runInBackground(ignoreUser(userId));

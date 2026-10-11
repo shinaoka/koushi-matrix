@@ -5,6 +5,8 @@
 
 #![allow(dead_code)]
 
+pub mod oauth_fixture;
+
 use std::time::Duration;
 
 use koushi_core::executor;

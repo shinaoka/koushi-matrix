@@ -2220,6 +2220,13 @@ button:disabled {
   gap: 10px;
   font-size: 21px;
   font-weight: 850;
+  /* #1327: this cell shares one grid row with the timeline controls, so it may
+     give way but never paint over them. With Linux font metrics the two status
+     pills kept their intrinsic width, the title overflowed its track, and the
+     access pill covered the navigation's buttons and swallowed their clicks.
+     Clipping keeps that impossible on any font metrics; the status popups are
+     fixed-positioned from their anchor's rect, so they are not clipped here. */
+  overflow: hidden;
 }
 
 .channel-avatar {
@@ -2251,8 +2258,8 @@ button:disabled {
   font: inherit;
 }
 
-/* #1166: an access badge and its tooltip host are not the truncated room name. */
-.channel-title .channel-access-badge,
+/* #1327: a status pill and its tooltip host are not the truncated room name. */
+.channel-title .channel-status-pill,
 .channel-title .tooltip-host {
   overflow: visible;
   white-space: nowrap;
@@ -8667,6 +8674,14 @@ kbd {
 .access-choice-item input {
   flex: 0 0 auto;
   margin-block-start: 2px;
+  /* #1327: a control scrolled to by the keyboard or by
+     `scrollIntoViewIfNeeded` stops clear of the scrollport edge instead of
+     exactly on it, where a fractional pixel can leave it partly outside. */
+  scroll-margin-block: 8px;
+}
+
+.access-choice-item {
+  scroll-margin-block: 8px;
 }
 
 .access-choice-item input:focus-visible {
@@ -9403,6 +9418,12 @@ kbd {
     font-size: 18px;
   }
 
+  /* #1327: at the smallest width both status icons and their accessible
+     descriptions stay; only the pill text is hidden, and the name truncates. */
+  .channel-status-pill-text {
+    display: none;
+  }
+
   .member-pill {
     display: none;
   }
@@ -9961,9 +9982,11 @@ kbd {
 .export-progress-note { font-size: 0.85em; color: var(--text-muted); }
 .export-progress-list li[data-phase="failed"] .export-progress-phase { color: var(--danger); }
 
-/* #1166: access conditions. The globe means public, the closed padlock means an
-   invitation is required, and the compact badges carry the other rules; none of
-   them is an encryption indicator. */
+/* #1327: access conditions. The globe means public and the padlock is the
+   encryption indicator and nothing else, so participation uses its own glyphs
+   (user-round-plus, users-round, hand, circle-help). One glyph follows the name
+   in the room list; the full localized label stays in the row's accessible name
+   and the row description. */
 .room-name-shell {
   display: flex;
   min-width: 0;
@@ -9971,33 +9994,56 @@ kbd {
   gap: 4px;
 }
 
-.room-access-icon,
-.room-access-badge {
-  /* #1249: the globe, padlock and membership/condition glyphs form one muted,
-     subordinate cluster after the name. The full localized label stays in the
-     tooltip, the row description and the room header/Room Info. */
+/* #1327: the row-level tooltip host must keep the row's own box. */
+.room-item-host {
+  display: block;
+  inline-size: 100%;
+}
+
+.room-access-icon {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   color: var(--text-muted);
 }
 
-.channel-access-badge {
+/* #1327: the one-line header's status pills. They sit after the name, keep
+   their intrinsic width while the name gives way, and never wrap the row. */
+.channel-status-pill {
+  display: inline-flex;
   flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
   padding-inline: var(--room-count-padding-inline);
-  border-radius: var(--r-pill);
   border: 1px solid var(--line);
+  border-radius: var(--r-pill);
   color: var(--text-muted);
   font-size: var(--room-count-font-size);
+  font-weight: 600;
   line-height: var(--room-count-block-size);
   white-space: nowrap;
 }
 
-.channel-access-icon {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
+.channel-status-pill-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+button.channel-access-pill {
+  cursor: pointer;
+  background: transparent;
+  font-family: inherit;
+}
+
+button.channel-access-pill:hover,
+button.channel-access-pill:focus-visible {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.channel-encryption-pill[data-room-encryption="plaintext"] {
   color: var(--text-muted);
+  border-style: dashed;
 }
 
 .channel-title .channel-name {
@@ -10025,7 +10071,7 @@ kbd {
 }
 
 .workspace-access-overlay[data-space-access="globe"],
-.workspace-access-overlay[data-space-access="padlock"] {
+.workspace-access-overlay[data-space-access="userRoundPlus"] {
   color: var(--text);
 }
 

@@ -304,6 +304,60 @@ describe("Rust-projected workspace shell", () => {
     expect(shell.firstElementChild).toBe(name);
   });
 
+  // #1327: the room list shows access only, and a DM row shows neither an
+  // encryption nor an access indicator.
+  it("shows no access or encryption indicator on a DM row (#1327)", () => {
+    const snapshot = readyDesktopSnapshotFixture();
+    snapshot.sidebar.active_space_id = null;
+    snapshot.sidebar.account_home.is_active = true;
+    snapshot.sidebar.space_rail = [];
+    snapshot.sidebar.space_rooms = [];
+    const dm: RoomListItem = {
+      ...room("!dm:example.invalid", "Synthetic Person"),
+      access_join_rule: "invite"
+    };
+    snapshot.sidebar.global_dms = [dm];
+    snapshot.sidebar.sections = {
+      favourites: [],
+      rooms: [],
+      people: [dm],
+      low_priority: [],
+      not_joined: []
+    };
+
+    render(<Sidebar snapshot={snapshot} {...sidebarProps()} />);
+
+    const row = screen.getByRole("button", { name: "Synthetic Person" });
+    expect(row.querySelector("[data-room-access]")).toBeNull();
+    expect(row.querySelector("[data-room-encryption]")).toBeNull();
+    expect(row.getAttribute("aria-describedby")).toBeNull();
+    expect(row.getAttribute("data-room-kind")).toBe("dm");
+  });
+
+  // #1327: a padlock is the encryption indicator, so an invite-only Space never
+  // shows one in the rail or the Space header, whichever lane renders it.
+  it("uses the participation vocabulary for an invite-only Space, never a padlock (#1327)", () => {
+    const snapshot = readyDesktopSnapshotFixture();
+    snapshot.sidebar.space_rail = [
+      {
+        ...railSpace("!invite-space:example.invalid", "Invite Space", true),
+        access_join_rule: "invite"
+      }
+    ];
+    const { unmount } = render(<WorkspaceRail snapshot={snapshot} {...railProps()} />);
+
+    const railItem = screen.getByRole("button", { name: "Invite Space" });
+    expect(railItem.querySelector('[data-space-access="userRoundPlus"]')).toBeTruthy();
+    expect(railItem.querySelector('[data-space-access="padlock"]')).toBeNull();
+    unmount();
+
+    render(<Sidebar snapshot={snapshot} {...sidebarProps()} />);
+    const header = screen.getByText("Invite Space").closest(".workspace-header-title") as HTMLElement;
+    expect(header.querySelector('[data-space-access="userRoundPlus"]')).toBeTruthy();
+    expect(header.querySelector('[data-space-access="padlock"]')).toBeNull();
+    expect(within(header).getByText(t("access.inviteOnly"))).toBeTruthy();
+  });
+
   it("preserves Rust section order and performs only text filtering", () => {
     const snapshot = readyDesktopSnapshotFixture();
     snapshot.sidebar.sections.rooms = [

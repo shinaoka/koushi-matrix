@@ -246,6 +246,15 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/rust-metrics"
           cargo test --profile ci --workspace --exclude sidebar-composition --exclude key-management 2>&1 | tee "$RUNNER_TEMP/rust-metrics/workspace-tests.log"
+      # #1326: the complete OAuth/MAS authorization-code path — discovery,
+      # authorization creation, real-socket code exchange through the SDK, Core
+      # login admission, and restart/restore of the persisted OAuth session —
+      # over the disposable authorization-server/homeserver fixture. Run
+      # focused so a regression names the broken step instead of surfacing as
+      # one line inside the workspace suite (the step above still covers it in
+      # the aggregate).
+      - name: OAuth authorization-code proof (#1326)
+        run: cargo test --profile ci -p koushi-core-testkit --test oauth_authorization_code
       - name: Record workspace cargo metrics
         if: ${{ !cancelled() }}
         # Skip quietly when an earlier step failed before the suite wrote a log.

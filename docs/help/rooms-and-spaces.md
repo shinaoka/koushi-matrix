@@ -155,26 +155,45 @@ contribution without replaying old notifications.
 
 ## See who can join a room or Space
 
-Every conversation row, the room header, the Space rail, and the Space header
-show who may join: a **globe** when anyone can join, a closed **padlock** when an
-invitation is required, or a **Conditions apply** or **Can request** badge when
-membership depends on other rooms or Spaces. The same indicator appears in
-**Room info** and **Space info**.
+Two separate facts are reported, and neither is used to mean the other: **who
+may join** and **whether the conversation is encrypted**. Every conversation
+row, the room header, the Space rail, the Space header, and **Room info** show
+the participation indicator; the conversation header and **Room info** also
+show the encryption indicator.
+
+The participation indicator is one icon with one label. Hover it, or reach it
+with the keyboard, to read what it means for that room or Space.
 
 - **Public** (globe): anyone can join without an invitation.
-- **Invite only** (closed padlock): an invitation is required to join.
-- **Conditions apply**: members of the listed Spaces or rooms can join without
-  an invitation, and everyone else needs one. When Koushi has read their names,
-  the indicator's tooltip lists the Spaces or rooms.
-- **Can request**: you can ask for an invitation, but joining still requires one.
-- **Checking** or **Unknown** (question mark): Koushi has not read the join
-  conditions yet, or it does not recognize the rule the server reports.
+- **Invite only** (person with a plus): an invitation is required to join.
+- **Space members can join** (two people): the members of the Space named in the
+  explanation can join without an invitation.
+- **Conditions apply** (two people): members of the listed Spaces or rooms can
+  join without an invitation, and everyone else needs one. When Koushi has read
+  their names, the explanation lists the Spaces or rooms.
+- **Can request** (raised hand): you can ask for an invitation, but joining
+  still requires one.
+- **Space / request** (raised hand): membership follows the Space named in the
+  explanation, and everyone else can ask for an invitation.
+- **Not joinable** (question mark): the room keeps a join rule with no ordinary
+  way in, and an invitation alone may not be enough.
+- **Checking** (spinner) or **Unknown** (question mark): Koushi has not read the
+  join conditions yet, or it does not recognize the rule the server reports.
 
-These indicators describe **who may join**, and nothing else. They are not an
-encryption, confidentiality, or history-visibility signal: an invite-only room
-can still hold unencrypted messages, and a public room can be encrypted. History
-visibility and the other properties are shown and changed in **Change room
-details, access, and history** and in **Space names and access** below.
+The encryption indicator is separate: **Encrypted** (closed padlock) or **Not
+encrypted** (open padlock), with its own explanation. A padlock never means that
+an invitation is required, and an invitation is never shown with a padlock.
+
+In the conversation list only the participation icon is shown, as the row's
+accessible name, because a list row has room for one. Direct messages show
+neither indicator in the list; the header and **Room info** report both facts for
+the open conversation.
+
+Neither indicator is a confidentiality or history-visibility signal: an
+invite-only room can still hold unencrypted messages, and a public room can be
+encrypted. History visibility and the other properties are shown and changed in
+**Change room details, access, and history** and in **Space names and access**
+below.
 
 ## Room information and notifications
 
@@ -208,14 +227,15 @@ Open **Room info**. Each property is shown, changed, and confirmed in one card:
   it. Choosing **Members of a Space** lists the Spaces you belong to; pick the
   ones whose members may join. A restricted rule is summarised by its
   people-facing access condition (**Conditions apply**, or **Space members can
-  join** when exactly one Space is verified) rather than as **Private**, and a
+  join** when exactly one Space is verified) rather than as **Not joinable**, and a
   rule the app cannot rewrite is shown disabled with the reason. The details
   keep server eligibility and key availability separate, note when history
   becomes visible to anyone, and state that a change does not apply to messages
   already sent. The same editor is used while creating a room.
 
-The badges at the top of **Room info**, such as **Public** or **Anyone can see
-history**, move to the matching card. A card shows **Saving…** while the change
+The summary at the top of **Room info**, such as **Encrypted**, **Invite only**
+or **Anyone can see history**, moves to the matching card when chosen; the
+encryption summary is a statement of fact and does not open a card. A card shows **Saving…** while the change
 is sent and **Saved** once the room reports the new value; if the change fails,
 the reason is shown in the same card and the old value stays. If your role cannot
 change a property, its card shows the current value and says so. The room name is

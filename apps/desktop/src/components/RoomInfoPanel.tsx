@@ -5,11 +5,10 @@ import {
   ChevronRight,
   Copy,
   FileText,
-  Globe2,
   History,
   KeyRound,
   Link,
-  Lock,
+  LockKeyhole,
   LockOpen,
   Users
 } from "lucide-react";
@@ -30,10 +29,10 @@ import { EntityAvatar } from "./Shell";
 import { avatarInitial, roomAccessTooltipLabel, roomDisplayLabel } from "../app/uiShared";
 import {
   ROOM_ACCESS_CHECKING,
-  roomAccessHeaderBadges,
   roomAccessIndicator,
   type RoomAccessProjection
 } from "../domain/accessCondition";
+import { RoomAccessGlyphIcon } from "./RoomAccessGlyph";
 import {
   HISTORY_VISIBILITY_OPTIONS,
   roomHistoryVisibilityDescription,
@@ -62,6 +61,18 @@ import type {
   RoomAccessPreview,
 } from "../domain/types";
 
+/** #1327: the editable properties another surface can ask this panel to reveal. */
+export type RoomInfoRevealSetting = "joinRule" | "historyVisibility";
+
+/**
+ * #1327: a one-shot "reveal this property" request, scoped to the room it was
+ * made for.
+ */
+export type RoomInfoRevealRequest = {
+  roomId: string;
+  setting: RoomInfoRevealSetting;
+};
+
 export function RoomInfoPanel({
   room,
   roomManagement,
@@ -85,7 +96,9 @@ export function RoomInfoPanel({
   historyExportControls,
   accessPreview,
   historyPreview,
-  onSetAccessDraft
+  onSetAccessDraft,
+  revealSetting,
+  onRevealSettingHandled
 }: {
   room: RoomSummary | null;
   roomManagement?: RoomManagementState;
@@ -113,10 +126,20 @@ export function RoomInfoPanel({
   /** The Rust history-panel preview for the current draft (#1177). */
   historyPreview?: RoomAccessPreview | null;
   onSetAccessDraft?: (command: RoomAccessDraftCommand) => void;
+  /**
+   * #1327: a one-shot request from another surface (the conversation header's
+   * access pill) to reveal the property it summarizes. It carries the room it
+   * belongs to, so a request for another room never moves this panel's focus.
+   */
+  revealSetting?: RoomInfoRevealRequest | null;
+  onRevealSettingHandled?: () => void;
 }) {
   const roomId = room?.room_id ?? "";
   const roomName = room ? roomDisplayLabel(room) : "";
   const isEncrypted = room?.is_encrypted ?? false;
+  // #1327: a DM shows its own join condition and history like any room, so this
+  // only selects the shortened DM explanation; it never suppresses a fact.
+  const isDirectMessage = room?.is_dm ?? false;
   const globalUrlPreviewsEnabled = isEncrypted
     ? appSettings?.values.display.encrypted_url_previews_enabled ?? false
     : appSettings?.values.display.url_previews_enabled ?? true;
@@ -183,6 +206,23 @@ export function RoomInfoPanel({
     setSubmission(null);
   }, [roomId]);
 
+  // #1327: the conversation header's access pill asks this panel to reveal the
+  // join-condition property. The property only exists once this room's settings
+  // have rendered, so the request waits for them and is then reported handled,
+  // exactly once, so a later re-render never steals focus again.
+  const pendingReveal =
+    revealSetting && roomId && revealSetting.roomId === roomId ? revealSetting.setting : null;
+  useEffect(() => {
+    if (!pendingReveal || !settings || !room) {
+      return;
+    }
+    const heading =
+      pendingReveal === "joinRule" ? joinRuleHeadingRef.current : historyHeadingRef.current;
+    heading?.scrollIntoView?.({ block: "nearest" });
+    heading?.focus();
+    onRevealSettingHandled?.();
+  }, [pendingReveal, settings, room, onRevealSettingHandled]);
+
   async function forceRotation() {
     const epoch = ++rotationEpochRef.current;
     setRotationConfirm(false);
@@ -216,7 +256,7 @@ export function RoomInfoPanel({
     settings && !settings.permissions.can_change_join_rule
       ? t("room.settingNoPermission")
       : null;
-  const statusBadges = roomStatusBadges(isEncrypted, settings, access);
+  const statusBadges = roomStatusBadges(isEncrypted, settings, access, isDirectMessage);
 
   // #1177: the access/history editor works over the Rust-owned draft. The
   // confirmed rule and completeness facts come from the shared sidebar
@@ -305,15 +345,17 @@ export function RoomInfoPanel({
       : null;
   }
 
-  function revealSetting(heading: HTMLHeadingElement | null) {
+  function focusSetting(heading: HTMLHeadingElement | null) {
     heading?.scrollIntoView?.({ block: "nearest" });
     heading?.focus();
   }
 
   function renderStatusBadge(badge: StatusBadge, triggerProps?: TooltipTriggerProps) {
     if (!badge.setting) {
+      // #1327: a summary the panel cannot edit is still focusable, so the same
+      // explanation is reachable from the keyboard as from the pointer.
       return (
-        <span className="room-status-badge" {...triggerProps}>
+        <span className="room-status-badge" tabIndex={badge.description ? 0 : undefined} {...triggerProps}>
           {badge.icon}
           <span>{badge.label}</span>
         </span>
@@ -325,7 +367,7 @@ export function RoomInfoPanel({
         type="button"
         aria-label={t("room.statusShowSetting", { status: badge.label })}
         onClick={() =>
-          revealSetting(
+          focusSetting(
             badge.setting === "joinRule"
               ? joinRuleHeadingRef.current
               : historyHeadingRef.current
@@ -934,7 +976,7 @@ export function RoomInfoPanel({
           {
             icon: <Bell size={16} />,
             label: t("room.notifications"),
-            onClick: () => revealSetting(notificationsHeadingRef.current)
+            onClick: () => focusSetting(notificationsHeadingRef.current)
           }
         ]}
       />
@@ -969,66 +1011,89 @@ function roomSettingFailureMessage(kind: OperationFailureKind): string {
 function roomStatusBadges(
   isEncrypted: boolean,
   settings: RoomManagementState["settings"],
-  access: RoomAccessProjection | null | undefined
+  access: RoomAccessProjection | null | undefined,
+  isDirectMessage: boolean
 ): StatusBadge[] {
   const badges: StatusBadge[] = [
     {
       label: isEncrypted ? t("room.statusEncrypted") : t("room.statusNotEncrypted"),
+      // #1327: the padlock is the encryption indicator and nothing else; an
+      // unencrypted conversation says so explicitly instead of showing no icon.
       icon: isEncrypted ? (
-        <Lock size={14} aria-hidden="true" />
+        <LockKeyhole size={14} aria-hidden="true" />
       ) : (
         <LockOpen size={14} aria-hidden="true" />
+      ),
+      description: t(
+        isEncrypted ? "room.encryptedDescription" : "room.notEncryptedDescription"
       )
     }
   ];
 
-  if (settings) {
-    // #1220: the summary is the same people-facing condition the row and header
-    // render, never a binary Public/Private that reads a restricted rule as
-    // `private`. It is shown for DMs too, which have their own access condition.
-    //
-    // A supplied access projection is authoritative, including an explicit
-    // `joinRule: null`: Room Info then shows the shared checking indicator
-    // instead of the settings snapshot's defaulted `invite`. Falling back to
-    // the snapshot is reserved for a caller that has no access projection at
-    // all.
-    const indicator = access
-      ? roomAccessIndicator(access.joinRule, access.restricted, {
+  // #1220: the summary is the same people-facing condition the row and header
+  // render, never a binary Public/Private that reads a restricted rule as
+  // `private`. It is shown for DMs too, which have their own access condition.
+  //
+  // A supplied access projection is authoritative, including an explicit
+  // `joinRule: null`: Room Info then shows the shared checking indicator
+  // instead of the settings snapshot's defaulted `invite`. Falling back to the
+  // snapshot is reserved for a caller that has no access projection at all.
+  //
+  // #1327: the participation fact comes from the projection, so it is reported
+  // while the settings snapshot is still loading — as a plain statement until
+  // the panel has a join-rule property to open.
+  const indicator = access
+    ? roomAccessIndicator(
+        access.joinRule,
+        access.restricted,
+        {
           spaceMembersRoute: access.spaceMembersRoute,
           allowedRoomNames: access.allowedRoomNames
-        }) ?? ROOM_ACCESS_CHECKING
-      : roomAccessIndicator(settings.join_rule);
-    if (indicator) {
-      // One badge per shared route label, each with its own explanation and any
-      // Space-name substitution, so a knock-restricted room keeps both the
-      // membership and the request route here as it does in the row and header.
-      for (const badge of roomAccessHeaderBadges(indicator)) {
-        badges.push({
-          label: t(badge.labelMessageId),
-          description: roomAccessTooltipLabel(
-            badge.descriptionMessageId,
-            badge.descriptionAllowedRoomNames,
-            badge.descriptionSpaceName
-          ),
-          icon: <Globe2 size={14} aria-hidden="true" />,
-          setting: "joinRule"
-        });
-      }
-    } else {
-      badges.push({
-        label: roomJoinRuleLabel(settings.join_rule),
-        icon: <Globe2 size={14} aria-hidden="true" />,
-        setting: "joinRule"
-      });
-    }
+        },
+        isDirectMessage
+      ) ?? ROOM_ACCESS_CHECKING
+    : settings
+      ? roomAccessIndicator(settings.join_rule, null, {}, isDirectMessage) ??
+        ROOM_ACCESS_CHECKING
+      : null;
+  if (indicator) {
+    badges.push({
+      label: t(indicator.labelMessageId),
+      description: roomAccessTooltipLabel(
+        indicator.descriptionMessageId,
+        indicator.descriptionAllowedRoomNames,
+        indicator.descriptionSpaceName
+      ),
+      icon: <RoomAccessGlyphIcon glyph={indicator.glyph} size={14} />,
+      // A rule with no property card to open stays a statement of fact.
+      ...(settings ? { setting: "joinRule" as const } : {})
+    });
+  }
+
+  if (settings) {
     badges.push({
       label: roomHistoryStatusLabel(settings.history_visibility),
+      // #1327: the history explanation follows the actual visibility value, and
+      // never promises that every historical event is decryptable.
+      description: roomHistoryStatusDescription(settings.history_visibility),
       icon: <History size={14} aria-hidden="true" />,
       setting: "historyVisibility"
     });
   }
 
   return badges;
+}
+
+function roomHistoryStatusDescription(visibility: RoomHistoryVisibility): string {
+  switch (visibility) {
+    case "worldReadable":
+      return t("room.statusHistoryWorldReadableDescription");
+    case "shared":
+      return t("room.statusHistorySharedDescription");
+    case "invited":
+    case "joined":
+      return t("room.statusHistoryLimitedDescription");
+  }
 }
 
 function roomHistoryStatusLabel(visibility: RoomHistoryVisibility): string {

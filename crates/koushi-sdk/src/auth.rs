@@ -537,12 +537,20 @@ fn classify_oauth_error(
         OAuthError::ClientRegistration(OAuthClientRegistrationError::OAuth(_)) => {
             AuthFailureDetail::http_response(method, stage, None, None, false)
         }
-        OAuthError::AuthorizationCode(OAuthAuthorizationCodeError::Cancelled) => {
+        OAuthError::AuthorizationCode(OAuthAuthorizationCodeError::Cancelled)
+        | OAuthError::AuthorizationCode(OAuthAuthorizationCodeError::InvalidState)
+        | OAuthError::AuthorizationCode(OAuthAuthorizationCodeError::RedirectUri(_)) => {
+            // Nothing was sent to the token endpoint: the callback was
+            // cancelled, malformed, or carried a state no live authorization
+            // minted. Reporting these as server responses would tell the user
+            // the homeserver rejected a request that never left the machine.
             AuthFailureDetail::local(method, stage)
         }
         OAuthError::AuthorizationCode(OAuthAuthorizationCodeError::RequestToken(error)) => {
             classify_oauth_request_error(error, method, stage)
         }
+        // The authorization server answered the redirect with an OAuth error,
+        // or the SDK gained a variant this classifier does not know yet.
         OAuthError::AuthorizationCode(_) => {
             AuthFailureDetail::http_response(method, stage, None, None, false)
         }

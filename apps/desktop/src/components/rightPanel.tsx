@@ -62,7 +62,7 @@ import {
 } from "./TimelineView";
 import { FilesView } from "./FilesView";
 import { ModalDialog } from "./ModalDialog";
-import { RoomInfoPanel } from "./RoomInfoPanel";
+import { RoomInfoPanel, type RoomInfoRevealRequest } from "./RoomInfoPanel";
 import { sidebarRoomAccess } from "../domain/accessCondition";
 import type { HistoryExportControls } from "./HistoryExportDialog";
 import { SpaceInfoPanel } from "./SpaceInfoPanel";
@@ -214,6 +214,8 @@ export function ContextualRightPanel({
   roomAccessPreview = null,
   roomHistoryPreview = null,
   onSetRoomAccessDraft = () => undefined,
+  roomInfoReveal = null,
+  onRoomInfoRevealHandled,
   onUpdateSpaceJoinRule,
   onIgnoreUser = () => undefined,
   onUnignoreUser = () => undefined,
@@ -396,6 +398,9 @@ export function ContextualRightPanel({
   roomAccessPreview?: RoomAccessPreview | null;
   roomHistoryPreview?: RoomAccessPreview | null;
   onSetRoomAccessDraft?: (command: RoomAccessDraftCommand) => void;
+  /** #1327: what another surface asked the open Room Info panel to reveal. */
+  roomInfoReveal?: RoomInfoRevealRequest | null;
+  onRoomInfoRevealHandled?: () => void;
   /** Issue #935: settles, or rejects when Rust refuses the change. */
   onUpdateSpaceJoinRule?: (spaceId: string, joinRule: RoomJoinRule) => Promise<void>;
   onIgnoreUser?: (userId: string) => void;
@@ -705,6 +710,8 @@ export function ContextualRightPanel({
           accessPreview={roomAccessPreview}
           historyPreview={roomHistoryPreview}
           onSetAccessDraft={onSetRoomAccessDraft}
+          revealSetting={roomInfoReveal}
+          onRevealSettingHandled={onRoomInfoRevealHandled}
           inviteHistoryPolicy={
             snapshot.state.domain.invite_workflow?.query.room_id === activeRoom?.room_id
               ? snapshot.state.domain.invite_workflow?.history_policy ?? null

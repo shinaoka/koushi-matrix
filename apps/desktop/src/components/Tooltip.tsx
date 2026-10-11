@@ -28,6 +28,18 @@ type TooltipProps = {
   label: string;
   placement?: "right";
   delayMs?: number;
+  /**
+   * #1327: extra host class. A row-level trigger needs a block-level host so the
+   * wrapped button keeps the row's own box.
+   */
+  className?: string;
+  /**
+   * #1327: identity of the fact this popup explains — the room whose status the
+   * trigger belongs to. A change closes an open bubble, so a room switch never
+   * leaves the previous room's explanation on screen. A label change for the
+   * *same* room keeps the bubble open and shows the new text.
+   */
+  resetKey?: string | number | null;
 };
 
 /** Keeps the bubble away from the viewport edges. */
@@ -35,7 +47,14 @@ const TOOLTIP_VIEWPORT_MARGIN_PX = 12;
 /** Distance between the trigger and the bubble. */
 const TOOLTIP_ANCHOR_GAP_PX = 8;
 
-export function Tooltip({ children, label, placement = "right", delayMs = 250 }: TooltipProps) {
+export function Tooltip({
+  children,
+  label,
+  placement = "right",
+  delayMs = 250,
+  className,
+  resetKey
+}: TooltipProps) {
   const tooltipId = useId();
   const [isOpen, setIsOpen] = useState(false);
   const openTimer = useRef<number | null>(null);
@@ -78,6 +97,17 @@ export function Tooltip({ children, label, placement = "right", delayMs = 250 }:
   useEffect(() => {
     return () => clearOpenTimer();
   }, []);
+
+  // Close — do not re-anchor — when the trigger starts explaining a different
+  // fact, so a room switch dismisses the popup instead of rewriting it.
+  const previousResetKey = useRef(resetKey);
+  useEffect(() => {
+    if (previousResetKey.current === resetKey) {
+      return;
+    }
+    previousResetKey.current = resetKey;
+    close();
+  }, [resetKey]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -192,7 +222,10 @@ export function Tooltip({ children, label, placement = "right", delayMs = 250 }:
   );
 
   return (
-    <span className="tooltip-host tooltip-host-floating" ref={hostRef}>
+    <span
+      className={`tooltip-host tooltip-host-floating${className ? ` ${className}` : ""}`}
+      ref={hostRef}
+    >
       {children(triggerProps)}
       {isOpen ? <FloatingLayer>{bubble}</FloatingLayer> : null}
     </span>

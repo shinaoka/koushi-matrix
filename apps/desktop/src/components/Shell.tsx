@@ -17,19 +17,12 @@ import {
   ChevronDown,
   Clock3,
   Compass,
-  Globe2,
   Home,
-  LockKeyhole,
-  CircleHelp,
-  HandHelping,
-  Info,
-  LoaderCircle,
   MessageSquare,
   MoreHorizontal,
   Plus,
   Search,
   Settings,
-  UserRoundCheck,
   Users,
   X
 } from "lucide-react";
@@ -51,13 +44,10 @@ import { contextMenuItems } from "../domain/contextMenus";
 import { renderableThumbnailSourceUrl } from "../backend/linkMediaRuntime";
 import {
   ROOM_ACCESS_CHECKING,
-  roomAccessBadgeGlyph,
-  roomAccessHeaderBadges,
-  roomAccessIndicator,
-  roomAccessRailSummary,
-  type RoomAccessGlyph
+  roomAccessIndicator
 } from "../domain/accessCondition";
-import { Tooltip } from "./Tooltip";
+import { RoomAccessGlyphIcon } from "./RoomAccessGlyph";
+import { Tooltip, type TooltipTriggerProps } from "./Tooltip";
 import { ImeTextField } from "./ImeTextControl";
 import { useRecoverableImageSource } from "./avatarImage";
 import {
@@ -495,14 +485,18 @@ export function WorkspaceRail({
             const fallbackName = space.display_name.trim() || space.space_id || "?";
             // #1166: the rail item keeps the Space name and explains its access
             // condition, and a bounded overlay summarises it at the avatar.
-            // #1166: the rail item carries its own projected access condition.
-            const spaceRule = space.access_join_rule ?? null;
+            // #1327: the overlay uses the same glyph vocabulary as every other
+            // surface, so a padlock here also means encryption and nothing else.
             const spaceAccess =
-              roomAccessIndicator(spaceRule, space.access_restricted_conditions, {
-                spaceMembersRoute: space.access_space_members_route,
-                allowedRoomNames: space.access_allowed_room_names
-              }) ?? ROOM_ACCESS_CHECKING;
-            const railSummary = roomAccessRailSummary(spaceRule);
+              roomAccessIndicator(
+                space.access_join_rule ?? null,
+                space.access_restricted_conditions,
+                {
+                  spaceMembersRoute: space.access_space_members_route,
+                  allowedRoomNames: space.access_allowed_room_names
+                }
+              ) ?? ROOM_ACCESS_CHECKING;
+            const railSummary = spaceAccess.glyph;
             return (
             <Tooltip
               label={`${fallbackName}${t("access.conditionSummarySeparator")}${roomAccessTooltipLabel(
@@ -570,17 +564,7 @@ export function WorkspaceRail({
                     data-space-access={railSummary}
                     aria-hidden="true"
                   >
-                    {railSummary === "globe" ? (
-                      <Globe2 size={ICON_SIZE.micro} aria-hidden="true" />
-                    ) : railSummary === "padlock" ? (
-                      <LockKeyhole size={ICON_SIZE.micro} aria-hidden="true" />
-                    ) : railSummary === "info" ? (
-                      <Info size={ICON_SIZE.micro} aria-hidden="true" />
-                    ) : railSummary === "question" ? (
-                      <CircleHelp size={ICON_SIZE.micro} aria-hidden="true" />
-                    ) : (
-                      <LoaderCircle size={ICON_SIZE.micro} aria-hidden="true" />
-                    )}
+                    <RoomAccessGlyphIcon glyph={railSummary} size={ICON_SIZE.micro} />
                   </span>
                 </button>
               )}
@@ -715,7 +699,7 @@ export function Sidebar({
     <aside className="sidebar" aria-label={t("workspace.rooms")}>
       <div className="workspace-header">
         <div className="workspace-header-title">
-          {activeSpaceAccess?.icon ? (
+          {activeSpaceAccess ? (
             <Tooltip
               label={roomAccessTooltipLabel(
                 activeSpaceAccess.descriptionMessageId,
@@ -726,15 +710,11 @@ export function Sidebar({
               {(triggerProps) => (
                 <span
                   className="workspace-access-icon"
-                  data-space-access={activeSpaceAccess.icon}
+                  data-space-access={activeSpaceAccess.glyph}
                   tabIndex={0}
                   {...triggerProps}
                 >
-                  {activeSpaceAccess.icon === "globe" ? (
-                    <Globe2 size={ICON_SIZE.small} aria-hidden="true" />
-                  ) : (
-                    <LockKeyhole size={ICON_SIZE.small} aria-hidden="true" />
-                  )}
+                  <RoomAccessGlyphIcon glyph={activeSpaceAccess.glyph} size={ICON_SIZE.small} />
                 </span>
               )}
             </Tooltip>
@@ -742,24 +722,21 @@ export function Sidebar({
           <div className="workspace-name" dir="auto">
             {activeSpaceName}
           </div>
-          {activeSpaceAccess
-            ? roomAccessHeaderBadges(activeSpaceAccess).map((badge) => (
-                <Tooltip
-                  key={badge.labelMessageId}
-                  label={roomAccessTooltipLabel(
-                    badge.descriptionMessageId,
-                    badge.descriptionAllowedRoomNames,
-                    badge.descriptionSpaceName
-                  )}
-                >
-                  {(triggerProps) => (
-                    <span className="workspace-access-badge" tabIndex={0} {...triggerProps}>
-                      {t(badge.labelMessageId)}
-                    </span>
-                  )}
-                </Tooltip>
-              ))
-            : null}
+          {activeSpaceAccess ? (
+            <Tooltip
+              label={roomAccessTooltipLabel(
+                activeSpaceAccess.descriptionMessageId,
+                activeSpaceAccess.descriptionAllowedRoomNames,
+                activeSpaceAccess.descriptionSpaceName
+              )}
+            >
+              {(triggerProps) => (
+                <span className="workspace-access-badge" tabIndex={0} {...triggerProps}>
+                  {t(activeSpaceAccess.labelMessageId)}
+                </span>
+              )}
+            </Tooltip>
+          ) : null}
         </div>
         <div className="workspace-header-actions no-wrap">
           <div className="workspace-header-context-actions" data-toolbar-group="context">
@@ -1301,25 +1278,6 @@ function SectionTitle({
   );
 }
 
-function RoomAccessGlyphIcon({ glyph }: { glyph: RoomAccessGlyph }) {
-  switch (glyph) {
-    case "globe":
-      return <Globe2 size={ICON_SIZE.access} aria-hidden="true" />;
-    case "padlock":
-      return <LockKeyhole size={ICON_SIZE.access} aria-hidden="true" />;
-    case "spaceMembers":
-      return <UserRoundCheck size={ICON_SIZE.access} aria-hidden="true" />;
-    case "conditions":
-      return <Info size={ICON_SIZE.access} aria-hidden="true" />;
-    case "request":
-      return <HandHelping size={ICON_SIZE.access} aria-hidden="true" />;
-    case "checking":
-      return <LoaderCircle size={ICON_SIZE.access} aria-hidden="true" />;
-    default:
-      return <CircleHelp size={ICON_SIZE.access} aria-hidden="true" />;
-  }
-}
-
 function RoomButton({
   activeRoomId,
   kind,
@@ -1356,25 +1314,38 @@ function RoomButton({
   const displayCount = room.display_count ?? room.unread_count;
   const mentionCount = room.highlight_count ?? (room.has_unread_mention ? 1 : 0);
   const attentionHighlighted = room.is_attention_highlighted ?? mentionCount;
-  // #1166: a joined row shows its own access condition; while it has not been
-  // projected the row says so instead of guessing. Lanes that have no joined
-  // condition (invitations, not-joined) render none.
+  // #1327: a joined ordinary room row shows its own access condition; while it
+  // has not been projected the row says so instead of guessing. A DM row shows
+  // neither an encryption nor an access indicator, and lanes without a joined
+  // condition (invitations, not-joined) render none. (#1166)
   const access =
-    roomAccessIndicator(room.access_join_rule, room.access_restricted_conditions, {
-      spaceMembersRoute: room.access_space_members_route,
-      allowedRoomNames: room.access_allowed_room_names
-    }) ?? (kind === "room" || kind === "dm" ? ROOM_ACCESS_CHECKING : null);
+    kind === "room"
+      ? roomAccessIndicator(room.access_join_rule, room.access_restricted_conditions, {
+          spaceMembersRoute: room.access_space_members_route,
+          allowedRoomNames: room.access_allowed_room_names
+        }) ?? ROOM_ACCESS_CHECKING
+      : null;
   const roomLabel = roomListItemLabel(room);
   // #1166: the condition is announced as the row's *description*, so the row's
   // accessible name stays exactly the room label other surfaces and tests match
-  // on. The visible icon and badges stay the sighted affordance.
+  // on. The visible icon stays the sighted affordance.
+  // #1327: the row is the one tab stop, so its own hover and focus reveal the
+  // popup and no extra tab stop is added inside it.
   const accessDescriptionId = useId();
-  return (
+  const accessDescription = access
+    ? roomAccessTooltipLabel(
+        access.descriptionMessageId,
+        access.descriptionAllowedRoomNames,
+        access.descriptionSpaceName
+      )
+    : null;
+
+  function renderRow(triggerProps?: TooltipTriggerProps) {
+    return (
     <button
       className={`room-item ${room.room_id === activeRoomId ? "is-active" : ""}`}
       aria-label={roomLabel}
-      aria-describedby={access ? accessDescriptionId : undefined}
-      data-access={access?.icon ?? undefined}
+      data-access={access?.glyph ?? undefined}
       data-mention-count={mentionCount || undefined}
       data-room-kind={kind}
       data-testid="room-item"
@@ -1417,6 +1388,10 @@ function RoomButton({
           })
         );
       }}
+      {...triggerProps}
+      // Always the full condition text: an open tooltip renders the same
+      // sentence, and the description stays reachable after the popup closes.
+      aria-describedby={access ? accessDescriptionId : undefined}
     >
       <span className="room-avatar-shell">
         <EntityAvatar
@@ -1430,69 +1405,28 @@ function RoomButton({
       </span>
       {access ? (
         <span className="sr-only" id={accessDescriptionId}>
-          {roomAccessTooltipLabel(
-            access.descriptionMessageId,
-            access.descriptionAllowedRoomNames,
-            access.descriptionSpaceName
-          )}
+          {accessDescription}
         </span>
       ) : null}
-      {/* #1166: the name, access icon and compact badges share the grid's name
-          cell so the avatar and the trailing unread area keep their columns.
+      {/* #1166: the name and the access icon share the grid's name cell so the
+          avatar and the trailing unread area keep their columns.
           #1247: the access icon follows the name so every name keeps one left
           edge regardless of whether an indicator is present.
-          #1249: the compact list renders the access facts as small muted glyphs
-          instead of the long text badges; the full localized label stays in the
-          tooltip and in the row's accessible description. */}
+          #1327: the row shows exactly one compact access glyph after the name;
+          the full localized label stays its accessible name, and the popup and
+          the row description carry the explanation. */}
       <span className="room-name-shell">
         <span className="room-name" dir="auto">{roomLabel}</span>
-        {access?.icon ? (
-          <Tooltip
-            label={roomAccessTooltipLabel(
-              access.descriptionMessageId,
-              access.descriptionAllowedRoomNames,
-              access.descriptionSpaceName
-            )}
+        {access ? (
+          <span
+            className="room-access-icon"
+            data-room-access={access.glyph}
+            role="img"
+            aria-label={t(access.labelMessageId)}
           >
-            {(triggerProps) => (
-              <span
-                className="room-access-icon"
-                data-room-access={access.icon}
-                role="img"
-                aria-label={t(
-                  access.icon === "globe" ? "access.public" : "access.inviteOnly"
-                )}
-                {...triggerProps}
-              >
-                <RoomAccessGlyphIcon glyph={access.icon === "globe" ? "globe" : "padlock"} />
-              </span>
-            )}
-          </Tooltip>
+            <RoomAccessGlyphIcon glyph={access.glyph} />
+          </span>
         ) : null}
-        {access
-          ? access.badges.map((badge) => (
-              <Tooltip
-                key={badge.labelMessageId}
-                label={roomAccessTooltipLabel(
-                  badge.descriptionMessageId,
-                  badge.descriptionAllowedRoomNames,
-                  badge.descriptionSpaceName
-                )}
-              >
-                {(triggerProps) => (
-                  <span
-                    className="room-access-badge"
-                    data-access-glyph={roomAccessBadgeGlyph(badge.labelMessageId)}
-                    role="img"
-                    aria-label={t(badge.labelMessageId)}
-                    {...triggerProps}
-                  >
-                    <RoomAccessGlyphIcon glyph={roomAccessBadgeGlyph(badge.labelMessageId)} />
-                  </span>
-                )}
-              </Tooltip>
-            ))
-          : null}
       </span>
       <span className="room-trailing">
         {/*
@@ -1516,6 +1450,16 @@ function RoomButton({
         ) : null}
       </span>
     </button>
+    );
+  }
+
+  if (!access || !accessDescription) {
+    return renderRow();
+  }
+  return (
+    <Tooltip className="room-item-host" label={accessDescription}>
+      {(triggerProps) => renderRow(triggerProps)}
+    </Tooltip>
   );
 }
 

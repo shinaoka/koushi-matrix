@@ -1347,7 +1347,7 @@ describe("RoomInfoPanel property cards", () => {
     );
 
     fireEvent.click(
-      screen.getByRole("button", { name: t("room.statusShowSetting", { status: t("room.statusPublic") }) })
+      screen.getByRole("button", { name: t("room.statusShowSetting", { status: t("access.public") }) })
     );
     expect(document.activeElement).toBe(
       within(propertyCard("join-rule")).getByRole("heading", { name: "Join rule" })
@@ -1396,5 +1396,339 @@ describe("RoomInfoPanel property cards", () => {
       const section = screen.getByRole("region", { name: auxiliary });
       expect(permissions.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
+  });
+});
+
+describe("Room Info status summary (#1327)", () => {
+  function accessRow(overrides: Record<string, unknown> = {}) {
+    return {
+      joinRule: "invite" as const,
+      restricted: null,
+      spaceMembersRoute: null,
+      allowedRoomNames: [],
+      ...overrides
+    };
+  }
+
+  test("shows encryption, the actual join rule and the actual history for a room", () => {
+    render(
+      <RoomInfoPanel
+        room={{ ...baseRoom, is_encrypted: true }}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed(roomSettings({ join_rule: "invite", history_visibility: "joined" }))}
+        access={accessRow()}
+        onUpdateRoomSetting={vi.fn()}
+      />
+    );
+
+    // Encryption is a fact of its own and is not a link: it cannot be edited here.
+    const encryption = screen.getByText(t("room.statusEncrypted"));
+    expect(encryption.closest(".room-status-badge")?.tagName).toBe("SPAN");
+    // One pill at a time: keyboard focus reveals this badge's explanation.
+    fireEvent.focus(encryption.closest(".room-status-badge") as HTMLElement);
+    expect(screen.getByRole("tooltip").textContent).toBe(t("room.encryptedDescription"));
+    fireEvent.blur(encryption.closest(".room-status-badge") as HTMLElement);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    // The join rule is the projected one, not the settings snapshot's.
+    const join = screen.getByRole("button", {
+      name: t("room.statusShowSetting", { status: t("access.inviteOnly") })
+    });
+    fireEvent.focus(join);
+    expect(screen.getByRole("tooltip").textContent).toBe(t("access.inviteOnlyDescription"));
+    fireEvent.blur(join);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    // History follows the actual visibility value, never the join rule, and
+    // never promises that every historical event can be decrypted.
+    const history = screen.getByRole("button", {
+      name: t("room.statusShowSetting", { status: t("room.statusHistoryLimited") })
+    });
+    fireEvent.focus(history);
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      t("room.statusHistoryLimitedDescription")
+    );
+    fireEvent.blur(history);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    fireEvent.click(history);
+    expect(document.activeElement).toBe(
+      within(propertyCard("history-visibility")).getByRole("heading", {
+        name: t("room.historyVisibility")
+      })
+    );
+  });
+
+  test("shows the same three facts for a DM, including join condition and history", () => {
+    const dmRoom: RoomSummary = {
+      ...baseRoom,
+      room_id: "!dm-synthetic:example.invalid",
+      display_name: "Synthetic Person",
+      display_label: "Synthetic Person",
+      original_display_label: "Synthetic Person",
+      is_dm: true,
+      dm_user_ids: ["@synthetic:example.invalid"],
+      is_encrypted: true
+    };
+    render(
+      <RoomInfoPanel
+        room={dmRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed(
+          roomSettings({
+            room_id: dmRoom.room_id,
+            join_rule: "invite",
+            history_visibility: "shared"
+          })
+        )}
+        access={accessRow()}
+        onUpdateRoomSetting={vi.fn()}
+      />
+    );
+
+    // The summary carries the fact; the property editor also offers the label as
+    // a choice, so the summary is asserted through its own control.
+    expect(
+      screen.getByRole("button", {
+        name: t("room.statusShowSetting", { status: t("access.inviteOnly") })
+      })
+    ).toBeTruthy();
+    expect(screen.getByText(t("room.statusHistoryShared"))).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: t("room.statusShowSetting", { status: t("room.statusHistoryShared") })
+      })
+    ).toBeTruthy();
+    // The invitation explanation drops only the Space sentence for a DM.
+    fireEvent.focus(
+      screen.getByRole("button", {
+        name: t("room.statusShowSetting", { status: t("access.inviteOnly") })
+      })
+    );
+    expect(screen.getByRole("tooltip").textContent).toBe(t("access.inviteOnlyDmDescription"));
+  });
+
+  test("uses a DM's own rule and history instead of the common invite case", () => {
+    // #1327: no DM-only suppression of the join condition or the history. A DM
+    // whose rule is public and whose history is world-readable says so, and is
+    // still reported as encrypted.
+    const publicDm: RoomSummary = {
+      ...baseRoom,
+      room_id: "!dm-public:example.invalid",
+      display_name: "Synthetic Person",
+      display_label: "Synthetic Person",
+      original_display_label: "Synthetic Person",
+      is_dm: true,
+      dm_user_ids: ["@synthetic:example.invalid"],
+      is_encrypted: true
+    };
+    render(
+      <RoomInfoPanel
+        room={publicDm}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed(
+          roomSettings({
+            room_id: publicDm.room_id,
+            join_rule: "public",
+            history_visibility: "worldReadable"
+          })
+        )}
+        access={accessRow({ joinRule: "public" })}
+        onUpdateRoomSetting={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(t("room.statusEncrypted"))).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: t("room.statusShowSetting", { status: t("access.public") })
+      })
+    ).toBeTruthy();
+    const history = screen.getByRole("button", {
+      name: t("room.statusShowSetting", { status: t("room.statusHistoryWorldReadable") })
+    });
+    fireEvent.focus(history);
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      t("room.statusHistoryWorldReadableDescription")
+    );
+    // The DM's own invitation sentence is not used for a public rule.
+    expect(screen.queryByText(t("access.inviteOnlyDmDescription"))).toBeNull();
+  });
+
+  test("keeps the last confirmed rule while a save is pending and after it fails", () => {
+    const { rerender } = render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed(roomSettings({ join_rule: "public" }))}
+        access={accessRow({ joinRule: "public" })}
+        onUpdateRoomSetting={vi.fn()}
+      />
+    );
+    const publicSummary = () =>
+      screen.getByRole("button", {
+        name: t("room.statusShowSetting", { status: t("access.public") })
+      });
+    expect(publicSummary()).toBeTruthy();
+
+    // A pending save does not move the indicator: it still reports the confirmed
+    // rule Rust last projected.
+    rerender(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed(roomSettings({ join_rule: "public" }), {
+          kind: "pending",
+          request_id: 7,
+          room_id: baseRoom.room_id,
+          operation: "settings"
+        })}
+        access={accessRow({ joinRule: "public" })}
+        onUpdateRoomSetting={vi.fn()}
+      />
+    );
+    expect(publicSummary()).toBeTruthy();
+
+    // A failed save leaves the confirmed rule in place too.
+    rerender(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed(roomSettings({ join_rule: "public" }), {
+          kind: "failed",
+          request_id: 8,
+          room_id: baseRoom.room_id,
+          operation: "settings",
+          failureKind: "network"
+        })}
+        access={accessRow({ joinRule: "public" })}
+        onUpdateRoomSetting={vi.fn()}
+      />
+    );
+    expect(publicSummary()).toBeTruthy();
+    expect(
+      screen.queryByRole("button", {
+        name: t("room.statusShowSetting", { status: t("access.inviteOnly") })
+      })
+    ).toBeNull();
+  });
+
+  test("reports the participation fact while the settings snapshot is loading", () => {
+    // #1327: the access projection is already known, so Room Info states it
+    // instead of showing encryption alone until the settings arrive. With no
+    // join-rule property to open, the statement is not a link.
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        access={accessRow({ joinRule: "restricted", restricted: "membershipOnly", spaceMembersRoute: "Synthetic Space" })}
+        onUpdateRoomSetting={vi.fn()}
+      />
+    );
+
+    const badge = screen.getByText(t("access.spaceMembersCanJoin")).closest(".room-status-badge");
+    expect(badge?.tagName).toBe("SPAN");
+    fireEvent.focus(badge as HTMLElement);
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      t("access.spaceMembersCanJoinDescription", { space: "Synthetic Space" })
+    );
+    // Nothing to open and nothing to guess: the history fact needs the snapshot.
+    expect(
+      screen.queryByRole("button", { name: /: show setting$/ })
+    ).toBeNull();
+  });
+
+  test("never shows the previous room's condition after a room switch", () => {
+    const { rerender } = render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed(roomSettings({ join_rule: "restricted" }))}
+        access={accessRow({
+          joinRule: "restricted",
+          restricted: "membershipOnly",
+          spaceMembersRoute: "Synthetic Space",
+          allowedRoomNames: ["Synthetic Space"]
+        })}
+        onUpdateRoomSetting={vi.fn()}
+      />
+    );
+    expect(screen.getByText(t("access.spaceMembersCanJoin"))).toBeTruthy();
+
+    // The next room's projection has not arrived yet, so the summary reads as
+    // checking rather than carrying the previous room's Space route.
+    const nextRoom: RoomSummary = { ...baseRoom, room_id: "!room-beta:example.invalid" };
+    rerender(
+      <RoomInfoPanel
+        room={nextRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed(roomSettings({ room_id: nextRoom.room_id }))}
+        access={accessRow({ joinRule: null })}
+        onUpdateRoomSetting={vi.fn()}
+      />
+    );
+    expect(screen.queryByText(t("access.spaceMembersCanJoin"))).toBeNull();
+    expect(
+      screen.getByRole("button", {
+        name: t("room.statusShowSetting", { status: t("access.checking") })
+      })
+    ).toBeTruthy();
+  });
+
+  test("reveals the requested property once this room's settings are rendered", () => {
+    const onRevealSettingHandled = vi.fn();
+    const { rerender } = render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        revealSetting={{ roomId: baseRoom.room_id, setting: "joinRule" }}
+        onRevealSettingHandled={onRevealSettingHandled}
+      />
+    );
+    // Without settings the property does not exist yet, so nothing is revealed.
+    expect(onRevealSettingHandled).not.toHaveBeenCalled();
+
+    rerender(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed()}
+        revealSetting={{ roomId: baseRoom.room_id, setting: "joinRule" }}
+        onRevealSettingHandled={onRevealSettingHandled}
+      />
+    );
+    expect(document.activeElement).toBe(
+      within(propertyCard("join-rule")).getByRole("heading", { name: t("room.joinRule") })
+    );
+    expect(onRevealSettingHandled).toHaveBeenCalledTimes(1);
+  });
+
+  test("ignores a reveal request that belongs to another room", () => {
+    const onRevealSettingHandled = vi.fn();
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={managed()}
+        revealSetting={{ roomId: "!somewhere-else:example.invalid", setting: "joinRule" }}
+        onRevealSettingHandled={onRevealSettingHandled}
+      />
+    );
+    expect(document.activeElement).not.toBe(
+      within(propertyCard("join-rule")).getByRole("heading", { name: t("room.joinRule") })
+    );
+    expect(onRevealSettingHandled).not.toHaveBeenCalled();
   });
 });

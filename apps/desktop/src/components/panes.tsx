@@ -11,9 +11,9 @@ import {
   Check,
   Clock3,
   Compass,
-  Globe2,
   Image as ImageIcon,
   LockKeyhole,
+  LockOpen,
   MessageCircle,
   MoreHorizontal,
   Search,
@@ -21,6 +21,7 @@ import {
   X
 } from "lucide-react";
 import { t } from "../i18n/messages";
+import { RoomAccessGlyphIcon } from "./RoomAccessGlyph";
 import { Tooltip } from "./Tooltip";
 import type {
   StagedUploadOutputSelection,
@@ -40,7 +41,6 @@ import { focusedTimelineKey, roomTimelineKey } from "../domain/coreEvents";
 import { invitePreviewLabel } from "../domain/roomDisplayLabel";
 import {
   ROOM_ACCESS_CHECKING,
-  roomAccessHeaderBadges,
   roomAccessIndicator,
   sidebarRoomAccess
 } from "../domain/accessCondition";
@@ -765,6 +765,7 @@ export function TimelinePane({
   onOpenPeople,
   onOpenThreads,
   onToggleRoomInfo,
+  onOpenRoomInfoSetting,
   onReturnToLive,
   onTimelineDiagnosticsChange,
   onTimelineDiagnosticLogEntry
@@ -825,6 +826,12 @@ export function TimelinePane({
   onOpenPeople: () => void;
   onOpenThreads: () => void;
   onToggleRoomInfo: () => void;
+  /**
+   * #1327: the header access pill opens Room Info at the join-condition
+   * property. A caller that cannot address a property falls back to the plain
+   * Room Info toggle.
+   */
+  onOpenRoomInfoSetting?: () => void;
   onReturnToLive?: ReturnToLiveHandler;
   onTimelineDiagnosticsChange?: (diagnostics: TimelineDiagnostics) => void;
   onTimelineDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
@@ -835,15 +842,21 @@ export function TimelinePane({
     ? snapshot.state.domain.rooms.find((room) => room.room_id === timelineRoomId) ?? null
     : null;
   // #1166: the header shows the active room's own access condition, from the
-  // same Rust projection the room list uses.
+  // same Rust projection the room list uses. #1327: a DM keeps its real rule, so
+  // only the explanation is shortened, never the condition itself.
   const headerRoomAccess = timelineRoomId
     ? sidebarRoomAccess(snapshot.sidebar, timelineRoomId)
     : null;
   const headerAccess = headerRoomAccess
-    ? roomAccessIndicator(headerRoomAccess.joinRule, headerRoomAccess.restricted, {
-        spaceMembersRoute: headerRoomAccess.spaceMembersRoute,
-        allowedRoomNames: headerRoomAccess.allowedRoomNames
-      }) ?? ROOM_ACCESS_CHECKING
+    ? roomAccessIndicator(
+        headerRoomAccess.joinRule,
+        headerRoomAccess.restricted,
+        {
+          spaceMembersRoute: headerRoomAccess.spaceMembersRoute,
+          allowedRoomNames: headerRoomAccess.allowedRoomNames
+        },
+        activeRoom?.is_dm ?? false
+      ) ?? ROOM_ACCESS_CHECKING
     : null;
   const liveLatestEventId = roomLatestDisplayEventId(activeRoom?.latest_event);
   const threadAttention = snapshot.state.domain.thread_attention;
@@ -981,6 +994,9 @@ export function TimelinePane({
   const onOpenPeopleStable = useStableEvent(onOpenPeople);
   const onOpenThreadsStable = useStableEvent(onOpenThreads);
   const onToggleRoomInfoStable = useStableEvent(onToggleRoomInfo);
+  const onOpenRoomInfoSettingStable = useStableEvent(
+    onOpenRoomInfoSetting ?? onToggleRoomInfo
+  );
   const onTimelineDiagnosticsChangeStable = useStableEvent(
     (diagnostics: TimelineDiagnostics) => onTimelineDiagnosticsChange?.(diagnostics)
   );
@@ -1004,49 +1020,78 @@ export function TimelinePane({
             colorSeed={activeRoom?.room_id ?? activeRoomName}
             fallback={avatarInitial(activeRoomName)}
           />
-          {headerAccess?.icon ? (
+          <span className="channel-name" dir="auto">{activeRoomName}</span>
+          {/* #1327: two independent status pills after the name, on the one
+              existing header row. Encryption comes from `is_encrypted`, the
+              access condition from the confirmed join rule; neither is derived
+              from DM status, directory visibility, history or Space privacy.
+              In a narrow pane only the pill text is hidden; the icons and their
+              accessible descriptions stay. */}
+          {activeRoom ? (
+            <Tooltip
+              label={t(
+                activeRoom.is_encrypted
+                  ? "room.encryptedDescription"
+                  : "room.notEncryptedDescription"
+              )}
+              // A room switch dismisses the popup rather than rewriting it.
+              resetKey={activeRoom.room_id}
+            >
+              {(triggerProps) => (
+                <span
+                  className="channel-status-pill channel-encryption-pill"
+                  data-room-encryption={activeRoom.is_encrypted ? "encrypted" : "plaintext"}
+                  role="img"
+                  tabIndex={0}
+                  aria-label={t(
+                    activeRoom.is_encrypted ? "room.statusEncrypted" : "room.statusNotEncrypted"
+                  )}
+                  {...triggerProps}
+                >
+                  {activeRoom.is_encrypted ? (
+                    <LockKeyhole size={ICON_SIZE.small} aria-hidden="true" />
+                  ) : (
+                    <LockOpen size={ICON_SIZE.small} aria-hidden="true" />
+                  )}
+                  <span className="channel-status-pill-text">
+                    {t(
+                      activeRoom.is_encrypted ? "room.statusEncrypted" : "room.statusNotEncrypted"
+                    )}
+                  </span>
+                </span>
+              )}
+            </Tooltip>
+          ) : null}
+          {headerAccess ? (
             <Tooltip
               label={roomAccessTooltipLabel(
                 headerAccess.descriptionMessageId,
                 headerAccess.descriptionAllowedRoomNames,
                 headerAccess.descriptionSpaceName
               )}
+              resetKey={activeRoom?.room_id ?? null}
             >
               {(triggerProps) => (
-                <span
-                  className="channel-access-icon"
-                  data-room-access={headerAccess.icon}
-                  tabIndex={0}
+                // The pill stays a button: the popup is explanatory and
+                // activation opens the join-rule property in Room Info.
+                <button
+                  className="channel-status-pill channel-access-pill"
+                  type="button"
+                  data-room-access={headerAccess.glyph}
+                  aria-label={t("room.statusShowSetting", {
+                    status: t(headerAccess.labelMessageId)
+                  })}
+                  onClick={onOpenRoomInfoSettingStable}
                   {...triggerProps}
                 >
-                  {headerAccess.icon === "globe" ? (
-                    <Globe2 size={ICON_SIZE.small} aria-hidden="true" />
-                  ) : (
-                    <LockKeyhole size={ICON_SIZE.small} aria-hidden="true" />
-                  )}
-                </span>
+                  <RoomAccessGlyphIcon glyph={headerAccess.glyph} size={ICON_SIZE.small} />
+                  <span className="channel-status-pill-text">
+                    {t(headerAccess.labelMessageId)}
+                  </span>
+                </button>
               )}
             </Tooltip>
           ) : null}
-          <span className="channel-name" dir="auto">{activeRoomName}</span>
-          {headerAccess
-            ? roomAccessHeaderBadges(headerAccess).map((badge) => (
-                <Tooltip
-                  key={badge.labelMessageId}
-                  label={roomAccessTooltipLabel(
-                    badge.descriptionMessageId,
-                    badge.descriptionAllowedRoomNames,
-                    badge.descriptionSpaceName
-                  )}
-                >
-                  {(triggerProps) => (
-                    <span className="channel-access-badge" tabIndex={0} {...triggerProps}>
-                      {t(badge.labelMessageId)}
-                    </span>
-                  )}
-                </Tooltip>
-              ))
-            : null}
         </div>
         <div className="channel-actions">
           <nav className="timeline-header-navigation" aria-label={t("timeline.navigation")}>
