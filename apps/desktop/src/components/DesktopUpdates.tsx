@@ -2,12 +2,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCcw } from "lucide-react";
 import { api } from "../backend/appRuntime";
 import { desktopEventPort } from "../backend/desktopEventRuntime";
+import { openExternalHttpUrl } from "../backend/linkMediaRuntime";
 import { isTauriRuntime } from "../backend/runtimeEnvironment";
 import { getAppStoreSnapshot, setAppStoreSnapshot, useAppStore } from "../domain/appStore";
 import { createCommandReceiptReconciler } from "../domain/commandWatermark";
 import { SNAPSHOT_SCHEMA_VERSION, type DesktopUpdateState, type SettingsPatch, type UpdatesSettings } from "../domain/types";
 import { t } from "../i18n/messages";
 import { ModalDialog } from "./ModalDialog";
+
+const RELEASE_PAGE_URL = "https://github.com/shinaoka/koushi-matrix/releases/latest";
 
 /** Application-level presentation over the single Rust updater owner. */
 export function DesktopUpdates() {
@@ -89,6 +92,7 @@ export function DesktopUpdates() {
           <DesktopUpdateControls
             current={settings.values.updates}
             state={state}
+            notificationOnly={state.kind === "available" && state.notification_only}
             disabled={settings.persistence.kind === "saving"}
             onSelect={patch => run(api.updateSettings(patch).then(receipt => reconcile.current(receipt)))}
             onCheck={() => run(api.checkForDesktopUpdate())}
@@ -96,6 +100,7 @@ export function DesktopUpdates() {
               if (state.kind === "available") run(api.downloadDesktopUpdate(state.generation));
             }}
             onRestart={() => run(api.restartToInstallDesktopUpdate())}
+            onOpenReleasePage={() => run(openExternalHttpUrl(RELEASE_PAGE_URL))}
           />
         ) : <p role="status">{t("settings.updateChecking")}</p>}
       </div>
@@ -106,18 +111,22 @@ export function DesktopUpdates() {
 export function DesktopUpdateControls({
   current,
   state,
+  notificationOnly = false,
   onSelect,
   onCheck,
   onDownload,
   onRestart,
+  onOpenReleasePage = () => undefined,
   disabled = false
 }: {
   current: UpdatesSettings;
   state: DesktopUpdateState;
+  notificationOnly?: boolean;
   onSelect: (patch: SettingsPatch) => void;
   onCheck: () => void;
   onDownload: () => void;
   onRestart: () => void;
+  onOpenReleasePage?: () => void;
   disabled?: boolean;
 }) {
   return (
@@ -167,14 +176,20 @@ export function DesktopUpdateControls({
         </span>
       </button>
       <div className="settings-update-status" aria-live="polite">
-          <p className="settings-status-text">{desktopUpdateStatusText(state)}</p>
+          <p className="settings-status-text">{desktopUpdateStatusText(state, notificationOnly)}</p>
           {state.kind === "idle" || state.kind === "up_to_date" || state.kind === "failed" ? (
             <button className="profile-settings-action" type="button" onClick={onCheck}>
               <RefreshCcw size={14} aria-hidden="true" />
               {t("settings.updateCheck")}
             </button>
           ) : null}
-          {state.kind === "available" ? (
+          {state.kind === "available" && notificationOnly ? (
+            <button className="profile-settings-action" type="button" onClick={onOpenReleasePage}>
+              <RefreshCcw size={14} aria-hidden="true" />
+              {t("settings.updateReleasePage")}
+            </button>
+          ) : null}
+          {state.kind === "available" && !notificationOnly ? (
             <button className="profile-settings-action" type="button" onClick={onDownload}>
               <RefreshCcw size={14} aria-hidden="true" />
               {t("settings.updateDownload")}
@@ -191,7 +206,7 @@ export function DesktopUpdateControls({
   );
 }
 
-function desktopUpdateStatusText(state: DesktopUpdateState): string {
+function desktopUpdateStatusText(state: DesktopUpdateState, notificationOnly = false): string {
   switch (state.kind) {
     case "idle":
       return t("settings.updateIdle");
@@ -200,7 +215,7 @@ function desktopUpdateStatusText(state: DesktopUpdateState): string {
     case "checking":
       return t("settings.updateChecking");
     case "available":
-      return t("settings.updateAvailable", { version: state.version });
+      return t(notificationOnly ? "settings.updateAvailableManual" : "settings.updateAvailable", { version: state.version });
     case "downloading":
       return t("settings.updateDownloading", { version: state.version });
     case "ready":

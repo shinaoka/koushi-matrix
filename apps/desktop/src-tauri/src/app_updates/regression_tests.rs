@@ -24,6 +24,7 @@ fn lifecycle() -> Lifecycle<String> {
 fn candidate(version: &str) -> PendingUpdate<String> {
     PendingUpdate {
         version: version.into(),
+        notification_only: false,
         update: version.into(),
         bytes: None,
     }
@@ -367,10 +368,11 @@ fn wire_state_includes_only_available_candidate_generation() {
     assert_eq!(
         serde_json::to_value(DesktopUpdateState::Available {
             version: "2.0.0".into(),
-            generation: 7
+            generation: 7,
+            notification_only: false
         })
         .unwrap(),
-        serde_json::json!({"kind": "available", "version": "2.0.0", "generation": 7})
+        serde_json::json!({"kind": "available", "version": "2.0.0", "generation": 7, "notification_only": false})
     );
     for (state, kind) in [
         (
@@ -633,6 +635,7 @@ async fn shutdown_cancels_check_and_download_and_joins_owner() {
                 .state(DesktopUpdateState::Available {
                     version: "2.0.0".into(),
                     generation,
+                    notification_only: false,
                 })
                 .await;
             harness
@@ -665,6 +668,7 @@ async fn shutdown_joins_installer_even_if_first_shutdown_waiter_is_cancelled() {
         .state(DesktopUpdateState::Available {
             version: "2.0.0".into(),
             generation,
+            notification_only: false,
         })
         .await;
     harness
@@ -742,6 +746,7 @@ async fn successful_install_requests_restart_once_and_owner_can_be_joined() {
         .state(DesktopUpdateState::Available {
             version: "2.0.0".into(),
             generation,
+            notification_only: false,
         })
         .await;
     harness
