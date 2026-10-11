@@ -11,6 +11,8 @@
 //! finish. This verifies the sender waits for membership before emitting the
 //! room-based verification request.
 
+use std::time::Duration;
+
 use koushi_protocol::command::ContactSecurityRequest;
 use koushi_state::{
     AppState, ContactDevicesStatus, ContactIdentityVerification, ContactSecurityLoadState,
@@ -18,7 +20,8 @@ use koushi_state::{
 };
 
 use super::event_wait::{
-    QaEventDeadline, wait_for_dm_room_in_room_list, wait_for_invite_in_snapshot,
+    QaEventDeadline, subscribe_timeline_for_qa, timeline_item_is_decryption_failure,
+    wait_for_dm_room_in_room_list, wait_for_invite_in_snapshot,
 };
 use super::fixtures::{
     accept_invite_for_qa, load_room_settings_for_qa, start_direct_message_for_qa,
@@ -29,8 +32,8 @@ use super::participants::{
 };
 use super::registry::{E2EE_EVENT_TIMEOUT, QaConfig};
 use super::{
-    AccountCommand, CoreCommand, CoreConnection, CoreEvent, E2eeTrustEvent, SasEmoji,
-    VerificationFlowState, VerificationTarget,
+    AccountCommand, AccountKey, CoreCommand, CoreConnection, CoreEvent, E2eeTrustEvent, SasEmoji,
+    SessionState, TimelineItem, TimelineKey, VerificationFlowState, VerificationTarget,
 };
 
 async fn wait_until<T>(
@@ -97,55 +100,6 @@ fn own_dm_joined_members(state: &AppState, user_b: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// Wait until A's own projection reports B as a joined member of the direct
-/// chat, then return the observed member count.
-///
-/// `ContactSecurityRequest::RequestVerification` reaches
-/// `VerificationFlowState::Requested { initiator: Us }` in A's state the moment
-/// the command is accepted (`account_command_projected_action`), while Koushi's
-/// vendored SDK patch (`wait_for_room_member_to_join`, 60s `JOIN_TIMEOUT`) has
-/// not sent the in-room request yet and can still fail with
-/// `crate::Error::Timeout`. The SDK only sends once the initiator's own room
-/// projection contains the target as a joined member, so this precondition is
-/// what makes "request sent" causal; without it a B-side timeout cannot say
-/// whether A's send was still parked or B never projected the request (#1169).
-///
-/// The observation is a room-list snapshot read, never a timeline open, so the
-/// direct chat stays unloaded.
-async fn wait_for_own_dm_member_projection(
-    conn: &mut CoreConnection,
-    user_b: &str,
-    label: &str,
-) -> Result<u64, String> {
-    let deadline = QaEventDeadline::after(E2EE_EVENT_TIMEOUT);
-    loop {
-        let observed = own_dm_joined_members(&conn.snapshot(), user_b);
-        if observed >= 2 {
-            return Ok(observed);
-        }
-        if tokio::time::Instant::now() >= deadline.instant {
-            // Cross-check the room member projection so the token says whether
-            // A never observed the join or this server does not report the
-            // room-list count at all.
-            let member_projection = own_dm_settings_joined_members(conn, user_b, label).await;
-            return Err(format!(
-                "{label}: timed out user_verification_a_observed_join=bad \
-                 joined_members={observed} member_projection_joined={member_projection}"
-            ));
-        }
-        deadline
-            .recv(conn)
-            .await
-            .map_err(|_| {
-                format!(
-                    "{label}: timed out user_verification_a_observed_join=bad \
-                     joined_members={observed}"
-                )
-            })?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-    }
-}
-
 /// Joined members A's room member projection reports, as a private-data-free
 /// count, through the room's own settings projection.
 async fn own_dm_settings_joined_members(
@@ -177,54 +131,100 @@ async fn own_dm_settings_joined_members(
     }
 }
 
-/// A's observed state for the verification send, as a private-data-free token.
-///
-/// The optimistic `VerificationRequestSent` projection makes `Requested`
-/// identical before and after the SDK send, so a B-side timeout has to report
-/// what A's flow actually reached: `requested` means A's send is still pending
-/// or finished silently, while `failed:<kind>` names the SDK failure that
-/// replaced it.
-fn outgoing_request_send_state(state: &AppState, flow_a: u64) -> String {
-    match &state.e2ee_trust.verification {
-        VerificationFlowState::Requested { request_id, .. } if *request_id == flow_a => {
-            "requested".to_owned()
+/// Private-data-free evidence for A's in-room verification send.
+#[derive(Debug, Clone, Copy)]
+struct OutgoingRequestSend {
+    /// A's own room-list projection of the direct chat with B.
+    joined_members: u64,
+    /// The account actor published the post-send progress event for this flow.
+    event_seen: bool,
+}
+
+impl OutgoingRequestSend {
+    /// `finished` only when the post-send event was observed; `optimistic_only`
+    /// means A's state shows `Requested` purely from the command-acceptance
+    /// projection.
+    fn token(self) -> &'static str {
+        if self.event_seen {
+            "finished"
+        } else {
+            "optimistic_only"
         }
-        VerificationFlowState::Failed {
-            request_id, kind, ..
-        } if *request_id == flow_a => format!("failed:{kind:?}"),
-        VerificationFlowState::Done { request_id, .. } if *request_id == flow_a => {
-            "done".to_owned()
-        }
-        _ => "other_flow".to_owned(),
     }
 }
 
+/// Wait until A's in-room verification send is established, and return the
+/// evidence for it.
+///
+/// `ContactSecurityRequest::RequestVerification` reaches
+/// `VerificationFlowState::Requested { initiator: Us }` in A's state the moment
+/// the command is accepted (`account_command_projected_action`), while Koushi's
+/// vendored SDK patch (`wait_for_room_member_to_join`, 60s `JOIN_TIMEOUT`) has
+/// not sent the in-room request yet and can still fail with
+/// `crate::Error::Timeout`. The projected state is therefore identical before
+/// and after the send and cannot stand in for it; the account actor publishes
+/// `VerificationProgress { state: Requested { initiator: Us } }` only from the
+/// `Ok` branch of `koushi_sdk::request_user_verification` (and
+/// `VerificationFailed` when it did not succeed), so that event is the
+/// authoritative post-send signal.
+///
+/// Both halves of the precondition are tracked in this single event loop: a
+/// snapshot-only check would accept the command-acceptance projection as proof
+/// of the send (#1169), and splitting the join wait into a loop of its own could
+/// swallow the post-send event before it is observed.
+///
+/// The observation is a room-list snapshot read, never a timeline open, so a
+/// run that reaches its checkpoints keeps the direct chat unloaded. B's timeline
+/// is opened only on the failure path, by `probe_b_dm_timeline`.
 async fn wait_for_outgoing_request_sent(
     conn: &mut CoreConnection,
     flow_id: u64,
     user_id: &str,
     label: &str,
-) -> Result<(), String> {
+) -> Result<OutgoingRequestSend, String> {
     let deadline = QaEventDeadline::after(E2EE_EVENT_TIMEOUT);
+    let mut observation = OutgoingRequestSend {
+        joined_members: 0,
+        event_seen: false,
+    };
     loop {
-        match &conn.snapshot().e2ee_trust.verification {
-            VerificationFlowState::Requested {
-                request_id,
-                target,
-                initiator: VerificationInitiator::Us,
-            } if *request_id == flow_id && target.user_id == user_id => return Ok(()),
-            VerificationFlowState::Failed {
-                request_id, kind, ..
-            } if *request_id == flow_id => {
-                return Err(format!("{label}: verification request failed: {kind:?}"));
-            }
-            _ => {}
+        observation.joined_members = observation
+            .joined_members
+            .max(own_dm_joined_members(&conn.snapshot(), user_id));
+        if let VerificationFlowState::Failed {
+            request_id, kind, ..
+        } = &conn.snapshot().e2ee_trust.verification
+            && *request_id == flow_id
+        {
+            return Err(format!("{label}: verification request failed: {kind:?}"));
+        }
+        if observation.event_seen && observation.joined_members >= 2 {
+            return Ok(observation);
+        }
+        if tokio::time::Instant::now() >= deadline.instant {
+            // Cross-check the room member projection so the token says whether
+            // A never observed the join or this server does not report the
+            // room-list count at all.
+            let member_projection = own_dm_settings_joined_members(conn, user_id, label).await;
+            return Err(format!(
+                "{label}: timed out waiting for the SDK request send a_send={} \
+                 joined_members={} member_projection_joined={member_projection}",
+                observation.token(),
+                observation.joined_members,
+            ));
         }
 
         let event = deadline
             .recv(conn)
             .await
-            .map_err(|_| format!("{label}: timed out waiting for the SDK request send"))?
+            .map_err(|_| {
+                format!(
+                    "{label}: timed out waiting for the SDK request send a_send={} \
+                     joined_members={}",
+                    observation.token(),
+                    observation.joined_members,
+                )
+            })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
         if let CoreEvent::E2eeTrust(E2eeTrustEvent::VerificationProgress { state, .. }) = event {
             match state {
@@ -232,7 +232,9 @@ async fn wait_for_outgoing_request_sent(
                     request_id,
                     target,
                     initiator: VerificationInitiator::Us,
-                } if request_id == flow_id && target.user_id == user_id => return Ok(()),
+                } if request_id == flow_id && target.user_id == user_id => {
+                    observation.event_seen = true;
+                }
                 VerificationFlowState::Failed {
                     request_id, kind, ..
                 } if request_id == flow_id => {
@@ -241,6 +243,52 @@ async fn wait_for_outgoing_request_sent(
                 _ => {}
             }
         }
+    }
+}
+
+/// Bound for the failure-path timeline probe. It exists so the probe can never
+/// hold the scenario open; a probe that does not answer in time reports
+/// `unknown` and the original failure stands.
+const B_DM_TIMELINE_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Whether B's direct-chat timeline holds an item it cannot decrypt.
+///
+/// A's in-room verification request is the only encrypted message this direct
+/// chat ever carries, so an item B reports as a decryption failure is that
+/// request: received, and not decodable from the first sync that delivered it.
+/// The negative answer is deliberately not named "never received": a request B
+/// re-decrypted once the room key arrived, or one the timeline never listed,
+/// looks the same here.
+fn b_dm_timeline_request_state(items: &[TimelineItem]) -> &'static str {
+    if items.iter().any(timeline_item_is_decryption_failure) {
+        "undecryptable"
+    } else {
+        "no_undecryptable_item"
+    }
+}
+
+/// Failure-path diagnosis only: read B's direct-chat timeline, once.
+///
+/// The passing path of this scenario never opens a timeline, so a run that
+/// reaches its checkpoints leaves the direct chat unloaded; this probe runs only
+/// after a B-side timeout has already been decided, and its answer cannot turn
+/// that failure into a pass. Conditions: private-data-free (a coarse state
+/// only), bounded by [`B_DM_TIMELINE_PROBE_TIMEOUT`], and `unknown` on any
+/// subscription error.
+async fn probe_b_dm_timeline(conn_b: &mut CoreConnection, room_id: &str) -> &'static str {
+    let account_key = match &conn_b.snapshot().session {
+        SessionState::Ready(info) => AccountKey(info.user_id.clone()),
+        _ => return "unknown",
+    };
+    let key = TimelineKey::room(account_key, room_id.to_owned());
+    let probe = async {
+        let items =
+            subscribe_timeline_for_qa(conn_b, &key, "user_verification B timeline probe").await?;
+        Ok::<_, String>(b_dm_timeline_request_state(&items))
+    };
+    match tokio::time::timeout(B_DM_TIMELINE_PROBE_TIMEOUT, probe).await {
+        Ok(Ok(state)) => state,
+        Ok(Err(_)) | Err(_) => "unknown",
     }
 }
 
@@ -320,27 +368,57 @@ pub(super) async fn run_user_verification_stage(
         .map_err(|error| format!("user_verification request: {error}"))?;
     // 3. B accepts the invite before A's SDK send completes. The SDK must
     // hold the room-based request until B's membership is joined.
+    //
+    // The room id is kept as evidence rather than as a gate. Whether B's own
+    // room-list projection has processed the joined room at the moment A's send
+    // lands decides which delivery interleaving B is in: when it has not, the
+    // room and the encrypted request reach B together in one room-list
+    // response, ahead of the megolm key on the separate encryption connection.
+    // Waiting for B's room list before A may send would remove exactly that
+    // interleaving, which is the one the nightly lane fails on, so the QA
+    // records it instead of forbidding it.
+    let mut dm_room_id = None;
     if new_direct_chat {
-        let dm_room_id = wait_until(conn_b, "user_verification DM invite", |state| {
+        let room_id = wait_until(conn_b, "user_verification DM invite", |state| {
             // B is a fresh QA account, so its only invite is the room A just
             // created. Do not depend on the server preserving is_direct in
             // the invited-room projection.
             Ok(state.invites.first().map(|invite| invite.room_id.clone()))
         })
         .await?;
-        accept_invite_for_qa(conn_b, &dm_room_id, "user_verification B joins DM").await?;
+        accept_invite_for_qa(conn_b, &room_id, "user_verification B joins DM").await?;
         println!("user_verification_dm_joined=ok");
+        dm_room_id = Some(room_id);
     }
     // A's command was accepted, but the SDK sends the in-room request only once
-    // A's own projection contains B as a joined member. Establish that
-    // precondition before treating the request as sent (#1169).
-    let observed_join =
-        wait_for_own_dm_member_projection(conn_a, &user_b, "user_verification A observed B join")
+    // A's own projection contains B as a joined member, and only the actor's
+    // post-send progress event proves that send happened (#1169).
+    let send =
+        wait_for_outgoing_request_sent(conn_a, flow_a, &user_b, "user_verification request sent")
             .await?;
-    println!("user_verification_a_observed_join=ok joined_members={observed_join}");
-    wait_for_outgoing_request_sent(conn_a, flow_a, &user_b, "user_verification request sent")
-        .await?;
-    println!("user_verification_request_sent=ok");
+    println!(
+        "user_verification_a_observed_join=ok joined_members={}",
+        send.joined_members
+    );
+    println!("user_verification_request_sent=ok a_send={}", send.token());
+
+    // Sampled once A's send is established and before B is asked for anything,
+    // so both green and failing runs say which delivery interleaving B was in.
+    let b_dm_joined_members_at_send = dm_room_id
+        .as_deref()
+        .and_then(|room_id| {
+            conn_b
+                .snapshot()
+                .rooms
+                .iter()
+                .find(|room| room.room_id == room_id)
+                .map(|room| room.joined_members)
+        })
+        .unwrap_or(0);
+    println!(
+        "user_verification_b_dm_room_listed_at_send={}",
+        dm_room_id.is_some() && b_dm_joined_members_at_send > 0
+    );
 
     let target_a = VerificationTarget {
         user_id: session_a.user_id.clone(),
@@ -358,16 +436,30 @@ pub(super) async fn run_user_verification_stage(
         Err(error) => {
             // Say which half was missing: B's own projection first (#1279), then
             // what A's flow reached instead.
+            // `a_send=finished` was established before this wait started, so a
+            // B-side timeout names B's delivery/decryption of the in-room
+            // request, never A's send. `b_dm_room_listed_at_send=false` says B's
+            // room list learned about the DM from the same response that carried
+            // the request, so the room key could not have been known yet.
             let b_snapshot = conn_b.snapshot();
+            let context = incoming_request_timeout_context(
+                &b_snapshot.e2ee_trust.verification,
+                Some(&target_a),
+                &b_snapshot.sync,
+            );
+            // Failure-path-only diagnosis: the verdict above already stands.
+            let b_dm_timeline = match dm_room_id.as_deref() {
+                Some(room_id) => probe_b_dm_timeline(conn_b, room_id).await,
+                None => "not_attempted",
+            };
             return Err(format!(
-                "{error} a_send_state={} a_room_list_joined_members={} {}",
-                outgoing_request_send_state(&conn_a.snapshot(), flow_a),
-                own_dm_joined_members(&conn_a.snapshot(), &user_b),
-                incoming_request_timeout_context(
-                    &b_snapshot.e2ee_trust.verification,
-                    Some(&target_a),
-                    &b_snapshot.sync,
-                ),
+                "{error} a_send={} a_room_list_joined_members={} \
+                 b_dm_room_listed_at_send={} b_dm_joined_members_at_send={} \
+                 b_dm_timeline={b_dm_timeline} {context}",
+                send.token(),
+                send.joined_members,
+                dm_room_id.is_some() && b_dm_joined_members_at_send > 0,
+                b_dm_joined_members_at_send,
             ));
         }
     };
