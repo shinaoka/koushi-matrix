@@ -2220,6 +2220,13 @@ button:disabled {
   gap: 10px;
   font-size: 21px;
   font-weight: 850;
+  /* #1327: this cell shares one grid row with the timeline controls, so it may
+     give way but never paint over them. With Linux font metrics the two status
+     pills kept their intrinsic width, the title overflowed its track, and the
+     access pill covered the navigation's buttons and swallowed their clicks.
+     Clipping keeps that impossible on any font metrics; the status popups are
+     fixed-positioned from their anchor's rect, so they are not clipped here. */
+  overflow: hidden;
 }
 
 .channel-avatar {

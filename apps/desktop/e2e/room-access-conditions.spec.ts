@@ -686,6 +686,37 @@ test("a long name truncates while both pills stay visible and on one row (#1327)
   expect(geometry.headerHeight).toBeLessThanOrEqual(62.5);
 });
 
+test("a status pill never paints over the timeline controls when the row overflows (#1327)", async ({
+  page
+}) => {
+  await pushRoomList(page);
+  // Linux font metrics widen the pill labels past what macOS measures, and that
+  // is where CI saw the access pill cover the timeline navigation's buttons and
+  // swallow their clicks. Widening them here makes the tight row deterministic
+  // on every platform instead of depending on the host's fonts.
+  await page.addStyleTag({ content: ".channel-status-pill { font-size: 2.2em; }" });
+
+  const hits = await page.evaluate(() => {
+    const title = document.querySelector(".channel-title") as HTMLElement;
+    const nav = document.querySelector(".timeline-header-navigation") as HTMLElement;
+    const button = nav?.querySelector("button") as HTMLElement | null;
+    if (!button) return null;
+    const box = button.getBoundingClientRect();
+    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    return {
+      // The row really is tight: the title's content is wider than its own box,
+      // which is what used to push the pill over the controls.
+      titleOverflows: title.scrollWidth > title.clientWidth + 1,
+      // ...and the timeline controls still own every pixel of themselves.
+      topmostIsTheControl: hit !== null && button.contains(hit)
+    };
+  });
+
+  expect(hits).not.toBeNull();
+  expect(hits?.titleOverflows).toBe(true);
+  expect(hits?.topmostIsTheControl).toBe(true);
+});
+
 test("the access explanation is localized, including the pseudo locale (#1327)", async ({
   page
 }) => {
