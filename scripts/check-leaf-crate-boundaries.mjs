@@ -19,6 +19,7 @@ export const testkitTargets = [
   "login_store_lifecycle.rs",
   "media_staging.rs",
   "media_staging_b2.rs",
+  "oauth_authorization_code.rs",
   "pending_login_journal.rs",
   "request_outcome.rs",
   "request_outcome_a2a.rs",
