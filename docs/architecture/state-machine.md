@@ -1054,9 +1054,11 @@ local flag:
   `RoomSummary.unread_count` keeps the SDK value. Two cold-start residuals follow
   and are accepted for now: a stored receipt can be recorded as active while its
   target is absent from the loaded chunk (undercount this projection cannot
-  detect), and a muted room — whose display count uses the greater of the unread
-  and notification counters — still shows the SDK's lower bound until the room is
-  paginated. Fixing either needs more loaded history, not a different counter.
+  detect), and a muted room — whose `RoomAttentionProjection.display_count` is
+  its raw unread messages, `RoomSummary.unread_count` plus
+  `RoomSummary.thread_unread_count`, never the notification counter — still
+  shows the SDK's lower bound until the room is paginated. Fixing either needs
+  more loaded history, not a different counter.
   The vendored SDK keeps the counts already known for a room when a sync response
   carries no `unread_notifications` pair at all (an empty pair means "no count
   update", not "none"), so a later sync cannot silently zero the top-up.
