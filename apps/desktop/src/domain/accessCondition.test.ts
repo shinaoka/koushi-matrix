@@ -2,68 +2,74 @@ import { describe, expect, it } from "vitest";
 
 import {
   ROOM_ACCESS_CHECKING,
-  roomAccessBadgeGlyph,
-  roomAccessHeaderBadges,
   roomAccessIndicator,
-  roomAccessRailSummary,
   sidebarRoomAccess
 } from "./accessCondition";
 
-describe("room access indicator (#1166)", () => {
-  it("maps the documented join rules to their icons, badges and explanations", () => {
-    const publicRoom = roomAccessIndicator("public");
-    expect(publicRoom?.icon).toBe("globe");
-    expect(publicRoom?.badges).toEqual([]);
-    expect(publicRoom?.labelMessageIds).toEqual(["access.public"]);
-    expect(publicRoom?.descriptionMessageId).toBe("access.publicDescription");
+describe("room access indicator (#1327)", () => {
+  it("maps the documented join rules to one icon, one label and one explanation", () => {
+    expect(roomAccessIndicator("public")).toEqual({
+      glyph: "globe",
+      labelMessageId: "access.public",
+      descriptionMessageId: "access.publicDescription"
+    });
 
+    // #1327: participation never uses a padlock; the padlock is the encryption
+    // indicator and nothing else.
     const inviteOnly = roomAccessIndicator("invite");
-    expect(inviteOnly?.icon).toBe("padlock");
-    expect(inviteOnly?.badges).toEqual([]);
-    expect(inviteOnly?.labelMessageIds).toEqual(["access.inviteOnly"]);
-
-    const restricted = roomAccessIndicator("restricted");
-    expect(restricted?.icon).toBeNull();
-    expect(restricted?.badges.map((badge) => badge.labelMessageId)).toEqual([
-      "access.conditionsApply"
-    ]);
+    expect(inviteOnly).toEqual({
+      glyph: "userRoundPlus",
+      labelMessageId: "access.inviteOnly",
+      descriptionMessageId: "access.inviteOnlyDescription"
+    });
 
     const knock = roomAccessIndicator("knock");
-    expect(knock?.badges.map((badge) => badge.labelMessageId)).toEqual([
-      "access.canRequest"
-    ]);
-  });
+    expect(knock).toEqual({
+      glyph: "hand",
+      labelMessageId: "access.canRequest",
+      descriptionMessageId: "access.requestDescription"
+    });
 
-  it("orders both knock_restricted badges and keeps each route's explanation", () => {
-    const indicator = roomAccessIndicator("knockRestricted");
-    expect(indicator?.icon).toBeNull();
-    expect(indicator?.badges).toEqual([
-      {
-        labelMessageId: "access.conditionsApply",
-        descriptionMessageId: "access.conditionsRouteDescription"
-      },
-      {
-        labelMessageId: "access.canRequest",
-        descriptionMessageId: "access.requestRouteDescription"
-      }
-    ]);
-    expect(indicator?.labelMessageIds).toEqual([
-      "access.conditionsApply",
-      "access.canRequest"
-    ]);
-    expect(indicator?.descriptionMessageId).toBe("access.knockRestrictedDescription");
-  });
-
-  it("never presents an unrecognised rule as a known condition", () => {
-    for (const rule of ["private", "unknown"] as const) {
-      const indicator = roomAccessIndicator(rule);
-      // No globe and no padlock: it must not look public or invite-only.
-      expect(indicator?.icon).toBeNull();
-      expect(indicator?.badges.map((badge) => badge.labelMessageId)).toEqual([
-        "access.unknown"
-      ]);
-      expect(indicator?.labelMessageIds).toEqual(["access.unknownFull"]);
+    // #1327: every participation state uses one of these glyphs. A padlock is
+    // the encryption indicator, so no access state may resolve to one.
+    for (const indicator of [
+      roomAccessIndicator("public"),
+      inviteOnly,
+      knock,
+      roomAccessIndicator("restricted"),
+      roomAccessIndicator("knockRestricted"),
+      roomAccessIndicator("private"),
+      roomAccessIndicator("unknown"),
+      ROOM_ACCESS_CHECKING
+    ]) {
+      expect(["globe", "userRoundPlus", "usersRound", "hand", "circleHelp", "checking"]).toContain(
+        indicator?.glyph
+      );
     }
+  });
+
+  it("shortens only the invitation explanation for a DM, never the condition", () => {
+    expect(roomAccessIndicator("invite", null, {}, true)).toEqual({
+      glyph: "userRoundPlus",
+      labelMessageId: "access.inviteOnly",
+      descriptionMessageId: "access.inviteOnlyDmDescription"
+    });
+    // Every other rule keeps one explanation for rooms and DMs alike.
+    for (const rule of ["public", "knock", "restricted", "knockRestricted", "private", "unknown"] as const) {
+      expect(roomAccessIndicator(rule, null, {}, true)).toEqual(roomAccessIndicator(rule));
+    }
+  });
+
+  it("keeps the reserved and unrecognised rules their own state", () => {
+    const reserved = roomAccessIndicator("private");
+    expect(reserved?.glyph).toBe("circleHelp");
+    expect(reserved?.labelMessageId).toBe("access.privateReserved");
+    expect(reserved?.descriptionMessageId).toBe("access.privateReservedDescription");
+
+    const unknown = roomAccessIndicator("unknown");
+    expect(unknown?.glyph).toBe("circleHelp");
+    expect(unknown?.labelMessageId).toBe("access.unknown");
+    expect(unknown?.descriptionMessageId).toBe("access.unknownDescription");
   });
 
   it("has no indicator for a rule that has not been projected", () => {
@@ -71,104 +77,36 @@ describe("room access indicator (#1166)", () => {
     expect(roomAccessIndicator(undefined)).toBeNull();
   });
 
-  it("explains the checking state without looking public or invite-only", () => {
-    expect(ROOM_ACCESS_CHECKING.icon).toBeNull();
-    expect(ROOM_ACCESS_CHECKING.badges).toEqual([
-      {
-        labelMessageId: "access.checking",
-        descriptionMessageId: "access.checkingDescription"
-      }
-    ]);
+  it("presents the checking state as its own neutral glyph, never a guessed rule", () => {
+    expect(ROOM_ACCESS_CHECKING).toEqual({
+      glyph: "checking",
+      labelMessageId: "access.checking",
+      descriptionMessageId: "access.checkingDescription"
+    });
   });
 });
 
-describe("room access header badges", () => {
-  it("uses the full label in a header and keeps each route's explanation", () => {
-    // Public and invite-only have no compact badge; the header shows the label.
-    expect(roomAccessHeaderBadges(roomAccessIndicator("public")!)).toEqual([
-      {
-        labelMessageId: "access.public",
-        descriptionMessageId: "access.publicDescription"
-      }
-    ]);
-    expect(roomAccessHeaderBadges(roomAccessIndicator("knockRestricted")!)).toEqual([
-      {
-        labelMessageId: "access.conditionsApply",
-        descriptionMessageId: "access.conditionsRouteDescription"
-      },
-      {
-        labelMessageId: "access.canRequest",
-        descriptionMessageId: "access.requestRouteDescription"
-      }
-    ]);
-  });
-
-  it("uses the full unknown and checking labels rather than their compact form", () => {
-    expect(roomAccessHeaderBadges(roomAccessIndicator("unknown")!)).toEqual([
-      {
-        labelMessageId: "access.unknownFull",
-        descriptionMessageId: "access.unknownDescription"
-      }
-    ]);
-    expect(roomAccessHeaderBadges(ROOM_ACCESS_CHECKING)).toEqual([
-      {
-        labelMessageId: "access.checkingFull",
-        descriptionMessageId: "access.checkingDescription"
-      }
-    ]);
-  });
-});
-
-describe("room access rail summary", () => {
-  it("collapses the five states to one glyph that never reads as a known icon for unknowns", () => {
-    expect(roomAccessRailSummary("public")).toBe("globe");
-    expect(roomAccessRailSummary("invite")).toBe("padlock");
-    for (const rule of ["restricted", "knock", "knockRestricted"] as const) {
-      expect(roomAccessRailSummary(rule)).toBe("info");
-    }
-    for (const rule of ["private", "unknown"] as const) {
-      expect(roomAccessRailSummary(rule)).toBe("question");
-    }
-    expect(roomAccessRailSummary(null)).toBe("loading");
-    expect(roomAccessRailSummary(undefined)).toBe("loading");
-  });
-});
-
-describe("restricted allow-condition facts (#1166)", () => {
-  it("says an invitation is required only when no usable condition is confirmed", () => {
+describe("restricted allow-condition facts (#1166, #1220)", () => {
+  it("says no usable condition is configured only when that is confirmed", () => {
     const noUsable = roomAccessIndicator("restricted", "confirmedEmpty");
     expect(noUsable?.descriptionMessageId).toBe(
       "access.restrictedNoUsableConditionsDescription"
     );
-    expect(noUsable?.badges).toEqual([
-      {
-        labelMessageId: "access.conditionsApply",
-        descriptionMessageId: "access.restrictedNoUsableConditionsDescription"
-      }
-    ]);
 
     // An allow-rule type the client does not model keeps the generic wording:
     // the absence of a usable condition is not confirmed.
-    const unknown = roomAccessIndicator("restricted", "unsupportedOnly");
-    expect(unknown?.descriptionMessageId).toBe("access.conditionsDescription");
-
-    // A usable condition keeps the membership explanation.
-    const usable = roomAccessIndicator("restricted", "membershipOnly");
-    expect(usable?.descriptionMessageId).toBe("access.conditionsDescription");
+    expect(roomAccessIndicator("restricted", "unsupportedOnly")?.descriptionMessageId).toBe(
+      "access.conditionsDescription"
+    );
+    expect(roomAccessIndicator("restricted", "notInspected")?.descriptionMessageId).toBe(
+      "access.conditionsDescription"
+    );
   });
 
   it("keeps the request route when a knock_restricted rule has no usable condition", () => {
     const indicator = roomAccessIndicator("knockRestricted", "confirmedEmpty");
-    expect(indicator?.badges).toEqual([
-      {
-        labelMessageId: "access.conditionsApply",
-        descriptionMessageId: "access.restrictedNoUsableConditionsDescription"
-      },
-      {
-        labelMessageId: "access.canRequest",
-        descriptionMessageId: "access.requestRouteDescription"
-      }
-    ]);
+    expect(indicator?.glyph).toBe("hand");
+    expect(indicator?.labelMessageId).toBe("access.knockRestrictedLabel");
     expect(indicator?.descriptionMessageId).toBe(
       "access.restrictedNoUsableConditionsCanRequestDescription"
     );
@@ -201,20 +139,15 @@ describe("restricted allow-condition facts (#1166)", () => {
   });
 
   it("uses the specific sentence only for a verified single-Space route", () => {
-    // A verified membership-only route names the Space.
     const specific = roomAccessIndicator("restricted", "membershipOnly", {
       spaceMembersRoute: "Alpha Space"
     });
-    expect(specific?.labelMessageIds).toEqual(["access.spaceMembersCanJoin"]);
-    expect(specific?.descriptionMessageId).toBe("access.spaceMembersCanJoinDescription");
-    expect(specific?.descriptionSpaceName).toBe("Alpha Space");
-    expect(specific?.badges).toEqual([
-      {
-        labelMessageId: "access.spaceMembersCanJoin",
-        descriptionMessageId: "access.spaceMembersCanJoinDescription",
-        descriptionSpaceName: "Alpha Space"
-      }
-    ]);
+    expect(specific).toEqual({
+      glyph: "usersRound",
+      labelMessageId: "access.spaceMembersCanJoin",
+      descriptionMessageId: "access.spaceMembersCanJoinDescription",
+      descriptionSpaceName: "Alpha Space"
+    });
 
     // A blank name never claims it; the generic facts carry the named routes.
     for (const name of ["", "   ", null, undefined]) {
@@ -244,28 +177,20 @@ describe("restricted allow-condition facts (#1166)", () => {
     const privateRule = roomAccessIndicator("private", "membershipOnly", {
       spaceMembersRoute: "Alpha Space"
     });
-    expect(privateRule?.descriptionMessageId).toBe("access.unknownDescription");
+    expect(privateRule?.descriptionMessageId).toBe("access.privateReservedDescription");
     expect(privateRule?.descriptionSpaceName).toBeUndefined();
   });
 
-  it("keeps the request badge and names the Space for a single-Space knock-restricted rule", () => {
+  it("explains both routes of a single-Space knock-restricted rule in one pill", () => {
     const indicator = roomAccessIndicator("knockRestricted", "membershipOnly", {
       spaceMembersRoute: "Alpha Space"
     });
-    expect(indicator?.badges).toEqual([
-      {
-        labelMessageId: "access.spaceMembersCanJoin",
-        descriptionMessageId: "access.spaceMembersCanJoinDescription",
-        descriptionSpaceName: "Alpha Space"
-      },
-      {
-        labelMessageId: "access.canRequest",
-        descriptionMessageId: "access.requestRouteDescription"
-      }
-    ]);
-    expect(indicator?.descriptionMessageId).toBe(
-      "access.spaceMembersCanJoinCanRequestDescription"
-    );
+    expect(indicator).toEqual({
+      glyph: "hand",
+      labelMessageId: "access.knockRestrictedLabel",
+      descriptionMessageId: "access.knockRestrictedSpaceDescription",
+      descriptionSpaceName: "Alpha Space"
+    });
   });
 
   it("finds a row in every sidebar lane and carries the verified Space route", () => {
@@ -320,15 +245,5 @@ describe("restricted allow-condition facts (#1166)", () => {
     ] as const) {
       expect(sidebarRoomAccess(sidebarFor(lane), row.room_id), `${lane} lane`).toEqual(expected);
     }
-  });
-});
-
-describe("compact room-list access glyphs (#1249)", () => {
-  it("maps every compact badge label to its glyph", () => {
-    expect(roomAccessBadgeGlyph("access.spaceMembersCanJoin")).toBe("spaceMembers");
-    expect(roomAccessBadgeGlyph("access.conditionsApply")).toBe("conditions");
-    expect(roomAccessBadgeGlyph("access.canRequest")).toBe("request");
-    expect(roomAccessBadgeGlyph("access.checking")).toBe("checking");
-    expect(roomAccessBadgeGlyph("access.unknown")).toBe("unknown");
   });
 });

@@ -6,19 +6,19 @@ export type MessageId =
   | "access.conditionsApply"
   | "access.spaceMembersCanJoin"
   | "access.canRequest"
+  | "access.knockRestrictedLabel"
+  | "access.privateReserved"
   | "access.unknown"
-  | "access.unknownFull"
   | "access.checking"
-  | "access.checkingFull"
   | "access.publicDescription"
   | "access.inviteOnlyDescription"
+  | "access.inviteOnlyDmDescription"
   | "access.conditionsDescription"
   | "access.spaceMembersCanJoinDescription"
-  | "access.spaceMembersCanJoinCanRequestDescription"
   | "access.requestDescription"
   | "access.knockRestrictedDescription"
-  | "access.conditionsRouteDescription"
-  | "access.requestRouteDescription"
+  | "access.knockRestrictedSpaceDescription"
+  | "access.privateReservedDescription"
   | "access.unknownDescription"
   | "access.checkingDescription"
   | "access.labelSeparator"
@@ -611,6 +611,11 @@ export type MessageId =
   | "room.historyNonRetroactive"
   | "room.historyRecoveryRequired"
   | "room.historyWorldReadableDescription"
+  | "room.statusHistoryLimitedDescription"
+  | "room.statusHistorySharedDescription"
+  | "room.statusHistoryWorldReadableDescription"
+  | "room.encryptedDescription"
+  | "room.notEncryptedDescription"
   | "room.historyWorldReadableWarning"
   | "room.historyWorldReadable"
   | "room.joinRule"
@@ -678,8 +683,6 @@ export type MessageId =
   | "room.statusHistoryShared"
   | "room.statusHistoryWorldReadable"
   | "room.statusNotEncrypted"
-  | "room.statusPrivate"
-  | "room.statusPublic"
   | "room.statusShowSetting"
   | "room.saveAccess"
   | "room.saveHistoryVisibility"
@@ -1849,43 +1852,43 @@ export function pseudoLocalize(input: string, mode: PseudoLocaleMode = "accented
 }
 
 const en: Catalog = {
-  // #1166: one access-condition vocabulary for rooms and Spaces. The labels are
-  // the issue's exact wording; the padlock notes an invitation requirement and
-  // is never used as an encryption indicator.
+  // #1327: one access-condition vocabulary for rooms and Spaces. A padlock means
+  // encryption only, so participation uses its own icons and labels.
   "access.public": "Public",
   "access.inviteOnly": "Invite only",
   "access.conditionsApply": "Conditions apply",
   "access.spaceMembersCanJoin": "Space members can join",
   "access.canRequest": "Can request",
+  "access.knockRestrictedLabel": "Space / request",
+  "access.privateReserved": "Not joinable",
   "access.unknown": "Unknown",
-  "access.unknownFull": "Unknown join conditions",
   "access.checking": "Checking",
-  "access.checkingFull": "Checking join conditions",
-  "access.publicDescription": "Anyone can join without an invitation.",
-  "access.inviteOnlyDescription": "An invitation is required to join.",
+  "access.publicDescription":
+    "Public. Anyone can join. Who can read message history is a separate setting.",
+  "access.inviteOnlyDescription":
+    "Invite only. Only invited people can join. Being a member of the Space is not enough.",
+  "access.inviteOnlyDmDescription": "Invite only. Only invited people can join.",
   "access.conditionsDescription":
-    "Members of specified Spaces or rooms can join without an invitation. Others need an invitation.",
+    "Conditions apply. People who meet the room's join conditions, or who are invited, can join.",
   "access.spaceMembersCanJoinDescription":
-    "Members of {space} can join without an invitation. Others need an invitation.",
-  "access.spaceMembersCanJoinCanRequestDescription":
-    "Members of {space} can join without an invitation. Others can request an invitation or accept one.",
+    "Space members can join. Members of {space}, or invited people, can join. Joining the Space does not join this room automatically.",
   "access.requestDescription":
-    "You can request an invitation. An invitation is required to join.",
+    "Join request. You can ask to join, and you join once a member approves the request.",
   "access.knockRestrictedDescription":
-    "Members of specified Spaces or rooms can join without an invitation. Others can request an invitation or accept one.",
-  "access.conditionsRouteDescription":
-    "Members of specified Spaces or rooms can join without an invitation.",
-  "access.requestRouteDescription":
-    "Others can request an invitation or accept one.",
-  "access.unknownDescription": "This app does not recognize these join conditions.",
-  "access.checkingDescription": "Join conditions are not available yet.",
+    "Space / request. People who meet the room's join conditions, or whose join request is approved, can join.",
+  "access.knockRestrictedSpaceDescription":
+    "Space / request. Members of {space}, or people whose join request is approved, can join. Joining the Space does not join this room automatically.",
+  "access.privateReservedDescription":
+    "Not joinable. There is no ordinary way to join this room, and an invitation alone may not be enough.",
+  "access.unknownDescription": "Unknown. This app does not recognize these join conditions.",
+  "access.checkingDescription": "Checking. The join conditions are not available yet.",
   "access.labelSeparator": ", ",
   "access.conditionSummarySeparator": " — ",
   "access.allowedRooms": "Allowed: {rooms}",
   "access.restrictedNoUsableConditionsDescription":
-    "No usable conditions allow joining without an invitation. An invitation is required to join.",
+    "Conditions apply. No usable join condition is configured. Only invited people can join.",
   "access.restrictedNoUsableConditionsCanRequestDescription":
-    "No usable conditions allow joining without an invitation. Others can request an invitation or accept one.",
+    "Space / request. No usable join condition is configured, but you can ask to join.",
   "help.title": "Koushi Help",
   "help.askAi": "Copy this GitHub URL and ask ChatGPT or another AI assistant how to use Koushi. Include your Koushi version, operating system, and question.",
   "help.copyRepositoryUrl": "Copy GitHub URL",
@@ -2547,12 +2550,20 @@ const en: Catalog = {
   "room.repairTimelineHint": "Detect and repair missing timeline ranges without deleting existing messages.",
   "room.status": "Room status",
   "room.statusEncrypted": "Encrypted",
+  "room.statusNotEncrypted": "Not encrypted",
+  "room.encryptedDescription":
+    "End-to-end encryption is on for this conversation. Decryption keys are required to read encrypted messages.",
+  "room.notEncryptedDescription":
+    "End-to-end encryption is not on for this conversation.",
   "room.statusHistoryLimited": "New members do not see history",
   "room.statusHistoryShared": "New members see history",
   "room.statusHistoryWorldReadable": "Anyone can see history",
-  "room.statusNotEncrypted": "Not encrypted",
-  "room.statusPrivate": "Private",
-  "room.statusPublic": "Public",
+  "room.statusHistoryLimitedDescription":
+    "New members cannot read message history from before they joined.",
+  "room.statusHistorySharedDescription":
+    "New members can read message history from before they joined. Decryption keys are required to read encrypted messages.",
+  "room.statusHistoryWorldReadableDescription":
+    "Anyone who can reach this room can read its history, including people who are not members.",
   "room.statusShowSetting": "{status}: show setting",
   "room.saveAccess": "Save access",
   "room.saveHistoryVisibility": "Save history visibility",
@@ -3644,42 +3655,43 @@ const en: Catalog = {
 
 const ja: Catalog = {
   ...en,
-  // #1166: 参加条件の表示語彙。ラベルは issue 指定の文言。鍵アイコンは招待が
-  // 必要なことだけを示し、E2EE の表示には使わない。
+  // #1327: 参加条件の表示語彙。錠前は暗号化だけを意味するため、参加条件は
+  // 専用のアイコンとラベルで示す。
   "access.public": "公開",
   "access.inviteOnly": "招待制",
   "access.conditionsApply": "参加条件有",
-  "access.spaceMembersCanJoin": "スペースのメンバーは参加できます",
-  "access.canRequest": "申請可",
+  "access.spaceMembersCanJoin": "Space参加可",
+  "access.canRequest": "参加申請",
+  "access.knockRestrictedLabel": "Space/申請",
+  "access.privateReserved": "非公開",
   "access.unknown": "不明",
-  "access.unknownFull": "参加条件不明",
   "access.checking": "確認中",
-  "access.checkingFull": "参加条件確認中",
-  "access.publicDescription": "誰でも招待なしで参加できます。",
-  "access.inviteOnlyDescription": "参加には招待が必要です。",
+  "access.publicDescription":
+    "公開。誰でも参加できます。メッセージ履歴の閲覧範囲は別の設定です。",
+  "access.inviteOnlyDescription":
+    "招待制。招待された人のみ参加できます。Space のメンバーでも招待が必要です。",
+  "access.inviteOnlyDmDescription": "招待制。招待された人のみ参加できます。",
   "access.conditionsDescription":
-    "指定されたSpace・ルームのメンバーは招待なしで参加できます。それ以外は招待が必要です。",
+    "参加条件有。このルームが定めた参加条件を満たす人、または招待された人が参加できます。",
   "access.spaceMembersCanJoinDescription":
-    "{space}のメンバーは招待なしで参加できます。それ以外は招待が必要です。",
-  "access.spaceMembersCanJoinCanRequestDescription":
-    "{space}のメンバーは招待なしで参加できます。それ以外は参加を申請するか、招待を受ける必要があります。",
+    "Space 参加可。指定 Space のメンバー、または招待された人が参加できます。Space への参加だけではルームに自動参加しません。",
   "access.requestDescription":
-    "参加を申請できます。参加には招待が必要です。",
+    "参加申請。参加を申請でき、メンバーが承認すると参加できます。",
   "access.knockRestrictedDescription":
-    "指定されたSpace・ルームのメンバーは招待なしで参加できます。それ以外は参加を申請するか、招待を受ける必要があります。",
-  "access.conditionsRouteDescription":
-    "指定されたSpace・ルームのメンバーは招待なしで参加できます。",
-  "access.requestRouteDescription":
-    "それ以外は参加を申請するか、招待を受ける必要があります。",
-  "access.unknownDescription": "この参加条件はアプリで認識できません。",
-  "access.checkingDescription": "参加条件をまだ確認できません。",
+    "Space/申請。このルームが定めた参加条件を満たす人、または参加申請が承認された人が参加できます。",
+  "access.knockRestrictedSpaceDescription":
+    "Space/申請。指定 Space のメンバー、または参加申請が承認された人が参加できます。Space への参加だけではルームに自動参加しません。",
+  "access.privateReservedDescription":
+    "非公開。通常の方法では参加できません。招待があっても参加できない場合があります。",
+  "access.unknownDescription": "不明。この参加条件はこのアプリでは認識できません。",
+  "access.checkingDescription": "確認中。参加条件をまだ取得できていません。",
   "access.labelSeparator": "、",
   "access.conditionSummarySeparator": " — ",
   "access.allowedRooms": "指定: {rooms}",
   "access.restrictedNoUsableConditionsDescription":
-    "招待なしで参加できる条件がないため、参加には招待が必要です。",
+    "参加条件有。有効な参加条件が設定されていません。招待された人のみ参加できます。",
   "access.restrictedNoUsableConditionsCanRequestDescription":
-    "招待なしで参加できる条件がないため、それ以外は参加を申請するか、招待を受ける必要があります。",
+    "Space/申請。有効な参加条件は設定されていませんが、参加申請はできます。",
   "help.title": "Koushiのヘルプ",
   "help.askAi": "このGitHub URLをコピーして、ChatGPTなどのAIにKoushiの使い方を質問してください。利用バージョン、OS、知りたいことを添えてください。",
   "help.copyRepositoryUrl": "GitHub URLをコピー",
@@ -4336,13 +4348,21 @@ const ja: Catalog = {
   "room.repairTimeline": "ルームのタイムラインを修復",
   "room.repairTimelineHint": "既存のメッセージを削除せず、欠けている範囲を検出して修復します。",
   "room.status": "ルーム状態",
-  "room.statusEncrypted": "暗号化済み",
+  "room.statusEncrypted": "暗号化",
+  "room.statusNotEncrypted": "未暗号化",
+  "room.encryptedDescription":
+    "この会話ではエンドツーエンド暗号化が有効です。暗号化されたメッセージを読むには復号鍵が必要です。",
+  "room.notEncryptedDescription":
+    "この会話ではエンドツーエンド暗号化が有効ではありません。",
   "room.statusHistoryLimited": "新規メンバーは履歴を閲覧不可",
   "room.statusHistoryShared": "新規メンバーも履歴を閲覧可",
   "room.statusHistoryWorldReadable": "誰でも履歴を閲覧可",
-  "room.statusNotEncrypted": "未暗号化",
-  "room.statusPrivate": "非公開",
-  "room.statusPublic": "公開",
+  "room.statusHistoryLimitedDescription":
+    "新規メンバーは、参加前のメッセージ履歴を閲覧できません。",
+  "room.statusHistorySharedDescription":
+    "新規メンバーも参加前のメッセージ履歴を閲覧できます。暗号化されたメッセージを読むには復号鍵が必要です。",
+  "room.statusHistoryWorldReadableDescription":
+    "このルームに到達できる人は、メンバーでなくても履歴を閲覧できます。",
   "room.statusShowSetting": "{status}：設定を表示",
   "room.saveAccess": "アクセス設定を保存",
   "room.saveHistoryVisibility": "履歴の表示範囲を保存",
