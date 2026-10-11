@@ -449,9 +449,9 @@ stateDiagram-v2
   terminal blocking failure, and ready. Server existence, local enablement,
   recovery completeness, and upload health remain distinct SDK inspection
   facts and are not collapsed into a boolean.
-- **Canon amendment (#1265) — pending approval.** `DegradedRetrying` and
-  `BlockedFailed` carry an optional structured, privacy-safe failure detail
-  alongside the coarse `SecureBackupGateFailureKind`: `stage` (which operation
+- **Canon amendment (#1265).** `DegradedRetrying` and `BlockedFailed` carry an
+  optional structured, privacy-safe failure detail alongside the coarse
+  `SecureBackupGateFailureKind`: `stage` (which operation
   produced the failure), `transport` (`noResponse`, `httpResponse`, `timeout`,
   `local`), `httpStatus` when a response arrived, an allowlisted
   `matrixErrorKind` (`errcode`), and `retryable`. The coarse vocabulary gains
