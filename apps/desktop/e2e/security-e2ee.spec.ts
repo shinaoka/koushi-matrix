@@ -163,7 +163,7 @@ test("Security settings render local encryption health and dispatch probe comman
   const confirmResetDialog = page.getByRole("dialog", { name: "Reset local data" });
   await confirmResetDialog.getByRole("button", { name: "Reset local data" }).click();
   await expect.poll(() => invocationCount(page, "reset_local_data")).toBe(1);
-  await expect(page.getByText("Not checked")).toBeVisible();
+  await expect(page.getByText("Not checked", { exact: true })).toBeVisible();
 });
 
 test("our own verification request waits for the other side instead of offering Accept (#1024)", async ({
