@@ -328,7 +328,7 @@ function readySnapshot(
           notification_delivery: { sinks: [], presets: defaultNotificationDeliveryPresets() },
           contact_security: { user_id: null, load: { kind: "idle" }, summary: null, verification_busy: false },
           sender_device_advisories: { rooms: {} },
-          account_management_capabilities: { change_password: { kind: "unknown" } },
+          account_management_capabilities: { change_password: { kind: "unknown" }, deactivate_account: { kind: "unknown" } },
           soft_logout_reauth: { kind: "idle" }, qr_login: { kind: "idle" },
           directory: {
         query: { kind: "closed" },
@@ -2296,7 +2296,7 @@ mock.setCommandResponse("load_account_management_capabilities", () =>
       domain: {
         ...currentSnapshot.state.domain,
       account_management_capabilities: {
-        change_password: { kind: "enabled" }
+        change_password: { kind: "enabled" }, deactivate_account: { kind: "enabled" }
       }
       },
     }
@@ -2478,8 +2478,9 @@ mock.setCommandResponse(
 );
 mock.setCommandResponse(
   "deactivate_account",
-  ({ eraseData }: { eraseData: boolean }) => {
+  ({ eraseData, password }: { eraseData: boolean; password: string }) => {
     void eraseData;
+    void password;
     return setCurrentSnapshot({
       ...currentSnapshot,
       state: {

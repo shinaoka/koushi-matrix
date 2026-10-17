@@ -2972,8 +2972,10 @@ impl AccountActor {
             AccountCommand::DeactivateAccount {
                 request_id,
                 erase_data,
+                password,
             } => {
-                self.handle_deactivate_account(request_id, erase_data).await;
+                self.handle_deactivate_account(request_id, erase_data, password)
+                    .await;
             }
             AccountCommand::SubmitAccountManagementUia {
                 request_id,

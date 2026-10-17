@@ -3440,8 +3440,8 @@ function AccountContent({
     await settleCommand(api.changePassword(newPassword));
   }
 
-  async function deactivateAccount(eraseData: boolean) {
-    await settleCommand(api.deactivateAccount(eraseData));
+  async function deactivateAccount(eraseData: boolean, password: string) {
+    await settleCommand(api.deactivateAccount(eraseData, password));
   }
 
   async function setDisplayName(displayName: string | null) {
@@ -7946,8 +7946,8 @@ function AccountContent({
           onChangePassword={(newPassword) => {
             runInBackground(changePassword(newPassword));
           }}
-          onDeactivateAccount={(eraseData) => {
-            runInBackground(deactivateAccount(eraseData));
+          onDeactivateAccount={(eraseData, password) => {
+            runInBackground(deactivateAccount(eraseData, password));
           }}
           onSubmitAccountManagementUia={(flowId, password) => {
             runInBackground(submitAccountManagementUia(flowId, password));

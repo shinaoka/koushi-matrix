@@ -377,6 +377,10 @@ pub enum AccountCommand {
     DeactivateAccount {
         request_id: RequestId,
         erase_data: bool,
+        /// Password collected up front by the deactivation dialog. When the
+        /// homeserver answers with a UIA challenge, the core retries once with
+        /// this password instead of asking for it again.
+        password: Option<koushi_state::AuthSecret>,
     },
     SubmitAccountManagementUia {
         request_id: RequestId,
@@ -678,10 +682,12 @@ impl fmt::Debug for AccountCommand {
             Self::DeactivateAccount {
                 request_id,
                 erase_data,
+                password,
             } => formatter
                 .debug_struct("DeactivateAccount")
                 .field("request_id", request_id)
                 .field("erase_data", erase_data)
+                .field("password", &password.as_ref().map(|_| "AuthSecret(..)"))
                 .finish(),
             Self::SubmitAccountManagementUia {
                 request_id,
@@ -1038,6 +1044,22 @@ mod tests {
         assert_eq!(change_homeserver.request_id(), fake_rid(76));
         assert!(format!("{retry:?}").contains("RetrySlidingSyncCapability"));
         assert!(format!("{change_homeserver:?}").contains("ChangeHomeserver"));
+    }
+
+    #[test]
+    fn deactivate_account_debug_redacts_the_password() {
+        let command = AccountCommand::DeactivateAccount {
+            request_id: fake_rid(12),
+            erase_data: true,
+            password: Some(koushi_state::AuthSecret::new(
+                "synthetic-deactivate-password".to_owned(),
+            )),
+        };
+
+        let debug = format!("{command:?}");
+        assert!(debug.contains("DeactivateAccount"), "{debug}");
+        assert!(debug.contains("AuthSecret(..)"), "{debug}");
+        assert!(!debug.contains("synthetic-deactivate-password"), "{debug}");
     }
 
     #[test]

@@ -20,6 +20,7 @@ fn default_capabilities_are_unknown() {
         state.account_management_capabilities,
         AccountManagementCapabilities {
             change_password: CapabilityState::Unknown,
+            deactivate_account: CapabilityState::Unknown,
         }
     );
 }
@@ -32,6 +33,7 @@ fn capabilities_load_marks_change_password_enabled() {
         &mut state,
         AppAction::AccountManagementCapabilitiesLoaded {
             change_password: true,
+            deactivate_account: true,
         },
     );
 
@@ -55,12 +57,34 @@ fn capabilities_load_marks_change_password_disabled() {
         &mut state,
         AppAction::AccountManagementCapabilitiesLoaded {
             change_password: false,
+            deactivate_account: true,
         },
     );
 
     assert_eq!(
         state.account_management_capabilities.change_password,
         CapabilityState::Disabled
+    );
+}
+
+#[test]
+fn capabilities_load_projects_deactivation_independently() {
+    let mut state = AppState::default();
+
+    reduce(
+        &mut state,
+        AppAction::AccountManagementCapabilitiesLoaded {
+            change_password: true,
+            deactivate_account: false,
+        },
+    );
+
+    assert_eq!(
+        state.account_management_capabilities,
+        AccountManagementCapabilities {
+            change_password: CapabilityState::Enabled,
+            deactivate_account: CapabilityState::Disabled,
+        }
     );
 }
 

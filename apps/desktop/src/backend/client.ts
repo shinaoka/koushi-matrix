@@ -492,8 +492,8 @@ export class TauriDesktopApi implements DesktopApi {
     return this.invokeCommand<CommandAdmission>("change_password", { newPassword });
   }
 
-  async deactivateAccount(eraseData: boolean): Promise<CommandAdmission> {
-    return this.invokeCommand<CommandAdmission>("deactivate_account", { eraseData });
+  async deactivateAccount(eraseData: boolean, password: string): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("deactivate_account", { eraseData, password });
   }
 
   async probeLocalEncryptionHealth(): Promise<CommandAdmission> {

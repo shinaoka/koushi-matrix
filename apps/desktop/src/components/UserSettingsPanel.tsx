@@ -200,7 +200,7 @@ export function UserSettingsPanel({
   runtimeAlertRetrying?: boolean;
   onRetryRuntimeAlert?: (kind: RuntimeAlert["kind"]) => void;
   onChangePassword: (newPassword: string) => void;
-  onDeactivateAccount: (eraseData: boolean) => void;
+  onDeactivateAccount: (eraseData: boolean, password: string) => void;
   onSubmitAccountManagementUia: (flowId: number, password: string) => void;
   onStartCrawlRoom?: (roomId: string) => void;
   onStopCrawlRoom?: (roomId: string) => void;

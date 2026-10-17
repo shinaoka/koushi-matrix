@@ -401,7 +401,7 @@ export function ContextualRightPanel({
   accountNotificationActions?: AccountNotificationActions;
   notificationDeliveryActions?: NotificationDeliveryActions;
   contactSecurityActions?: ContactSecurityActions;
-  onDeactivateAccount?: (eraseData: boolean) => void;
+  onDeactivateAccount?: (eraseData: boolean, password: string) => void;
   onSubmitAccountManagementUia?: (flowId: number, password: string) => void;
   onStartCrawlRoom?: (roomId: string) => void;
   onStopCrawlRoom?: (roomId: string) => void;

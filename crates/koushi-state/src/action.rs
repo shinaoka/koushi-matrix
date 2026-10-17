@@ -223,6 +223,7 @@ pub enum AppAction {
     },
     AccountManagementCapabilitiesLoaded {
         change_password: bool,
+        deactivate_account: bool,
     },
     AccountManagementCapabilitiesLoadFailed,
     CurrentSessionStatusRefreshRequested {

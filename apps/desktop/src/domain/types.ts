@@ -761,6 +761,7 @@ export type AccountManagementOperation =
 
 export interface AccountManagementCapabilities {
   change_password: CapabilityState;
+  deactivate_account: CapabilityState;
 }
 
 // Mirrors koushi_state::state::account_notifications (#981).

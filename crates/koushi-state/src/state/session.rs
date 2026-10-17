@@ -616,6 +616,7 @@ pub enum CapabilityState {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AccountManagementCapabilities {
     pub change_password: CapabilityState,
+    pub deactivate_account: CapabilityState,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

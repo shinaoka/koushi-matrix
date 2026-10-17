@@ -67,6 +67,7 @@ pub async fn change_password(
 pub async fn deactivate_account(
     account_tab_id: Option<String>,
     erase_data: bool,
+    password: Option<String>,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
@@ -75,6 +76,9 @@ pub async fn deactivate_account(
         CoreCommand::Account(AccountCommand::DeactivateAccount {
             request_id,
             erase_data,
+            password: password
+                .filter(|password| !password.is_empty())
+                .map(AuthSecret::new),
         }),
     )
     .await?;

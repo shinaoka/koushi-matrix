@@ -2241,6 +2241,10 @@ impl fmt::Debug for AccountManagementError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AccountManagementCapabilities {
     pub change_password: bool,
+    /// Matches Element X: deactivation is offered only for native Matrix
+    /// (password/UIA) sessions; OAuth/MAS accounts deactivate through the
+    /// account-management web UI instead.
+    pub deactivate_account: bool,
 }
 
 pub async fn account_management_capabilities(
@@ -2253,7 +2257,14 @@ pub async fn account_management_capabilities(
         .await
         .ok()
         .unwrap_or(true);
-    AccountManagementCapabilities { change_password }
+    let deactivate_account = matches!(
+        session.client().auth_api(),
+        Some(matrix_sdk::AuthApi::Matrix(_))
+    );
+    AccountManagementCapabilities {
+        change_password,
+        deactivate_account,
+    }
 }
 
 pub async fn change_password(

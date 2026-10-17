@@ -453,7 +453,7 @@ export function defaultSnapshotResponse() {
       contact_security: { user_id: null, load: { kind: "idle" }, summary: null, verification_busy: false },
       sender_device_advisories: { rooms: {} },
       notification_delivery: { sinks: [], presets: [] },
-      account_management_capabilities: { change_password: { kind: "unknown" } },
+      account_management_capabilities: { change_password: { kind: "unknown" }, deactivate_account: { kind: "unknown" } },
       soft_logout_reauth: { kind: "idle" },
       qr_login: { kind: "idle" },
       directory: {

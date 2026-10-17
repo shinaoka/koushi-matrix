@@ -4768,6 +4768,18 @@ stateDiagram-v2
   `request_id` and `flow_id` match the pending UIA state. It transitions back to
   `Working` with the original password-change or deactivation operation so the
   account actor can retry with supplied auth.
+- Deactivation (#1503) carries an optional password on
+  `AccountCommand::DeactivateAccount`; the reducer never sees it. The account
+  actor first sends the request without auth (Element X order). If the server
+  answers with a UIA challenge and a password was supplied, the actor retries
+  once with `m.login.password` auth and the challenge session, staying in
+  `Working`. A second challenge ends in `Failed` with `Forbidden` (wrong
+  password) instead of `AwaitingUia`. Without a password the existing
+  `AwaitingUia` path applies.
+- `AccountManagementCapabilities.deactivate_account` is `Enabled` only for
+  native Matrix (password/UIA) sessions, as in Element X. OAuth/MAS accounts
+  deactivate through the server's account-management page, so the GUI hides
+  its deactivation entry point.
 
 Soft-logout re-authentication (MSC2697):
 

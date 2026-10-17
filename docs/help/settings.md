@@ -37,7 +37,7 @@ translated app.
 | App Settings → Keyboard (キーボード) | Send-message shortcut (Enter or the platform modifier+Enter); reference list of keyboard shortcuts and their availability. |
 | App Settings → Search history (検索履歴) | Shared background-work speed and pause/resume control. Search crawling and media prefetch use this budget across all accounts. **Off** pauses both. |
 | App Settings → Help & About (ヘルプと情報) | Public GitHub repository URL, copy button, and instructions for asking ChatGPT or another AI assistant. |
-| Account Settings → Account (アカウント) | Profile display name and avatar; account management page when provided by the server; change password and deactivate account when supported. |
+| Account Settings → Account (アカウント) | Profile display name and avatar; account management page when provided by the server; change password when supported. **Deactivate account** sits in a separate **Danger zone** (危険な操作) block and is shown only for password-based accounts; accounts managed by an external provider use the account management page instead. |
 | Account Settings → Sessions (セッション) | Homeserver, user ID, device ID/name, verification, cross-signing, backup and local-store information; Sign out. This is current-session information, not a list of all remote devices. The status shown is the last checked result; Koushi re-checks it automatically when the app or account starts and after a connection outage, and the refresh action checks again immediately. |
 | Account Settings → Notifications (通知) | Three tabs, **OS notifications** first. **OS notifications** (OS通知): desktop notifications and **Show message content in notifications**. **Sent from this device** (この端末から送信): destinations Koushi sends to from this computer (email or WeChat). **Homeserver notifications** (ホームサーバー通知): account-wide notification rules and **Email notifications**, which apply to every device. See [OS notifications](#os-notifications), [Notifications from this device](#notifications-from-this-device), and [Email notifications](#email-notifications). |
 | Account Settings → Security & Privacy (セキュリティとプライバシー) | URL previews in unencrypted/encrypted rooms; sending read receipts and typing notifications. |
@@ -112,6 +112,23 @@ topmost dismissible dialog and returns focus to its opener.
 For consequences and prerequisites, see [Search](search.md),
 [Security and recovery](security-and-recovery.md), and
 [User trust model](user-trust-model.md) before changing the corresponding settings.
+
+## Deactivate your account
+
+Deactivating an account is permanent and is **not** the same as signing out.
+The account cannot sign in again and its user ID can never be reused. To only
+remove this computer's session, use **Sign out** instead.
+
+1. Open **Account Settings → Account** for the account you want to deactivate.
+2. In **Danger zone**, choose **Deactivate account**.
+3. Check the account shown under **Account to deactivate**, read the list of
+   consequences, and optionally turn on **Delete all my messages**.
+4. Enter the account password and choose **Continue**.
+5. Choose **Deactivate permanently** to confirm, or **Cancel** to stop. Nothing
+   is sent to the server before this step.
+
+If the password is wrong, Koushi shows an error and the account stays active.
+After a successful deactivation, Koushi signs this computer out of the account.
 
 ## OS notifications
 

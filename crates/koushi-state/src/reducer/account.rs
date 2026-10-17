@@ -115,12 +115,17 @@ pub(crate) fn handle_account_management_capabilities_load_requested(
 pub(crate) fn handle_account_management_capabilities_loaded(
     state: &mut AppState,
     change_password: bool,
+    deactivate_account: bool,
 ) -> Vec<AppEffect> {
-    state.account_management_capabilities.change_password = if change_password {
-        CapabilityState::Enabled
-    } else {
-        CapabilityState::Disabled
+    let capability = |enabled| {
+        if enabled {
+            CapabilityState::Enabled
+        } else {
+            CapabilityState::Disabled
+        }
     };
+    state.account_management_capabilities.change_password = capability(change_password);
+    state.account_management_capabilities.deactivate_account = capability(deactivate_account);
     vec![AppEffect::EmitUiEvent(
         UiEvent::AccountManagementCapabilitiesChanged,
     )]

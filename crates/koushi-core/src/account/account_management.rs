@@ -100,6 +100,7 @@ impl AccountActor {
         let capabilities = koushi_sdk::account_management_capabilities(&session).await;
         self.send_actions(vec![AppAction::AccountManagementCapabilitiesLoaded {
             change_password: capabilities.change_password,
+            deactivate_account: capabilities.deactivate_account,
         }])
         .await;
     }
@@ -170,6 +171,7 @@ impl AccountActor {
         &mut self,
         request_id: RequestId,
         erase_data: bool,
+        password: Option<koushi_state::AuthSecret>,
     ) {
         let operation = AccountManagementOperation::DeactivateAccount;
         let session = match &self.session {
@@ -186,7 +188,45 @@ impl AccountActor {
             }
         };
 
-        let result = koushi_sdk::deactivate_account(&session, erase_data, None, None).await;
+        let mut result = koushi_sdk::deactivate_account(&session, erase_data, None, None).await;
+        // Element X parity: the dialog collects the password up front, so a
+        // first UIA challenge is answered once with it. A second challenge
+        // means the password was rejected; report it instead of looping.
+        if let (
+            Err(koushi_sdk::AccountManagementError::UiaaChallenge {
+                session: uiaa_session,
+            }),
+            Some(password),
+        ) = (&result, password)
+        {
+            let auth = koushi_state::IdentityResetAuthRequest::UiaaPassword { password };
+            result = koushi_sdk::deactivate_account(
+                &session,
+                erase_data,
+                Some(&auth),
+                uiaa_session.as_deref(),
+            )
+            .await;
+            drop(auth);
+            // Like Element X, only the password stage is answered. A second
+            // challenge (rejected password, or an extra stage the dialog
+            // cannot complete) ends the attempt as Forbidden.
+            if matches!(
+                result,
+                Err(koushi_sdk::AccountManagementError::UiaaChallenge { .. })
+            ) {
+                self.project_account_management_failure(
+                    request_id,
+                    operation,
+                    AuthFailureKind::Forbidden,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Forbidden,
+                    },
+                )
+                .await;
+                return;
+            }
+        }
         match result {
             Ok(()) => {
                 self.pending_uia_operations.remove(&request_id.sequence);

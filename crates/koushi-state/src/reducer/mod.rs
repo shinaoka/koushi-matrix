@@ -555,9 +555,14 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::AccountManagementCapabilitiesLoadRequested => {
             account::handle_account_management_capabilities_load_requested(state)
         }
-        AppAction::AccountManagementCapabilitiesLoaded { change_password } => {
-            account::handle_account_management_capabilities_loaded(state, change_password)
-        }
+        AppAction::AccountManagementCapabilitiesLoaded {
+            change_password,
+            deactivate_account,
+        } => account::handle_account_management_capabilities_loaded(
+            state,
+            change_password,
+            deactivate_account,
+        ),
         AppAction::AccountManagementCapabilitiesLoadFailed => {
             account::handle_account_management_capabilities_load_failed(state)
         }

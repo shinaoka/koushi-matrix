@@ -5,6 +5,7 @@ import { toExternalHttpUrl } from "../../domain/externalLinks";
 import { t } from "../../i18n/messages";
 import { ImeSafeForm, SecureImeTextField } from "../ImeTextControl";
 import { AccountManagementUiaForm } from "./AccountManagementUiaForm";
+import { DeactivateAccountDialog } from "./DeactivateAccountDialog";
 import type {
   AccountManagementCapabilities,
   AccountManagementState,
@@ -28,7 +29,7 @@ export function AccountManagementSection({
   currentSession: SavedSessionInfo | null;
   onLoadAccountManagementCapabilities: () => void;
   onChangePassword: (newPassword: string) => void;
-  onDeactivateAccount: (eraseData: boolean) => void;
+  onDeactivateAccount: (eraseData: boolean, password: string) => void;
   onManageAccount: () => void;
   onSubmitAccountManagementUia: (flowId: number, password: string) => void;
 }) {
@@ -44,7 +45,6 @@ export function AccountManagementSection({
   const newPasswordRef = useRef<HTMLInputElement>(null);
   const confirmPasswordRef = useRef<HTMLInputElement>(null);
   const [passwordFieldsComplete, setPasswordFieldsComplete] = useState(false);
-  const [eraseData, setEraseData] = useState(false);
   const [mismatch, setMismatch] = useState(false);
 
   const activeOperation =
@@ -60,6 +60,7 @@ export function AccountManagementSection({
 
   const changePasswordEnabled =
     accountManagementCapabilities.change_password.kind === "enabled";
+  const deactivateCapability = accountManagementCapabilities.deactivate_account.kind;
 
   function submitChangePassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -79,11 +80,6 @@ export function AccountManagementSection({
     );
   }
 
-  function submitDeactivate(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    onDeactivateAccount(eraseData);
-  }
-
   function resetForms() {
     if (newPasswordRef.current) {
       newPasswordRef.current.value = "";
@@ -94,7 +90,6 @@ export function AccountManagementSection({
     setShowChangePassword(false);
     setShowDeactivate(false);
     setPasswordFieldsComplete(false);
-    setEraseData(false);
     setMismatch(false);
   }
 
@@ -138,13 +133,13 @@ export function AccountManagementSection({
         </p>
       ) : null}
 
-      {accountManagement.kind === "failed" && (isChangePassword || isDeactivate) ? (
+      {accountManagement.kind === "failed" && isChangePassword ? (
         <p className="settings-status-text" data-testid="account-management-error">
           {t("settings.accountManagementFailed")}
         </p>
       ) : null}
 
-      {!showChangePassword && !showDeactivate ? (
+      {!showChangePassword ? (
         <div className="session-actions">
           <button
             className="trust-action-button secondary"
@@ -155,16 +150,6 @@ export function AccountManagementSection({
           >
             <KeyRound size={14} />
             <span>{t("settings.changePassword")}</span>
-          </button>
-          <button
-            className="trust-action-button danger"
-            type="button"
-            disabled={accountManagement.kind === "working"}
-            onClick={() => setShowDeactivate(true)}
-            data-testid="deactivate-account-button"
-          >
-            <ShieldAlert size={14} />
-            <span>{t("settings.deactivateAccount")}</span>
           </button>
         </div>
       ) : null}
@@ -214,38 +199,32 @@ export function AccountManagementSection({
         </ImeSafeForm>
       ) : null}
 
-      {showDeactivate ? (
-        <ImeSafeForm className="settings-form" onSubmit={submitDeactivate}>
-          <p className="settings-status-text">{t("settings.deactivateAccountConfirm")}</p>
-          <label className="settings-detail-row">
-            <input
-              type="checkbox"
-              checked={eraseData}
-              onChange={(event) => setEraseData(event.currentTarget.checked)}
-              data-testid="deactivate-erase-checkbox"
-            />
-            <span>{t("settings.deactivateAccountErase")}</span>
-          </label>
-          <div className="session-actions">
-            <button
-              className="trust-action-button secondary"
-              type="button"
-              onClick={() => {
-                resetForms();
-              }}
-            >
-              {t("action.cancel")}
-            </button>
-            <button
-              className="trust-action-button danger"
-              type="submit"
-              disabled={accountManagement.kind === "working"}
-              data-testid="deactivate-account-submit"
-            >
-              {t("settings.deactivateAccount")}
-            </button>
-          </div>
-        </ImeSafeForm>
+      {currentSession && deactivateCapability !== "disabled" ? (
+        <div className="settings-danger-zone" data-testid="account-danger-zone">
+          <h4>{t("settings.dangerZone")}</h4>
+          <p className="profile-settings-hint">
+            {t("settings.deactivateAccountEntryHint", { userId: currentSession.user_id })}
+          </p>
+          <button
+            className="trust-action-button danger"
+            type="button"
+            disabled={deactivateCapability !== "enabled" || accountManagement.kind === "working"}
+            onClick={() => setShowDeactivate(true)}
+            data-testid="deactivate-account-button"
+          >
+            <ShieldAlert size={14} />
+            <span>{t("settings.deactivateAccount")}</span>
+          </button>
+        </div>
+      ) : null}
+
+      {showDeactivate && currentSession ? (
+        <DeactivateAccountDialog
+          userId={currentSession.user_id}
+          accountManagement={accountManagement}
+          onCancel={() => setShowDeactivate(false)}
+          onDeactivate={onDeactivateAccount}
+        />
       ) : null}
     </section>
   );

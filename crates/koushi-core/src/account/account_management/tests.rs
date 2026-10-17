@@ -200,3 +200,75 @@ async fn wrong_session_destination_completion_is_ignored() {
     drop(release);
     let _ = handle.send(AccountMessage::Shutdown).await;
 }
+
+async fn deactivate_and_collect(password: Option<&str>) -> AppAction {
+    let (handle, mut action_rx) = login_gated_actor().await;
+    assert!(
+        handle
+            .send(AccountMessage::Command(
+                koushi_protocol::command::AccountCommand::DeactivateAccount {
+                    request_id: koushi_protocol::ids::RequestId {
+                        connection_id: koushi_protocol::ids::RuntimeConnectionId(1),
+                        sequence: 77,
+                    },
+                    erase_data: false,
+                    password: password.map(koushi_state::AuthSecret::new),
+                },
+            ))
+            .await
+    );
+    let outcome = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let actions = action_rx.recv().await.expect("actor alive");
+            if let Some(action) = actions.into_iter().find(|action| {
+                matches!(
+                    action,
+                    AppAction::AccountManagementSucceeded { .. }
+                        | AppAction::AccountManagementFailed { .. }
+                        | AppAction::AccountManagementUiaRequired { .. }
+                )
+            }) {
+                break action;
+            }
+        }
+    })
+    .await
+    .expect("deactivation outcome");
+    let _ = handle.send(AccountMessage::Shutdown).await;
+    outcome
+}
+
+#[tokio::test]
+async fn deactivation_with_password_answers_the_uia_challenge_once() {
+    assert!(matches!(
+        deactivate_and_collect(Some("synthetic-password")).await,
+        AppAction::AccountManagementSucceeded {
+            request_id: 77,
+            operation: koushi_state::AccountManagementOperation::DeactivateAccount,
+        }
+    ));
+}
+
+#[tokio::test]
+async fn deactivation_with_rejected_password_fails_as_forbidden() {
+    assert!(matches!(
+        deactivate_and_collect(Some("not-the-password")).await,
+        AppAction::AccountManagementFailed {
+            request_id: 77,
+            operation: koushi_state::AccountManagementOperation::DeactivateAccount,
+            kind: koushi_state::AuthFailureKind::Forbidden,
+        }
+    ));
+}
+
+#[tokio::test]
+async fn deactivation_without_password_keeps_the_uia_prompt_path() {
+    assert!(matches!(
+        deactivate_and_collect(None).await,
+        AppAction::AccountManagementUiaRequired {
+            request_id: 77,
+            flow_id: 77,
+            ..
+        }
+    ));
+}

@@ -239,7 +239,7 @@ export interface DesktopApi {
     sample: NotificationDeliveryPreviewSample
   ): Promise<NotificationDeliveryPreview>;
   changePassword(newPassword: string): Promise<CommandAdmission>;
-  deactivateAccount(eraseData: boolean): Promise<CommandAdmission>;
+  deactivateAccount(eraseData: boolean, password: string): Promise<CommandAdmission>;
   probeLocalEncryptionHealth(): Promise<CommandAdmission>;
   resetLocalData(): Promise<CommandAdmission>;
   bootstrapCrossSigning(): Promise<CommandAdmission>;

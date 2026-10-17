@@ -1186,8 +1186,22 @@ export type MessageId =
   | "settings.changePasswordMismatch"
   | "settings.passwordChanged"
   | "settings.deactivateAccount"
-  | "settings.deactivateAccountErase"
-  | "settings.deactivateAccountConfirm"
+  | "settings.dangerZone"
+  | "settings.deactivateAccountEntryHint"
+  | "settings.deactivateAccountTarget"
+  | "settings.deactivateAccountIntro"
+  | "settings.deactivateAccountConsequenceDisable"
+  | "settings.deactivateAccountConsequenceRooms"
+  | "settings.deactivateAccountConsequenceIdentity"
+  | "settings.deactivateAccountConsequenceMessages"
+  | "settings.deactivateAccountDeleteMessages"
+  | "settings.deactivateAccountDeleteMessagesNotice"
+  | "settings.deactivateAccountPassword"
+  | "settings.deactivateAccountFinalConfirmTitle"
+  | "settings.deactivateAccountFinalConfirm"
+  | "settings.deactivateAccountFinalAction"
+  | "settings.deactivateAccountWorking"
+  | "settings.deactivateAccountWrongPassword"
   | "settings.accountDeactivated"
   | "settings.accountManagementFailed"
   | "settings.signOut"
@@ -3451,8 +3465,22 @@ const en: Catalog = {
   "settings.changePasswordMismatch": "Passwords do not match",
   "settings.passwordChanged": "Password changed",
   "settings.deactivateAccount": "Deactivate account",
-  "settings.deactivateAccountErase": "Erase all data",
-  "settings.deactivateAccountConfirm": "This cannot be undone. Confirm to proceed.",
+  "settings.dangerZone": "Danger zone",
+  "settings.deactivateAccountEntryHint": "Permanently disables {userId}. This is not the same as signing out.",
+  "settings.deactivateAccountTarget": "Account to deactivate",
+  "settings.deactivateAccountIntro": "Deactivating your account is irreversible. It will:",
+  "settings.deactivateAccountConsequenceDisable": "Permanently disable your account. You can't sign in again, and your user ID can't be reused.",
+  "settings.deactivateAccountConsequenceRooms": "Remove you from all rooms and chats.",
+  "settings.deactivateAccountConsequenceIdentity": "Delete your account information from the identity server.",
+  "settings.deactivateAccountConsequenceMessages": "Keep your messages visible to registered users, but hide them from new or unregistered users if you choose to delete them.",
+  "settings.deactivateAccountDeleteMessages": "Delete all my messages",
+  "settings.deactivateAccountDeleteMessagesNotice": "Future users may see incomplete conversations.",
+  "settings.deactivateAccountPassword": "Enter your password to continue",
+  "settings.deactivateAccountFinalConfirmTitle": "Deactivate {userId}?",
+  "settings.deactivateAccountFinalConfirm": "Please confirm that you want to deactivate this account. This action cannot be undone.",
+  "settings.deactivateAccountFinalAction": "Deactivate permanently",
+  "settings.deactivateAccountWorking": "Deactivating account…",
+  "settings.deactivateAccountWrongPassword": "Incorrect password. The account was not deactivated.",
   "settings.accountDeactivated": "Account deactivated",
   "settings.accountManagementFailed": "Account operation failed",
   "settings.signOut": "Sign out",
@@ -5603,8 +5631,22 @@ const ja: Catalog = {
   "settings.changePasswordMismatch": "パスワードが一致しません",
   "settings.passwordChanged": "パスワードを変更しました",
   "settings.deactivateAccount": "アカウントを無効化",
-  "settings.deactivateAccountErase": "すべてのデータを消去",
-  "settings.deactivateAccountConfirm": "この操作は元に戻せません。続行するには確認してください。",
+  "settings.dangerZone": "危険な操作",
+  "settings.deactivateAccountEntryHint": "{userId} を永久に使えなくします。サインアウトとは異なります。",
+  "settings.deactivateAccountTarget": "無効化するアカウント",
+  "settings.deactivateAccountIntro": "アカウントの無効化は元に戻せません。次のようになります:",
+  "settings.deactivateAccountConsequenceDisable": "アカウントが永久に無効になります。再びサインインすることはできず、ユーザー ID も再利用できません。",
+  "settings.deactivateAccountConsequenceRooms": "すべてのルームとチャットから退出します。",
+  "settings.deactivateAccountConsequenceIdentity": "ID サーバーからアカウント情報が削除されます。",
+  "settings.deactivateAccountConsequenceMessages": "メッセージは登録済みユーザーには引き続き表示されますが、削除を選んだ場合は新規ユーザーや未登録ユーザーには表示されなくなります。",
+  "settings.deactivateAccountDeleteMessages": "自分のメッセージをすべて削除",
+  "settings.deactivateAccountDeleteMessagesNotice": "今後参加するユーザーには会話が不完全に見える場合があります。",
+  "settings.deactivateAccountPassword": "続行するにはパスワードを入力してください",
+  "settings.deactivateAccountFinalConfirmTitle": "{userId} を無効化しますか？",
+  "settings.deactivateAccountFinalConfirm": "このアカウントを無効化することを確認してください。この操作は元に戻せません。",
+  "settings.deactivateAccountFinalAction": "完全に無効化する",
+  "settings.deactivateAccountWorking": "アカウントを無効化しています…",
+  "settings.deactivateAccountWrongPassword": "パスワードが正しくありません。アカウントは無効化されていません。",
   "settings.accountDeactivated": "アカウントを無効化しました",
   "settings.accountManagementFailed": "アカウント操作に失敗しました",
   "settings.signOut": "サインアウト",

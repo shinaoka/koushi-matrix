@@ -350,6 +350,32 @@ pub(super) fn spawn_named_quarantine_password_server_with_controls(
             {
                 continue;
             }
+            if text.starts_with("POST /_matrix/client/") && text.contains("/account/deactivate") {
+                // UIA fixture: unauthenticated → challenge; password
+                // "synthetic-password" → success; any other password → challenge.
+                let request_body = text
+                    .split_once("\r\n\r\n")
+                    .and_then(|(_, body)| serde_json::from_str::<serde_json::Value>(body).ok())
+                    .unwrap_or_default();
+                let accepted = request_body["auth"]["type"] == "m.login.password"
+                    && request_body["auth"]["password"] == "synthetic-password"
+                    && request_body["auth"]["session"] == "fixture-uia-session";
+                let (status, body) = if accepted {
+                    ("200 OK", r#"{"id_server_unbind_result":"no-support"}"#)
+                } else {
+                    (
+                        "401 Unauthorized",
+                        r#"{"session":"fixture-uia-session","flows":[{"stages":["m.login.password"]}],"params":{}}"#,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+                continue 'accept;
+            }
             let body = if text.starts_with("GET /_matrix/client/versions ") {
                 let sliding_sync_supported =
                     sliding_sync_supported.load(std::sync::atomic::Ordering::SeqCst);

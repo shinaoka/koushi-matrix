@@ -325,6 +325,9 @@
       "account_management_capabilities": {
         "change_password": {
           "kind": "unknown"
+        },
+        "deactivate_account": {
+          "kind": "unknown"
         }
       },
       "account_management_url": "https://account.example.invalid/devices",
