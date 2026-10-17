@@ -16,7 +16,59 @@ pub struct E2eeTrustState {
     pub identity_reset: IdentityResetState,
     #[serde(default)]
     pub key_management: E2eeKeyManagementState,
+    /// #1505: the account's sessions as of the last own-session check, the
+    /// current one included. Empty until the first check of this session.
     pub devices: Vec<DeviceTrustSummary>,
+    /// #1505: set by an own-session check that found other unverified sessions
+    /// while the current session is verified; cleared by dismissal or by a
+    /// later check that finds none.
+    #[serde(default)]
+    pub unverified_own_sessions_alert: Option<UnverifiedOwnSessionsAlert>,
+}
+
+/// #1505: own-session checks run at login, then only once this much time has
+/// passed since the account's previous check (across restarts). Device-list
+/// changes in between never trigger a check.
+pub const OWN_SESSION_CHECK_INTERVAL_MS: u64 = 24 * 60 * 60 * 1_000;
+
+/// #1505: delay before retrying an own-session check that failed.
+pub const OWN_SESSION_CHECK_RETRY_MS: u64 = 30 * 60 * 1_000;
+
+/// #1505: when the next own-session check is due. An account never checked
+/// (a new login) is due at once.
+pub fn own_session_check_due_at_ms(last_checked_at_ms: Option<u64>) -> u64 {
+    last_checked_at_ms.map_or(0, |last| last.saturating_add(OWN_SESSION_CHECK_INTERVAL_MS))
+}
+
+/// #1505: the counts an own-session check reports, or `None` when there is
+/// nothing to warn about. Without a verified current session the trust of the
+/// others is not meaningful (the session verification gate covers that case),
+/// so no alert is raised.
+pub fn unverified_own_sessions_alert(
+    devices: &[DeviceTrustSummary],
+    current_session_verified: bool,
+) -> Option<UnverifiedOwnSessionsAlert> {
+    if !current_session_verified {
+        return None;
+    }
+    let unverified = devices
+        .iter()
+        .filter(|device| !device.is_current && device.trust_level != DeviceTrustLevel::Verified)
+        .count();
+    (unverified > 0).then(|| UnverifiedOwnSessionsAlert {
+        total_sessions: u32::try_from(devices.len()).unwrap_or(u32::MAX),
+        unverified_sessions: u32::try_from(unverified).unwrap_or(u32::MAX),
+    })
+}
+
+/// #1505: "N sessions are signed in to this account, M are not verified."
+/// The counted sessions are listed in `E2eeTrustState::devices`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UnverifiedOwnSessionsAlert {
+    /// All sessions of the account, the current one included.
+    pub total_sessions: u32,
+    /// Other sessions that are not verified; never counts the current one.
+    pub unverified_sessions: u32,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -319,6 +371,15 @@ pub struct DeviceTrustSummary {
     pub user_id: String,
     pub device_id: String,
     pub trust_level: DeviceTrustLevel,
+    /// #1505: the session name the server reports.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// #1505: when the server last saw the session, if it reports it.
+    #[serde(default)]
+    pub last_seen_ts: Option<u64>,
+    /// #1505: this is the session Koushi is signed in with.
+    #[serde(default)]
+    pub is_current: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

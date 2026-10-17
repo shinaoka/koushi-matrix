@@ -253,9 +253,12 @@ pub use room_management::{
 pub use e2ee::{
     CrossSigningStatus, DeviceTrustLevel, DeviceTrustSummary, E2eeKeyManagementState,
     E2eeRecoveryState, E2eeTrustState, IdentityResetAuthType, IdentityResetState, KeyBackupStatus,
-    RecoveryKeyDeliveryState, RecoveryKeyMaterial, RoomKeyExportState, RoomKeyImportState,
-    SasEmoji, SecureBackupPassphraseChangeState, SecureBackupSetupState, TrustOperationFailureKind,
-    VerificationCancelReason, VerificationFlowState, VerificationInitiator, VerificationTarget,
+    OWN_SESSION_CHECK_INTERVAL_MS, OWN_SESSION_CHECK_RETRY_MS, RecoveryKeyDeliveryState,
+    RecoveryKeyMaterial, RoomKeyExportState, RoomKeyImportState, SasEmoji,
+    SecureBackupPassphraseChangeState, SecureBackupSetupState, TrustOperationFailureKind,
+    UnverifiedOwnSessionsAlert, VerificationCancelReason, VerificationFlowState,
+    VerificationInitiator, VerificationTarget, own_session_check_due_at_ms,
+    unverified_own_sessions_alert,
 };
 
 // ── Re-exports: local_encryption ────────────────────────────────────────────

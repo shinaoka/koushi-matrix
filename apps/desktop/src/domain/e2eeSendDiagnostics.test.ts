@@ -29,7 +29,10 @@ describe("e2eeSendDiagnosticMessage", () => {
               {
                 user_id: "@own:example.invalid",
                 device_id: "DEVICEID",
-                trust_level: "verified"
+                trust_level: "verified",
+                display_name: null,
+                last_seen_ts: null,
+                is_current: false
               }
             ]
           }

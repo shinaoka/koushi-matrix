@@ -1789,6 +1789,7 @@ pub fn run() {
             commands::navigation::select_room,
             commands::navigation::open_activity_event,
             commands::navigation::dismiss_event_navigation_failure,
+            commands::navigation::dismiss_unverified_own_sessions_alert,
             commands::navigation::open_pinned_event,
             commands::navigation::open_notification_event,
             commands::navigation::select_search_result,

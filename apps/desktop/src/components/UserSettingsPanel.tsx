@@ -43,6 +43,8 @@ import { avatarInitial } from "../app/uiShared";
 import { currentSessionStatusDetails } from "../domain/currentSessionStatus";
 import type { RuntimeAlert } from "./Shell";
 import { ModalDialog } from "./ModalDialog";
+import { OtherOwnSessionsList } from "./ownSessions";
+import { toExternalHttpUrl } from "../domain/externalLinks";
 import type {
   AccountManagementCapabilities,
   AccountManagementState,
@@ -576,6 +578,24 @@ export function UserSettingsPanel({
                 </span>
               </button>
             </div>
+          </section>
+          <section
+            id="settings-other-sessions"
+            className="settings-section"
+            aria-label={t("ownSessions.otherSessions")}
+          >
+            <h3>{t("ownSessions.otherSessions")}</h3>
+            <OtherOwnSessionsList devices={e2eeTrust.devices} label={t("ownSessions.otherSessions")} />
+            {toExternalHttpUrl(accountManagementUrl) ? (
+              <>
+                <p className="profile-settings-hint">{t("ownSessions.signOutHint")}</p>
+                <div className="profile-settings-actions">
+                  <button className="profile-settings-action" type="button" onClick={onManageAccount}>
+                    <span>{t("settings.manageAccount")}</span>
+                  </button>
+                </div>
+              </>
+            ) : null}
           </section>
         </div>
         <div id="settings-page-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance" className="settings-category" hidden={activeCategory !== "appearance"} tabIndex={0}>

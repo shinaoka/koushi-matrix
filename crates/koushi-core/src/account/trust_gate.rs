@@ -673,6 +673,7 @@ impl AccountActor {
         // #1361: replay a Secure Backup admission whose proven connectivity
         // edge arrived while this session was still unpromoted.
         self.replay_secure_backup_admission_on_promotion();
+        self.start_own_session_check_schedule();
         for event in std::mem::take(&mut self.pending_ready_events) {
             self.emit(event);
         }
@@ -1493,6 +1494,7 @@ impl AccountActor {
         // #1361: replay a Secure Backup admission whose proven connectivity
         // edge arrived while this session was still unpromoted.
         self.replay_secure_backup_admission_on_promotion();
+        self.start_own_session_check_schedule();
         for event in std::mem::take(&mut self.pending_ready_events) {
             self.emit(event);
         }

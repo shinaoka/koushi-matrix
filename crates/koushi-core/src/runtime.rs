@@ -3660,6 +3660,13 @@ impl AppActor {
                             self.handle_app_effects(request_id, effects).await;
                             true
                         }
+                        AppCommand::DismissUnverifiedOwnSessionsAlert { request_id } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::UnverifiedOwnSessionsAlertDismissed)
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
                         AppCommand::OpenInviteWorkflow {
                             request_id,
                             room_id,

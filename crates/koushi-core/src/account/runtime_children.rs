@@ -202,6 +202,7 @@ impl AccountActor {
         self.stop_recovery_observer().await;
         self.stop_incoming_verification_observer().await;
         self.stop_contact_security_observer().await;
+        self.retire_own_session_check();
         self.stop_session_change_observer().await;
         self.record_lifecycle_probe("shutdown_stop_timeline_actor");
         self.stop_timeline_actor().await;

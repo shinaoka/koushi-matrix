@@ -4741,9 +4741,26 @@ stateDiagram-v2
 - Missing, malformed, unsafe, or unreachable metadata leaves the capability
   unavailable and never fails login, restore, verification, or normal runtime.
 - Account Settings renders **Manage account & devices** only while available.
-  Koushi has no remote-device inventory, rename, or sign-out state machine; the
-  server destination owns those operations. Current-device diagnostics/name
-  repair and explicit rejected-provisional-device cleanup remain local.
+  Koushi has no remote-device rename or sign-out state machine; the server
+  destination owns those operations. Current-device diagnostics/name repair and
+  explicit rejected-provisional-device cleanup remain local.
+- Own-session check (#1505) is a read-only inventory, not a management surface.
+  After promotion and proven sync connectivity, the AccountActor loads the
+  encrypted per-account last-check time and arms one timer: due at once when the
+  account was never checked, otherwise 24 hours after the last successful check.
+  Device-list changes never trigger a check; restarts and new logins inside the
+  24-hour window stay suppressed. A due check reads the account's own devices
+  through public SDK APIs, persists the check time, re-arms for 24 hours, and
+  reduces `OwnSessionsChecked`; a failed check retries after 30 minutes without
+  persisting. Completions are accepted only for the current timer generation,
+  and logout, switch, or runtime stop retire the timer and task.
+- `OwnSessionsChecked` replaces `E2eeTrustState.devices` (display name, last
+  seen, current flag, trust level) only while the session is `Ready`. It sets
+  `unverified_own_sessions_alert` (total and non-current unverified counts) only
+  when the current session is verified and at least one other session is not
+  verified; otherwise it clears the alert. `UnverifiedOwnSessionsAlertDismissed`
+  clears only the alert. The popup names the account and points to Settings →
+  Sessions and **Manage account & devices**; it never signs sessions out.
 
 Shared UIA and local account operations:
 

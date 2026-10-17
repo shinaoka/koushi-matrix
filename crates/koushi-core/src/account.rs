@@ -18,6 +18,7 @@ mod contact_security;
 mod contact_security_tests;
 mod history_export;
 mod local_data_cleanup;
+mod own_sessions;
 mod profile;
 #[cfg(test)]
 mod profile_tests;

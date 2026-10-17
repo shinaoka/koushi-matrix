@@ -872,7 +872,11 @@ optional destination for the exact active session. OAuth uses public SDK server
 metadata plus its devices-list account action; non-OAuth sessions use the active
 homeserver's well-known client metadata. Only HTTP(S) destinations cross into
 AppState, and replacement, authentication lock, trust quarantine, logout, or
-switch invalidates them.
+switch invalidates them. The one read-only exception is the own-session check:
+at most once every 24 hours per account (and at the first sign-in), the
+AccountActor reads the account's own session list so Settings can show other
+sessions and a popup can warn about unverified ones; signing them out stays
+with the server destination.
 Login discovery never owns this active-session capability. Ambiguous legacy
 `M_UNKNOWN_TOKEN` and generic `M_NOT_FOUND` errors are not
 proof of target-device absence and therefore remain retryable. Starting a new

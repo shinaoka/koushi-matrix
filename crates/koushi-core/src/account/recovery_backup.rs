@@ -2212,6 +2212,7 @@ impl AccountActor {
                 self.request_authoritative_trust_recheck();
             }
             self.admit_secure_backup_for_proven_connectivity(recovery_reset);
+            self.start_own_session_check_schedule();
         }
     }
 

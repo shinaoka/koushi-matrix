@@ -439,7 +439,8 @@ function defaultE2eeTrustState(): DesktopSnapshot["state"]["domain"]["e2ee_trust
     key_backup: { kind: "unknown" },
     identity_reset: { kind: "idle" },
     key_management: defaultE2eeKeyManagementState(),
-    devices: []
+    devices: [],
+    unverified_own_sessions_alert: null
   };
 }
 
@@ -761,14 +762,21 @@ function e2eeTrustFixture(): E2eeTrustState {
       {
         user_id: USER_ID,
         device_id: DEVICE_ID,
-        trust_level: "verified"
+        trust_level: "verified",
+        display_name: null,
+        last_seen_ts: null,
+        is_current: true
       },
       {
         user_id: "redacted-trust-target",
         device_id: "TRUSTDEVICE",
-        trust_level: "unverified"
+        trust_level: "unverified",
+        display_name: null,
+        last_seen_ts: null,
+        is_current: false
       }
-    ]
+    ],
+    unverified_own_sessions_alert: null
   };
 }
 

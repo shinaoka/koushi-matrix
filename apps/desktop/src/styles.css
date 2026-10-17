@@ -10487,6 +10487,15 @@ kbd {
 .leave-space-content { display: grid; gap: 12px; }
 .deactivate-account-modal .confirmation-content { display: grid; gap: 12px; }
 .deactivate-account-modal .confirmation-content p { margin: 0; }
+.unverified-own-sessions-modal .confirmation-content { display: grid; gap: 12px; }
+.unverified-own-sessions-modal .confirmation-content p { margin: 0; }
+.own-sessions-account { white-space: pre-line; overflow-wrap: anywhere; }
+.own-session-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; max-height: 220px; overflow-y: auto; }
+.own-session-row { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 6px 8px; border-radius: 6px; background: var(--surface-hover); }
+.own-session-name { font-weight: 600; overflow-wrap: anywhere; }
+.own-session-id, .own-session-last-seen { color: var(--text-muted); font-size: 0.85em; }
+.own-session-row[data-trust-level="unverified"] .own-session-trust,
+.own-session-row[data-trust-level="unknown"] .own-session-trust { color: var(--warning); }
 .deactivate-account-target {
   display: grid;
   gap: 2px;

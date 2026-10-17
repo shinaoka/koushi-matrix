@@ -1606,7 +1606,8 @@ function makeSnapshot(): DesktopSnapshot {
             secure_backup_setup: { kind: "idle" },
             passphrase_change: { kind: "idle" }
           },
-          devices: []
+          devices: [],
+          unverified_own_sessions_alert: null
         },
         local_encryption: { kind: "unknown" },
         native_attention: {

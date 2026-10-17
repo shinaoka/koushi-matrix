@@ -1461,6 +1461,13 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::EventNavigationFailureDismissed => {
             navigation::handle_event_navigation_failure_dismissed(state)
         }
+        AppAction::OwnSessionsChecked {
+            devices,
+            current_session_verified,
+        } => e2ee::handle_own_sessions_checked(state, devices, current_session_verified),
+        AppAction::UnverifiedOwnSessionsAlertDismissed => {
+            e2ee::handle_unverified_own_sessions_alert_dismissed(state)
+        }
         AppAction::TimelineScrollAnchorUpdated { room_id, anchor } => {
             navigation::handle_timeline_scroll_anchor_updated(state, room_id, anchor)
         }

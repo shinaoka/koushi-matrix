@@ -98,14 +98,21 @@ describe("UserSettingsPanel", () => {
       {
         user_id: "@demo-user:example.invalid",
         device_id: "FAKEDEVICE",
-        trust_level: "verified"
+        trust_level: "verified",
+        display_name: null,
+        last_seen_ts: null,
+        is_current: false
       },
       {
         user_id: "redacted-target-user",
         device_id: "TARGETDEVICE",
-        trust_level: "unverified"
+        trust_level: "unverified",
+        display_name: null,
+        last_seen_ts: null,
+        is_current: false
       }
-    ]
+    ],
+    unverified_own_sessions_alert: null
   };
   const idleE2eeTrust: E2eeTrustState = {
     verification: { kind: "idle" },
@@ -113,7 +120,8 @@ describe("UserSettingsPanel", () => {
     key_backup: { kind: "unknown" },
     identity_reset: { kind: "idle" },
     key_management: keyManagement,
-    devices: []
+    devices: [],
+    unverified_own_sessions_alert: null
   };
   const profile: ProfileState = {
     own: {
@@ -273,7 +281,8 @@ describe("UserSettingsPanel", () => {
     expect(markup).not.toContain("Device 2");
     expect(markup).toContain("Trusted");
     expect(markup).not.toContain("redacted-target-user");
-    expect(markup).not.toContain("TARGETDEVICE");
+    // #1505: Settings → Sessions lists the account's other sessions by Device ID.
+    expect(markup).toContain("TARGETDEVICE");
   });
 
   test("shows only app-owned categories in App Settings", () => {
@@ -1446,7 +1455,7 @@ describe("UserSettingsPanel", () => {
     expect(setup).toContain(t("settings.setupSecureBackup"));
   });
 
-  test("does not render Koushi-owned remote device management", () => {
+  test("lists other sessions read-only without Koushi-owned remote device management", () => {
     const markup = renderToStaticMarkup(
       <UserSettingsPanel
         currentSession={{
@@ -1466,7 +1475,9 @@ describe("UserSettingsPanel", () => {
       />
     );
 
-    expect(markup).not.toContain("Other sessions");
+    // #1505: a read-only list; signing sessions out stays with the server.
+    expect(markup).toContain("Other sessions");
+    expect(markup).toContain(t("ownSessions.notChecked").replaceAll("'", "&#x27;"));
     expect(markup).not.toContain("Sign out all other sessions");
     expect(markup).not.toContain("Rename device");
   });

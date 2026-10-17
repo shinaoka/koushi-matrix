@@ -159,6 +159,10 @@ pub enum AppCommand {
     DismissEventNavigationFailure {
         request_id: RequestId,
     },
+    /// Dismiss the unverified own-sessions popup (#1505) until the next check.
+    DismissUnverifiedOwnSessionsAlert {
+        request_id: RequestId,
+    },
     CloseSearch {
         request_id: RequestId,
     },
@@ -537,6 +541,10 @@ impl fmt::Debug for AppCommand {
                 .finish(),
             Self::DismissEventNavigationFailure { request_id } => formatter
                 .debug_struct("DismissEventNavigationFailure")
+                .field("request_id", request_id)
+                .finish(),
+            Self::DismissUnverifiedOwnSessionsAlert { request_id } => formatter
+                .debug_struct("DismissUnverifiedOwnSessionsAlert")
                 .field("request_id", request_id)
                 .finish(),
             Self::CloseSearch { request_id } => formatter

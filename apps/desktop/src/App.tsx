@@ -274,7 +274,8 @@ import {
   syncStatePresentation,
   type ActiveContextMenu,
   type ContextMenuTarget,
-  type PrimaryView,
+  currentSavedSession,
+  type PrimaryView
 } from "./app/uiShared";
 import {
   ActivityPane,
@@ -313,6 +314,8 @@ import type { NotificationDeliveryActions } from "./components/user-settings/Not
 import type { ContactSecurityActions } from "./components/ContactSecurityDetails";
 import type { HistoryExportControls } from "./components/HistoryExportDialog";
 import { historyExportLabels } from "./domain/historyExportLabels";
+import { UnverifiedOwnSessionsDialog } from "./components/ownSessions";
+import type { SettingsCategoryId } from "./domain/settingsNavigation";
 import type {
   SpaceInviteAvailabilityReason,
   SpaceInviteCancellationAvailabilityReason
@@ -2358,6 +2361,13 @@ function AccountContent({
     [accountTimelineTransport, acquireAvatarDemand, releaseAvatarDemand]
   );
 
+  // #1505: the page Account Settings opens on; any close returns it to Account.
+  const [accountSettingsCategory, setAccountSettingsCategory] =
+    useState<SettingsCategoryId>("account");
+  useEffect(() => {
+    if (settingsScope === null) setAccountSettingsCategory("account");
+  }, [settingsScope]);
+
   function requestSettingsScope(scope: "account" | "app" | null): void {
     settingsScopeIntentRef.current = scope;
     onSettingsScopeChange(scope);
@@ -2365,7 +2375,8 @@ function AccountContent({
 
   // The account surface closes the focused context asynchronously; guard the
   // late panel-mode write so it cannot override a newer App Settings request.
-  function openAccountSettings(): void {
+  function openAccountSettings(category: SettingsCategoryId = "account"): void {
+    setAccountSettingsCategory(category);
     settingsScopeIntentRef.current = "account";
     onSettingsScopeChange("account");
     runInBackground(setRightPanelModeClosingFocusedContext(
@@ -7731,6 +7742,7 @@ function AccountContent({
             }
           }}
           settingsScope={settingsScope ?? "account"}
+          accountSettingsCategory={accountSettingsCategory}
           sendingAccount={sendingAccount}
           onSettingsScopeChange={requestSettingsScope}
           displayDensity={displayDensity}
@@ -8311,6 +8323,31 @@ function AccountContent({
             }}
             onDismiss={() => {
               runInBackground(settleCommand(api.dismissSuggestedSpaceRooms(offer.space_id)));
+            }}
+          />
+        );
+      })()}
+      {(() => {
+        // #1505: the own-session check's popup, naming the account it is about.
+        const trust = snapshot.state.domain.e2ee_trust;
+        const alert = trust.unverified_own_sessions_alert;
+        const session = currentSavedSession(snapshot);
+        if (!alert || !session) {
+          return null;
+        }
+        const dismiss = () =>
+          runInBackground(settleCommand(api.dismissUnverifiedOwnSessionsAlert()));
+        return (
+          <UnverifiedOwnSessionsDialog
+            account={snapshot.state.domain.profile.own.display_name?.trim() || session.user_id}
+            userId={session.user_id}
+            homeserver={session.homeserver}
+            alert={alert}
+            devices={trust.devices}
+            onLater={dismiss}
+            onReview={() => {
+              dismiss();
+              openAccountSettings("sessions");
             }}
           />
         );

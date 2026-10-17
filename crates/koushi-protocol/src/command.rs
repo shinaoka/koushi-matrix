@@ -48,6 +48,7 @@ impl CoreCommand {
                 | AppCommand::TimelineScrollAnchorUpdated { request_id, .. }
                 | AppCommand::CloseFocusedContext { request_id }
                 | AppCommand::DismissEventNavigationFailure { request_id }
+                | AppCommand::DismissUnverifiedOwnSessionsAlert { request_id }
                 | AppCommand::CloseSearch { request_id }
                 | AppCommand::OpenInviteWorkflow { request_id, .. }
                 | AppCommand::CloseInviteWorkflow { request_id }

@@ -11,10 +11,10 @@ use crate::state::{
     AttachmentScope, AttachmentSort, AuthFailureKind, AvatarThumbnailState, BasicOperationRequest,
     CrossSigningStatus, CurrentDeviceTrustState, CurrentSessionStatusDetails,
     CurrentSessionStatusFailureKind, DelegatedAuthLinks, DeviceCleanupAuthMode,
-    DeviceCleanupFailureKind, DeviceCleanupRemoteOutcome, DirectoryQuery, DirectoryRoomPreview,
-    DirectoryRoomSummary, E2eeRecoveryState, EventNavigationFailureKind, EventNavigationSource,
-    FilesViewScope, IdentityResetAuthType, InviteDestinationResult, InviteScopeSelection,
-    JapaneseCatalogProfile, LiveEventReceiptSummaryUpdate, LiveEventReceipts,
+    DeviceCleanupFailureKind, DeviceCleanupRemoteOutcome, DeviceTrustSummary, DirectoryQuery,
+    DirectoryRoomPreview, DirectoryRoomSummary, E2eeRecoveryState, EventNavigationFailureKind,
+    EventNavigationSource, FilesViewScope, IdentityResetAuthType, InviteDestinationResult,
+    InviteScopeSelection, JapaneseCatalogProfile, LiveEventReceiptSummaryUpdate, LiveEventReceipts,
     LocalEncryptionHealth, LoginAttemptId, LoginFlow, MentionCandidate,
     MentionCandidatesCompleteness, MentionCandidatesFailureKind, MentionSurface,
     NativeAttentionDispatchId, NativeAttentionSoundOutcome, NativeAttentionState,
@@ -1295,6 +1295,16 @@ pub enum AppAction {
     /// User dismissed the navigation-failure banner. Only clears a `Failed`
     /// state, so a dismiss that races a restarted navigation is inert (#980).
     EventNavigationFailureDismissed,
+    /// #1505: Core's own-session check settled. `devices` lists every
+    /// session of the account, the current one included.
+    OwnSessionsChecked {
+        devices: Vec<DeviceTrustSummary>,
+        current_session_verified: bool,
+    },
+    /// #1505: the user closed the unverified-own-sessions popup ("Later" or
+    /// "Review sessions"). Nothing is snoozed: the next check is simply the
+    /// next scheduled one.
+    UnverifiedOwnSessionsAlertDismissed,
     TimelineScrollAnchorUpdated {
         room_id: String,
         anchor: TimelineScrollAnchor,

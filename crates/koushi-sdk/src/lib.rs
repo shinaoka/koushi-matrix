@@ -29,6 +29,8 @@ pub use contact_security::{
 mod e2ee;
 
 mod login_store;
+mod own_sessions;
+pub use own_sessions::{OwnSessionsInventory, OwnSessionsInventoryError, inspect_own_sessions};
 
 #[cfg(any(test, feature = "test-hooks"))]
 pub mod login_store_test_support;

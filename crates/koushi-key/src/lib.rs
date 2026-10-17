@@ -26,6 +26,7 @@ const SCHEDULED_SENDS_INFO: &[u8] = b"koushi-desktop:scheduled-sends";
 const NAVIGATION_INFO: &[u8] = b"koushi-desktop:navigation";
 const ROOM_PREFERENCES_INFO: &[u8] = b"koushi-desktop:room-preferences";
 const ROOM_ACTIVITY_INFO: &[u8] = b"koushi-desktop:room-activity";
+const OWN_SESSION_CHECK_INFO: &[u8] = b"koushi-desktop:own-session-check";
 const ACCOUNT_SETTINGS_INFO: &[u8] = b"koushi-desktop:account-settings";
 const READ_STATE_OUTBOX_INFO: &[u8] = b"koushi-desktop:read-state-outbox";
 const SEARCH_PROGRESS_INFO: &[u8] = b"koushi-desktop:search-progress";
@@ -660,6 +661,23 @@ pub struct AccountSettingsKey {
     key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
 }
 
+/// #1505: when this account's own sessions were last checked.
+pub struct OwnSessionCheckKey {
+    key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
+}
+
+impl OwnSessionCheckKey {
+    pub fn as_bytes(&self) -> &[u8; LOCAL_UNLOCK_SECRET_LEN] {
+        &self.key
+    }
+}
+
+impl fmt::Debug for OwnSessionCheckKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OwnSessionCheckKey(..)")
+    }
+}
+
 pub struct ReadStateOutboxKey {
     key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
 }
@@ -910,6 +928,14 @@ impl LocalUnlockSecret {
         RoomActivityKey {
             key: self
                 .derive_key(ROOM_ACTIVITY_INFO)
+                .expect("32-byte HKDF output length is valid"),
+        }
+    }
+
+    pub fn derive_own_session_check_key(&self) -> OwnSessionCheckKey {
+        OwnSessionCheckKey {
+            key: self
+                .derive_key(OWN_SESSION_CHECK_INFO)
                 .expect("32-byte HKDF output length is valid"),
         }
     }
@@ -1399,6 +1425,21 @@ mod tests {
         assert_ne!(
             read_state.as_bytes(),
             secret.derive_navigation_key().as_bytes()
+        );
+    }
+
+    #[test]
+    fn own_session_check_uses_a_dedicated_hkdf_domain() {
+        let secret = LocalUnlockSecret::generate();
+        let check = secret.derive_own_session_check_key();
+
+        assert_ne!(
+            check.as_bytes(),
+            secret.derive_room_activity_key().as_bytes()
+        );
+        assert_ne!(
+            check.as_bytes(),
+            secret.derive_account_settings_key().as_bytes()
         );
     }
 

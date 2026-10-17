@@ -85,6 +85,7 @@ import { ThreadComposer, type ComposerSendingAccount } from "./composer";
 import { UploadStagingDialog, uploadStagingItemsAreSendable } from "./dialogs";
 import type { OpenContextMenu } from "../app/uiShared";
 import { useStableEvent } from "./useStableEvent";
+import type { SettingsCategoryId } from "../domain/settingsNavigation";
 
 const noopSearchSpaceInviteTargets = async (): Promise<InviteTargetCandidate[]> => [];
 const noopResetSpaceInviteSearch = (): void => undefined;
@@ -107,6 +108,7 @@ export function ContextualRightPanel({
   activeSpaceName,
   accountManagementUrl = null,
   settingsScope = "account",
+  accountSettingsCategory = "account",
   sendingAccount = null,
   onSettingsScopeChange = () => undefined,
   displayDensity = "comfortable",
@@ -326,6 +328,8 @@ export function ContextualRightPanel({
   runtimeAlertRetrying?: boolean;
   onRetryRuntimeAlert?: (kind: RuntimeAlert["kind"]) => void;
   settingsScope?: "account" | "app";
+  /** The Account Settings page to open on (#1505 opens Sessions). */
+  accountSettingsCategory?: SettingsCategoryId;
   sendingAccount?: ComposerSendingAccount | null;
   onSettingsScopeChange?: (scope: "account" | "app") => void;
   onProbeLocalEncryption: () => void;
@@ -634,9 +638,10 @@ export function ContextualRightPanel({
         onClose={onClosePanel}
       >
         <UserSettingsPanel
+          key={accountSettingsCategory}
           settingsScope={settingsScope}
           onSettingsScopeChange={onSettingsScopeChange}
-          initialCategory={mode === "keyboardSettings" ? "keyboard" : settingsScope === "app" ? "appearance" : "account"}
+          initialCategory={mode === "keyboardSettings" ? "keyboard" : settingsScope === "app" ? "appearance" : accountSettingsCategory}
           currentSession={currentSavedSession(snapshot)}
           currentSessionStatus={snapshot.state.domain.current_session_status}
           displayDensity={displayDensity}

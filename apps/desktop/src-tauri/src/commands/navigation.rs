@@ -113,6 +113,28 @@ pub(super) fn build_dismiss_event_navigation_failure_command(
     CoreCommand::App(AppCommand::DismissEventNavigationFailure { request_id })
 }
 
+pub(super) fn build_dismiss_unverified_own_sessions_alert_command(
+    request_id: koushi_protocol::RequestId,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::DismissUnverifiedOwnSessionsAlert { request_id })
+}
+
+/// Dismiss the unverified own-sessions popup (#1505). The popup reflects
+/// Rust-owned `e2ee_trust.unverified_own_sessions_alert`; the next check
+/// (24 hours later) may raise it again.
+#[tauri::command]
+pub async fn dismiss_unverified_own_sessions_alert(
+    account_tab_id: Option<String>,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    submit_core_command_with_admission(
+        state.inner(),
+        build_dismiss_unverified_own_sessions_alert_command(request_id),
+    )
+    .await
+}
+
 /// Dismiss the navigation-failure banner (#980). The banner reflects
 /// Rust-owned `ui.navigation.event_navigation`, so dismissal is a core command
 /// rather than renderer-local state.

@@ -391,6 +391,15 @@ pub(crate) enum AccountMessage {
     CurrentSessionStatusTimerFired {
         token: u64,
     },
+    /// #1505: the own-session check timer elapsed.
+    OwnSessionCheckDue {
+        generation: u64,
+    },
+    /// #1505: an own-session inventory read settled.
+    OwnSessionCheckFinished {
+        generation: u64,
+        result: Result<koushi_sdk::OwnSessionsInventory, koushi_sdk::OwnSessionsInventoryError>,
+    },
     TrustRecheckRetryDue {
         serial: u64,
     },
@@ -1250,6 +1259,8 @@ pub struct AccountActor {
     /// Open contact's security-details observer (#1024).
     pub(super) contact_security: Option<super::contact_security::ContactSecurityObservation>,
     pub(super) contact_security_generation: u64,
+    /// #1505: the own-session check schedule.
+    pub(super) own_session_check: super::own_sessions::OwnSessionCheck,
     pub(super) contact_security_load_task: Option<crate::executor::JoinHandle<()>>,
     pub(super) pending_contact_verification_send:
         Option<super::contact_security::PendingContactVerificationSend>,
@@ -1528,6 +1539,7 @@ impl AccountActor {
             incoming_verification_observer: None,
             contact_security: None,
             contact_security_generation: 0,
+            own_session_check: Default::default(),
             contact_security_load_task: None,
             pending_contact_verification_send: None,
             contact_verification_send_generation: 0,
@@ -2090,6 +2102,13 @@ impl AccountActor {
                 }
                 AccountMessage::CurrentSessionStatusTimerFired { token } => {
                     self.handle_current_session_status_timer_fired(token).await;
+                }
+                AccountMessage::OwnSessionCheckDue { generation } => {
+                    self.handle_own_session_check_due(generation);
+                }
+                AccountMessage::OwnSessionCheckFinished { generation, result } => {
+                    self.handle_own_session_check_finished(generation, result)
+                        .await;
                 }
                 AccountMessage::TrustRecheckRetryDue { serial } => {
                     self.handle_trust_recheck_retry_due(serial);

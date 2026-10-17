@@ -21,6 +21,23 @@ The available choices depend on your account. Koushi recommends the recovery
 key when available; another device can be offline or missing keys. Wait for
 verification to finish rather than repeatedly starting new requests.
 
+## Unverified sessions on your account
+
+When you sign in, and afterwards at most once every 24 hours, Koushi checks
+which sessions are signed in to your account. If this session is verified and
+another session is not, a popup titled **Unverified sessions on** followed by
+the account name appears. It shows the account's user ID and homeserver, how
+many sessions are signed in, how many are not verified, and lists the
+unverified ones with their last activity.
+
+- **Review sessions** opens **Account Settings → Sessions**, where **Other
+  sessions** lists every other session of that account.
+- **Later** closes the popup until the next check.
+
+If you do not recognize a session, sign it out with **Manage account &
+devices**; Koushi does not sign other sessions out itself. If you do recognize
+it, verify it from that device.
+
 ## Complete secure backup setup
 
 If **Secure backup required** appears, follow the offered recovery or setup

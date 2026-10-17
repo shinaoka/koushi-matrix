@@ -561,7 +561,16 @@
         "cross_signing": {
           "kind": "trusted"
         },
-        "devices": [],
+        "devices": [
+          {
+            "device_id": "FIXTUREOTHER",
+            "display_name": "Fixture laptop",
+            "is_current": false,
+            "last_seen_ts": 1700000000000,
+            "trust_level": "unverified",
+            "user_id": "@fixture:example.invalid"
+          }
+        ],
         "identity_reset": {
           "kind": "idle"
         },
@@ -582,6 +591,10 @@
           "secure_backup_setup": {
             "kind": "idle"
           }
+        },
+        "unverified_own_sessions_alert": {
+          "total_sessions": 2,
+          "unverified_sessions": 1
         },
         "verification": {
           "kind": "idle"

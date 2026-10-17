@@ -504,6 +504,7 @@ async fn reset_local_data_clears_current_account_persistence_and_signs_out_local
         incoming_verification_observer: None,
         contact_security: None,
         contact_security_generation: 0,
+        own_session_check: Default::default(),
         contact_security_load_task: None,
         pending_contact_verification_send: None,
         contact_verification_send_generation: 0,

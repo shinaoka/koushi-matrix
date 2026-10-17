@@ -1291,6 +1291,10 @@ export class TauriDesktopApi implements DesktopApi {
     return this.invokeCommand<CommandAdmission>("dismiss_event_navigation_failure", {});
   }
 
+  async dismissUnverifiedOwnSessionsAlert(): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("dismiss_unverified_own_sessions_alert", {});
+  }
+
   async openTimelineAtTimestamp(
     roomId: string,
     timestampMs: number

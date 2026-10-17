@@ -2615,7 +2615,15 @@ export interface E2eeTrustState {
   key_backup: KeyBackupStatus;
   identity_reset: IdentityResetState;
   key_management: E2eeKeyManagementState;
+  /** The account's own sessions from the last own-session check (#1505). */
   devices: DeviceTrustSummary[];
+  /** Pending popup naming unverified own sessions; null once dismissed. */
+  unverified_own_sessions_alert: UnverifiedOwnSessionsAlert | null;
+}
+
+export interface UnverifiedOwnSessionsAlert {
+  total_sessions: number;
+  unverified_sessions: number;
 }
 
 export interface E2eeKeyManagementState {
@@ -2751,6 +2759,10 @@ export interface DeviceTrustSummary {
   user_id: string;
   device_id: string;
   trust_level: DeviceTrustLevel;
+  display_name: string | null;
+  /** Milliseconds since the Unix epoch, as reported by the homeserver. */
+  last_seen_ts: number | null;
+  is_current: boolean;
 }
 
 export type DeviceTrustLevel = "unknown" | "unverified" | "verified" | "blocked";

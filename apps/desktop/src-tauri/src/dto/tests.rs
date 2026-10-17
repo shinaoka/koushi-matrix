@@ -2296,7 +2296,18 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
         },
         identity_reset: IdentityResetState::Idle,
         key_management: E2eeKeyManagementState::default(),
-        devices: Vec::new(),
+        devices: vec![koushi_state::DeviceTrustSummary {
+            user_id: "@fixture:example.invalid".to_owned(),
+            device_id: "FIXTUREOTHER".to_owned(),
+            trust_level: koushi_state::DeviceTrustLevel::Unverified,
+            display_name: Some("Fixture laptop".to_owned()),
+            last_seen_ts: Some(1_700_000_000_000),
+            is_current: false,
+        }],
+        unverified_own_sessions_alert: Some(koushi_state::UnverifiedOwnSessionsAlert {
+            total_sessions: 2,
+            unverified_sessions: 1,
+        }),
     };
 
     // local_encryption

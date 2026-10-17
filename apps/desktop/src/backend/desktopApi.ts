@@ -305,6 +305,7 @@ export interface DesktopApi {
   selectSearchResult(roomId: string, eventId: string): Promise<CommandSettlement>;
   openTimelineAtTimestamp(roomId: string, timestampMs: number): Promise<CommandSettlement>;
   dismissEventNavigationFailure(): Promise<CommandAdmission>;
+  dismissUnverifiedOwnSessionsAlert(): Promise<CommandAdmission>;
   closeFocusedContext(): Promise<CommandSettlement>;
   closeSearch(): Promise<CommandSettlement>;
   beginComposerDraftRendererGeneration(): Promise<string>;

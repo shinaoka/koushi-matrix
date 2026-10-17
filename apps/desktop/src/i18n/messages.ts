@@ -1186,6 +1186,18 @@ export type MessageId =
   | "settings.securityPrivacy"
   | "settings.accountManagement"
   | "settings.manageAccount"
+  | "ownSessions.title"
+  | "ownSessions.account"
+  | "ownSessions.counts"
+  | "ownSessions.explain"
+  | "ownSessions.unverifiedList"
+  | "ownSessions.lastSeen"
+  | "ownSessions.review"
+  | "ownSessions.later"
+  | "ownSessions.otherSessions"
+  | "ownSessions.none"
+  | "ownSessions.notChecked"
+  | "ownSessions.signOutHint"
   | "settings.manageAccountHint"
   | "settings.changePassword"
   | "settings.changePasswordLabel"
@@ -3482,6 +3494,18 @@ const en: Catalog = {
   "settings.securityPrivacy": "Security & Privacy",
   "settings.accountManagement": "Account management",
   "settings.manageAccount": "Manage account & devices",
+  "ownSessions.title": "Unverified sessions on {account}",
+  "ownSessions.account": "Account: {userId}\nHomeserver: {homeserver}",
+  "ownSessions.counts": "Signed-in sessions: {total}. Not verified: {unverified}.",
+  "ownSessions.explain": "If a session is yours, verify it from that session. If you don't recognize it, sign it out from Manage account & devices.",
+  "ownSessions.unverifiedList": "Unverified sessions",
+  "ownSessions.lastSeen": "Last active {time}",
+  "ownSessions.review": "Review sessions",
+  "ownSessions.later": "Later",
+  "ownSessions.otherSessions": "Other sessions",
+  "ownSessions.none": "No other sessions are signed in to this account.",
+  "ownSessions.notChecked": "Koushi has not checked this account's sessions yet.",
+  "ownSessions.signOutHint": "Koushi checks this list at sign-in and at most once every 24 hours. To sign out a session, use Manage account & devices.",
   "settings.manageAccountHint": "Opens this server's account and device management page in your browser.",
   "settings.changePassword": "Change password",
   "settings.changePasswordLabel": "New password",
@@ -5665,6 +5689,18 @@ const ja: Catalog = {
   "settings.securityPrivacy": "セキュリティとプライバシー",
   "settings.accountManagement": "アカウント管理",
   "settings.manageAccount": "アカウントとデバイスを管理",
+  "ownSessions.title": "{account} に未検証のセッションがあります",
+  "ownSessions.account": "アカウント: {userId}\nホームサーバー: {homeserver}",
+  "ownSessions.counts": "サインイン中のセッション: {total} 件。未検証: {unverified} 件。",
+  "ownSessions.explain": "自分のセッションであれば、そのセッションから検証してください。心当たりがない場合は「アカウントとデバイスを管理」からサインアウトしてください。",
+  "ownSessions.unverifiedList": "未検証のセッション",
+  "ownSessions.lastSeen": "最終アクティブ: {time}",
+  "ownSessions.review": "セッションを確認",
+  "ownSessions.later": "後で",
+  "ownSessions.otherSessions": "その他のセッション",
+  "ownSessions.none": "このアカウントにサインインしている他のセッションはありません。",
+  "ownSessions.notChecked": "Koushi はまだこのアカウントのセッションを確認していません。",
+  "ownSessions.signOutHint": "Koushi はこの一覧をサインイン時と、最大 24 時間に 1 回確認します。セッションをサインアウトするには「アカウントとデバイスを管理」を使ってください。",
   "settings.manageAccountHint": "このサーバーのアカウントとデバイスの管理ページをブラウザで開きます。",
   "settings.changePassword": "パスワードを変更",
   "settings.changePasswordLabel": "新しいパスワード",

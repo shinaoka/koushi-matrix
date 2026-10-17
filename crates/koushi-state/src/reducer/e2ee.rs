@@ -1263,3 +1263,38 @@ fn e2ee_key_management_events() -> Vec<AppEffect> {
         AppEffect::EmitUiEvent(UiEvent::E2eeKeyManagementChanged),
     ]
 }
+
+/// #1505: install a settled own-session check. A session that is no longer
+/// ready (logout, switch, or lock raced the check) keeps its cleared state.
+pub(crate) fn handle_own_sessions_checked(
+    state: &mut AppState,
+    devices: Vec<crate::state::DeviceTrustSummary>,
+    current_session_verified: bool,
+) -> Vec<AppEffect> {
+    if !matches!(state.session, SessionState::Ready(_)) {
+        return Vec::new();
+    }
+    let alert = crate::state::unverified_own_sessions_alert(&devices, current_session_verified);
+    if state.e2ee_trust.devices == devices
+        && state.e2ee_trust.unverified_own_sessions_alert == alert
+    {
+        return Vec::new();
+    }
+    state.e2ee_trust.devices = devices;
+    state.e2ee_trust.unverified_own_sessions_alert = alert;
+    vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+}
+
+pub(crate) fn handle_unverified_own_sessions_alert_dismissed(
+    state: &mut AppState,
+) -> Vec<AppEffect> {
+    if state
+        .e2ee_trust
+        .unverified_own_sessions_alert
+        .take()
+        .is_none()
+    {
+        return Vec::new();
+    }
+    vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+}
