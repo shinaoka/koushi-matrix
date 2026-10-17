@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   accountResetIdentityConfirmation,
   accountSignOutConfirmation,
-  signedInAccountLabel
+  signedInAccountLabel,
+  targetAccountTab
 } from "./accountSignOut";
 import type { AccountTabSummary } from "../domain/types";
 import { t } from "../i18n/messages";
@@ -59,5 +60,24 @@ describe("account-scoped confirmations name their account (#1504)", () => {
     expect(signedInAccountLabel(tab({ id: "dave" }))).toBe("dave");
     expect(signedInAccountLabel(tab({ id: "erin", status: "signedOut" }))).toBeNull();
     expect(signedInAccountLabel(null)).toBeNull();
+  });
+});
+
+describe("targetAccountTab", () => {
+  it("prefers the bound tab and otherwise names the session's own account", () => {
+    const bound = tab({ id: "a", accountKey: "@alice:example.invalid" });
+    expect(targetAccountTab(bound, null)).toBe(bound);
+    expect(
+      targetAccountTab(undefined, {
+        kind: "ready",
+        homeserver: "https://matrix.example.invalid",
+        user_id: "@solo:example.invalid",
+        device_id: "DEVICE"
+      } as never)
+    ).toMatchObject({
+      accountKey: "@solo:example.invalid",
+      homeserver: "https://matrix.example.invalid"
+    });
+    expect(targetAccountTab(null, { kind: "signedOut" } as never)).toBeNull();
   });
 });

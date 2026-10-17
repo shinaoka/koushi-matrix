@@ -131,7 +131,8 @@ import { syncNativeMenuLabels } from "./backend/tauri/nativeMenuLabels";
 import {
   accountResetIdentityConfirmation,
   accountSignOutConfirmation,
-  signedInAccountLabel
+  signedInAccountLabel,
+  targetAccountTab
 } from "./components/accountSignOut";
 import type { AccountTabAction } from "./components/Shell";
 import {
@@ -3209,7 +3210,10 @@ function AccountContent({
     logoutConfirmationInFlightRef.current = true;
     try {
       // #1504: name the account being signed out, never a bare "Sign out?".
-      const tab = accountTabs?.tabs.find((candidate) => candidate.id === accountTabId);
+      const tab = targetAccountTab(
+        accountTabs?.tabs.find((candidate) => candidate.id === accountTabId),
+        snapshot?.state.domain.session
+      );
       if (!tab) return;
       const { message, options } = accountSignOutConfirmation(tab, accountTabs?.tabs ?? [], {
         removeTab: false
@@ -3777,7 +3781,10 @@ function AccountContent({
 
   async function resetIdentity() {
     // #1504: an account-scoped destructive action names its account first.
-    const tab = accountTabs?.tabs.find((candidate) => candidate.id === accountTabId);
+    const tab = targetAccountTab(
+      accountTabs?.tabs.find((candidate) => candidate.id === accountTabId),
+      snapshot?.state.domain.session
+    );
     if (!tab) return;
     const { message, options } = accountResetIdentityConfirmation(tab);
     if (!(await windowDialogPort.confirm(message, options))) return;

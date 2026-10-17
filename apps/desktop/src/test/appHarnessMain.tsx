@@ -862,7 +862,15 @@ function harnessAccountTabsSnapshot() {
 // Native confirmation dialogs are accepted by default in the unattended app
 // harness. Individual dialog behavior belongs in focused unit tests; existing
 // end-to-end flows should continue past an explicit destructive confirmation.
-mock.setCommandResponse("plugin:dialog|message", "Ok");
+// A confirmation with a named action (#1504) settles as accepted only when the
+// result is that action's label, so echo the requested OK label back.
+mock.setCommandResponse(
+  "plugin:dialog|message",
+  (args: { buttons?: { OkCancelCustom?: [string, string] } | string } | undefined) =>
+    typeof args?.buttons === "object" && args.buttons.OkCancelCustom
+      ? args.buttons.OkCancelCustom[0]
+      : "Ok"
+);
 mock.setCommandResponse("request_native_attention_notification_permission", true);
 let currentSnapshot = withSectionBounds(readySnapshot());
 let lastStateUpdateGeneration = currentSnapshot.state_generation ?? 0;

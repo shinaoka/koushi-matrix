@@ -75,7 +75,7 @@ test("switching tabs during logout keeps Account Settings bound to the new accou
   await settingsButton.click();
   const dialog = page.getByRole("dialog", { name: "Account Settings", exact: true });
   await dialog.getByRole("tab", { name: "Sessions", exact: true }).click();
-  await dialog.getByRole("button", { name: "Sign out", exact: true }).click();
+  await dialog.getByRole("button", { name: /^Sign out of @/ }).click();
   await expect.poll(() => page.evaluate(() =>
     (window as unknown as { __harness: { invocationsOf(command: string): unknown[] } })
       .__harness.invocationsOf("logout").length
@@ -103,7 +103,7 @@ test("switching tabs during logout keeps Account Settings bound to the new accou
 
   await expect(dialog.locator(".settings-account-owner")).toContainText("@bob:example.invalid");
   await dialog.getByRole("tab", { name: "Sessions", exact: true }).click();
-  await expect(dialog.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: /^Sign out of @/ })).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Bob", exact: true }))
     .toHaveAttribute("aria-current", "page");
 });

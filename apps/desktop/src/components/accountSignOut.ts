@@ -1,5 +1,5 @@
 import { t } from "../i18n/messages";
-import type { AccountTabSummary } from "../domain/types";
+import type { AccountTabSummary, SessionState } from "../domain/types";
 import type { WindowConfirmOptions } from "../backend/windowDialogPort";
 
 /** The account a tab is bound to, by display name, then user ID localpart. */
@@ -9,6 +9,30 @@ export function accountTabLabel(tab: AccountTabSummary): string {
     tab.accountKey?.replace(/^@/, "").split(":", 1)[0] ||
     t("accountTabs.addAccount")
   );
+}
+
+/**
+ * The account a destructive action targets: the bound tab, or, when no tab
+ * list is published (single-account runtime), the session's own account.
+ */
+export function targetAccountTab(
+  tab: AccountTabSummary | null | undefined,
+  session: SessionState | null | undefined
+): AccountTabSummary | null {
+  if (tab) return tab;
+  if (!session || !("user_id" in session) || typeof session.user_id !== "string") return null;
+  const homeserver = "homeserver" in session && typeof session.homeserver === "string"
+    ? session.homeserver
+    : null;
+  return {
+    id: "",
+    accountKey: session.user_id,
+    homeserver,
+    displayName: null,
+    avatarSourceRef: null,
+    status: "ready",
+    unreadCount: 0
+  };
 }
 
 /** Tabs whose account is bound and not signed out (#1504). */
