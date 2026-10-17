@@ -70,3 +70,20 @@ test("does nothing outside the desktop runtime", async () => {
   await syncNativeMenuLabels("ja");
   expect(invoke).not.toHaveBeenCalled();
 });
+
+test("names the selected account on account-scoped menu items (#1504)", async () => {
+  Reflect.set(window, "__TAURI_INTERNALS__", {});
+  vi.mocked(invoke).mockImplementation(async (command) =>
+    command === "native_menu_label_keys"
+      ? ["menu.signOut", "menu.accountSettings", "menu.view"]
+      : undefined
+  );
+  await syncNativeMenuLabels("en", "none", "Alice");
+  expect(invoke).toHaveBeenLastCalledWith("set_native_menu_labels", {
+    labels: {
+      "menu.signOut": "Sign Out of Alice",
+      "menu.accountSettings": "Account Settings for Alice…",
+      "menu.view": "View"
+    }
+  });
+});

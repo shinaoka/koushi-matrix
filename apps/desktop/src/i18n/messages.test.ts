@@ -407,7 +407,10 @@ describe("i18n message catalog", () => {
         (item) => item.labelMessageId
       ),
       ...contextMenuItems({ kind: "space" }).map((item) => item.labelMessageId),
-      ...contextMenuItems({ kind: "account" }).map((item) => item.labelMessageId)
+      ...contextMenuItems({ kind: "account" }).map((item) => item.labelMessageId),
+      ...(["ready", "error", "signedOut"] as const).flatMap((status) =>
+        contextMenuItems({ kind: "accountTab", status }).map((item) => item.labelMessageId)
+      )
     ];
 
     expect(ids.every((id) => messageIds.has(id))).toBe(true);

@@ -62,8 +62,20 @@ you want.
 
 Select a tab to view that account. Switching tabs does not sign out the other
 accounts: they continue syncing and can receive notifications. Koushi restores
-saved accounts and the selected tab on startup. **Account Settings → Sessions →
-Sign out** signs out only the selected account.
+saved accounts and the selected tab on startup.
+
+Right-click an account tab (or focus it and press Shift+F10 or the context-menu
+key) to act on that account without switching to it first:
+
+- A signed-in account offers **Account settings…**, **Sign out…**, and **Sign
+  out and remove tab…**.
+- A signed-out account offers **Sign in again** and **Remove tab**.
+
+Every sign-out names the account it affects. The confirmation shows the account's
+user ID and homeserver, and says when your other accounts stay signed in. The
+**Sign out of** *account* button in **Account Settings → Sessions** and the menu
+bar's **Sign Out of** *account* both act on the selected account only. Signing
+out keeps the tab as signed out; **Sign out and remove tab** also removes it.
 
 ## Open a conversation
 

@@ -92,6 +92,7 @@ describe("DesktopApi command contract", () => {
         "addAccountTab",
         "cancelAddAccountTab",
         "listAccountTabs",
+        "logoutAccountTab",
         "removeSignedOutAccountTab",
         "selectAccountTab",
         "setRoomAccessDraft",

@@ -70,7 +70,7 @@ import type { HistoryExportControls } from "./HistoryExportDialog";
 import { SpaceInfoPanel } from "./SpaceInfoPanel";
 import { ThreadsListView } from "./ThreadsListView";
 import { UserSettingsPanel } from "./UserSettingsPanel";
-import { AccountTabStrip, type RuntimeAlert } from "./Shell";
+import { AccountTabStrip, type AccountTabAction, type RuntimeAlert } from "./Shell";
 import type { AccountNotificationActions } from "./user-settings/AccountNotificationsSections";
 import type { NotificationDeliveryActions } from "./user-settings/NotificationDeliverySection";
 import { PeoplePanel, ProfilePanel } from "./PeoplePanel";
@@ -157,6 +157,7 @@ export function ContextualRightPanel({
   onSelectAccountTab = () => undefined,
   onAddAccountTab = () => undefined,
   onRemoveSignedOutAccountTab = () => undefined,
+  onAccountTabAction,
   canRestartSync = false,
   onRestartSync = () => undefined,
   runtimeAlerts = [],
@@ -318,6 +319,7 @@ export function ContextualRightPanel({
   onSelectAccountTab?: (id: string) => void;
   onAddAccountTab?: () => void;
   onRemoveSignedOutAccountTab?: (id: string) => void;
+  onAccountTabAction?: (tabId: string, action: AccountTabAction) => void;
   canRestartSync?: boolean;
   onRestartSync?: () => void;
   runtimeAlerts?: RuntimeAlert[];
@@ -625,6 +627,7 @@ export function ContextualRightPanel({
             onSelect={onSelectAccountTab}
             onAdd={onAddAccountTab}
             onRemove={onRemoveSignedOutAccountTab}
+            onAccountTabAction={onAccountTabAction}
             showActivity={false}
           />
         ) : null}

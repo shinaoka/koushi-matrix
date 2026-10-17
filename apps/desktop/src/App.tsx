@@ -129,6 +129,12 @@ import { createLatestShortcutHandler, listenForAppShortcuts } from "./app/keyboa
 import { effectiveLoginServer } from "./app/loginServer";
 import { syncNativeMenuLabels } from "./backend/tauri/nativeMenuLabels";
 import {
+  accountResetIdentityConfirmation,
+  accountSignOutConfirmation,
+  signedInAccountLabel
+} from "./components/accountSignOut";
+import type { AccountTabAction } from "./components/Shell";
+import {
   effectiveRightPanelModeForSnapshot,
   type PeoplePanelScope,
   type RightPanelContextMenuTarget,
@@ -989,6 +995,50 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     });
   }
 
+  const accountTabSignOutInFlightRef = useRef(false);
+
+  /**
+   * #1504: an account tab's context menu acts on that tab's account, which need
+   * not be the selected tab. Sign-out names the account in the confirmation.
+   */
+  async function runAccountTabAction(tabId: string, action: AccountTabAction): Promise<void> {
+    const tabs = accountTabsRef.current?.tabs ?? [];
+    const tab = tabs.find((candidate) => candidate.id === tabId);
+    if (!tab) return;
+    switch (action) {
+      case "accountTabSettings":
+        if (accountTabsRef.current?.selectedTabId !== tabId) await selectAccountTab(tabId);
+        if (accountTabsRef.current?.selectedTabId === tabId) setSettingsScope("account");
+        return;
+      case "accountTabSignInAgain":
+        await selectAccountTab(tabId);
+        return;
+      case "accountTabRemove":
+        await removeSignedOutAccountTab(tabId);
+        return;
+      case "accountTabSignOut":
+      case "accountTabSignOutAndRemove": {
+        if (accountTabSignOutInFlightRef.current) return;
+        accountTabSignOutInFlightRef.current = true;
+        try {
+          const removeTab = action === "accountTabSignOutAndRemove";
+          const { message, options } = accountSignOutConfirmation(tab, tabs, { removeTab });
+          if (!(await windowDialogPort.confirm(message, options))) return;
+          await desktopApi.logoutAccountTab(tabId);
+          if (accountTabsRef.current?.selectedTabId === tabId) setSettingsScope(null);
+          if (removeTab) await removeSignedOutAccountTab(tabId);
+        } finally {
+          accountTabSignOutInFlightRef.current = false;
+        }
+        return;
+      }
+    }
+  }
+
+  function handleAccountTabAction(tabId: string, action: AccountTabAction): void {
+    void runAccountTabAction(tabId, action).catch(() => undefined);
+  }
+
   async function removeSignedOutAccountTab(tabId: string): Promise<void> {
     // #1101: closing an unfinished add-account tab cancels it and returns to
     // the previous account; it never signs out or removes a bound account.
@@ -1027,6 +1077,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
       onSelectAccountTab={selectAccountTab}
       onAddAccountTab={addAccountTab}
       onRemoveSignedOutAccountTab={removeSignedOutAccountTab}
+      onAccountTabAction={handleAccountTabAction}
       onOpenAppSettings={() => setSettingsScope("app")}
       onOpenDiagnostics={() => openDiagnosticsRef.current()}
     >
@@ -1042,6 +1093,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           onSelectAccountTab={selectAccountTab}
           onAddAccountTab={addAccountTab}
           onRemoveSignedOutAccountTab={removeSignedOutAccountTab}
+          onAccountTabAction={handleAccountTabAction}
           onSettingsScopeChange={(scope) => {
             if (scope === null && selectedTabIntentRef.current !== selectedTabId) return;
             setSettingsScope(scope);
@@ -1077,6 +1129,7 @@ function AccountContent({
   onSelectAccountTab,
   onAddAccountTab,
   onRemoveSignedOutAccountTab,
+  onAccountTabAction,
   onSettingsScopeChange,
   settingsScope,
   onShowHelp,
@@ -1093,6 +1146,7 @@ function AccountContent({
   onSelectAccountTab: (id: string) => void | Promise<void>;
   onAddAccountTab: () => void;
   onRemoveSignedOutAccountTab: (id: string) => void;
+  onAccountTabAction: (tabId: string, action: AccountTabAction) => void;
   onSettingsScopeChange: (scope: "account" | "app" | null) => void;
   settingsScope: "account" | "app" | null;
   onShowHelp: () => void;
@@ -2692,12 +2746,15 @@ function AccountContent({
 
   const catalogLocale = snapshot?.state.domain.locale_profile.catalog_locale;
   const pseudoLocale = snapshot?.state.domain.locale_profile.pseudo_locale;
+  const nativeMenuAccount = signedInAccountLabel(
+    accountTabs?.tabs.find((tab) => tab.id === accountTabId)
+  );
   useEffect(() => {
     // #1016: the native menu is built before this webview resolves the
     // catalog, so a locale change re-applies the menu with localized labels.
     if (!catalogLocale) return;
-    runInBackground(syncNativeMenuLabels(catalogLocale, pseudoLocale));
-  }, [catalogLocale, pseudoLocale]);
+    runInBackground(syncNativeMenuLabels(catalogLocale, pseudoLocale, nativeMenuAccount));
+  }, [catalogLocale, pseudoLocale, nativeMenuAccount]);
 
   useEffect(() => {
     // A file dropped outside a Composer otherwise triggers the WebView's
@@ -3151,10 +3208,13 @@ function AccountContent({
     }
     logoutConfirmationInFlightRef.current = true;
     try {
-      const confirmed = await windowDialogPort.confirm(t("settings.signOutConfirm"), {
-        title: t("settings.signOutConfirmTitle"),
-        kind: "warning"
+      // #1504: name the account being signed out, never a bare "Sign out?".
+      const tab = accountTabs?.tabs.find((candidate) => candidate.id === accountTabId);
+      if (!tab) return;
+      const { message, options } = accountSignOutConfirmation(tab, accountTabs?.tabs ?? [], {
+        removeTab: false
       });
+      const confirmed = await windowDialogPort.confirm(message, options);
       if (confirmed) {
         await logout();
       }
@@ -3716,6 +3776,11 @@ function AccountContent({
   }
 
   async function resetIdentity() {
+    // #1504: an account-scoped destructive action names its account first.
+    const tab = accountTabs?.tabs.find((candidate) => candidate.id === accountTabId);
+    if (!tab) return;
+    const { message, options } = accountResetIdentityConfirmation(tab);
+    if (!(await windowDialogPort.confirm(message, options))) return;
     await settleCommand(api.resetIdentity());
   }
 
@@ -7288,6 +7353,7 @@ function AccountContent({
           onSelectAccountTab={onSelectAccountTab}
           onAddAccountTab={onAddAccountTab}
           onRemoveSignedOutAccountTab={onRemoveSignedOutAccountTab}
+          onAccountTabAction={onAccountTabAction}
           activeRoomName={activeRoom ? roomDisplayLabel(activeRoom) : null}
           activeSpaceName={activeSpaceName}
           platform={snapshot.state.domain.locale_profile.platform}
@@ -7647,6 +7713,7 @@ function AccountContent({
           onSelectAccountTab={onSelectAccountTab}
           onAddAccountTab={onAddAccountTab}
           onRemoveSignedOutAccountTab={onRemoveSignedOutAccountTab}
+          onAccountTabAction={onAccountTabAction}
           canRestartSync={syncStatePresentation(snapshot.state.domain.sync).restartable}
           onRestartSync={() => runInBackground(restartSync())}
           runtimeAlerts={runtimeAlerts}

@@ -298,7 +298,8 @@ describe("ContextualRightPanel", () => {
 
     expect(confirmationHandler).toBeDefined();
     expect(confirmationHandler).toContain("windowDialogPort.confirm");
-    expect(confirmationHandler).toContain('t("settings.signOutConfirm")');
+    // #1504: the confirmation names the account being signed out.
+    expect(confirmationHandler).toContain("accountSignOutConfirmation(tab");
     expect(confirmationHandler).toContain("await logout()");
     expect(source).not.toContain("void requestLogout()");
     expect(source.match(/runInBackground\(requestLogout\(\)\)/g)?.length).toBe(4);

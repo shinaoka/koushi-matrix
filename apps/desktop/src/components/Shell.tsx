@@ -44,14 +44,15 @@ import type {
   SidebarSectionBound,
   SidebarSectionKind
 } from "../domain/types";
-import { contextMenuItems } from "../domain/contextMenus";
+import { contextMenuItems, type ContextMenuActionId } from "../domain/contextMenus";
 import { renderableThumbnailSourceUrl } from "../backend/linkMediaRuntime";
 import {
   ROOM_ACCESS_CHECKING,
   roomAccessIndicator
 } from "../domain/accessCondition";
 import { RoomAccessGlyphIcon } from "./RoomAccessGlyph";
-import { onMenuKeyDown } from "./ContextMenuSurface";
+import { ContextMenuSurface, onMenuKeyDown } from "./ContextMenuSurface";
+import { accountTabLabel } from "./accountSignOut";
 import { FloatingLayer, floatingPlacementStyle, useFloatingPlacement } from "./floatingLayer";
 import { useOutsidePressDismissal } from "./popupDismissal";
 import { Tooltip, type TooltipTriggerProps } from "./Tooltip";
@@ -184,13 +185,15 @@ function searchScopePlaceholder(
   }
 }
 
-function accountTabLabel(tab: AccountTabSummary): string {
-  return (
-    tab.displayName?.trim() ||
-    tab.accountKey?.replace(/^@/, "").split(":", 1)[0] ||
-    t("accountTabs.addAccount")
-  );
-}
+/** #1504: an account tab context-menu action, always naming the tab it acts on. */
+export type AccountTabAction = Extract<
+  ContextMenuActionId,
+  | "accountTabSettings"
+  | "accountTabSignOut"
+  | "accountTabSignOutAndRemove"
+  | "accountTabSignInAgain"
+  | "accountTabRemove"
+>;
 
 function shortHomeserverName(homeserver: string | null): string {
   if (!homeserver) return "";
@@ -207,6 +210,7 @@ export function AccountTabStrip({
   onSelect,
   onAdd,
   onRemove,
+  onAccountTabAction,
   showActivity = true
 }: {
   tabs: AccountTabSummary[];
@@ -215,12 +219,27 @@ export function AccountTabStrip({
   onAdd: () => void;
   onRemove: (id: string) => void;
   /**
+   * #1504: actions from a tab's context menu. Each carries the clicked tab's id,
+   * which need not be the selected tab. Without it, tabs open no context menu.
+   */
+  onAccountTabAction?: (tabId: string, action: AccountTabAction) => void;
+  /**
    * #1458: the workspace strip shows each account's connection status, unread and
    * invitation counts. The Account Settings header keeps only account selection, so it
    * renders neither the indicators nor the status in the tab's accessible name.
    */
   showActivity?: boolean;
 }) {
+  const [tabMenu, setTabMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
+  const menuTab = tabMenu ? tabs.find((tab) => tab.id === tabMenu.tabId) ?? null : null;
+  const menuItems = menuTab ? contextMenuItems({ kind: "accountTab", status: menuTab.status }) : [];
+
+  function openTabMenu(tab: AccountTabSummary, x: number, y: number) {
+    if (!onAccountTabAction) return;
+    if (contextMenuItems({ kind: "accountTab", status: tab.status }).length === 0) return;
+    setTabMenu({ tabId: tab.id, x, y });
+  }
+
   function statusLabel(status: AccountTabSummary["status"]): string {
     switch (status) {
       case "addAccount": return t("accountTabs.addAccount");
@@ -264,6 +283,18 @@ export function AccountTabStrip({
               }
               title={`${label}${tab.homeserver ? ` · ${shortHomeserverName(tab.homeserver)}` : ""}`}
               onClick={() => onSelect(tab.id)}
+              onContextMenu={(event) => {
+                if (!onAccountTabAction) return;
+                event.preventDefault();
+                openTabMenu(tab, event.clientX, event.clientY);
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "ContextMenu" && !(event.key === "F10" && event.shiftKey)) return;
+                if (!onAccountTabAction) return;
+                event.preventDefault();
+                const rect = event.currentTarget.getBoundingClientRect();
+                openTabMenu(tab, rect.left, rect.bottom);
+              }}
             >
               <span className={`account-tab-avatar ${avatarColorClass(tab.accountKey ?? tab.id)}`}>
                 {avatarSource ? (
@@ -328,6 +359,24 @@ export function AccountTabStrip({
           </button>
         )}
       </Tooltip>
+      {tabMenu && menuTab && onAccountTabAction ? (
+        <FloatingLayer>
+          {/* The strip sits in the draggable titlebar; keep menu presses from
+              bubbling (through the portal) into a window drag. */}
+          <div onMouseDown={(event) => event.stopPropagation()}>
+            <ContextMenuSurface
+              items={menuItems}
+              x={tabMenu.x}
+              y={tabMenu.y}
+              onClose={() => setTabMenu(null)}
+              onAction={(action) => {
+                setTabMenu(null);
+                onAccountTabAction(menuTab.id, action as AccountTabAction);
+              }}
+            />
+          </div>
+        </FloatingLayer>
+      ) : null}
     </nav>
   );
 }
@@ -340,6 +389,7 @@ export function PersistentAccountShell({
   onSelectAccountTab,
   onAddAccountTab,
   onRemoveSignedOutAccountTab,
+  onAccountTabAction,
   onOpenAppSettings,
   onOpenDiagnostics,
   children
@@ -351,6 +401,7 @@ export function PersistentAccountShell({
   onSelectAccountTab: (id: string) => void;
   onAddAccountTab: () => void;
   onRemoveSignedOutAccountTab: (id: string) => void;
+  onAccountTabAction?: (tabId: string, action: AccountTabAction) => void;
   onOpenAppSettings: () => void;
   onOpenDiagnostics: () => void;
   children: ReactNode;
@@ -368,6 +419,7 @@ export function PersistentAccountShell({
         onSelectAccountTab={onSelectAccountTab}
         onAddAccountTab={onAddAccountTab}
         onRemoveSignedOutAccountTab={onRemoveSignedOutAccountTab}
+        onAccountTabAction={onAccountTabAction}
         onOpenAppSettings={onOpenAppSettings}
         onOpenDiagnostics={onOpenDiagnostics}
       /> : null}
@@ -391,6 +443,7 @@ export function TopBar({
   onSelectAccountTab = () => undefined,
   onAddAccountTab = () => undefined,
   onRemoveSignedOutAccountTab = () => undefined,
+  onAccountTabAction,
   accountTabs = null,
   selectedAccountTabId = null,
   accountScopedContentReady = true
@@ -409,6 +462,7 @@ export function TopBar({
   onSelectAccountTab?: (id: string) => void;
   onAddAccountTab?: () => void;
   onRemoveSignedOutAccountTab?: (id: string) => void;
+  onAccountTabAction?: (tabId: string, action: AccountTabAction) => void;
   accountTabs?: AccountTabsSnapshot | null;
   selectedAccountTabId?: string | null;
   accountScopedContentReady?: boolean;
@@ -433,6 +487,7 @@ export function TopBar({
         onSelect={onSelectAccountTab}
         onAdd={onAddAccountTab}
         onRemove={onRemoveSignedOutAccountTab}
+        onAccountTabAction={onAccountTabAction}
       />
       {accountScopedContentReady ? <label className="top-search">
         <Search size={ICON_SIZE.input} />

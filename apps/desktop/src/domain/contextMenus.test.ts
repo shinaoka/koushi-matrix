@@ -338,4 +338,30 @@ describe("context menu registry", () => {
       "copySelectedText"
     );
   });
+
+  test("account tab menus match what the tab's account can do (#1504)", () => {
+    const ids = (status: Parameters<typeof contextMenuItems>[0] & { kind: "accountTab" }) =>
+      contextMenuItems(status).map((item) => item.id);
+    expect(ids({ kind: "accountTab", status: "ready" })).toEqual([
+      "accountTabSettings",
+      "accountTabSignOut",
+      "accountTabSignOutAndRemove"
+    ]);
+    expect(ids({ kind: "accountTab", status: "needsVerification" })).toEqual([
+      "accountTabSettings",
+      "accountTabSignOut",
+      "accountTabSignOutAndRemove"
+    ]);
+    expect(ids({ kind: "accountTab", status: "error" })).toEqual([
+      "accountTabSignOut",
+      "accountTabSignOutAndRemove"
+    ]);
+    expect(ids({ kind: "accountTab", status: "signedOut" })).toEqual([
+      "accountTabSignInAgain",
+      "accountTabRemove"
+    ]);
+    for (const status of ["addAccount", "restoring", "authenticating", "loggingOut"] as const) {
+      expect(ids({ kind: "accountTab", status })).toEqual([]);
+    }
+  });
 });

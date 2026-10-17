@@ -138,6 +138,11 @@ export interface DesktopApi {
   addAccountTab(): Promise<AccountTabsSnapshot>;
   removeSignedOutAccountTab(tabId: string): Promise<AccountTabsSnapshot>;
   cancelAddAccountTab(tabId: string): Promise<AccountTabsSnapshot>;
+  /**
+   * #1504: sign out the account bound to a specific tab, which need not be the
+   * selected one (account tab context menu).
+   */
+  logoutAccountTab(tabId: string): Promise<CommandSettlement>;
   getDesktopUpdateState(): Promise<DesktopUpdateState>;
   checkForDesktopUpdate(): Promise<void>;
   downloadDesktopUpdate(expectedGeneration: number): Promise<void>;

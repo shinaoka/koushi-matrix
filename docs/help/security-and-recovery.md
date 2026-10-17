@@ -57,9 +57,10 @@ need to reopen the room.
 
 Recovery only helps when the needed keys are available from your backup, key
 file, or another eligible device. A verified session does not guarantee that
-all historical messages can be decrypted. Avoid resetting identity or erasing
-local data as a first troubleshooting step: it can remove access to keys that
-exist only on that device.
+all historical messages can be decrypted. **Reset** identity first asks you to
+confirm, naming the account whose identity it resets. Avoid resetting identity
+or erasing local data as a first troubleshooting step: it can remove access to
+keys that exist only on that device.
 
 ## Key export and chat export are different
 

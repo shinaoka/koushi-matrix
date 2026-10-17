@@ -1,7 +1,13 @@
 import type { MessageId } from "../i18n/messages";
-import type { RoomTags } from "./types";
+import type { AccountTabSummary, RoomTags } from "./types";
 
-export type ContextMenuKind = "message" | "room" | "space" | "spaceMember" | "account";
+export type ContextMenuKind =
+  | "message"
+  | "room"
+  | "space"
+  | "spaceMember"
+  | "account"
+  | "accountTab";
 
 export type ContextMenuActionId =
   | "copySelectedText"
@@ -30,7 +36,12 @@ export type ContextMenuActionId =
   | "leaveSpace"
   | "inviteUserToSpace"
   | "openUserSettings"
-  | "openKeyboardSettings";
+  | "openKeyboardSettings"
+  | "accountTabSettings"
+  | "accountTabSignOut"
+  | "accountTabSignOutAndRemove"
+  | "accountTabSignInAgain"
+  | "accountTabRemove";
 
 export interface ContextMenuItem {
   id: ContextMenuActionId;
@@ -80,6 +91,11 @@ export type ContextMenuRequest =
     }
   | {
       kind: "account";
+    }
+  | {
+      /** #1504: right-click on an account tab; actions target that tab's account. */
+      kind: "accountTab";
+      status: AccountTabSummary["status"];
     };
 
 export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[] {
@@ -184,5 +200,40 @@ export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[]
         : [];
     case "account":
       return [{ id: "openUserSettings", labelMessageId: "context.openUserSettings" }];
+    case "accountTab":
+      return accountTabMenuItems(request.status);
+  }
+}
+
+function accountTabMenuItems(status: AccountTabSummary["status"]): ContextMenuItem[] {
+  const signOut: ContextMenuItem[] = [
+    { id: "accountTabSignOut", labelMessageId: "accountTabs.menuSignOut", destructive: true },
+    {
+      id: "accountTabSignOutAndRemove",
+      labelMessageId: "accountTabs.menuSignOutAndRemove",
+      destructive: true
+    }
+  ];
+  switch (status) {
+    case "ready":
+    case "needsVerification":
+      return [
+        { id: "accountTabSettings", labelMessageId: "accountTabs.menuAccountSettings" },
+        ...signOut
+      ];
+    case "error":
+      return signOut;
+    case "signedOut":
+      return [
+        { id: "accountTabSignInAgain", labelMessageId: "accountTabs.menuSignInAgain" },
+        { id: "accountTabRemove", labelMessageId: "accountTabs.menuRemoveTab", destructive: true }
+      ];
+    // Transitional tabs (restoring, signing in, signing out) and the add-account
+    // tab have no account action to offer; the add-account tab keeps its ×.
+    case "addAccount":
+    case "restoring":
+    case "authenticating":
+    case "loggingOut":
+      return [];
   }
 }

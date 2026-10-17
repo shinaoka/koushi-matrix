@@ -55,6 +55,11 @@ export type MessageId =
   | "accountTabs.error"
   | "accountTabs.removeFromList"
   | "accountTabs.cancelAddAccount"
+  | "accountTabs.menuAccountSettings"
+  | "accountTabs.menuSignOut"
+  | "accountTabs.menuSignOutAndRemove"
+  | "accountTabs.menuSignInAgain"
+  | "accountTabs.menuRemoveTab"
 
   | "action.add"
   | "action.back"
@@ -104,6 +109,8 @@ export type MessageId =
   | "menu.appSettings"
   | "menu.aboutKoushi"
   | "menu.signOut"
+  | "accountMenu.signOutAccount"
+  | "accountMenu.accountSettingsFor"
   | "menu.toggleRightPanel"
   | "menu.koushiHelp"
   | "menu.checkForUpdates"
@@ -1205,8 +1212,15 @@ export type MessageId =
   | "settings.accountDeactivated"
   | "settings.accountManagementFailed"
   | "settings.signOut"
-  | "settings.signOutConfirm"
-  | "settings.signOutConfirmTitle"
+  | "settings.signOutAccount"
+  | "settings.signOutAccountTitle"
+  | "settings.signOutAndRemoveTitle"
+  | "settings.signOutTarget"
+  | "settings.signOutBody"
+  | "settings.signOutAndRemoveBody"
+  | "settings.signOutOthersStay"
+  | "settings.signOutConfirmAction"
+  | "settings.signOutAndRemoveAction"
   | "settings.keyManagement"
   | "settings.roomKeyExport"
   | "settings.roomKeyExportDestination"
@@ -1315,6 +1329,9 @@ export type MessageId =
   | "trust.keyBackup"
   | "trust.noDevices"
   | "trust.resetIdentity"
+  | "trust.resetIdentityConfirmTitle"
+  | "trust.resetIdentityConfirmBody"
+  | "trust.resetIdentityConfirmAction"
   | "trust.sasEmoji"
   | "trust.sasEmojiList"
   | "trust.setupCrossSigning"
@@ -2173,6 +2190,11 @@ const en: Catalog = {
   "accountTabs.error": "Account error",
   "accountTabs.removeFromList": "Remove {account} from list",
   "accountTabs.cancelAddAccount": "Cancel adding account",
+  "accountTabs.menuAccountSettings": "Account settings…",
+  "accountTabs.menuSignOut": "Sign out…",
+  "accountTabs.menuSignOutAndRemove": "Sign out and remove tab…",
+  "accountTabs.menuSignInAgain": "Sign in again",
+  "accountTabs.menuRemoveTab": "Remove tab",
 
   "action.add": "Add",
   "action.back": "Back",
@@ -2225,6 +2247,8 @@ const en: Catalog = {
   "menu.accountSettings": "Account Settings…",
   "menu.appSettings": "App Settings…",
   "menu.signOut": "Sign Out",
+  "accountMenu.signOutAccount": "Sign Out of {account}",
+  "accountMenu.accountSettingsFor": "Account Settings for {account}…",
   "menu.toggleRightPanel": "Toggle Right Panel",
   "menu.koushiHelp": "Koushi Help",
   "menu.checkForUpdates": "Check for Updates…",
@@ -3484,8 +3508,15 @@ const en: Catalog = {
   "settings.accountDeactivated": "Account deactivated",
   "settings.accountManagementFailed": "Account operation failed",
   "settings.signOut": "Sign out",
-  "settings.signOutConfirm": "Are you sure you want to sign out of Koushi on this device?",
-  "settings.signOutConfirmTitle": "Sign out?",
+  "settings.signOutAccount": "Sign out of {account}",
+  "settings.signOutAccountTitle": "Sign out of {account}?",
+  "settings.signOutAndRemoveTitle": "Sign out of {account} and remove its tab?",
+  "settings.signOutTarget": "Account: {userId}\nHomeserver: {homeserver}",
+  "settings.signOutBody": "Koushi will sign this account out on this device. You can sign in again later.",
+  "settings.signOutAndRemoveBody": "Koushi will sign this account out on this device and remove its tab.",
+  "settings.signOutOthersStay": "Your other accounts stay signed in.",
+  "settings.signOutConfirmAction": "Sign out",
+  "settings.signOutAndRemoveAction": "Sign out and remove",
   "settings.keyManagement": "Key management",
   "settings.roomKeyExport": "Room key export",
   "settings.roomKeyExportDestination": "Key export destination",
@@ -3594,6 +3625,9 @@ const en: Catalog = {
   "trust.keyBackup": "Key backup",
   "trust.noDevices": "No devices",
   "trust.resetIdentity": "Reset",
+  "trust.resetIdentityConfirmTitle": "Reset the identity of {account}?",
+  "trust.resetIdentityConfirmBody": "Only this account's cryptographic identity is reset. Your other sessions of this account will need to be verified again, and your contacts may see that your identity changed.",
+  "trust.resetIdentityConfirmAction": "Reset identity",
   "trust.sasEmoji": "SAS emoji {index}",
   "trust.sasEmojiList": "SAS emoji",
   "trust.setupCrossSigning": "Set up",
@@ -4354,6 +4388,11 @@ const ja: Catalog = {
   "accountTabs.error": "アカウントエラー",
   "accountTabs.removeFromList": "{account}を一覧から削除",
   "accountTabs.cancelAddAccount": "アカウントの追加をキャンセル",
+  "accountTabs.menuAccountSettings": "アカウント設定…",
+  "accountTabs.menuSignOut": "サインアウト…",
+  "accountTabs.menuSignOutAndRemove": "サインアウトしてタブを削除…",
+  "accountTabs.menuSignInAgain": "再度サインイン",
+  "accountTabs.menuRemoveTab": "タブを削除",
 
   "action.add": "追加",
   "action.back": "戻る",
@@ -4416,6 +4455,8 @@ const ja: Catalog = {
   "menu.accountSettings": "アカウント設定…",
   "menu.appSettings": "アプリ設定…",
   "menu.signOut": "サインアウト",
+  "accountMenu.signOutAccount": "{account} からサインアウト",
+  "accountMenu.accountSettingsFor": "{account} のアカウント設定…",
   "menu.toggleRightPanel": "右パネルを切り替え",
   "menu.koushiHelp": "Koushi ヘルプ",
   "menu.checkForUpdates": "更新を確認…",
@@ -5650,8 +5691,15 @@ const ja: Catalog = {
   "settings.accountDeactivated": "アカウントを無効化しました",
   "settings.accountManagementFailed": "アカウント操作に失敗しました",
   "settings.signOut": "サインアウト",
-  "settings.signOutConfirm": "このデバイスの Koushi からサインアウトしてもよろしいですか？",
-  "settings.signOutConfirmTitle": "サインアウトしますか？",
+  "settings.signOutAccount": "{account} からサインアウト",
+  "settings.signOutAccountTitle": "{account} からサインアウトしますか？",
+  "settings.signOutAndRemoveTitle": "{account} からサインアウトしてタブを削除しますか？",
+  "settings.signOutTarget": "アカウント: {userId}\nホームサーバー: {homeserver}",
+  "settings.signOutBody": "このデバイスの Koushi でこのアカウントからサインアウトします。後で再度サインインできます。",
+  "settings.signOutAndRemoveBody": "このデバイスの Koushi でこのアカウントからサインアウトし、タブを削除します。",
+  "settings.signOutOthersStay": "他のアカウントはサインインしたままです。",
+  "settings.signOutConfirmAction": "サインアウト",
+  "settings.signOutAndRemoveAction": "サインアウトして削除",
   "settings.keyManagement": "鍵管理",
   "settings.roomKeyExport": "ルーム鍵エクスポート",
   "settings.roomKeyExportDestination": "鍵エクスポート先",
@@ -5762,6 +5810,9 @@ const ja: Catalog = {
   "trust.keyBackup": "鍵バックアップ",
   "trust.noDevices": "デバイスなし",
   "trust.resetIdentity": "リセット",
+  "trust.resetIdentityConfirmTitle": "{account} の ID をリセットしますか？",
+  "trust.resetIdentityConfirmBody": "このアカウントの暗号 ID だけがリセットされます。このアカウントの他のセッションは再度検証が必要になり、連絡先には ID が変更されたことが表示される場合があります。",
+  "trust.resetIdentityConfirmAction": "ID をリセット",
   "trust.sasEmoji": "SAS絵文字 {index}",
   "trust.sasEmojiList": "SAS絵文字",
   "trust.setupCrossSigning": "セットアップ",

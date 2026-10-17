@@ -6,6 +6,8 @@ export interface WindowDialogFilter {
 export interface WindowConfirmOptions {
   title: string;
   kind: "warning";
+  /** Names the confirming action instead of the platform's generic "OK". */
+  okLabel?: string;
 }
 
 export interface WindowSaveFileOptions {

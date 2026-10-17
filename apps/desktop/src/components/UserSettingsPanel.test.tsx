@@ -646,7 +646,9 @@ describe("UserSettingsPanel", () => {
     );
 
     fireEvent.click(screen.getByRole("tab", { name: "Sessions" }));
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Sign out of @demo-user:example.invalid" })
+    );
 
     expect(onLogout).toHaveBeenCalledTimes(1);
   });

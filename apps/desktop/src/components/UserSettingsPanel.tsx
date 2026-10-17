@@ -568,7 +568,12 @@ export function UserSettingsPanel({
                 onClick={onLogout}
               >
                 <LogOut size={14} />
-                <span>{t("settings.signOut")}</span>
+                {/* #1504: name the account so this can't read as "sign out of everything". */}
+                <span>
+                  {currentSession
+                    ? t("settings.signOutAccount", { account: currentSession.user_id })
+                    : t("settings.signOut")}
+                </span>
               </button>
             </div>
           </section>
