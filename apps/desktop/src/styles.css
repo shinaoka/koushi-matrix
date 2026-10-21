@@ -5799,11 +5799,15 @@ mark {
    are the pre-measurement defaults; resolveEmojiPickerPlacement then sets the
    exact inline/block size and physical offsets inline. */
 .emoji-picker {
-  --emoji-picker-resize-handle-size: 18px;
+  --emoji-picker-frame-size: 8px;
+  --emoji-picker-corner-size: 14px;
   position: fixed;
   z-index: 80;
   display: grid;
   grid-template-rows: auto auto 1fr;
+  /* The frame owns a gutter of its own thickness: a resize strip can then
+     never sit on the search field, the tabs, the grid or the scrollbar. */
+  padding: var(--emoji-picker-frame-size);
   inline-size: min(380px, calc(100vw - 32px));
   block-size: min(520px, calc(100vh - 32px));
   min-block-size: 0;
@@ -5882,35 +5886,47 @@ mark {
   padding: 8px;
 }
 
-/* The free corner follows the resolved anchor side. Physical corners correspond
-   to pointer coordinates; logical alignment is resolved in EmojiPicker. */
+/* Whole-frame resizing (#1583): thin strips on all four edges, squares on all
+   four corners. Insets are logical; the cursor names the physical edge pair,
+   because the drag itself follows physical pointer coordinates. */
 .emoji-picker-resize {
   position: absolute;
   z-index: 2;
-  inline-size: var(--emoji-picker-resize-handle-size);
-  block-size: var(--emoji-picker-resize-handle-size);
   padding: 0;
   border: 0;
-  background: var(--surface);
+  background: transparent;
   color: var(--text-muted);
   touch-action: none;
   user-select: none;
   line-height: 1;
 }
-.emoji-picker-resize.at-top { inset-block-start: 0; }
-.emoji-picker-resize.at-bottom { inset-block-end: 0; }
-.emoji-picker-resize.at-start { inset-inline-start: 0; }
-.emoji-picker-resize.at-end { inset-inline-end: 0; }
-.emoji-picker-resize.at-top.at-right,
-.emoji-picker-resize.at-bottom.at-left { cursor: nesw-resize; }
-.emoji-picker-resize.at-top.at-left,
-.emoji-picker-resize.at-bottom.at-right { cursor: nwse-resize; }
-
-.emoji-picker:has(.emoji-picker-resize.at-top) .emoji-picker-header {
-  padding-block-start: var(--emoji-picker-resize-handle-size);
+.emoji-picker-resize.is-edge-block {
+  inset-inline: 0;
+  block-size: var(--emoji-picker-frame-size);
 }
-.emoji-picker:has(.emoji-picker-resize.at-bottom) .emoji-picker-body {
-  padding-block-end: var(--emoji-picker-resize-handle-size);
+.emoji-picker-resize.is-edge-inline {
+  inset-block: 0;
+  inline-size: var(--emoji-picker-frame-size);
+}
+.emoji-picker-resize.is-corner {
+  z-index: 3;
+  inline-size: var(--emoji-picker-corner-size);
+  block-size: var(--emoji-picker-corner-size);
+}
+.emoji-picker-resize.at-block-start { inset-block-start: 0; }
+.emoji-picker-resize.at-block-end { inset-block-end: 0; }
+.emoji-picker-resize.at-inline-start { inset-inline-start: 0; }
+.emoji-picker-resize.at-inline-end { inset-inline-end: 0; }
+.emoji-picker-resize.is-ns { cursor: ns-resize; }
+.emoji-picker-resize.is-ew { cursor: ew-resize; }
+.emoji-picker-resize.is-nwse { cursor: nwse-resize; }
+.emoji-picker-resize.is-nesw { cursor: nesw-resize; }
+
+/* The marked corner is the keyboard-operable handle and the visible
+   affordance; the rest of the frame is pointer-only. */
+.emoji-picker-resize.is-marked {
+  background: var(--surface);
+  font-size: 12px;
 }
 
 .emoji-picker-section {

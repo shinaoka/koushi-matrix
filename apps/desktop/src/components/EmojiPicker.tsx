@@ -2,6 +2,7 @@ import { Search, X } from "lucide-react";
 import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type RefObject,
   useCallback,
   useEffect,
@@ -13,7 +14,9 @@ import {
 
 import {
   FloatingLayer,
+  type FloatingRect,
   floatingPlacementStyle,
+  pinnedPlacementStyle,
   useFloatingPlacement,
 } from "./floatingLayer";
 import { t } from "../i18n/messages";
@@ -69,13 +72,78 @@ function constrainPickerSize(width: number, height: number): [number, number] {
 }
 
 interface PickerResizeDrag {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  horizontal: number;
-  vertical: number;
+  pointer: { x: number; y: number };
+  /** Panel rectangle when the drag began: the grabbed edges move from here. */
+  rect: FloatingRect;
+  bounds: FloatingRect;
+  /** Physical edges the grabbed handle moves: -1 is the left/top one. */
+  horizontal: -1 | 0 | 1;
+  vertical: -1 | 0 | 1;
+  /** Preferred size, the value committed on release. */
   size: [number, number];
+  /** Marked corner, pinned for the drag so an alignment flip cannot move it. */
+  marked: FrameZoneName;
+  moved: boolean;
+}
+
+type FrameZoneName =
+  | "top"
+  | "bottom"
+  | "left"
+  | "right"
+  | "top-left"
+  | "top-right"
+  | "bottom-left"
+  | "bottom-right";
+
+interface FrameZone {
+  name: FrameZoneName;
+  horizontal: -1 | 0 | 1;
+  vertical: -1 | 0 | 1;
+}
+
+/** The whole frame resizes: four edges, four corners (#1583). */
+const FRAME_ZONES: FrameZone[] = [
+  { horizontal: 0, name: "top", vertical: -1 },
+  { horizontal: 0, name: "bottom", vertical: 1 },
+  { horizontal: -1, name: "left", vertical: 0 },
+  { horizontal: 1, name: "right", vertical: 0 },
+  { horizontal: -1, name: "top-left", vertical: -1 },
+  { horizontal: 1, name: "top-right", vertical: -1 },
+  { horizontal: -1, name: "bottom-left", vertical: 1 },
+  { horizontal: 1, name: "bottom-right", vertical: 1 },
+];
+
+/**
+ * Logical insets place a frame zone; the cursor names the physical edge pair
+ * because pointer coordinates are physical. A resize strip on an inline-side
+ * in RTL is the physical left one, so the inline side is mapped through the
+ * root direction.
+ */
+function frameZoneClass(zone: FrameZone, rtl: boolean, marked: boolean): string {
+  const position: string[] = [];
+  if (zone.vertical < 0) position.push("at-block-start");
+  if (zone.vertical > 0) position.push("at-block-end");
+  if (zone.horizontal !== 0) {
+    position.push((zone.horizontal < 0) !== rtl ? "at-inline-start" : "at-inline-end");
+  }
+  const shape =
+    zone.horizontal !== 0 && zone.vertical !== 0
+      ? "is-corner"
+      : zone.horizontal !== 0
+        ? "is-edge-inline"
+        : "is-edge-block";
+  const cursor =
+    zone.horizontal !== 0 && zone.vertical !== 0
+      ? zone.horizontal === zone.vertical
+        ? "is-nwse"
+        : "is-nesw"
+      : zone.horizontal !== 0
+        ? "is-ew"
+        : "is-ns";
+  return ["emoji-picker-resize", shape, cursor, ...position, marked ? "is-marked" : ""]
+    .filter(Boolean)
+    .join(" ");
 }
 
 interface EmojiPickerProps {
@@ -121,6 +189,12 @@ export function EmojiPicker({
     size ? constrainPickerSize(...size) : [EMOJI_PICKER_INLINE_SIZE_PX, EMOJI_PICKER_BLOCK_SIZE_PX]
   );
   const drag = useRef<PickerResizeDrag | null>(null);
+  /** Rectangle a pointer resize pinned; until it is set the panel is anchored. */
+  const [pinnedGeometry, setPinnedGeometry] = useState<{
+    left: number;
+    marked: FrameZoneName;
+    top: number;
+  } | null>(null);
   const [query, setQuery] = useState("");
   const [activeCategory, setActiveCategory] = useState<
     EmojiCategory | "recent"
@@ -181,6 +255,11 @@ export function EmojiPicker({
 
   const resizeAbove = resolvedPlacement?.placement === "above";
   const resizeLeft = (resolvedPlacement?.align === "end") !== (document.documentElement.dir === "rtl");
+  /** The marked corner is the one furthest from the anchor; a pinned panel keeps
+   * the corner it was resized from, whatever the resolver does afterwards. */
+  const markedZone: FrameZoneName =
+    pinnedGeometry?.marked ??
+    (`${resizeAbove ? "top" : "bottom"}-${resizeLeft ? "left" : "right"}` as FrameZoneName);
 
   const initiallyFocused = useRef(false);
   useLayoutEffect(() => {
@@ -227,6 +306,81 @@ export function EmojiPicker({
     }
   }, []);
 
+  // Every edge and corner resizes (#1583). The grabbed edges follow the
+  // pointer and the opposite ones stay where the drag started, so the anchored
+  // placement and its flip heuristic cannot move the panel under the pointer.
+  // The pinned rectangle outlives the drag: recomputing it from the anchor on
+  // release would snap an anchor-side edge back and fight the gesture.
+  const beginResize = (zone: FrameZone) => (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || !panelRef.current || !resolvedPlacement) return;
+    event.preventDefault();
+    const rect = panelRef.current.getBoundingClientRect();
+    drag.current = {
+      bounds: resolvedPlacement.bounds,
+      horizontal: zone.horizontal,
+      marked: markedZone,
+      moved: false,
+      pointer: { x: event.clientX, y: event.clientY },
+      rect: { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top },
+      size: draftSize,
+      vertical: zone.vertical,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const moveResize = (event: ReactPointerEvent<HTMLElement>) => {
+    const start = drag.current;
+    if (!start) return;
+    // An axis this handle does not own keeps the preferred size, so resizing
+    // one dimension cannot overwrite a window-clamped value on the other.
+    start.size = constrainPickerSize(
+      start.horizontal === 0
+        ? start.size[0]
+        : start.rect.right - start.rect.left + start.horizontal * (event.clientX - start.pointer.x),
+      start.vertical === 0
+        ? start.size[1]
+        : start.rect.bottom - start.rect.top + start.vertical * (event.clientY - start.pointer.y),
+    );
+    start.moved = true;
+    const shownWidth = Math.min(start.size[0], start.bounds.right - start.bounds.left);
+    const shownHeight = Math.min(start.size[1], start.bounds.bottom - start.bounds.top);
+    setDraftSize(start.size);
+    setPinnedGeometry({
+      left: start.horizontal < 0 ? start.rect.right - shownWidth : start.rect.left,
+      marked: start.marked,
+      top: start.vertical < 0 ? start.rect.bottom - shownHeight : start.rect.top,
+    });
+  };
+
+  const endResize = (event: ReactPointerEvent<HTMLElement>) => {
+    const start = drag.current;
+    if (!start) return;
+    drag.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    if (start.moved) onSizeChange?.(start.size);
+  };
+
+  const cancelResize = () => {
+    drag.current = null;
+    setPinnedGeometry(null);
+    setDraftSize(size ?? [EMOJI_PICKER_INLINE_SIZE_PX, EMOJI_PICKER_BLOCK_SIZE_PX]);
+  };
+
+  // The marked handle is the only one in the tab order, and the arrow keys move
+  // its two edges just like a pointer would.
+  const keyboardResize = (event: ReactKeyboardEvent<HTMLElement>, zone: FrameZone) => {
+    const horizontal = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+    const vertical = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+    if (horizontal === 0 && vertical === 0) return;
+    event.preventDefault();
+    const next = constrainPickerSize(
+      draftSize[0] + horizontal * zone.horizontal * RESIZE_KEY_STEP,
+      draftSize[1] + vertical * zone.vertical * RESIZE_KEY_STEP,
+    );
+    setDraftSize(next);
+    onSizeChange?.(next);
+  };
+
   // Rendered in a body-level floating layer: the composer lives inside
   // overflow-clipped panes (the thread pane), so an anchored popup would be cut
   // off at the pane boundary. Coordinates are physical because they come from
@@ -244,7 +398,11 @@ export function EmojiPicker({
         .join(" ")}
       role="dialog"
       aria-label={t("composer.emoji")}
-      style={floatingPlacementStyle(resolvedPlacement)}
+      style={
+        pinnedGeometry && resolvedPlacement
+          ? pinnedPlacementStyle(resolvedPlacement, pinnedGeometry, draftSize[0], draftSize[1])
+          : floatingPlacementStyle(resolvedPlacement)
+      }
       onKeyDown={(event) => {
         if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing && event.keyCode !== 229) {
           event.preventDefault();
@@ -254,47 +412,43 @@ export function EmojiPicker({
         }
       }}
     >
-      <button
-        type="button"
-        className={`emoji-picker-resize ${resizeAbove ? "at-top" : "at-bottom"} ${resizeLeft ? "at-left" : "at-right"} ${resolvedPlacement?.align === "end" ? "at-start" : "at-end"}`}
-        aria-label={t("composer.emojiResize")}
-        onPointerDown={(event) => {
-          if (event.button !== 0 || !panelRef.current) return;
-          event.preventDefault();
-          const rect = panelRef.current.getBoundingClientRect();
-          drag.current = { x: event.clientX, y: event.clientY, width: rect.width, height: rect.height, horizontal: resizeLeft ? -1 : 1, vertical: resizeAbove ? -1 : 1, size: draftSize };
-          event.currentTarget.setPointerCapture(event.pointerId);
-        }}
-        onPointerMove={(event) => {
-          const start = drag.current;
-          if (!start) return;
-          start.size = constrainPickerSize(start.width + start.horizontal * (event.clientX - start.x), start.height + start.vertical * (event.clientY - start.y));
-          setDraftSize(start.size);
-        }}
-        onPointerUp={(event) => {
-          const start = drag.current;
-          if (!start) return;
-          drag.current = null;
-          event.currentTarget.releasePointerCapture(event.pointerId);
-          onSizeChange?.(start.size);
-        }}
-        onLostPointerCapture={() => { drag.current = null; }}
-        onPointerCancel={() => {
-          drag.current = null;
-          setDraftSize(size ?? [EMOJI_PICKER_INLINE_SIZE_PX, EMOJI_PICKER_BLOCK_SIZE_PX]);
-        }}
-        onKeyDown={(event) => {
-          const horizontal = event.key === "ArrowRight" ? RESIZE_KEY_STEP : event.key === "ArrowLeft" ? -RESIZE_KEY_STEP : 0;
-          const vertical = event.key === "ArrowDown" ? RESIZE_KEY_STEP : event.key === "ArrowUp" ? -RESIZE_KEY_STEP : 0;
-          if (!horizontal && !vertical) return;
-          event.preventDefault();
-          const next = constrainPickerSize(draftSize[0] + horizontal * (resizeLeft ? -1 : 1), draftSize[1] + vertical * (resizeAbove ? -1 : 1));
-          setDraftSize(next);
-          onSizeChange?.(next);
-        }}
-      >
-        <span aria-hidden="true">⋰</span>
-      </button>
+      {FRAME_ZONES.map((zone) => {
+        const className = frameZoneClass(
+          zone,
+          document.documentElement.dir === "rtl",
+          zone.name === markedZone,
+        );
+        const pointerHandlers = {
+          onLostPointerCapture: () => {
+            drag.current = null;
+          },
+          onPointerCancel: cancelResize,
+          onPointerDown: beginResize(zone),
+          onPointerMove: moveResize,
+          onPointerUp: endResize,
+        };
+        return zone.name === markedZone ? (
+          <button
+            key={zone.name}
+            type="button"
+            className={className}
+            data-emoji-picker-resize={zone.name}
+            aria-label={t("composer.emojiResize")}
+            onKeyDown={(event) => keyboardResize(event, zone)}
+            {...pointerHandlers}
+          >
+            <span aria-hidden="true">⋰</span>
+          </button>
+        ) : (
+          <div
+            key={zone.name}
+            className={className}
+            data-emoji-picker-resize={zone.name}
+            aria-hidden="true"
+            {...pointerHandlers}
+          />
+        );
+      })}
       <div className="emoji-picker-header">
         <div className="emoji-picker-search">
           <Search size={14} aria-hidden="true" />

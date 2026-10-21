@@ -68,6 +68,11 @@ export interface FloatingPlacementResult {
   top: number;
   inlineSize: number;
   blockSize: number;
+  /**
+   * Rectangle the panel was clamped into. A panel the user resized keeps its
+   * own rectangle inside these bounds instead of the anchor-derived one.
+   */
+  bounds: FloatingRect;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -158,6 +163,7 @@ export function resolveFloatingPlacement(
   return {
     align,
     blockSize,
+    bounds,
     inlineSize,
     left: clamp(left, bounds.left, Math.max(bounds.left, bounds.right - inlineSize)),
     placement,
@@ -173,6 +179,10 @@ function placementsEqual(
     current != null &&
     current.align === next.align &&
     current.blockSize === next.blockSize &&
+    current.bounds.bottom === next.bounds.bottom &&
+    current.bounds.left === next.bounds.left &&
+    current.bounds.right === next.bounds.right &&
+    current.bounds.top === next.bounds.top &&
     current.inlineSize === next.inlineSize &&
     current.left === next.left &&
     current.placement === next.placement &&
@@ -325,6 +335,31 @@ export function floatingPlacementStyle(
         top: `${resolved.top}px`,
       }
     : { left: `${resolved.left}px`, top: `${resolved.top}px` };
+}
+
+/**
+ * Style a panel at a rectangle the user dragged.
+ *
+ * A resize moves the panel off its anchor, so the pinned rectangle replaces
+ * the anchor-derived one; it is still clamped into the same bounds, and the
+ * caller's preferred size is only narrowed for the rendered box exactly as the
+ * resolver narrows it, so a temporary small window cannot overwrite it.
+ */
+export function pinnedPlacementStyle(
+  resolved: FloatingPlacementResult,
+  pinned: { left: number; top: number },
+  inlineSize: number,
+  blockSize: number,
+): CSSProperties {
+  const { bounds } = resolved;
+  const inline = Math.min(inlineSize, bounds.right - bounds.left);
+  const block = Math.min(blockSize, bounds.bottom - bounds.top);
+  return {
+    blockSize: `${block}px`,
+    inlineSize: `${inline}px`,
+    left: `${clamp(pinned.left, bounds.left, Math.max(bounds.left, bounds.right - inline))}px`,
+    top: `${clamp(pinned.top, bounds.top, Math.max(bounds.top, bounds.bottom - block))}px`,
+  };
 }
 
 /** Read the shared CSS length in CSS pixels (custom properties may be calc()). */

@@ -6135,7 +6135,10 @@ stateDiagram-v2
 - `WindowSettings.emoji_picker_size` is an optional device-wide width/height
   preference. Every emoji picker reads it on opening and submits an app-scoped
   `UpdateSettings` when a resize finishes. Drag measurements are transient React
-  presentation state; viewport clamping never overwrites the saved preference.
+  presentation state; the rectangle a resize pins (so the panel keeps its
+  position instead of snapping back to the anchor when the gesture ends) is
+  presentation state that lasts only while that picker is open, and viewport
+  clamping never overwrites the saved preference.
 - Settings values are non-secret by construction. They must never include
   access tokens, refresh tokens, passwords, recovery material, SDK store keys,
   search index keys, local unlock secrets, raw homeserver credentials, raw

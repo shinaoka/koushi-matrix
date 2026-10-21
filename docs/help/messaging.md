@@ -29,11 +29,12 @@ when you have permission to notify the room.
 
 ## Resize the emoji picker
 
-Open **Emoji** in a composer or reaction menu and drag the marked outer corner
-of the picker. The corner follows the side on which the picker opens. You can
-also focus the resize handle with Tab and use the arrow keys. The size is shared
-across pickers on this device and restored after restarting Koushi. In a smaller
-window the picker fits the available space without replacing your saved size.
+Open **Emoji** in a composer or reaction menu and drag any edge or corner of the
+picker: an edge changes that dimension, a corner changes both. The opposite edge
+or corner stays where it is. You can also focus the marked corner with Tab and
+use the arrow keys. The size is shared across pickers on this device and restored
+after restarting Koushi. In a smaller window the picker fits the available space
+without replacing your saved size.
 
 ## Schedule a message
 
