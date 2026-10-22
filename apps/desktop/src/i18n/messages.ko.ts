@@ -1742,6 +1742,8 @@ export const ko: Catalog = {
   "timeline.notice.roomJoinRules": "참가 규칙을 업데이트했습니다",
   "timeline.notice.roomHistoryVisibility": "기록 공개 범위를 업데이트했습니다",
   "timeline.notice.roomPinnedEvents": "고정된 메시지를 업데이트했습니다",
+  "timeline.notice.roomPinnedEventPinned": "메시지를 고정했습니다",
+  "timeline.notice.roomPinnedEventUnpinned": "메시지 고정을 해제했습니다",
   "timeline.notice.roomNameSet": "방 이름을 “{newName}”(으)로 설정했습니다",
   "timeline.notice.roomNameChanged": "방 이름을 “{oldName}”에서 “{newName}”(으)로 변경했습니다",
   "timeline.notice.roomNameRemoved": "방 이름을 삭제했습니다",

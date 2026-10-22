@@ -216,9 +216,12 @@ fn mentions_only_room_with_unread_content_contributes_to_home_and_its_sections()
 
     let sidebar = compose_sidebar_for_state(&state);
     assert_eq!(sidebar.account_home.unread_count, 3);
-    assert_eq!(sidebar.space_unread_count, 3);
+    // #1589: the room is that Space's child, so Home's Rooms section excludes it.
+    assert_eq!(sidebar.space_unread_count, 0);
     assert_eq!(sidebar.space_rail.len(), 1);
     assert_eq!(sidebar.space_rail[0].unread_count, 3);
+    state.navigation.active_space_id = Some("!space:example.invalid".to_owned());
+    assert_eq!(compose_sidebar_for_state(&state).space_unread_count, 3);
     assert_eq!(account_tab_attention(&state), 3);
     assert_eq!(
         account_tab_attention(&state),

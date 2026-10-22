@@ -778,6 +778,10 @@ pub enum TimelineNoticeI18nKey {
     RoomHistoryVisibility,
     #[serde(rename = "timeline.notice.roomPinnedEvents")]
     RoomPinnedEvents,
+    #[serde(rename = "timeline.notice.roomPinnedEventPinned")]
+    RoomPinnedEventPinned,
+    #[serde(rename = "timeline.notice.roomPinnedEventUnpinned")]
+    RoomPinnedEventUnpinned,
     #[serde(rename = "timeline.notice.roomNameSet")]
     RoomNameSet,
     #[serde(rename = "timeline.notice.roomNameChanged")]

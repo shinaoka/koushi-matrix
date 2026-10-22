@@ -79,6 +79,20 @@ on ownership, permissions, and whether the message has been sent.
 previously read or saved it. A pending or failed local send has different actions
 from a sent message. Read the confirmation before removing anything.
 
+## Pin a message
+
+Use a message's actions to choose **Pin message**, and choose **Unpin message**
+on a pinned one. Pinning is shared with the room: it needs the permission the
+room grants, and every member sees the result. Koushi does not pin a message
+for only yourself.
+
+A pinned message keeps a **Pinned message** marker under its text, in both
+densities and on a message that continues an earlier one's sender; unpinning
+removes it. The **Pinned** row at the top of the room opens the list of pinned
+messages, which also unpins from each row. The timeline's new notice reads
+**pinned a message** or **unpinned a message** for a single change, and **updated
+pinned messages** when several messages changed at once.
+
 ## Copy or search selected text
 
 Select text inside a message, then open the message's context menu. When a

@@ -447,7 +447,12 @@ fn compose_sidebar_with_preferences(
                 .filter(|room| !room.is_dm)
                 .collect()
         })
-        .unwrap_or_else(|| rooms.iter().filter(|room| !room.is_dm).collect());
+        .unwrap_or_else(|| {
+            rooms
+                .iter()
+                .filter(|room| !room.is_dm && room_listed_at_home(room, spaces))
+                .collect()
+        });
     sort_room_summaries(
         &mut space_room_summaries,
         rooms_sort,
@@ -648,6 +653,18 @@ fn compose_sidebar_with_preferences(
 fn active_room_position(rooms: &[RoomListItem], active_room_id: Option<&str>) -> Option<usize> {
     let active_room_id = active_room_id?;
     rooms.iter().position(|room| room.room_id == active_room_id)
+}
+
+/// #1589: with no active Space, a non-DM room is listed under every joined Space
+/// whose `child_room_ids` — the list a Space scope renders — holds it, so Home
+/// must not list it again. Home keeps every other room, so a room whose parent
+/// Space this account has not joined stays reachable, and DMs stay in Home in
+/// full.
+pub(crate) fn room_listed_at_home(room: &RoomSummary, spaces: &[SpaceSummary]) -> bool {
+    room.is_dm
+        || !spaces
+            .iter()
+            .any(|space| space.child_room_ids.contains(&room.room_id))
 }
 
 fn sort_room_summaries(

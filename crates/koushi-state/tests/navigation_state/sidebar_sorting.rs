@@ -137,8 +137,13 @@ fn sidebar_aggregate_badges_ignore_muted_rooms_but_room_items_keep_counts() {
         },
     )]);
 
-    let sidebar =
-        compose_sidebar_with_account_facts(None, &spaces(), &rooms(), &notification_settings, 0);
+    let sidebar = compose_sidebar_with_account_facts(
+        Some("space-a"),
+        &spaces(),
+        &rooms(),
+        &notification_settings,
+        0,
+    );
 
     let muted = sidebar
         .space_rooms
@@ -159,7 +164,8 @@ fn sidebar_aggregate_badges_ignore_muted_rooms_but_room_items_keep_counts() {
     assert_eq!(sidebar.account_home.highlight_count, 0);
     assert_eq!(sidebar.space_rail[0].unread_count, 0);
     assert_eq!(sidebar.space_rail[0].highlight_count, 0);
-    assert_eq!(sidebar.space_unread_count, 2);
+    // The muted room is this Space's only Rooms row, so its aggregate is empty.
+    assert_eq!(sidebar.space_unread_count, 0);
     assert_eq!(sidebar.dm_unread_count, 3);
 }
 
@@ -329,7 +335,7 @@ fn sidebar_badges_include_plain_unread_counts_and_keep_display_semantics() {
         },
     ];
 
-    let sidebar = compose_sidebar(None, &spaces, &rooms);
+    let sidebar = compose_sidebar(Some("space-a"), &spaces, &rooms);
 
     assert_eq!(sidebar.account_home.unread_count, 5);
     assert_eq!(sidebar.space_rail[0].unread_count, 5);
@@ -542,7 +548,7 @@ fn dm_in_multiple_spaces_appears_under_each() {
 
 #[test]
 fn sidebar_projection_carries_rust_owned_highlight_counts_for_mention_affordances() {
-    let sidebar = compose_sidebar(None, &spaces(), &rooms());
+    let sidebar = compose_sidebar(Some("space-a"), &spaces(), &rooms());
     let value = serde_json::to_value(sidebar).expect("sidebar serializes");
 
     assert_eq!(value["account_home"]["unread_count"], json!(10));
@@ -559,7 +565,7 @@ fn sidebar_projection_carries_rust_owned_highlight_counts_for_mention_affordance
     assert_eq!(room_a["highlight_count"], json!(1));
     assert_eq!(value["global_dms"][0]["unread_count"], json!(3));
     assert_eq!(value["global_dms"][0]["highlight_count"], json!(0));
-    assert_eq!(value["space_unread_count"], json!(7));
+    assert_eq!(value["space_unread_count"], json!(5));
     assert_eq!(value["dm_unread_count"], json!(3));
     assert_eq!(value["space_highlight_count"], json!(1));
     assert_eq!(value["dm_highlight_count"], json!(0));
@@ -1149,17 +1155,13 @@ fn active_sort_orders_sidebar_rooms_and_dms_in_home_and_active_space() {
     ];
 
     let home = compose_sidebar(None, &spaces, &rooms);
+    // #1589: the Space's own rooms are listed under the Space only.
     assert_eq!(
         home.space_rooms
             .iter()
             .map(|room| room.room_id.as_str())
             .collect::<Vec<_>>(),
-        vec![
-            "home-ordinary",
-            "space-read",
-            "space-notification",
-            "space-mention",
-        ]
+        vec!["home-ordinary"]
     );
     assert_eq!(
         home.global_dms
@@ -1415,12 +1417,16 @@ fn sidebar_room_rows_carry_the_projected_access_condition() {
     ]);
 
     let sidebar = koushi_state::compose_sidebar_for_state(&state);
+    // #1589: room-a is Space A's child, so its row is projected under the Space.
+    let mut space_scoped = state.clone();
+    space_scoped.navigation.active_space_id = Some("space-a".to_owned());
+    let space_scoped = koushi_state::compose_sidebar_for_state(&space_scoped);
 
-    let public_room = sidebar
+    let public_room = space_scoped
         .space_rooms
         .iter()
         .find(|room| room.room_id == "room-a")
-        .expect("room-a should be in the room list");
+        .expect("room-a should be in the Space's room list");
     assert_eq!(
         public_room.access_join_rule,
         Some(koushi_state::RoomJoinRule::Public)
@@ -1651,10 +1657,8 @@ fn default_sidebar_order_is_recent_conversation_order_in_home_and_every_space() 
     ];
 
     let home = compose_sidebar_for_state(&state);
-    assert_eq!(
-        section_order(&home.sections.rooms),
-        vec!["room-newer", "room-unread", "room-mention"]
-    );
+    // #1589: every non-DM room here belongs to the Space, so Home lists none.
+    assert!(home.sections.rooms.is_empty());
     assert_eq!(
         section_order(&home.sections.people),
         vec!["dm-newer", "dm-unread"]

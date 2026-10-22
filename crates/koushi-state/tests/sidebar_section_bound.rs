@@ -50,8 +50,7 @@ fn room(id: &str, label: &str, is_dm: bool, activity_ms: u64) -> RoomSummary {
             source: ConversationActivitySource::Message,
         }),
         latest_event: None,
-        // Home scope: the Space reaches the same rooms through its
-        // `child_room_ids`, so a selection at Home never moves the scope.
+        // Home scope: these rooms belong to no Space, so Home lists them (#1589).
         parent_space_ids: Vec::new(),
         dm_space_ids: Vec::new(),
         is_encrypted: false,
@@ -69,6 +68,9 @@ fn tagged(mut room: RoomSummary, low_priority: bool) -> RoomSummary {
 /// Home: nine rooms, seven DMs, and seven low-priority conversations, each with
 /// a synthetic, distinct activity timestamp so the Recent-first order is known.
 /// Rooms and DMs are ordered newest first: `room-9`, `room-8`, ... `room-1`.
+///
+/// The joined Space owns a separate nine rooms (#1589), so the Space scope has
+/// the same bound to exercise while Home keeps its own rows.
 fn bounded_state() -> AppState {
     let mut rooms: Vec<RoomSummary> = (1..=9)
         .map(|index| {
@@ -80,6 +82,18 @@ fn bounded_state() -> AppState {
             )
         })
         .collect();
+    rooms.extend((1..=9).map(|index| {
+        let mut in_space = room(
+            &format!("!space-room-{index}:example.invalid"),
+            &format!("Space room {index}"),
+            false,
+            200 + index,
+        );
+        in_space.unread_count = 0;
+        in_space.notification_count = 0;
+        in_space.parent_space_ids = vec![SPACE_ID.to_owned()];
+        in_space
+    }));
     rooms.extend((1..=7).map(|index| {
         room(
             &format!("!dm-{index}:example.invalid"),
@@ -108,7 +122,7 @@ fn bounded_state() -> AppState {
             avatar: None,
             join_rule: None,
             child_room_ids: (1..=9)
-                .map(|index| format!("!room-{index}:example.invalid"))
+                .map(|index| format!("!space-room-{index}:example.invalid"))
                 .collect(),
             parent_side_child_room_ids: Vec::new(),
         }],
@@ -497,7 +511,7 @@ fn a_reveal_never_uncollapses_another_scope() {
     reduce(
         &mut state,
         AppAction::SelectRoom {
-            room_id: "!room-1:example.invalid".to_owned(),
+            room_id: "!space-room-1:example.invalid".to_owned(),
         },
     );
     assert!(

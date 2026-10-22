@@ -189,6 +189,18 @@ describe("i18n message catalog", () => {
     );
   });
 
+  test("localizes the single pin and unpin notices (#1591)", () => {
+    expect(t("timeline.notice.roomPinnedEventPinned")).toBe("pinned a message");
+    expect(t("timeline.notice.roomPinnedEventUnpinned")).toBe("unpinned a message");
+    expect(t("timeline.notice.roomPinnedEvents")).toBe("updated pinned messages");
+    expect(t("timeline.notice.roomPinnedEventPinned", {}, "ja")).toBe(
+      "メッセージをピン留めしました"
+    );
+    expect(t("timeline.notice.roomPinnedEventUnpinned", {}, "ja")).toBe(
+      "メッセージのピン留めを解除しました"
+    );
+  });
+
   test("Japanese catalog localizes shipped message ids except the named allowlist", () => {
     const identicalMessageIds = (Object.keys(catalogs.en) as MessageId[]).filter(
       (id) => catalogs.ja[id] === catalogs.en[id] && !japaneseIdenticalMessageAllowlist.has(id)

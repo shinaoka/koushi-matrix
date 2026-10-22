@@ -145,11 +145,20 @@ fn home_and_active_space_sorts_publish_order_and_preserve_other_section() {
                     // covered by `low_priority_collapse_publishes_per_scope`.
                     SidebarSectionKind::LowPriority => unreachable!(),
                 };
+                // #1589: the fixture's non-DM rooms name the Space as their
+                // parent, so the Home scope lists none of them; the Space scope
+                // still carries the sorted rows.
+                let expected: Vec<&str> =
+                    if active.is_none() && section == SidebarSectionKind::Rooms {
+                        Vec::new()
+                    } else {
+                        names
+                    };
                 assert_eq!(
                     rows.iter()
                         .map(|room| room.display_name.as_str())
                         .collect::<Vec<_>>(),
-                    names
+                    expected
                 );
                 assert_eq!(next.navigation, previous.navigation);
                 previous = next;
@@ -348,7 +357,7 @@ fn low_priority_collapse_publishes_per_scope() {
 /// the native attention totals, without replaying a notification candidate.
 #[test]
 fn a_low_priority_tag_change_republishes_sections_and_native_attention() {
-    let mut previous = fixture(None);
+    let mut previous = fixture(Some(SPACE));
     // Tag actions are accepted only for a Ready session.
     previous.session = koushi_state::SessionState::Ready(koushi_state::SessionInfo {
         homeserver: "https://matrix.example.invalid".to_owned(),
@@ -411,7 +420,7 @@ fn a_low_priority_tag_change_republishes_sections_and_native_attention() {
 /// changing only that slice must publish a sidebar delta.
 #[test]
 fn access_condition_change_alone_publishes_the_sidebar() {
-    let previous = fixture(None);
+    let previous = fixture(Some(SPACE));
     let mut next = previous.clone();
     next.room_access.insert(
         "!A-false:example.invalid".to_owned(),

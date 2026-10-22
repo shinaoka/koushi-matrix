@@ -1274,8 +1274,14 @@ export function TimelineItemRow({
             ) : null}
           </div>
         ) : null}
-        {canShowReactions || receiptTotalCount > 0 ? (
+        {isPinned || canShowReactions || receiptTotalCount > 0 ? (
           <div className="message-status-row">
+            {isPinned ? (
+              <span className="message-pin-badge">
+                <Pin aria-hidden="true" size={12} />
+                <span>{t("timeline.pinnedMessage")}</span>
+              </span>
+            ) : null}
             {canShowReactions ? (
               <div className="message-reactions">
                 {item.reactions.map((reaction, index) => {
@@ -1789,6 +1795,10 @@ function localizedTimelineItemBody(item: TimelineItem): string {
       return t("timeline.notice.roomHistoryVisibility");
     case "timeline.notice.roomPinnedEvents":
       return t("timeline.notice.roomPinnedEvents");
+    case "timeline.notice.roomPinnedEventPinned":
+      return t("timeline.notice.roomPinnedEventPinned");
+    case "timeline.notice.roomPinnedEventUnpinned":
+      return t("timeline.notice.roomPinnedEventUnpinned");
     case "timeline.notice.roomNameSet":
       return t("timeline.notice.roomNameSet", {
         newName: notice.new_name ?? ""

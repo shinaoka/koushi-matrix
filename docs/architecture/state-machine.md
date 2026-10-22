@@ -1158,8 +1158,13 @@ code without a matching command-success correlation.
   Selecting a Space starts hydration through the room-list owner, independent of
   opening the Space members panel. The sidebar and `People` room-list projection
   apply the same active-Space predicate.
-- If no active Space is selected, the room list shows non-DM rooms with no parent
-  Space, plus all DMs (Home shows DMs in full).
+- If no active Space is selected, the room list shows the non-DM rooms no
+  joined Space's `child_room_ids` holds — a room a joined Space lists as a child
+  appears under that Space only — plus all DMs (Home shows DMs in full). A parent
+  Space this account has not joined never hides a room, so it stays at Home
+  rather than vanishing from every scope. The Home Rooms section and its
+  unread/highlight aggregates follow this set; the Home rail badge and the
+  account-wide Activity view stay account-wide (#1589).
 - Navigation remembers the last non-DM room selected inside each Space. Selecting
   a Space restores that room when it still belongs to the Space, otherwise it
   falls back to the Space's first non-DM room and retargets the timeline.
@@ -1377,10 +1382,12 @@ Space scope, so one conversation appears exactly once:
 
 `space_rooms` and `global_dms` remain the unsectioned in-scope lists. They are
 inputs to the sections and to Rust-owned aggregates; they are not the render
-source for a visible section. Home covers every joined conversation, a Space
-covers its child rooms plus `dm_space_ids`-scoped DMs, and a low-priority
-conversation outside the active Space is not mixed in. React must not classify
-tags, merge sections, or hide a section by tag.
+source for a visible section. Home covers the conversations no Space scope
+lists — every DM, and every non-DM room no joined Space holds in its
+`child_room_ids` (#1589) — a Space covers its child rooms plus
+`dm_space_ids`-scoped DMs, and a low-priority conversation outside the active
+Space is not mixed in. React must not classify tags, merge sections, or hide a
+section by tag.
 
 Low priority is an attention-suppression tag, not a mute and not a read action:
 

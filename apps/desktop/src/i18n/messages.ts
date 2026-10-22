@@ -1719,6 +1719,8 @@ export type MessageId =
   | "timeline.notice.roomJoinRules"
   | "timeline.notice.roomHistoryVisibility"
   | "timeline.notice.roomPinnedEvents"
+  | "timeline.notice.roomPinnedEventPinned"
+  | "timeline.notice.roomPinnedEventUnpinned"
   | "timeline.notice.roomNameSet"
   | "timeline.notice.roomNameChanged"
   | "timeline.notice.roomNameRemoved"
@@ -4153,6 +4155,8 @@ const en: Catalog = {
   "timeline.notice.roomJoinRules": "updated join rules",
   "timeline.notice.roomHistoryVisibility": "updated history visibility",
   "timeline.notice.roomPinnedEvents": "updated pinned messages",
+  "timeline.notice.roomPinnedEventPinned": "pinned a message",
+  "timeline.notice.roomPinnedEventUnpinned": "unpinned a message",
   "timeline.notice.roomNameSet": "set the room name to {newName}",
   "timeline.notice.roomNameChanged": "changed the room name from {oldName} to {newName}",
   "timeline.notice.roomNameRemoved": "removed the room name",
@@ -6458,6 +6462,8 @@ const ja: Catalog = {
   "timeline.notice.roomJoinRules": "参加ルールを更新しました",
   "timeline.notice.roomHistoryVisibility": "履歴の表示範囲を更新しました",
   "timeline.notice.roomPinnedEvents": "ピン留めメッセージを更新しました",
+  "timeline.notice.roomPinnedEventPinned": "メッセージをピン留めしました",
+  "timeline.notice.roomPinnedEventUnpinned": "メッセージのピン留めを解除しました",
   "timeline.notice.roomNameSet": "ルーム名を「{newName}」に設定しました",
   "timeline.notice.roomNameChanged": "ルーム名を「{oldName}」から「{newName}」に変更しました",
   "timeline.notice.roomNameRemoved": "ルーム名を削除しました",

@@ -73,27 +73,41 @@ fn tag_favourite(mut room: RoomSummary) -> RoomSummary {
     room
 }
 
+/// The Space every fixture room names as its parent. The rooms name it without
+/// the account having joined it, so the Home scope still lists them (#1589);
+/// a test that needs a joined Space wraps the state in [`with_joined_space`].
+fn space() -> SpaceSummary {
+    SpaceSummary {
+        space_id: SPACE_ID.to_owned(),
+        raw_name: None,
+        display_name: "Space".to_owned(),
+        avatar: None,
+        join_rule: None,
+        child_room_ids: vec![
+            "!plain:example.invalid".to_owned(),
+            "!fav:example.invalid".to_owned(),
+            "!low-room:example.invalid".to_owned(),
+        ],
+        parent_side_child_room_ids: vec![
+            "!plain:example.invalid".to_owned(),
+            "!fav:example.invalid".to_owned(),
+            "!low-room:example.invalid".to_owned(),
+        ],
+    }
+}
+
+/// Join the fixture Space and select it, so the projection is Space-scoped.
+fn with_joined_space(mut state: AppState) -> AppState {
+    state.spaces = vec![space()];
+    state.navigation.active_space_id = Some(SPACE_ID.to_owned());
+    state
+}
+
 /// Home scope, one of each conversation shape. Rooms carry unread counts so an
 /// aggregate that forgot to exclude low priority is visible as a number.
 fn mixed_state() -> AppState {
     AppState {
-        spaces: vec![SpaceSummary {
-            space_id: SPACE_ID.to_owned(),
-            raw_name: None,
-            display_name: "Space".to_owned(),
-            avatar: None,
-            join_rule: None,
-            child_room_ids: vec![
-                "!plain:example.invalid".to_owned(),
-                "!fav:example.invalid".to_owned(),
-                "!low-room:example.invalid".to_owned(),
-            ],
-            parent_side_child_room_ids: vec![
-                "!plain:example.invalid".to_owned(),
-                "!fav:example.invalid".to_owned(),
-                "!low-room:example.invalid".to_owned(),
-            ],
-        }],
+        spaces: Vec::new(),
         rooms: vec![
             with_recency(room("!plain:example.invalid", "Plain", false, 5, 1), 20),
             tag_favourite(room("!fav:example.invalid", "Favourite", false, 0, 0)),
@@ -162,7 +176,7 @@ fn low_priority_rows_keep_their_own_raw_unread_counts() {
 
 #[test]
 fn low_priority_is_excluded_from_every_sidebar_attention_aggregate() {
-    let sidebar = compose_sidebar_for_state(&mixed_state());
+    let sidebar = compose_sidebar_for_state(&with_joined_space(mixed_state()));
 
     // Only the plain room (5 / 1) and the plain DM (3 / 0) contribute.
     assert_eq!(sidebar.space_unread_count, 5);
@@ -190,8 +204,7 @@ fn removing_the_low_priority_tag_restores_the_aggregate_contribution() {
 
 #[test]
 fn a_space_scope_lists_only_its_own_low_priority_conversations() {
-    let mut state = mixed_state();
-    state.navigation.active_space_id = Some(SPACE_ID.to_owned());
+    let mut state = with_joined_space(mixed_state());
     let outside = tag_low_priority(room("!outside:example.invalid", "Outside", true, 9, 9));
     let mut outside = outside;
     outside.parent_space_ids = vec![OTHER_SPACE_ID.to_owned()];

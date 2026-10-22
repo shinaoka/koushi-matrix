@@ -534,3 +534,113 @@ async fn poll_and_live_location_interim_notices_use_typed_sdk_content() {
         assert_eq!(message_projection_from_timeline_content(&content).notice_i18n.unwrap().key, key);
     }
 }
+
+/// #1591: the pinned state event carries both lists, so Element Web diffs them
+/// and distinguishes a single pin from a single unpin. Bulk, mixed, and
+/// unreadable changes keep the generic notice.
+#[test]
+fn pinned_events_notice_distinguishes_a_single_pin_or_unpin() {
+    use matrix_sdk::ruma::events::room::pinned_events::PossiblyRedactedRoomPinnedEventsEventContent;
+    let change = |current: &[&str], previous: Option<&[&str]>| {
+        AnyOtherStateEventContentChange::RoomPinnedEvents(StateEventContentChange::Original {
+            content: serde_json::from_value(json!({ "pinned": current })).unwrap(),
+            prev_content: previous.map(|previous| {
+                serde_json::from_value::<PossiblyRedactedRoomPinnedEventsEventContent>(json!({
+                    "pinned": previous
+                }))
+                .unwrap()
+            }),
+        })
+    };
+    let project = |change| other_state_projection(&change);
+
+    let pin = project(change(
+        &["$a:example.invalid", "$b:example.invalid"],
+        Some(&["$a:example.invalid"]),
+    ));
+    assert_eq!(
+        pin.notice_i18n.unwrap().key,
+        TimelineNoticeI18nKey::RoomPinnedEventPinned
+    );
+    assert_eq!(pin.body.as_deref(), Some("pinned a message"));
+    assert_eq!(pin.message_kind, TimelineMessageKind::Notice);
+    assert!(!pin.body_is_user_content);
+
+    let unpin = project(change(
+        &["$a:example.invalid"],
+        Some(&["$a:example.invalid", "$b:example.invalid"]),
+    ));
+    assert_eq!(
+        unpin.notice_i18n.unwrap().key,
+        TimelineNoticeI18nKey::RoomPinnedEventUnpinned
+    );
+    assert_eq!(unpin.body.as_deref(), Some("unpinned a message"));
+
+    // The first pin in a room has no previous state; Element Web treats that as
+    // an empty list, so it still reads as a single pin.
+    let first_pin = project(change(&["$a:example.invalid"], None));
+    assert_eq!(
+        first_pin.notice_i18n.unwrap().key,
+        TimelineNoticeI18nKey::RoomPinnedEventPinned
+    );
+
+    for (current, previous) in [
+        (&["$a:example.invalid", "$b:example.invalid"][..], None),
+        (
+            &["$a:example.invalid", "$c:example.invalid"][..],
+            Some(&["$a:example.invalid", "$b:example.invalid"][..]),
+        ),
+        (
+            &[][..],
+            Some(&["$a:example.invalid", "$b:example.invalid"][..]),
+        ),
+        (&[][..], None),
+    ] {
+        let generic = project(change(current, previous));
+        assert_eq!(
+            generic.notice_i18n.unwrap().key,
+            TimelineNoticeI18nKey::RoomPinnedEvents
+        );
+        assert_eq!(generic.body.as_deref(), Some("updated pinned messages"));
+    }
+
+    // Duplicates and reordering are still one change, because the lists are
+    // compared as sets.
+    assert_eq!(
+        project(change(&["$a:example.invalid", "$a:example.invalid"], None))
+            .notice_i18n
+            .unwrap()
+            .key,
+        TimelineNoticeI18nKey::RoomPinnedEventPinned
+    );
+    assert_eq!(
+        project(change(
+            &["$a:example.invalid", "$b:example.invalid"],
+            Some(&["$b:example.invalid", "$a:example.invalid"]),
+        ))
+        .notice_i18n
+        .unwrap()
+        .key,
+        TimelineNoticeI18nKey::RoomPinnedEvents
+    );
+
+    let redacted = AnyOtherStateEventContentChange::RoomPinnedEvents(
+        StateEventContentChange::Redacted(serde_json::from_value(json!({})).unwrap()),
+    );
+    assert_eq!(
+        project(redacted).notice_i18n.unwrap().key,
+        TimelineNoticeI18nKey::RoomPinnedEvents
+    );
+
+    // A previous state whose list was redacted cannot be diffed, so a single
+    // pinned message does not claim to be newly pinned.
+    let redacted_previous =
+        AnyOtherStateEventContentChange::RoomPinnedEvents(StateEventContentChange::Original {
+            content: serde_json::from_value(json!({ "pinned": ["$a:example.invalid"] })).unwrap(),
+            prev_content: Some(serde_json::from_value(json!({})).unwrap()),
+        });
+    assert_eq!(
+        project(redacted_previous).notice_i18n.unwrap().key,
+        TimelineNoticeI18nKey::RoomPinnedEvents
+    );
+}

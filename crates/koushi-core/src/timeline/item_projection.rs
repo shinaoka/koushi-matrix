@@ -18,12 +18,16 @@ use matrix_sdk::attachment::{AttachmentInfo, BaseFileInfo, BaseImageInfo, Thumbn
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
 use matrix_sdk::room::edit::EditedContent;
 use matrix_sdk::room::reply::{EnforceThread, Reply};
+use matrix_sdk::ruma::OwnedEventId;
 use matrix_sdk::ruma::events::room::message::FormattedBody;
 use matrix_sdk::ruma::events::room::message::{
     AddMentions, MessageFormat, MessageType, ReplyWithinThread,
     RoomMessageEventContentWithoutRelation,
 };
-use matrix_sdk::ruma::events::room::{MediaSource, ThumbnailInfo};
+use matrix_sdk::ruma::events::room::{
+    MediaSource, ThumbnailInfo,
+    pinned_events::{PossiblyRedactedRoomPinnedEventsEventContent, RoomPinnedEventsEventContent},
+};
 use matrix_sdk::ruma::events::{StateEventContentChange, room::name::RoomNameEventContent};
 use matrix_sdk::ruma::html::Html;
 use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, SendHandle};
@@ -2647,12 +2651,16 @@ fn other_state_projection(state: &AnyOtherStateEventContentChange) -> MessagePro
                 Some(content.replacement_room.to_string());
             projection
         }
+        S::RoomPinnedEvents(StateEventContentChange::Original {
+            content,
+            prev_content,
+        }) => pinned_events_notice_projection(content, prev_content.as_ref()),
+        S::RoomPinnedEvents(_) => state_event_notice_projection("m.room.pinned_events"),
         S::RoomCreate(_)
         | S::RoomEncryption(_)
         | S::RoomGuestAccess(_)
         | S::RoomHistoryVisibility(_)
         | S::RoomJoinRules(_)
-        | S::RoomPinnedEvents(_)
         | S::RoomPowerLevels(_)
         | S::SpaceParent(_) => state_event_notice_projection(&state.event_type().to_string()),
         // Element X also filters alias, hierarchy, moderation and custom state.
@@ -2681,6 +2689,38 @@ pub(super) fn sticker_projection_from_body(body: &str) -> MessageProjection {
         spoiler_spans: Vec::new(),
         media: None,
         formatted: None,
+    }
+}
+
+/// #1591: Element Web diffs the two pinned lists, so a single pin and a single
+/// unpin read as such. Bulk, mixed, and unreadable changes keep the generic
+/// notice, and a missing previous state is an empty list so the first pin in a
+/// room still reads as a pin.
+fn pinned_events_notice_projection(
+    content: &RoomPinnedEventsEventContent,
+    prev_content: Option<&PossiblyRedactedRoomPinnedEventsEventContent>,
+) -> MessageProjection {
+    let previous: BTreeSet<&OwnedEventId> = match prev_content {
+        None => BTreeSet::new(),
+        Some(previous) => match previous.pinned.as_deref() {
+            Some(previous) => previous.iter().collect(),
+            // A redacted previous list cannot be diffed.
+            None => return state_event_notice_projection("m.room.pinned_events"),
+        },
+    };
+    let current: BTreeSet<&OwnedEventId> = content.pinned.iter().collect();
+    let added = current.difference(&previous).count();
+    let removed = previous.difference(&current).count();
+    match (added, removed) {
+        (1, 0) => localized_notice_projection(
+            TimelineNoticeI18nKey::RoomPinnedEventPinned,
+            "pinned a message",
+        ),
+        (0, 1) => localized_notice_projection(
+            TimelineNoticeI18nKey::RoomPinnedEventUnpinned,
+            "unpinned a message",
+        ),
+        _ => state_event_notice_projection("m.room.pinned_events"),
     }
 }
 

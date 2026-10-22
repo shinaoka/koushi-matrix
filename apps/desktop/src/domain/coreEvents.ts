@@ -302,6 +302,8 @@ export type TimelineNoticeI18nKey =
   | "timeline.notice.roomJoinRules"
   | "timeline.notice.roomHistoryVisibility"
   | "timeline.notice.roomPinnedEvents"
+  | "timeline.notice.roomPinnedEventPinned"
+  | "timeline.notice.roomPinnedEventUnpinned"
   | "timeline.notice.roomNameSet"
   | "timeline.notice.roomNameChanged"
   | "timeline.notice.roomNameRemoved"

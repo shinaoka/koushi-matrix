@@ -514,7 +514,7 @@ fn room_list_update_reopens_restored_active_room_timeline() {
 }
 
 #[test]
-fn account_home_lists_all_non_dm_rooms_and_keeps_dms_global() {
+fn account_home_lists_space_less_rooms_and_keeps_dms_global() {
     let sidebar = compose_sidebar(None, &spaces(), &rooms());
 
     assert!(sidebar.account_home.is_active);
@@ -525,7 +525,7 @@ fn account_home_lists_all_non_dm_rooms_and_keeps_dms_global() {
             .iter()
             .map(|room| room.room_id.as_str())
             .collect::<Vec<_>>(),
-        vec!["global-room", "room-a"]
+        vec!["global-room"]
     );
     assert_eq!(
         sidebar
@@ -535,7 +535,9 @@ fn account_home_lists_all_non_dm_rooms_and_keeps_dms_global() {
             .collect::<Vec<_>>(),
         vec!["dm-a"]
     );
-    assert_eq!(sidebar.space_unread_count, 7);
+    // The Rooms heading follows its section; the account-wide Home badge above
+    // still covers the Space's rooms.
+    assert_eq!(sidebar.space_unread_count, 2);
     assert_eq!(sidebar.dm_unread_count, 3);
 }
 

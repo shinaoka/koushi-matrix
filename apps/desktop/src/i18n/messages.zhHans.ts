@@ -1742,6 +1742,8 @@ export const zhHans: Catalog = {
   "timeline.notice.roomJoinRules": "更新了加入规则",
   "timeline.notice.roomHistoryVisibility": "更新了历史记录可见性",
   "timeline.notice.roomPinnedEvents": "更新了置顶消息",
+  "timeline.notice.roomPinnedEventPinned": "置顶了消息",
+  "timeline.notice.roomPinnedEventUnpinned": "取消置顶了消息",
   "timeline.notice.roomNameSet": "将房间名称设为 {newName}",
   "timeline.notice.roomNameChanged": "将房间名称从 {oldName} 更改为 {newName}",
   "timeline.notice.roomNameRemoved": "移除了房间名称",

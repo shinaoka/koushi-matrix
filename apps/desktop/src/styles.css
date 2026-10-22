@@ -4825,6 +4825,17 @@ button:disabled {
   white-space: nowrap;
 }
 
+.message-pin-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: var(--receipt-row-font-size);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .message-reactions {
   flex: 1 1 auto;
   display: flex;

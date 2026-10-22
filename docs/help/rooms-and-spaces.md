@@ -12,8 +12,15 @@ header row carries **Activity**, **Explore**, and **Invites** at the start and
 **Threads**, **Scheduled messages**, and **Info** at the end. A Space replaces
 the start of that row with **Members** and keeps the same **Threads**,
 **Scheduled messages**, and **Info** actions at the end. Choose a Space to see
-its rooms. If a conversation is absent from a Space view, return to Home before
-assuming it has disappeared. The clock button opens the
+its rooms.
+
+A Space lists the rooms it contains, and Home's **Rooms** list holds the rooms
+that belong to no Space, so one room is not listed in both. A room that belongs
+to several Spaces is listed under each of them. Home always shows all your direct
+messages, and its rail badge and **Activity** cover every conversation in the
+account. If a room is absent from the Space you are viewing, open the Space that
+contains it, or Home for a room in no Space, rather than assuming it has
+disappeared. The clock button opens the
 [scheduled messages panel](messaging.md#schedule-a-message).
 
 ## Read or change a Space description

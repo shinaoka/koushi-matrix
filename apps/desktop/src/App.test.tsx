@@ -2649,6 +2649,52 @@ describe("Timeline item row rendering", () => {
     expect(pinned).not.toContain('aria-label="Pin message"');
   });
 
+  // #1590: the pinned state is visible without hover or focus, on a continuation
+  // row too, and outside the hover-only action bar.
+  test("renders a persistent pin badge on a pinned row", () => {
+    const item = {
+      id: { Event: { event_id: "$pin-target:example.invalid" } },
+      sender: "@me:example.invalid",
+      body: "Pinnable message",
+      timestamp_ms: 1_820_000_000_000,
+      in_reply_to_event_id: null,
+      thread_root: null,
+      thread_summary: null,
+      can_react: false,
+      is_redacted: false,
+      is_hidden: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false,
+      reactions: []
+    } as TimelineItem;
+    const row = (isPinned: boolean, isContinuation: boolean) =>
+      renderToStaticMarkup(
+        <TimelineItemRow
+          item={item}
+          roomId="!room:example.invalid"
+          isPinned={isPinned}
+          isContinuation={isContinuation}
+          onReply={() => undefined}
+          onSendReaction={() => undefined}
+          onRedactReaction={() => undefined}
+          onEdit={() => undefined}
+          onRedact={() => undefined}
+          onPin={() => undefined}
+          onUnpin={() => undefined}
+        />
+      );
+
+    const pinned = row(true, false);
+    expect(pinned).toContain("Pinned message");
+    expect(pinned).toContain('class="message-status-row"');
+    expect(pinned.indexOf("Pinned message")).toBeLessThan(
+      pinned.indexOf('class="message-actions')
+    );
+    expect(row(true, true)).toContain("Pinned message");
+    expect(row(false, false)).not.toContain("Pinned message");
+  });
+
   test("renders send queue status from Rust-owned send_state only", () => {
     const transactionWithoutState = renderToStaticMarkup(
       <TimelineItemRow

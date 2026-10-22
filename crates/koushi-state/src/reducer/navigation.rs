@@ -511,7 +511,19 @@ pub(crate) fn handle_select_room(state: &mut AppState, room_id: String) -> Vec<A
             .as_ref()
             .is_some_and(|space_id| selected_room.parent_space_ids.contains(space_id));
         if !active_space_contains_selected_room {
-            state.navigation.active_space_id = selected_room.parent_space_ids.first().cloned();
+            // #1589: only a joined Space is a scope the sidebar can render, so a
+            // room that also names a Space this account is not in still opens
+            // under a Space whose list shows it.
+            state.navigation.active_space_id = selected_room
+                .parent_space_ids
+                .iter()
+                .find(|space_id| {
+                    state
+                        .spaces
+                        .iter()
+                        .any(|space| &space.space_id == *space_id)
+                })
+                .cloned();
         }
     }
     let mut effects = Vec::new();

@@ -1742,6 +1742,8 @@ export const zhHant: Catalog = {
   "timeline.notice.roomJoinRules": "更新了加入規則",
   "timeline.notice.roomHistoryVisibility": "更新了歷史紀錄可見度",
   "timeline.notice.roomPinnedEvents": "更新了釘選的訊息",
+  "timeline.notice.roomPinnedEventPinned": "釘選了訊息",
+  "timeline.notice.roomPinnedEventUnpinned": "取消釘選了訊息",
   "timeline.notice.roomNameSet": "將聊天室名稱設為 {newName}",
   "timeline.notice.roomNameChanged": "將聊天室名稱從 {oldName} 變更為 {newName}",
   "timeline.notice.roomNameRemoved": "移除了聊天室名稱",

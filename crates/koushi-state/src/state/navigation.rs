@@ -533,7 +533,12 @@ pub fn compute_room_list_projection(
         _ => rooms
             .iter()
             .filter(|room| {
-                room_visible_in_active_space(room, active_space_id, active_space_child_room_ids)
+                room_visible_in_active_space(
+                    room,
+                    active_space_id,
+                    active_space_child_room_ids,
+                    spaces,
+                )
             })
             .filter(|room| match active_filter {
                 RoomListFilter::Unread => {
@@ -620,9 +625,11 @@ fn room_visible_in_active_space(
     room: &super::room::RoomSummary,
     active_space_id: Option<&str>,
     active_space_child_room_ids: Option<&[String]>,
+    spaces: &[super::room::SpaceSummary],
 ) -> bool {
     let Some(active_space_id) = active_space_id else {
-        return true;
+        // #1589: the same Home scope the sidebar projects.
+        return crate::sidebar::room_listed_at_home(room, spaces);
     };
     if room.is_dm {
         return room
