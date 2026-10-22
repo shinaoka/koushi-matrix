@@ -827,7 +827,8 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
 - `AppState.room_interactions` is the Rust-owned source of truth for
   `pinned_events` and `pin_operation`. GUI code dispatches typed `pin_event` /
   `unpin_event` commands and waits for Rust-shaped snapshots/events instead of
-  mutating local pin lists.
+  mutating local pin lists. A timeline row's pin badge and its pin/unpin action
+  both read that projection, so React keeps no pin state of its own.
 - Recoverable pin/unpin failures must remain retryable in the reducer. Do not
   clear failed pin state from React; a new typed request transitions the Rust
   state from `Failed` to `Pending`. Pin/unpin command success settles the Rust
