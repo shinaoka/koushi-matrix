@@ -10,7 +10,7 @@ use koushi_core::settings::SettingsStore;
 use koushi_core::store::StoreActor;
 use koushi_key::InMemoryCredentialBackend;
 use koushi_mcp_host::BridgeAccounts;
-use koushi_state::{SessionAuthenticationMethod, SessionInfo};
+use koushi_state::{SessionAuthenticationMethod, SessionInfo, SessionState};
 
 fn manager(data: &std::path::Path) -> AccountRuntimeManager {
     AccountRuntimeManager::new(
@@ -54,6 +54,16 @@ async fn an_account_signed_in_this_run_is_exposed_under_its_stable_id() {
         .map(|account| account.id)
         .collect();
     assert_eq!(ids, vec!["account:@member1:example.invalid".to_owned()]);
+    // The tab keeps its account key, but its runtime never signed in: the
+    // bridge lists the account for `list_accounts` and refuses every tool that
+    // needs it (#1580).
+    assert!(
+        !matches!(
+            manager.accounts()[0].connection.snapshot().session,
+            SessionState::Ready(_)
+        ),
+        "a signed-out runtime is not ready"
+    );
 
     manager.shutdown_all_checked().await.expect("shutdown");
 }

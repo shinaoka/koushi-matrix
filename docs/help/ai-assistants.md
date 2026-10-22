@@ -368,7 +368,7 @@ Two failures look similar and mean different things:
 | `Operation not permitted` | The execution environment blocked the local socket connection before Koushi saw it. | Ask the environment for its escalated execution on that call; do not disable its sandbox. |
 | `consent_required` | Nobody answered the approval in Koushi in time. | Answer the dialog in Koushi, then retry. |
 | `not_permitted` | You denied this permission, or removed the assistant while it waited. | Turn the permission on in **App Settings → AI assistants**, then retry. |
-| `account_unavailable` | The account is signed out or still restoring. | Sign in or wait for restore to finish. |
+| `account_unavailable` | The account is not signed in yet: signed out, locked, or still restoring. | Sign in, unlock Koushi, or wait for restore to finish, then retry. |
 | `room_not_found` | The room is unknown to that account or you have left it. | List rooms again and use a room id the account is joined to. |
 | `event_not_found` | The event id is unknown to the room. | Re-run `search_messages` for a current event id. |
 | `busy` | This account already runs the maximum number of concurrent searches from assistants, or too many approvals are waiting. | Answer or close waiting approvals, wait for earlier calls, and retry. |

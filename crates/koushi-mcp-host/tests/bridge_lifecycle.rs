@@ -3,6 +3,8 @@
 //! while its call waits for approval leaves nothing running.
 #![cfg(unix)]
 
+mod support;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -89,10 +91,13 @@ struct Fixture {
     broker: Arc<ConsentBroker>,
 }
 
-fn fixture() -> (Fixture, Arc<dyn BridgeAccounts>) {
+async fn fixture() -> (Fixture, Arc<dyn BridgeAccounts>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let data_dir = dir.path().join("app");
     let core = Arc::new(CoreRuntime::start_with_data_dir(dir.path().join("core")));
+    // The calls under test must reach the approval lifecycle: only a ready
+    // account is admitted (#1580).
+    support::sign_in(&core).await;
     let media = dir.path().join("media");
     std::fs::create_dir_all(&media).expect("media dir");
     let accounts: Arc<dyn BridgeAccounts> = Arc::new(OneAccount { core, media });
@@ -126,7 +131,7 @@ async fn until(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_client_that_disconnects_while_waiting_never_sends() {
-    let (fixture, accounts) = fixture();
+    let (fixture, accounts) = fixture().await;
     let bridge = koushi_mcp_host::start(
         accounts,
         fixture.data_dir.clone(),
@@ -166,7 +171,7 @@ async fn a_client_that_disconnects_while_waiting_never_sends() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stopping_the_bridge_closes_connected_clients() {
-    let (fixture, accounts) = fixture();
+    let (fixture, accounts) = fixture().await;
     let bridge = koushi_mcp_host::start(
         accounts,
         fixture.data_dir.clone(),
@@ -210,7 +215,7 @@ async fn stopping_the_bridge_closes_connected_clients() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unknown_account_is_refused_without_an_approval() {
-    let (fixture, accounts) = fixture();
+    let (fixture, accounts) = fixture().await;
     let bridge = koushi_mcp_host::start(
         accounts,
         fixture.data_dir.clone(),
@@ -235,7 +240,7 @@ async fn an_unknown_account_is_refused_without_an_approval() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_restarted_bridge_keeps_its_files_when_the_old_handle_drops() {
-    let (fixture, accounts) = fixture();
+    let (fixture, accounts) = fixture().await;
     let first = koushi_mcp_host::start(
         Arc::clone(&accounts),
         fixture.data_dir.clone(),

@@ -5,6 +5,8 @@
 //! typed error before any approval is raised.
 #![cfg(unix)]
 
+mod support;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -61,6 +63,9 @@ impl Harness {
             .expect("grants");
         }
         let core = Arc::new(CoreRuntime::start_with_data_dir(dir.path().join("core")));
+        // A call that passes argument validation must reach the permissions
+        // under test, so the account is ready (#1580).
+        support::sign_in(&core).await;
         let media = dir.path().join("media");
         std::fs::create_dir_all(&media).expect("media dir");
         let accounts: Arc<dyn BridgeAccounts> = Arc::new(OneAccount { core, media });

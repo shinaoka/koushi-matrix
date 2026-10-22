@@ -143,6 +143,8 @@ async fn authorize(
         .broker
         .authorize(client, account_id, need, context)
         .await?;
+    // The account can be signed out or locked while the approval waited.
+    ready_account_key(&connection.snapshot().session)?;
     Ok(connection)
 }
 
@@ -196,6 +198,9 @@ async fn list_rooms(
         .unwrap_or(false);
 
     let snapshot = connection.snapshot();
+    // The rooms of this very snapshot: a sign-out or lock while the approval
+    // waited must not read as an account with no rooms (#1580).
+    ready_account_key(&snapshot.session)?;
     let mut rooms: Vec<Value> = snapshot
         .rooms
         .iter()
@@ -312,6 +317,8 @@ async fn search_messages(
             .direct_search(query, room_ids)
             .await
             .map_err(direct_search_failure)?;
+        // The account can be signed out or locked while the search ran.
+        ready_account_key(&connection.snapshot().session)?;
 
         let total = results.len();
         let items: Vec<Value> = results
@@ -383,6 +390,8 @@ async fn read_room_messages(
             .read_room_messages(room_id.clone(), limit, from)
             .await
             .map_err(room_messages_failure)?;
+        // The account can be signed out or locked while the read ran.
+        ready_account_key(&connection.snapshot().session)?;
         let messages: Vec<Value> = page
             .messages
             .into_iter()
@@ -485,6 +494,10 @@ async fn send_message(
             },
         )
         .await?;
+    // Before the attachments permission can be asked: the account is checked
+    // again after the approval wait, so a signed-out or locked account never
+    // raises a second dialog.
+    ready_account_key(&connection.snapshot().session)?;
     let operation = connection.begin_navigation_operation(
         koushi_diagnostics::NavigationCause::DirectSend,
         koushi_diagnostics::NavigationOrigin::Mcp,
@@ -507,13 +520,8 @@ async fn send_message(
                 .await?;
         }
         let snapshot = connection.snapshot();
-        let account_key = account_key_from_snapshot(&snapshot);
-        if account_key.0.is_empty() {
-            return Err(WireError::new(
-                ErrorCode::AccountUnavailable,
-                "account is not signed in",
-            ));
-        }
+        // The account can be signed out or locked while the approval waited.
+        let account_key = ready_account_key(&snapshot.session)?;
         let key = TimelineKey::room(account_key, room_id.clone());
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
         if !attachments.is_empty() {
@@ -866,7 +874,11 @@ async fn wait_for_events(
         .unwrap_or(25)
         .min(remaining);
 
-    events::wait_for_events(&shared.log, &account_id, cursor, timeout_s).await
+    let waited = events::wait_for_events(&shared.log, &account_id, cursor, timeout_s).await?;
+    // The account can be signed out or locked while the wait ran: a quiet feed
+    // of an account that is no longer usable is not an empty result (#1580).
+    account_connection(&shared.accounts, &account_id)?;
+    Ok(waited)
 }
 
 /// Downloads one file of a message into Koushi's managed media cache and
@@ -919,6 +931,8 @@ async fn get_attachment(
             .await
             .map_err(attachment_failure)?;
         ensure_cache_containment(&shared.accounts, &account_id, &attachment.path)?;
+        // The account can be signed out or locked while the download ran.
+        ready_account_key(&connection.snapshot().session)?;
         Ok(json!({
             "room_id": room_id,
             "event_id": event_id,
@@ -986,16 +1000,21 @@ fn joined_room_label(connection: &koushi_core::CoreConnection, room_id: &str) ->
         .map(|room| room.display_label.clone())
 }
 
+/// The account's live connection. A missing, signed-out, locked, or
+/// still-restoring account fails the request before any approval exists, so an
+/// unavailable account never reads as one with no rooms or no activity.
 fn account_connection(
     accounts: &Arc<dyn BridgeAccounts>,
     account_id: &str,
 ) -> Result<koushi_core::CoreConnection, WireError> {
-    accounts
+    let connection = accounts
         .accounts()
         .into_iter()
         .find(|account| account.id == account_id)
         .map(|account| account.connection)
-        .ok_or_else(|| WireError::new(ErrorCode::AccountUnavailable, "unknown account"))
+        .ok_or_else(|| WireError::new(ErrorCode::AccountUnavailable, "unknown account"))?;
+    ready_account_key(&connection.snapshot().session)?;
+    Ok(connection)
 }
 
 fn required_account_id(arguments: &Value) -> Result<String, WireError> {
@@ -1007,20 +1026,17 @@ fn required_account_id(arguments: &Value) -> Result<String, WireError> {
         .ok_or_else(|| WireError::new(ErrorCode::Unsupported, "account_id is required"))
 }
 
-/// The signed-in account key, or the empty key when no session is ready.
-pub(crate) fn account_key_from_snapshot(
-    snapshot: &koushi_state::AppState,
-) -> koushi_protocol::ids::AccountKey {
-    match &snapshot.session {
-        koushi_state::SessionState::Ready(info)
-        | koushi_state::SessionState::Provisional { info, .. }
-        | koushi_state::SessionState::AwaitingVerification { info, .. }
-        | koushi_state::SessionState::Verifying { info, .. }
-        | koushi_state::SessionState::AwaitingBootstrapConfirmation { info, .. }
-        | koushi_state::SessionState::Rejecting { info, .. }
-        | koushi_state::SessionState::Locked(info) => {
-            koushi_core::store::account_key_from_info(info)
-        }
-        _ => koushi_protocol::ids::AccountKey(String::new()),
+/// The signed-in account key. Only a ready session is a usable account: a
+/// signed-out, locked, restoring, or still-verifying one answers
+/// `account_unavailable`.
+fn ready_account_key(
+    session: &SessionState,
+) -> Result<koushi_protocol::ids::AccountKey, WireError> {
+    match session {
+        SessionState::Ready(info) => Ok(koushi_core::store::account_key_from_info(info)),
+        _ => Err(WireError::new(
+            ErrorCode::AccountUnavailable,
+            "account is not signed in",
+        )),
     }
 }
