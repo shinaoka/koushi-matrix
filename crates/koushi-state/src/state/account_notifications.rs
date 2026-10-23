@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::matrix_case_key;
+
 /// One of the shared notification categories shown as a single ON/OFF switch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -399,9 +401,12 @@ pub fn normalize_notification_keyword(
     if trimmed.chars().count() > MAX_NOTIFICATION_KEYWORD_CHARS {
         return Err(AccountNotificationsFailureKind::PatternTooLong);
     }
+    // The homeserver compares lowercased text, so the refusal must fold
+    // non-ASCII letters too: `café` and `CAFÉ` are one keyword (#1597).
+    let case_key = matrix_case_key(trimmed);
     if existing
         .iter()
-        .any(|rule| rule.pattern.eq_ignore_ascii_case(trimmed))
+        .any(|rule| matrix_case_key(&rule.pattern) == case_key)
     {
         return Err(AccountNotificationsFailureKind::Duplicate);
     }

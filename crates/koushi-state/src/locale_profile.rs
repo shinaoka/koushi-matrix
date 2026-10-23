@@ -136,6 +136,19 @@ pub fn normalize_cjk_search_text(value: &str) -> String {
         .collect()
 }
 
+/// The case-insensitive comparison form Matrix uses for its own text matching.
+///
+/// Homeservers lowercase both sides with the full Unicode lowercase mapping
+/// (Synapse's push-rule matcher lowercases the pattern and the haystack), so
+/// this mirrors that comparison rather than this client's search folding:
+/// `café`/`CAFÉ`, `Σ`/`σ`, and `Д`/`д` compare equal, while width and other
+/// compatibility variants stay distinct because the homeserver keeps them
+/// distinct. It is deliberately separate from [`normalize_cjk_search_text`],
+/// whose NFKC folding belongs to Koushi's own search and ordering.
+pub fn matrix_case_key(value: &str) -> String {
+    value.to_lowercase()
+}
+
 pub fn cjk_display_sort_key(value: &str) -> String {
     let normalized = normalize_cjk_search_text(value);
     let mut sort_key = String::with_capacity(normalized.len());

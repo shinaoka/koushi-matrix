@@ -6484,7 +6484,11 @@ transport or to one country's infrastructure. The app must be running to send.
   (`override > content > room > sender > underride`), so a keyword wins over a room rule
   while a mute, which is an override, still wins over the keyword. The list is bounded,
   a pattern is bounded and trimmed, a duplicate is refused rather than written twice,
-  and a failed write is reported as a failure instead of being shown as saved. The rule
+  and a failed write is reported as a failure instead of being shown as saved. The
+  duplicate comparison is the homeserver's own: full Unicode lowercase folding of both
+  sides (`koushi_state::matrix_case_key`), so `café`/`CAFÉ` and `σίγμα`/`ΣΊΓΜΑ` are one
+  keyword, while width or other compatibility variants stay distinct because the
+  homeserver keeps them distinct. The rule
   name is minted from the pattern rather than taken from the user: a prefix this client
   owns plus a hash of the trimmed text, so the same keyword cannot become two rules, no
   pattern text travels in a URL path, and an id that collides with a different pattern is

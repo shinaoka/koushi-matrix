@@ -114,6 +114,32 @@ fn keyword_normalization_refuses_the_local_failures() {
 }
 
 #[test]
+fn keyword_normalization_refuses_non_ascii_case_variants() {
+    // Matrix matching lowercases with full Unicode mappings, so a non-ASCII
+    // letter's case variants are one keyword (#1597).
+    for (existing_pattern, input) in [
+        ("café", "CAFÉ"),
+        ("CAFÉ", "café"),
+        ("σίγμα", "ΣΊΓΜΑ"),
+        ("дом", "ДОМ"),
+    ] {
+        let existing = vec![rule("client.keyword.one", existing_pattern, true)];
+        assert_eq!(
+            normalize_notification_keyword(input, &existing),
+            Err(AccountNotificationsFailureKind::Duplicate),
+            "{existing_pattern:?} vs {input:?}"
+        );
+    }
+    // A width difference is not a case difference: the homeserver keeps those
+    // patterns distinct, so the local refusal must not over-refuse them.
+    let existing = vec![rule("client.keyword.fullwidth", "ｃａｋｅ", true)];
+    assert_eq!(
+        normalize_notification_keyword("cake", &existing),
+        Ok("cake".to_owned())
+    );
+}
+
+#[test]
 fn keyword_normalization_refuses_an_add_beyond_the_cap() {
     let full: Vec<NotificationKeywordRuleState> = (0..MAX_NOTIFICATION_KEYWORDS)
         .map(|index| {

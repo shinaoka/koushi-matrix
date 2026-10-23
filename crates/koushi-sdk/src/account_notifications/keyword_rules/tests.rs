@@ -179,6 +179,34 @@ fn planning_refuses_an_empty_oversized_or_duplicate_pattern_locally() {
 }
 
 #[test]
+fn planning_refuses_non_ascii_case_variants_of_a_keyword() {
+    // The homeserver compares lowercased text, so a non-ASCII case variant is
+    // the same keyword and must not be written a second time (#1597).
+    let ruleset: Ruleset = serde_json::from_value(json!({"content": [
+        {"rule_id": "client.keyword.accent", "default": false, "enabled": true,
+         "pattern": "café", "actions": ["notify"]},
+        {"rule_id": "client.keyword.greek", "default": false, "enabled": false,
+         "pattern": "σίγμα", "actions": ["notify"]}
+    ]}))
+    .unwrap();
+    assert_eq!(
+        plan_keyword_rule(&ruleset, "CAFÉ"),
+        Err(MatrixKeywordRuleError::Duplicate)
+    );
+    assert_eq!(
+        plan_keyword_rule(&ruleset, "ΣΊΓΜΑ"),
+        Err(MatrixKeywordRuleError::Duplicate)
+    );
+    // The comparison is case-insensitive, not compatibility folding.
+    let fullwidth: Ruleset = serde_json::from_value(json!({"content": [
+        {"rule_id": "client.keyword.fullwidth", "default": false, "enabled": true,
+         "pattern": "ｃａｋｅ", "actions": ["notify"]}
+    ]}))
+    .unwrap();
+    assert!(plan_keyword_rule(&fullwidth, "cake").is_ok());
+}
+
+#[test]
 fn planning_trims_and_returns_the_rule_to_write() {
     let ruleset: Ruleset = serde_json::from_value(json!({"content": []})).unwrap();
     let rule = plan_keyword_rule(&ruleset, "  cake  ").unwrap();

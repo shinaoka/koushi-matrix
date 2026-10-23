@@ -37,8 +37,8 @@ pub use composer_shortcuts::{
 pub use effect::{AppEffect, ProfileDisplayChange, UiEvent};
 pub use locale_profile::{
     CatalogLocale, DisplayPlatform, LocaleDirection, LocaleDisplayProfile, ModifierLabelProfile,
-    PseudoLocaleMode, cjk_display_sort_key, normalize_cjk_search_text, resolve_catalog_locale,
-    resolve_locale_display_profile,
+    PseudoLocaleMode, cjk_display_sort_key, matrix_case_key, normalize_cjk_search_text,
+    resolve_catalog_locale, resolve_locale_display_profile,
 };
 pub use notification_text::{
     NotificationPlural, NotificationText, notification_counts, notification_label_separator,

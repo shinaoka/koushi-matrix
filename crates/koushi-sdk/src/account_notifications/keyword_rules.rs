@@ -42,7 +42,7 @@
 //!   with a dot for server-default rules, so [`keyword_rule_id`] adds a
 //!   `.`-free prefix and a deterministic suffix.
 
-use koushi_state::AccountNotificationsFailureKind;
+use koushi_state::{AccountNotificationsFailureKind, matrix_case_key};
 use matrix_sdk::ruma::{
     api::client::push::{delete_pushrule, set_pushrule},
     push::{NewPatternedPushRule, NewPushRule, RuleKind, Ruleset},
@@ -144,10 +144,13 @@ pub fn plan_keyword_rule(
 ) -> Result<KeywordRule, MatrixKeywordRuleError> {
     let pattern = normalize_pattern(pattern)?;
     let rule_id = keyword_rule_id(pattern);
+    // The homeserver compares lowercased text, so a non-ASCII case variant is
+    // the same keyword and must not be written a second time (#1597).
+    let case_key = matrix_case_key(pattern);
     if ruleset
         .content
         .iter()
-        .any(|rule| !rule.default && rule.pattern.eq_ignore_ascii_case(pattern))
+        .any(|rule| !rule.default && matrix_case_key(&rule.pattern) == case_key)
     {
         return Err(MatrixKeywordRuleError::Duplicate);
     }
