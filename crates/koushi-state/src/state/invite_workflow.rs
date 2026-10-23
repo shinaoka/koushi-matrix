@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::{cjk_display_sort_key, normalize_cjk_search_text};
+
 use super::{
     AppState, AvatarImage, OperationFailureKind, RoomHistoryVisibility, RoomManagementState,
     RoomMemberSummary, SessionState, SpaceSummary, UserProfile,
@@ -229,7 +231,7 @@ pub fn build_invite_target_query_state(
         };
     }
 
-    let lowered_query = trimmed.to_ascii_lowercase();
+    let normalized_query = normalize_cjk_search_text(trimmed);
     let selected_user_ids = state
         .invite_workflow
         .selected_targets
@@ -285,7 +287,7 @@ pub fn build_invite_target_query_state(
             user_id,
             profile,
             state.profile.local_aliases.get(user_id).map(String::as_str),
-            &lowered_query,
+            &normalized_query,
         ) {
             candidates_by_user_id.insert(
                 user_id.clone(),
@@ -302,7 +304,8 @@ pub fn build_invite_target_query_state(
     }
 
     for (user_id, alias) in &state.profile.local_aliases {
-        if text_matches_query(alias, &lowered_query) || text_matches_query(user_id, &lowered_query)
+        if text_matches_query(alias, &normalized_query)
+            || text_matches_query(user_id, &normalized_query)
         {
             candidates_by_user_id
                 .entry(user_id.clone())
@@ -326,7 +329,7 @@ pub fn build_invite_target_query_state(
                 user_id,
                 profile,
                 state.profile.local_aliases.get(user_id).map(String::as_str),
-                &lowered_query,
+                &normalized_query,
             ) {
                 candidates_by_user_id
                     .entry(user_id.clone())
@@ -356,13 +359,13 @@ pub fn build_invite_target_query_state(
             .local_aliases
             .get(&member.user_id)
             .map(String::as_str);
-        if text_matches_query(&member.user_id, &lowered_query)
-            || text_matches_query(&member.display_label, &lowered_query)
+        if text_matches_query(&member.user_id, &normalized_query)
+            || text_matches_query(&member.display_label, &normalized_query)
             || member
                 .display_name
                 .as_deref()
-                .is_some_and(|name| text_matches_query(name, &lowered_query))
-            || alias.is_some_and(|value| text_matches_query(value, &lowered_query))
+                .is_some_and(|name| text_matches_query(name, &normalized_query))
+            || alias.is_some_and(|value| text_matches_query(value, &normalized_query))
         {
             candidates_by_user_id
                 .entry(member.user_id.clone())
@@ -390,7 +393,7 @@ pub fn build_invite_target_query_state(
             .local_aliases
             .get(&member.user_id)
             .map(String::as_str);
-        if member_matches_query(member, alias, &lowered_query) {
+        if member_matches_query(member, alias, &normalized_query) {
             candidates_by_user_id
                 .entry(member.user_id.clone())
                 .or_insert_with(|| {
@@ -413,13 +416,13 @@ pub fn build_invite_target_query_state(
 
     for room in &state.rooms {
         for user_id in &room.dm_user_ids {
-            if text_matches_query(user_id, &lowered_query)
+            if text_matches_query(user_id, &normalized_query)
                 || state.profile.users.get(user_id).is_some_and(|profile| {
                     profile_matches_query(
                         user_id,
                         profile,
                         state.profile.local_aliases.get(user_id).map(String::as_str),
-                        &lowered_query,
+                        &normalized_query,
                     )
                 })
             {
@@ -467,9 +470,8 @@ pub fn build_invite_target_query_state(
             .contains(&right.user_id)
             .cmp(&known_user_ids.contains(&left.user_id))
             .then_with(|| {
-                left.display_label
-                    .to_ascii_lowercase()
-                    .cmp(&right.display_label.to_ascii_lowercase())
+                cjk_display_sort_key(&left.display_label)
+                    .cmp(&cjk_display_sort_key(&right.display_label))
             })
             .then_with(|| left.user_id.cmp(&right.user_id))
     });
@@ -599,38 +601,38 @@ fn profile_matches_query(
     user_id: &str,
     profile: &UserProfile,
     alias: Option<&str>,
-    lowered_query: &str,
+    normalized_query: &str,
 ) -> bool {
-    alias.is_some_and(|value| text_matches_query(value, lowered_query))
-        || text_matches_query(user_id, lowered_query)
+    alias.is_some_and(|value| text_matches_query(value, normalized_query))
+        || text_matches_query(user_id, normalized_query)
         || profile
             .display_name
             .as_deref()
-            .is_some_and(|value| text_matches_query(value, lowered_query))
-        || text_matches_query(&profile.display_label, lowered_query)
+            .is_some_and(|value| text_matches_query(value, normalized_query))
+        || text_matches_query(&profile.display_label, normalized_query)
         || profile
             .mention_search_terms
             .iter()
-            .any(|term| text_matches_query(term, lowered_query))
+            .any(|term| text_matches_query(term, normalized_query))
 }
 
 fn member_matches_query(
     member: &RoomMemberSummary,
     alias: Option<&str>,
-    lowered_query: &str,
+    normalized_query: &str,
 ) -> bool {
-    alias.is_some_and(|value| text_matches_query(value, lowered_query))
-        || text_matches_query(&member.user_id, lowered_query)
+    alias.is_some_and(|value| text_matches_query(value, normalized_query))
+        || text_matches_query(&member.user_id, normalized_query)
         || member
             .display_name
             .as_deref()
-            .is_some_and(|value| text_matches_query(value, lowered_query))
-        || text_matches_query(&member.display_label, lowered_query)
-        || text_matches_query(&member.original_display_label, lowered_query)
+            .is_some_and(|value| text_matches_query(value, normalized_query))
+        || text_matches_query(&member.display_label, normalized_query)
+        || text_matches_query(&member.original_display_label, normalized_query)
 }
 
-fn text_matches_query(value: &str, lowered_query: &str) -> bool {
-    value.to_ascii_lowercase().contains(lowered_query)
+fn text_matches_query(value: &str, normalized_query: &str) -> bool {
+    normalize_cjk_search_text(value).contains(normalized_query)
 }
 
 fn candidate_from_profile(

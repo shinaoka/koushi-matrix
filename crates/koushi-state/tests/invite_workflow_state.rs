@@ -362,6 +362,69 @@ fn invite_target_query_matches_profiles_aliases_members_and_explicit_user_ids() 
 }
 
 #[test]
+fn invite_target_query_folds_unicode_case_and_width_and_sorts_with_cjk_keys() {
+    let mut state = ready_with_room(ROOM_A);
+    state.profile.users.insert(
+        "@elodie:example.org".to_owned(),
+        user_profile("@elodie:example.org", "Élodie", &[]),
+    );
+    state.profile.users.insert(
+        "@arisu:example.org".to_owned(),
+        user_profile("@arisu:example.org", "アリス", &[]),
+    );
+
+    // Invite search is person search: it applies the same Rust-owned NFKC and
+    // case folding as the mention surface, so a lowercase or half-width query
+    // still finds the loaded person (#1601).
+    for (query, expected) in [
+        ("élodie", "@elodie:example.org"),
+        ("ｱﾘｽ", "@arisu:example.org"),
+    ] {
+        reduce(
+            &mut state,
+            AppAction::InviteTargetQueryChanged {
+                room_id: ROOM_A.to_owned(),
+                query: query.to_owned(),
+            },
+        );
+        assert_eq!(
+            state.invite_workflow.query.candidates.len(),
+            1,
+            "{query:?} should find exactly one loaded person"
+        );
+        assert_eq!(
+            state.invite_workflow.query.candidates[0].user_id, expected,
+            "{query:?}"
+        );
+    }
+
+    // Candidate ordering uses the canonical CJK display sort key, whose numeric
+    // segments order numerically, not the ASCII-lowercased label (#1601).
+    for (index, label) in ["会議10", "会議2"].into_iter().enumerate() {
+        let user_id = format!("@kaigi{index}:example.org");
+        state
+            .profile
+            .users
+            .insert(user_id.clone(), user_profile(&user_id, label, &[]));
+    }
+    reduce(
+        &mut state,
+        AppAction::InviteTargetQueryChanged {
+            room_id: ROOM_A.to_owned(),
+            query: "会議".to_owned(),
+        },
+    );
+    let labels: Vec<&str> = state
+        .invite_workflow
+        .query
+        .candidates
+        .iter()
+        .map(|candidate| candidate.display_label.as_str())
+        .collect();
+    assert_eq!(labels, ["会議2", "会議10"]);
+}
+
+#[test]
 fn invite_target_query_prioritizes_people_known_from_joined_rooms_and_dms() {
     let mut state = ready_with_room(ROOM_A);
     state.profile.users.insert(
