@@ -1753,6 +1753,11 @@ function replyQuoteBody(quote: NonNullable<TimelineItem["reply_quote"]>): string
 function localizedTimelineItemBody(item: TimelineItem): string {
   const notice = item.notice_i18n;
   switch (notice?.key) {
+    case "timeline.notice.profileDisplayNameChanged":
+    case "timeline.notice.profileAvatarChanged":
+    case "timeline.notice.profileDisplayNameAndAvatarChanged":
+    case "timeline.notice.profileUpdated":
+      return t(notice.key, { sender: peopleFacingLabel(item.sender_label) });
     case "timeline.notice.roomTopicSet":
       return t("timeline.notice.roomTopicSet", { value: notice?.value ?? "" });
     case "timeline.notice.roomTopicChanged":

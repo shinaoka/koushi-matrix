@@ -782,6 +782,14 @@ pub enum TimelineNoticeI18nKey {
     RoomPinnedEventPinned,
     #[serde(rename = "timeline.notice.roomPinnedEventUnpinned")]
     RoomPinnedEventUnpinned,
+    #[serde(rename = "timeline.notice.profileDisplayNameChanged")]
+    ProfileDisplayNameChanged,
+    #[serde(rename = "timeline.notice.profileAvatarChanged")]
+    ProfileAvatarChanged,
+    #[serde(rename = "timeline.notice.profileDisplayNameAndAvatarChanged")]
+    ProfileDisplayNameAndAvatarChanged,
+    #[serde(rename = "timeline.notice.profileUpdated")]
+    ProfileUpdated,
     #[serde(rename = "timeline.notice.roomNameSet")]
     RoomNameSet,
     #[serde(rename = "timeline.notice.roomNameChanged")]

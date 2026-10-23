@@ -1721,6 +1721,10 @@ export type MessageId =
   | "timeline.notice.roomPinnedEvents"
   | "timeline.notice.roomPinnedEventPinned"
   | "timeline.notice.roomPinnedEventUnpinned"
+  | "timeline.notice.profileDisplayNameChanged"
+  | "timeline.notice.profileAvatarChanged"
+  | "timeline.notice.profileDisplayNameAndAvatarChanged"
+  | "timeline.notice.profileUpdated"
   | "timeline.notice.roomNameSet"
   | "timeline.notice.roomNameChanged"
   | "timeline.notice.roomNameRemoved"
@@ -4157,6 +4161,10 @@ const en: Catalog = {
   "timeline.notice.roomPinnedEvents": "updated pinned messages",
   "timeline.notice.roomPinnedEventPinned": "pinned a message",
   "timeline.notice.roomPinnedEventUnpinned": "unpinned a message",
+  "timeline.notice.profileDisplayNameChanged": "{sender} changed their display name",
+  "timeline.notice.profileAvatarChanged": "{sender} changed their profile picture",
+  "timeline.notice.profileDisplayNameAndAvatarChanged": "{sender} changed their display name and profile picture",
+  "timeline.notice.profileUpdated": "{sender} updated their room profile",
   "timeline.notice.roomNameSet": "set the room name to {newName}",
   "timeline.notice.roomNameChanged": "changed the room name from {oldName} to {newName}",
   "timeline.notice.roomNameRemoved": "removed the room name",
@@ -6464,6 +6472,10 @@ const ja: Catalog = {
   "timeline.notice.roomPinnedEvents": "ピン留めメッセージを更新しました",
   "timeline.notice.roomPinnedEventPinned": "メッセージをピン留めしました",
   "timeline.notice.roomPinnedEventUnpinned": "メッセージのピン留めを解除しました",
+  "timeline.notice.profileDisplayNameChanged": "{sender}が表示名を変更しました",
+  "timeline.notice.profileAvatarChanged": "{sender}がプロフィール画像を変更しました",
+  "timeline.notice.profileDisplayNameAndAvatarChanged": "{sender}が表示名とプロフィール画像を変更しました",
+  "timeline.notice.profileUpdated": "{sender}がルーム内のプロフィールを更新しました",
   "timeline.notice.roomNameSet": "ルーム名を「{newName}」に設定しました",
   "timeline.notice.roomNameChanged": "ルーム名を「{oldName}」から「{newName}」に変更しました",
   "timeline.notice.roomNameRemoved": "ルーム名を削除しました",

@@ -2877,16 +2877,28 @@ fn membership_change_projection(
 fn profile_change_projection(
     change: &matrix_sdk_ui::timeline::MemberProfileChange,
 ) -> MessageProjection {
-    let body = match (
+    let (key, body) = match (
         change.displayname_change().is_some(),
         change.avatar_url_change().is_some(),
     ) {
-        (false, true) => "changed their profile picture",
-        (true, false) => "changed their display name",
-        (true, true) => "changed their display name and profile picture",
-        (false, false) => "updated their room profile",
+        (false, true) => (
+            TimelineNoticeI18nKey::ProfileAvatarChanged,
+            "changed their profile picture",
+        ),
+        (true, false) => (
+            TimelineNoticeI18nKey::ProfileDisplayNameChanged,
+            "changed their display name",
+        ),
+        (true, true) => (
+            TimelineNoticeI18nKey::ProfileDisplayNameAndAvatarChanged,
+            "changed their display name and profile picture",
+        ),
+        (false, false) => (
+            TimelineNoticeI18nKey::ProfileUpdated,
+            "updated their room profile",
+        ),
     };
-    non_user_content_projection(body)
+    localized_notice_projection(key, body)
 }
 
 pub(super) fn non_user_content_projection(body: &str) -> MessageProjection {
@@ -4105,3 +4117,6 @@ mod content_policy_tests;
 
 #[cfg(test)]
 mod receipt_scope_tests;
+
+#[cfg(test)]
+mod profile_notice_tests;

@@ -638,7 +638,29 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
                 }),
                 ..item.clone()
             },
-        ],
+        ]
+        .into_iter()
+        .chain(
+            [
+                koushi_protocol::event::TimelineNoticeI18nKey::ProfileDisplayNameChanged,
+                koushi_protocol::event::TimelineNoticeI18nKey::ProfileAvatarChanged,
+                koushi_protocol::event::TimelineNoticeI18nKey::ProfileDisplayNameAndAvatarChanged,
+                koushi_protocol::event::TimelineNoticeI18nKey::ProfileUpdated,
+            ]
+            .into_iter()
+            .map(|key| TimelineItem {
+                message_kind: koushi_protocol::event::TimelineMessageKind::Notice,
+                notice_i18n: Some(koushi_protocol::event::TimelineNoticeI18n {
+                    key,
+                    old_name: None,
+                    new_name: None,
+                    value: None,
+                    replacement_room_id: None,
+                }),
+                ..item.clone()
+            }),
+        )
+        .collect(),
     }))
     .expect("timeline events serialize");
     assert_eq!(initial["kind"], json!("Timeline"));
