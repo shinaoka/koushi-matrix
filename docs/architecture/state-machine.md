@@ -6526,8 +6526,10 @@ transport or to one country's infrastructure. The app must be running to send.
   is byte-identical it reuses its idempotency key; otherwise it takes a new window
   key, preferring a possible duplicate notice to resending obsolete text. Subject,
   title, and body are notification payload text owned by Core, not the React message
-  catalog: they never render inside the app and are English until localization is
-  decided. The queue is in-memory and bounded and is discarded on exit; there is no
+  catalog: they never render inside the app, and they are rendered through the Rust
+  notification catalog in the app language, resolved at send or retry time, so a held
+  or retried delivery is worded in the locale current when it is sent (#1476). The
+  queue is in-memory and bounded and is discarded on exit; there is no
   durable outbox. The last outcome is projected per destination: accepted by the
   service, invalid credential, not permitted, rejected, rate limited, or transport
   failure. Only a rate limit or a transport failure is retried, at most three
