@@ -43,7 +43,7 @@ use crate::event_projection::{
     message_actions_for_timeline_item, message_source_for_timeline_item,
 };
 use crate::executor;
-use crate::link_preview::{LinkPreviewContext, extract_link_ranges};
+use crate::link_preview::{LinkPreviewContext, extract_formatted_link_ranges, extract_link_ranges};
 use crate::search::SearchIndexMessage;
 use koushi_protocol::command::{MediaDownloadSelection, UploadMediaKind, UploadMediaRequest};
 use koushi_protocol::event::{
@@ -2337,11 +2337,13 @@ pub(super) fn link_ranges_for_message_projection(
     body: Option<&str>,
     formatted: Option<&koushi_protocol::event::TimelineFormattedBody>,
 ) -> Vec<koushi_protocol::event::TimelineLinkRange> {
-    let source = formatted
-        .map(|formatted_body| formatted_body.plain_text.as_str())
-        .or(body)
-        .unwrap_or("");
-    extract_link_ranges(source)
+    match formatted {
+        // The stored plain text concatenates block elements, so detection runs
+        // on the sanitized HTML with its block boundaries preserved and the
+        // offsets are mapped back onto that text (#1596).
+        Some(formatted_body) => extract_formatted_link_ranges(&formatted_body.html),
+        None => extract_link_ranges(body.unwrap_or("")),
+    }
 }
 
 fn reply_quote_from_details(details: &InReplyToDetails) -> ReplyQuote {
@@ -4108,6 +4110,9 @@ pub(super) fn classify_reaction_error(err: &matrix_sdk_ui::timeline::Error) -> T
 
 #[cfg(test)]
 mod edit_formatting_tests;
+
+#[cfg(test)]
+mod formatted_link_ranges_tests;
 
 #[cfg(test)]
 mod tests;

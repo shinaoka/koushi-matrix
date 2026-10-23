@@ -277,31 +277,102 @@ fn is_block_element(tag: &str) -> bool {
 }
 
 /// Text of `html` with a `\n` between block-level elements and `<br>`, keeping
-/// inline-concatenated runs intact. Used only for URL boundary detection; the
-/// stored formatted plain text and its offsets are left untouched.
-fn plain_text_with_block_separators(html: &Html) -> String {
-    fn collect(nodes: impl Iterator<Item = matrix_sdk::ruma::html::NodeRef>, out: &mut String) {
+/// inline-concatenated runs intact, plus the UTF-16 offsets of the separators
+/// this traversal inserted.
+///
+/// The stored formatted plain text stays untouched, so URL detection can use
+/// these boundaries and still publish offsets into that text (#870, #1596).
+#[derive(Debug, Default)]
+struct BlockSeparatedText {
+    text: String,
+    utf16_len: usize,
+    separator_offsets: Vec<usize>,
+}
+
+impl BlockSeparatedText {
+    fn push_text(&mut self, text: &str) {
+        self.text.push_str(text);
+        self.utf16_len += text.encode_utf16().count();
+    }
+
+    fn push_separator(&mut self) {
+        if self.text.is_empty() {
+            return;
+        }
+        self.separator_offsets.push(self.utf16_len);
+        self.text.push('\n');
+        self.utf16_len += 1;
+    }
+}
+
+/// Text of `html` with a `\n` between block-level elements and `<br>`, keeping
+/// inline-concatenated runs intact.
+fn block_separated_text(html: &Html) -> BlockSeparatedText {
+    fn collect(
+        nodes: impl Iterator<Item = matrix_sdk::ruma::html::NodeRef>,
+        out: &mut BlockSeparatedText,
+    ) {
         for node in nodes {
             if let Some(text) = node.as_text() {
-                out.push_str(&text.borrow());
+                out.push_text(&text.borrow());
                 continue;
             }
             let block = node
                 .as_element()
                 .is_some_and(|element| is_block_element(element.name.local.as_ref()));
-            if block && !out.is_empty() {
-                out.push('\n');
+            if block {
+                out.push_separator();
             }
             collect(node.children(), out);
-            if block && !out.is_empty() {
-                out.push('\n');
+            if block {
+                out.push_separator();
             }
         }
     }
 
-    let mut text = String::new();
-    collect(html.children(), &mut text);
-    text
+    let mut out = BlockSeparatedText::default();
+    collect(html.children(), &mut out);
+    out
+}
+
+/// Clickable link ranges for a formatted message, detected with block
+/// boundaries preserved and then mapped back onto the stored plain text
+/// (#1596).
+///
+/// The stored plain text concatenates block elements, so scanning it directly
+/// lets a bare URL at the end of one item swallow the next item's first word.
+/// Detection therefore runs on [`block_separated_text`], and each range is
+/// shifted back by the separators inserted before it. A range that would cross
+/// an inserted separator cannot address the stored text and is dropped.
+pub(crate) fn extract_formatted_link_ranges(html: &str) -> Vec<TimelineLinkRange> {
+    let separated = block_separated_text(&Html::parse(html));
+    extract_link_ranges(&separated.text)
+        .into_iter()
+        .filter_map(|range| {
+            let crosses_separator = separated
+                .separator_offsets
+                .iter()
+                .any(|offset| *offset >= range.start_utf16 && *offset < range.end_utf16);
+            if crosses_separator {
+                return None;
+            }
+            let start_utf16 = basis_offset(range.start_utf16, &separated.separator_offsets);
+            let end_utf16 = basis_offset(range.end_utf16, &separated.separator_offsets);
+            // The mapped range must still cover exactly the detected URL;
+            // anything else is a misalignment the renderer would drop.
+            (end_utf16 - start_utf16 == range.url.encode_utf16().count()).then_some(
+                TimelineLinkRange {
+                    start_utf16,
+                    end_utf16,
+                    ..range
+                },
+            )
+        })
+        .collect()
+}
+
+fn basis_offset(offset: usize, separators: &[usize]) -> usize {
+    offset - separators.partition_point(|separator| *separator < offset)
 }
 
 pub fn extract_urls(body: Option<&str>, formatted: Option<&TimelineFormattedBody>) -> Vec<String> {
@@ -323,9 +394,7 @@ pub fn extract_urls(body: Option<&str>, formatted: Option<&TimelineFormattedBody
         // Scan the sanitized formatted HTML with paragraph and <br> boundaries
         // preserved instead of the concatenated plain text, so a URL followed by
         // a new paragraph cannot swallow the next word into a phantom URL (#870).
-        collect(&plain_text_with_block_separators(&Html::parse(
-            &formatted.html,
-        )));
+        collect(&block_separated_text(&Html::parse(&formatted.html)).text);
         // Extract hrefs from sanitized HTML without parsing the full DOM.
         let href_re = href_regex();
         for cap in href_re.captures_iter(&formatted.html) {

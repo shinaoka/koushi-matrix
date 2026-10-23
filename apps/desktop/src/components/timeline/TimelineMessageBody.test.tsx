@@ -408,4 +408,23 @@ describe("renderFormattedBody linkify beside existing anchors (#1542)", () => {
 
     expect(markup).toContain(`href="${url}"`);
   });
+
+  // #1596: the Rust projection detects links on block boundaries and maps the
+  // ranges back onto the concatenated plain text, so adjacent list items publish
+  // one exact range per URL. The renderer must link both without nesting.
+  test("links both URLs of adjacent list items from Rust-shaped ranges", () => {
+    const first = "https://example.invalid/profiles/member_one?locale=ja";
+    const second = "https://example.invalid/profiles/member_two?locale=ja";
+    const html = `<ul><li>Member 1: ${first}</li><li>Member 2: ${second}</li></ul>`;
+    const plainText = `Member 1: ${first}Member 2: ${second}`;
+    const markup = renderLinked(html, plainText, [
+      rangeOf(plainText, first),
+      rangeOf(plainText, second)
+    ]);
+
+    expect(markup).toContain(`href="${first}"`);
+    expect(markup).toContain(`href="${second}"`);
+    expect(anchorCount(markup)).toBe(2);
+    expect(markup).not.toMatch(NESTED_ANCHOR);
+  });
 });

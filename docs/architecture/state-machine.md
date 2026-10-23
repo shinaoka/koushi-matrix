@@ -3280,7 +3280,12 @@ sanitizes it before exposing it through `TimelineItem.formatted`.
   that value to CSS/markup only and must not infer msgtype from body text.
 - `TimelineItem.formatted` carries a safe render contract: sanitized HTML,
   plain text derived from that sanitized tree, and extracted code-block metadata
-  (`language` plus code body).
+  (`language` plus code body). The plain text concatenates the sanitized text
+  nodes without block separators, and every projected offset (spoilers, link
+  ranges) addresses that text. Clickable URL ranges are detected with block
+  boundaries (`p`, `li`, `br`, and the other block elements) preserved and then
+  mapped back onto it, so a bare URL at the end of one item cannot swallow the
+  next item's first word (#1596).
 - Spoiler semantics are Rust-owned. Plain `||spoiler||` fallback text is
   normalized to display text plus `TimelineItem.spoiler_spans`; sanitized
   Matrix HTML `<span data-mx-spoiler>` is preserved as a reveal affordance and
