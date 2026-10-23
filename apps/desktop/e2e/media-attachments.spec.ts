@@ -18,9 +18,10 @@
  *  9. Retry dispatches download_media again after failure.
  */
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { t } from "../src/i18n/messages";
 import { roomTimelineKey, threadTimelineKey } from "../src/domain/coreEvents";
+import { dragResizer } from "./support/panelGeometry";
 
 const HARNESS_ACCOUNT_KEY = "@harness-user:example.invalid";
 const HARNESS_ROOM_ID = "!harness-room:example.invalid";
@@ -501,6 +502,140 @@ test("thread panel ready image preview fits inside the panel width", async ({
   await expect
     .poll(() => figure.evaluate((element) => getComputedStyle(element).overflow))
     .toBe("hidden");
+});
+
+// ---------------------------------------------------------------------------
+// 6b. Panel resize keeps image and frame in step (#1594)
+// ---------------------------------------------------------------------------
+
+test("panel resize keeps image frames in step with their images", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 820 });
+  await gotoReadyShell(page);
+
+  const roomEventId = "$media-resize-room:example.invalid";
+  const threadEventId = "$media-resize-thread:example.invalid";
+  const syntheticUrl =
+    "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
+
+  await openThreadPane(page);
+  await seedTimelineItems(
+    page,
+    [
+      {
+        ...makeImageItem(threadEventId),
+        in_reply_to_event_id: HARNESS_THREAD_ROOT_ID,
+        thread_root: HARNESS_THREAD_ROOT_ID
+      }
+    ],
+    3,
+    HARNESS_THREAD_KEY
+  );
+  await pushMediaDownloadState(page, threadEventId, {
+    kind: "ready",
+    source_url: syntheticUrl,
+    width: 800,
+    height: 600,
+    mime_type: "image/jpeg"
+  });
+
+  await seedTimelineItems(page, [makeImageItem(roomEventId)]);
+  await pushMediaDownloadState(page, roomEventId, {
+    kind: "ready",
+    source_url: syntheticUrl,
+    width: 800,
+    height: 600,
+    mime_type: "image/jpeg"
+  });
+
+  const pane = page.locator('aside[aria-label="Context panel"]');
+  const roomMedia = page.locator(`[data-event-id="${roomEventId}"] .message-media`);
+  const threadMedia = pane.locator(`[data-event-id="${threadEventId}"] .message-media`);
+  const roomRow = page.locator(`[data-event-id="${roomEventId}"]`);
+  const threadRow = pane.locator(`[data-event-id="${threadEventId}"]`);
+  await expect(roomMedia.locator("img.message-media-image")).toBeVisible();
+  await expect(threadMedia.locator("img.message-media-image")).toBeVisible();
+
+  const boxes = async (media: Locator, row: Locator) => {
+    const [rowBox, cardBox, figureBox, imageBox] = await Promise.all([
+      row.boundingBox(),
+      media.boundingBox(),
+      media.locator(".message-media-figure").boundingBox(),
+      media.locator("img.message-media-image").boundingBox()
+    ]);
+    if (!rowBox || !cardBox || !figureBox || !imageBox) {
+      throw new Error("media row has no rendered box");
+    }
+    return { row: rowBox, card: cardBox, figure: figureBox, image: imageBox };
+  };
+
+  // Layout after a mount or a width change settles asynchronously in WebKit, so
+  // the geometry is polled until it is consistent instead of sampled once.
+  const expectInStep = async (media: Locator, row: Locator, ratio: number) => {
+    let figureBox: Awaited<ReturnType<typeof boxes>>["figure"] | null = null;
+    await expect
+      .poll(
+        async () => {
+          const { row: rowBox, card, figure, image } = await boxes(media, row);
+          figureBox = figure;
+          const problems: string[] = [];
+          // The image fills exactly the metadata-derived frame.
+          if (Math.abs(image.width - figure.width) > 1) {
+            problems.push(`image width ${image.width} != frame ${figure.width}`);
+          }
+          if (Math.abs(image.height - figure.height) > 1) {
+            problems.push(`image height ${image.height} != frame ${figure.height}`);
+          }
+          if (Math.abs(figure.width / figure.height - ratio) > 0.05) {
+            problems.push(`frame ratio ${figure.width / figure.height} != ${ratio}`);
+          }
+          // The frame stays inside its card and the card inside its own row: a
+          // widened panel cannot spill the image over the sender line, and a
+          // narrowed one cannot leave a taller box behind.
+          if (figure.x < card.x - 0.5 || figure.y < card.y - 0.5) {
+            problems.push("frame starts outside its card");
+          }
+          if (
+            figure.x + figure.width > card.x + card.width + 0.5 ||
+            figure.y + figure.height > card.y + card.height + 0.5
+          ) {
+            problems.push("frame overflows its card");
+          }
+          if (card.y + card.height > rowBox.y + rowBox.height + 0.5) {
+            problems.push("card overflows its row");
+          }
+          return problems.join("; ");
+        },
+        { timeout: 5_000 }
+      )
+      .toBe("");
+    if (!figureBox) {
+      throw new Error("media frame never rendered");
+    }
+    return figureBox;
+  };
+
+  const initialThreadFigure = await expectInStep(threadMedia, threadRow, 800 / 600);
+  const initialRoomFigure = await expectInStep(roomMedia, roomRow, 800 / 600);
+
+  // Widen the panel past its starting width: the thread frame grows and its row
+  // must grow with it, while the main timeline narrows.
+  await dragResizer(page, t("workspace.resizeRightPanel"), -160);
+  await expect
+    .poll(() => pane.evaluate((element) => element.getBoundingClientRect().width))
+    .toBeGreaterThan(390);
+  const widenedThreadFigure = await expectInStep(threadMedia, threadRow, 800 / 600);
+  const widenedRoomFigure = await expectInStep(roomMedia, roomRow, 800 / 600);
+  expect(widenedThreadFigure.width).toBeGreaterThan(initialThreadFigure.width);
+  expect(widenedRoomFigure.width).toBeLessThan(initialRoomFigure.width);
+
+  // Narrow it below the starting width: both frames shrink with their cards.
+  await dragResizer(page, t("workspace.resizeRightPanel"), 300);
+  await expect
+    .poll(() => pane.evaluate((element) => element.getBoundingClientRect().width))
+    .toBe(320);
+  const narrowedThreadFigure = await expectInStep(threadMedia, threadRow, 800 / 600);
+  expect(narrowedThreadFigure.width).toBeLessThan(widenedThreadFigure.width);
+  await expectInStep(roomMedia, roomRow, 800 / 600);
 });
 
 // ---------------------------------------------------------------------------

@@ -5136,9 +5136,16 @@ button:disabled {
 /* #163: image-first inline attachment. The image is the primary block; actions
    overlay on hover/focus and never occupy layout that covers the preview. */
 .message-media-image-ready {
+  /* #1594: the explicit row track is load-bearing. The figure derives its block
+     size from its inline size with `aspect-ratio`; with an implicit `auto` row
+     WebKit kept that derived height across a thread-panel or window width
+     change, so the figure outgrew the wrapper and row (spilling over the sender
+     line when the panel widened, leaving a stale tall box when it narrowed)
+     until the row was re-rendered. `max-content` makes the row reflow with the
+     child in both engines. */
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 0;
+  grid-template-rows: max-content;
   box-sizing: border-box;
   min-inline-size: min(100%, 260px);
   inline-size: 100%;
@@ -5164,8 +5171,11 @@ button:disabled {
 .message-media-open {
   position: absolute;
   inset: 0;
-  display: inline-grid;
-  place-items: center;
+  /* #1594: block flow, not a centred grid. A percentage block size inside an
+     auto-sized grid row is indefinite, so WebKit sized the image from its
+     intrinsic `width`/`height` attributes instead of the frame and cropped a
+     non-square picture until the row was rendered again. */
+  display: block;
   inline-size: 100%;
   block-size: 100%;
   padding: 0;
