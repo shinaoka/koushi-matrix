@@ -21,6 +21,7 @@ export {
   clearTimelineViewportSessionMemoryForTests,
   setTimelineViewportSessionAnchorForTests
 } from "./timeline/TimelineViewportAnchors";
+import { beginHoverScroll, endHoverScroll, useHoverIntent } from "./hoverIntent";
 import {
   isScrolledToBottom,
   scrollContainerToBottom,
@@ -34,6 +35,7 @@ import {
   canonicalTimelineContainsActivityEventId,
   captureAnchor,
   captureFreeScrollAnchor,
+  capturePrependAnchor,
   captureRoomScrollAnchor,
   findTimelineEventNode,
   measureAnchorDelta,
@@ -558,6 +560,7 @@ export const TimelineView = memo(function TimelineView({
   const virtualItemHeight = TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
   const [measuredHeightVersion, setMeasuredHeightVersion] = useState(0);
   const [viewportTransactionRevision, setViewportTransactionRevision] = useState(0);
+  const hoverIntent = useHoverIntent();
   const containerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const itemHeightByDomIdRef = useRef<Map<string, number>>(new Map());
@@ -930,10 +933,15 @@ export const TimelineView = memo(function TimelineView({
     };
     emitScrollDiagnostics();
   }, [emitScrollDiagnostics]);
+  const markScrollActivityIdle = useCallback(() => {
+    scrollActivityRef.current = "idle";
+    endHoverScroll();
+  }, []);
+
   const resetActiveMeasurementDeferral = useCallback(
     (options: { clearMountedIds?: boolean } = {}) => {
       clearMeasurementTimers();
-      scrollActivityRef.current = "idle";
+      markScrollActivityIdle();
       measurementEpochRef.current += 1;
       pendingMeasuredHeightsRef.current.clear();
       if (options.clearMountedIds) {
@@ -941,7 +949,7 @@ export const TimelineView = memo(function TimelineView({
       }
       clearPendingMeasurementDiagnostics();
     },
-    [clearMeasurementTimers, clearPendingMeasurementDiagnostics]
+    [clearMeasurementTimers, clearPendingMeasurementDiagnostics, markScrollActivityIdle]
   );
   useLayoutEffect(() => {
     advanceViewportEpoch();
@@ -1057,7 +1065,7 @@ export const TimelineView = memo(function TimelineView({
     }
     const container = containerRef.current;
     if (container) {
-      const fresh = captureFreeScrollAnchor(container);
+      const fresh = capturePrependAnchor(container);
       const pendingDelta = transaction.anchor ? measureAnchorDelta(container, transaction.anchor) : 0;
       if (fresh && pendingDelta !== null) owner.rebase(transaction.id, { ...fresh, offsetTop: fresh.offsetTop - pendingDelta });
     }
@@ -1080,7 +1088,7 @@ export const TimelineView = memo(function TimelineView({
       const pending = pendingMeasuredHeightsRef.current;
       if (pending.size === 0 && reason !== "layout") {
         clearMeasurementTimers();
-        scrollActivityRef.current = "idle";
+        markScrollActivityIdle();
         clearPendingMeasurementDiagnostics();
         releaseDeferredPrepend();
         return;
@@ -1145,7 +1153,7 @@ export const TimelineView = memo(function TimelineView({
       pending.clear();
       if (reason !== "layout") {
         clearMeasurementTimers();
-        scrollActivityRef.current = "idle";
+        markScrollActivityIdle();
       }
       releaseDeferredPrepend();
 
@@ -1209,6 +1217,7 @@ export const TimelineView = memo(function TimelineView({
       clearPendingMeasurementDiagnostics,
       generation,
       emitDiagnosticLog,
+      markScrollActivityIdle,
       releaseDeferredPrepend,
       setViewportIntentToLiveEdge,
       stableAnchor,
@@ -1217,6 +1226,7 @@ export const TimelineView = memo(function TimelineView({
   );
 
   const markScrollActivityActive = useCallback(() => {
+    if (scrollActivityRef.current !== "active") beginHoverScroll();
     const measurementEpoch = measurementEpochRef.current;
     const flush = (reason: "idle" | "maxDefer") => {
       if (measurementEpoch === measurementEpochRef.current) flushPendingMeasurements(reason);
@@ -1863,7 +1873,8 @@ export const TimelineView = memo(function TimelineView({
       viewportTransactionRef.current.join({
         key: timelineKeyHash,
         generation,
-        anchor: viewportTransactionRef.current.active()?.anchor ?? stableAnchor(),
+        anchor: viewportTransactionRef.current.active()?.anchor ?? stableAnchor() ??
+          (container ? capturePrependAnchor(container) : null),
         scrollTop: container?.scrollTop ?? 0,
         phase: "waiting-prepend"
       });
@@ -1904,13 +1915,19 @@ export const TimelineView = memo(function TimelineView({
       const owner = viewportTransactionRef.current;
       if (container && userScrollInputPendingRef.current) owner.accountForInput(container.scrollTop);
       const stableRowIds = stableProjectionAnchorRowIds(previous.rows, next.rows);
+      const purePrepend = timelineRowsArePurePrepend(
+        previous.rows.map((row) => row.row_id),
+        next.rows.map((row) => row.row_id)
+      );
       const heldAnchor = owner.active()?.anchor ?? stableAnchor();
       const heldAnchorSurvives = heldAnchor && stableRowIds.has(heldAnchor.itemId);
       const anchor =
         !heldAnchorSurvives && container && viewportIntentRef.current.kind !== "live-edge"
-          ? captureAnchor(container, {
-              isEligible: (node) => stableRowIds.has(node.dataset["itemId"] ?? "")
-            })
+          ? purePrepend
+            ? capturePrependAnchor(container)
+            : captureAnchor(container, {
+                isEligible: (node) => stableRowIds.has(node.dataset["itemId"] ?? "")
+              })
           : null;
       const pendingDelta = !heldAnchorSurvives && heldAnchor && container
         ? measureAnchorDelta(container, heldAnchor) ?? 0 : 0;
@@ -3506,6 +3523,10 @@ export const TimelineView = memo(function TimelineView({
         data-end-reached={endReached || undefined}
         data-timeline-generation={generation}
         data-virtualized={virtualWindow.virtualized || undefined}
+        data-scroll-active={hoverIntent.scrolling || undefined}
+        data-hover-armed={
+          !hoverIntent.scrolling && hoverIntent.pointerMovedSinceScroll ? "true" : undefined
+        }
         data-total-items={visibleRows.length}
         data-rendered-items={virtualWindow.items.length}
         ref={containerRef}

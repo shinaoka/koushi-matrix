@@ -63,6 +63,17 @@ export function captureFreeScrollAnchor(container: HTMLElement): ScrollAnchor | 
   });
 }
 
+/**
+ * #1604: a pure prepend inserts rows above the viewport and moves no mounted
+ * row, so any intersecting row can compensate it. The free-scroll exclusion
+ * above guards long-lived memory against a later reply relocating a thread
+ * root; it must not leave a prepend transaction without an anchor when every
+ * visible row is such a root. Use this only for a prepend's own compensation.
+ */
+export function capturePrependAnchor(container: HTMLElement): ScrollAnchor | null {
+  return captureFreeScrollAnchor(container) ?? captureAnchor(container);
+}
+
 /** Measure the anchor's local delta; only the viewport transaction may apply it. */
 export function measureAnchorDelta(
   container: HTMLElement,

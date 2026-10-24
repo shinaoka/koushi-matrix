@@ -3,18 +3,24 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoreEventPayload, TimelineItem } from "../domain/coreEvents";
 import { createManualTimelineViewportScheduler } from "./timeline/TimelineViewportScheduler";
+import { resetHoverIntentForTests } from "./hoverIntent";
 import { KEY, baseTransport, message, mockTimelineRects } from "./timelineViewTestSupport";
 import { TimelineView, clearTimelineViewportSessionMemoryForTests } from "./TimelineView";
 
 afterEach(() => {
   cleanup();
   clearTimelineViewportSessionMemoryForTests();
+  resetHoverIntentForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
-function setup(count: number, roundWrites = false) {
+function setup(
+  count: number,
+  roundWrites = false,
+  itemFactory: (index: number) => TimelineItem = (index) => message(`$item${index}`, "Synthetic row")
+) {
   vi.useFakeTimers();
   const scheduler = createManualTimelineViewportScheduler();
   let listener: ((event: CoreEventPayload) => void) | null = null;
@@ -41,7 +47,7 @@ function setup(count: number, roundWrites = false) {
   });
   act(() => emit({ kind: "Timeline", event: { InitialItems: {
     request_id: null, key: KEY, generation: 1,
-    items: Array.from({ length: count }, (_, i) => message(`$item${i}`, "Synthetic row"))
+    items: Array.from({ length: count }, (_, i) => itemFactory(i))
   } } }));
   const drain = () => {
     // Flush React commits between scheduler phases; the scheduler itself bounds
@@ -62,27 +68,55 @@ function setup(count: number, roundWrites = false) {
   const anchor = { id: row.dataset.itemId!, offset: row.getBoundingClientRect().top };
   writes.length = 0;
   diagnostics.mockClear();
+  function applyPrependRects(amount: number, delayedHeight: number) {
+    for (let i = 0; i < count; i++) rects[`$item${i}`] = {
+      top: (amount + i) * 72 + (i > 5 ? delayedHeight : 0), height: i === 5 ? 72 + delayedHeight : 72
+    };
+    for (let i = 0; i < amount; i++) rects[`$old${i}`] = { top: (amount - i - 1) * 72, height: 72 };
+    scrollHeight += amount * 72 + delayedHeight;
+  }
   return { view, emit, rects, writes, diagnostics, anchor, drain,
     userScroll(delta: number) {
       scrollTop += delta; // Browser-owned input: do not count it as a compensation write.
       fireEvent.wheel(view, { deltaY: delta });
       fireEvent.scroll(view);
     },
-    prepend(amount: number, delayedHeight: number) {
+    prepend(amount: number, delayedHeight: number, hideTail = true, applyRects = true) {
       act(() => {
         emit({ kind: "Timeline", event: { ItemsUpdated: {
           key: KEY, generation: 1, batch_id: 1,
           diffs: [
             ...Array.from({ length: amount }, (_, i) => ({ PushFront: { item: message(`$old${i}`, "Older synthetic row") } })),
-            { Set: { index: count + amount - 1, item: { ...message(`$item${count - 1}`, "Synthetic row"), is_hidden: true } as TimelineItem } }
+            ...(hideTail ? [{ Set: { index: count + amount - 1, item: { ...message(`$item${count - 1}`, "Synthetic row"), is_hidden: true } as TimelineItem } }] : [])
           ]
         } } });
-        for (let i = 0; i < count; i++) rects[`$item${i}`] = {
-          top: (amount + i) * 72 + (i > 5 ? delayedHeight : 0), height: i === 5 ? 72 + delayedHeight : 72
-        };
-        for (let i = 0; i < amount; i++) rects[`$old${i}`] = { top: (amount - i - 1) * 72, height: 72 };
-        scrollHeight += amount * 72 + delayedHeight;
+        if (applyRects) applyPrependRects(amount, delayedHeight);
       });
+    },
+    applyPrependRects,
+    scheduler
+  };
+}
+
+/** A latest-reply root is placed at its reply's activity position. */
+function latestReplyRoot(index: number): TimelineItem {
+  const contentEventId = `$root${index}`;
+  const activityEventId = `$item${index}`;
+  return {
+    ...message(contentEventId, "Synthetic thread root"),
+    thread_summary: {
+      reply_count: 1,
+      latest_event_id: activityEventId,
+      latest_sender: "@bob:example.invalid",
+      latest_body_preview: "Synthetic reply",
+      latest_timestamp_ms: 1_800_000_000_000
+    },
+    display_metadata: {
+      row_id: activityEventId,
+      kind: { kind: "threadRoot" },
+      content_event_id: contentEventId,
+      activity_event_id: activityEventId,
+      display_timestamp_ms: 1_800_000_000_000
     }
   };
 }
@@ -264,4 +298,46 @@ describe("TimelineView unified viewport transaction", () => {
       expect(JSON.stringify(lifecycle)).not.toMatch(/example\.invalid|\$item|\$old/);
     });
   }
+
+  it("compensates a hidden-history prepend when every visible row is a latest-reply thread root", () => {
+    const fixture = setup(120, false, latestReplyRoot);
+    expect(fixture.anchor.id).toBeTruthy();
+    // The deferred projection keeps the old rows mounted; their geometry must
+    // stay untouched until the release commits the prepend.
+    fixture.prepend(80, 0, false, false);
+    act(() => { vi.advanceTimersByTime(100); });
+    fixture.applyPrependRects(80, 0);
+    act(() => { fixture.scheduler.flushAll(); });
+    const row = [...fixture.view.querySelectorAll<HTMLElement>("[data-item-id]")].find(
+      (node) => node.dataset.itemId === fixture.anchor.id
+    );
+    expect(row).toBeDefined();
+    expect(row!.getBoundingClientRect().top).toBe(fixture.anchor.offset);
+    expect(fixture.writes.length).toBeGreaterThan(0);
+    const lifecycle = fixture.diagnostics.mock.calls.map(([entry]) => entry).filter(
+      (entry) => entry.source === "timeline.viewport_transaction"
+    );
+    expect(lifecycle.some((entry) => entry.message.includes("reason=missing-anchor"))).toBe(false);
+    expect(lifecycle.filter((entry) => entry.message.includes("reason=settled"))).toHaveLength(1);
+  });
+
+  it("gates timeline hover chrome until scrolling stops and the pointer moves", () => {
+    const fixture = setup(120);
+    expect(fixture.view.getAttribute("data-scroll-active")).toBe("true");
+    expect(fixture.view.getAttribute("data-hover-armed")).toBeNull();
+
+    fixture.drain();
+    expect(fixture.view.getAttribute("data-scroll-active")).toBeNull();
+    // Rows that came to rest under the stationary pointer stay unarmed.
+    expect(fixture.view.getAttribute("data-hover-armed")).toBeNull();
+
+    fireEvent.pointerMove(fixture.view);
+    expect(fixture.view.getAttribute("data-hover-armed")).toBe("true");
+
+    // The next scroll gesture closes the gate and waits for movement again.
+    fixture.userScroll(-40);
+    expect(fixture.view.getAttribute("data-scroll-active")).toBe("true");
+    expect(fixture.view.getAttribute("data-hover-armed")).toBeNull();
+  });
+
 });
