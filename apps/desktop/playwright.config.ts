@@ -70,6 +70,9 @@ export default defineConfig({
         /inline-math-baseline\.spec\.ts$/,
         /activity-shell-scroll\.spec\.ts$/,
         /timeline-scroll-anchor-drift\.spec\.ts$/,
+        // #1603: hover chrome is suppressed for content scrolling under a
+        // stationary pointer; the report came from macOS WebKit.
+        /timeline-hover-intent\.spec\.ts$/,
         /scheduled-messages-layout\.spec\.ts$/,
         /scrollable-list-bounds\.spec\.ts$/,
         // Remote-text direction (#1378) is resolved by the engine's own bidi

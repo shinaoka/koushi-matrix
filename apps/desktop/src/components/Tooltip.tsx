@@ -14,6 +14,11 @@ import {
 } from "react";
 
 import { FloatingLayer, resolveFloatingPlacement } from "./floatingLayer";
+import {
+  getHoverIntentSnapshot,
+  hoverIntentAllowsPointerHover,
+  subscribeHoverIntent
+} from "./hoverIntent";
 
 export type TooltipPlacement = "right" | "above" | "below";
 
@@ -24,6 +29,7 @@ export type TooltipTriggerProps = {
   onKeyDown: (event: KeyboardEvent<HTMLElement>) => void;
   onMouseEnter: (event: MouseEvent<HTMLElement>) => void;
   onMouseLeave: (event: MouseEvent<HTMLElement>) => void;
+  onPointerMove: (event: PointerEvent<HTMLElement>) => void;
   onPointerDown: (event: PointerEvent<HTMLElement>) => void;
 };
 
@@ -101,7 +107,7 @@ export function Tooltip({
   }
 
   function openAfterDelay() {
-    if (pressDismissed.current) {
+    if (pressDismissed.current || !hoverIntentAllowsPointerHover()) {
       return;
     }
     clearOpenTimer();
@@ -153,6 +159,23 @@ export function Tooltip({
 
   useEffect(() => {
     return () => clearOpenTimer();
+  }, []);
+
+  // Content moving under a parked pointer is not a hover. Dismiss an open
+  // bubble when a scroll gesture starts instead of letting it chase the row.
+  // Subscribing without render state keeps a parked hover from re-rendering
+  // every tooltip in a scrolling timeline.
+  useEffect(() => {
+    let generation = getHoverIntentSnapshot().scrollGeneration;
+    return subscribeHoverIntent(() => {
+      const next = getHoverIntentSnapshot();
+      if (next.scrollGeneration === generation) {
+        return;
+      }
+      generation = next.scrollGeneration;
+      clearOpenTimer();
+      setIsOpen(false);
+    });
   }, []);
 
   // Close — do not re-anchor — when the trigger starts explaining a different
@@ -296,6 +319,14 @@ export function Tooltip({
     onBlur: openOnFocus ? release : undefined,
     onMouseEnter: openAfterDelay,
     onMouseLeave: release,
+    // A row that scrolled under a parked pointer got mouseenter while the gate
+    // was closed, so the reader's first real pointer movement must re-arm it.
+    onPointerMove: () => {
+      if (isOpen || openTimer.current !== null) {
+        return;
+      }
+      openAfterDelay();
+    },
     onPointerDown: press
   };
 

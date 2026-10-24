@@ -16,6 +16,8 @@
   --message-actions-inset-inline: 8px;
   --message-actions-gap: 2px;
   --message-actions-padding: 2px;
+  /* #1603: pointer-owned row chrome waits for hover intent after a scroll. */
+  --message-hover-intent-delay: 180ms;
   /* #305 upload output controls: ~24-28px segments inside a ~30-34px control. */
   --upload-output-control-size: 32px;
   --upload-output-option-size: 26px;
@@ -3386,6 +3388,20 @@ button:disabled {
   background: var(--surface-hover);
 }
 
+/* #1603: a scroll can move a row under a stationary pointer, which would
+   otherwise reveal that row's hover background and action bar. The timeline
+   publishes data-hover-armed only after scrolling stops and the pointer has
+   moved, so rows inside it wait for real hover intent. Keyboard focus stays
+   immediate below. Non-timeline lists keep their existing hover reveal. */
+.timeline-view .message:hover {
+  background: transparent;
+}
+
+.timeline-view[data-hover-armed="true"] .message:hover {
+  background: var(--surface-hover);
+  transition: background-color 120ms ease-out var(--message-hover-intent-delay);
+}
+
 .message.pinned-target {
   animation: pinned-target-highlight 2.4s ease-out;
 }
@@ -3595,6 +3611,27 @@ button:disabled {
 .message:hover .message-actions,
 .message:focus-within .message-actions {
   opacity: 1;
+}
+
+.timeline-view .message:hover .message-actions {
+  opacity: 0;
+}
+
+.timeline-view[data-hover-armed="true"] .message:hover .message-actions {
+  opacity: 1;
+  transition: opacity 120ms ease-out var(--message-hover-intent-delay);
+}
+
+.timeline-view .message:focus-within .message-actions {
+  opacity: 1;
+}
+
+/* Reduce Motion may skip the fade, but not the scroll/pointer-intent gate. */
+@media (prefers-reduced-motion: reduce) {
+  .timeline-view[data-hover-armed="true"] .message:hover,
+  .timeline-view[data-hover-armed="true"] .message:hover .message-actions {
+    transition: none;
+  }
 }
 
 .message-action {

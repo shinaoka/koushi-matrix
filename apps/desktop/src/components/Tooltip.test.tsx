@@ -7,12 +7,20 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { t } from "../i18n/messages";
 import { Tooltip } from "./Tooltip";
+import {
+  beginHoverScroll,
+  endHoverScroll,
+  resetHoverIntentForTests
+} from "./hoverIntent";
 
 // `import.meta.url` is not a file URL under the jsdom environment this suite
 // needs, so read the source through the project root instead.
 // This config runs without Vitest globals, so Testing Library cannot register
 // its automatic cleanup and each render must be torn down explicitly.
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  resetHoverIntentForTests();
+});
 
 const tooltipSource = readFileSync(resolve(process.cwd(), "src/components/Tooltip.tsx"), "utf8");
 
@@ -95,6 +103,76 @@ describe("Tooltip", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // #1603: content that scrolled under a parked pointer is not a hover. The
+  // bubble must not open until the reader actually moves the pointer.
+  test("does not open when content scrolls under a stationary pointer", () => {
+    vi.useFakeTimers();
+    try {
+      beginHoverScroll();
+      const trigger = renderTooltip("below", "start", 250);
+
+      fireEvent.mouseEnter(trigger);
+      act(() => {
+        vi.advanceTimersByTime(250);
+      });
+      expect(screen.queryByRole("tooltip")).toBeNull();
+
+      act(() => {
+        endHoverScroll();
+      });
+      act(() => {
+        vi.advanceTimersByTime(250);
+      });
+      expect(screen.queryByRole("tooltip")).toBeNull();
+
+      fireEvent.pointerMove(trigger);
+      expect(screen.queryByRole("tooltip")).toBeNull();
+      act(() => {
+        vi.advanceTimersByTime(250);
+      });
+      expect(screen.getByRole("tooltip")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("reduce motion skips the delay, not the scroll and pointer-intent gate", () => {
+    const previousMatchMedia = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes("prefers-reduced-motion")
+    })) as typeof window.matchMedia;
+    try {
+      beginHoverScroll();
+      const trigger = renderTooltip("below", "start", 250);
+
+      fireEvent.mouseEnter(trigger);
+      expect(screen.queryByRole("tooltip")).toBeNull();
+
+      act(() => {
+        endHoverScroll();
+      });
+      expect(screen.queryByRole("tooltip")).toBeNull();
+
+      fireEvent.pointerMove(trigger);
+      // Reduce Motion only removes the hover delay.
+      expect(screen.getByRole("tooltip")).toBeTruthy();
+    } finally {
+      window.matchMedia = previousMatchMedia;
+    }
+  });
+
+  test("dismisses an open bubble when a scroll gesture starts", () => {
+    const trigger = renderTooltip("below");
+    fireEvent.mouseEnter(trigger);
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+
+    act(() => {
+      beginHoverScroll();
+    });
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(trigger.getAttribute("aria-describedby")).toBeNull();
   });
 
   // The reported case (#1388): choosing a section sort option returns focus to

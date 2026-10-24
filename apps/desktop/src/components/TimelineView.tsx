@@ -21,7 +21,12 @@ export {
   clearTimelineViewportSessionMemoryForTests,
   setTimelineViewportSessionAnchorForTests
 } from "./timeline/TimelineViewportAnchors";
-import { beginHoverScroll, endHoverScroll, useHoverIntent } from "./hoverIntent";
+import {
+  beginHoverScroll,
+  endHoverScroll,
+  getHoverIntentSnapshot,
+  subscribeHoverIntent
+} from "./hoverIntent";
 import {
   isScrolledToBottom,
   scrollContainerToBottom,
@@ -560,7 +565,6 @@ export const TimelineView = memo(function TimelineView({
   const virtualItemHeight = TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
   const [measuredHeightVersion, setMeasuredHeightVersion] = useState(0);
   const [viewportTransactionRevision, setViewportTransactionRevision] = useState(0);
-  const hoverIntent = useHoverIntent();
   const containerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const itemHeightByDomIdRef = useRef<Map<string, number>>(new Map());
@@ -575,6 +579,30 @@ export const TimelineView = memo(function TimelineView({
     viewportDiagnosticCallbackRef.current?.({ timestampMs: Date.now(), source: "timeline.viewport_transaction", message });
   }));
   const viewportSettlementFrameRef = useRef<TimelineScheduledFrame | null>(null);
+  // The gate is presentation-only DOM state, not React product state: writing
+  // it directly keeps a scrolling timeline from re-rendering every row and
+  // every tooltip on each gesture start/stop.
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return undefined;
+    }
+    const sync = () => {
+      const { pointerMovedSinceScroll, scrolling } = getHoverIntentSnapshot();
+      if (scrolling) {
+        container.setAttribute("data-scroll-active", "true");
+      } else {
+        container.removeAttribute("data-scroll-active");
+      }
+      if (!scrolling && pointerMovedSinceScroll) {
+        container.setAttribute("data-hover-armed", "true");
+      } else {
+        container.removeAttribute("data-hover-armed");
+      }
+    };
+    sync();
+    return subscribeHoverIntent(sync);
+  }, []);
   const viewportSettlementAttemptRef = useRef<(() => void) | null>(null);
   const openMediaViewer = useCallback((item: TimelineMediaViewerItem) => {
     const activeElement =
@@ -3523,10 +3551,6 @@ export const TimelineView = memo(function TimelineView({
         data-end-reached={endReached || undefined}
         data-timeline-generation={generation}
         data-virtualized={virtualWindow.virtualized || undefined}
-        data-scroll-active={hoverIntent.scrolling || undefined}
-        data-hover-armed={
-          !hoverIntent.scrolling && hoverIntent.pointerMovedSinceScroll ? "true" : undefined
-        }
         data-total-items={visibleRows.length}
         data-rendered-items={virtualWindow.items.length}
         ref={containerRef}
