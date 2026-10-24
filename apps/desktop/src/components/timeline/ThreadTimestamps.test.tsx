@@ -28,6 +28,7 @@ function renderRoot(options: {
   moved?: boolean;
   context?: "room" | "thread" | "focused";
   summary?: boolean;
+  unread?: number;
 } = {}) {
   const timestamp = options.timestamp === undefined ? posted : options.timestamp;
   const item = {
@@ -39,7 +40,8 @@ function renderRoot(options: {
       latest_sender: "@member:example.invalid",
       latest_sender_label: "Member 1",
       latest_body_preview: "Synthetic reply",
-      latest_timestamp_ms: options.latestTimestamp === undefined ? replied : options.latestTimestamp
+      latest_timestamp_ms: options.latestTimestamp === undefined ? replied : options.latestTimestamp,
+      unread_count: options.unread ?? 0
     }
   };
   const onOpenThread = vi.fn();
@@ -126,5 +128,23 @@ describe("thread posting and reply dates", () => {
     expect(container.querySelector(".message-posted-at")?.textContent).toContain(t("timeline.postedAt"));
     expect(container.querySelector(".thread-latest-reply")?.textContent).toContain(t("timeline.latestReplyAt"));
     expect(container.querySelector(".thread-latest-reply time")?.textContent).toContain(t("timeline.timestampToday"));
+  });
+});
+
+describe("thread unread badge", () => {
+  it("overlays the unread count on the summary chip instead of a separate row", () => {
+    const { container, onOpenThread } = renderRoot({ unread: 3 });
+    expect(container.querySelector(".thread-new-replies-chip")).toBeNull();
+    const chip = container.querySelector<HTMLButtonElement>(".thread-summary-chip")!;
+    const badge = chip.querySelector(".thread-summary-unread-badge")!;
+    expect(badge.textContent).toBe("3");
+    expect(chip.getAttribute("aria-label")).toContain(t("timeline.threadNotificationCount", { count: 3 }));
+    fireEvent.click(badge);
+    expect(onOpenThread).toHaveBeenCalledWith("!room:example.invalid", rootId, "existingThread");
+  });
+
+  it("omits the badge when the thread has no unread replies", () => {
+    const { container } = renderRoot();
+    expect(container.querySelector(".thread-summary-unread-badge")).toBeNull();
   });
 });

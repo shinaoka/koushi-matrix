@@ -5046,6 +5046,29 @@ button:disabled {
   white-space: nowrap;
 }
 
+.thread-summary-chip:has(.thread-summary-unread-badge) {
+  position: relative;
+  margin-inline-end: 10px;
+}
+
+.thread-summary-chip .thread-summary-unread-badge {
+  position: absolute;
+  inset-block-start: -8px;
+  inset-inline-end: -10px;
+  min-inline-size: 20px;
+  height: 20px;
+  padding-inline: 6px;
+  overflow: visible;
+  border-radius: var(--r-pill);
+  color: #fff;
+  background: var(--danger);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 20px;
+  text-align: center;
+}
+
 .thread-summary-chip:hover {
   background: var(--surface-hover);
 }

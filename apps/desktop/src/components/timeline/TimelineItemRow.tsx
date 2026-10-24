@@ -1310,7 +1310,7 @@ export function TimelineItemRow({
             )}
           </p>
         ) : null}
-        {threadUnreadCount > 0 ? (
+        {threadUnreadCount > 0 && !canShowThreadSummary ? (
           <button
             className="thread-summary-chip thread-new-replies-chip"
             type="button"
@@ -1326,7 +1326,11 @@ export function TimelineItemRow({
             <button
               className="thread-summary-chip"
               type="button"
-              aria-label={t("timeline.openThreadSummary", { summary: threadSummaryText })}
+              aria-label={t("timeline.openThreadSummary", {
+                summary: threadNotificationsText
+                  ? `${threadSummaryText} · ${threadNotificationsText}`
+                  : threadSummaryText
+              })}
               onClick={submitOpenThread}
             >
               <MessageCircle size={13} />
@@ -1340,6 +1344,11 @@ export function TimelineItemRow({
                   threadSummary?.count
                 )}
               </span>
+              {threadUnreadCount > 0 ? (
+                <span className="thread-summary-unread-badge" aria-hidden="true" title={threadNotificationsText}>
+                  {uiNumberFormat().format(threadUnreadCount)}
+                </span>
+              ) : null}
             </button>
             {item.thread_summary?.latest_timestamp_ms != null ? (
               <div className="thread-latest-reply">
