@@ -95,15 +95,23 @@ test("scrolling under a parked pointer waits for movement before revealing hover
   // Park the pointer, then start a gesture that moves rows underneath it.
   await page.mouse.move(x, y);
   const before = await view.evaluate((node) => node.scrollTop);
-  await view.evaluate((node) => {
+  // The scroll-idle flush clears `data-scroll-active` after roughly 100 ms, so
+  // polling for it can miss the window under a loaded runner. The gate writes
+  // it synchronously inside the dispatched scroll event; read it in the same
+  // task instead.
+  const gesture = await view.evaluate((node) => {
     node.scrollTop -= 120;
     node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -40 }));
     node.dispatchEvent(new Event("scroll", { bubbles: true }));
+    return {
+      scrollTop: node.scrollTop,
+      scrollActive: node.getAttribute("data-scroll-active"),
+      hoverArmed: node.getAttribute("data-hover-armed")
+    };
   });
-  expect(await view.evaluate((node) => node.scrollTop)).toBeLessThan(before);
-
-  await expect(view).toHaveAttribute("data-scroll-active", "true");
-  await expect(view).not.toHaveAttribute("data-hover-armed", "true");
+  expect(gesture.scrollTop).toBeLessThan(before);
+  expect(gesture.scrollActive).toBe("true");
+  expect(gesture.hoverArmed).not.toBe("true");
   expect(await hoveredActionsOpacity(page, x, y)).toBe(0);
 
   // Scrolling has stopped, but a row came to rest under a pointer that never

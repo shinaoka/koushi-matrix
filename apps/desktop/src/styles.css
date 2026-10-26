@@ -5060,7 +5060,7 @@ button:disabled {
   padding-inline: 6px;
   overflow: visible;
   border-radius: var(--r-pill);
-  color: #fff;
+  color: var(--brand-contrast);
   background: var(--danger);
   font-size: 12px;
   font-weight: 700;
