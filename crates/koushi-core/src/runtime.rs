@@ -377,6 +377,18 @@ enum CoreCommandEnvelope {
             >,
         >,
     },
+    /// One message read or action for an out-of-band caller (#1628). Answered
+    /// on the reply channel only; no timeline actor, app action, or GUI event
+    /// is produced.
+    DirectMessageAction {
+        request: crate::direct_operations::DirectMessageRequest,
+        response: oneshot::Sender<
+            Result<
+                crate::direct_operations::DirectMessageResponse,
+                crate::direct_operations::DirectMessageFailure,
+            >,
+        >,
+    },
     /// A search for an out-of-band caller (#1524). Answered on the reply
     /// channel only; no app action or GUI event is produced.
     DirectSearch {
@@ -402,6 +414,7 @@ impl CoreCommandEnvelope {
             Self::RetentionDiagnostics(_) => panic!("expected public command envelope"),
             Self::DirectSearch { .. } => panic!("expected public command envelope"),
             Self::DirectRoomMessages { .. }
+            | Self::DirectMessageAction { .. }
             | Self::DirectRecentActivity { .. }
             | Self::DirectSessionAccessToken { .. }
             | Self::ValidateSessionAccessToken { .. } => panic!("expected public command envelope"),
@@ -2724,6 +2737,9 @@ impl AppActor {
                 from,
                 response,
             } => Box::pin(self.handle_direct_room_messages(room_id, limit, from, response)).await,
+            CoreCommandEnvelope::DirectMessageAction { request, response } => {
+                Box::pin(self.handle_direct_message_action(request, response)).await
+            }
             envelope => Box::pin(self.handle_public_command(envelope)).await,
         }
     }
@@ -2880,6 +2896,37 @@ impl AppActor {
     /// The runtime only decides session readiness; the account actor owns the
     /// bounded read and the reply. No app action is reduced, so an open room's
     /// timeline and scroll position cannot change.
+    /// Route one direct (non-GUI) message read or action to the account (#1628).
+    ///
+    /// The runtime only decides session readiness; the account actor owns the
+    /// bounded execution, the reaction lane, and the reply. No app action is
+    /// reduced and no timeline actor is mounted.
+    async fn handle_direct_message_action(
+        &mut self,
+        request: crate::direct_operations::DirectMessageRequest,
+        response: oneshot::Sender<
+            Result<
+                crate::direct_operations::DirectMessageResponse,
+                crate::direct_operations::DirectMessageFailure,
+            >,
+        >,
+    ) -> bool {
+        if response.is_closed() {
+            return false;
+        }
+        if is_ready_session_for_commands(&self.state.session) {
+            let _ = self
+                .account_actor
+                .send(AccountMessage::DirectMessageAction { request, response })
+                .await;
+        } else {
+            let _ = response.send(Err(
+                crate::direct_operations::DirectMessageFailure::AccountInactive,
+            ));
+        }
+        false
+    }
+
     async fn handle_direct_room_messages(
         &mut self,
         room_id: String,
@@ -3001,6 +3048,7 @@ impl AppActor {
             CoreCommandEnvelope::DirectSearch { .. }
             | CoreCommandEnvelope::DirectAttachment { .. }
             | CoreCommandEnvelope::DirectRoomMessages { .. }
+            | CoreCommandEnvelope::DirectMessageAction { .. }
             | CoreCommandEnvelope::DirectRecentActivity { .. }
             | CoreCommandEnvelope::DirectSessionAccessToken { .. }
             | CoreCommandEnvelope::ValidateSessionAccessToken { .. } => {

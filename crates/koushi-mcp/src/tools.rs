@@ -71,6 +71,94 @@ fn wait_for_events_output_schema() -> Value {
     })
 }
 
+fn room_event_properties() -> Value {
+    json!({
+        "account_id": account_id_property(),
+        "room_id": { "type": "string", "description": "Room id of a room this account is joined to." },
+        "event_id": { "type": "string", "description": "Event id of a message-like event in that room." }
+    })
+}
+
+fn client_request_id_property() -> Value {
+    json!({
+        "type": "string",
+        "description": "Caller-generated UUID. Reuse it verbatim when retrying so the action is not applied twice."
+    })
+}
+
+fn reaction_key_property() -> Value {
+    json!({
+        "type": "string",
+        "minLength": 1,
+        "description": "Emoji or short text of the reaction, 1-128 UTF-8 bytes with no control characters or line breaks."
+    })
+}
+
+fn id_or_null() -> Value {
+    json!({ "type": ["string", "null"] })
+}
+
+/// The structured result of `get_message` (#1628).
+fn get_message_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "room_id": { "type": "string" },
+            "event_id": { "type": "string" },
+            "sender_id": { "type": "string" },
+            "timestamp_ms": { "type": "integer" },
+            "kind": { "type": "string" },
+            "is_encrypted": { "type": "boolean" },
+            "is_redacted": { "type": "boolean" },
+            "content_available": { "type": "boolean", "description": "False when this device cannot decrypt the event; body is then null and the read still succeeded." },
+            "body": { "type": ["string", "null"], "description": "Display body after the latest valid edit, with any reply fallback removed." },
+            "edited": {
+                "type": ["object", "null"],
+                "properties": {
+                    "event_id": { "type": "string" },
+                    "timestamp_ms": { "type": "integer" }
+                },
+                "required": ["event_id", "timestamp_ms"]
+            },
+            "reactions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "key": { "type": "string" },
+                        "count": { "type": "integer" },
+                        "mine": { "type": "boolean" }
+                    },
+                    "required": ["key", "count", "mine"]
+                }
+            },
+            "relations_truncated": { "type": "boolean", "description": "True when more relations exist than this bounded read returned." },
+            "thread_root_event_id": id_or_null(),
+            "reply_to_event_id": id_or_null()
+        },
+        "required": [
+            "room_id", "event_id", "sender_id", "timestamp_ms", "kind", "is_encrypted",
+            "is_redacted", "content_available", "body", "edited", "reactions",
+            "relations_truncated", "thread_root_event_id", "reply_to_event_id"
+        ]
+    })
+}
+
+fn message_action_tool(
+    name: &'static str,
+    description: &'static str,
+    input_schema: Value,
+    output_schema: Value,
+) -> ToolDefinition {
+    ToolDefinition {
+        name,
+        description,
+        input_schema,
+        read_only: false,
+        output_schema: Some(output_schema),
+    }
+}
+
 /// Every tool this build advertises. Order is stable so `tools/list` diffs are
 /// meaningful across runs.
 pub fn definitions() -> Vec<ToolDefinition> {
@@ -232,6 +320,128 @@ pub fn definitions() -> Vec<ToolDefinition> {
             read_only: true,
             output_schema: Some(wait_for_events_output_schema()),
         },
+        ToolDefinition {
+            name: "get_message",
+            description: "Fetch one message-like event of a joined room by id, whether or not the room is open in the GUI. Returns the sender, timestamp, kind, the body after its latest valid edit, reaction groups, and the thread/reply relation. Never marks anything read, sends a receipt, changes unread state, or starts a background resolver. An event this device cannot decrypt is a successful read with content_available false and body null. Reactions and edits come from at most one bounded relations page, so relations_truncated reports that more exist. Requires account_id, room_id, and event_id.",
+            input_schema: json!({
+                "type": "object",
+                "properties": room_event_properties(),
+                "required": ["account_id", "room_id", "event_id"],
+                "additionalProperties": false
+            }),
+            read_only: true,
+            output_schema: Some(get_message_output_schema()),
+        },
+        message_action_tool(
+            "react_to_message",
+            "Add this account's reaction with the given key to a message-like event of a joined room, without opening the room or changing any GUI state. Set semantics: if the account already reacted with that key, nothing is sent and added is false with the existing reaction event id. The result is the user's own reaction, visible to others. A reaction that cannot be resolved from one bounded relations page fails instead of risking a duplicate. Requires the message actions permission.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id_property(),
+                    "room_id": { "type": "string" },
+                    "event_id": { "type": "string" },
+                    "key": reaction_key_property()
+                },
+                "required": ["account_id", "room_id", "event_id", "key"],
+                "additionalProperties": false
+            }),
+            json!({
+                "type": "object",
+                "properties": {
+                    "added": { "type": "boolean" },
+                    "reaction_event_id": id_or_null()
+                },
+                "required": ["added", "reaction_event_id"]
+            }),
+        ),
+        message_action_tool(
+            "unreact_to_message",
+            "Remove every reaction this account added to a message-like event with the given key, without opening the room or changing any GUI state. Sending no reaction with that key is not an error: removed is 0. Requires the message actions permission.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id_property(),
+                    "room_id": { "type": "string" },
+                    "event_id": { "type": "string" },
+                    "key": reaction_key_property()
+                },
+                "required": ["account_id", "room_id", "event_id", "key"],
+                "additionalProperties": false
+            }),
+            json!({
+                "type": "object",
+                "properties": { "removed": { "type": "integer", "minimum": 0 } },
+                "required": ["removed"]
+            }),
+        ),
+        message_action_tool(
+            "edit_message",
+            "Replace the display text of a message this account sent, keeping its message type and any media payload (editing an image or file caption does not turn it into a text event). Fails with not_permitted when the target belongs to another sender. Reusing the same client_request_id does not create a second edit event. A direct edit is sent as one event without the send queue, so transaction_id echoes client_request_id for correlation rather than naming a queued transaction. Requires the message actions permission.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id_property(),
+                    "room_id": { "type": "string" },
+                    "event_id": { "type": "string" },
+                    "body": { "type": "string", "minLength": 1, "description": "New plain-text body." },
+                    "client_request_id": client_request_id_property()
+                },
+                "required": ["account_id", "room_id", "event_id", "body", "client_request_id"],
+                "additionalProperties": false
+            }),
+            json!({
+                "type": "object",
+                "properties": {
+                    "edit_event_id": id_or_null(),
+                    "transaction_id": { "type": "string", "description": "The caller's client_request_id, echoed for correlation; a direct edit has no queued SDK transaction." }
+                },
+                "required": ["edit_event_id", "transaction_id"]
+            }),
+        ),
+        message_action_tool(
+            "delete_message",
+            "Redact a message this account sent, without opening the room or changing any GUI state. Moderation of another user's message is not supported in this version. Deleting an already-redacted message succeeds with already_redacted true and sends no new event. Requires the message actions permission.",
+            json!({
+                "type": "object",
+                "properties": room_event_properties(),
+                "required": ["account_id", "room_id", "event_id"],
+                "additionalProperties": false
+            }),
+            json!({
+                "type": "object",
+                "properties": {
+                    "redaction_event_id": id_or_null(),
+                    "already_redacted": { "type": "boolean" }
+                },
+                "required": ["redaction_event_id", "already_redacted"]
+            }),
+        ),
+        ToolDefinition {
+            name: "send_thread_reply",
+            description: "Post a plain-text reply in the thread under a visible thread root, using the same thread relation and reply fallback the composer sends, without opening the thread or changing any GUI state. The target must be a thread root, not itself a thread reply; it may belong to another user. Attachments are not supported here. Reusing the same client_request_id does not post twice. Needs the send permission. If the caller disconnects before the answer, the reply may already be posted and cannot be recalled.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id_property(),
+                    "room_id": { "type": "string" },
+                    "thread_root_event_id": { "type": "string", "description": "Event id of the thread root to answer in." },
+                    "body": { "type": "string", "minLength": 1, "description": "Plain text body." },
+                    "client_request_id": client_request_id_property()
+                },
+                "required": ["account_id", "room_id", "thread_root_event_id", "body", "client_request_id"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "event_id": { "type": "string" },
+                    "transaction_id": { "type": "string" }
+                },
+                "required": ["event_id", "transaction_id"]
+            })),
+        },
     ]
 }
 
@@ -292,121 +502,5 @@ pub fn validate_arguments(name: &str, arguments: &Value) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn definitions_are_unique_and_valid() {
-        let tools = definitions();
-        assert_eq!(tools.len(), 8);
-        let mut names: Vec<&str> = tools.iter().map(|tool| tool.name).collect();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), tools.len());
-        for tool in &tools {
-            assert_eq!(tool.input_schema["type"], "object");
-            assert!(tool.input_schema.get("properties").is_some());
-        }
-    }
-
-    #[test]
-    fn account_scoped_tools_require_account_id() {
-        for name in [
-            "list_rooms",
-            "search_messages",
-            "wait_for_events",
-            "read_room_messages",
-            "read_recent_activity",
-        ] {
-            let tool = find(name).expect("tool");
-            let required = tool.input_schema["required"].as_array().expect("required");
-            assert!(required.iter().any(|value| value == "account_id"), "{name}");
-        }
-    }
-
-    #[test]
-    fn validation_rejects_missing_and_unknown_arguments() {
-        assert!(validate_arguments("list_accounts", &json!({})).is_ok());
-        assert!(validate_arguments("search_messages", &json!({"account_id": "a"})).is_err());
-        assert!(
-            validate_arguments(
-                "search_messages",
-                &json!({"account_id": "a", "query": "x", "bogus": 1})
-            )
-            .is_err()
-        );
-        assert!(
-            validate_arguments("search_messages", &json!({"account_id": "", "query": "x"}))
-                .is_err()
-        );
-        assert!(
-            validate_arguments("search_messages", &json!({"account_id": "a", "query": "x"}))
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn wait_for_events_publishes_its_coverage_and_cursor_contract() {
-        let tool = find("wait_for_events").expect("tool");
-        for phrase in [
-            "not a message log",
-            "coalesce",
-            "Invites are not reported",
-            "only sets a baseline",
-            "at most 500",
-            "not removed when a room is read",
-            "not that no message was posted",
-            "resync_required",
-            "read_room_messages",
-        ] {
-            assert!(tool.description.contains(phrase), "{phrase}");
-        }
-        let schema = tool.output_schema.expect("output schema");
-        assert_eq!(
-            schema["properties"]["coverage"]["enum"],
-            json!(["sampled_room_changes"])
-        );
-        let others_typed = definitions()
-            .iter()
-            .filter(|tool| tool.output_schema.is_some())
-            .count();
-        assert_eq!(others_typed, 2);
-    }
-
-    #[test]
-    fn send_message_describes_its_attachment_contract() {
-        let tool = find("send_message").expect("tool");
-        for phrase in [
-            "absolute local file paths",
-            "attachments permission",
-            "caption",
-        ] {
-            assert!(tool.description.contains(phrase), "{phrase}");
-        }
-        let path = &tool.input_schema["properties"]["attachments"]["items"]["properties"]["path"];
-        assert!(
-            path["description"]
-                .as_str()
-                .is_some_and(|text| text.starts_with("Absolute"))
-        );
-    }
-
-    #[test]
-    fn read_only_flags_match_the_write_tool() {
-        let writes: Vec<&str> = definitions()
-            .iter()
-            .filter(|tool| !tool.read_only)
-            .map(|tool| tool.name)
-            .collect();
-        assert_eq!(writes, vec!["send_message"]);
-    }
-    #[test]
-    fn recent_activity_discovery_is_read_only_and_describes_bounded_history() {
-        let tool = find("read_recent_activity").expect("Recent tool");
-        assert!(tool.read_only);
-        assert!(tool.description.contains("read"));
-        assert!(tool.output_schema.is_some());
-        assert_eq!(tool.input_schema["properties"]["limit"]["minimum"], 1);
-        assert_eq!(tool.input_schema["properties"]["limit"]["maximum"], 100);
-    }
-}
+#[path = "tools_tests.rs"]
+mod tests;

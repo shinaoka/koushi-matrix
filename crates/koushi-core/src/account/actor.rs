@@ -129,6 +129,14 @@ pub(crate) type ResidencyInstallGapSessions = (
 /// Maximum number of concurrent direct (non-GUI) searches per account (#1524).
 const DIRECT_SEARCH_LIMIT: usize = 4;
 
+/// Maximum number of concurrent direct (non-GUI) message operations per account
+/// (#1628).
+const DIRECT_MESSAGE_ACTION_LIMIT: usize = 4;
+
+/// One absolute deadline for a direct message operation, covering admission,
+/// the reaction lane wait, target resolution and submission (#1628).
+const DIRECT_MESSAGE_ACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
 /// Messages routed to the AccountActor task.
 pub(crate) enum AccountMessage {
     /// A search issued by an out-of-band caller (MCP). Answered on the reply
@@ -179,6 +187,18 @@ pub(crate) enum AccountMessage {
             Result<
                 koushi_protocol::event::RoomMessagesPage,
                 crate::direct_operations::RoomMessagesFailure,
+            >,
+        >,
+    },
+    /// One message read or action for an out-of-band caller (#1628). Answered
+    /// on the reply channel only: no app action, no GUI event, no timeline
+    /// actor, and no receipt or unread change.
+    DirectMessageAction {
+        request: crate::direct_operations::DirectMessageRequest,
+        response: tokio::sync::oneshot::Sender<
+            Result<
+                crate::direct_operations::DirectMessageResponse,
+                crate::direct_operations::DirectMessageFailure,
             >,
         >,
     },
@@ -1136,6 +1156,12 @@ pub struct AccountActor {
     pub(super) direct_search_tasks: Vec<crate::executor::JoinHandle<()>>,
     /// Bounded reads of a room's recent timeline for out-of-band callers (#1530).
     pub(super) direct_room_messages_tasks: Vec<crate::executor::JoinHandle<()>>,
+    /// Bounds concurrent direct (non-GUI) message operations, and serializes
+    /// reaction decisions so two calls cannot both add the same reaction
+    /// (#1628).
+    pub(super) direct_message_action_slots: Arc<tokio::sync::Semaphore>,
+    pub(super) direct_message_action_tasks: Vec<crate::executor::JoinHandle<()>>,
+    pub(super) direct_reaction_lane: Arc<tokio::sync::Mutex<()>>,
     pub(super) direct_attachment_tasks: Vec<crate::executor::JoinHandle<()>>,
     pub(super) session_promoted: bool,
     pub(super) trust_generation: u64,
@@ -1496,6 +1522,11 @@ impl AccountActor {
             direct_search_slots: Arc::new(tokio::sync::Semaphore::new(DIRECT_SEARCH_LIMIT)),
             direct_search_tasks: Vec::new(),
             direct_room_messages_tasks: Vec::new(),
+            direct_message_action_slots: Arc::new(tokio::sync::Semaphore::new(
+                DIRECT_MESSAGE_ACTION_LIMIT,
+            )),
+            direct_message_action_tasks: Vec::new(),
+            direct_reaction_lane: Arc::new(tokio::sync::Mutex::new(())),
             direct_attachment_tasks: Vec::new(),
             session_promoted: false,
             trust_generation: 0,
@@ -1902,6 +1933,9 @@ impl AccountActor {
                 } => {
                     Box::pin(self.handle_direct_room_messages(room_id, limit, from, response))
                         .await;
+                }
+                AccountMessage::DirectMessageAction { request, response } => {
+                    Box::pin(self.handle_direct_message_action(request, response)).await;
                 }
                 AccountMessage::TimelineCommand(timeline_command) => {
                     Box::pin(self.route_timeline_command(timeline_command)).await;
@@ -3199,12 +3233,65 @@ impl AccountActor {
             }));
     }
 
+    /// Runs one direct (non-GUI) message read or action for an out-of-band
+    /// caller (#1628).
+    ///
+    /// The session owns the room lookup and the bounded read, so no timeline
+    /// actor is mounted and no app action or GUI event is produced. Reaction
+    /// decisions take the per-account reaction lane, because deciding "no own
+    /// reaction exists" and sending it must not interleave with another call.
+    async fn handle_direct_message_action(
+        &mut self,
+        request: crate::direct_operations::DirectMessageRequest,
+        response: tokio::sync::oneshot::Sender<
+            Result<
+                crate::direct_operations::DirectMessageResponse,
+                crate::direct_operations::DirectMessageFailure,
+            >,
+        >,
+    ) {
+        use crate::direct_operations::DirectMessageFailure as Failure;
+        let Ok(permit) = Arc::clone(&self.direct_message_action_slots).try_acquire_owned() else {
+            let _ = response.send(Err(Failure::Capacity));
+            return;
+        };
+        let Some(session) = self.session.clone() else {
+            let _ = response.send(Err(Failure::AccountInactive));
+            return;
+        };
+        let lane = Arc::clone(&self.direct_reaction_lane);
+        self.direct_message_action_tasks
+            .retain(|task| !task.is_finished());
+        self.direct_message_action_tasks
+            .push(crate::executor::spawn(async move {
+                let _permit = permit;
+                let outcome = match crate::executor::timeout(
+                    DIRECT_MESSAGE_ACTION_TIMEOUT,
+                    Box::pin(crate::timeline::run_direct_message_action(
+                        session, lane, request,
+                    )),
+                )
+                .await
+                {
+                    Ok(outcome) => outcome,
+                    Err(_) => Err(Failure::Unavailable),
+                };
+                if !response.is_closed() {
+                    let _ = response.send(outcome);
+                }
+            }));
+    }
+
     async fn abort_direct_searches(&mut self) {
         for task in self.direct_search_tasks.drain(..) {
             task.abort();
             let _ = Box::pin(task).await;
         }
         for task in self.direct_room_messages_tasks.drain(..) {
+            task.abort();
+            let _ = Box::pin(task).await;
+        }
+        for task in self.direct_message_action_tasks.drain(..) {
             task.abort();
             let _ = Box::pin(task).await;
         }

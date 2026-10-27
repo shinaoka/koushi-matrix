@@ -502,6 +502,7 @@ impl CoreCommandHandle {
             | CoreCommandEnvelope::DirectSearch { .. }
             | CoreCommandEnvelope::DirectAttachment { .. }
             | CoreCommandEnvelope::DirectRoomMessages { .. }
+            | CoreCommandEnvelope::DirectMessageAction { .. }
             | CoreCommandEnvelope::DirectRecentActivity { .. }
             | CoreCommandEnvelope::DirectSessionAccessToken { .. }
             | CoreCommandEnvelope::ValidateSessionAccessToken { .. } => {
@@ -598,6 +599,7 @@ impl CoreConnectionTestControl {
             CoreCommandEnvelope::DirectSearch { .. }
             | CoreCommandEnvelope::DirectAttachment { .. }
             | CoreCommandEnvelope::DirectRoomMessages { .. }
+            | CoreCommandEnvelope::DirectMessageAction { .. }
             | CoreCommandEnvelope::DirectRecentActivity { .. }
             | CoreCommandEnvelope::DirectSessionAccessToken { .. }
             | CoreCommandEnvelope::ValidateSessionAccessToken { .. } => {
@@ -832,6 +834,29 @@ impl CoreConnection {
         result
             .await
             .map_err(|_| crate::direct_operations::RoomMessagesFailure::AccountInactive)?
+    }
+
+    /// Run one direct (display-independent) message read or action (#1628).
+    ///
+    /// The answer travels only on this caller's reply channel: no app action is
+    /// reduced, no `CoreEvent` is emitted, and no timeline actor is mounted, so
+    /// the GUI's selected room, scroll position, read markers, and unread counts
+    /// are untouched.
+    pub async fn direct_message_action(
+        &self,
+        request: crate::direct_operations::DirectMessageRequest,
+    ) -> Result<
+        crate::direct_operations::DirectMessageResponse,
+        crate::direct_operations::DirectMessageFailure,
+    > {
+        let (response, result) = oneshot::channel();
+        self.command_tx
+            .send(CoreCommandEnvelope::DirectMessageAction { request, response })
+            .await
+            .map_err(|_| crate::direct_operations::DirectMessageFailure::AccountInactive)?;
+        result
+            .await
+            .map_err(|_| crate::direct_operations::DirectMessageFailure::AccountInactive)?
     }
 
     /// Run one search for an out-of-band caller (#1524).

@@ -131,6 +131,7 @@ pub fn start(
             log,
             activity_pages: Arc::new(crate::recent_activity::ActivityPages::default()),
             broker: Arc::clone(&broker),
+            actions: Arc::new(crate::actions::ActionLedger::default()),
         },
         token,
         shutdown_rx,
@@ -152,6 +153,8 @@ pub(crate) struct Shared {
     pub(crate) log: Arc<events::EventLog>,
     pub(crate) activity_pages: Arc<crate::recent_activity::ActivityPages>,
     pub(crate) broker: Arc<ConsentBroker>,
+    /// Idempotency for `client_request_id` (#1628).
+    pub(crate) actions: Arc<crate::actions::ActionLedger>,
 }
 
 fn spawn_sweeper(broker: Arc<ConsentBroker>, mut shutdown: watch::Receiver<bool>) {

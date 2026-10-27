@@ -58,7 +58,7 @@ fn malformed_and_newer_files_grant_nothing_and_are_not_writable() {
     assert_eq!(loaded.status, StoreStatus::Malformed);
     assert!(!loaded.writable());
 
-    write_raw(dir.path(), r#"{"schema":3,"connections":[]}"#);
+    write_raw(dir.path(), r#"{"schema":4,"connections":[]}"#);
     let loaded = load(dir.path());
     assert_eq!(loaded.status, StoreStatus::UnsupportedSchema);
     assert!(!loaded.writable());
@@ -68,6 +68,47 @@ fn malformed_and_newer_files_grant_nothing_and_are_not_writable() {
         r#"{"schema":2,"connections":[{"client_name":"pi","accounts":[{"account_id":"x","read":"yes"}]}]}"#,
     );
     assert_eq!(load(dir.path()).status, StoreStatus::Malformed);
+}
+
+#[test]
+fn schema_two_rows_default_message_actions_off_and_keep_their_other_flags() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_raw(
+        dir.path(),
+        r#"{"schema":2,"connections":[{"client_name":"pi","accounts":[
+            {"account_id":"account:@alice:example.invalid","read":true,"send":true,"attachments":false}]}]}"#,
+    );
+    let loaded = load(dir.path());
+    assert_eq!(loaded.status, StoreStatus::Ok);
+    assert!(loaded.store.allows("pi", ALICE, Need::Read));
+    assert!(loaded.store.allows("pi", ALICE, Need::Send));
+    assert!(
+        !loaded.store.allows("pi", ALICE, Need::MessageActions),
+        "schema 2 has no message_actions flag, so it must default to false"
+    );
+}
+
+#[test]
+fn schema_three_round_trips_message_actions_without_widening_another_need() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut store = Store::default();
+    store.set("pi", ALICE, Need::MessageActions, true);
+    save(dir.path(), &store).expect("save");
+
+    let written: Value =
+        serde_json::from_slice(&std::fs::read(grants_path(dir.path())).expect("read"))
+            .expect("json");
+    assert_eq!(written["schema"], 3);
+    assert_eq!(
+        written["connections"][0]["accounts"][0]["message_actions"],
+        true
+    );
+    assert_eq!(written["connections"][0]["accounts"][0]["send"], false);
+
+    let reloaded = load(dir.path());
+    assert_eq!(reloaded.status, StoreStatus::Ok);
+    assert!(reloaded.store.allows("pi", ALICE, Need::MessageActions));
+    assert!(!reloaded.store.allows("pi", ALICE, Need::Send));
 }
 
 #[test]
@@ -96,7 +137,7 @@ fn a_write_upgrades_schema_one_and_keeps_unknown_fields() {
     let written: Value =
         serde_json::from_slice(&std::fs::read(grants_path(dir.path())).expect("read"))
             .expect("json");
-    assert_eq!(written["schema"], 2);
+    assert_eq!(written["schema"], 3);
     assert_eq!(written["note"], "kept");
     assert_eq!(written["connections"][0]["label"], "kept too");
     assert_eq!(written["connections"][0]["accounts"][0]["read"], true);

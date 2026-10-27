@@ -19,6 +19,11 @@ feasibility gate. Historical plans below are not the new implementation brief.
 
 ## Runtime and roadmap
 
+[#1628 MCP message actions](../plans/2026-10-27-issue1628-mcp-message-actions.md)
+gives an assistant `get_message` plus react, edit, delete, and thread reply as
+direct session-owned operations behind a new `message_actions` grant
+(`connections.json` schema 3), with no timeline actor and no GUI state change.
+
 [One-click MCP registration](../plans/2026-10-19-mcp-one-click-register.md)
 lets the AI assistants page run Claude Code's, Codex's, or pi's own
 registration CLI (resolved with the login `PATH`, bounded and killable) and

@@ -157,6 +157,10 @@ fn parses_all_scenarios_from_env_value_including_directory() {
         QaScenario::from_env_value("thread_late_joiner").unwrap(),
         QaScenario::ThreadLateJoiner
     );
+    assert_eq!(
+        QaScenario::from_env_value("mcp_message_actions").unwrap(),
+        QaScenario::McpMessageActions
+    );
 }
 
 #[test]
@@ -299,6 +303,25 @@ fn thread_late_joiner_is_registered_with_private_safe_final_tokens() {
     );
     let report = scenario_report("local", scenario);
     assert!(report.contains("thread_late_joiner=ok"));
+    assert!(!report.contains('@'));
+    assert!(!report.contains('!'));
+    assert!(!report.contains('$'));
+}
+
+#[test]
+fn mcp_message_actions_is_registered_with_private_safe_final_token() {
+    let scenario = QaScenario::McpMessageActions;
+    assert_eq!(
+        stages_for_scenario(scenario),
+        [QaStage::Safety, QaStage::McpMessageActions]
+    );
+    assert_eq!(
+        final_tokens_for_scenario(scenario),
+        ["safety=ok", "mcp_message_actions=ok"]
+    );
+    assert!(!QaScenario::All.should_run_stage(QaStage::McpMessageActions));
+    let report = scenario_report("local", scenario);
+    assert!(report.contains("mcp_message_actions=ok"));
     assert!(!report.contains('@'));
     assert!(!report.contains('!'));
     assert!(!report.contains('$'));

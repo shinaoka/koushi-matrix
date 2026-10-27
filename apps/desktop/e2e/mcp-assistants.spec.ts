@@ -88,7 +88,7 @@ test("App Settings lists assistants and changes one permission at a time", async
       client_name: "codex",
       client_version: "0.147.0",
       last_used_ms: null,
-      accounts: [{ account_id: ACCOUNT, read: true, send: false, attachments: false, denied: [] }]
+      accounts: [{ account_id: ACCOUNT, read: true, send: false, attachments: false, message_actions: false, denied: [] }]
     }]
   }));
 
@@ -103,6 +103,65 @@ test("App Settings lists assistants and changes one permission at a time", async
   await settings.getByRole("switch", { name: "Let AI assistants connect", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("update_settings").at(-1)?.args))
     .toMatchObject({ patch: { scope: "app", mcp: { enabled: false } } });
+});
+
+test("a message-actions approval names the react, edit, and delete grant (#1628)", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(async (tabs) => {
+    await window.__harness.pushAccountTabs(tabs);
+    window.__harness.clearInvocations();
+  }, accountTabs);
+  await page.evaluate((state) => window.__harness.pushMcpAssistants(state), mcpState({
+    pending: [{
+      request_id: 7,
+      client_name: "claude-code",
+      client_version: "2.1.0",
+      account_id: ACCOUNT,
+      need: "message_actions",
+      room_label: null,
+      message_preview: null,
+      waiting: true,
+      waiting_calls: 1
+    }]
+  }));
+
+  const dialog = page.getByRole("dialog", { name: "Allow claude-code to change your messages?", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("wants to react to, edit, and delete your messages in Harness")).toBeVisible();
+  await expect(dialog.getByText("Add and remove its own reactions on any message it can see")).toBeVisible();
+  await expect(dialog.getByText("Edit the text of messages you sent, keeping any image or file")).toBeVisible();
+  await expect(dialog.getByText("Delete messages you sent")).toBeVisible();
+  await expect(dialog.getByText(/It cannot change anyone else's message/)).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Allow changing messages in Harness", exact: true })).toBeVisible();
+});
+
+test("App Settings lists the message-actions permission and toggles it alone", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(async (tabs) => {
+    await window.__harness.pushAccountTabs(tabs);
+    window.__harness.clearInvocations();
+  }, accountTabs);
+  await page.getByRole("button", { name: "App Settings", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "App Settings", exact: true });
+  await settings.getByRole("tab", { name: "AI assistants", exact: true }).click();
+  await page.evaluate((state) => window.__harness.pushMcpAssistants(state), mcpState({
+    assistants: [{
+      client_name: "codex",
+      client_version: "0.147.0",
+      last_used_ms: null,
+      accounts: [{ account_id: ACCOUNT, read: true, send: true, attachments: true, message_actions: false, denied: [] }]
+    }]
+  }));
+
+  const card = settings.getByRole("article", { name: "codex" });
+  await expect(card.getByRole("columnheader", { name: "Change messages", exact: true })).toBeVisible();
+  const change = card.getByRole("switch", { name: "Change messages for @harness-user:example.invalid", exact: true });
+  // Ungranted reads as off rather than denied.
+  await expect(change).toHaveAttribute("aria-checked", "false");
+  await expect(card.getByText("Denied", { exact: true })).toHaveCount(0);
+  await change.click();
+  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("set_mcp_permission").at(-1)?.args))
+    .toMatchObject({ clientName: "codex", accountId: ACCOUNT, need: "message_actions", allowed: true });
 });
 
 test("Register asks first, then runs the client's command through Rust", async ({ page }) => {

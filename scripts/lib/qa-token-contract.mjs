@@ -95,6 +95,7 @@ export const HEADLESS_LOCAL_QA_SCENARIO_TOKENS = Object.freeze({
     "thread_late_joiner_withheld_retry_close=ok",
     "thread_late_joiner=ok"
   ]),
+  mcp_message_actions: Object.freeze(["mcp_message_actions=ok"]),
   notification_delivery: Object.freeze([
     "notification_delivery_file_credential_store=ok",
     "notification_delivery_unfocused=ok",

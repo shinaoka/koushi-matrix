@@ -556,7 +556,7 @@ export interface McpSettings {
   enabled: boolean;
 }
 
-export type McpNeed = "read" | "send" | "attachments";
+export type McpNeed = "read" | "send" | "attachments" | "message_actions";
 
 export interface McpPendingApproval {
   request_id: number;
@@ -577,6 +577,7 @@ export interface McpAssistantAccount {
   read: boolean;
   send: boolean;
   attachments: boolean;
+  message_actions: boolean;
   /** Permissions denied for this account during this bridge run. */
   denied: McpNeed[];
 }

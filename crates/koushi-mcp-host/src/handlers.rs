@@ -48,6 +48,12 @@ pub(crate) async fn dispatch_tool_call(
         "read_recent_activity" => read_recent_activity(shared, client, &arguments).await,
         "get_attachment" => get_attachment(shared, client, &arguments).await,
         "read_room_messages" => read_room_messages(shared, client, &arguments).await,
+        "get_message" => get_message(shared, client, &arguments).await,
+        "react_to_message" => react_to_message(shared, client, &arguments).await,
+        "unreact_to_message" => unreact_to_message(shared, client, &arguments).await,
+        "edit_message" => edit_message(shared, client, &arguments).await,
+        "delete_message" => delete_message(shared, client, &arguments).await,
+        "send_thread_reply" => send_thread_reply(shared, client, &arguments).await,
         other => Err(WireError::new(
             ErrorCode::Unsupported,
             format!("unknown tool: {other}"),
@@ -102,8 +108,11 @@ fn list_accounts(shared: &Shared, client: &ClientIdentity) -> Result<Value, Wire
             "read": grant.is_some_and(|grant| grant.read),
             "send": grant.is_some_and(|grant| grant.send),
             "attachments": grant.is_some_and(|grant| grant.attachments),
+            "message_actions": grant.is_some_and(|grant| grant.message_actions),
         });
-        if grant.is_some_and(|grant| grant.read || grant.send || grant.attachments) {
+        if grant.is_some_and(|grant| {
+            grant.read || grant.send || grant.attachments || grant.message_actions
+        }) {
             let user_id = session.map(|info| info.user_id.clone());
             let homeserver = session
                 .map(|info| info.homeserver.clone())
@@ -416,6 +425,507 @@ async fn read_room_messages(
     .await;
     operation.finish(result.is_ok());
     result
+}
+
+/// Maps one direct message failure to the closed MCP error vocabulary (#1628).
+fn direct_message_failure(failure: koushi_core::DirectMessageFailure) -> WireError {
+    use koushi_core::DirectMessageFailure as Failure;
+    match failure {
+        Failure::AccountInactive => {
+            WireError::new(ErrorCode::AccountUnavailable, "account is not signed in")
+        }
+        Failure::RoomNotFound => WireError::new(ErrorCode::RoomNotFound, "the room is not joined"),
+        Failure::EventNotFound => {
+            WireError::new(ErrorCode::EventNotFound, "the event is not in this room")
+        }
+        Failure::NotAuthor => WireError::with_reason(
+            ErrorCode::NotPermitted,
+            "not_author",
+            "only the message's own sender can change it",
+        ),
+        Failure::NotAMessage => WireError::with_reason(
+            ErrorCode::Unsupported,
+            "not_a_message",
+            "the event is not a message",
+        ),
+        Failure::Redacted => WireError::with_reason(
+            ErrorCode::Unsupported,
+            "redacted",
+            "the message was already deleted",
+        ),
+        Failure::NotThreadRoot => WireError::with_reason(
+            ErrorCode::Unsupported,
+            "not_thread_root",
+            "the event is a thread reply, not a thread root",
+        ),
+        Failure::RelationsUnavailable => WireError::with_reason(
+            ErrorCode::Internal,
+            "relations_unavailable",
+            "Koushi could not read this message's reactions",
+        ),
+        Failure::Capacity => WireError::new(
+            ErrorCode::Busy,
+            "too many concurrent message actions for this account",
+        ),
+        Failure::Unavailable => {
+            WireError::new(ErrorCode::Internal, "Koushi could not complete this action")
+        }
+    }
+}
+
+fn required_argument<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, WireError> {
+    arguments
+        .get(name)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| WireError::new(ErrorCode::Unsupported, format!("{name} is required")))
+}
+
+/// A reaction key is 1-128 UTF-8 bytes with no control characters or line
+/// breaks, so it cannot smuggle a multi-line body into a reaction.
+fn reaction_key(arguments: &Value) -> Result<&str, WireError> {
+    let key = required_argument(arguments, "key")?;
+    let invalid = key.len() > 128 || key.chars().any(|character| character.is_control());
+    if invalid {
+        return Err(WireError::new(
+            ErrorCode::Unsupported,
+            "a reaction key is 1-128 bytes with no control characters",
+        ));
+    }
+    Ok(key)
+}
+
+/// A caller-generated id used as the retry key. It becomes a transaction id
+/// label, so it is restricted to the characters those ids use.
+fn client_request_id(arguments: &Value) -> Result<&str, WireError> {
+    let id = required_argument(arguments, "client_request_id")?;
+    let valid = id.len() <= 128
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-._:".contains(character));
+    if !valid {
+        return Err(WireError::new(
+            ErrorCode::Unsupported,
+            "client_request_id must be at most 128 characters of ASCII letters, digits, - . _ or :",
+        ));
+    }
+    Ok(id)
+}
+
+/// Reads one message-like event by id for an out-of-band caller (#1628).
+async fn get_message(
+    shared: &Shared,
+    client: &ClientIdentity,
+    arguments: &Value,
+) -> Result<Value, WireError> {
+    let account_id = required_account_id(arguments)?;
+    let room_id = required_argument(arguments, "room_id")?.to_owned();
+    let event_id = required_argument(arguments, "event_id")?.to_owned();
+    let connection = authorize(
+        shared,
+        client,
+        &account_id,
+        Need::Read,
+        ConsentContext::default(),
+    )
+    .await?;
+    let operation = connection.begin_navigation_operation(
+        koushi_diagnostics::NavigationCause::DirectRead,
+        koushi_diagnostics::NavigationOrigin::Mcp,
+    );
+    let result = async {
+        let view = match connection
+            .direct_message_action(koushi_core::DirectMessageRequest::Read {
+                room_id: room_id.clone(),
+                event_id: event_id.clone(),
+            })
+            .await
+            .map_err(direct_message_failure)?
+        {
+            koushi_core::DirectMessageResponse::Read(view) => view,
+            _ => {
+                return Err(WireError::new(
+                    ErrorCode::Internal,
+                    "Koushi answered a different action",
+                ));
+            }
+        };
+        // The account can be signed out or locked while the read ran.
+        ready_account_key(&connection.snapshot().session)?;
+        Ok(json!({
+            "room_id": view.room_id,
+            "event_id": view.event_id,
+            "sender_id": view.sender_id,
+            "timestamp_ms": view.timestamp_ms,
+            "kind": view.kind,
+            "is_encrypted": view.is_encrypted,
+            "is_redacted": view.is_redacted,
+            "content_available": view.content_available,
+            "body": view.body,
+            "edited": view.edited.map(|edit| json!({
+                "event_id": edit.event_id,
+                "timestamp_ms": edit.timestamp_ms,
+            })),
+            "reactions": view.reactions.into_iter().map(|reaction| json!({
+                "key": reaction.key,
+                "count": reaction.count,
+                "mine": reaction.mine,
+            })).collect::<Vec<_>>(),
+            "relations_truncated": view.relations_truncated,
+            "thread_root_event_id": view.thread_root_event_id,
+            "reply_to_event_id": view.reply_to_event_id,
+        }))
+    }
+    .await;
+    operation.finish(result.is_ok());
+    result
+}
+
+/// Authorizes `message_actions` and returns the account connection (#1628).
+///
+/// The approval is raised before any target detail is read, so an approval can
+/// be shown for a call that then fails. Every target verdict (own author,
+/// message kind, redacted, thread root) belongs to Core, which reads the target
+/// inside the operation immediately before it submits.
+async fn authorize_message_action(
+    shared: &Shared,
+    client: &ClientIdentity,
+    account_id: &str,
+    room_id: &str,
+) -> Result<koushi_core::CoreConnection, WireError> {
+    authorize(
+        shared,
+        client,
+        account_id,
+        Need::MessageActions,
+        ConsentContext {
+            room_label: joined_room_label(
+                &account_connection(&shared.accounts, account_id)?,
+                room_id,
+            ),
+            message_preview: None,
+        },
+    )
+    .await
+}
+
+/// Adds this account's reaction with set semantics (#1628).
+async fn react_to_message(
+    shared: &Shared,
+    client: &ClientIdentity,
+    arguments: &Value,
+) -> Result<Value, WireError> {
+    let account_id = required_account_id(arguments)?;
+    let room_id = required_argument(arguments, "room_id")?.to_owned();
+    let event_id = required_argument(arguments, "event_id")?.to_owned();
+    let key = reaction_key(arguments)?.to_owned();
+    let connection = authorize_message_action(shared, client, &account_id, &room_id).await?;
+    match connection
+        .direct_message_action(koushi_core::DirectMessageRequest::React {
+            room_id,
+            event_id,
+            key,
+        })
+        .await
+        .map_err(direct_message_failure)?
+    {
+        koushi_core::DirectMessageResponse::React(outcome) => Ok(json!({
+            "added": outcome.added,
+            "reaction_event_id": outcome.reaction_event_id,
+        })),
+        _ => Err(WireError::new(
+            ErrorCode::Internal,
+            "Koushi answered a different action",
+        )),
+    }
+}
+
+/// Removes every own reaction with `key` (#1628).
+async fn unreact_to_message(
+    shared: &Shared,
+    client: &ClientIdentity,
+    arguments: &Value,
+) -> Result<Value, WireError> {
+    let account_id = required_account_id(arguments)?;
+    let room_id = required_argument(arguments, "room_id")?.to_owned();
+    let event_id = required_argument(arguments, "event_id")?.to_owned();
+    let key = reaction_key(arguments)?.to_owned();
+    let connection = authorize_message_action(shared, client, &account_id, &room_id).await?;
+    match connection
+        .direct_message_action(koushi_core::DirectMessageRequest::Unreact {
+            room_id,
+            event_id,
+            key,
+        })
+        .await
+        .map_err(direct_message_failure)?
+    {
+        koushi_core::DirectMessageResponse::Unreact(removed) => Ok(json!({ "removed": removed })),
+        _ => Err(WireError::new(
+            ErrorCode::Internal,
+            "Koushi answered a different action",
+        )),
+    }
+}
+
+/// Replaces this account's own message text (#1628).
+async fn edit_message(
+    shared: &Shared,
+    client: &ClientIdentity,
+    arguments: &Value,
+) -> Result<Value, WireError> {
+    let account_id = required_account_id(arguments)?;
+    let room_id = required_argument(arguments, "room_id")?.to_owned();
+    let event_id = required_argument(arguments, "event_id")?.to_owned();
+    let body = required_argument(arguments, "body")?.to_owned();
+    let request_id = client_request_id(arguments)?.to_owned();
+    let target = format!("{room_id}/{event_id}");
+    let key =
+        crate::actions::ActionLedger::key(&client.name, &account_id, &target, "edit", &request_id);
+    match shared.actions.begin(key.clone()) {
+        crate::actions::Replay::Settled(result) => {
+            // A retry must not answer from the ledger after the grant or the
+            // session went away.
+            authorize_message_action(shared, client, &account_id, &room_id).await?;
+            return Ok(result);
+        }
+        crate::actions::Replay::InFlight => {
+            return Err(WireError::new(
+                ErrorCode::Busy,
+                "an identical edit is already running",
+            ));
+        }
+        crate::actions::Replay::Fresh => {}
+    }
+    let connection = match authorize_message_action(shared, client, &account_id, &room_id).await {
+        Ok(connection) => connection,
+        Err(error) => {
+            shared.actions.release(&key);
+            return Err(error);
+        }
+    };
+    let formatting = connection
+        .snapshot()
+        .settings
+        .values
+        .composer
+        .formatting_options();
+    let result = async {
+        match connection
+            .direct_message_action(koushi_core::DirectMessageRequest::Edit {
+                room_id,
+                event_id,
+                body,
+                formatting,
+            })
+            .await
+            .map_err(direct_message_failure)?
+        {
+            koushi_core::DirectMessageResponse::Edit(outcome) => Ok(json!({
+                "edit_event_id": outcome.edit_event_id,
+                // A direct edit sends one event without the queue, so there is
+                // no SDK transaction id; the caller's retry key is echoed here
+                // for correlation.
+                "transaction_id": request_id,
+            })),
+            _ => Err(WireError::new(
+                ErrorCode::Internal,
+                "Koushi answered a different action",
+            )),
+        }
+    }
+    .await;
+    match result {
+        Ok(value) => {
+            shared.actions.settle(&key, value.clone());
+            Ok(value)
+        }
+        Err(error) if error.code == ErrorCode::Internal => {
+            // The submission may have reached the homeserver before the failure
+            // (`internal` covers a timeout or a queue error after enqueue), so a
+            // retry with this key is refused until the ledger forgets it instead
+            // of risking a second event.
+            Err(error)
+        }
+        Err(error) => {
+            shared.actions.release(&key);
+            Err(error)
+        }
+    }
+}
+
+/// Redacts this account's own message (#1628).
+async fn delete_message(
+    shared: &Shared,
+    client: &ClientIdentity,
+    arguments: &Value,
+) -> Result<Value, WireError> {
+    let account_id = required_account_id(arguments)?;
+    let room_id = required_argument(arguments, "room_id")?.to_owned();
+    let event_id = required_argument(arguments, "event_id")?.to_owned();
+    let connection = authorize_message_action(shared, client, &account_id, &room_id).await?;
+    match connection
+        .direct_message_action(koushi_core::DirectMessageRequest::Delete { room_id, event_id })
+        .await
+        .map_err(direct_message_failure)?
+    {
+        koushi_core::DirectMessageResponse::Delete(outcome) => Ok(json!({
+            "redaction_event_id": outcome.redaction_event_id,
+            "already_redacted": outcome.already_redacted,
+        })),
+        _ => Err(WireError::new(
+            ErrorCode::Internal,
+            "Koushi answered a different action",
+        )),
+    }
+}
+
+/// Posts a plain-text reply under a visible thread root (#1628).
+///
+/// The reply reuses the composer's thread content shape and the direct send
+/// queue that `send_message` already uses, so no thread timeline is mounted.
+async fn send_thread_reply(
+    shared: &Shared,
+    client: &ClientIdentity,
+    arguments: &Value,
+) -> Result<Value, WireError> {
+    let account_id = required_account_id(arguments)?;
+    let room_id = required_argument(arguments, "room_id")?.to_owned();
+    let root_event_id = required_argument(arguments, "thread_root_event_id")?.to_owned();
+    let body = required_argument(arguments, "body")?.to_owned();
+    let request_id = client_request_id(arguments)?.to_owned();
+    let target = format!("{room_id}/{root_event_id}");
+    let key = crate::actions::ActionLedger::key(
+        &client.name,
+        &account_id,
+        &target,
+        "thread_reply",
+        &request_id,
+    );
+    match shared.actions.begin(key.clone()) {
+        crate::actions::Replay::Settled(result) => {
+            // A retry must not answer from the ledger after the grant or the
+            // session went away.
+            authorize_message_action(shared, client, &account_id, &room_id).await?;
+            return Ok(result);
+        }
+        crate::actions::Replay::InFlight => {
+            return Err(WireError::new(
+                ErrorCode::Busy,
+                "an identical thread reply is already running",
+            ));
+        }
+        crate::actions::Replay::Fresh => {}
+    }
+    let connection = match account_connection(&shared.accounts, &account_id) {
+        Ok(connection) => connection,
+        Err(error) => {
+            shared.actions.release(&key);
+            return Err(error);
+        }
+    };
+    let room_label = joined_room_label(&connection, &room_id);
+    if let Err(error) = shared
+        .broker
+        .authorize(
+            client,
+            &account_id,
+            Need::Send,
+            ConsentContext {
+                room_label,
+                message_preview: (!body.trim().is_empty()).then(|| body.clone()),
+            },
+        )
+        .await
+    {
+        shared.actions.release(&key);
+        return Err(error);
+    }
+    if let Err(error) = ready_account_key(&connection.snapshot().session) {
+        shared.actions.release(&key);
+        return Err(error);
+    }
+    let operation = connection.begin_navigation_operation(
+        koushi_diagnostics::NavigationCause::DirectSend,
+        koushi_diagnostics::NavigationOrigin::Mcp,
+    );
+    let result = async {
+        // The target must be a visible message-like thread root, not itself a
+        // thread reply. The read is bounded by the same budget as `get_message`.
+        let view = match connection
+            .direct_message_action(koushi_core::DirectMessageRequest::Read {
+                room_id: room_id.clone(),
+                event_id: root_event_id.clone(),
+            })
+            .await
+            .map_err(direct_message_failure)?
+        {
+            koushi_core::DirectMessageResponse::Read(view) => view,
+            _ => {
+                return Err(WireError::new(
+                    ErrorCode::Internal,
+                    "Koushi answered a different action",
+                ));
+            }
+        };
+        if view.is_redacted {
+            return Err(direct_message_failure(
+                koushi_core::DirectMessageFailure::Redacted,
+            ));
+        }
+        if view.thread_root_event_id.is_some() {
+            return Err(direct_message_failure(
+                koushi_core::DirectMessageFailure::NotThreadRoot,
+            ));
+        }
+        // The grant is re-read immediately before the send, so a revocation
+        // during the read is honored.
+        shared
+            .broker
+            .authorize(client, &account_id, Need::Send, ConsentContext::default())
+            .await?;
+        let snapshot = connection.snapshot();
+        ready_account_key(&snapshot.session)?;
+        let formatting = snapshot.settings.values.composer.formatting_options();
+        match connection
+            .direct_message_action(koushi_core::DirectMessageRequest::ThreadReply {
+                room_id: room_id.clone(),
+                root_event_id: root_event_id.clone(),
+                body,
+                formatting,
+            })
+            .await
+            .map_err(direct_message_failure)?
+        {
+            koushi_core::DirectMessageResponse::ThreadReply(outcome) => Ok(json!({
+                "event_id": outcome.event_id,
+                "transaction_id": outcome.transaction_id,
+            })),
+            _ => Err(WireError::new(
+                ErrorCode::Internal,
+                "Koushi answered a different action",
+            )),
+        }
+    }
+    .await;
+    operation.finish(result.is_ok());
+    match result {
+        Ok(value) => {
+            shared.actions.settle(&key, value.clone());
+            Ok(value)
+        }
+        Err(error) if error.code == ErrorCode::Internal => {
+            // The submission may have reached the homeserver before the failure
+            // (`internal` covers a timeout or a queue error after enqueue), so a
+            // retry with this key is refused until the ledger forgets it instead
+            // of risking a second event.
+            Err(error)
+        }
+        Err(error) => {
+            shared.actions.release(&key);
+            Err(error)
+        }
+    }
 }
 
 fn room_messages_failure(failure: koushi_core::RoomMessagesFailure) -> WireError {

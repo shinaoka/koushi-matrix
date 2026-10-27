@@ -47,7 +47,8 @@ export function mcpWantsText(need: McpNeed, account: string): string {
   return {
     read: t("mcp.wantsRead", { account }),
     send: t("mcp.wantsSend", { account }),
-    attachments: t("mcp.wantsAttachments", { account })
+    attachments: t("mcp.wantsAttachments", { account }),
+    message_actions: t("mcp.wantsMessageActions", { account })
   }[need];
 }
 
@@ -55,7 +56,8 @@ export function mcpAllowLabel(need: McpNeed, account: string): string {
   return {
     read: t("mcp.allowRead", { account }),
     send: t("mcp.allowSend", { account }),
-    attachments: t("mcp.allowAttachments", { account })
+    attachments: t("mcp.allowAttachments", { account }),
+    message_actions: t("mcp.allowMessageActions", { account })
   }[need];
 }
 
@@ -82,7 +84,8 @@ export function McpApprovalPrompt({
   const title = {
     read: t("mcp.approveReadTitle", { client }),
     send: t("mcp.approveSendTitle", { client }),
-    attachments: t("mcp.approveAttachmentsTitle", { client })
+    attachments: t("mcp.approveAttachmentsTitle", { client }),
+    message_actions: t("mcp.approveMessageActionsTitle", { client })
   }[request.need];
   const wants = mcpWantsText(request.need, account);
   const allowLabel = mcpAllowLabel(request.need, account);
@@ -150,6 +153,18 @@ export function McpApprovalPrompt({
           <>
             {request.room_label ? <p className="mcp-approval-note">{t("mcp.attachmentsRoom", { room: request.room_label })}</p> : null}
             <p className="mcp-approval-note">{t("mcp.attachmentsExplain", { client, account })}</p>
+          </>
+        ) : null}
+
+        {request.need === "message_actions" ? (
+          <>
+            <p className="mcp-approval-heading">{t("mcp.messageActionsCan", { client })}</p>
+            <ul className="mcp-approval-list">
+              <li>{t("mcp.messageActionsCanReact")}</li>
+              <li>{t("mcp.messageActionsCanEdit")}</li>
+              <li>{t("mcp.messageActionsCanDelete")}</li>
+            </ul>
+            <p className="mcp-approval-note">{t("mcp.messageActionsCannot", { account })}</p>
           </>
         ) : null}
 

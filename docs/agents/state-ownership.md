@@ -1356,6 +1356,16 @@ normal QA-title mode and cannot change product title semantics.
   never settings: they live in `mcp/connections.json`.
 - Account labels in the dialog and on the settings page come from Koushi's own
   account tabs, never from text an assistant supplied.
+- Direct message actions (`get_message`, reactions, edit, delete, thread
+  reply) belong to `koushi-core`'s direct operations next to the direct read,
+  search, attachment, and send paths. Core owns target resolution, the
+  own-author and thread-root guards, the edit document policy it already owns
+  (`timeline/item_projection`), the reaction verdict, the thread content shape,
+  the bounded `client_request_id` ledger, and the account-session fence. The
+  MCP host owns only argument validation, the `message_actions` grant, and the
+  failure mapping; it must not implement a second edit, reaction, or relation
+  semantic, and no part of this path may mount a `TimelineActor` or reduce an
+  `AppAction`.
 
 ## E2EE trust
 

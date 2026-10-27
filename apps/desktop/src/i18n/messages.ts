@@ -934,6 +934,7 @@ export type MessageId =
   | "settings.assistantsRead"
   | "settings.assistantsSend"
   | "settings.assistantsAttachments"
+  | "settings.assistantsMessageActions"
   | "settings.assistantsDenied"
   | "settings.assistantsPermissionLabel"
   | "settings.assistantsNotRequested"
@@ -955,15 +956,22 @@ export type MessageId =
   | "mcp.approveReadTitle"
   | "mcp.approveSendTitle"
   | "mcp.approveAttachmentsTitle"
+  | "mcp.approveMessageActionsTitle"
   | "mcp.requestedBy"
   | "mcp.wantsRead"
   | "mcp.wantsSend"
   | "mcp.wantsAttachments"
+  | "mcp.wantsMessageActions"
   | "mcp.readCan"
   | "mcp.readCanRooms"
   | "mcp.readCanMessages"
   | "mcp.readCanSearch"
   | "mcp.readCannot"
+  | "mcp.messageActionsCan"
+  | "mcp.messageActionsCanReact"
+  | "mcp.messageActionsCanEdit"
+  | "mcp.messageActionsCanDelete"
+  | "mcp.messageActionsCannot"
   | "mcp.sendPreviewHeading"
   | "mcp.sendPreviewHeadingRoom"
   | "mcp.sendNoLongerWaiting"
@@ -975,6 +983,7 @@ export type MessageId =
   | "mcp.allowRead"
   | "mcp.allowSend"
   | "mcp.allowAttachments"
+  | "mcp.allowMessageActions"
   | "mcp.moreWaiting"
   | "mcp.saveFailed"
   | "mcp.moreMessagesWaiting"
@@ -3219,6 +3228,7 @@ const en: Catalog = {
   "settings.assistantsRead": "Read",
   "settings.assistantsSend": "Send",
   "settings.assistantsAttachments": "Attachments",
+  "settings.assistantsMessageActions": "Change messages",
   "settings.assistantsDenied": "Denied",
   "settings.assistantsPermissionLabel": "{permission} for {account}",
   "settings.assistantsNotRequested": "Not requested yet. Koushi will ask when {client} first uses this account.",
@@ -3240,19 +3250,26 @@ const en: Catalog = {
   "mcp.approveReadTitle": "Allow {client} to read your messages?",
   "mcp.approveSendTitle": "Allow {client} to send messages?",
   "mcp.approveAttachmentsTitle": "Allow {client} to send and download attachments?",
+  "mcp.approveMessageActionsTitle": "Allow {client} to change your messages?",
   "mcp.requestedBy": "Requested by a program on this computer",
   "mcp.wantsRead": "wants to read {account}",
   "mcp.wantsSend": "wants to send as {account}",
   "mcp.wantsAttachments": "wants to send and download attachments in {account}",
+  "mcp.wantsMessageActions": "wants to react to, edit, and delete your messages in {account}",
   "mcp.readCan": "If you allow, {client} can:",
   "mcp.readCanRooms": "List the rooms in {account}, with unread counts",
   "mcp.readCanMessages": "Read recent messages, including encrypted rooms",
   "mcp.readCanSearch": "Search your message history in {account}",
   "mcp.readCannot": "It cannot send messages or download attachments. Koushi will ask again if it tries. Other accounts stay hidden.",
+  "mcp.messageActionsCan": "If you allow, {client} can:",
+  "mcp.messageActionsCanReact": "Add and remove its own reactions on any message it can see",
+  "mcp.messageActionsCanEdit": "Edit the text of messages you sent, keeping any image or file",
+  "mcp.messageActionsCanDelete": "Delete messages you sent",
+  "mcp.messageActionsCannot": "It cannot change anyone else's message, read message contents with this permission, or send new messages. Whatever it does looks like your own action in {account}. You can turn this off in App Settings → AI assistants.",
   "mcp.sendPreviewHeading": "The message it is waiting to send:",
   "mcp.sendPreviewHeadingRoom": "The message it is waiting to send, in {room}:",
   "mcp.sendNoLongerWaiting": "The assistant stopped waiting, so that message will not be sent. Your answer still applies to its future messages.",
-  "mcp.sendExplain": "If you allow, {client} can send messages and replies from {account} without asking again. They look like messages you wrote. You can turn this off in App Settings → AI assistants.",
+  "mcp.sendExplain": "If you allow, {client} can send messages, replies, and thread replies from {account} without asking again. They look like messages you wrote. You can turn this off in App Settings → AI assistants.",
   "mcp.attachmentsExplain": "If you allow, {client} can send files from this computer as attachments from {account}, and download attachments from {account} into Koushi's media cache, without asking again.",
   "mcp.attachmentsRoom": "Requested for a file in {room}.",
   "mcp.selfDeclared": "“{client}” is the name the assistant gave itself. Allow it only if you just set up or asked that assistant.",
@@ -3260,6 +3277,7 @@ const en: Catalog = {
   "mcp.allowRead": "Allow reading {account}",
   "mcp.allowSend": "Allow sending from {account}",
   "mcp.allowAttachments": "Allow attachments for {account}",
+  "mcp.allowMessageActions": "Allow changing messages in {account}",
   "mcp.moreWaiting": "More requests waiting: {count}",
   "mcp.saveFailed": "Koushi could not save this approval. See App Settings → AI assistants.",
   "mcp.moreMessagesWaiting": "Other calls from this assistant waiting for this answer: {count}",
@@ -5541,6 +5559,7 @@ const ja: Catalog = {
   "settings.assistantsRead": "読み取り",
   "settings.assistantsSend": "送信",
   "settings.assistantsAttachments": "添付ファイル",
+  "settings.assistantsMessageActions": "メッセージ変更",
   "settings.assistantsDenied": "拒否済み",
   "settings.assistantsPermissionLabel": "{account} の{permission}",
   "settings.assistantsNotRequested": "まだ求められていません。{client} がこのアカウントを初めて使うときに確認します。",
@@ -5562,19 +5581,26 @@ const ja: Catalog = {
   "mcp.approveReadTitle": "{client} にメッセージの読み取りを許可しますか？",
   "mcp.approveSendTitle": "{client} にメッセージの送信を許可しますか？",
   "mcp.approveAttachmentsTitle": "{client} に添付ファイルの送信とダウンロードを許可しますか？",
+  "mcp.approveMessageActionsTitle": "{client} にメッセージの変更を許可しますか？",
   "mcp.requestedBy": "このコンピューター上のプログラムからの要求です",
   "mcp.wantsRead": "{account} の読み取りを求めています",
   "mcp.wantsSend": "{account} として送信しようとしています",
   "mcp.wantsAttachments": "{account} での添付ファイルの送信とダウンロードを求めています",
+  "mcp.wantsMessageActions": "{account} のメッセージへのリアクション、編集、削除を求めています",
   "mcp.readCan": "許可すると、{client} は次のことができます。",
   "mcp.readCanRooms": "{account} のルームを未読数つきで一覧する",
   "mcp.readCanMessages": "暗号化ルームを含む最近のメッセージを読む",
   "mcp.readCanSearch": "{account} のメッセージ履歴を検索する",
   "mcp.readCannot": "メッセージの送信や添付ファイルのダウンロードはできません。試みた場合は改めて確認します。ほかのアカウントは見えません。",
+  "mcp.messageActionsCan": "許可すると、{client} は次のことができます。",
+  "mcp.messageActionsCanReact": "見られるメッセージに自分のリアクションを付け外しする",
+  "mcp.messageActionsCanEdit": "あなたが送ったメッセージの本文を、画像やファイルを保ったまま編集する",
+  "mcp.messageActionsCanDelete": "あなたが送ったメッセージを削除する",
+  "mcp.messageActionsCannot": "ほかの人のメッセージは変更できません。この権限でメッセージの内容を読むことも、新しいメッセージを送ることもできません。この機能の操作は {account} であなた自身が行った操作として表示されます。アプリ設定 → AI アシスタントでオフにできます。",
   "mcp.sendPreviewHeading": "送信を待っているメッセージ：",
   "mcp.sendPreviewHeadingRoom": "{room} への送信を待っているメッセージ：",
   "mcp.sendNoLongerWaiting": "アシスタントが待つのをやめたため、そのメッセージは送信されません。ここでの回答は今後のメッセージに適用されます。",
-  "mcp.sendExplain": "許可すると、{client} は今後確認なしで {account} からメッセージや返信を送れます。あなたが書いたメッセージと同じように見えます。アプリ設定 → AI アシスタントでいつでもオフにできます。",
+  "mcp.sendExplain": "許可すると、{client} は今後確認なしで {account} からメッセージや返信、スレッド返信を送れます。あなたが書いたメッセージと同じように見えます。アプリ設定 → AI アシスタントでいつでもオフにできます。",
   "mcp.attachmentsExplain": "許可すると、{client} は今後確認なしで、このコンピューター上のファイルを {account} から添付ファイルとして送信し、{account} の添付ファイルを Koushi のメディアキャッシュにダウンロードできます。",
   "mcp.attachmentsRoom": "{room} のファイルについての要求です。",
   "mcp.selfDeclared": "「{client}」はアシスタントの自己申告による名前です。そのアシスタントを設定した直後や、頼みごとをした場合にだけ許可してください。",
@@ -5582,6 +5608,7 @@ const ja: Catalog = {
   "mcp.allowRead": "{account} の読み取りを許可",
   "mcp.allowSend": "{account} からの送信を許可",
   "mcp.allowAttachments": "{account} の添付ファイルを許可",
+  "mcp.allowMessageActions": "{account} のメッセージ変更を許可",
   "mcp.moreWaiting": "ほかに待っている要求：{count} 件",
   "mcp.saveFailed": "この承認を保存できませんでした。アプリ設定 → AI アシスタントを確認してください。",
   "mcp.moreMessagesWaiting": "この回答を待っている、このアシスタントのほかの呼び出し：{count} 件",

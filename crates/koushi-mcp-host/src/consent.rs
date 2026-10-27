@@ -723,6 +723,7 @@ fn need_word(need: Need) -> &'static str {
         Need::Read => "read",
         Need::Send => "send",
         Need::Attachments => "attachment",
+        Need::MessageActions => "message actions",
     }
 }
 

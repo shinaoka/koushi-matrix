@@ -2,9 +2,9 @@
 //!
 //! The app writes it when the user answers an approval or changes a
 //! permission, and every tool call re-reads it, so a hand edit or a revocation
-//! applies on the next call. Schema 2 keeps permissions per account; schema 1
-//! (one set of flags for a list of accounts) is still read and is upgraded by
-//! the next write.
+//! applies on the next call. Schema 3 keeps permissions per account; schema 1
+//! (one set of flags for a list of accounts) and schema 2 (no
+//! `message_actions` flag) are still read and are upgraded by the next write.
 //!
 //! The store fails closed: a missing, unreadable, malformed, or newer file
 //! grants nothing, and the app never writes over a file it could not parse.
@@ -16,7 +16,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 pub(crate) const FILE_NAME: &str = "connections.json";
-const SCHEMA: u64 = 2;
+const SCHEMA: u64 = 3;
 
 /// A permission an assistant can hold for one account.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, serde::Deserialize)]
@@ -25,16 +25,23 @@ pub enum Need {
     Read,
     Send,
     Attachments,
+    MessageActions,
 }
 
 impl Need {
-    pub const ALL: [Need; 3] = [Need::Read, Need::Send, Need::Attachments];
+    pub const ALL: [Need; 4] = [
+        Need::Read,
+        Need::Send,
+        Need::Attachments,
+        Need::MessageActions,
+    ];
 
     fn field(self) -> &'static str {
         match self {
             Need::Read => "read",
             Need::Send => "send",
             Need::Attachments => "attachments",
+            Need::MessageActions => "message_actions",
         }
     }
 }
@@ -58,6 +65,7 @@ pub(crate) struct AccountGrant {
     pub(crate) read: bool,
     pub(crate) send: bool,
     pub(crate) attachments: bool,
+    pub(crate) message_actions: bool,
     extra: Map<String, Value>,
 }
 
@@ -67,6 +75,7 @@ impl AccountGrant {
             Need::Read => self.read,
             Need::Send => self.send,
             Need::Attachments => self.attachments,
+            Need::MessageActions => self.message_actions,
         }
     }
 
@@ -75,6 +84,7 @@ impl AccountGrant {
             Need::Read => self.read = allowed,
             Need::Send => self.send = allowed,
             Need::Attachments => self.attachments = allowed,
+            Need::MessageActions => self.message_actions = allowed,
         }
     }
 }
@@ -347,6 +357,7 @@ fn parse_v1(value: Value) -> Result<Entry, ()> {
             read,
             send,
             attachments,
+            message_actions: false,
             extra: Map::new(),
         });
     }
@@ -384,11 +395,14 @@ fn parse_v2(value: Value) -> Result<Entry, ()> {
         let read = take_flag(&mut row, "read")?;
         let send = take_flag(&mut row, "send")?;
         let attachments = take_flag(&mut row, "attachments")?;
+        // Schema 2 rows have no `message_actions` key; a missing flag is false.
+        let message_actions = take_flag(&mut row, "message_actions")?;
         accounts.push(AccountGrant {
             account_id,
             read,
             send,
             attachments,
+            message_actions,
             extra: row,
         });
     }
@@ -399,7 +413,7 @@ fn parse_v2(value: Value) -> Result<Entry, ()> {
     }))
 }
 
-/// Writes the store as schema 2: a private temporary file in the same
+/// Writes the store as schema 3: a private temporary file in the same
 /// directory, then an atomic rename over the old file.
 pub(crate) fn save(data_dir: &Path, store: &Store) -> std::io::Result<()> {
     use std::io::Write;

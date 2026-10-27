@@ -652,7 +652,7 @@ async fn enqueue_document_send(
         .map_err(|error| classify_send_queue_error(&error))
 }
 
-fn make_offline_thread_content(
+pub(super) fn make_offline_thread_content(
     content: &mut RoomMessageEventContent,
     key: &TimelineKey,
 ) -> Result<(), TimelineFailureKind> {

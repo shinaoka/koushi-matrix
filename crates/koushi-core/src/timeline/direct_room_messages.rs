@@ -103,21 +103,35 @@ fn item_for_event(event: &TimelineEvent) -> Option<RoomMessageItem> {
 /// Media events carry a filename or a caption in `body`; keeping it lets a
 /// reader tell "sent an image" from "sent `agent-scenario.png`". An event this
 /// build does not model stays `Other` with no text.
-fn describe(msgtype: &MessageType) -> (RoomMessageKind, Option<String>) {
-    fn text(body: &str) -> Option<String> {
-        let trimmed = body.trim();
-        (!trimmed.is_empty()).then(|| trimmed.to_owned())
-    }
+pub(crate) fn message_kind(msgtype: &MessageType) -> RoomMessageKind {
     match msgtype {
-        MessageType::Text(content) => (RoomMessageKind::Text, text(&content.body)),
-        MessageType::Emote(content) => (RoomMessageKind::Emote, text(&content.body)),
-        MessageType::Notice(content) => (RoomMessageKind::Notice, text(&content.body)),
-        MessageType::Image(content) => (RoomMessageKind::Image, text(&content.body)),
-        MessageType::Video(content) => (RoomMessageKind::Video, text(&content.body)),
-        MessageType::Audio(content) => (RoomMessageKind::Audio, text(&content.body)),
-        MessageType::File(content) => (RoomMessageKind::File, text(&content.body)),
-        _ => (RoomMessageKind::Other, None),
+        MessageType::Text(_) => RoomMessageKind::Text,
+        MessageType::Emote(_) => RoomMessageKind::Emote,
+        MessageType::Notice(_) => RoomMessageKind::Notice,
+        MessageType::Image(_) => RoomMessageKind::Image,
+        MessageType::Video(_) => RoomMessageKind::Video,
+        MessageType::Audio(_) => RoomMessageKind::Audio,
+        MessageType::File(_) => RoomMessageKind::File,
+        _ => RoomMessageKind::Other,
     }
+}
+
+fn describe(msgtype: &MessageType) -> (RoomMessageKind, Option<String>) {
+    let kind = message_kind(msgtype);
+    let body = match msgtype {
+        MessageType::Text(content) => Some(&content.body),
+        MessageType::Emote(content) => Some(&content.body),
+        MessageType::Notice(content) => Some(&content.body),
+        MessageType::Image(content) => Some(&content.body),
+        MessageType::Video(content) => Some(&content.body),
+        MessageType::Audio(content) => Some(&content.body),
+        MessageType::File(content) => Some(&content.body),
+        _ => None,
+    };
+    let body = body
+        .map(|body: &String| body.trim().to_owned())
+        .filter(|body| !body.is_empty());
+    (kind, body)
 }
 
 #[cfg(test)]

@@ -143,6 +143,39 @@ test("several calls waiting on one approval are counted", () => {
   expect(screen.getByText("Other calls from this assistant waiting for this answer: 2")).toBeTruthy();
 });
 
+test("a message-actions approval states what it may and may not change (#1628)", () => {
+  render(
+    <McpApprovalPrompt
+      request={request({ need: "message_actions" })}
+      accountTabs={tabs}
+      moreWaiting={0}
+      armingDelayMs={0}
+      onClose={() => undefined}
+    />
+  );
+  const dialog = screen.getByRole("dialog", { name: "Allow claude-code to change your messages?" });
+  expect(dialog.textContent).toContain("wants to react to, edit, and delete your messages in Synthetic Workspace");
+  expect(dialog.textContent).toContain("If you allow, claude-code can:");
+  expect(dialog.textContent).toContain("Add and remove its own reactions on any message it can see");
+  expect(dialog.textContent).toContain("Edit the text of messages you sent, keeping any image or file");
+  expect(dialog.textContent).toContain("Delete messages you sent");
+  expect(dialog.textContent).toContain("It cannot change anyone else's message");
+  expect(dialog.textContent).toContain("looks like your own action in Synthetic Workspace");
+  expect(screen.getByRole("button", { name: "Allow changing messages in Synthetic Workspace" })).toBeTruthy();
+});
+
+test("the send approval names thread replies too (#1628)", () => {
+  render(
+    <McpApprovalPrompt
+      request={request({ need: "send", message_preview: "Fixture reply text" })}
+      accountTabs={tabs}
+      moreWaiting={0}
+      onClose={() => undefined}
+    />
+  );
+  expect(screen.getByText(/messages, replies, and thread replies/)).toBeTruthy();
+});
+
 test("an approval that could not be saved says so", async () => {
   fixture.answer.mockResolvedValue("store_failed");
   render(<McpApprovalPrompt request={request()} accountTabs={tabs} moreWaiting={0} armingDelayMs={0} onClose={() => undefined} />);

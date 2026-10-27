@@ -20,7 +20,7 @@ import { t } from "../../i18n/messages";
 import { mcpAccountId, mcpAccountLabel, useMcpAssistantsState } from "../useMcpAssistantsState";
 import { MCP_ALLOW_ARMING_DELAY_MS, mcpAllowLabel, mcpWantsText, useArmed } from "../McpApprovalDialog";
 
-const NEEDS: readonly McpNeed[] = ["read", "send", "attachments"];
+const NEEDS: readonly McpNeed[] = ["read", "send", "attachments", "message_actions"];
 
 /** Product names of the clients; not translated. */
 const CLIENT_NAMES: Record<Exclude<McpRegistration["client"], "other">, string> = {
@@ -35,7 +35,8 @@ function needLabel(need: McpNeed): string {
   return {
     read: t("settings.assistantsRead"),
     send: t("settings.assistantsSend"),
-    attachments: t("settings.assistantsAttachments")
+    attachments: t("settings.assistantsAttachments"),
+    message_actions: t("settings.assistantsMessageActions")
   }[need];
 }
 
@@ -249,7 +250,7 @@ function AssistantCard({
         {unrequested.map(tab => (
           <div role="row" className="settings-assistant-row" key={tab.id}>
             <span role="rowheader" dir="ltr">{tab.accountKey}</span>
-            <span role="cell" aria-colspan={3} className="settings-assistant-unrequested">
+            <span role="cell" aria-colspan={NEEDS.length} className="settings-assistant-unrequested">
               {t("settings.assistantsNotRequested", { client })}
             </span>
           </div>

@@ -392,6 +392,9 @@ async fn reset_local_data_clears_current_account_persistence_and_signs_out_local
         Some(focused_projection_tx.clone()),
     );
     let mut actor = AccountActor {
+        direct_message_action_slots: Arc::new(tokio::sync::Semaphore::new(1)),
+        direct_message_action_tasks: Vec::new(),
+        direct_reaction_lane: Arc::new(tokio::sync::Mutex::new(())),
         avatar_capacity_evicted: std::collections::HashSet::new(),
         session: None,
         session_key_id: Some(key_id.clone()),

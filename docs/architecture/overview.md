@@ -2072,6 +2072,22 @@ Invariants:
   permission in addition to `send`. Receiving
   writes through the `media_save` containment policy into an app-managed
   directory. No caller-chosen destination is accepted.
+- **Message actions are direct operations, not timeline mutations.**
+  `get_message`, `react_to_message`, `unreact_to_message`, `edit_message`,
+  `delete_message`, and `send_thread_reply` run as session-owned direct
+  operations in `koushi-core`, like the direct read, search, attachment, and
+  send paths. They never mount a `TimelineActor` and never reduce an
+  `AppAction`, so a room or thread nobody opened still answers and an open one
+  keeps its selection, scroll position, read markers, and unread counts. The
+  edit document policy, reaction validation, the `m.thread` content shape, and
+  the send queue come from the existing owners; the MCP host adds only
+  argument validation, the grant check, and failure mapping. Reacting,
+  editing, and deleting need the separate `message_actions` grant (schema 3),
+  thread replies need `send`, and `get_message` needs `read`. Only the
+  account's own events can be edited or deleted, and a thread reply may answer
+  any visible thread root. Actions are bounded, per-account capped, and fenced
+  on the account session, so a revoked grant is refused at submission while an
+  already-submitted event is never rolled back.
 - **Polling, not push.** MCP cannot wake a host that is not calling. Room
   changes surface through a `wait_for_events` long-poll of at most 50 s over a
   sampled feed: the host samples each joined room's latest event every 2 s,

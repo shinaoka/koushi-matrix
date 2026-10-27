@@ -19,6 +19,12 @@ account and each permission.
 | `search_messages` | Searches decrypted history and returns room, event id, sender, timestamp, and a snippet. | read |
 | `get_attachment` | Downloads one attachment into Koushi's media cache and returns its path. | attachments |
 | `send_message` | Sends a message, optionally as a reply, or sends local files with an optional caption. | send; also attachments when sending files |
+| `send_thread_reply` | Posts a plain-text reply in a thread, under a visible thread root. | send |
+| `get_message` | Fetches one message by its event id, with sender, time, the body after its latest edit, reactions, and its thread or reply relation. | read |
+| `react_to_message` | Adds the assistant account's reaction to a message. Repeating it with the same reaction does nothing. | message actions |
+| `unreact_to_message` | Removes every reaction of that account with the given key from a message. | message actions |
+| `edit_message` | Replaces the text of a message that account sent, keeping any image or file. | message actions |
+| `delete_message` | Deletes (redacts) a message that account sent. | message actions |
 | `wait_for_events` | Waits for sampled room changes in the account and returns the changed rooms. | read |
 
 Every tool needs an `account_id`. The assistant gets it from `list_accounts`;
@@ -165,11 +171,14 @@ assistant's call waits for your answer (up to 40 seconds):
 - **Per account.** The first call that touches an account asks about that
   account only. Other accounts stay hidden until the assistant uses them and you
   approve them too.
-- **Per permission.** Reading, sending, and attachments are asked separately,
-  when first needed. An assistant you allowed to read asks again the first time
-  it sends. The attachments permission covers both downloading attachments and
-  sending files from your computer, so an assistant allowed to send text asks
-  again the first time it sends a file.
+- **Per permission.** Reading, sending, attachments, and changing messages are
+  asked separately, when first needed. An assistant you allowed to read asks
+  again the first time it sends. The attachments permission covers both
+  downloading attachments and sending files from your computer, so an assistant
+  allowed to send text asks again the first time it sends a file. **Message
+  actions** covers reacting to, editing, and deleting messages the account
+  already sent; it is separate from sending, because rewriting an existing
+  message is not the same as writing a new one.
 - **Allow** keeps that permission for that account. After you allow sending,
   later messages are sent without asking again.
 - **Deny** refuses that permission. Koushi remembers the denial until you turn
@@ -191,8 +200,8 @@ Allow a request only when you just set up or asked that assistant.
 ### Change or remove access
 
 **App Settings → AI assistants → Connected assistants** lists every assistant
-that has asked, with a **Read**, **Send**, and **Attachments** switch for each
-account. A permission you denied shows **Denied**; turning its switch on allows
+that has asked, with a **Read**, **Send**, **Attachments**, and **Change
+messages** switch for each account. A permission you denied shows **Denied**; turning its switch on allows
 it. **Remove access** deletes everything for that assistant. Changes apply on
 the assistant's next call.
 
@@ -209,12 +218,13 @@ edit applies immediately:
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "connections": [
     {
       "client_name": "claude-code",
       "accounts": [
-        { "account_id": "account:@you:example.org", "read": true, "send": false, "attachments": false }
+        { "account_id": "account:@you:example.org", "read": true, "send": false,
+          "attachments": false, "message_actions": false }
       ]
     }
   ]
@@ -222,8 +232,9 @@ edit applies immediately:
 ```
 
 Files written by earlier versions (`accounts` as a list of ids with
-`allow_read`, `allow_send`, and `allow_attachments`) still work and are upgraded
-the next time Koushi saves a change. If Koushi cannot read the file, no assistant
+`allow_read`, `allow_send`, and `allow_attachments`, or per-account rows without
+`message_actions`) still work, grant no message actions, and are upgraded the
+next time Koushi saves a change. If Koushi cannot read the file, no assistant
 has access and the settings page says so; Koushi does not overwrite a file it
 cannot read, so fix or remove it.
 
@@ -304,6 +315,12 @@ Tool calls run inside Koushi's own runtime, but they are not GUI actions:
 - `send_message` sends without touching a draft or the composer. The message
   appears in an open room through normal sync; the assistant's request and its
   errors stay with the assistant.
+- `get_message`, the reaction, edit, and delete calls, and `send_thread_reply`
+  read and act on the account, not on an open timeline. They work for a room or
+  thread nobody opened and never change an open room's scroll position,
+  selection, read markers, or unread counts. `get_message` never marks a
+  message read. A thread reply appears through normal sync, like a sent
+  message.
 
 ## Checking a connection
 
@@ -346,6 +363,16 @@ Two failures look similar and mean different things:
   may not be searchable yet. `read_room_messages` reads the room directly and
   does not depend on the crawl.
 - Replies are supported with `reply_to_event_id`; starting a new thread is not.
+- The assistant can only react to, edit, or delete messages that the same
+  account sent. Moderating another person's message is not supported.
+  `send_thread_reply` may answer anyone's thread root, but it cannot answer a
+  message that is itself a thread reply.
+- Thread replies and edits are plain text: attachments are not supported in
+  either, and editing an image or file changes its caption only.
+- `get_message` and the reaction calls read at most one bounded page of a
+  message's reactions and edits (256 relations). A message with a larger
+  history reports `relations_truncated`, and a reaction change then fails
+  rather than risking a duplicate.
 - `send_message` sends files from absolute local paths that Koushi can read: at
   most 10 files, 50 MB each and 100 MB per call. Each file becomes its own
   message, and `body` captions the first one. A file cannot be sent as a reply,
@@ -371,6 +398,11 @@ Two failures look similar and mean different things:
 | `account_unavailable` | The account is not signed in yet: signed out, locked, or still restoring. | Sign in, unlock Koushi, or wait for restore to finish, then retry. |
 | `room_not_found` | The room is unknown to that account or you have left it. | List rooms again and use a room id the account is joined to. |
 | `event_not_found` | The event id is unknown to the room. | Re-run `search_messages` for a current event id. |
+| `not_permitted` with reason `not_author` | The target message was sent by another account. | Only your own messages can be edited or deleted. |
+| `unsupported` with reason `not_a_message` | The event id names a state event or another non-message event. | Use a message event id from `read_room_messages` or `search_messages`. |
+| `unsupported` with reason `redacted` | The target message was already deleted. | Nothing to change; `delete_message` on it already succeeds with `already_redacted`. |
+| `unsupported` with reason `not_thread_root` | The target of `send_thread_reply` is itself a thread reply. | Reply under the thread's root event instead. |
+| `internal` with reason `relations_unavailable` | Koushi could not read the message's reactions (a truncated page or a failed request). | Retry the call; nothing was sent. |
 | `busy` | This account already runs the maximum number of concurrent searches from assistants, or too many approvals are waiting. | Answer or close waiting approvals, wait for earlier calls, and retry. |
 | `internal: Koushi could not save the approval` | `connections.json` could not be written or read. | See the message in **App Settings → AI assistants**; fix or remove the file. |
 | `unsupported` | The assistant asked for a tool this build does not implement. | Update Koushi. |
