@@ -949,7 +949,7 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   generic English fallbacks such as `Member`, and do not infer the DM target from
   a room title in React.
 - `AvatarImage.mxc_uri` is metadata, not a render URL. GUI code renders an `<img>`
-  only for `AvatarThumbnailState::Ready.source_url`; otherwise it uses the
+  only for `AvatarThumbnailState::Ready.source_ref`; otherwise it uses the
   colored-initial fallback. Timeline downloads follow the same opaque-reference
   rule: `TimelineMediaDownloadState::Ready.source_ref` names the managed cache
   entry (`download/<room-hash>/<event-hash>`), and only the platform port turns
