@@ -74,6 +74,26 @@ or SDK boundary without logging private Matrix payloads.
   Koushi's application-specific wire protocol and remove equivalent fork APIs
   when public upstream replacements become available.
 
+- Bundled thread-reply timestamp ceiling (#1626, 2026-10-27): Koushi's thread
+  summary chip showed a thread's *root* time as the latest reply time for a
+  session whose first sync already contained the replies. `TimelineEvent::
+  bundled_latest_thread_event` derived the server-bundled latest reply with the
+  root's own `origin_server_ts` as the anti-future clamp ceiling, and the room
+  event cache persists that derived event, overwriting the correctly dated copy
+  of the same reply from the same batch. A reply is always posted after its
+  root, so the ceiling dated every bundled reply at the root; the thread list
+  aggregate, and the `ThreadSummaryDto.latest_timestamp_ms` Koushi projects from
+  it, then carried the wrong value. The patch is one expression: the ceiling is
+  now `MilliSecondsSinceUnixEpoch::now()`, the same guard
+  `bundled_replacement` already uses, so a forged future timestamp is still
+  capped while a real reply keeps its own time. Fixed-clock unit tests in
+  `matrix-sdk-common` cover a reply dated after its root and a reply dated in
+  the future, and a Koushi headless test covers the persisted copy. The fork
+  change is `3fec6d3bc` (merge of `shinaoka/matrix-rust-sdk-work` PR #30) on
+  `main`. Upstream intent: report this to `matrix-org/matrix-rust-sdk` as a
+  one-line correctness fix; remove the local patch when the upstream version is
+  pinned.
+
 - Invited-room historical-key recovery window (2026-10-17): Koushi retains
   pending inviter bundles for 30 days after invitation acceptance instead of
   the SDK default of 24 hours. Users may restart well after accepting an invite

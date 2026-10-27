@@ -46,7 +46,8 @@ export const testkitTargets = [
   "runtime_settings.rs",
   "runtime_timeline.rs",
   "send_queue_fast.rs",
-  "stack_budget.rs"
+  "stack_budget.rs",
+  "thread_bundled_reply_timestamp.rs"
 ];
 
 export const coreLocalIntegrationTargets = [
