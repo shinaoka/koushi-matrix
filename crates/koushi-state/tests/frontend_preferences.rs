@@ -157,6 +157,7 @@ fn rust_sidebar_projects_complete_sections_order_and_local_space_presentation() 
         display_name: "Server Space".to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: vec![
             "!normal-b:example.invalid".to_owned(),
             "!normal-a:example.invalid".to_owned(),
@@ -279,6 +280,7 @@ fn rust_sidebar_projects_complete_sections_order_and_local_space_presentation() 
         display_name: "Other".to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: Vec::new(),
         parent_side_child_room_ids: Vec::new(),
     });

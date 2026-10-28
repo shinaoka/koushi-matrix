@@ -976,6 +976,7 @@ mod tests {
             display_name_placeholder: None,
             avatar: None,
             membership,
+            topic: None,
             can_join: false,
             suggested: false,
             is_space: false,

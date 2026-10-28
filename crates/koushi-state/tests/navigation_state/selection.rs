@@ -172,6 +172,7 @@ fn room_list_update_keeps_empty_selected_space_empty() {
                 display_name: "Empty Space".to_owned(),
                 avatar: None,
                 join_rule: None,
+                topic: None,
                 child_room_ids: Vec::new(),
                 parent_side_child_room_ids: Vec::new(),
             },
@@ -181,6 +182,7 @@ fn room_list_update_keeps_empty_selected_space_empty() {
                 display_name: "Space A".to_owned(),
                 avatar: None,
                 join_rule: None,
+                topic: None,
                 child_room_ids: vec!["room-a".to_owned()],
                 parent_side_child_room_ids: vec!["room-a".to_owned()],
             },
@@ -271,6 +273,7 @@ fn selecting_space_restores_last_non_dm_room_for_that_space() {
         display_name: "Space A".to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: vec!["room-a".to_owned(), "room-b".to_owned(), "dm-a".to_owned()],
         parent_side_child_room_ids: vec![
             "room-a".to_owned(),

@@ -367,6 +367,7 @@ fn space_threads_list_uses_the_same_child_membership_as_the_space_badge() {
         display_name: "Space A".to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: vec!["room-a".to_owned()],
         parent_side_child_room_ids: vec!["room-a".to_owned()],
     }];

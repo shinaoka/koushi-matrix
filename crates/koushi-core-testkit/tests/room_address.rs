@@ -19,6 +19,7 @@ fn ready_state() -> AppState {
             display_name: "local presentation name".into(),
             avatar: None,
             join_rule: None,
+            topic: None,
             child_room_ids: Vec::new(),
             parent_side_child_room_ids: Vec::new(),
         }],

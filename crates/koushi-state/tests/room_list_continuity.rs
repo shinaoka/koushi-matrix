@@ -22,6 +22,7 @@ fn test_space(space_id: &str) -> SpaceSummary {
         display_name: space_id.to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: Vec::new(),
         parent_side_child_room_ids: Vec::new(),
     }

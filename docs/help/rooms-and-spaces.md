@@ -25,7 +25,13 @@ disappeared. The clock button opens the
 
 ## Read or change a Space description
 
-Select a Space, then choose **Info** in its header. The **Description** card
+When you select a Space that has a description, it appears at the top of the
+Space's conversation list. A long description shows its first few lines; choose
+**Show more** to read all of it and **Show less** to fold it again. An invitation
+to a Space shows the same description under **Description**, and in a Space's
+**Info**, a sub-Space you have not joined shows its description beside its name.
+
+To edit it, select the Space, then choose **Info** in its header. The **Description** card
 shows the shared description, including line breaks. **No description** means
 the Space has none; **Loading description…** means its settings are still loading.
 

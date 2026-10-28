@@ -31,6 +31,7 @@ async fn space_invite_explicit_id_search_settles_after_publishing_candidate() {
                     display_name: "Invite test".into(),
                     avatar: None,
                     join_rule: None,
+                    topic: None,
                     child_room_ids: vec![],
                     parent_side_child_room_ids: vec![],
                 }],
@@ -5181,6 +5182,7 @@ async fn leaving_a_selected_space_child_routes_a_space_children_reload() {
         display_name: "Synthetic space".to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: vec![child_id.to_owned()],
         parent_side_child_room_ids: vec![child_id.to_owned()],
     }];
@@ -5193,6 +5195,7 @@ async fn leaving_a_selected_space_child_routes_a_space_children_reload() {
             display_name: "Synthetic room".to_owned(),
             display_name_placeholder: None,
             avatar: None,
+            topic: None,
             membership: koushi_state::SpaceChildMembership::Joined,
             can_join: false,
             suggested: false,

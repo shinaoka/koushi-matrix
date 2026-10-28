@@ -882,6 +882,7 @@ fn frontend_snapshot_serializes_profile_and_summary_avatars() {
         display_name: "Space".to_owned(),
         avatar: Some(room_avatar.clone()),
         join_rule: None,
+        topic: None,
         child_room_ids: vec![],
         parent_side_child_room_ids: vec![],
     });
@@ -1544,6 +1545,7 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
         display_name: "Fixture Space".to_owned(),
         avatar: None,
         join_rule: Some(RoomJoinRule::KnockRestricted),
+        topic: Some("Fixture Space description\nSecond line".to_owned()),
         child_room_ids: vec![
             "!room:example.invalid".to_owned(),
             "!low-priority-room:example.invalid".to_owned(),
@@ -1571,6 +1573,7 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
                 mxc_uri: "mxc://example.invalid/not-joined".to_owned(),
                 thumbnail: AvatarThumbnailState::NotRequested,
             }),
+            topic: Some("Fixture child description".to_owned()),
             membership: koushi_state::SpaceChildMembership::NotJoined,
             can_join: true,
             // #1410: populated so the golden proves the suggested shapes.

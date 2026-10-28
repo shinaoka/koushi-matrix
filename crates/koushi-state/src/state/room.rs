@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::profile::AvatarImage;
 use super::settings::RoomNotificationMode;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SpaceSummary {
     pub space_id: String,
     /// The Space's canonical `m.room.name`. `None` means the Space has no
@@ -21,6 +21,11 @@ pub struct SpaceSummary {
     /// `None`); readers show it as not yet known, never as a guessed rule.
     #[serde(default)]
     pub join_rule: Option<super::room_management::RoomJoinRule>,
+    /// The Space's confirmed description (`m.room.topic`) as last synced
+    /// (#1661): the read-only value every surface outside Space info renders.
+    /// `None` means no description, never an empty string.
+    #[serde(default)]
+    pub topic: Option<String>,
     pub child_room_ids: Vec<String>,
     /// The Space's own parent-side `m.space.child` children: what other
     /// clients list for this Space. `child_room_ids` is the display union of
@@ -30,6 +35,25 @@ pub struct SpaceSummary {
     /// list, so a parent-only room stays eligible.
     #[serde(default)]
     pub parent_side_child_room_ids: Vec<String>,
+}
+
+impl fmt::Debug for SpaceSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SpaceSummary")
+            .field("space_id", &"RoomId(..)")
+            .field("raw_name", &self.raw_name.as_ref().map(|_| "RoomName(..)"))
+            .field("display_name", &"RoomName(..)")
+            .field("avatar", &self.avatar.as_ref().map(|_| "AvatarImage(..)"))
+            .field("join_rule", &self.join_rule)
+            .field("topic", &self.topic.as_ref().map(|_| "RoomTopic(..)"))
+            .field("child_room_ids", &self.child_room_ids.len())
+            .field(
+                "parent_side_child_room_ids",
+                &self.parent_side_child_room_ids.len(),
+            )
+            .finish()
+    }
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]

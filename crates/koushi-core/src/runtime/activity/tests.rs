@@ -622,6 +622,7 @@ fn activity_projection_context_label_uses_space_and_room_names() {
             display_name: "Science".to_owned(),
             avatar: None,
             join_rule: None,
+            topic: None,
             child_room_ids: vec!["!room:example.invalid".to_owned()],
             parent_side_child_room_ids: vec!["!room:example.invalid".to_owned()],
         }],

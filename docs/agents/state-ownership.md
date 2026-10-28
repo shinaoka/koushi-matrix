@@ -989,6 +989,15 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   "Private" dispatches the `invite` rule. Pending/failed state comes from the
   Space-scoped `room_management.operation`; the renderer keeps only its own
   confirmation step and which submission is its own, both reset per Space.
+- The Space description outside Space info (#1661) is read-only and renders
+  Rust-projected values only: the selected Space's sidebar description from the
+  synced `SpaceSummary.topic`, a Space invite's description from
+  `InvitePreview.topic`, and a not-joined sub-Space row from
+  `SpaceChildSummary.topic` (`/hierarchy`, or the local cache for a locally
+  known child). None of them reads the transient `room_management.settings`
+  slot. Whether the text overflows its clamp and whether it is expanded are
+  React presentation state, reset when another Space is selected; editing stays
+  in Space info.
 - Room Info property cards (#1008) attribute the room-scoped
   `room_management.operation` to the property the panel itself submitted
   (field plus the failed `request_id` already on screen), reset per room.

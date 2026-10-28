@@ -18,6 +18,7 @@ import type {
 import { HistoryExportSection, type HistoryExportControls } from "./HistoryExportDialog";
 import { SpaceAccessSection } from "./SpaceAccessSection";
 import { SpaceDescriptionSection } from "./SpaceDescriptionSection";
+import { SpaceDescriptionPreview } from "./SpaceDescriptionPreview";
 import {
   InlineTextPropertyEditor,
   SettingsPropertyCard,
@@ -328,6 +329,10 @@ export function SpaceInfoPanel({
           {outsideChildren.map((child) => (
             <div className="settings-detail-row" key={child.room_id}>
               <span dir="auto">{spaceChildLabel(child)}</span>
+              {/* #1661: a sub-Space introduces itself with its description. */}
+              {child.is_space ? (
+                <SpaceDescriptionPreview className="space-child-description" text={child.topic} />
+              ) : null}
               <small className="space-child-status">
                 <span className="room-membership-badge">
                   {spaceChildMembershipLabel(child.membership)}

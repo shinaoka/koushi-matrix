@@ -32,6 +32,7 @@ fn fixture(active: Option<&str>) -> AppState {
             display_name: "Synthetic Space".into(),
             avatar: None,
             join_rule: None,
+            topic: None,
             child_room_ids: state
                 .rooms
                 .iter()
@@ -245,6 +246,7 @@ fn loading_space_children_publishes_the_not_joined_sidebar_lane() {
         display_name: "Private Room".to_owned(),
         display_name_placeholder: None,
         avatar: None,
+        topic: None,
         membership: SpaceChildMembership::NotJoined,
         can_join: false,
         suggested: false,

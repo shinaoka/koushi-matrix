@@ -49,6 +49,7 @@ fn child(room_id: &str, label: &str, membership: SpaceChildMembership) -> SpaceC
         display_name_placeholder: None,
         avatar: None,
         membership,
+        topic: None,
         can_join: matches!(
             membership,
             SpaceChildMembership::NotJoined | SpaceChildMembership::Invited
@@ -68,6 +69,7 @@ fn state_with_children(children: Vec<SpaceChildSummary>) -> AppState {
         display_name: "Space".to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: vec!["!joined:example.invalid".to_owned()],
         parent_side_child_room_ids: vec!["!joined:example.invalid".to_owned()],
     }];
@@ -307,6 +309,7 @@ fn only_joinable_rows_carry_a_join_affordance() {
             SpaceChildMembership::NotJoined,
         ),
         SpaceChildSummary {
+            topic: None,
             can_join: false,
             ..child(
                 "!banned:example.invalid",
@@ -315,6 +318,7 @@ fn only_joinable_rows_carry_a_join_affordance() {
             )
         },
         SpaceChildSummary {
+            topic: None,
             can_join: false,
             ..child(
                 "!invite-only:example.invalid",
@@ -335,6 +339,7 @@ fn only_joinable_rows_carry_a_join_affordance() {
         is_space: false,
     }];
     state.space_children.children.push(SpaceChildSummary {
+        topic: None,
         can_join: false,
         ..child(
             "!pending:example.invalid",
@@ -611,6 +616,7 @@ fn a_joined_subspace_is_never_in_the_not_joined_lane() {
         display_name: "Engineering".to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: Vec::new(),
         parent_side_child_room_ids: Vec::new(),
     });

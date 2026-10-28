@@ -319,6 +319,7 @@ async fn activity_context_label_reflects_dm_or_space_room() {
                     display_name: "QA Space".to_owned(),
                     avatar: None,
                     join_rule: None,
+                    topic: None,
                     child_room_ids: vec!["!room-in-space:example.test".to_owned()],
                     parent_side_child_room_ids: vec!["!room-in-space:example.test".to_owned()],
                 }],

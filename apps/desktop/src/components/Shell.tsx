@@ -58,6 +58,7 @@ import { useOutsidePressDismissal } from "./popupDismissal";
 import { Tooltip, type TooltipTriggerProps } from "./Tooltip";
 import { ImeTextField } from "./ImeTextControl";
 import { useRecoverableImageSource } from "./avatarImage";
+import { SpaceDescriptionPreview } from "./SpaceDescriptionPreview";
 import { WorkspaceRailEdgeIndicator, useWorkspaceRailOverflow } from "./WorkspaceRailEdge";
 import {
   ICON_SIZE,
@@ -831,6 +832,11 @@ export function Sidebar({
         }
       ) ?? ROOM_ACCESS_CHECKING
     : null;
+  // #1661: the active Space's confirmed description comes from the synced
+  // Space projection, never from the transient Room Info settings slot.
+  const activeSpaceTopic = activeSpace
+    ? snapshot.state.domain.spaces.find((space) => space.space_id === activeSpace.space_id)?.topic ?? null
+    : null;
   const accountHomeActive = snapshot.sidebar.account_home.is_active && !activeSpace;
   const roomById = new Map(snapshot.state.domain.rooms.map((room) => [room.room_id, room]));
   const presence = snapshot.state.domain.live_signals.presence;
@@ -970,6 +976,13 @@ export function Sidebar({
         </div>
       </div>
       <div className="sidebar-scroll">
+        {activeSpace ? (
+          <SpaceDescriptionPreview
+            key={activeSpace.space_id}
+            className="sidebar-space-description"
+            text={activeSpaceTopic}
+          />
+        ) : null}
         {!roomListReady ? (
           <div className="room-list-status" role="status">
             {roomListReadiness.kind === "failed" ? t("roomList.failed") : t("roomList.loading")}

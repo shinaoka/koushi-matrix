@@ -344,6 +344,7 @@ fn space(id: &str, child_room_ids: &[&str]) -> SpaceSummary {
         display_name: id.into(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: child_room_ids.iter().map(|id| (*id).to_owned()).collect(),
         parent_side_child_room_ids: child_room_ids.iter().map(|id| (*id).to_owned()).collect(),
     }
@@ -702,6 +703,7 @@ fn space_changes_use_a_scoped_delta_when_order_is_stable() {
         display_name: "Space".into(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: Vec::new(),
         parent_side_child_room_ids: Vec::new(),
     });

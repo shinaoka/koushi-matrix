@@ -575,6 +575,7 @@ function makeSnapshot(): DesktopSnapshot {
             display_name: "Alpha Space",
             avatar: null,
             join_rule: null,
+            topic: null,
             child_room_ids: ["!room-alpha:example.invalid"],
             parent_side_child_room_ids: ["!room-alpha:example.invalid"]
           }

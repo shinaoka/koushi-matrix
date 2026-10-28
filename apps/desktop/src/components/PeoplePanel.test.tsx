@@ -32,6 +32,7 @@ const baseSpace: SpaceSummary = {
   display_name: "Synthetic Workspace",
   avatar: null,
   join_rule: null,
+  topic: null,
   child_room_ids: [],
   parent_side_child_room_ids: []
 };

@@ -477,6 +477,7 @@ describe("RoomInfoPanel", () => {
             display_name: "Synthetic Workspace",
             avatar: null,
             join_rule: null,
+            topic: null,
             child_room_ids: ["!room-alpha:example.invalid"],
             parent_side_child_room_ids: ["!room-alpha:example.invalid"]
           }
@@ -959,6 +960,7 @@ function spaceSummary(spaceId: string, displayName: string): SpaceSummary {
     display_name: displayName,
     avatar: null,
     join_rule: "invite",
+    topic: null,
     child_room_ids: [],
     parent_side_child_room_ids: []
   };

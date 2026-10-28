@@ -55,6 +55,9 @@ pub struct MatrixRoomListSpace {
     /// The Space's current join rule, projected on every room-list update so
     /// a change made by another client reaches Space Info (#935).
     pub join_rule: MatrixRoomJoinRule,
+    /// The Space's confirmed description (`m.room.topic`), projected on every
+    /// room-list update like `join_rule` (#1661). An empty topic is `None`.
+    pub topic: Option<String>,
     pub child_room_ids: Vec<String>,
     pub member_user_ids: Vec<String>,
 }
@@ -2623,6 +2626,7 @@ async fn matrix_room_list_snapshot_from_rooms(
                 display_name,
                 avatar_mxc_uri: room.avatar_url().map(|uri| uri.to_string()),
                 join_rule: matrix_room_join_rule_or_default(&room),
+                topic: normalized_room_topic(&room),
                 child_room_ids,
                 member_user_ids: member_user_ids.unwrap_or_default(),
             });

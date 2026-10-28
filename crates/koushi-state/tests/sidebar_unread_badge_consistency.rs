@@ -41,6 +41,7 @@ fn space_badge_equals_the_visible_non_muted_room_counts() {
         display_name: "Synthetic Space".into(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: vec![
             "!plain:example.invalid".into(),
             "!thread:example.invalid".into(),
@@ -76,6 +77,7 @@ fn muted_room_keeps_local_unread_but_does_not_inflate_space_badge() {
         display_name: "Synthetic Space".into(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: vec!["!muted:example.invalid".into()],
         parent_side_child_room_ids: vec![],
     };

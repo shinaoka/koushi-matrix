@@ -143,6 +143,7 @@ fn leave_space_admission_keeps_only_joined_children_of_that_space() {
             display_name: "Synthetic Workspace".to_owned(),
             avatar: None,
             join_rule: None,
+            topic: None,
             child_room_ids: vec!["!child:example.invalid".to_owned()],
             parent_side_child_room_ids: vec!["!child:example.invalid".to_owned()],
         }],

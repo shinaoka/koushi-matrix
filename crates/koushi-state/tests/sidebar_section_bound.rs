@@ -121,6 +121,7 @@ fn bounded_state() -> AppState {
             display_name: "Space".to_owned(),
             avatar: None,
             join_rule: None,
+            topic: None,
             child_room_ids: (1..=9)
                 .map(|index| format!("!space-room-{index}:example.invalid"))
                 .collect(),

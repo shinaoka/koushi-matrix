@@ -16,6 +16,7 @@ fn state_in_space(join_rule: Option<RoomJoinRule>) -> AppState {
             display_name: "Synthetic Workspace".to_owned(),
             avatar: None,
             join_rule,
+            topic: None,
             child_room_ids: Vec::new(),
             parent_side_child_room_ids: Vec::new(),
         }],

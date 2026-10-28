@@ -25,6 +25,7 @@ pub(super) fn normalize_spaces(snapshot: &koushi_sdk::MatrixRoomListSnapshot) ->
                 display_name: space.display_name.clone(),
                 avatar: avatar_from_mxc_uri(space.avatar_mxc_uri.as_deref()),
                 join_rule: Some(super::management::room_join_rule_from_sdk(space.join_rule)),
+                topic: space.topic.clone(),
                 child_room_ids,
                 // The Space's own `m.space.child` list, kept separate from the
                 // display union so add-existing eligibility stays parent-side

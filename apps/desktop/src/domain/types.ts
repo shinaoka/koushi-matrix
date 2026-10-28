@@ -1529,6 +1529,8 @@ export interface SpaceSummary {
   avatar: AvatarImage | null;
   /** The join rule as last synced; null until a room-list update projects it (#935). */
   join_rule: RoomJoinRule | null;
+  /** The Space's confirmed description (`m.room.topic`) as last synced; null when it has none (#1661). */
+  topic: string | null;
   child_room_ids: string[];
   /** The Space's own parent-side `m.space.child` rooms; add-existing eligibility uses this list, while `child_room_ids` is the display union (#1098). */
   parent_side_child_room_ids: string[];
@@ -1554,6 +1556,8 @@ export interface SpaceChildSummary {
   /** Set when `display_name` is the SDK's English calculated empty-room name (#1070). */
   display_name_placeholder?: RoomNamePlaceholder | null;
   avatar: AvatarImage | null;
+  /** Issue #1661: the child's description from `/hierarchy` or the local cache. */
+  topic: string | null;
   membership: SpaceChildMembership;
   /** Whether the join rule the server reported permits an attempt to join. */
   can_join: boolean;

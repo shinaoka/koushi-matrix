@@ -125,16 +125,26 @@ async fn wait_for_observed_topic(
     space_id: &str,
     expected: Option<&str>,
 ) -> Result<(), String> {
+    // #1661: the synced Space projection carries the same confirmed value, so
+    // surfaces outside Space info follow another member's edit too.
+    let projected_matches = |snapshot: &AppState| {
+        snapshot
+            .spaces
+            .iter()
+            .find(|space| space.space_id == space_id)
+            .is_some_and(|space| space.topic.as_deref() == expected)
+    };
     let deadline = tokio::time::Instant::now() + ROOM_LIST_EVENT_TIMEOUT;
     loop {
-        let observed = conn
-            .snapshot()
-            .room_management
-            .settings
-            .as_ref()
-            .is_some_and(|settings| {
-                settings.room_id == space_id && settings.topic.as_deref() == expected
-            });
+        let snapshot = conn.snapshot();
+        let observed = projected_matches(&snapshot)
+            && snapshot
+                .room_management
+                .settings
+                .as_ref()
+                .is_some_and(|settings| {
+                    settings.room_id == space_id && settings.topic.as_deref() == expected
+                });
         if observed {
             return Ok(());
         }
@@ -198,11 +208,13 @@ async fn wait_for_observed_topic(
                 return Err(format!(
                     "space_topic: open settings did not observe the shared description \
                      (expected_present={} actual_present={} actual_empty={} \
+                     space_projection_match={} \
                      selected_match={} loaded_match={} reload_matches_expected={} \
                      account_epoch={} settings_intents={} settings_reconciles={} settings_accepted={} settings_noops={})",
                     expected.is_some(),
                     settings.is_some_and(|value| value.topic.is_some()),
                     settings.is_some_and(|value| value.topic.as_deref() == Some("")),
+                    projected_matches(&snapshot),
                     snapshot.room_management.selected_room_id.as_deref() == Some(space_id),
                     settings.is_some_and(|value| value.room_id == space_id),
                     reload_matches_expected,

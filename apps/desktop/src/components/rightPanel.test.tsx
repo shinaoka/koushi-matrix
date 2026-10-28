@@ -123,6 +123,7 @@ const space: SpaceSummary = {
   display_name: "Workspace",
   avatar: null,
   join_rule: null,
+  topic: null,
   child_room_ids: [room.room_id],
   parent_side_child_room_ids: [room.room_id]
 };

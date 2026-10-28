@@ -87,7 +87,10 @@ export default defineConfig({
         /account-tab-spinner\.spec\.ts$/,
         // The scrollbar-less Space rail's scroll-into-view and edge
         // indicators (#1509) depend on the engine's scrollport geometry.
-        /workspace-rail-overflow\.spec\.ts$/
+        /workspace-rail-overflow\.spec\.ts$/,
+        // The Space description's line clamp and per-line direction (#1661)
+        // are engine layout features.
+        /space-description-preview\.spec\.ts$/
       ]
     }
   ],

@@ -1636,6 +1636,8 @@ export const ko: Catalog = {
   "space.spacePreferences": "스페이스 환경설정",
   "space.description": "설명",
   "space.noDescription": "설명 없음",
+  "space.descriptionShowMore": "더 보기",
+  "space.descriptionShowLess": "접기",
   "space.editDescription": "설명 편집",
   "space.saveDescription": "설명 저장",
   "space.clearDescription": "설명 지우기",

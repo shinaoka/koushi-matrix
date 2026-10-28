@@ -1350,7 +1350,8 @@
             "joined_members": 12,
             "membership": "not_joined",
             "room_id": "!not-joined-room:example.invalid",
-            "suggested": true
+            "suggested": true,
+            "topic": "Fixture child description"
           }
         ],
         "generation": 3,
@@ -1408,7 +1409,8 @@
             "!not-joined-room:example.invalid"
           ],
           "raw_name": "Fixture Space Canonical Name",
-          "space_id": "!space:example.invalid"
+          "space_id": "!space:example.invalid",
+          "topic": "Fixture Space description\nSecond line"
         }
       ],
       "sync": "running",

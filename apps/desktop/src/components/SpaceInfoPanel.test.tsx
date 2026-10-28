@@ -54,6 +54,7 @@ describe("SpaceInfoPanel", () => {
           display_name: "Workspace",
           avatar: null,
           join_rule: null,
+          topic: null,
           child_room_ids: ["!active:example.invalid", "!muted:example.invalid"],
           parent_side_child_room_ids: []
         }}
@@ -119,6 +120,7 @@ describe("SpaceInfoPanel", () => {
           display_name: "Synthetic Workspace",
           avatar: null,
           join_rule: null,
+          topic: null,
           child_room_ids: ["!room-alpha:example.invalid", "!room-beta:example.invalid"],
           parent_side_child_room_ids: ["!room-alpha:example.invalid", "!room-beta:example.invalid"]
         }}
@@ -198,6 +200,7 @@ describe("SpaceInfoPanel", () => {
           display_name: "Synthetic Workspace",
           avatar: null,
           join_rule: null,
+          topic: null,
           child_room_ids: [],
           parent_side_child_room_ids: []
         }}
@@ -255,6 +258,7 @@ describe("SpaceInfoPanel", () => {
           display_name: "Synthetic Workspace",
           avatar: null,
           join_rule: null,
+          topic: null,
           child_room_ids: [],
           parent_side_child_room_ids: []
         }}
@@ -590,6 +594,7 @@ describe("SpaceInfoPanel", () => {
           display_name: "Research Group",
           avatar: null,
           join_rule: null,
+          topic: null,
           child_room_ids: [],
           parent_side_child_room_ids: []
         }}
@@ -617,6 +622,7 @@ describe("SpaceInfoPanel", () => {
           display_name: "Alice and Bob",
           avatar: null,
           join_rule: null,
+          topic: null,
           child_room_ids: [],
           parent_side_child_room_ids: []
         }}
@@ -642,6 +648,7 @@ describe("SpaceInfoPanel", () => {
           display_name: "Work",
           avatar: null,
           join_rule: null,
+          topic: null,
           child_room_ids: [],
           parent_side_child_room_ids: []
         }}
@@ -650,6 +657,7 @@ describe("SpaceInfoPanel", () => {
             room_id: "!open:example.invalid",
             display_name: "Open Room",
             avatar: null,
+            topic: null,
             membership: "not_joined",
             can_join: true,
             is_space: false,
@@ -659,6 +667,7 @@ describe("SpaceInfoPanel", () => {
             room_id: "!invited:example.invalid",
             display_name: "Invited Room",
             avatar: null,
+            topic: null,
             membership: "invited",
             can_join: true,
             is_space: false,
@@ -668,6 +677,7 @@ describe("SpaceInfoPanel", () => {
             room_id: "!private:example.invalid",
             display_name: "!private:example.invalid",
             avatar: null,
+            topic: null,
             membership: "unknown",
             can_join: false,
             is_space: false,
@@ -706,6 +716,7 @@ describe("SpaceInfoPanel", () => {
       display_name: "Work",
       avatar: null,
       join_rule: null,
+      topic: null,
       child_room_ids: [],
       parent_side_child_room_ids: []
     };
@@ -714,6 +725,7 @@ describe("SpaceInfoPanel", () => {
         room_id: "!open:example.invalid",
         display_name: "Open Room",
         avatar: null,
+        topic: null,
         membership: "not_joined" as const,
         can_join: true,
         is_space: false,
@@ -724,6 +736,7 @@ describe("SpaceInfoPanel", () => {
         room_id: "!picked:example.invalid",
         display_name: "Picked Room",
         avatar: null,
+        topic: null,
         membership: "not_joined" as const,
         can_join: true,
         is_space: false,
@@ -815,6 +828,7 @@ describe("SpaceInfoPanel", () => {
             display_name: "Work",
             avatar: null,
             join_rule: null,
+            topic: null,
             child_room_ids: [],
             parent_side_child_room_ids: []
           }}
@@ -824,6 +838,7 @@ describe("SpaceInfoPanel", () => {
               display_name: "Empty Room",
               display_name_placeholder: { kind: "empty" },
               avatar: null,
+              topic: null,
               membership: "not_joined",
               can_join: true,
               is_space: false,
@@ -834,6 +849,7 @@ describe("SpaceInfoPanel", () => {
               display_name: "Empty Room (was Alice)",
               display_name_placeholder: { kind: "emptyWas", previous_names: "Alice" },
               avatar: null,
+              topic: null,
               membership: "not_joined",
               can_join: false,
               is_space: false,
@@ -844,6 +860,7 @@ describe("SpaceInfoPanel", () => {
               display_name: "Empty Room",
               display_name_placeholder: null,
               avatar: null,
+              topic: null,
               membership: "not_joined",
               can_join: false,
               is_space: false,
@@ -879,6 +896,7 @@ describe("SpaceInfoPanel", () => {
           display_name: "Work",
           avatar: null,
           join_rule: null,
+          topic: null,
           child_room_ids: [],
           parent_side_child_room_ids: []
         }}
@@ -887,6 +905,7 @@ describe("SpaceInfoPanel", () => {
             room_id: "!invited:example.invalid",
             display_name: "Invited Room",
             avatar: null,
+            topic: null,
             membership: "invited",
             can_join: true,
             is_space: false,
@@ -930,6 +949,7 @@ describe("SpaceInfoPanel", () => {
           display_name: "Work",
           avatar: null,
           join_rule: null,
+          topic: null,
           child_room_ids: ["!joined:example.invalid"],
           parent_side_child_room_ids: ["!joined:example.invalid"]
         }}
@@ -938,6 +958,7 @@ describe("SpaceInfoPanel", () => {
             room_id: "!joined:example.invalid",
             display_name: "Joined Room",
             avatar: null,
+            topic: null,
             membership: "joined",
             can_join: false,
             is_space: false,
@@ -958,6 +979,7 @@ function workSpace(spaceId = "!space-work:example.invalid"): SpaceSummary {
     display_name: "Synthetic Workspace",
     avatar: null,
     join_rule: null,
+    topic: null,
     child_room_ids: [],
     parent_side_child_room_ids: []
   };

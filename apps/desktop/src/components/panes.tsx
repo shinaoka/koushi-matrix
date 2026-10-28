@@ -655,9 +655,17 @@ export function InvitesPane({
                         : t("search.scopeRoom")
                   }
                 />
+                {/*
+                  #1661: a Space's topic is its description, shown whole with
+                  its line breaks.
+                */}
                 <SummaryTile
-                  label={t("invite.topic")}
-                  value={selectedInvite.topic ?? t("invite.noTopic")}
+                  label={selectedInvite.is_space ? t("space.description") : t("invite.topic")}
+                  multiline={selectedInvite.is_space}
+                  value={
+                    selectedInvite.topic ??
+                    (selectedInvite.is_space ? t("space.noDescription") : t("invite.noTopic"))
+                  }
                 />
               </div>
               {selectedInviteActionError ? (
@@ -706,11 +714,22 @@ export function InvitesPane({
   );
 }
 
-export function SummaryTile({ label, value }: { label: string; value: string }) {
+export function SummaryTile({
+  label,
+  value,
+  multiline = false
+}: {
+  label: string;
+  value: string;
+  /** Wrap and keep the value's line breaks instead of eliding one line. */
+  multiline?: boolean;
+}) {
   return (
-    <div className="settings-summary-tile">
+    <div className={`settings-summary-tile${multiline ? " is-multiline" : ""}`}>
       <span>{label}</span>
-      <strong dir="auto">{value}</strong>
+      <strong className={multiline ? "settings-summary-tile-multiline" : undefined} dir="auto">
+        {value}
+      </strong>
     </div>
   );
 }

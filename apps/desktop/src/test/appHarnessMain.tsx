@@ -177,6 +177,7 @@ function readySnapshot(
       display_name: SPACE_NAME,
       avatar: null,
       join_rule: null,
+      topic: null,
       child_room_ids: [ROOM_ID],
       parent_side_child_room_ids: [ROOM_ID]
     },
@@ -832,6 +833,7 @@ function afterCreateSpaceSnapshot(): DesktopSnapshot {
     display_name: "Created Space",
     avatar: null,
     join_rule: null,
+    topic: null,
     child_room_ids: [],
     parent_side_child_room_ids: []
   });

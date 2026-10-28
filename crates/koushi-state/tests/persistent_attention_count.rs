@@ -61,6 +61,7 @@ fn space(space_id: &str, child_room_ids: Vec<String>) -> SpaceSummary {
         avatar: None,
         join_rule: None,
         child_room_ids,
+        topic: None,
         parent_side_child_room_ids: Vec::new(),
     }
 }

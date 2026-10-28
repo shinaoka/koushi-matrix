@@ -14,6 +14,7 @@ fn space(space_id: &str, children: &[&str]) -> SpaceSummary {
         display_name: "Space".to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: children.iter().map(|id| (*id).to_owned()).collect(),
         parent_side_child_room_ids: children.iter().map(|id| (*id).to_owned()).collect(),
     }

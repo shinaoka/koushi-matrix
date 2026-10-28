@@ -201,6 +201,7 @@ async function seedAccessEditor(page: Page, locale: EditorLocale) {
                 display_name: "Accessibility Space With A Long Synthetic Name",
                 avatar: null,
                 join_rule: "invite",
+                topic: null,
                 child_room_ids: [],
                 parent_side_child_room_ids: []
               }

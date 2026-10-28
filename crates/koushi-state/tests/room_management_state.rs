@@ -1303,6 +1303,7 @@ fn joined_space(space_id: &str) -> koushi_state::SpaceSummary {
         display_name: "Design Team".to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: Vec::new(),
         parent_side_child_room_ids: Vec::new(),
     }

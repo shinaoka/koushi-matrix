@@ -83,6 +83,7 @@ fn space() -> SpaceSummary {
         display_name: "Space".to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: vec![
             "!plain:example.invalid".to_owned(),
             "!fav:example.invalid".to_owned(),

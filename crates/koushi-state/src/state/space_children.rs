@@ -44,6 +44,10 @@ pub struct SpaceChildSummary {
     pub display_name_placeholder: Option<super::room::RoomNamePlaceholder>,
     #[serde(default)]
     pub avatar: Option<AvatarImage>,
+    /// Issue #1661: the child's description (`m.room.topic`) as `/hierarchy`
+    /// or the local cache reports it; `None` when it has none.
+    #[serde(default)]
+    pub topic: Option<String>,
     pub membership: SpaceChildMembership,
     /// Whether the join rule the server reported permits an attempt to join.
     /// A room the account is invited to counts: accepting is a join.
@@ -66,6 +70,7 @@ impl fmt::Debug for SpaceChildSummary {
             .field("display_name", &"RoomName(..)")
             .field("display_name_placeholder", &self.display_name_placeholder)
             .field("avatar", &self.avatar.as_ref().map(|_| "AvatarImage(..)"))
+            .field("topic", &self.topic.as_ref().map(|_| "RoomTopic(..)"))
             .field("membership", &self.membership)
             .field("can_join", &self.can_join)
             .field("is_space", &self.is_space)

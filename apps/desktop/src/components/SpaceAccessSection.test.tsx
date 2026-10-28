@@ -22,6 +22,7 @@ function space(joinRule: RoomJoinRule | null = null, spaceId = SPACE_ID): SpaceS
     display_name: "Workspace",
     avatar: null,
     join_rule: joinRule,
+    topic: null,
     child_room_ids: [],
     parent_side_child_room_ids: []
   };

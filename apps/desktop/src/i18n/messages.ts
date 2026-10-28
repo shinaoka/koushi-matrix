@@ -1626,6 +1626,8 @@ export type MessageId =
   | "space.spacePreferences"
   | "space.description"
   | "space.noDescription"
+  | "space.descriptionShowMore"
+  | "space.descriptionShowLess"
   | "space.editDescription"
   | "space.saveDescription"
   | "space.clearDescription"
@@ -4074,6 +4076,8 @@ const en: Catalog = {
   "space.spacePreferences": "Space preferences",
   "space.description": "Description",
   "space.noDescription": "No description",
+  "space.descriptionShowMore": "Show more",
+  "space.descriptionShowLess": "Show less",
   "space.editDescription": "Edit description",
   "space.saveDescription": "Save description",
   "space.clearDescription": "Clear description",
@@ -6406,6 +6410,8 @@ const ja: Catalog = {
   "space.spacePreferences": "スペース環境設定",
   "space.description": "説明",
   "space.noDescription": "説明なし",
+  "space.descriptionShowMore": "すべて表示",
+  "space.descriptionShowLess": "折りたたむ",
   "space.editDescription": "説明を編集",
   "space.saveDescription": "説明を保存",
   "space.clearDescription": "説明をクリア",

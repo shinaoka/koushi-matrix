@@ -6,7 +6,7 @@ import { SpaceInfoPanel } from "./SpaceInfoPanel";
 
 afterEach(cleanup);
 const ID = "!description:example.invalid";
-const space: SpaceSummary = { space_id: ID, raw_name: "Workspace", display_name: "Workspace", avatar: null, join_rule: "invite", child_room_ids: [], parent_side_child_room_ids: [] };
+const space: SpaceSummary = { space_id: ID, raw_name: "Workspace", display_name: "Workspace", avatar: null, join_rule: "invite", topic: null, child_room_ids: [], parent_side_child_room_ids: [] };
 function management(topic: string | null, canChange = true): RoomManagementState {
   return { selected_room_id: ID, operation: { kind: "idle" }, settings: {
     room_id: ID, name: "Workspace", topic, avatar_url: null, join_rule: "invite", history_visibility: "shared", members: [],

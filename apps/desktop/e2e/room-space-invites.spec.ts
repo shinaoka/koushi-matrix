@@ -3406,6 +3406,7 @@ test("the Room Info access editor dispatches typed draft commands over Rust-shap
               display_name: "Alpha",
               avatar: null,
               join_rule: "invite",
+              topic: null,
               child_room_ids: [],
               parent_side_child_room_ids: []
             },
@@ -3415,6 +3416,7 @@ test("the Room Info access editor dispatches typed draft commands over Rust-shap
               display_name: "Beta",
               avatar: null,
               join_rule: "invite",
+              topic: null,
               child_room_ids: [],
               parent_side_child_room_ids: []
             }

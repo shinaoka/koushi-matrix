@@ -119,6 +119,7 @@ fn ready_room_with_parent_space() -> AppState {
         display_name: "Project Space".to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: vec![ROOM_A.to_owned()],
         parent_side_child_room_ids: vec![ROOM_A.to_owned()],
     });
@@ -1214,6 +1215,7 @@ fn invite_space_open_first_query_select_and_batch_flow_is_admitted() {
         display_name: "Project Space".to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: Vec::new(),
         parent_side_child_room_ids: Vec::new(),
     });
@@ -1240,6 +1242,7 @@ fn invite_space_open_first_query_select_and_batch_flow_is_admitted() {
         display_name: "Project Space".to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: Vec::new(),
         parent_side_child_room_ids: Vec::new(),
     });

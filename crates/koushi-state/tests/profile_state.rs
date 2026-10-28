@@ -1188,6 +1188,7 @@ fn room_space_and_invite_summaries_surface_avatar_mxc() {
                 display_name: "Space".to_owned(),
                 avatar: Some(avatar("mxc://localhost/space-avatar")),
                 join_rule: None,
+                topic: None,
                 child_room_ids: vec!["!room:localhost".to_owned()],
                 parent_side_child_room_ids: vec!["!room:localhost".to_owned()],
             }],

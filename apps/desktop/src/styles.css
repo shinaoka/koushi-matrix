@@ -400,7 +400,8 @@ button:disabled {
 .timeline-send-bar-action:focus-visible,
 .settings-toggle-row:focus-visible,
 .composer-math-toggle:focus-visible,
-.room-status-badge[tabindex]:focus-visible {
+.room-status-badge[tabindex]:focus-visible,
+.space-description-toggle:focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
@@ -8276,6 +8277,71 @@ dialog.timeline-media-viewer-overlay::backdrop { background: transparent; }
   font-size: 15px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* #1661: a Space invite's description spans the grid and keeps its lines. */
+.settings-summary-tile.is-multiline {
+  grid-column: 1 / -1;
+}
+
+.settings-summary-tile strong.settings-summary-tile-multiline {
+  overflow-wrap: anywhere;
+  text-align: start;
+  unicode-bidi: plaintext;
+  white-space: pre-wrap;
+}
+
+/* #1661: a Space's description outside Space info. Each line resolves its own
+   direction (#1084); long text is clamped to a few lines until expanded. */
+.space-description-preview {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  min-inline-size: 0;
+}
+
+.space-description-text {
+  max-inline-size: 100%;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  text-align: start;
+  unicode-bidi: plaintext;
+  white-space: pre-wrap;
+}
+
+.space-description-text.is-collapsed {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+
+.space-description-toggle {
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: var(--brand);
+  background: none;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.space-description-toggle:hover {
+  color: var(--brand-hover);
+}
+
+.sidebar-space-description {
+  margin: 4px 6px 10px;
+  padding-block-end: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.space-child-description .space-description-text {
+  font-size: 12px;
 }
 
 .settings-section {

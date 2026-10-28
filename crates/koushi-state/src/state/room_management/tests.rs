@@ -238,6 +238,7 @@ fn access_panel_uses_confirmed_targets_without_a_draft_rule() {
         display_name: "Design".to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: Vec::new(),
         parent_side_child_room_ids: Vec::new(),
     }];

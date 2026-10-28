@@ -73,6 +73,7 @@ fn scale_spaces() -> Vec<SpaceSummary> {
                 avatar: None,
                 join_rule: None,
                 parent_side_child_room_ids: children.clone(),
+                topic: None,
                 child_room_ids: children,
             }
         })

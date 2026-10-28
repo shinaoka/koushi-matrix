@@ -56,6 +56,7 @@ fn state() -> AppState {
             // `normalize_spaces` does once the room's `m.space.parent` is
             // projected; eligibility must ignore that and use the Space's own
             // `m.space.child` list.
+            topic: None,
             child_room_ids: vec!["!linked:example.invalid".to_owned(), DOMAINLESS.to_owned()],
             parent_side_child_room_ids: vec!["!linked:example.invalid".to_owned()],
         }],
@@ -275,6 +276,7 @@ fn switching_spaces_scopes_status_to_the_selected_space() {
         display_name: "Second".to_owned(),
         avatar: None,
         join_rule: None,
+        topic: None,
         child_room_ids: Vec::new(),
         parent_side_child_room_ids: Vec::new(),
     });

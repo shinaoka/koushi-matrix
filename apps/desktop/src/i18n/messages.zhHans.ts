@@ -1636,6 +1636,8 @@ export const zhHans: Catalog = {
   "space.spacePreferences": "空间偏好设置",
   "space.description": "描述",
   "space.noDescription": "暂无描述",
+  "space.descriptionShowMore": "展开",
+  "space.descriptionShowLess": "收起",
   "space.editDescription": "编辑描述",
   "space.saveDescription": "保存描述",
   "space.clearDescription": "清除描述",

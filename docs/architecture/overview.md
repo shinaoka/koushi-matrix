@@ -2787,6 +2787,13 @@ The existing position guard orders this work with response commit, and HTTP work
 does not hold the global store lock. This also covers remote description and
 topic-permission updates without a second state owner.
 
+The Space projection carries the same confirmed value (#1661): every room-list
+update projects a Space's local SDK `m.room.topic` into `SpaceSummary.topic`, as
+it does `join_rule`, so surfaces outside Space info follow remote description
+edits without demanding settings. Space children carry the `/hierarchy` topic
+(or the local cache's, for a locally known child) in `SpaceChildSummary.topic`.
+An empty topic projects as `None`.
+
 
 ## Incoming in-room verification request recovery (#1534)
 

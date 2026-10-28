@@ -49,6 +49,9 @@ pub struct MatrixSpaceChildEntry {
     /// name (#1070), whose product text the GUI catalog owns.
     pub display_name_placeholder: Option<koushi_state::RoomNamePlaceholder>,
     pub avatar_mxc_uri: Option<String>,
+    /// The child's description (`m.room.topic`) as the server or the local
+    /// cache reports it (#1661). An empty topic is `None`.
+    pub topic: Option<String>,
     pub membership: MatrixSpaceChildMembership,
     pub can_join: bool,
     pub is_space: bool,
@@ -103,6 +106,7 @@ pub async fn matrix_space_children_projection(
             },
             display_name_placeholder: hierarchy_name_placeholder(&room),
             avatar_mxc_uri: room.avatar_url.as_ref().map(ToString::to_string),
+            topic: room.topic.clone().filter(|topic| !topic.is_empty()),
             membership: membership_from_room_state(room.state),
             can_join: can_join(room.state, room.join_rule.as_ref()),
             is_space: room.room_type == Some(ruma::room::RoomType::Space),
@@ -157,6 +161,7 @@ pub async fn matrix_space_children_projection(
                 display_name,
                 display_name_placeholder,
                 avatar_mxc_uri: room.avatar_url().map(|url| url.to_string()),
+                topic: room.topic().filter(|topic| !topic.is_empty()),
                 membership: membership_from_room_state(Some(state)),
                 can_join,
                 is_space: room.is_space(),
@@ -172,6 +177,7 @@ pub async fn matrix_space_children_projection(
             display_name: room_id,
             display_name_placeholder: None,
             avatar_mxc_uri: None,
+            topic: None,
             membership: MatrixSpaceChildMembership::Unknown,
             can_join: false,
             is_space: false,
@@ -331,6 +337,7 @@ mod tests {
             display_name: "Room".to_owned(),
             display_name_placeholder: None,
             avatar_mxc_uri: None,
+            topic: None,
             membership,
             can_join,
             is_space: false,
