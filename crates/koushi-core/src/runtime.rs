@@ -3399,6 +3399,44 @@ impl AppActor {
                             })
                             .await
                         }
+                        AppCommand::SetThreadComposerReplyTarget {
+                            request_id,
+                            room_id,
+                            root_event_id,
+                            event_id,
+                        } => {
+                            Box::pin(async move {
+                                let effects = Box::pin(self.reduce_app_action(
+                                    AppAction::ThreadComposerReplyTargetSelected {
+                                        room_id,
+                                        root_event_id,
+                                        event_id,
+                                    },
+                                ))
+                                .await;
+                                Box::pin(self.handle_app_effects(request_id, effects)).await;
+                                true
+                            })
+                            .await
+                        }
+                        AppCommand::CancelThreadComposerReply {
+                            request_id,
+                            room_id,
+                            root_event_id,
+                        } => {
+                            Box::pin(async move {
+                                let effects = Box::pin(self.reduce_app_action(
+                                    AppAction::ThreadComposerReplyCancelled {
+                                        room_id,
+                                        root_event_id,
+                                    },
+                                ))
+                                .await;
+                                Box::pin(self.handle_app_effects(request_id, effects)).await;
+                                true
+                            })
+                            .await
+                        }
                         AppCommand::SetComposerDraft {
                             request_id,
                             expected_account,

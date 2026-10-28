@@ -16,13 +16,8 @@ fn composer_wire_tokens_accept_only_canonical_nonzero_decimal_u64() {
     assert!(parse_composer_wire_tokens("18446744073709551616", "1").is_err());
 }
 
-/// #1426: a message typed in the thread pane is a plain thread message, so the
-/// builder must submit text on the thread key. `SubmitReply` with the root as
-/// the target made every thread message a genuine in-thread reply that quoted
-/// the root and mentioned its sender.
-#[test]
-fn thread_composer_submission_builds_plain_thread_text() {
-    let command = build_submit_thread_text_command(
+fn thread_composer_command(in_reply_to_event_id: Option<&str>) -> Option<CoreCommand> {
+    build_submit_thread_composer_command(
         koushi_protocol::RequestId {
             connection_id: koushi_protocol::RuntimeConnectionId(7),
             sequence: 21,
@@ -37,20 +32,46 @@ fn thread_composer_submission_builds_plain_thread_text() {
         "!room:example.invalid".to_owned(),
         "$root:example.invalid".to_owned(),
         "desktop-21".to_owned(),
+        in_reply_to_event_id.map(str::to_owned),
         ComposerDocument::from_plain_text("thread message"),
         3.into(),
-    );
+    )
+}
 
-    match command {
+fn expected_thread_kind() -> TimelineKind {
+    TimelineKind::Thread {
+        room_id: "!room:example.invalid".to_owned(),
+        root_event_id: "$root:example.invalid".to_owned(),
+    }
+}
+
+/// #1426: a message typed in the thread pane is a plain thread message, so the
+/// builder must submit text on the thread key. `SubmitReply` with the root as
+/// the target made every thread message a genuine in-thread reply that quoted
+/// the root and mentioned its sender.
+#[test]
+fn thread_composer_submission_builds_plain_thread_text() {
+    match thread_composer_command(None) {
         Some(CoreCommand::Timeline(TimelineCommand::SubmitText { key, .. })) => {
-            assert_eq!(
-                key.kind,
-                TimelineKind::Thread {
-                    room_id: "!room:example.invalid".to_owned(),
-                    root_event_id: "$root:example.invalid".to_owned(),
-                }
-            );
+            assert_eq!(key.kind, expected_thread_kind());
         }
         other => panic!("thread composer must submit plain text on the thread key, got {other:?}"),
+    }
+}
+
+/// #1643: in reply mode the thread composer submits a reply to the chosen
+/// event on the thread key, which Core sends as a reply within the thread.
+#[test]
+fn thread_composer_reply_mode_builds_reply_on_the_thread_key() {
+    match thread_composer_command(Some("$earlier:example.invalid")) {
+        Some(CoreCommand::Timeline(TimelineCommand::SubmitReply {
+            key,
+            in_reply_to_event_id,
+            ..
+        })) => {
+            assert_eq!(key.kind, expected_thread_kind());
+            assert_eq!(in_reply_to_event_id, "$earlier:example.invalid");
+        }
+        other => panic!("thread reply mode must submit a reply on the thread key, got {other:?}"),
     }
 }

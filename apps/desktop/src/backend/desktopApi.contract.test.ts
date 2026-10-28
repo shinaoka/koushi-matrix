@@ -113,6 +113,8 @@ describe("DesktopApi command contract", () => {
         "setSpaceChildSuggested",
         "joinSuggestedSpaceRooms",
         "dismissSuggestedSpaceRooms",
+        "setThreadComposerReplyTarget",
+        "cancelThreadComposerReply",
         "dismissAssistantDraftMarker"
       )
       .sort();

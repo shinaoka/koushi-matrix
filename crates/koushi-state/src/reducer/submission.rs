@@ -69,6 +69,10 @@ pub(crate) fn handle_queued(
             room_id,
             root_event_id,
         } => {
+            let was_cleared = state
+                .composer_drafts
+                .thread_revision(&room_id, &root_event_id)
+                <= draft_revision;
             if state
                 .composer_drafts
                 .advance_thread_revision(&room_id, &root_event_id, draft_revision)
@@ -95,9 +99,12 @@ pub(crate) fn handle_queued(
             {
                 return Vec::new();
             }
+            let pending_kind = composer.pending_send_kind.take();
             composer.pending_submission_id = None;
             composer.pending_transaction_id = None;
-            composer.pending_send_kind = None;
+            if was_cleared {
+                super::thread::settle_thread_reply_mode(composer, pending_kind);
+            }
             composer.draft = accepted_composer.draft;
             composer.document = accepted_composer.document;
             composer.draft_revision = accepted_composer.draft_revision;
@@ -176,9 +183,12 @@ pub(crate) fn handle_settled(
             {
                 return Vec::new();
             }
+            let pending_kind = composer.pending_send_kind.take();
             composer.pending_submission_id = None;
             composer.pending_transaction_id = None;
-            composer.pending_send_kind = None;
+            if matches!(outcome, ComposerSubmissionTerminalOutcome::Succeeded) {
+                super::thread::settle_thread_reply_mode(composer, pending_kind);
+            }
             UiEvent::ThreadChanged
         }
     };

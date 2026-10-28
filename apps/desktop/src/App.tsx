@@ -5024,6 +5024,14 @@ function AccountContent({
     await settleCommand(api.cancelComposerReply());
   }
 
+  async function setThreadComposerReplyTarget(roomId: string, rootEventId: string, eventId: string) {
+    await settleCommand(api.setThreadComposerReplyTarget(roomId, rootEventId, eventId));
+  }
+
+  async function cancelThreadComposerReply(roomId: string, rootEventId: string) {
+    await settleCommand(api.cancelThreadComposerReply(roomId, rootEventId));
+  }
+
   function beginComposerOperation(scope: ComposerDraftScope): {
     capture: ComposerDraftOperationCapture;
     lease: NonNullable<ReturnType<ComposerDraftLifecycleRegistry["snapshot"]>>;
@@ -6126,9 +6134,19 @@ function AccountContent({
         composerDraftLifecycleRegistryRef.current!.snapshot(scope)?.revision ??
         COMPOSER_DRAFT_REVISION_ZERO;
       const localRevisionAtSubmission = threadComposerOverlayRef.current?.revision ?? null;
+      // #1643: reply semantics are Rust-owned; capture the open thread
+      // composer's reply target at submission time.
+      const threadState = snapshot?.state.ui.thread;
+      const threadMode =
+        threadState?.kind === "open" &&
+        threadState.room_id === roomId &&
+        threadState.root_event_id === rootEventId
+          ? threadState.composer.mode
+          : "Plain";
       submissionController.capture(submissionId, {
         roomId,
         rootEventId,
+        inReplyToEventId: threadMode === "Plain" ? null : threadMode.Reply.in_reply_to_event_id,
         body,
         document,
         draftRevision,
@@ -6141,6 +6159,7 @@ function AccountContent({
     const captured = submissionController.payload<{
       roomId: string;
       rootEventId: string;
+      inReplyToEventId: string | null;
       body: string;
       document: ComposerDocument;
       draftRevision: ComposerDraftRevision;
@@ -6162,7 +6181,11 @@ function AccountContent({
     }
     let accepted = false;
     try {
-      appendComposerSubmitDiagnostic("thread", "dispatch", "mode=thread_reply");
+      appendComposerSubmitDiagnostic(
+        "thread",
+        "dispatch",
+        `mode=${captured.inReplyToEventId === null ? "thread_reply" : "thread_reply_to_event"}`
+      );
       const response = await api.sendThreadReply(
         captured.account,
         admitted.lease.leaseId,
@@ -6171,7 +6194,8 @@ function AccountContent({
         captured.roomId,
         captured.rootEventId,
         captured.document,
-        captured.draftRevision
+        captured.draftRevision,
+        captured.inReplyToEventId
       );
       accepted =
         response.submissionId === submissionId && response.outcome === "accepted";
@@ -6960,6 +6984,12 @@ function AccountContent({
     if (target.kind === "message") {
       switch (actionId) {
         case "replyToMessage":
+          // #1643: the row supplies its own Reply route, so a thread-pane row
+          // targets the thread composer rather than the main composer.
+          if (target.onReply) {
+            target.onReply();
+            return;
+          }
           runInBackground(setComposerReplyTarget(target.message.room_id, target.message.event_id));
           return;
         case "openThread":
@@ -8076,6 +8106,12 @@ function AccountContent({
           }}
           onThreadReplySend={(roomId, rootEventId, document) => {
             runInBackground(sendThreadReply(roomId, rootEventId, document));
+          }}
+          onThreadComposerReply={(roomId, rootEventId, eventId) => {
+            runInBackground(setThreadComposerReplyTarget(roomId, rootEventId, eventId));
+          }}
+          onThreadComposerCancelReply={(roomId, rootEventId) => {
+            runInBackground(cancelThreadComposerReply(roomId, rootEventId));
           }}
           onTimelineDiagnosticLogEntry={appendDiagnosticLog}
           onResolveComposerKeyAction={resolveComposerKeyAction}

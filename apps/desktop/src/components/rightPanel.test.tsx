@@ -1042,6 +1042,113 @@ describe("ContextualRightPanel thread message context menu (#1155)", () => {
   });
 });
 
+// Issue #1643: Reply on a thread-pane row targets the open thread's composer,
+// whose Rust-owned reply mode renders the same banner as the room composer.
+describe("ContextualRightPanel thread reply mode (#1643)", () => {
+  function threadTimelineSnapshot(mode: unknown): DesktopSnapshot {
+    const base = threadSnapshot("");
+    const thread = base.state.ui.thread as unknown as {
+      composer: Record<string, unknown>;
+    };
+    return {
+      ...base,
+      state: {
+        ...base.state,
+        domain: {
+          ...base.state.domain,
+          live_signals: { presence: {}, rooms: {} },
+          profile: { ...base.state.domain.profile, own: { avatar: null } },
+          settings: {
+            ...base.state.domain.settings,
+            values: {
+              ...base.state.domain.settings.values,
+              appearance: { density: "default" }
+            }
+          }
+        },
+        ui: {
+          ...base.state.ui,
+          thread: {
+            ...thread,
+            composer: { ...thread.composer, mode },
+            staged_uploads: []
+          }
+        }
+      }
+    } as unknown as DesktopSnapshot;
+  }
+
+  function renderThread(mode: unknown, overrides: Partial<RightPanelProps> = {}) {
+    const key = threadTimelineKey("@current:example.invalid", room.room_id, "$root:example.invalid");
+    const store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key,
+        generation: 1,
+        items: [message("$reply:example.invalid", "Thread reply")]
+      }
+    });
+    const props = {
+      ...defaultProps,
+      mode: "thread" as const,
+      timelineTransport: baseTransport({}),
+      ...overrides
+    };
+    const view = render(
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <ContextualRightPanel {...props} snapshot={threadTimelineSnapshot(mode)} />
+      </TimelineStoreContext.Provider>
+    );
+    return {
+      rerenderWithMode(nextMode: unknown) {
+        view.rerender(
+          <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+            <ContextualRightPanel {...props} snapshot={threadTimelineSnapshot(nextMode)} />
+          </TimelineStoreContext.Provider>
+        );
+      }
+    };
+  }
+
+  test("routes a thread row's Reply to the thread composer, not the main composer", () => {
+    const onReply = vi.fn();
+    const onThreadComposerReply = vi.fn();
+    renderThread("Plain", { onReply, onThreadComposerReply });
+
+    const row = document.querySelector('[data-event-id="$reply:example.invalid"]') as HTMLElement;
+    expect(row).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Reply in thread" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Reply to message" }));
+
+    expect(onThreadComposerReply).toHaveBeenCalledWith(
+      room.room_id,
+      "$root:example.invalid",
+      "$reply:example.invalid"
+    );
+    expect(onReply).not.toHaveBeenCalled();
+    expect(screen.queryByText(t("composer.replying"))).toBeNull();
+  });
+
+  test("shows the reply banner from Rust reply mode and cancels it for the open thread", () => {
+    const onThreadComposerCancelReply = vi.fn();
+    const { rerenderWithMode } = renderThread(
+      { Reply: { in_reply_to_event_id: "$reply:example.invalid" } },
+      { onThreadComposerCancelReply }
+    );
+
+    expect(screen.getByText(t("composer.replying"))).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: t("composer.cancelReply") }));
+    expect(onThreadComposerCancelReply).toHaveBeenCalledWith(
+      room.room_id,
+      "$root:example.invalid"
+    );
+
+    // Rust clears reply mode on thread switch/close/restore; the banner follows.
+    rerenderWithMode("Plain");
+    expect(screen.queryByText(t("composer.replying"))).toBeNull();
+  });
+});
+
 // Issue #1473: a failed thread open stays on screen with Retry and Close
 // instead of closing silently.
 describe("ContextualRightPanel failed thread pane (#1473)", () => {

@@ -2,9 +2,10 @@ use crate::{ComposerDraftRevision, OperationFailureKind, SubmissionId};
 use crate::{
     effect::{AppEffect, UiEvent},
     state::{
-        AppError, AppState, FocusedContextState, PendingComposerSendKind, RoomSummary,
-        ThreadAttentionState, ThreadOpenIntent, ThreadPaneState, ThreadRootAttention,
-        ThreadsListScope, ThreadsListState, sort_threads_list_items,
+        AppError, AppState, ComposerMode, ComposerState, FocusedContextState,
+        PendingComposerSendKind, RoomSummary, ThreadAttentionState, ThreadOpenIntent,
+        ThreadPaneState, ThreadRootAttention, ThreadsListScope, ThreadsListState,
+        sort_threads_list_items,
     },
 };
 use std::collections::BTreeMap;
@@ -77,15 +78,91 @@ pub(crate) fn handle_thread_submission_accepted(
     composer.remember_accepted_submission(submission_id.clone());
     composer.pending_submission_id = Some(submission_id);
     composer.pending_transaction_id = Some(transaction_id);
-    composer.pending_send_kind = Some(PendingComposerSendKind::Reply {
-        in_reply_to_event_id: root_event_id,
-    });
+    composer.pending_send_kind = Some(pending_send_kind_for(composer));
     composer.draft = accepted_composer.draft;
     composer.document = accepted_composer.document;
     composer.draft_revision = accepted_composer.draft_revision;
     composer.last_accepted_clear_revision = accepted_composer.last_accepted_clear_revision;
     *intent = ThreadOpenIntent::ExistingThread;
     vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+}
+
+/// #1643: the pending kind captures the composer mode at submission time, so a
+/// completion can tell a reply send from a plain thread message.
+fn pending_send_kind_for(composer: &ComposerState) -> PendingComposerSendKind {
+    match &composer.mode {
+        ComposerMode::Plain => PendingComposerSendKind::Plain,
+        ComposerMode::Reply {
+            in_reply_to_event_id,
+        } => PendingComposerSendKind::Reply {
+            in_reply_to_event_id: in_reply_to_event_id.clone(),
+        },
+    }
+}
+
+/// Return to `Plain` only when the completed send was a reply to the target
+/// that is still current; a plain send or a newer target keeps the mode.
+pub(crate) fn settle_thread_reply_mode(
+    composer: &mut ComposerState,
+    pending_kind: Option<PendingComposerSendKind>,
+) {
+    if let Some(PendingComposerSendKind::Reply {
+        in_reply_to_event_id,
+    }) = pending_kind
+        && composer.mode
+            == (ComposerMode::Reply {
+                in_reply_to_event_id,
+            })
+    {
+        composer.mode = ComposerMode::Plain;
+    }
+}
+
+pub(crate) fn handle_thread_composer_reply_target_selected(
+    state: &mut AppState,
+    room_id: String,
+    root_event_id: String,
+    event_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    match &mut state.thread {
+        ThreadPaneState::Open {
+            room_id: open_room_id,
+            root_event_id: open_root_event_id,
+            composer,
+            ..
+        } if open_room_id == &room_id && open_root_event_id == &root_event_id => {
+            composer.mode = ComposerMode::Reply {
+                in_reply_to_event_id: event_id,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+        }
+        _ => Vec::new(),
+    }
+}
+
+pub(crate) fn handle_thread_composer_reply_cancelled(
+    state: &mut AppState,
+    room_id: String,
+    root_event_id: String,
+) -> Vec<AppEffect> {
+    match &mut state.thread {
+        ThreadPaneState::Open {
+            room_id: open_room_id,
+            root_event_id: open_root_event_id,
+            composer,
+            ..
+        } if open_room_id == &room_id
+            && open_root_event_id == &root_event_id
+            && composer.mode != ComposerMode::Plain =>
+        {
+            composer.mode = ComposerMode::Plain;
+            vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+        }
+        _ => Vec::new(),
+    }
 }
 
 pub(crate) fn handle_thread_composer_draft_changed(
@@ -148,9 +225,7 @@ pub(crate) fn handle_thread_reply_submitted(
             && composer.pending_transaction_id.is_none() =>
         {
             composer.pending_transaction_id = Some(transaction_id);
-            composer.pending_send_kind = Some(PendingComposerSendKind::Reply {
-                in_reply_to_event_id: root_event_id.clone(),
-            });
+            composer.pending_send_kind = Some(pending_send_kind_for(composer));
             let Ok(accepted_revision) = state.composer_drafts.advance_thread_revision(
                 &room_id,
                 &root_event_id,
@@ -198,7 +273,8 @@ pub(crate) fn handle_thread_reply_finished(
             && composer.pending_transaction_id.as_deref() == Some(transaction_id.as_str()) =>
         {
             composer.pending_transaction_id = None;
-            composer.pending_send_kind = None;
+            let pending_kind = composer.pending_send_kind.take();
+            settle_thread_reply_mode(composer, pending_kind);
             vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
         }
         _ => Vec::new(),

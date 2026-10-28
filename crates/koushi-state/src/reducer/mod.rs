@@ -1756,6 +1756,20 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             timeline::handle_composer_reply_target_selected(state, room_id, event_id)
         }
         AppAction::ComposerReplyCancelled => timeline::handle_composer_reply_cancelled(state),
+        AppAction::ThreadComposerReplyTargetSelected {
+            room_id,
+            root_event_id,
+            event_id,
+        } => thread::handle_thread_composer_reply_target_selected(
+            state,
+            room_id,
+            root_event_id,
+            event_id,
+        ),
+        AppAction::ThreadComposerReplyCancelled {
+            room_id,
+            root_event_id,
+        } => thread::handle_thread_composer_reply_cancelled(state, room_id, root_event_id),
         AppAction::ThreadComposerDraftChanged {
             room_id,
             root_event_id,

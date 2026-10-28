@@ -83,7 +83,7 @@ import {
 import { MessageArticle, PinnedEventsList, ScheduledMessagesList, SearchResults } from "./mediaLists";
 import { ThreadComposer, type ComposerSendingAccount } from "./composer";
 import { UploadStagingDialog, uploadStagingItemsAreSendable } from "./dialogs";
-import type { OpenContextMenu } from "../app/uiShared";
+import type { ComposerModeProp, OpenContextMenu } from "../app/uiShared";
 import { useStableEvent } from "./useStableEvent";
 import type { SettingsCategoryId } from "../domain/settingsNavigation";
 
@@ -254,6 +254,8 @@ export function ContextualRightPanel({
   onThreadMentionQueryChange = () => undefined,
   onThreadRetryStagedUploadPreparation = () => undefined,
   onThreadReplySend,
+  onThreadComposerReply = () => undefined,
+  onThreadComposerCancelReply = () => undefined,
   onThreadScheduleSend,
   onThreadSelectStagedUploadOutput = () => undefined,
   onThreadSendStagedAttachments = () => undefined,
@@ -469,6 +471,9 @@ export function ContextualRightPanel({
     rootEventId: string,
     document: ComposerDocument
   ) => void;
+  /** #1643: put the open thread's composer into reply mode for `eventId`. */
+  onThreadComposerReply?: (roomId: string, rootEventId: string, eventId: string) => void;
+  onThreadComposerCancelReply?: (roomId: string, rootEventId: string) => void;
   onThreadScheduleSend?: (
     roomId: string,
     rootEventId: string,
@@ -517,7 +522,30 @@ export function ContextualRightPanel({
   // Issue #972: App recreates every handler it passes on each render. The
   // thread TimelineView and Composer are memoized, so they are handed stable
   // references and only re-render when thread data changes.
-  const threadReplyStable = useStableEvent(onReply);
+  const threadReplyTargetEventId =
+    threadTarget.kind === "open" && threadTarget.composer.mode !== "Plain"
+      ? threadTarget.composer.mode.Reply.in_reply_to_event_id
+      : null;
+  // The thread Composer is memoized; keep the mode identity stable per target.
+  const threadComposerMode = useMemo<ComposerModeProp>(
+    () =>
+      threadReplyTargetEventId === null
+        ? { kind: "plain" }
+        : { kind: "reply", in_reply_to_event_id: threadReplyTargetEventId },
+    [threadReplyTargetEventId]
+  );
+  // #1643: Reply on a thread-pane row targets the open thread's composer. Rows
+  // of the open thread always share its room, so another room is a stale row.
+  const threadReplyStable = useStableEvent((roomId: string, eventId: string) => {
+    if (threadPreviewRoomId === roomId && threadPreviewRootEventId) {
+      onThreadComposerReply(roomId, threadPreviewRootEventId, eventId);
+    }
+  });
+  const threadCancelReplyStable = useStableEvent(() => {
+    if (threadPreviewRoomId && threadPreviewRootEventId) {
+      onThreadComposerCancelReply(threadPreviewRoomId, threadPreviewRootEventId);
+    }
+  });
   const threadOpenMatrixTargetStable = useStableEvent(
     (...args: Parameters<NonNullable<typeof onOpenMatrixTarget>>) => onOpenMatrixTarget?.(...args)
   );
@@ -1376,6 +1404,8 @@ export function ContextualRightPanel({
       ) : null}
       <ThreadComposer
         sendingAccount={sendingAccount}
+        composerMode={threadComposerMode}
+        onCancelReply={threadCancelReplyStable}
         stagedUploadsReady={uploadStagingItemsAreSendable(threadStagedUploads)}
         onSendStagedUploads={threadSendStagedUploadsStable}
         notice={threadComposerNotice}

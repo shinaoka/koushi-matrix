@@ -33,14 +33,20 @@ with an Element Desktop/Web-like three-pane desktop UX:
   membership completeness is explicit Rust-owned projection input. A partial
   observation may add known-positive associations but must preserve prior
   positives; only a complete direct-member observation may remove one.
-- Threads are linear. The thread pane's composer sends ordinary thread messages,
-  and thread events expose no reply-composition affordance: no per-event Reply,
-  no Reply in thread, no nested thread. Rich replies authored by Element or
-  another Matrix client still render their quoted context inside a thread, and
-  core keeps a thread-keyed reply an ordinary thread message
-  (`EnforceThread::Threaded(ReplyWithinThread::No)`), so creating a thread rich
-  reply stays unreachable from the product UI. Reply and Reply in thread remain
-  room-timeline actions.
+- Threads are not nested. Thread-pane events offer Reply but never Reply in
+  thread or a nested thread; Reply in thread stays a room-timeline action.
+  Without a reply target the thread composer sends an ordinary thread message
+  (`m.thread` to the root with `is_falling_back: true` and no added mention),
+  matching Element X and Element Web. Choosing Reply on a thread-pane event puts
+  the thread composer into Rust-owned reply mode for that event; sending in that
+  mode produces a Matrix "reply within thread" (spec v1.4): `rel_type: m.thread`
+  to the root, `m.in_reply_to` set to the chosen event, and
+  `is_falling_back: false` (Ruma `Thread::reply`, SDK
+  `ReplyWithinThread::Yes`). Thread-pane attachments stay ordinary thread
+  messages (`ReplyWithinThread::No`). Reply mode belongs to the open thread's
+  composer only: switching or closing the thread, or restoring its composer from
+  the stored draft, clears it. Rich replies authored by other clients render
+  their quoted context inside a thread unchanged.
 - Opening a thread carries a Rust-owned creation intent. A root with a positive
   projected reply count and every Threads-list entry is an existing thread; a
   room-timeline root with no known replies is a new-thread draft. Draft panes

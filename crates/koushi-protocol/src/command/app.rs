@@ -24,6 +24,18 @@ pub enum AppCommand {
     CancelComposerReply {
         request_id: RequestId,
     },
+    /// #1643: reply mode for the open thread's composer.
+    SetThreadComposerReplyTarget {
+        request_id: RequestId,
+        room_id: String,
+        root_event_id: String,
+        event_id: String,
+    },
+    CancelThreadComposerReply {
+        request_id: RequestId,
+        room_id: String,
+        root_event_id: String,
+    },
     SetComposerDraft {
         request_id: RequestId,
         expected_account: crate::SessionKeyId,
@@ -355,6 +367,27 @@ impl fmt::Debug for AppCommand {
             Self::CancelComposerReply { request_id } => formatter
                 .debug_struct("CancelComposerReply")
                 .field("request_id", request_id)
+                .finish(),
+            Self::SetThreadComposerReplyTarget {
+                request_id,
+                room_id,
+                ..
+            } => formatter
+                .debug_struct("SetThreadComposerReplyTarget")
+                .field("request_id", request_id)
+                .field("room_id", room_id)
+                .field("root_event_id", &"EventId(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::CancelThreadComposerReply {
+                request_id,
+                room_id,
+                ..
+            } => formatter
+                .debug_struct("CancelThreadComposerReply")
+                .field("request_id", request_id)
+                .field("room_id", room_id)
+                .field("root_event_id", &"EventId(..)")
                 .finish(),
             Self::SetComposerDraft {
                 request_id,

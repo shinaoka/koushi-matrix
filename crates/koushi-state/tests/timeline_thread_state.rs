@@ -1958,11 +1958,11 @@ fn thread_reply_submit_sets_thread_pending_reply_and_leaves_main_composer_alone(
         composer.pending_transaction_id.as_deref(),
         Some("txn-thread")
     );
+    // #1643: a composer send without a reply target is a plain thread
+    // message, not a reply to the root.
     assert_eq!(
         composer.pending_send_kind,
-        Some(PendingComposerSendKind::Reply {
-            in_reply_to_event_id: "$root".to_owned(),
-        })
+        Some(PendingComposerSendKind::Plain)
     );
     assert_eq!(composer.draft, "");
     assert_eq!(state.timeline.composer.pending_transaction_id, None);
@@ -2802,4 +2802,325 @@ fn threads_list_display_order_follows_setting() {
         ids(&state),
         vec!["$root-old".to_owned(), "$root-new".to_owned()]
     );
+}
+
+fn thread_target(room_id: &str, root_event_id: &str) -> ComposerSubmissionTarget {
+    ComposerSubmissionTarget::Thread {
+        room_id: room_id.to_owned(),
+        root_event_id: root_event_id.to_owned(),
+    }
+}
+
+fn select_thread_reply_target(state: &mut AppState, root_event_id: &str, event_id: &str) {
+    reduce(
+        state,
+        AppAction::ThreadComposerReplyTargetSelected {
+            room_id: "room-a".to_owned(),
+            root_event_id: root_event_id.to_owned(),
+            event_id: event_id.to_owned(),
+        },
+    );
+}
+
+fn accept_thread_submission(state: &mut AppState, submission_id: &str, transaction_id: &str) {
+    reduce(
+        state,
+        AppAction::ThreadComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            document: "answer".into(),
+            revision: 1.into(),
+        },
+    );
+    reduce(
+        state,
+        AppAction::ThreadSubmissionAcceptedAtRevision {
+            submission_id: SubmissionId::new(submission_id),
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: transaction_id.to_owned(),
+            body: "answer".to_owned(),
+            draft_revision: 1.into(),
+        },
+    );
+}
+
+fn reply_mode(event_id: &str) -> ComposerMode {
+    ComposerMode::Reply {
+        in_reply_to_event_id: event_id.to_owned(),
+    }
+}
+
+#[test]
+fn thread_reply_target_applies_only_to_the_matching_open_thread() {
+    let mut state = open_thread_state("room-a", "$root");
+
+    let effects = reduce(
+        &mut state,
+        AppAction::ThreadComposerReplyTargetSelected {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            event_id: "$earlier".to_owned(),
+        },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+    );
+    assert_eq!(open_thread_composer(&state).mode, reply_mode("$earlier"));
+    assert_eq!(state.timeline.composer.mode, ComposerMode::Plain);
+
+    // Re-selecting retargets.
+    select_thread_reply_target(&mut state, "$root", "$later");
+    assert_eq!(open_thread_composer(&state).mode, reply_mode("$later"));
+
+    // Stale room/root signals are ignored.
+    for (room_id, root_event_id) in [("room-b", "$root"), ("room-a", "$other-root")] {
+        let effects = reduce(
+            &mut state,
+            AppAction::ThreadComposerReplyTargetSelected {
+                room_id: room_id.to_owned(),
+                root_event_id: root_event_id.to_owned(),
+                event_id: "$stale".to_owned(),
+            },
+        );
+        assert!(effects.is_empty());
+        let effects = reduce(
+            &mut state,
+            AppAction::ThreadComposerReplyCancelled {
+                room_id: room_id.to_owned(),
+                root_event_id: root_event_id.to_owned(),
+            },
+        );
+        assert!(effects.is_empty());
+    }
+    assert_eq!(open_thread_composer(&state).mode, reply_mode("$later"));
+
+    let effects = reduce(
+        &mut state,
+        AppAction::ThreadComposerReplyCancelled {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+        },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+    );
+    assert_eq!(open_thread_composer(&state).mode, ComposerMode::Plain);
+    // Cancelling while already Plain is a no-op.
+    let effects = reduce(
+        &mut state,
+        AppAction::ThreadComposerReplyCancelled {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+        },
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn thread_reply_target_is_ignored_without_an_open_thread() {
+    let mut state = selected_room_state("room-a");
+    let effects = reduce(
+        &mut state,
+        AppAction::ThreadComposerReplyTargetSelected {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            event_id: "$earlier".to_owned(),
+        },
+    );
+    assert!(effects.is_empty());
+    assert_eq!(state.thread, ThreadPaneState::Closed);
+    assert_eq!(state.timeline.composer.mode, ComposerMode::Plain);
+}
+
+#[test]
+fn thread_reply_mode_clears_on_thread_switch_and_close() {
+    let mut state = open_thread_state("room-a", "$root");
+    select_thread_reply_target(&mut state, "$root", "$earlier");
+
+    reduce(
+        &mut state,
+        AppAction::OpenThread {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$other-root".to_owned(),
+            intent: ThreadOpenIntent::ExistingThread,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadSubscribed {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$other-root".to_owned(),
+        },
+    );
+    assert_eq!(open_thread_composer(&state).mode, ComposerMode::Plain);
+
+    // Returning to the first thread does not resurrect its reply target.
+    reduce(
+        &mut state,
+        AppAction::OpenThread {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            intent: ThreadOpenIntent::ExistingThread,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadSubscribed {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+        },
+    );
+    assert_eq!(open_thread_composer(&state).mode, ComposerMode::Plain);
+
+    select_thread_reply_target(&mut state, "$root", "$earlier");
+    reduce(&mut state, AppAction::CloseThread);
+    assert_eq!(state.thread, ThreadPaneState::Closed);
+}
+
+#[test]
+fn thread_reply_submission_captures_target_and_durable_enqueue_returns_to_plain() {
+    let mut state = open_thread_state("room-a", "$root");
+    select_thread_reply_target(&mut state, "$root", "$earlier");
+    accept_thread_submission(&mut state, "sub-reply", "txn-reply");
+
+    let composer = open_thread_composer(&state);
+    assert_eq!(
+        composer.pending_send_kind,
+        Some(PendingComposerSendKind::Reply {
+            in_reply_to_event_id: "$earlier".to_owned(),
+        })
+    );
+    // Acceptance alone keeps reply mode; the durable enqueue settles it.
+    assert_eq!(composer.mode, reply_mode("$earlier"));
+
+    reduce(
+        &mut state,
+        AppAction::ComposerSubmissionQueued {
+            submission_id: SubmissionId::new("sub-reply"),
+            transaction_id: "txn-reply".to_owned(),
+            target: thread_target("room-a", "$root"),
+            draft_revision: 1.into(),
+        },
+    );
+    let composer = open_thread_composer(&state);
+    assert_eq!(composer.mode, ComposerMode::Plain);
+    assert_eq!(composer.pending_send_kind, None);
+    assert_eq!(state.timeline.composer.mode, ComposerMode::Plain);
+}
+
+#[test]
+fn plain_thread_submission_records_plain_kind_and_keeps_a_later_reply_target() {
+    let mut state = open_thread_state("room-a", "$root");
+    accept_thread_submission(&mut state, "sub-plain", "txn-plain");
+    assert_eq!(
+        open_thread_composer(&state).pending_send_kind,
+        Some(PendingComposerSendKind::Plain)
+    );
+
+    // A reply target chosen while the plain send is pending survives it, even
+    // when the target is the root itself.
+    select_thread_reply_target(&mut state, "$root", "$root");
+    reduce(
+        &mut state,
+        AppAction::ComposerSubmissionQueued {
+            submission_id: SubmissionId::new("sub-plain"),
+            transaction_id: "txn-plain".to_owned(),
+            target: thread_target("room-a", "$root"),
+            draft_revision: 1.into(),
+        },
+    );
+    assert_eq!(open_thread_composer(&state).mode, reply_mode("$root"));
+}
+
+#[test]
+fn thread_reply_completion_keeps_a_newer_target_and_failure_keeps_reply_mode() {
+    let mut state = open_thread_state("room-a", "$root");
+    select_thread_reply_target(&mut state, "$root", "$earlier");
+    accept_thread_submission(&mut state, "sub-reply", "txn-reply");
+    select_thread_reply_target(&mut state, "$root", "$newer");
+    reduce(
+        &mut state,
+        AppAction::ComposerSubmissionQueued {
+            submission_id: SubmissionId::new("sub-reply"),
+            transaction_id: "txn-reply".to_owned(),
+            target: thread_target("room-a", "$root"),
+            draft_revision: 1.into(),
+        },
+    );
+    assert_eq!(open_thread_composer(&state).mode, reply_mode("$newer"));
+
+    let mut failed = open_thread_state("room-a", "$root");
+    select_thread_reply_target(&mut failed, "$root", "$earlier");
+    accept_thread_submission(&mut failed, "sub-fail", "txn-fail");
+    let effects = reduce(
+        &mut failed,
+        AppAction::ComposerSubmissionSettled {
+            submission_id: SubmissionId::new("sub-fail"),
+            transaction_id: "txn-fail".to_owned(),
+            target: thread_target("room-a", "$root"),
+            outcome: ComposerSubmissionTerminalOutcome::Failed {
+                message: "send failed".to_owned(),
+            },
+        },
+    );
+    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::ErrorChanged)));
+    let composer = open_thread_composer(&failed);
+    assert_eq!(composer.mode, reply_mode("$earlier"));
+    assert_eq!(composer.pending_transaction_id, None);
+}
+
+#[test]
+fn legacy_thread_reply_submitted_captures_the_reply_target() {
+    let mut state = open_thread_state("room-a", "$root");
+    select_thread_reply_target(&mut state, "$root", "$earlier");
+    set_open_thread_draft(&mut state, "answer");
+    reduce(
+        &mut state,
+        AppAction::ThreadReplySubmitted {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-legacy".to_owned(),
+            body: "answer".to_owned(),
+        },
+    );
+    assert_eq!(
+        open_thread_composer(&state).pending_send_kind,
+        Some(PendingComposerSendKind::Reply {
+            in_reply_to_event_id: "$earlier".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn thread_reply_target_is_ignored_while_the_thread_is_opening() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::OpenThread {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            intent: ThreadOpenIntent::ExistingThread,
+        },
+    );
+    assert!(matches!(state.thread, ThreadPaneState::Opening { .. }));
+    let effects = reduce(
+        &mut state,
+        AppAction::ThreadComposerReplyTargetSelected {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            event_id: "$earlier".to_owned(),
+        },
+    );
+    assert!(effects.is_empty());
+    reduce(
+        &mut state,
+        AppAction::ThreadSubscribed {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+        },
+    );
+    assert_eq!(open_thread_composer(&state).mode, ComposerMode::Plain);
 }

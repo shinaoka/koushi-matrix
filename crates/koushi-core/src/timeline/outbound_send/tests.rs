@@ -79,10 +79,42 @@ fn offline_reply_keeps_its_relation_without_fetching_the_original_event() {
     assert!(matches!(room.relates_to, Some(Relation::Reply(_))));
     let thread =
         make_offline_reply_content(content(), original, &thread_key(), None, None).unwrap();
-    // #1426: an explicit reply inside a thread stays a genuine in-thread reply
-    // (not falling back), which is why the thread composer must not use it.
+    // #1643: an explicit reply inside a thread is a Matrix reply within the
+    // thread: `m.thread` to the root, `m.in_reply_to` the chosen event, not
+    // falling back. A plain thread-composer send never takes this path (#1426).
     assert!(
-        matches!(thread.relates_to, Some(Relation::Thread(ref relation)) if !relation.is_falling_back)
+        matches!(thread.relates_to, Some(Relation::Thread(ref relation))
+        if relation.event_id.as_str() == "$root:test"
+            && !relation.is_falling_back
+            && relation.in_reply_to.as_ref().is_some_and(|reply| reply.event_id.as_str() == "$reply-to:test"))
+    );
+}
+
+#[test]
+fn thread_reply_to_a_cached_event_mentions_its_sender_within_the_thread() {
+    use matrix_sdk::ruma::events::room::message::{
+        Relation, RoomMessageEventContentWithoutRelation,
+    };
+    let sender = matrix_sdk::ruma::user_id!("@bob:test").to_owned();
+    let content = make_offline_reply_content(
+        RoomMessageEventContentWithoutRelation::text_plain("answer"),
+        matrix_sdk::ruma::event_id!("$reply-to:test").to_owned(),
+        &thread_key(),
+        Some((
+            sender.clone(),
+            Some(matrix_sdk::ruma::event_id!("$root:test").to_owned()),
+        )),
+        None,
+    )
+    .unwrap();
+    assert!(
+        matches!(content.relates_to, Some(Relation::Thread(ref relation))
+        if relation.event_id.as_str() == "$root:test" && !relation.is_falling_back)
+    );
+    assert!(
+        content
+            .mentions
+            .is_some_and(|mentions| mentions.user_ids.contains(&sender))
     );
 }
 

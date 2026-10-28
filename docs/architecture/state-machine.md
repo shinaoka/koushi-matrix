@@ -3879,17 +3879,51 @@ stateDiagram-v2
     Pending --> Idle: ThreadReplyFailed [matching transaction]
 ```
 
+Independently of the draft/pending lifecycle above, the open thread composer
+carries a reply mode (`ComposerMode`) with the same shape as the main composer:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Plain
+    Plain --> Reply: ThreadComposerReplyTargetSelected [matching open thread]
+    Reply --> Reply: ThreadComposerReplyTargetSelected [matching open thread]
+    Reply --> Plain: ThreadComposerReplyCancelled [matching open thread]
+    Reply --> Plain: ComposerSubmissionQueued/Settled or ThreadReplyFinished [matching pending reply send]
+    Reply --> Plain: thread switched, closed, or composer restored from stored draft
+```
+
 - `ThreadComposerDraftChanged { room_id, root_event_id, draft }` applies only
   when a ready session has that exact thread open. Stale room/root signals and
   closed/opening thread states are ignored. Accepted changes update both the
   open thread composer and the Rust-owned `(room_id, root_event_id)` draft
   entry.
-- `ThreadReplySubmitted { room_id, root_event_id, transaction_id, body }`
-  applies only when a ready session has that exact thread open and the thread
-  composer has no pending transaction. It records the pending transaction as a
-  reply to `root_event_id`, clears the thread draft and stored thread draft,
-  and emits `ThreadChanged`. It does not mutate the selected room's main
-  composer.
+- `ThreadComposerReplyTargetSelected { room_id, root_event_id, event_id }`
+  enters (or retargets) `Reply` only when a ready session has that exact thread
+  open; stale room/root signals and closed/opening thread states are ignored.
+  `ThreadComposerReplyCancelled { room_id, root_event_id }` returns that open
+  thread's composer to `Plain` and is a no-op when already `Plain` or stale.
+  Neither touches the selected room's main composer mode, and reply mode is never
+  stored with the thread draft: opening another thread, closing the pane, or
+  rebuilding the composer from `composer_drafts` starts in `Plain`.
+- `ThreadReplySubmitted { room_id, root_event_id, transaction_id, body }` and
+  `ThreadSubmissionAccepted` apply only when a ready session has that exact
+  thread open and the thread composer has no pending transaction. They record
+  the pending send kind from the composer mode at submission time (`Plain`, or
+  `Reply` with the captured target), clear the thread draft and stored thread
+  draft, and emit `ThreadChanged`. They do not mutate the selected room's main
+  composer. Core sends a `Plain` submission as an ordinary falling-back thread
+  message and a `Reply` submission as a reply within the thread.
+- The matching `ComposerSubmissionQueued` (when the draft was cleared), a
+  successful `ComposerSubmissionSettled`, or a matching `ThreadReplyFinished`
+  returns the thread composer to `Plain`
+  only when the pending send was a reply and the current reply target still
+  equals the captured target, exactly as for the main composer. A failed
+  settlement preserves the reply mode.
+- The renderer reads the reply target from the snapshot when it submits and
+  passes it with the send; the reducer derives the pending kind from the mode
+  current at acceptance. As with the main composer, a target changed in the
+  narrow window between those two points only affects which mode completion
+  clears, never the relation Core sends.
 - `ThreadReplyFinished { room_id, root_event_id, transaction_id }` clears only
   the matching thread composer pending transaction and emits `ThreadChanged`.
   Stale room/root/transaction signals are ignored.

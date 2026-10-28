@@ -505,7 +505,9 @@ export interface DesktopApi {
     roomId: string,
     rootEventId: string,
     document: ComposerDocument,
-    draftRevision?: ComposerDraftRevision
+    draftRevision?: ComposerDraftRevision,
+    /** #1643: the thread composer's Rust-owned reply target, if any. */
+    inReplyToEventId?: string | null
   ): Promise<SubmissionResponse>;
   submitSearch(query: string, scope: SearchScopeKind): Promise<CommandSettlement>;
   queryDirectory(query: DirectoryQuery): Promise<CommandSettlement>;
@@ -599,6 +601,12 @@ export interface DesktopApi {
   ): Promise<CommandSettlement>;
   setComposerReplyTarget(roomId: string, eventId: string): Promise<CommandAdmission>;
   cancelComposerReply(): Promise<CommandAdmission>;
+  setThreadComposerReplyTarget(
+    roomId: string,
+    rootEventId: string,
+    eventId: string
+  ): Promise<CommandAdmission>;
+  cancelThreadComposerReply(roomId: string, rootEventId: string): Promise<CommandAdmission>;
   sendReply(
     account: ComposerDraftAccountOwner,
     leaseId: string,

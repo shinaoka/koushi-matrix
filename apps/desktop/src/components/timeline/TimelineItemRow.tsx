@@ -748,11 +748,9 @@ export function TimelineItemRow({
     onCancelSend(roomId, transactionId);
   }, [onCancelSend, roomId, transactionId]);
   const canShowActionButtons = Boolean(eventId) && !isRedacted;
-  // Koushi threads are linear: the thread composer already sends into the open
-  // thread, so a thread-pane row offers no reply-composition affordance. Rich
-  // replies received from other clients still render their quoted context.
-  const canComposeReply = presentationContext !== "thread";
-  const canShowReply = canShowActionButtons && item.actions?.can_reply === true && canComposeReply;
+  // #1643: a thread-pane row offers Reply (a reply within the open thread), but
+  // threads are not nested, so Reply in thread stays a room-timeline action.
+  const canShowReply = canShowActionButtons && item.actions?.can_reply === true;
   const canShowReplyInThread = canShowReply && presentationContext === "room";
   const canCopyMessage = Boolean(eventId && item.actions?.can_copy && item.body !== null);
   const canCopyPermalink = Boolean(
@@ -1063,7 +1061,7 @@ export function TimelineItemRow({
       canManage: currentUserId === item.sender,
       canEdit: item.can_edit,
       canReply: canShowReply,
-      hasThread: item.thread_summary != null && canComposeReply,
+      hasThread: item.thread_summary != null && presentationContext !== "thread",
       senderUserId: item.sender ?? "",
       currentUserId: currentUserId ?? "",
       roomId,
@@ -1086,6 +1084,7 @@ export function TimelineItemRow({
         reply_count: item.thread_summary?.reply_count ?? 0
       },
       onOpenEdit: openEditForm,
+      onReply: submitReply,
       selectedText
     }, items);
   }

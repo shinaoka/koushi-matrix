@@ -25,6 +25,8 @@ impl CoreCommand {
                 AppCommand::Shutdown { request_id }
                 | AppCommand::SetComposerReplyTarget { request_id, .. }
                 | AppCommand::CancelComposerReply { request_id }
+                | AppCommand::SetThreadComposerReplyTarget { request_id, .. }
+                | AppCommand::CancelThreadComposerReply { request_id, .. }
                 | AppCommand::SetComposerDraft { request_id, .. }
                 | AppCommand::SeedComposerDraft { request_id, .. }
                 | AppCommand::DismissAssistantDraftMarker { request_id, .. }
