@@ -28,6 +28,36 @@ impl DisplayProjectionState {
             self.return_to_live_window(canonical, context);
             return;
         }
+        let same_positions = !self.slots.is_empty()
+            && self.slots.len() <= WINDOW_SLOTS
+            && self.slots.iter().all(|slot| {
+                canonical
+                    .get(slot.canonical_index)
+                    .is_some_and(|item| item.id == slot.item.id)
+            });
+        let newly_visible_owner = if same_positions {
+            let start = self.slots.first().unwrap().canonical_index;
+            let end = self.slots.last().unwrap().canonical_index + 1;
+            canonical
+                .iter()
+                .enumerate()
+                .take(end)
+                .skip(start)
+                .any(|(index, item)| {
+                    item_occupies_display_row(item)
+                        && !self.slots.iter().any(|slot| slot.canonical_index == index)
+                })
+        } else {
+            true
+        };
+        if same_positions && !newly_visible_owner {
+            for slot in &mut self.slots {
+                slot.item = canonical[slot.canonical_index].clone();
+            }
+            self.window_revision = self.window_revision.saturating_add(1);
+            self.rebuild_window_items(context);
+            return;
+        }
         let represented = self
             .slots
             .iter()

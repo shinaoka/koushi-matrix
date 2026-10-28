@@ -130,3 +130,15 @@ exposing the implementation's slot budget. The proposed full list-engine
 replacement remains separate. Production review additionally requires sparse
 SDK Reset selection, ownership-preserving visibility rehydration, and current
 window revisions in headless QA observations; these corrections have RED cases.
+
+Production review also found that authoritative recovery must keep a historical
+window when its owners survive. Recovery now carries current viewport facts,
+seeds the prior finite membership, and shares sparse Reset handling. A no-change
+snapshot preserves exact membership; the actual recovery publisher's regression
+failed before this correction and now retains both its anchor and emitted range.
+Final independent production review approved the integrated design and diff,
+conditional on final gates. Current core library result: 1,818 passed / 11 ignored;
+QA binary: 131 passed. Native residual reproduction remained negative after the
+bounded additional investigation. One local browser-suite account-lease fixture
+race passed all 11 cases on isolated rerun without a product/assertion change;
+required CI still gates the full suite at the final PR revision.
