@@ -15,6 +15,14 @@ are **Enter sends** and the platform modifier plus Enter. The keyboard page
 lists the current platform's shortcuts. Confirming an IME candidate is separate
 from sending the composed message.
 
+## Read older messages
+
+Scroll upward to read earlier messages. Older history loads automatically as you
+approach it; availability depends on the server, room history policy, and keys
+for encrypted messages. New messages do not pull you to the bottom while you are
+reading earlier history. Use **Jump to latest message** to return to the newest
+messages.
+
 ## Mention someone
 
 Type `@` in a room, direct message, or thread composer and choose a person.

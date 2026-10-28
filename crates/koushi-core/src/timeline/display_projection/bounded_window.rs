@@ -17,6 +17,134 @@ fn event_id(item: &TimelineItem) -> Option<&str> {
 }
 
 impl DisplayProjectionState {
+    /// Reconcile a replacement snapshot without measuring its window in raw
+    /// canonical offsets: hidden runs can separate adjacent displayed rows.
+    pub(in crate::timeline) fn reset_bounded(
+        &mut self,
+        canonical: &[TimelineItem],
+        context: &DisplayProjectionContext,
+    ) {
+        if context.viewport.at_bottom || canonical.is_empty() {
+            self.return_to_live_window(canonical, context);
+            return;
+        }
+        let represented = self
+            .slots
+            .iter()
+            .map(|slot| &slot.item.id)
+            .collect::<HashSet<_>>();
+        let retained = canonical
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| represented.contains(&item.id).then_some(index))
+            .take(WINDOW_SLOTS)
+            .collect::<Vec<_>>();
+        let endpoint = |activity: Option<&str>| {
+            let activity = activity?;
+            canonical
+                .iter()
+                .position(|item| event_id(item) == Some(activity))
+                .or_else(|| {
+                    let row = self
+                        .display_items
+                        .iter()
+                        .find(|item| event_id(item) == Some(activity))?;
+                    canonical.iter().position(|item| item.id == row.id)
+                })
+        };
+        let first = endpoint(context.viewport.first_visible_event_id.as_deref());
+        let last = endpoint(context.viewport.last_visible_event_id.as_deref());
+        let Some(anchor) = first.or(last).or_else(|| retained.first().copied()) else {
+            self.return_to_live_window(canonical, context);
+            return;
+        };
+        let first_index = first.unwrap_or(anchor);
+        let last_index = last.unwrap_or(anchor);
+        let first = first_index.min(last_index);
+        let last = first_index.max(last_index);
+        let mut indices = HashSet::with_capacity(WINDOW_SLOTS);
+        indices.insert(first);
+        indices.insert(last);
+        // Preserve the known real end, including a hidden cursor, before spending
+        // the remaining budget. Historical windows with a suffix keep that suffix.
+        if let Some(&index) = retained.last()
+            && index + 1 == canonical.len()
+        {
+            indices.insert(index);
+        }
+        for (index, item) in canonical.iter().enumerate().take(last + 1).skip(first) {
+            if indices.len() == WINDOW_SLOTS {
+                break;
+            }
+            if item_occupies_display_row(item) {
+                indices.insert(index);
+            }
+        }
+        // Existing thread activity must survive an unrelated replacement. These
+        // indices are bounded by the old window, unlike the canonical history.
+        for &index in &retained {
+            if indices.len() == WINDOW_SLOTS {
+                break;
+            }
+            if canonical[index].thread_root.is_some() {
+                indices.insert(index);
+            }
+        }
+        let mut latest_replies = indices
+            .iter()
+            .filter_map(|&index| {
+                canonical[index]
+                    .thread_root
+                    .as_deref()
+                    .map(|root| (root, index))
+            })
+            .collect::<HashMap<_, _>>();
+        for (index, item) in canonical.iter().enumerate().take(last + 1).skip(first) {
+            let Some(root) = item.thread_root.as_deref() else {
+                continue;
+            };
+            if let Some(previous) = latest_replies.get(root).copied()
+                && previous != first
+                && previous != last
+                && previous + 1 != canonical.len()
+            {
+                indices.remove(&previous);
+            }
+            if indices.len() < WINDOW_SLOTS {
+                indices.insert(index);
+                latest_replies.insert(root, index);
+            }
+        }
+        let mut lookbehind = 0;
+        for index in (0..first).rev() {
+            if indices.len() == WINDOW_SLOTS || lookbehind == PAGE_ROWS {
+                break;
+            }
+            if item_occupies_display_row(&canonical[index]) && indices.insert(index) {
+                lookbehind += 1;
+            }
+        }
+        for (index, item) in canonical.iter().enumerate().skip(last + 1) {
+            if indices.len() == WINDOW_SLOTS {
+                break;
+            }
+            if item_occupies_display_row(item) {
+                indices.insert(index);
+            }
+        }
+        let mut indices = indices.into_iter().collect::<Vec<_>>();
+        indices.sort_unstable();
+        self.slots = indices
+            .into_iter()
+            .map(|canonical_index| DisplayProjectionSlot {
+                canonical_index,
+                item: canonical[canonical_index].clone(),
+            })
+            .collect();
+        self.window_revision = self.window_revision.saturating_add(1);
+        self.rebuild_window_items(context);
+    }
+
     pub(in crate::timeline) fn return_to_live_window(
         &mut self,
         canonical: &[TimelineItem],
@@ -105,24 +233,53 @@ impl DisplayProjectionState {
     }
 
     fn observed_slots(&self, observation: &TimelineViewportObservation) -> Option<(usize, usize)> {
-        let slot_for_activity = |activity: &str| {
-            // Activity identity and canonical content identity differ for a
-            // LatestReply thread root. Prefer its activity slot when retained,
-            // then resolve the projected row back to its canonical content.
-            self.slots
-                .iter()
-                .position(|slot| event_id(&slot.item) == Some(activity))
-                .or_else(|| {
-                    let row = self
-                        .display_items
+        let slot_for_row = |row: &TimelineItem| {
+            event_id(row)
+                .and_then(|activity| {
+                    self.slots
                         .iter()
-                        .find(|item| event_id(item) == Some(activity))?;
-                    self.slots.iter().position(|slot| slot.item.id == row.id)
+                        .position(|slot| event_id(&slot.item) == Some(activity))
                 })
+                .or_else(|| self.slots.iter().position(|slot| slot.item.id == row.id))
         };
-        let first = slot_for_activity(observation.first_visible_event_id.as_deref()?)?;
-        let last = slot_for_activity(observation.last_visible_event_id.as_deref()?)?;
-        (first <= last && last - first < WINDOW_SLOTS).then_some((first, last))
+        let endpoint = |activity: &str, prefer_next: bool| {
+            // Only genuinely projected rows can provide geometry evidence. A
+            // retained standalone root has product identity but no canonical
+            // slot; borrow a neighbor's geometry without changing read evidence.
+            let position = self
+                .display_items
+                .iter()
+                .position(|row| !row.is_hidden && event_id(row) == Some(activity))?;
+            if let Some(index) = slot_for_row(&self.display_items[position]) {
+                return Some(index);
+            }
+            let next = || {
+                self.display_items[position + 1..]
+                    .iter()
+                    .filter(|row| !row.is_hidden)
+                    .find_map(slot_for_row)
+            };
+            let previous = || {
+                self.display_items[..position]
+                    .iter()
+                    .rev()
+                    .filter(|row| !row.is_hidden)
+                    .find_map(slot_for_row)
+            };
+            if prefer_next {
+                next()
+                    .or_else(previous)
+                    .or_else(|| (!self.slots.is_empty()).then_some(0))
+            } else {
+                previous()
+                    .or_else(next)
+                    .or_else(|| self.slots.len().checked_sub(1))
+            }
+        };
+        let first = endpoint(observation.first_visible_event_id.as_deref()?, true)?;
+        let last = endpoint(observation.last_visible_event_id.as_deref()?, false)?;
+        let (first, last) = (first.min(last), first.max(last));
+        (last - first < WINDOW_SLOTS).then_some((first, last))
     }
 
     pub(in crate::timeline) fn reconcile_bounded_window(
@@ -236,10 +393,10 @@ impl DisplayProjectionState {
             } else {
                 first.min(len - WINDOW_SLOTS)
             }
-        } else if context.viewport.at_bottom {
-            len - WINDOW_SLOTS
-        } else {
+        } else if keep_older {
             0
+        } else {
+            len - WINDOW_SLOTS
         };
         self.slots.truncate(start + WINDOW_SLOTS);
         self.slots.drain(..start);

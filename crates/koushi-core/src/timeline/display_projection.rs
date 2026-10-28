@@ -113,62 +113,92 @@ impl DisplayProjectionState {
     ) -> Vec<TimelineDiff> {
         let before = self.display_items.clone();
         let range = self.canonical_window_range(canonical.len());
-        let anchor = context.viewport.first_visible_event_id.as_deref().and_then(|id| self.slots.iter().find(|slot| matches!(&slot.item.id, TimelineItemId::Event { event_id } if event_id == id))).map(|slot|slot.canonical_index).unwrap_or(range.start);
-        let start = range.start.max(anchor.saturating_sub(60));
-        let mut replies: HashMap<String, DisplayProjectionSlot> = HashMap::new();
-        let reply_budget = 240 - usize::from(range.end > 0 && canonical[range.end - 1].is_hidden);
-        for (canonical_index, item) in canonical.iter().enumerate().take(range.end).skip(start) {
-            if let Some(root) = item.thread_root.as_ref()
-                && !item.is_hidden
-                && (replies.contains_key(root) || replies.len() < reply_budget)
-            {
-                replies.insert(
-                    root.clone(),
-                    DisplayProjectionSlot {
-                        canonical_index,
-                        item: item.clone(),
-                    },
-                );
+        // Existing owners get capacity before previously unrepresented roots.
+        // Only indices are retained while scanning the sparse canonical span.
+        let mut replies = HashMap::<String, usize>::new();
+        let mut ordinary = std::collections::BTreeSet::new();
+        for slot in &self.slots {
+            if slot.canonical_index >= canonical.len() {
+                continue;
+            }
+            if let Some(root) = canonical[slot.canonical_index].thread_root.as_ref() {
+                replies.insert(root.clone(), slot.canonical_index);
+            } else {
+                ordinary.insert(slot.canonical_index);
             }
         }
-        let needs_cursor = range.end > 0
-            && canonical[range.end - 1].is_hidden;
-        let row_budget = 240usize.saturating_sub(replies.len() + usize::from(needs_cursor));
-        self.slots = canonical
+        let cursor = range
+            .end
+            .checked_sub(1)
+            .filter(|index| canonical[*index].is_hidden || canonical[*index].thread_root.is_some());
+        for (index, item) in canonical
             .iter()
             .enumerate()
             .take(range.end)
-            .skip(start)
-            .filter(|(index, item)| {
-                item_occupies_display_row(item)
-                    || (item.thread_root.is_none()
-                        && self.slots.iter().any(|slot| slot.canonical_index == *index))
-            })
-            .take(row_budget)
-            .map(|(canonical_index, item)| DisplayProjectionSlot {
-                canonical_index,
-                item: item.clone(),
-            })
-            .collect();
-        self.slots.extend(replies.into_values());
-        // A hidden terminal cursor keeps physical end and canonical end distinct.
-        if range.end > 0
-            && !self
-                .slots
-                .iter()
-                .any(|slot| slot.canonical_index + 1 == range.end)
+            .skip(range.start)
         {
-            let canonical_index = range.end - 1;
-            if canonical[canonical_index].is_hidden
-                || canonical[canonical_index].thread_root.is_some()
+            if let Some(root) = item.thread_root.as_ref()
+                && replies.contains_key(root)
+                && !item.is_hidden
             {
-                self.slots.push(DisplayProjectionSlot {
-                    canonical_index,
-                    item: canonical[canonical_index].clone(),
-                });
+                replies.insert(root.clone(), index);
             }
         }
-        self.slots.sort_by_key(|slot| slot.canonical_index);
+        if let Some(index) = cursor {
+            ordinary.remove(&index);
+        }
+        let cursor_extra =
+            usize::from(cursor.is_some_and(|index| !replies.values().any(|owner| *owner == index)));
+        let row_budget = 240usize.saturating_sub(replies.len() + cursor_extra);
+        let mut new_rows = 0;
+        for (index, item) in canonical
+            .iter()
+            .enumerate()
+            .take(range.end)
+            .skip(range.start)
+        {
+            if new_rows >= 240 {
+                break;
+            }
+            if item_occupies_display_row(item) && Some(index) != cursor && ordinary.insert(index) {
+                new_rows += 1;
+            }
+        }
+        let candidates = ordinary.into_iter().collect::<Vec<_>>();
+        let endpoint = |id: Option<&str>| {
+            id.and_then(|id| self.slots.iter().find(|slot| matches!(&slot.item.id, TimelineItemId::Event { event_id } if event_id == id))).map(|slot|slot.canonical_index)
+        };
+        let first = endpoint(context.viewport.first_visible_event_id.as_deref());
+        let last = endpoint(context.viewport.last_visible_event_id.as_deref());
+        let first_pos = first
+            .and_then(|index| candidates.iter().position(|candidate| *candidate == index))
+            .unwrap_or(0);
+        let mut start = first_pos.saturating_sub(60.min(row_budget / 3));
+        if let Some(last_pos) =
+            last.and_then(|index| candidates.iter().position(|candidate| *candidate == index))
+            && last_pos >= first_pos
+            && last_pos - first_pos < row_budget
+        {
+            start = start.max((last_pos + 1).saturating_sub(row_budget));
+        }
+        start = start.min(candidates.len().saturating_sub(row_budget));
+        let mut selected = candidates
+            .into_iter()
+            .skip(start)
+            .take(row_budget)
+            .collect::<std::collections::BTreeSet<_>>();
+        selected.extend(replies.into_values());
+        if let Some(index) = cursor {
+            selected.insert(index);
+        }
+        self.slots = selected
+            .into_iter()
+            .take(240)
+            .map(|canonical_index| DisplayProjectionSlot {
+                canonical_index,
+                item: canonical[canonical_index].clone(),
+            })
+            .collect();
         self.window_revision = self.window_revision.saturating_add(1);
         self.display_items = project_display_items(
             &self.slots,
@@ -1079,23 +1109,24 @@ fn project_sdk_batch(
             }
             TimelineDiff::Reset { items } => {
                 *canonical_items = items.clone();
-                let start = context
-                    .max_live_edge_items
-                    .map(|max_items| live_edge_window_start(canonical_items, max_items))
-                    .unwrap_or(0);
-                let window = if context.room_window {
-                    let anchor = context.viewport.first_visible_event_id.as_deref().and_then(|id| canonical_items.iter().position(|item| matches!(&item.id, TimelineItemId::Event { event_id } if event_id == id)));
-                    let start = if context.viewport.at_bottom {
-                        canonical_items.len().saturating_sub(240)
-                    } else {
-                        anchor.unwrap_or(start).saturating_sub(60)
-                    };
-                    let end = (start + 240).min(canonical_items.len());
-                    start..end
+                if context.room_window {
+                    display_state.reset_bounded(canonical_items, context);
+                    let (rebuilt, ambiguous) = DisplayMembershipRope::from_projection_state(
+                        canonical_items.len(),
+                        display_state,
+                    );
+                    membership = rebuilt;
+                    translation_ambiguous |= ambiguous;
                 } else {
-                    start..canonical_items.len()
-                };
-                membership = DisplayMembershipRope::from_canonical_window(canonical_items, window);
+                    let start = context
+                        .max_live_edge_items
+                        .map(|max| live_edge_window_start(canonical_items, max))
+                        .unwrap_or(0);
+                    membership = DisplayMembershipRope::from_canonical_window(
+                        canonical_items,
+                        start..canonical_items.len(),
+                    );
+                }
             }
         }
         membership.trim_to_live_edge(context.max_live_edge_items);

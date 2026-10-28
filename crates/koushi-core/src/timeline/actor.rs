@@ -1657,7 +1657,11 @@ impl TimelineActor {
         }
         let mut display_projection = DisplayProjectionState::from_canonical_window(
             &navigation_items,
-            0..if matches!(key.kind, TimelineKind::Room { .. }) { 0 } else { navigation_items.len() },
+            0..if matches!(key.kind, TimelineKind::Room { .. }) {
+                0
+            } else {
+                navigation_items.len()
+            },
         );
         let initial_display_context = DisplayProjectionContext::for_timeline(
             &key.kind,

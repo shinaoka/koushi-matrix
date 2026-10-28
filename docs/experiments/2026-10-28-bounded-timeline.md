@@ -1,6 +1,6 @@
 # Bounded scrollback experiment
 
-Base: origin/main (70673a89). Experimental branch, not a release fix.
+Base: origin/main (70673a89). The bounded-window improvement is selected for release; the remaining native jump is tracked separately.
 
 ## Design
 
@@ -119,3 +119,14 @@ threshold crossing alone is not sufficient. Further reproduction must include
 native input continuity and overlapping projection/measurement transitions.
 Test CSS is loaded through Vite so imports resolve consistently in both engines.
 No production code or installed application changed during this investigation.
+
+## Merge preparation
+
+The user selected the verified bounded-window improvement for merge and v0.31.0
+after bounded further investigation did not reproduce the residual native jump.
+Follow-up: [#1653](https://github.com/shinaoka/koushi-matrix/issues/1653).
+The help page now explains older-history scrolling and return to latest without
+exposing the implementation's slot budget. The proposed full list-engine
+replacement remains separate. Production review additionally requires sparse
+SDK Reset selection, ownership-preserving visibility rehydration, and current
+window revisions in headless QA observations; these corrections have RED cases.

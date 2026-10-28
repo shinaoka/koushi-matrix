@@ -144,3 +144,55 @@ fn visibility_rehydrate_preserves_more_than_sixty_distinct_reply_roots_within_bu
     assert!(state.slots.len() <= 240);
     assert!(state.window_reaches_live_end(canonical.len()));
 }
+
+#[test]
+fn visibility_toggle_does_not_admit_unrepresented_reply_roots_or_lose_reading_rows() {
+    let mut canonical = (0..420)
+        .map(|i| {
+            timeline_item(
+                &format!("$row{i}:example.invalid"),
+                Some("synthetic"),
+                "@member:example.invalid",
+                false,
+            )
+        })
+        .collect::<Vec<_>>();
+    for (i, item) in canonical.iter_mut().enumerate().skip(120) {
+        item.thread_root = Some(format!("$root{i}:example.invalid"));
+    }
+    let observation = TimelineViewportObservation {
+        first_visible_event_id: Some("$row80:example.invalid".to_owned()),
+        last_visible_event_id: Some("$row90:example.invalid".to_owned()),
+        ..Default::default()
+    };
+    let context = DisplayProjectionContext::for_timeline(&room_key().kind, &observation);
+    let mut state = DisplayProjectionState::default();
+    state.return_to_live_window(&canonical, &context);
+    let represented_roots = state
+        .slots
+        .iter()
+        .filter_map(|s| s.item.thread_root.clone())
+        .collect::<HashSet<_>>();
+    canonical[110].is_hidden = true;
+    state.rehydrate_bounded_visibility(&canonical, &context);
+    assert!(
+        state.slots.len() <= 240,
+        "visibility updates must not exceed the shared slot budget"
+    );
+    for i in [80, 90] {
+        assert!(
+            state.slots.iter().any(|slot| slot.canonical_index == i),
+            "reading endpoints must survive an unrelated toggle"
+        );
+    }
+    for root in represented_roots {
+        assert!(
+            state
+                .slots
+                .iter()
+                .any(|slot| slot.item.thread_root.as_ref() == Some(&root)),
+            "already represented roots must keep their budget"
+        );
+    }
+    assert!(state.window_reaches_live_end(canonical.len()));
+}

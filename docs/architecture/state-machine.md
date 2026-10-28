@@ -1789,7 +1789,7 @@ Each immediately-ending replacement increases the delay, preventing a hot
 subscribe/Resync loop. The first accepted live diff batch resets backoff to the
 base delay. Queue overflow recovery remains immediate.
 
-Experimental room display-window transitions (2026-10-28): interior viewport
+Room display-window transitions: interior viewport
 observations preserve membership. A revision-matched observation at a historical
 forward edge, or a cached backward pagination demand, moves a finite window while
 retaining the visible event span. The window revision changes when represented

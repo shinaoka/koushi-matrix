@@ -1120,7 +1120,7 @@ fn scheduled_item_absent(snapshot: &AppState, scheduled_id: &str) -> bool {
         .all(|item| item.scheduled_id != scheduled_id)
 }
 
-fn apply_timeline_diff(items: &mut Vec<TimelineItem>, diff: &TimelineDiff) {
+pub(crate) fn apply_timeline_diff(items: &mut Vec<TimelineItem>, diff: &TimelineDiff) {
     match diff {
         TimelineDiff::PushFront { item } => items.insert(0, item.clone()),
         TimelineDiff::PushBack { item } => items.push(item.clone()),
@@ -2048,19 +2048,25 @@ pub(super) async fn run_timeline_reconnect_scenario_impl(config: &QaConfig) -> R
             detached_end_token,
             qa_detached_historical_continuation_events(&user_b_full_id),
         )?;
+        let observation = super::viewport_observation::fresh_viewport_observation_for_qa(
+            &mut detached_conn,
+            &key_a,
+            TimelineViewportObservation {
+                display_window_revision: None,
+                first_visible_event_id: visible_gap.first_visible_event_id.clone(),
+                last_visible_event_id: visible_gap.last_visible_event_id.clone(),
+                visible_gap_ids: vec![visible_gap.id],
+                at_bottom: false,
+                bottom_arrival: TimelineBottomArrival::User,
+            },
+        )
+        .await?;
         let visible_gap_request_id = detached_conn.next_request_id();
         detached_conn
             .command(CoreCommand::Timeline(TimelineCommand::ObserveViewport {
                 request_id: visible_gap_request_id,
                 key: key_a.clone(),
-                observation: TimelineViewportObservation {
-                    display_window_revision: None,
-                    first_visible_event_id: visible_gap.first_visible_event_id.clone(),
-                    last_visible_event_id: visible_gap.last_visible_event_id.clone(),
-                    visible_gap_ids: vec![visible_gap.id],
-                    at_bottom: false,
-                    bottom_arrival: TimelineBottomArrival::User,
-                },
+                observation,
             }))
             .await
             .map_err(|e| {

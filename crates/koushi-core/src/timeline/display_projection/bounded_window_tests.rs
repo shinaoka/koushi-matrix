@@ -276,3 +276,266 @@ fn return_to_live_replaces_historical_window_with_bounded_latest_history() {
     apply_timeline_diffs_to_items(&mut replay, &diffs);
     assert_eq!(replay, state.display_items);
 }
+
+#[test]
+fn bounded_reset_live_tail_keeps_messages_before_a_long_hidden_suffix() {
+    let mut canonical = items(1120);
+    for item in &mut canonical[120..] {
+        item.is_hidden = true;
+    }
+    let observation = TimelineViewportObservation {
+        at_bottom: true,
+        ..Default::default()
+    };
+    let context = context(&observation);
+    let mut state = DisplayProjectionState::default();
+    state.return_to_live_window(&canonical, &context);
+    let replacement = canonical.clone();
+    project_sdk_batch(
+        &mut canonical,
+        &mut state,
+        &[TimelineDiff::Reset { items: replacement }],
+        &context,
+    );
+    assert_eq!(
+        state
+            .display_items()
+            .iter()
+            .filter(|item| !item.is_hidden)
+            .count(),
+        120
+    );
+    assert!(state.slots.len() <= 240);
+    assert!(state.window_reaches_live_end(canonical.len()));
+}
+
+#[test]
+fn bounded_reset_historical_window_preserves_both_sparse_viewport_endpoints() {
+    let mut canonical = items(700);
+    for item in &mut canonical[100..600] {
+        item.is_hidden = true;
+    }
+    let mut state = DisplayProjectionState::default();
+    let live = TimelineViewportObservation {
+        at_bottom: true,
+        ..Default::default()
+    };
+    state.return_to_live_window(&canonical, &context(&live));
+    let observation = observe(&state, 95, 605);
+    let context = context(&observation);
+    let replacement = canonical.clone();
+    project_sdk_batch(
+        &mut canonical,
+        &mut state,
+        &[TimelineDiff::Reset { items: replacement }],
+        &context,
+    );
+    for index in [95, 605] {
+        assert!(
+            state.slots.iter().any(|slot| slot.canonical_index == index),
+            "Reset must retain both observed sparse endpoints"
+        );
+    }
+    assert!(state.slots.len() <= 240);
+}
+
+fn standalone_root_context(
+    canonical: &[TimelineItem],
+    root_index: usize,
+    activity_index: usize,
+    observation: &TimelineViewportObservation,
+) -> DisplayProjectionContext {
+    use crate::threads_list::{AuthoritativeThreadAggregate, ThreadRootDisplayData};
+    let root_id = format!("$event{root_index}:example.invalid");
+    let activity_id = format!("$event{activity_index}:example.invalid");
+    context(observation).with_thread_roots(
+        TimelineThreadRootOrder::LatestReply,
+        vec![ThreadRootDisplayData {
+            root_event_id: root_id,
+            unread: 0,
+            activity_event_id: activity_id.clone(),
+            activity_timestamp_ms: Some(activity_index as u64),
+            item: Some(canonical[root_index].clone()),
+            aggregate: AuthoritativeThreadAggregate {
+                reply_count: 1,
+                latest_event_id: Some(activity_id),
+                latest_sender: None,
+                latest_sender_label: None,
+                latest_body_preview: None,
+                latest_timestamp_ms: Some(activity_index as u64),
+            },
+            pending: false,
+            failure_kind: None,
+        }],
+    )
+}
+
+#[test]
+fn standalone_root_at_top_allows_cached_backward_paging_and_rejects_duplicate_evidence() {
+    let mut canonical = items(1000);
+    for (index, item) in canonical.iter_mut().enumerate() {
+        item.timestamp_ms = Some(index as u64);
+    }
+    canonical[10].thread_root = Some("$event0:example.invalid".to_owned());
+    let mut state = DisplayProjectionState::from_canonical_window(&canonical, 880..1000);
+    let observation = observe(&state, 10, 890);
+    let context = standalone_root_context(&canonical, 0, 10, &observation);
+    state.reproject(&context);
+    assert!(state.observation_is_current(&observation));
+    let diffs = state.reconcile_bounded_window(
+        &canonical,
+        &observation,
+        &context,
+        Some(PaginationDirection::Backward),
+    );
+    assert!(
+        !diffs.is_empty(),
+        "a genuinely displayed root without canonical slots must not block cached pagination"
+    );
+    assert_eq!(state.first_visible_canonical_index(), Some(820));
+    assert!(
+        state
+            .display_items()
+            .iter()
+            .any(|item| item.id == canonical[0].id)
+    );
+    let after = state.clone();
+    assert!(
+        state
+            .reconcile_bounded_window(
+                &canonical,
+                &observation,
+                &context,
+                Some(PaginationDirection::Backward)
+            )
+            .is_empty()
+    );
+    assert_eq!(after, state);
+}
+
+#[test]
+fn standalone_root_at_bottom_allows_cached_forward_paging() {
+    let mut canonical = items(1000);
+    for (index, item) in canonical.iter_mut().enumerate() {
+        item.timestamp_ms = Some(index as u64);
+    }
+    canonical[990].thread_root = Some("$event999:example.invalid".to_owned());
+    let mut state = DisplayProjectionState::from_canonical_window(&canonical, 0..120);
+    let observation = observe(&state, 110, 990);
+    let context = standalone_root_context(&canonical, 999, 990, &observation);
+    state.reproject(&context);
+    assert!(state.observation_is_current(&observation));
+    let diffs = state.reconcile_bounded_window(&canonical, &observation, &context, None);
+    assert!(
+        !diffs.is_empty(),
+        "a standalone root at the rendered bottom must not block forward movement"
+    );
+    assert_eq!(state.slots.last().unwrap().canonical_index, 179);
+    assert!(
+        state
+            .display_items()
+            .iter()
+            .any(|item| item.id == canonical[999].id)
+    );
+    assert!(state.slots.len() <= 240);
+}
+
+#[test]
+fn standalone_root_repeated_fresh_demand_always_advances_or_reaches_cached_start() {
+    let mut canonical = items(1000);
+    for (index, item) in canonical.iter_mut().enumerate() {
+        item.timestamp_ms = Some(index as u64);
+    }
+    canonical[10].thread_root = Some("$event0:example.invalid".to_owned());
+    let mut state = DisplayProjectionState::from_canonical_window(&canonical, 880..1000);
+    let seed = observe(&state, 10, 890);
+    state.reproject(&standalone_root_context(&canonical, 0, 10, &seed));
+    for _ in 0..20 {
+        let oldest = state.slots.first().unwrap().canonical_index;
+        if oldest == 0 {
+            break;
+        }
+        let observation = observe(&state, 10, oldest + 10);
+        let context = standalone_root_context(&canonical, 0, 10, &observation);
+        let before = state.display_items().to_vec();
+        let diffs = state.reconcile_bounded_window(
+            &canonical,
+            &observation,
+            &context,
+            Some(PaginationDirection::Backward),
+        );
+        assert!(
+            state.slots.first().unwrap().canonical_index < oldest,
+            "cached demand must make strict progress, not leave a retry loop at the same boundary"
+        );
+        assert!(state.slots.len() <= 240);
+        let mut replay = before;
+        apply_timeline_diffs_to_items(&mut replay, &diffs);
+        assert_eq!(replay, state.display_items());
+        assert!(
+            state
+                .display_items()
+                .iter()
+                .any(|item| item.id == canonical[0].id)
+        );
+    }
+    assert_eq!(state.first_visible_canonical_index(), Some(0));
+    let observation = observe(&state, 10, 20);
+    let context = standalone_root_context(&canonical, 0, 10, &observation);
+    assert!(
+        state
+            .reconcile_bounded_window(
+                &canonical,
+                &observation,
+                &context,
+                Some(PaginationDirection::Backward)
+            )
+            .is_empty()
+    );
+    let mut unknown = observation;
+    unknown.first_visible_event_id = Some("$not-projected:example.invalid".to_owned());
+    assert!(
+        state
+            .reconcile_bounded_window(
+                &canonical,
+                &unknown,
+                &context,
+                Some(PaginationDirection::Backward)
+            )
+            .is_empty()
+    );
+}
+
+#[test]
+fn standalone_root_only_viewport_forward_demand_makes_strict_progress() {
+    let mut canonical = items(1000);
+    for (index, item) in canonical.iter_mut().enumerate() {
+        item.timestamp_ms = Some(index as u64);
+        if index < 240 {
+            item.is_hidden = true;
+        }
+    }
+    canonical[990].thread_root = Some("$event999:example.invalid".to_owned());
+    let mut state = DisplayProjectionState::from_canonical_window(&canonical, 0..240);
+    let observation = observe(&state, 990, 990);
+    let context = standalone_root_context(&canonical, 999, 990, &observation);
+    state.reproject(&context);
+    assert_eq!(
+        state
+            .display_items()
+            .iter()
+            .filter(|item| !item.is_hidden)
+            .count(),
+        1
+    );
+    let diffs = state.reconcile_bounded_window(&canonical, &observation, &context, None);
+    assert!(!diffs.is_empty());
+    assert_eq!(state.slots.last().unwrap().canonical_index, 299);
+    assert_eq!(state.slots.len(), 240);
+    assert!(
+        state
+            .display_items()
+            .iter()
+            .any(|item| !item.is_hidden && item.id == canonical[240].id)
+    );
+}

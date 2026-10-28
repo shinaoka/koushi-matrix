@@ -769,19 +769,25 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         }))
         .await
         .map_err(|e| format!("submit navigation fully-read marker: {e}"))?;
+    let observation = super::viewport_observation::fresh_viewport_observation_for_qa(
+        &mut conn_b,
+        &key_b,
+        TimelineViewportObservation {
+            display_window_revision: None,
+            first_visible_event_id: Some(event1_id.clone()),
+            last_visible_event_id: Some(event1_id.clone()),
+            visible_gap_ids: Vec::new(),
+            at_bottom: false,
+            bottom_arrival: TimelineBottomArrival::User,
+        },
+    )
+    .await?;
     let nav_viewport_id = conn_b.next_request_id();
     conn_b
         .command(CoreCommand::Timeline(TimelineCommand::ObserveViewport {
             request_id: nav_viewport_id,
             key: key_b.clone(),
-            observation: TimelineViewportObservation {
-                display_window_revision: None,
-                first_visible_event_id: Some(event1_id.clone()),
-                last_visible_event_id: Some(event1_id.clone()),
-                visible_gap_ids: Vec::new(),
-                at_bottom: false,
-                bottom_arrival: TimelineBottomArrival::User,
-            },
+            observation,
         }))
         .await
         .map_err(|e| format!("submit navigation viewport observation: {e}"))?;
