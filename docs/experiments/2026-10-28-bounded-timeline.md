@@ -106,3 +106,16 @@ Tauri navigation command tests: 7 passed. Main self-review traced the registered
 IPC -> typed command -> manager -> actor -> window metadata/diffs -> renderer
 boundary checks -> existing stabilization transaction path. No PR or release gate
 claim is made; no installed application or existing user profile was changed.
+
+## Follow-up investigation
+
+Native feedback reports substantial improvement with a possible remaining jump.
+A native diagnostic candidate ends a projection transaction with missing-anchor
+while history crosses the virtualization threshold. A new synthetic two-page
+history test (including a mixed Set update) preserves the original visible row
+in both Chromium and WebKit. All six viewport transaction cases now run in both
+engines: 12 passed. This does not reproduce or explain the remaining native jump;
+threshold crossing alone is not sufficient. Further reproduction must include
+native input continuity and overlapping projection/measurement transitions.
+Test CSS is loaded through Vite so imports resolve consistently in both engines.
+No production code or installed application changed during this investigation.
