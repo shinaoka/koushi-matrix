@@ -2054,6 +2054,7 @@ pub(super) async fn run_timeline_reconnect_scenario_impl(config: &QaConfig) -> R
                 request_id: visible_gap_request_id,
                 key: key_a.clone(),
                 observation: TimelineViewportObservation {
+                    display_window_revision: None,
                     first_visible_event_id: visible_gap.first_visible_event_id.clone(),
                     last_visible_event_id: visible_gap.last_visible_event_id.clone(),
                     visible_gap_ids: vec![visible_gap.id],

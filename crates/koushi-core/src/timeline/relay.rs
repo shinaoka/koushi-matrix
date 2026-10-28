@@ -1512,7 +1512,7 @@ where
     }
     let mut candidate_display = DisplayProjectionState::from_canonical_window(
         &authoritative_items,
-        0..authoritative_items.len(),
+        0..if matches!(key.kind, TimelineKind::Room { .. }) { 0 } else { authoritative_items.len() },
     );
     let context =
         DisplayProjectionContext::for_timeline(&key.kind, &TimelineViewportObservation::default())
@@ -1523,7 +1523,10 @@ where
                     .expect("thread-root projection service lock must not be poisoned")
                     .display_data_for_room(key.room_id()),
             );
-    candidate_display.reproject(&context);
+    if matches!(key.kind, TimelineKind::Room { .. }) {
+        candidate_display.return_to_live_window(&authoritative_items, &context);
+        candidate_display.window_revision = display_projection.window_revision.saturating_add(1);
+    } else { candidate_display.reproject(&context); }
     let emitted_items = candidate_display.display_items().to_vec();
     let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
         return false;

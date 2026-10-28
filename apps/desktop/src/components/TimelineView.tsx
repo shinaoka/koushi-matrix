@@ -731,6 +731,14 @@ export const TimelineView = memo(function TimelineView({
     "Focused" in timelineKey.kind ? timelineKey.kind.Focused.event_id : null;
   const items = getItems(store, timelineKey);
   const navigationSnapshot = store.keys.get(timelineKeyHash)?.navigation ?? null;
+  const displayWindow = navigationSnapshot?.display_window ?? null;
+  // Physical bottom can be the end of a historical window, not the live edge.
+  // Refs also fence delayed callbacks that captured the previous navigation DTO.
+  const returnToLivePendingRef = useRef<{ key: string } | null>(null);
+  const windowReachesLiveEndRef = useRef(true);
+  windowReachesLiveEndRef.current = displayWindow?.reaches_live_end ?? true;
+  useLayoutEffect(() => { returnToLivePendingRef.current = null; }, [timelineKeyHash]);
+
   // Issue #460: immediate acknowledgment on the user's "Request keys and
   // retry" click: a toast + a local pending marker, until Rust publishes a
   // terminal request state via the timeline DTO. Presentation-only.
@@ -1083,6 +1091,11 @@ export const TimelineView = memo(function TimelineView({
   );
 
   const setViewportIntentToLiveEdge = useCallback(() => {
+    if (!windowReachesLiveEndRef.current) {
+      viewportIntentRef.current = { kind: "free-scroll" };
+      stickToBottomAfterMeasurementRef.current = false;
+      return;
+    }
     if (viewportIntentRef.current.kind !== "live-edge") viewportTransactionRef.current.invalidate("live-edge");
     viewportIntentRef.current = { kind: "live-edge" };
     timelineViewportSessionMemory.set(timelineKeyHash, { mode: "live-edge" });
@@ -1194,7 +1207,7 @@ export const TimelineView = memo(function TimelineView({
       }
 
       const container = containerRef.current;
-      const measuredAtBottom = Boolean(container && isScrolledToBottom(container));
+      const measuredAtBottom = Boolean(windowReachesLiveEndRef.current && container && isScrolledToBottom(container));
       stickToBottomAfterMeasurementRef.current = measuredAtBottom;
       if (measuredAtBottom) {
         setViewportIntentToLiveEdge();
@@ -1288,6 +1301,12 @@ export const TimelineView = memo(function TimelineView({
     userScrollInputPendingRef.current = false;
   }, [setViewportIntentToFreeScroll]);
 
+  useLayoutEffect(() => {
+    if (!displayWindow?.reaches_live_end && displayWindow !== null) {
+      setViewportIntentToFreeScroll();
+    }
+  }, [displayWindow, setViewportIntentToFreeScroll]);
+
   const noteUserViewportInput = useCallback(() => {
     const owner = viewportTransactionRef.current;
     const container = containerRef.current;
@@ -1307,6 +1326,7 @@ export const TimelineView = memo(function TimelineView({
     if (transaction && !transaction.projectionCommitted && rebased) owner.rebase(transaction.id, rebased);
   }, []);
   const markUserScrollInput = useCallback((options: { keepLiveEdgeAtBottom?: boolean } = {}) => {
+    returnToLivePendingRef.current = null;
     // Input belongs to the user even when it leaves the logical intent kind
     // unchanged (for example another free-scroll wheel event). A queued
     // projection frame must never reclaim that viewport position.
@@ -1324,6 +1344,7 @@ export const TimelineView = memo(function TimelineView({
     markScrollActivityActive();
     if (
       options.keepLiveEdgeAtBottom &&
+      windowReachesLiveEndRef.current &&
       container &&
       isScrolledToBottom(container)
     ) {
@@ -1334,7 +1355,7 @@ export const TimelineView = memo(function TimelineView({
 
   const applyViewportIntent = useCallback((): boolean => {
     const container = containerRef.current;
-    if (!container || viewportIntentRef.current.kind !== "live-edge") {
+    if (!container || !windowReachesLiveEndRef.current || viewportIntentRef.current.kind !== "live-edge") {
       return false;
     }
     const targetScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
@@ -1671,7 +1692,7 @@ export const TimelineView = memo(function TimelineView({
         timelineDiffsContainOwnOutgoingItem(event.ItemsUpdated.diffs, currentUserId)
       ) {
         setViewportIntentToLiveEdge();
-        stickToBottomAfterMeasurementRef.current = true;
+        stickToBottomAfterMeasurementRef.current = windowReachesLiveEndRef.current;
       }
 
       if (!isAppLevelStore) {
@@ -1953,7 +1974,7 @@ export const TimelineView = memo(function TimelineView({
       const heldAnchor = owner.active()?.anchor ?? stableAnchor();
       const heldAnchorSurvives = heldAnchor && stableRowIds.has(heldAnchor.itemId);
       const anchor =
-        !heldAnchorSurvives && container && viewportIntentRef.current.kind !== "live-edge"
+        !heldAnchorSurvives && container && (viewportIntentRef.current.kind !== "live-edge" || !windowReachesLiveEndRef.current)
           ? purePrepend
             ? capturePrependAnchor(container)
             : captureAnchor(container, {
@@ -2379,6 +2400,16 @@ export const TimelineView = memo(function TimelineView({
     if (!container) {
       return;
     }
+    if (displayWindow) {
+      const rows = committedVisibleRowsRef.current?.rows ?? [];
+      const eventIds = rows.map((row) => row.activity_event_id).filter((id) => id !== null);
+      if (
+        viewportTransactionRef.current.active() !== null ||
+        deferPurePrepend ||
+        (eventIds.at(0) ?? null) !== displayWindow.first_event_id ||
+        (eventIds.at(-1) ?? null) !== displayWindow.last_event_id
+      ) return;
+    }
     const visible = visibleTimelineViewportFacts(container);
     if (
       !visible.firstVisibleEventId &&
@@ -2387,11 +2418,11 @@ export const TimelineView = memo(function TimelineView({
     ) {
       return;
     }
-    const atBottom = isScrolledToBottom(container);
+    const atBottom = windowReachesLiveEndRef.current && isScrolledToBottom(container);
     const latestVisible =
       latestViewportEventId !== null &&
       visible.lastVisibleEventId === latestViewportEventId;
-    const effectiveAtBottom = atBottom || latestVisible;
+    const effectiveAtBottom = windowReachesLiveEndRef.current && (atBottom || latestVisible);
     setViewportAtBottom((current) =>
       current === effectiveAtBottom ? current : effectiveAtBottom
     );
@@ -2413,7 +2444,8 @@ export const TimelineView = memo(function TimelineView({
         .map((id) => `${id.topology_revision}:${id.ordinal}`)
         .join("\u0002"),
       effectiveAtBottom ? "bottom" : "not-bottom",
-      bottomArrival
+      bottomArrival,
+      displayWindow?.revision ?? ""
     ].join("\u0000");
     if (lastViewportObservationRef.current === signature) {
       return;
@@ -2426,10 +2458,13 @@ export const TimelineView = memo(function TimelineView({
         visible.visibleGapIds,
         effectiveAtBottom,
         bottomArrival,
-        viewportThreadRootEventId
+        viewportThreadRootEventId,
+        ...(displayWindow ? [displayWindow.revision] : [])
       )
       .catch(() => undefined);
   }, [
+    displayWindow,
+    deferPurePrepend,
     focusedTimelineTargetEventId,
     isAnchored,
     latestViewportEventId,
@@ -2925,7 +2960,7 @@ export const TimelineView = memo(function TimelineView({
         restoredRoomScrollAnchorSignatureRef.current = activeRoomAnchorSignature;
         initialLiveEdgeScrollAppliedRef.current = initialLiveEdgeScrollKey;
         runWithScrollWriteReason("roomRestore", () => {
-          scrollContainerToBottom(container);
+          if (windowReachesLiveEndRef.current) scrollContainerToBottom(container);
         });
       }
     } else if (
@@ -2940,7 +2975,7 @@ export const TimelineView = memo(function TimelineView({
         emitRoomReentryDecision("live_edge", false);
         setViewportIntentToLiveEdge();
         runWithScrollWriteReason("liveEdge", () => {
-          scrollContainerToBottom(container);
+          if (windowReachesLiveEndRef.current) scrollContainerToBottom(container);
         });
         // Only mark the live-edge scroll as applied once the content actually
         // overflows the viewport. If the first batch is too short to scroll,
@@ -2954,14 +2989,14 @@ export const TimelineView = memo(function TimelineView({
           // The DOM scrollHeight used above may be an underestimate before
           // variable-height rows are measured. Force a follow-up snap to the
           // new bottom once the measurement effect has actual heights.
-          stickToBottomAfterMeasurementRef.current = true;
+          stickToBottomAfterMeasurementRef.current = windowReachesLiveEndRef.current;
         }
       }
     }
     if (stickToBottomAfterMeasurementRef.current) {
       if (container) {
         runWithScrollWriteReason("liveEdge", () => {
-          scrollContainerToBottom(container);
+          if (windowReachesLiveEndRef.current) scrollContainerToBottom(container);
         });
       }
       stickToBottomAfterMeasurementRef.current = false;
@@ -3125,7 +3160,7 @@ export const TimelineView = memo(function TimelineView({
       return;
     }
     const container = containerRef.current;
-    const measuredAtBottom = Boolean(container && isScrolledToBottom(container));
+    const measuredAtBottom = Boolean(windowReachesLiveEndRef.current && container && isScrolledToBottom(container));
     stickToBottomAfterMeasurementRef.current = measuredAtBottom;
     if (measuredAtBottom) {
       setViewportIntentToLiveEdge();
@@ -3372,7 +3407,7 @@ export const TimelineView = memo(function TimelineView({
       if (viewportTransactionRef.current.active()) setViewportTransactionRevision((revision) => revision + 1);
     }
     const userInputPending = hadInputIntent || !isProgrammaticEcho;
-    const actuallyAtBottom = Boolean(container && isScrolledToBottom(container));
+    const actuallyAtBottom = Boolean(windowReachesLiveEndRef.current && container && isScrolledToBottom(container));
     if (userInputPending && actuallyAtBottom) {
       setViewportIntentToLiveEdge();
       if (isProgrammaticEcho) {
@@ -3495,6 +3530,18 @@ export const TimelineView = memo(function TimelineView({
     [markUserScrollInput]
   );
   const jumpToBottom = useCallback(() => {
+    if (!windowReachesLiveEndRef.current) {
+      if ("Room" in timelineKey.kind && transport.returnToLive) {
+        const pending = { key: timelineKeyHash };
+        returnToLivePendingRef.current = pending;
+        void transport.returnToLive(timelineKey).catch(() => {
+          if (returnToLivePendingRef.current === pending) returnToLivePendingRef.current = null;
+        });
+      } else if (onReturnToLive) {
+        void onReturnToLive();
+      }
+      return;
+    }
     const container = containerRef.current;
     if (!container) {
       return;
@@ -3506,19 +3553,23 @@ export const TimelineView = memo(function TimelineView({
     advanceViewportEpoch();
     setViewportIntentToLiveEdge();
     runWithScrollWriteReason("jumpToBottom", () => {
-      scrollContainerToBottom(container);
+      if (windowReachesLiveEndRef.current) scrollContainerToBottom(container);
     });
     updateViewportMetrics();
     reportViewportObservation();
     scheduleScrollFollowUpFrame(() => {
       runWithScrollWriteReason("jumpToBottom", () => {
-        scrollContainerToBottom(container);
+        if (windowReachesLiveEndRef.current) scrollContainerToBottom(container);
       });
       updateViewportMetrics();
       reportViewportObservation();
       scheduleBackfillEvaluation("live_edge_settled");
     });
   }, [
+    onReturnToLive,
+    timelineKey,
+    timelineKeyHash,
+    transport,
     setViewportIntentToLiveEdge,
     reportViewportObservation,
     runWithScrollWriteReason,
@@ -3527,6 +3578,14 @@ export const TimelineView = memo(function TimelineView({
     updateViewportMetrics,
     advanceViewportEpoch
   ]);
+  useLayoutEffect(() => {
+    if (returnToLivePendingRef.current?.key !== timelineKeyHash || !displayWindow?.reaches_live_end || deferPurePrepend) return;
+    const rows = committedVisibleRowsRef.current?.rows ?? [];
+    const eventIds = rows.map((row) => row.activity_event_id).filter((id) => id !== null);
+    if ((eventIds.at(0) ?? null) !== displayWindow.first_event_id || (eventIds.at(-1) ?? null) !== displayWindow.last_event_id) return;
+    returnToLivePendingRef.current = null;
+    jumpToBottom();
+  }, [deferPurePrepend, displayWindow, jumpToBottom, timelineKeyHash, visibleRows]);
   useEffect(() => {
     onRegisterJumpToLatest?.(jumpToBottom);
     return () => onRegisterJumpToLatest?.(null);

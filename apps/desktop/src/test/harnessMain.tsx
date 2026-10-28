@@ -255,6 +255,9 @@ const transport: TimelineTransport = {
   hideLinkPreview(roomId, eventId) {
     return ipc.invoke("hide_link_preview", { roomId, eventId });
   },
+  returnToLive(timelineKey) {
+    return ipc.invoke("return_timeline_to_live", { timelineKey });
+  },
   observeViewport(
     roomId,
     firstVisibleEventId,
@@ -262,7 +265,8 @@ const transport: TimelineTransport = {
     visibleGapIds,
     atBottom,
     bottomArrival,
-    threadRootEventId
+    threadRootEventId,
+    displayWindowRevision
   ) {
     return ipc.invoke("observe_timeline_viewport", {
       roomId,
@@ -271,7 +275,8 @@ const transport: TimelineTransport = {
       visibleGapIds,
       atBottom,
       bottomArrival,
-      threadRootEventId
+      threadRootEventId,
+      displayWindowRevision
     });
   },
   openAtTimestamp(roomId, timestampMs) {

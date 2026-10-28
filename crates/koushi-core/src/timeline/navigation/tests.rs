@@ -253,6 +253,7 @@ fn resubscribe_replay_keeps_scrolled_room_context_complete() {
         &key.kind,
         &items,
         &TimelineViewportObservation {
+            display_window_revision: None,
             bottom_arrival: TimelineBottomArrival::User,
             at_bottom: false,
             first_visible_event_id: Some("$event-10:test".to_owned()),
@@ -1757,6 +1758,7 @@ fn timeline_navigation_marks_first_unread_inside_viewport() {
         &items,
         Some("$read:test"),
         &TimelineViewportObservation {
+            display_window_revision: None,
             first_visible_event_id: Some("$unread:test".to_owned()),
             last_visible_event_id: Some("$newer:test".to_owned()),
             visible_gap_ids: Vec::new(),
@@ -1793,6 +1795,7 @@ fn timeline_navigation_separates_local_viewed_and_server_confirmed_boundaries() 
         Some("$local:test"),
         TimelineReadStateSync::Pending,
         &TimelineViewportObservation {
+            display_window_revision: None,
             first_visible_event_id: Some("$local:test".to_owned()),
             last_visible_event_id: Some("$local:test".to_owned()),
             visible_gap_ids: Vec::new(),
@@ -1835,6 +1838,7 @@ fn timeline_navigation_reports_unread_below_viewport_and_newer_count() {
         &items,
         Some("$visible:test"),
         &TimelineViewportObservation {
+            display_window_revision: None,
             first_visible_event_id: Some("$read:test".to_owned()),
             last_visible_event_id: Some("$visible:test".to_owned()),
             visible_gap_ids: Vec::new(),
@@ -1875,6 +1879,7 @@ fn timeline_navigation_does_not_count_read_history_below_viewport_as_newer() {
         &items,
         Some("$read-marker:test"),
         &TimelineViewportObservation {
+            display_window_revision: None,
             first_visible_event_id: Some("$visible:test".to_owned()),
             last_visible_event_id: Some("$visible:test".to_owned()),
             visible_gap_ids: Vec::new(),
@@ -1902,6 +1907,7 @@ fn timeline_navigation_does_not_count_newer_events_without_read_marker() {
         &items,
         None,
         &TimelineViewportObservation {
+            display_window_revision: None,
             first_visible_event_id: Some("$visible:test".to_owned()),
             last_visible_event_id: Some("$visible:test".to_owned()),
             visible_gap_ids: Vec::new(),
@@ -1944,6 +1950,7 @@ fn timeline_navigation_ignores_own_local_and_synthetic_items_for_unread_counts()
         &items,
         Some("$read:test"),
         &TimelineViewportObservation {
+            display_window_revision: None,
             first_visible_event_id: Some("$read:test".to_owned()),
             last_visible_event_id: Some("$remote:test".to_owned()),
             visible_gap_ids: Vec::new(),
@@ -2925,6 +2932,12 @@ async fn replay_initial_items_republishes_unchanged_read_navigation() {
     })
     .await
     .expect("replayed items must include unchanged read navigation for a new subscriber");
+    let mut expected = expected;
+    if let (Some(actual), Some(previous)) = (&replayed.display_window, &mut expected.display_window)
+    {
+        assert!(actual.revision >= previous.revision);
+        previous.revision = actual.revision;
+    }
     assert_eq!(replayed, expected);
 }
 

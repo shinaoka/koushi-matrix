@@ -1065,6 +1065,45 @@ impl TimelineActor {
             return;
         }
 
+        if matches!(self.key.kind, TimelineKind::Room { .. })
+            && direction == PaginationDirection::Backward
+            && self
+                .display_projection
+                .first_visible_canonical_index()
+                .is_some_and(|i| i > 0)
+        {
+            let context = self.display_projection_context();
+            // Pagination is explicit renderer demand, not a stale viewport event.
+            // Rebase surviving endpoint identities onto the current publication.
+            let mut demand = self.viewport_observation.clone();
+            demand.display_window_revision = Some(self.display_projection.window_revision);
+            if demand.first_visible_event_id.is_none() || demand.last_visible_event_id.is_none() {
+                let metadata = self
+                    .display_projection
+                    .window_metadata(self.navigation_items.len());
+                demand.first_visible_event_id = metadata.first_event_id.clone();
+                demand.last_visible_event_id = metadata.first_event_id;
+            }
+            let diffs = self.display_projection.reconcile_bounded_window(
+                &self.navigation_items,
+                &demand,
+                &context,
+                Some(direction),
+            );
+            self.emit_navigation_if_changed();
+            if !diffs.is_empty() {
+                self.emit_items_updated(diffs);
+            }
+            self.emit(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                request_id: Some(request_id),
+                key: self.key.clone(),
+                direction,
+                state: PaginationState::Idle,
+                prepend_expected: Some(false),
+            }));
+            return;
+        }
+
         let serial = self.next_pagination_serial;
         self.next_pagination_serial = self.next_pagination_serial.saturating_add(1);
         let key = self.key.clone();
@@ -1242,23 +1281,36 @@ impl TimelineActor {
     /// an exact cause; internal replay recovery does not. The projection ACK
     /// identity remains owned by the actor in both cases.
     pub(super) fn handle_replay_initial_items(&mut self, cause_request_id: Option<RequestId>) {
-        let window = replay_initial_items_window_range(
-            &self.key.kind,
-            &self.navigation_items,
-            &self.viewport_observation,
-        );
-        let items = self.navigation_items[window.clone()].to_vec();
+        let window = if matches!(self.key.kind, TimelineKind::Room { .. }) {
+            self.display_projection
+                .canonical_window_range(self.navigation_items.len())
+        } else {
+            replay_initial_items_window_range(
+                &self.key.kind,
+                &self.navigation_items,
+                &self.viewport_observation,
+            )
+        };
+        let items = if matches!(self.key.kind, TimelineKind::Room { .. }) {
+            self.display_projection.display_items().to_vec()
+        } else {
+            self.navigation_items[window.clone()].to_vec()
+        };
         let item_count = items.len();
         trace_timeline_items("replay_initial", &self.key, &items);
         let mut candidate_display_projection = self.display_projection.clone();
         let candidate_context = self.display_projection_context();
         // Replay preserves manager-owned pending rows and suppressed late SDK
         // echoes, including when the previous broadcast had no receivers.
-        candidate_display_projection.rematerialize_window(
-            &self.navigation_items,
-            window,
-            &candidate_context,
-        );
+        if matches!(self.key.kind, TimelineKind::Room { .. }) {
+            candidate_display_projection.reproject(&candidate_context);
+        } else {
+            candidate_display_projection.rematerialize_window(
+                &self.navigation_items,
+                window,
+                &candidate_context,
+            );
+        }
         let emitted = commit_prepared_initial_window_for_generation(
             &mut self.navigation_items,
             &mut self.display_projection,
@@ -1328,6 +1380,12 @@ impl TimelineActor {
             self.display_projection.display_items(),
             &mut snapshot,
         );
+        if matches!(self.key.kind, TimelineKind::Room { .. }) {
+            snapshot.display_window = Some(
+                self.display_projection
+                    .window_metadata(self.navigation_items.len()),
+            );
+        }
         snapshot
     }
     pub(super) fn emit_navigation_if_changed(&mut self) {
@@ -1543,6 +1601,7 @@ pub(super) fn derive_timeline_navigation_snapshot_with_read_state(
             .map(ToOwned::to_owned)
     });
     let mut snapshot = TimelineNavigationSnapshot {
+        display_window: None,
         read_marker_event_id: server_confirmed_read_event_id.clone(),
         read_marker_display_event_id: display_marker,
         first_unread_event_id: None,

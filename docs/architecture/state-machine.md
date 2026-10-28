@@ -1789,6 +1789,15 @@ Each immediately-ending replacement increases the delay, preventing a hot
 subscribe/Resync loop. The first accepted live diff batch resets backoff to the
 base delay. Queue overflow recovery remains immediate.
 
+Experimental room display-window transitions (2026-10-28): interior viewport
+observations preserve membership. A revision-matched observation at a historical
+forward edge, or a cached backward pagination demand, moves a finite window while
+retaining the visible event span. The window revision changes when represented
+boundaries change, including SDK invalidation. Stale revisions are rejected before
+read-boundary processing. Physical bottom is semantic live only when the window
+reaches the canonical end. Cached backward completion publishes correlated Idle;
+SDK pagination is used only after the retained canonical prefix is exhausted.
+
 Canonical SDK positions and bounded display positions are distinct domains.
 The timeline actor owns the only production projection transaction: it applies
 the canonical batch once, advances exact pre-normalization display membership,

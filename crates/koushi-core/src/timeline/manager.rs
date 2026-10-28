@@ -1441,6 +1441,14 @@ impl TimelineManagerActor {
                     .await;
                 }
             }
+            TimelineCommand::ReturnToLive { request_id, key } => {
+                Box::pin(self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::ReturnToLive { request_id },
+                ))
+                .await;
+            }
             TimelineCommand::ObserveViewport {
                 request_id,
                 key,
@@ -2837,3 +2845,6 @@ mod thread_mention_projection_tests;
 
 #[cfg(test)]
 mod thread_hydration_tests;
+
+#[cfg(test)]
+mod return_to_live_tests;

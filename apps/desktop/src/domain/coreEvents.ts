@@ -471,6 +471,7 @@ export type TimelineUnreadPosition =
   | "unknown";
 
 export interface TimelineNavigationSnapshot {
+  display_window?: { revision: number; first_event_id: string | null; last_event_id: string | null; reaches_live_end: boolean } | null;
   read_marker_event_id: string | null;
   read_marker_display_event_id: string | null;
   first_unread_event_id: string | null;

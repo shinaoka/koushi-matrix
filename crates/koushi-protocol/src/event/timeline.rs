@@ -387,6 +387,8 @@ impl fmt::Debug for TimelineDisplayLabelUpdate {
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelineViewportObservation {
+    #[serde(default)]
+    pub display_window_revision: Option<u64>,
     pub first_visible_event_id: Option<String>,
     pub last_visible_event_id: Option<String>,
     #[serde(default)]
@@ -433,7 +435,24 @@ pub enum TimelineReadStateSync {
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineDisplayWindow {
+    pub revision: u64,
+    pub first_event_id: Option<String>,
+    pub last_event_id: Option<String>,
+    pub reaches_live_end: bool,
+}
+impl fmt::Debug for TimelineDisplayWindow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TimelineDisplayWindow")
+            .field("revision", &self.revision)
+            .field("reaches_live_end", &self.reaches_live_end)
+            .finish_non_exhaustive()
+    }
+}
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelineNavigationSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_window: Option<TimelineDisplayWindow>,
     pub read_marker_event_id: Option<String>,
     pub read_marker_display_event_id: Option<String>,
     pub first_unread_event_id: Option<String>,

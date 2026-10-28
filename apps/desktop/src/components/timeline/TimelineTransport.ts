@@ -16,6 +16,8 @@ export interface TimelineTransport {
   listenCoreEvents(listener: (payload: CoreEventPayload) => void): () => void;
   /** Re/subscribe this key after the listener is active so InitialItems cannot be missed. */
   ensureSubscribed?(timelineKey: TimelineKey): Promise<void>;
+  /** Ask Core to restore the bounded room window to its live end. */
+  returnToLive?(timelineKey: TimelineKey): Promise<void>;
   /** Invoke a backward-pagination command for this timeline key. */
   paginateBackwards(timelineKey: TimelineKey): Promise<void>;
   repairTimeline?(roomId: string): Promise<void>;
@@ -93,7 +95,8 @@ export interface TimelineTransport {
      * the fact, Rust decides whether it counts as reading.
      */
     bottomArrival: TimelineBottomArrival,
-    threadRootEventId: string | null
+    threadRootEventId: string | null,
+    displayWindowRevision?: number
   ): Promise<void>;
   /** Persist the current room-local read/scroll anchor. */
   updateScrollAnchor?(roomId: string, anchor: TimelineScrollAnchor): Promise<void>;

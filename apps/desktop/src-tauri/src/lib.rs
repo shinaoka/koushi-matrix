@@ -1865,6 +1865,7 @@ pub fn run() {
             commands::navigation::update_navigation_scroll_anchor,
             commands::navigation::observe_timeline_viewport,
             commands::timeline::ensure_timeline_subscribed,
+            commands::timeline::return_timeline_to_live,
             commands::timeline::paginate_timeline_backwards,
             commands::timeline::paginate_thread_timeline_backwards,
             commands::timeline::send_text,

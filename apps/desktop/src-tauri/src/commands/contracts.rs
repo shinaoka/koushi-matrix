@@ -851,6 +851,7 @@ fn tauri_command_routes_build_expected_core_commands() {
         false,
         TimelineBottomArrival::User,
         None,
+        None,
     ) {
         CoreCommand::Timeline(TimelineCommand::ObserveViewport {
             request_id,

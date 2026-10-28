@@ -254,6 +254,11 @@ pub enum TimelineCommand {
         request_id: RequestId,
         key: TimelineKey,
     },
+    /// Explicitly replace a historical room display window with its live tail.
+    ReturnToLive {
+        request_id: RequestId,
+        key: TimelineKey,
+    },
     ObserveViewport {
         request_id: RequestId,
         key: TimelineKey,
@@ -452,6 +457,11 @@ impl fmt::Debug for TimelineCommand {
                 .debug_struct("CancelLinkPreviews")
                 .field("request_id", request_id)
                 .field("key", key)
+                .finish(),
+            Self::ReturnToLive { request_id, .. } => formatter
+                .debug_struct("ReturnToLive")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
                 .finish(),
             Self::ObserveViewport { request_id, .. } => formatter
                 .debug_struct("ObserveViewport")

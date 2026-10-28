@@ -1838,6 +1838,19 @@ feasibility gate selects an engine and this section is amended before production
 replacement. The proposal does not establish a fixed recurrence or a supported
 large-room capacity.
 
+Experimental bounded-window branch (2026-10-28): room display membership is a
+finite window, not a full-prefix expansion on leaving the live edge. Cached
+backward demand and near-forward-edge demand move it in bounded pages, retaining
+the visible span. Core provides revision, first/last event identities and whether
+the represented window reaches the canonical live end. Renderer observations echo
+the revision only after those boundaries are applied. Stale observations cannot
+move the window or advance read state. A historical physical bottom never enables
+live follow. Both movement directions use the existing pre-layout projection
+stabilization transaction. Reset/removal/replay invalidate changed boundaries.
+The experiment bounds additional display membership, not canonical SDK retention,
+payload bytes, media memory or process RSS. See
+[experiment record](../experiments/2026-10-28-bounded-timeline.md).
+
 Timeline scrollback uses a two-layer contract: core owns Matrix ordering,
 subscriptions, diffs, and pagination state; React owns render lists, viewport
 measurement, and DOM anchoring.

@@ -775,6 +775,7 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
             request_id: nav_viewport_id,
             key: key_b.clone(),
             observation: TimelineViewportObservation {
+                display_window_revision: None,
                 first_visible_event_id: Some(event1_id.clone()),
                 last_visible_event_id: Some(event1_id.clone()),
                 visible_gap_ids: Vec::new(),

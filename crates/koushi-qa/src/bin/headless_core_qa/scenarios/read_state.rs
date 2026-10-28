@@ -429,6 +429,7 @@ pub(super) async fn observe_viewport(
         request_id,
         key: key.clone(),
         observation: TimelineViewportObservation {
+            display_window_revision: None,
             first_visible_event_id: Some(event_id.to_owned()),
             last_visible_event_id: Some(event_id.to_owned()),
             visible_gap_ids: Vec::new(),
