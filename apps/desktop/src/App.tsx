@@ -57,6 +57,11 @@ import {
   documentFromText,
   plainBodyFromDocument
 } from "./domain/composerDocument";
+import {
+  assistantDraftOverlayDecision,
+  overlayIsShown,
+  type AssistantDraftOverlayDecision
+} from "./domain/assistantDraftAdoption";
 import type { MatrixPermalinkTarget } from "./domain/matrixPermalink";
 import { resolveDirectorySubmission } from "./domain/directorySubmission";
 import { serverNameFromMatrixId } from "./domain/matrixPermalink";
@@ -814,6 +819,14 @@ function composerDraftApiAccount(scope: ComposerDraftScope): {
   };
 }
 
+
+/** The renderer's not-yet-acknowledged composer text for one draft scope. */
+type ComposerDraftOverlay = {
+  scope: ComposerDraftScope;
+  document: ComposerDocument;
+  revision: ComposerDraftRevision | null;
+};
+
 export function App() {
   useModalFocusTracking();
   const [helpOpen, setHelpOpen] = useState(false);
@@ -1285,16 +1298,8 @@ function AccountContent({
   // rooms are `SpaceRailItem.leave_candidates` and Rust re-admits the choice.
   const [pendingSpaceLeave, setPendingSpaceLeave] = useState<{ spaceId: string } | null>(null);
   const [spaceLeaveInFlight, setSpaceLeaveInFlight] = useState(false);
-  const mainComposerOverlayRef = useRef<{
-    scope: ComposerDraftScope;
-    document: ComposerDocument;
-    revision: ComposerDraftRevision | null;
-  } | null>(null);
-  const threadComposerOverlayRef = useRef<{
-    scope: ComposerDraftScope;
-    document: ComposerDocument;
-    revision: ComposerDraftRevision | null;
-  } | null>(null);
+  const mainComposerOverlayRef = useRef<ComposerDraftOverlay | null>(null);
+  const threadComposerOverlayRef = useRef<ComposerDraftOverlay | null>(null);
   const drainComposerForAccountSwitchRef = useRef<() => Promise<boolean>>(async () => true);
   const openedNotificationActivationRef = useRef<DesktopNotificationActivation | null>(null);
   // The composer documents below are derived from these refs during render, so
@@ -2094,18 +2099,29 @@ function AccountContent({
     ? composerDraftAccountOwnerKey(currentComposerAccount)
     : "no-account";
   const mainComposerOverlay = mainComposerOverlayRef.current;
-  const composerDocument =
+  const mainAssistantDraft = snapshot?.state.ui.timeline.composer.assistant_draft ?? null;
+  const activeMainComposerOverlay =
     timelineRoomId &&
     mainComposerOverlay?.scope.target.kind === "main" &&
     mainComposerOverlay.scope.target.room_id === timelineRoomId &&
     mainComposerOverlay.scope.account.homeserver === currentComposerAccount?.homeserver &&
     mainComposerOverlay.scope.account.user_id === currentComposerAccount?.userId &&
     mainComposerOverlay.scope.account.device_id === currentComposerAccount?.deviceId
-      ? mainComposerOverlay.document
+      ? mainComposerOverlay
+      : null;
+  // #1644: an assistant-staged draft replaces only an empty, older overlay.
+  const mainAssistantDecision = assistantDraftOverlayDecision(
+    activeMainComposerOverlay,
+    mainAssistantDraft
+  );
+  const composerDocument =
+    activeMainComposerOverlay && overlayIsShown(mainAssistantDecision)
+      ? activeMainComposerOverlay.document
       : snapshotComposerDocument;
   const mainComposerDraftImeKey = [accountOwnerKey, "main", timelineRoomId ?? "no-room",
     snapshot?.state.ui.timeline.composer.last_accepted_clear_revision ??
-      COMPOSER_DRAFT_REVISION_ZERO
+      COMPOSER_DRAFT_REVISION_ZERO,
+    mainAssistantDraft?.revision ?? ""
   ].join("\u0000");
   const activeThreadState = snapshot?.state.ui.thread;
   const activeThreadTarget: ComposerTarget | null =
@@ -2123,11 +2139,21 @@ function AccountContent({
       ? composerDraftScope(currentComposerAccount, activeThreadTarget)
       : null;
   const threadComposerOverlay = threadComposerOverlayRef.current;
-  const threadComposerDocumentOverride =
+  const threadAssistantDraft =
+    activeThreadState?.kind === "open" ? activeThreadState.composer?.assistant_draft ?? null : null;
+  const activeThreadComposerOverlay =
     activeThreadScope &&
     threadComposerOverlay &&
     composerDraftScopesEqual(activeThreadScope, threadComposerOverlay.scope)
-      ? threadComposerOverlay.document
+      ? threadComposerOverlay
+      : null;
+  const threadAssistantDecision = assistantDraftOverlayDecision(
+    activeThreadComposerOverlay,
+    threadAssistantDraft
+  );
+  const threadComposerDocumentOverride =
+    activeThreadComposerOverlay && overlayIsShown(threadAssistantDecision)
+      ? activeThreadComposerOverlay.document
       : undefined;
   const threadComposerDraftImeKey =
     activeThreadState?.kind === "open" && activeThreadState.composer
@@ -2136,9 +2162,23 @@ function AccountContent({
           "thread",
           activeThreadState.room_id,
           activeThreadState.root_event_id,
-          activeThreadState.composer.last_accepted_clear_revision
+          activeThreadState.composer.last_accepted_clear_revision,
+          threadAssistantDraft?.revision ?? ""
         ].join("\u0000")
       : undefined;
+  // #1644: settle the overlay against a newly staged assistant draft. An empty
+  // overlay retires so the staged text stays shown; text the user typed while
+  // the draft landed is re-persisted above it and the marker is dismissed.
+  // Neither path moves focus or changes the selected room.
+  useEffect(() => {
+    settleAssistantDraftOverlay("main", activeMainComposerOverlay, mainAssistantDecision);
+    settleAssistantDraftOverlay("thread", activeThreadComposerOverlay, threadAssistantDecision);
+  }, [
+    mainAssistantDraft?.revision,
+    threadAssistantDraft?.revision,
+    mainAssistantDecision,
+    threadAssistantDecision
+  ]);
   const stagedUploads = snapshot?.state.ui.timeline.staged_uploads ?? [];
   const retainedTimelineKeyIds = useMemo(
     () => retainedTimelineStoreKeyIds(snapshot),
@@ -4984,6 +5024,14 @@ function AccountContent({
     await settleCommand(api.cancelComposerReply());
   }
 
+  async function setThreadComposerReplyTarget(roomId: string, rootEventId: string, eventId: string) {
+    await settleCommand(api.setThreadComposerReplyTarget(roomId, rootEventId, eventId));
+  }
+
+  async function cancelThreadComposerReply(roomId: string, rootEventId: string) {
+    await settleCommand(api.cancelThreadComposerReply(roomId, rootEventId));
+  }
+
   function beginComposerOperation(scope: ComposerDraftScope): {
     capture: ComposerDraftOperationCapture;
     lease: NonNullable<ReturnType<ComposerDraftLifecycleRegistry["snapshot"]>>;
@@ -5507,6 +5555,41 @@ function AccountContent({
         .catch(() => settleComposerOperation(admitted));
     }, 350);
     composerDraftLifecycleRegistryRef.current!.setDebounce(scope, handle);
+  }
+
+  function settleAssistantDraftOverlay(
+    kind: "main" | "thread",
+    overlay: ComposerDraftOverlay | null,
+    decision: AssistantDraftOverlayDecision
+  ) {
+    if (!overlay || (decision !== "adopt" && decision !== "user_wins")) return;
+    const registry = composerDraftLifecycleRegistryRef.current!;
+    const scope = overlay.scope;
+    if (decision === "adopt") {
+      clearComposerDraftPersistTimer(scope);
+      if (kind === "main") mainComposerOverlayRef.current = null;
+      else threadComposerOverlayRef.current = null;
+      registry.setActiveOverlay(scope, null, null);
+      return;
+    }
+    const revision = registry.snapshot(scope)?.leaseId ? registry.nextDraft(scope) : null;
+    overlay.revision = revision;
+    registry.setActiveOverlay(scope, overlay.document, revision);
+    if (revision) {
+      if (kind === "main") queueComposerDraftPersist(scope, overlay.document, revision);
+      else queueThreadComposerDraftPersist(scope, overlay.document, revision);
+    }
+    void dismissAssistantDraftMarker(scope.target);
+  }
+
+  async function dismissAssistantDraftMarker(target: ComposerTarget): Promise<void> {
+    const account = readyComposerDraftAccountOwner(snapshot);
+    if (!account) return;
+    try {
+      await settleCommand(api.dismissAssistantDraftMarker(account, target));
+    } catch {
+      // Command failures are surfaced through the Rust-owned error/event path.
+    }
   }
 
   function clearLocalComposerDraft(scope: ComposerDraftScope) {
@@ -6051,9 +6134,19 @@ function AccountContent({
         composerDraftLifecycleRegistryRef.current!.snapshot(scope)?.revision ??
         COMPOSER_DRAFT_REVISION_ZERO;
       const localRevisionAtSubmission = threadComposerOverlayRef.current?.revision ?? null;
+      // #1643: reply semantics are Rust-owned; capture the open thread
+      // composer's reply target at submission time.
+      const threadState = snapshot?.state.ui.thread;
+      const threadMode =
+        threadState?.kind === "open" &&
+        threadState.room_id === roomId &&
+        threadState.root_event_id === rootEventId
+          ? threadState.composer.mode
+          : "Plain";
       submissionController.capture(submissionId, {
         roomId,
         rootEventId,
+        inReplyToEventId: threadMode === "Plain" ? null : threadMode.Reply.in_reply_to_event_id,
         body,
         document,
         draftRevision,
@@ -6066,6 +6159,7 @@ function AccountContent({
     const captured = submissionController.payload<{
       roomId: string;
       rootEventId: string;
+      inReplyToEventId: string | null;
       body: string;
       document: ComposerDocument;
       draftRevision: ComposerDraftRevision;
@@ -6087,7 +6181,11 @@ function AccountContent({
     }
     let accepted = false;
     try {
-      appendComposerSubmitDiagnostic("thread", "dispatch", "mode=thread_reply");
+      appendComposerSubmitDiagnostic(
+        "thread",
+        "dispatch",
+        `mode=${captured.inReplyToEventId === null ? "thread_reply" : "thread_reply_to_event"}`
+      );
       const response = await api.sendThreadReply(
         captured.account,
         admitted.lease.leaseId,
@@ -6096,7 +6194,8 @@ function AccountContent({
         captured.roomId,
         captured.rootEventId,
         captured.document,
-        captured.draftRevision
+        captured.draftRevision,
+        captured.inReplyToEventId
       );
       accepted =
         response.submissionId === submissionId && response.outcome === "accepted";
@@ -6885,6 +6984,12 @@ function AccountContent({
     if (target.kind === "message") {
       switch (actionId) {
         case "replyToMessage":
+          // #1643: the row supplies its own Reply route, so a thread-pane row
+          // targets the thread composer rather than the main composer.
+          if (target.onReply) {
+            target.onReply();
+            return;
+          }
           runInBackground(setComposerReplyTarget(target.message.room_id, target.message.event_id));
           return;
         case "openThread":
@@ -7576,6 +7681,11 @@ function AccountContent({
             activeRoomName={roomDisplayLabel(activeRoom)}
             sendingAccount={sendingAccount}
             composerDocument={composerDocument}
+            onDismissComposerAssistantDraft={() => {
+              if (timelineRoomId) {
+                void dismissAssistantDraftMarker({ kind: "main", room_id: timelineRoomId });
+              }
+            }}
             composerNotice={
               composerNotice &&
               "Room" in composerNotice.key.kind &&
@@ -7949,6 +8059,9 @@ function AccountContent({
           }}
           threadComposerDraftImeKey={threadComposerDraftImeKey}
           threadComposerDocumentOverride={threadComposerDocumentOverride}
+          onDismissThreadAssistantDraft={() => {
+            if (activeThreadTarget) void dismissAssistantDraftMarker(activeThreadTarget);
+          }}
           threadComposerNotice={
             composerNotice &&
             activeThreadTarget &&
@@ -7993,6 +8106,12 @@ function AccountContent({
           }}
           onThreadReplySend={(roomId, rootEventId, document) => {
             runInBackground(sendThreadReply(roomId, rootEventId, document));
+          }}
+          onThreadComposerReply={(roomId, rootEventId, eventId) => {
+            runInBackground(setThreadComposerReplyTarget(roomId, rootEventId, eventId));
+          }}
+          onThreadComposerCancelReply={(roomId, rootEventId) => {
+            runInBackground(cancelThreadComposerReply(roomId, rootEventId));
           }}
           onTimelineDiagnosticLogEntry={appendDiagnosticLog}
           onResolveComposerKeyAction={resolveComposerKeyAction}

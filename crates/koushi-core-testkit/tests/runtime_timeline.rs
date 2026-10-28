@@ -675,6 +675,80 @@ async fn app_command_sets_open_thread_composer_draft() {
 }
 
 #[tokio::test]
+async fn app_command_sets_and_clears_open_thread_reply_target() {
+    // #1643: the thread composer's reply mode is Rust-owned and separate from
+    // the main composer's.
+    let (runtime, _data_dir, _credential_dir) = runtime_with_file_credentials();
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(restore_ready_actions![
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("!room:example.test")],
+            },
+            AppAction::SelectRoom {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::TimelineSubscribed {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::OpenThread {
+                room_id: "!room:example.test".to_owned(),
+                root_event_id: "$root:example.test".to_owned(),
+                intent: ThreadOpenIntent::ExistingThread,
+            },
+            AppAction::ThreadSubscribed {
+                room_id: "!room:example.test".to_owned(),
+                root_event_id: "$root:example.test".to_owned(),
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.thread, ThreadPaneState::Open { .. })
+    })
+    .await;
+
+    let set_request = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::SetThreadComposerReplyTarget {
+        request_id: set_request,
+        room_id: "!room:example.test".to_owned(),
+        root_event_id: "$root:example.test".to_owned(),
+        event_id: "$earlier:example.test".to_owned(),
+    }))
+    .await
+    .expect("set thread reply target command");
+    let snapshot = wait_for_state(&mut conn, |state| {
+        matches!(
+            &state.thread,
+            ThreadPaneState::Open { composer, .. }
+                if matches!(
+                    composer.mode,
+                    ComposerMode::Reply { ref in_reply_to_event_id }
+                        if in_reply_to_event_id == "$earlier:example.test"
+                )
+        )
+    })
+    .await;
+    assert_eq!(snapshot.timeline.composer.mode, ComposerMode::Plain);
+
+    let cancel_request = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::CancelThreadComposerReply {
+        request_id: cancel_request,
+        room_id: "!room:example.test".to_owned(),
+        root_event_id: "$root:example.test".to_owned(),
+    }))
+    .await
+    .expect("cancel thread reply target command");
+    wait_for_state(&mut conn, |state| {
+        matches!(
+            &state.thread,
+            ThreadPaneState::Open { composer, .. } if composer.mode == ComposerMode::Plain
+        )
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn app_command_sets_selected_room_composer_draft() {
     let (runtime, _data_dir, _credential_dir) = runtime_with_file_credentials();
     let mut conn = runtime.attach();

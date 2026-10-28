@@ -130,6 +130,7 @@ export type MessageId =
   | "menu.selectAll"
   | "menu.closeWindow"
   | "menu.quit"
+  | "menu.showKoushi"
   | "auth.failureForbidden"
   | "auth.failureInvalidCredentials"
   | "auth.failureNetwork"
@@ -202,6 +203,8 @@ export type MessageId =
   | "composer.imageCompressionSaveDefault"
   | "composer.imageCompressionTitle"
   | "composer.placeholder"
+  | "composer.assistantDraftMarker"
+  | "composer.assistantDraftDismiss"
   | "composer.replying"
   | "composer.sendingAs"
   | "composer.slashCommandUnavailable"
@@ -935,6 +938,7 @@ export type MessageId =
   | "settings.assistantsSend"
   | "settings.assistantsAttachments"
   | "settings.assistantsMessageActions"
+  | "settings.assistantsDraft"
   | "settings.assistantsDenied"
   | "settings.assistantsPermissionLabel"
   | "settings.assistantsNotRequested"
@@ -957,11 +961,13 @@ export type MessageId =
   | "mcp.approveSendTitle"
   | "mcp.approveAttachmentsTitle"
   | "mcp.approveMessageActionsTitle"
+  | "mcp.approveDraftTitle"
   | "mcp.requestedBy"
   | "mcp.wantsRead"
   | "mcp.wantsSend"
   | "mcp.wantsAttachments"
   | "mcp.wantsMessageActions"
+  | "mcp.wantsDraft"
   | "mcp.readCan"
   | "mcp.readCanRooms"
   | "mcp.readCanMessages"
@@ -976,6 +982,10 @@ export type MessageId =
   | "mcp.sendPreviewHeadingRoom"
   | "mcp.sendNoLongerWaiting"
   | "mcp.sendExplain"
+  | "mcp.draftPreviewHeading"
+  | "mcp.draftPreviewHeadingRoom"
+  | "mcp.draftNoLongerWaiting"
+  | "mcp.draftExplain"
   | "mcp.attachmentsExplain"
   | "mcp.attachmentsRoom"
   | "mcp.selfDeclared"
@@ -984,6 +994,7 @@ export type MessageId =
   | "mcp.allowSend"
   | "mcp.allowAttachments"
   | "mcp.allowMessageActions"
+  | "mcp.allowDraft"
   | "mcp.moreWaiting"
   | "mcp.saveFailed"
   | "mcp.moreMessagesWaiting"
@@ -2406,6 +2417,7 @@ const en: Catalog = {
   "menu.selectAll": "Select All",
   "menu.closeWindow": "Close Window",
   "menu.quit": "Quit Koushi",
+  "menu.showKoushi": "Show Koushi",
   "auth.failureForbidden": "Login methods are not available for this account",
   "auth.failureInvalidCredentials": "Incorrect Matrix ID or password",
   "auth.failureNetwork": "Could not reach the homeserver",
@@ -2480,6 +2492,8 @@ const en: Catalog = {
   "composer.imageCompressionSaveDefault": "Use this choice by default",
   "composer.imageCompressionTitle": "Compress image",
   "composer.placeholder": "Message {roomName}",
+  "composer.assistantDraftMarker": "Drafted by {client}. Review it before sending.",
+  "composer.assistantDraftDismiss": "Hide assistant label",
   "composer.replying": "Replying",
   "composer.sendingAs": "Sending as {account}",
   "composer.slashCommandUnavailable": "This command is not available in this composer.",
@@ -3229,6 +3243,7 @@ const en: Catalog = {
   "settings.assistantsSend": "Send",
   "settings.assistantsAttachments": "Attachments",
   "settings.assistantsMessageActions": "Change messages",
+  "settings.assistantsDraft": "Write drafts",
   "settings.assistantsDenied": "Denied",
   "settings.assistantsPermissionLabel": "{permission} for {account}",
   "settings.assistantsNotRequested": "Not requested yet. Koushi will ask when {client} first uses this account.",
@@ -3251,11 +3266,13 @@ const en: Catalog = {
   "mcp.approveSendTitle": "Allow {client} to send messages?",
   "mcp.approveAttachmentsTitle": "Allow {client} to send and download attachments?",
   "mcp.approveMessageActionsTitle": "Allow {client} to change your messages?",
+  "mcp.approveDraftTitle": "Allow {client} to write drafts?",
   "mcp.requestedBy": "Requested by a program on this computer",
   "mcp.wantsRead": "wants to read {account}",
   "mcp.wantsSend": "wants to send as {account}",
   "mcp.wantsAttachments": "wants to send and download attachments in {account}",
   "mcp.wantsMessageActions": "wants to react to, edit, and delete your messages in {account}",
+  "mcp.wantsDraft": "wants to put message drafts in your composers in {account}",
   "mcp.readCan": "If you allow, {client} can:",
   "mcp.readCanRooms": "List the rooms in {account}, with unread counts",
   "mcp.readCanMessages": "Read recent messages, including encrypted rooms",
@@ -3270,6 +3287,10 @@ const en: Catalog = {
   "mcp.sendPreviewHeadingRoom": "The message it is waiting to send, in {room}:",
   "mcp.sendNoLongerWaiting": "The assistant stopped waiting, so that message will not be sent. Your answer still applies to its future messages.",
   "mcp.sendExplain": "If you allow, {client} can send messages, replies, and thread replies from {account} without asking again. They look like messages you wrote. You can turn this off in App Settings → AI assistants.",
+  "mcp.draftPreviewHeading": "The draft it is waiting to add:",
+  "mcp.draftPreviewHeadingRoom": "The draft it is waiting to add, in {room}:",
+  "mcp.draftNoLongerWaiting": "The assistant stopped waiting, so that draft will not be added. Your answer still applies to its future drafts.",
+  "mcp.draftExplain": "If you allow, {client} can put drafts into composers in {account} without asking again. It cannot send them: you review, edit, and send each one yourself. It never replaces text you are writing. You can turn this off in App Settings → AI assistants.",
   "mcp.attachmentsExplain": "If you allow, {client} can send files from this computer as attachments from {account}, and download attachments from {account} into Koushi's media cache, without asking again.",
   "mcp.attachmentsRoom": "Requested for a file in {room}.",
   "mcp.selfDeclared": "“{client}” is the name the assistant gave itself. Allow it only if you just set up or asked that assistant.",
@@ -3278,6 +3299,7 @@ const en: Catalog = {
   "mcp.allowSend": "Allow sending from {account}",
   "mcp.allowAttachments": "Allow attachments for {account}",
   "mcp.allowMessageActions": "Allow changing messages in {account}",
+  "mcp.allowDraft": "Allow drafts in {account}",
   "mcp.moreWaiting": "More requests waiting: {count}",
   "mcp.saveFailed": "Koushi could not save this approval. See App Settings → AI assistants.",
   "mcp.moreMessagesWaiting": "Other calls from this assistant waiting for this answer: {count}",
@@ -4752,6 +4774,7 @@ const ja: Catalog = {
   "menu.selectAll": "すべてを選択",
   "menu.closeWindow": "ウインドウを閉じる",
   "menu.quit": "Koushi を終了",
+  "menu.showKoushi": "Koushi を表示",
   "auth.matrixAccount": "Matrixアカウント",
   "auth.matrixDesktop": "Koushi（光子・格子）",
   "auth.noLoginMethods": "ログイン方法がありません",
@@ -4807,6 +4830,8 @@ const ja: Catalog = {
   "composer.mentionUsers": "ユーザー",
   "composer.messageComposer": "メッセージ入力欄",
   "composer.placeholder": "{roomName}にメッセージ",
+  "composer.assistantDraftMarker": "{client} が作成した下書きです。送信前に確認してください。",
+  "composer.assistantDraftDismiss": "アシスタント表示を消す",
   "composer.replying": "返信中",
   "composer.sendingAs": "{account}として送信",
   "composer.slashCommandUnavailable": "このコマンドはこの入力欄では実行できません。",
@@ -5560,6 +5585,7 @@ const ja: Catalog = {
   "settings.assistantsSend": "送信",
   "settings.assistantsAttachments": "添付ファイル",
   "settings.assistantsMessageActions": "メッセージ変更",
+  "settings.assistantsDraft": "下書き作成",
   "settings.assistantsDenied": "拒否済み",
   "settings.assistantsPermissionLabel": "{account} の{permission}",
   "settings.assistantsNotRequested": "まだ求められていません。{client} がこのアカウントを初めて使うときに確認します。",
@@ -5582,11 +5608,13 @@ const ja: Catalog = {
   "mcp.approveSendTitle": "{client} にメッセージの送信を許可しますか？",
   "mcp.approveAttachmentsTitle": "{client} に添付ファイルの送信とダウンロードを許可しますか？",
   "mcp.approveMessageActionsTitle": "{client} にメッセージの変更を許可しますか？",
+  "mcp.approveDraftTitle": "{client} に下書きの作成を許可しますか？",
   "mcp.requestedBy": "このコンピューター上のプログラムからの要求です",
   "mcp.wantsRead": "{account} の読み取りを求めています",
   "mcp.wantsSend": "{account} として送信しようとしています",
   "mcp.wantsAttachments": "{account} での添付ファイルの送信とダウンロードを求めています",
   "mcp.wantsMessageActions": "{account} のメッセージへのリアクション、編集、削除を求めています",
+  "mcp.wantsDraft": "{account} の入力欄にメッセージの下書きを入れようとしています",
   "mcp.readCan": "許可すると、{client} は次のことができます。",
   "mcp.readCanRooms": "{account} のルームを未読数つきで一覧する",
   "mcp.readCanMessages": "暗号化ルームを含む最近のメッセージを読む",
@@ -5601,6 +5629,10 @@ const ja: Catalog = {
   "mcp.sendPreviewHeadingRoom": "{room} への送信を待っているメッセージ：",
   "mcp.sendNoLongerWaiting": "アシスタントが待つのをやめたため、そのメッセージは送信されません。ここでの回答は今後のメッセージに適用されます。",
   "mcp.sendExplain": "許可すると、{client} は今後確認なしで {account} からメッセージや返信、スレッド返信を送れます。あなたが書いたメッセージと同じように見えます。アプリ設定 → AI アシスタントでいつでもオフにできます。",
+  "mcp.draftPreviewHeading": "追加を待っている下書き：",
+  "mcp.draftPreviewHeadingRoom": "{room} に追加を待っている下書き：",
+  "mcp.draftNoLongerWaiting": "アシスタントが待機をやめたため、この下書きは追加されません。この回答は今後の下書きにも適用されます。",
+  "mcp.draftExplain": "許可すると、{client} は確認なしで {account} の入力欄に下書きを入れられるようになります。送信はできません。下書きはそれぞれ自分で確認・編集して送信します。入力中のテキストを置き換えることはありません。アプリ設定 → AI アシスタントでオフにできます。",
   "mcp.attachmentsExplain": "許可すると、{client} は今後確認なしで、このコンピューター上のファイルを {account} から添付ファイルとして送信し、{account} の添付ファイルを Koushi のメディアキャッシュにダウンロードできます。",
   "mcp.attachmentsRoom": "{room} のファイルについての要求です。",
   "mcp.selfDeclared": "「{client}」はアシスタントの自己申告による名前です。そのアシスタントを設定した直後や、頼みごとをした場合にだけ許可してください。",
@@ -5609,6 +5641,7 @@ const ja: Catalog = {
   "mcp.allowSend": "{account} からの送信を許可",
   "mcp.allowAttachments": "{account} の添付ファイルを許可",
   "mcp.allowMessageActions": "{account} のメッセージ変更を許可",
+  "mcp.allowDraft": "{account} での下書きを許可",
   "mcp.moreWaiting": "ほかに待っている要求：{count} 件",
   "mcp.saveFailed": "この承認を保存できませんでした。アプリ設定 → AI アシスタントを確認してください。",
   "mcp.moreMessagesWaiting": "この回答を待っている、このアシスタントのほかの呼び出し：{count} 件",

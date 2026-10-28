@@ -3,9 +3,9 @@ use std::io::Cursor;
 use image::{DynamicImage, GenericImageView, ImageFormat, Rgba, RgbaImage};
 use koushi_media::{
     DecodeLimits, DecodedRgbaImage, ImageOutputFormat, ImageOutputRequest, ImagePreparationError,
-    ImagePreparationPolicy, ImageResizeScale, PreparedImageFormat, prepare_decoded_image_output,
-    prepare_image_output, prepare_image_output_fitted, prepare_image_variants,
-    probe_image_dimensions,
+    ImagePreparationPolicy, ImageResizeScale, PreparedImageFormat, detected_image_format_token,
+    prepare_decoded_image_output, prepare_image_output, prepare_image_output_fitted,
+    prepare_image_variants, probe_image_dimensions,
 };
 
 fn synthetic_png(width: u32, height: u32) -> Vec<u8> {
@@ -28,6 +28,33 @@ fn synthetic_jpeg(width: u32, height: u32) -> Vec<u8> {
         .write_to(&mut bytes, ImageFormat::Jpeg)
         .expect("encode fixture");
     bytes.into_inner()
+}
+
+/// 24-bit bottom-up BMP with a 54-byte header, the layout WeChat's screenshot
+/// tool serves for every image MIME it offers, `image/png` included (#1630).
+fn synthetic_bmp(width: u32, height: u32) -> Vec<u8> {
+    let row = (width * 3).div_ceil(4) * 4;
+    let pixels = row * height;
+    let mut bytes = Vec::with_capacity(54 + pixels as usize);
+    bytes.extend_from_slice(b"BM");
+    bytes.extend_from_slice(&(54 + pixels).to_le_bytes());
+    bytes.extend_from_slice(&[0; 4]);
+    bytes.extend_from_slice(&54u32.to_le_bytes());
+    bytes.extend_from_slice(&40u32.to_le_bytes());
+    bytes.extend_from_slice(&(width as i32).to_le_bytes());
+    bytes.extend_from_slice(&(height as i32).to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&24u16.to_le_bytes());
+    bytes.extend_from_slice(&[0; 4]);
+    bytes.extend_from_slice(&pixels.to_le_bytes());
+    bytes.extend_from_slice(&[0; 16]);
+    for y in 0..height {
+        for x in 0..width {
+            bytes.extend_from_slice(&[120, (y % 239) as u8, (x % 251) as u8]);
+        }
+        bytes.resize(bytes.len() + (row - width * 3) as usize, 0);
+    }
+    bytes
 }
 
 fn synthetic_apng() -> Vec<u8> {
@@ -684,4 +711,55 @@ fn dimension_probe_reads_headers_for_content_kept_verbatim() {
     );
     assert_eq!(probe_image_dimensions(b"binaryjpegfullimagedata"), None);
     assert_eq!(probe_image_dimensions(&[]), None);
+}
+
+/// #1630: the token names what the bytes are, whatever MIME was declared.
+#[test]
+fn detected_format_token_judges_content_not_declaration() {
+    assert_eq!(detected_image_format_token(&synthetic_png(2, 1)), "png");
+    assert_eq!(detected_image_format_token(&synthetic_jpeg(2, 1)), "jpeg");
+    assert_eq!(detected_image_format_token(heif_fixture()), "heif");
+    assert_eq!(detected_image_format_token(b"BM\0\0\0\0\0\0\0\0"), "bmp");
+    assert_eq!(detected_image_format_token(b"II*\0\0\0\0\0"), "tiff");
+    assert_eq!(detected_image_format_token(b"not an image"), "unknown");
+    assert_eq!(detected_image_format_token(b""), "unknown");
+}
+
+/// #1630: a BMP declared as PNG is decoded, and Keep resolves to PNG because a
+/// bitmap is not a format to upload as-is.
+#[test]
+fn bmp_source_keeps_as_png_and_converts_to_other_outputs() {
+    let source = synthetic_bmp(30, 7);
+    let policy = ImagePreparationPolicy::default();
+
+    let kept = prepare_image_output(
+        &source,
+        "image.png",
+        ImageOutputRequest {
+            resize: ImageResizeScale::Original,
+            format: ImageOutputFormat::Keep,
+        },
+        &policy,
+    )
+    .expect("BMP decodes");
+    assert_eq!(kept.format, PreparedImageFormat::Png);
+    assert_eq!(kept.mime_type, "image/png");
+    assert_eq!(kept.filename, "image.png");
+    assert_eq!(kept.dimensions, (30, 7));
+    assert!(kept.bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert_eq!(decoded_dimensions(&kept.bytes), (30, 7));
+
+    let jpeg = prepare_image_output(
+        &source,
+        "image.png",
+        ImageOutputRequest {
+            resize: ImageResizeScale::Half,
+            format: ImageOutputFormat::Jpeg,
+        },
+        &policy,
+    )
+    .expect("BMP converts to JPEG");
+    assert_eq!(jpeg.mime_type, "image/jpeg");
+    assert_eq!(jpeg.dimensions, (15, 3));
+    assert_eq!(probe_image_dimensions(&source), Some((30, 7)));
 }

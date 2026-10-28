@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   EMOJI_PICKER_BLOCK_SIZE_PX,
+  EMOJI_PICKER_CELL_SIZE_PX,
   EMOJI_PICKER_GRID_COLUMNS,
   EMOJI_PICKER_INLINE_SIZE_PX
 } from "./components/EmojiPicker";
@@ -264,11 +265,14 @@ describe("styles.css token system", () => {
     );
     expect(pickerBlock).not.toContain("--emoji-picker-max-block-size");
 
-    // The grid column count has a single owner in EmojiPicker.tsx.
+    // The grid column count has a single owner in EmojiPicker.tsx, and cells
+    // keep a fixed pitch instead of stretching with the panel.
     const gridBlock = selectorBlock(".emoji-picker-grid");
     expect(gridBlock).toContain(
-      `grid-template-columns: repeat(var(--emoji-picker-columns, ${EMOJI_PICKER_GRID_COLUMNS}), minmax(0, 1fr));`
+      `grid-template-columns: repeat(var(--emoji-picker-columns, ${EMOJI_PICKER_GRID_COLUMNS}), var(--emoji-picker-cell-size, ${EMOJI_PICKER_CELL_SIZE_PX}px));`
     );
+    expect(gridBlock).toContain(`grid-auto-rows: var(--emoji-picker-cell-size, ${EMOJI_PICKER_CELL_SIZE_PX}px);`);
+    expect(gridBlock).not.toContain("1fr");
 
     const tabsBlock = selectorBlock(".emoji-picker-tabs");
     expect(tabsBlock).toContain("justify-content: space-between;");

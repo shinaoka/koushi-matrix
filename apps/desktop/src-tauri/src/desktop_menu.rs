@@ -198,7 +198,7 @@ const MENU_PLAIN_LABELS: [(&str, &str); 12] = [
 
 /// Localized labels resolved by the webview, keyed by the catalog message ids
 /// this module owns. Missing keys fall back to the built-in English literals.
-pub(super) type MenuLabels = HashMap<String, String>;
+pub(crate) type MenuLabels = HashMap<String, String>;
 
 fn localized<'a>(labels: &'a MenuLabels, key: &str) -> &'a str {
     let fallback = MENU_PLAIN_LABELS
@@ -220,6 +220,7 @@ fn native_menu_label_ids() -> Vec<String> {
         .iter()
         .map(|item| item.label_key)
         .chain(MENU_PLAIN_LABELS.iter().map(|(key, _)| *key))
+        .chain(crate::tray::tray_menu_label_keys())
         .map(str::to_owned)
         .collect();
     ids.sort();
@@ -253,6 +254,8 @@ pub(crate) fn set_native_menu_labels(
     let _ = set_history_availability(&menu, history_enabled[0], history_enabled[1])
         .map_err(|error| error.to_string())?;
     app.set_menu(menu).map_err(|error| error.to_string())?;
+    // #1638: the tray menu is native product UI too and follows the same labels.
+    crate::tray::apply_tray_menu_labels(&app, &labels).map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -648,6 +651,7 @@ mod tests {
             "menu.selectAll",
             "menu.closeWindow",
             "menu.quit",
+            "menu.showKoushi",
         ] {
             assert!(
                 ids.contains(&key.to_owned()),

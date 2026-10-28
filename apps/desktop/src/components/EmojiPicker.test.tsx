@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   EMOJI_PICKER_GRID_COLUMNS,
+  emojiPickerColumnsForWidth,
   EMOJI_PICKER_INLINE_SIZE_PX,
   EmojiPicker,
 } from "./EmojiPicker";
@@ -150,6 +151,13 @@ describe("EmojiPicker", () => {
     );
     expect(panel.style.left).not.toBe("");
     expect(panel.style.top).not.toBe("");
+  });
+
+  it("fits more fixed-pitch columns into a wider grid instead of widening cells", () => {
+    expect(emojiPickerColumnsForWidth(0)).toBe(1);
+    expect(emojiPickerColumnsForWidth(258)).toBe(10);
+    expect(emojiPickerColumnsForWidth(259)).toBe(10);
+    expect(emojiPickerColumnsForWidth(520)).toBe(20);
   });
 
   it("keeps the rendered grid column count and the keyboard step in sync", () => {

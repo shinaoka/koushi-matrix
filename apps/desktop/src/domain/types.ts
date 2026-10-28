@@ -556,7 +556,7 @@ export interface McpSettings {
   enabled: boolean;
 }
 
-export type McpNeed = "read" | "send" | "attachments" | "message_actions";
+export type McpNeed = "read" | "send" | "attachments" | "message_actions" | "draft";
 
 export interface McpPendingApproval {
   request_id: number;
@@ -578,6 +578,7 @@ export interface McpAssistantAccount {
   send: boolean;
   attachments: boolean;
   message_actions: boolean;
+  draft: boolean;
   /** Permissions denied for this account during this bridge run. */
   denied: McpNeed[];
 }
@@ -2598,6 +2599,16 @@ export interface ComposerState {
   draft_revision: ComposerDraftRevision;
   last_accepted_clear_revision: ComposerDraftRevision;
   mode: ComposerMode;
+  /** #1644: set while the draft is one an MCP assistant staged. */
+  assistant_draft?: AssistantDraftMarker | null;
+}
+
+/** #1644: Rust-owned marker of an assistant-staged draft. */
+export interface AssistantDraftMarker {
+  /** The assistant's self-declared MCP client name. */
+  client_name: string;
+  /** The revision the draft was staged at; keys composer adoption. */
+  revision: ComposerDraftRevision;
 }
 
 export type ComposerDraftRevision = string & {

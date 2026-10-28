@@ -37,6 +37,9 @@ pub enum ErrorCode {
     AttachmentTooLarge,
     /// The account already runs the maximum number of concurrent operations.
     Busy,
+    /// The target already holds something the call must not overwrite, such
+    /// as a composer draft the user typed (#1644). Nothing was changed.
+    Conflict,
     /// The tool or argument shape is not supported by this build.
     Unsupported,
     /// A continuation cursor cannot be used (malformed, from a previous run,
@@ -60,6 +63,7 @@ impl ErrorCode {
             Self::EventNotFound => "event_not_found",
             Self::AttachmentTooLarge => "attachment_too_large",
             Self::Busy => "busy",
+            Self::Conflict => "conflict",
             Self::Unsupported => "unsupported",
             Self::ResyncRequired => "resync_required",
             Self::Internal => "internal",
@@ -269,6 +273,7 @@ mod tests {
             ErrorCode::EventNotFound,
             ErrorCode::AttachmentTooLarge,
             ErrorCode::Busy,
+            ErrorCode::Conflict,
             ErrorCode::Unsupported,
             ErrorCode::Internal,
         ];

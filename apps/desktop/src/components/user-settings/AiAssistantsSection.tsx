@@ -20,7 +20,7 @@ import { t } from "../../i18n/messages";
 import { mcpAccountId, mcpAccountLabel, useMcpAssistantsState } from "../useMcpAssistantsState";
 import { MCP_ALLOW_ARMING_DELAY_MS, mcpAllowLabel, mcpWantsText, useArmed } from "../McpApprovalDialog";
 
-const NEEDS: readonly McpNeed[] = ["read", "send", "attachments", "message_actions"];
+const NEEDS: readonly McpNeed[] = ["read", "send", "attachments", "message_actions", "draft"];
 
 /** Product names of the clients; not translated. */
 const CLIENT_NAMES: Record<Exclude<McpRegistration["client"], "other">, string> = {
@@ -36,7 +36,8 @@ function needLabel(need: McpNeed): string {
     read: t("settings.assistantsRead"),
     send: t("settings.assistantsSend"),
     attachments: t("settings.assistantsAttachments"),
-    message_actions: t("settings.assistantsMessageActions")
+    message_actions: t("settings.assistantsMessageActions"),
+    draft: t("settings.assistantsDraft")
   }[need];
 }
 

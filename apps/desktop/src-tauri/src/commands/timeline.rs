@@ -1709,6 +1709,96 @@ pub async fn cancel_composer_reply(
     Ok(admission)
 }
 
+/// #1644: the user dismissed the assistant marker on a staged draft. Only the
+/// marker goes; the text and its revision stay, so this holds no composer
+/// lease. The account owner is revalidated in Core like the other draft
+/// commands.
+#[tauri::command]
+pub async fn dismiss_assistant_draft_marker(
+    account_tab_id: Option<String>,
+    account_homeserver: String,
+    account_user_id: String,
+    account_device_id: String,
+    target: koushi_state::ComposerTarget,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    let event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = event_conn.next_request_id();
+    let admission = event_conn
+        .command_with_admission(build_dismiss_assistant_draft_marker_command(
+            request_id,
+            koushi_protocol::SessionKeyId {
+                homeserver: account_homeserver,
+                user_id: account_user_id,
+                device_id: account_device_id,
+            },
+            target,
+        ))
+        .await
+        .map_err(|error| format!("command submit failed: {error}"))?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    Ok(FrontendCommandAdmission::from_core(admission))
+}
+
+pub(super) fn build_dismiss_assistant_draft_marker_command(
+    request_id: koushi_protocol::RequestId,
+    expected_account: koushi_protocol::SessionKeyId,
+    target: koushi_state::ComposerTarget,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::DismissAssistantDraftMarker {
+        request_id,
+        expected_account,
+        target,
+    })
+}
+
+#[tauri::command]
+pub async fn set_thread_composer_reply_target(
+    account_tab_id: Option<String>,
+    room_id: String,
+    root_event_id: String,
+    event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let admission = submit_core_command_with_admission(
+        state.inner(),
+        CoreCommand::App(AppCommand::SetThreadComposerReplyTarget {
+            request_id,
+            room_id,
+            root_event_id,
+            event_id,
+        }),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    Ok(admission)
+}
+
+#[tauri::command]
+pub async fn cancel_thread_composer_reply(
+    account_tab_id: Option<String>,
+    room_id: String,
+    root_event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let admission = submit_core_command_with_admission(
+        state.inner(),
+        CoreCommand::App(AppCommand::CancelThreadComposerReply {
+            request_id,
+            room_id,
+            root_event_id,
+        }),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    Ok(admission)
+}
+
 #[tauri::command]
 #[expect(
     clippy::too_many_arguments,
@@ -1914,6 +2004,7 @@ pub async fn send_thread_reply(
     submission_id: String,
     room_id: String,
     root_event_id: String,
+    in_reply_to_event_id: Option<String>,
     document: koushi_state::ComposerDocument,
     draft_revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
@@ -1950,7 +2041,7 @@ pub async fn send_thread_reply(
     let request_id = event_conn.next_request_id();
     let account_key = account_key_from_app_state(&event_conn.snapshot());
     let submission_id = SubmissionId::new(submission_id);
-    if let Some(command) = build_submit_thread_text_command(
+    if let Some(command) = build_submit_thread_composer_command(
         request_id,
         expected_account,
         submission_id.clone(),
@@ -1958,6 +2049,7 @@ pub async fn send_thread_reply(
         room_id,
         root_event_id,
         transaction_id,
+        in_reply_to_event_id,
         document,
         draft_revision,
     ) {
@@ -2132,15 +2224,16 @@ pub(super) fn build_submit_reply_command(
 )]
 /// Build the thread pane's composer submission.
 ///
-/// The renderer's IPC name is `send_thread_reply`, but a message typed in the
-/// thread pane is a plain thread message: `SubmitText` on a thread key makes
-/// `make_offline_thread_content` send the falling-back `m.thread` relation that
-/// Element X and Element Web send. Routing it through `SubmitReply` with the
-/// root as the reply target made every thread message a genuine in-thread
-/// reply — quoted above it, and mentioning the root's sender (#1426). Keep
-/// `SubmitReply` on a thread key for a future explicit in-thread Reply action
-/// (#303), not for the composer.
-pub(super) fn build_submit_thread_text_command(
+/// The renderer's IPC name is `send_thread_reply`, but without a reply target a
+/// message typed in the thread pane is a plain thread message: `SubmitText` on a
+/// thread key makes `make_offline_thread_content` send the falling-back
+/// `m.thread` relation that Element X and Element Web send. Routing it through
+/// `SubmitReply` with the root as the reply target made every thread message a
+/// genuine in-thread reply — quoted above it, and mentioning the root's sender
+/// (#1426). Only the thread composer's Rust-owned reply mode supplies
+/// `in_reply_to_event_id` (#1643); then `SubmitReply` on the thread key sends a
+/// reply within the thread to that event.
+pub(super) fn build_submit_thread_composer_command(
     request_id: RequestId,
     expected_account: koushi_protocol::SessionKeyId,
     submission_id: SubmissionId,
@@ -2148,26 +2241,40 @@ pub(super) fn build_submit_thread_text_command(
     room_id: String,
     root_event_id: String,
     transaction_id: String,
+    in_reply_to_event_id: Option<String>,
     document: ComposerDocument,
     draft_revision: ComposerDraftRevision,
 ) -> Option<CoreCommand> {
     if document.plain_body().trim().is_empty() {
         return None;
     }
-    Some(CoreCommand::Timeline(TimelineCommand::SubmitText {
-        request_id,
-        expected_account,
-        submission_id,
-        key: TimelineKey {
-            account_key,
-            kind: TimelineKind::Thread {
-                room_id,
-                root_event_id,
-            },
+    let key = TimelineKey {
+        account_key,
+        kind: TimelineKind::Thread {
+            room_id,
+            root_event_id,
         },
-        transaction_id,
-        document,
-        draft_revision,
+    };
+    Some(CoreCommand::Timeline(match in_reply_to_event_id {
+        Some(in_reply_to_event_id) => TimelineCommand::SubmitReply {
+            request_id,
+            expected_account,
+            submission_id,
+            key,
+            transaction_id,
+            in_reply_to_event_id,
+            document,
+            draft_revision,
+        },
+        None => TimelineCommand::SubmitText {
+            request_id,
+            expected_account,
+            submission_id,
+            key,
+            transaction_id,
+            document,
+            draft_revision,
+        },
     }))
 }
 

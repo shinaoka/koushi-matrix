@@ -24,6 +24,18 @@ pub enum AppCommand {
     CancelComposerReply {
         request_id: RequestId,
     },
+    /// #1643: reply mode for the open thread's composer.
+    SetThreadComposerReplyTarget {
+        request_id: RequestId,
+        room_id: String,
+        root_event_id: String,
+        event_id: String,
+    },
+    CancelThreadComposerReply {
+        request_id: RequestId,
+        room_id: String,
+        root_event_id: String,
+    },
     SetComposerDraft {
         request_id: RequestId,
         expected_account: crate::SessionKeyId,
@@ -39,6 +51,12 @@ pub enum AppCommand {
         expected_account: crate::SessionKeyId,
         room_id: String,
         document: ComposerDocument,
+    },
+    /// #1644: drop the assistant marker of a staged draft; the text stays.
+    DismissAssistantDraftMarker {
+        request_id: RequestId,
+        expected_account: crate::SessionKeyId,
+        target: koushi_state::ComposerTarget,
     },
     SetThreadComposerDraft {
         request_id: RequestId,
@@ -350,6 +368,27 @@ impl fmt::Debug for AppCommand {
                 .debug_struct("CancelComposerReply")
                 .field("request_id", request_id)
                 .finish(),
+            Self::SetThreadComposerReplyTarget {
+                request_id,
+                room_id,
+                ..
+            } => formatter
+                .debug_struct("SetThreadComposerReplyTarget")
+                .field("request_id", request_id)
+                .field("room_id", room_id)
+                .field("root_event_id", &"EventId(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::CancelThreadComposerReply {
+                request_id,
+                room_id,
+                ..
+            } => formatter
+                .debug_struct("CancelThreadComposerReply")
+                .field("request_id", request_id)
+                .field("room_id", room_id)
+                .field("root_event_id", &"EventId(..)")
+                .finish(),
             Self::SetComposerDraft {
                 request_id,
                 room_id,
@@ -369,6 +408,11 @@ impl fmt::Debug for AppCommand {
                 .field("request_id", request_id)
                 .field("room_id", room_id)
                 .field("draft", &"MessageBody(..)")
+                .finish(),
+            Self::DismissAssistantDraftMarker { request_id, .. } => formatter
+                .debug_struct("DismissAssistantDraftMarker")
+                .field("request_id", request_id)
+                .field("target", &"ComposerTarget(..)")
                 .finish(),
             Self::SetThreadComposerDraft {
                 request_id,

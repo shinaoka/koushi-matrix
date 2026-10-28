@@ -202,3 +202,26 @@ test("an account signed in this run is named although its tab keeps a sign-in id
   expect(screen.getByText("wants to read Synthetic Workspace")).toBeTruthy();
   expect(screen.queryByText("Account not open in Koushi")).toBeNull();
 });
+
+test("a draft approval previews the draft and says it cannot send (#1644)", () => {
+  render(
+    <McpApprovalPrompt
+      request={request({
+        need: "draft",
+        room_label: "Synthetic Room",
+        message_preview: "Fixture draft text"
+      })}
+      accountTabs={tabs}
+      moreWaiting={0}
+      armingDelayMs={0}
+      onClose={() => undefined}
+    />
+  );
+  const dialog = screen.getByRole("dialog", { name: "Allow claude-code to write drafts?" });
+  expect(dialog.textContent).toContain("wants to put message drafts in your composers in Synthetic Workspace");
+  expect(dialog.textContent).toContain("The draft it is waiting to add, in Synthetic Room:");
+  expect(screen.getByText("Fixture draft text")).toBeTruthy();
+  expect(dialog.textContent).toContain("It cannot send them");
+  expect(dialog.textContent).toContain("never replaces text you are writing");
+  expect(screen.getByRole("button", { name: "Allow drafts in Synthetic Workspace" })).toBeTruthy();
+});

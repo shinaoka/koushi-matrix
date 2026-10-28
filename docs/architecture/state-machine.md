@@ -1971,6 +1971,24 @@ stateDiagram-v2
   its stored draft is non-empty; otherwise it submits the seed and reports
   `seeded`.
 
+- `AssistantDraftStaged { target, document, client_name }` (#1644) is the
+  MCP `draft_message` write, the second draft write that does not come from a
+  composer lease. `AppActor` reduces it only from the `DirectComposerDraft`
+  envelope, after checking that the session is Ready, the account's draft store
+  is `Loaded`, the target room is in the room list, the target's stored draft
+  is empty, no composer command permit is held for that exact target, and the
+  open target composer has no pending submission; any other case answers the
+  caller without reducing. The reducer repeats the Ready, room, and empty-draft
+  guards, writes the document at the successor of the stored revision, and
+  records `AssistantDraftMarker { client_name, revision }` for the target. When
+  the target is the open main or thread composer it hydrates that composer
+  under the `ComposerDraftsLoaded` rule. The marker lives only while the
+  target has content: every path that removes the target's content removes
+  the marker, and later renderer edits keep it.
+  `AssistantDraftMarkerDismissed { target }` removes only the marker, leaves
+  content and revision unchanged, and is idempotent. The marker is persisted
+  with the draft entry (`assistant`, optional in payload schema 3).
+
 ```mermaid
 stateDiagram-v2
     [*] --> Empty
@@ -1983,6 +2001,10 @@ stateDiagram-v2
     Editing --> Empty: LogoutRequested/SessionCleared
     Empty --> Editing: ComposerDraftsLoaded [active composer empty and persisted draft exists]
     Empty --> Editing: ComposerDraftSeeded [room known, stored draft empty] / store document + successor revision
+    Empty --> AssistantDrafted: AssistantDraftStaged [room known, stored draft empty, no command permit] / store document + successor revision + marker
+    AssistantDrafted --> AssistantDrafted: ComposerDraftChanged [non-empty and revision > stored] / replace draft, keep marker
+    AssistantDrafted --> Editing: AssistantDraftMarkerDismissed / drop marker
+    AssistantDrafted --> Empty: ComposerDraftChanged [empty] or AcceptedSend / drop content + marker
 ```
 
 Content, ActiveEmpty, and LeasedEmpty are protected. LeasedEmpty becomes a
@@ -3002,6 +3024,8 @@ stateDiagram-v2
   resizes, and encodes PNG/JPEG/WebP candidates during staging. Re-encoded
   candidates report actual MIME, dimensions, byte count, metadata stripping,
   and thumbnail refresh; animated/unsupported sources remain original-only.
+  The source encoding is judged from content, not the declared MIME: a BMP
+  (WeChat serves one under `image/png`) is decoded and its Keep output is PNG.
 - Upload staging is Rust-owned. `AppState.upload_staging` is the reducer backing
   store and is not serialized directly. Projections are target-scoped:
   `TimelinePaneState.staged_uploads` for the active room composer and
@@ -3855,17 +3879,51 @@ stateDiagram-v2
     Pending --> Idle: ThreadReplyFailed [matching transaction]
 ```
 
+Independently of the draft/pending lifecycle above, the open thread composer
+carries a reply mode (`ComposerMode`) with the same shape as the main composer:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Plain
+    Plain --> Reply: ThreadComposerReplyTargetSelected [matching open thread]
+    Reply --> Reply: ThreadComposerReplyTargetSelected [matching open thread]
+    Reply --> Plain: ThreadComposerReplyCancelled [matching open thread]
+    Reply --> Plain: ComposerSubmissionQueued/Settled or ThreadReplyFinished [matching pending reply send]
+    Reply --> Plain: thread switched, closed, or composer restored from stored draft
+```
+
 - `ThreadComposerDraftChanged { room_id, root_event_id, draft }` applies only
   when a ready session has that exact thread open. Stale room/root signals and
   closed/opening thread states are ignored. Accepted changes update both the
   open thread composer and the Rust-owned `(room_id, root_event_id)` draft
   entry.
-- `ThreadReplySubmitted { room_id, root_event_id, transaction_id, body }`
-  applies only when a ready session has that exact thread open and the thread
-  composer has no pending transaction. It records the pending transaction as a
-  reply to `root_event_id`, clears the thread draft and stored thread draft,
-  and emits `ThreadChanged`. It does not mutate the selected room's main
-  composer.
+- `ThreadComposerReplyTargetSelected { room_id, root_event_id, event_id }`
+  enters (or retargets) `Reply` only when a ready session has that exact thread
+  open; stale room/root signals and closed/opening thread states are ignored.
+  `ThreadComposerReplyCancelled { room_id, root_event_id }` returns that open
+  thread's composer to `Plain` and is a no-op when already `Plain` or stale.
+  Neither touches the selected room's main composer mode, and reply mode is never
+  stored with the thread draft: opening another thread, closing the pane, or
+  rebuilding the composer from `composer_drafts` starts in `Plain`.
+- `ThreadReplySubmitted { room_id, root_event_id, transaction_id, body }` and
+  `ThreadSubmissionAccepted` apply only when a ready session has that exact
+  thread open and the thread composer has no pending transaction. They record
+  the pending send kind from the composer mode at submission time (`Plain`, or
+  `Reply` with the captured target), clear the thread draft and stored thread
+  draft, and emit `ThreadChanged`. They do not mutate the selected room's main
+  composer. Core sends a `Plain` submission as an ordinary falling-back thread
+  message and a `Reply` submission as a reply within the thread.
+- The matching `ComposerSubmissionQueued` (when the draft was cleared), a
+  successful `ComposerSubmissionSettled`, or a matching `ThreadReplyFinished`
+  returns the thread composer to `Plain`
+  only when the pending send was a reply and the current reply target still
+  equals the captured target, exactly as for the main composer. A failed
+  settlement preserves the reply mode.
+- The renderer reads the reply target from the snapshot when it submits and
+  passes it with the send; the reducer derives the pending kind from the mode
+  current at acceptance. As with the main composer, a target changed in the
+  narrow window between those two points only affects which mode completion
+  clears, never the relation Core sends.
 - `ThreadReplyFinished { room_id, root_event_id, transaction_id }` clears only
   the matching thread composer pending transaction and emits `ThreadChanged`.
   Stale room/root/transaction signals are ignored.

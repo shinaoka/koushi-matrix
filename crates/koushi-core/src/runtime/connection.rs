@@ -503,6 +503,7 @@ impl CoreCommandHandle {
             | CoreCommandEnvelope::DirectAttachment { .. }
             | CoreCommandEnvelope::DirectRoomMessages { .. }
             | CoreCommandEnvelope::DirectMessageAction { .. }
+            | CoreCommandEnvelope::DirectComposerDraft { .. }
             | CoreCommandEnvelope::DirectRecentActivity { .. }
             | CoreCommandEnvelope::DirectSessionAccessToken { .. }
             | CoreCommandEnvelope::ValidateSessionAccessToken { .. } => {
@@ -600,6 +601,7 @@ impl CoreConnectionTestControl {
             | CoreCommandEnvelope::DirectAttachment { .. }
             | CoreCommandEnvelope::DirectRoomMessages { .. }
             | CoreCommandEnvelope::DirectMessageAction { .. }
+            | CoreCommandEnvelope::DirectComposerDraft { .. }
             | CoreCommandEnvelope::DirectRecentActivity { .. }
             | CoreCommandEnvelope::DirectSessionAccessToken { .. }
             | CoreCommandEnvelope::ValidateSessionAccessToken { .. } => {
@@ -857,6 +859,33 @@ impl CoreConnection {
         result
             .await
             .map_err(|_| crate::direct_operations::DirectMessageFailure::AccountInactive)?
+    }
+
+    /// Stage an assistant draft for MCP `draft_message` (#1644).
+    ///
+    /// The one direct operation that reduces an app action: it writes only the
+    /// target composer's draft and its assistant marker, never sends, and never
+    /// selects a room, pane, or thread. A non-empty or busy target is refused
+    /// with `Conflict` and left untouched.
+    pub async fn stage_assistant_draft(
+        &self,
+        request: crate::direct_operations::AssistantDraftRequest,
+    ) -> Result<
+        crate::direct_operations::StagedAssistantDraft,
+        crate::direct_operations::AssistantDraftFailure,
+    > {
+        let (response, result) = oneshot::channel();
+        self.command_tx
+            .send(CoreCommandEnvelope::DirectComposerDraft {
+                request_id: self.next_request_id(),
+                request,
+                response,
+            })
+            .await
+            .map_err(|_| crate::direct_operations::AssistantDraftFailure::AccountInactive)?;
+        result
+            .await
+            .map_err(|_| crate::direct_operations::AssistantDraftFailure::AccountInactive)?
     }
 
     /// Run one search for an out-of-band caller (#1524).

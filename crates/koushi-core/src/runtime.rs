@@ -389,6 +389,19 @@ enum CoreCommandEnvelope {
             >,
         >,
     },
+    /// An assistant draft for MCP `draft_message` (#1644). The one direct
+    /// operation that reduces an app action: it writes only the target's draft
+    /// and marker, and is answered on the reply channel.
+    DirectComposerDraft {
+        request_id: RequestId,
+        request: crate::direct_operations::AssistantDraftRequest,
+        response: oneshot::Sender<
+            Result<
+                crate::direct_operations::StagedAssistantDraft,
+                crate::direct_operations::AssistantDraftFailure,
+            >,
+        >,
+    },
     /// A search for an out-of-band caller (#1524). Answered on the reply
     /// channel only; no app action or GUI event is produced.
     DirectSearch {
@@ -415,6 +428,7 @@ impl CoreCommandEnvelope {
             Self::DirectSearch { .. } => panic!("expected public command envelope"),
             Self::DirectRoomMessages { .. }
             | Self::DirectMessageAction { .. }
+            | Self::DirectComposerDraft { .. }
             | Self::DirectRecentActivity { .. }
             | Self::DirectSessionAccessToken { .. }
             | Self::ValidateSessionAccessToken { .. } => panic!("expected public command envelope"),
@@ -2740,7 +2754,107 @@ impl AppActor {
             CoreCommandEnvelope::DirectMessageAction { request, response } => {
                 Box::pin(self.handle_direct_message_action(request, response)).await
             }
+            CoreCommandEnvelope::DirectComposerDraft {
+                request_id,
+                request,
+                response,
+            } => {
+                let result = Box::pin(self.handle_assistant_draft(request_id, request)).await;
+                let staged = result.is_ok();
+                let _ = response.send(result);
+                staged
+            }
             envelope => Box::pin(self.handle_public_command(envelope)).await,
+        }
+    }
+
+    /// #1644: stage an MCP assistant draft. Every guard runs before the
+    /// reducer, so a refused draft changes nothing; the reducer repeats the
+    /// state guards it can see.
+    async fn handle_assistant_draft(
+        &mut self,
+        request_id: RequestId,
+        request: crate::direct_operations::AssistantDraftRequest,
+    ) -> Result<
+        crate::direct_operations::StagedAssistantDraft,
+        crate::direct_operations::AssistantDraftFailure,
+    > {
+        use crate::direct_operations::{AssistantDraftFailure, StagedAssistantDraft};
+        let Some(account) = composer_draft_session_key(&self.state) else {
+            return Err(AssistantDraftFailure::AccountInactive);
+        };
+        if !matches!(
+            &self.composer_draft_load_status,
+            ComposerDraftLoadStatus::Loaded(loaded) if *loaded == account
+        ) {
+            return Err(AssistantDraftFailure::Unavailable);
+        }
+        let room_id = match &request.target {
+            koushi_state::ComposerTarget::Main { room_id }
+            | koushi_state::ComposerTarget::Thread { room_id, .. } => room_id,
+        };
+        if !self.state.rooms.iter().any(|room| &room.room_id == room_id) {
+            return Err(AssistantDraftFailure::RoomNotFound);
+        }
+        let open_composer_pending = match &request.target {
+            koushi_state::ComposerTarget::Main { room_id } => {
+                self.state.timeline.room_id.as_deref() == Some(room_id.as_str())
+                    && self
+                        .state
+                        .timeline
+                        .composer
+                        .pending_transaction_id
+                        .is_some()
+            }
+            koushi_state::ComposerTarget::Thread {
+                room_id,
+                root_event_id,
+            } => matches!(
+                &self.state.thread,
+                koushi_state::ThreadPaneState::Open {
+                    room_id: open_room,
+                    root_event_id: open_root,
+                    composer,
+                    ..
+                } if open_room == room_id
+                    && open_root == root_event_id
+                    && composer.pending_transaction_id.is_some()
+            ),
+        };
+        let scope = crate::composer_draft_lifecycle::ComposerDraftScope {
+            account,
+            target: request.target.clone(),
+        };
+        if !self.state.composer_drafts.target_is_empty(&request.target)
+            || open_composer_pending
+            || self.composer_draft_leases.has_command_permit(&scope)
+        {
+            return Err(AssistantDraftFailure::Conflict);
+        }
+        let target = request.target.clone();
+        let effects = Box::pin(self.reduce_app_action(AppAction::AssistantDraftStaged {
+            target: request.target,
+            document: request.document,
+            client_name: request.client_name,
+        }))
+        .await;
+        Box::pin(self.handle_app_effects(request_id, effects)).await;
+        match self.state.composer_drafts.target_is_empty(&target) {
+            true => Err(AssistantDraftFailure::Conflict),
+            false => Ok(StagedAssistantDraft {
+                revision: match &target {
+                    koushi_state::ComposerTarget::Main { room_id } => {
+                        self.state.composer_drafts.room_revision(room_id)
+                    }
+                    koushi_state::ComposerTarget::Thread {
+                        room_id,
+                        root_event_id,
+                    } => self
+                        .state
+                        .composer_drafts
+                        .thread_revision(room_id, root_event_id),
+                },
+            }),
         }
     }
 
@@ -3049,6 +3163,7 @@ impl AppActor {
             | CoreCommandEnvelope::DirectAttachment { .. }
             | CoreCommandEnvelope::DirectRoomMessages { .. }
             | CoreCommandEnvelope::DirectMessageAction { .. }
+            | CoreCommandEnvelope::DirectComposerDraft { .. }
             | CoreCommandEnvelope::DirectRecentActivity { .. }
             | CoreCommandEnvelope::DirectSessionAccessToken { .. }
             | CoreCommandEnvelope::ValidateSessionAccessToken { .. } => {
@@ -3284,6 +3399,44 @@ impl AppActor {
                             })
                             .await
                         }
+                        AppCommand::SetThreadComposerReplyTarget {
+                            request_id,
+                            room_id,
+                            root_event_id,
+                            event_id,
+                        } => {
+                            Box::pin(async move {
+                                let effects = Box::pin(self.reduce_app_action(
+                                    AppAction::ThreadComposerReplyTargetSelected {
+                                        room_id,
+                                        root_event_id,
+                                        event_id,
+                                    },
+                                ))
+                                .await;
+                                Box::pin(self.handle_app_effects(request_id, effects)).await;
+                                true
+                            })
+                            .await
+                        }
+                        AppCommand::CancelThreadComposerReply {
+                            request_id,
+                            room_id,
+                            root_event_id,
+                        } => {
+                            Box::pin(async move {
+                                let effects = Box::pin(self.reduce_app_action(
+                                    AppAction::ThreadComposerReplyCancelled {
+                                        room_id,
+                                        root_event_id,
+                                    },
+                                ))
+                                .await;
+                                Box::pin(self.handle_app_effects(request_id, effects)).await;
+                                true
+                            })
+                            .await
+                        }
                         AppCommand::SetComposerDraft {
                             request_id,
                             expected_account,
@@ -3320,6 +3473,24 @@ impl AppActor {
                                 }
                                 let effects = Box::pin(self.reduce_app_action(
                                     AppAction::ComposerDraftSeeded { room_id, document },
+                                ))
+                                .await;
+                                Box::pin(self.handle_app_effects(request_id, effects)).await;
+                                true
+                            })
+                            .await
+                        }
+                        AppCommand::DismissAssistantDraftMarker {
+                            request_id,
+                            expected_account,
+                            target,
+                        } => {
+                            Box::pin(async move {
+                                if !composer_draft_account_matches(&self.state, &expected_account) {
+                                    return false;
+                                }
+                                let effects = Box::pin(self.reduce_app_action(
+                                    AppAction::AssistantDraftMarkerDismissed { target },
                                 ))
                                 .await;
                                 Box::pin(self.handle_app_effects(request_id, effects)).await;

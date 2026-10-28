@@ -17,16 +17,26 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
 use koushi_state::NativeAttentionCapability;
 use tauri::{
+    Manager,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
 };
+
+use crate::desktop_menu::MenuLabels;
 
 pub(crate) const TRAY_ID: &str = "koushi-main-tray";
 pub(crate) const TRAY_TOOLTIP: &str = "Koushi";
 pub(crate) const TRAY_MENU_ID_SHOW: &str = "tray_show_main_window";
 pub(crate) const TRAY_MENU_ID_QUIT: &str = "tray_quit";
-pub(crate) const TRAY_MENU_LABEL_SHOW: &str = "Show Koushi";
-pub(crate) const TRAY_MENU_LABEL_QUIT: &str = "Quit Koushi";
+
+/// Catalog message ids and English fallbacks for the tray menu labels, in menu
+/// order (#1638). They ride the native-menu label round trip: the webview
+/// resolves them with the app-menu keys and `set_native_menu_labels` re-applies
+/// both menus, so a language change reaches the tray too.
+pub(crate) const TRAY_MENU_LABELS: [(&str, &str, &str); 2] = [
+    (TRAY_MENU_ID_SHOW, "menu.showKoushi", "Show Koushi"),
+    (TRAY_MENU_ID_QUIT, "menu.quit", "Quit Koushi"),
+];
 
 const TRAY_UNKNOWN: u8 = 0;
 const TRAY_AVAILABLE: u8 = 1;
@@ -114,22 +124,46 @@ fn tray_failure_token(error: &tauri::Error) -> &'static str {
     }
 }
 
+/// Catalog ids the tray menu is labelled from, offered to the webview with the
+/// app-menu ids.
+pub(crate) fn tray_menu_label_keys() -> impl Iterator<Item = &'static str> {
+    TRAY_MENU_LABELS.iter().map(|(_, key, _)| *key)
+}
+
+/// Resolved `(menu id, label)` pairs; English stays the fallback for any key
+/// the webview has not resolved.
+fn tray_menu_labels(labels: &MenuLabels) -> [(&'static str, &str); 2] {
+    TRAY_MENU_LABELS
+        .map(|(id, key, fallback)| (id, labels.get(key).map(String::as_str).unwrap_or(fallback)))
+}
+
+fn build_tray_menu<R: tauri::Runtime, M: Manager<R>>(
+    manager: &M,
+    labels: &MenuLabels,
+) -> tauri::Result<Menu<R>> {
+    let menu = Menu::new(manager)?;
+    for (id, label) in tray_menu_labels(labels) {
+        menu.append(&MenuItem::with_id(manager, id, label, true, None::<&str>)?)?;
+    }
+    Ok(menu)
+}
+
+/// Re-label the tray menu with catalog strings the webview resolved. A process
+/// with no tray has nothing to re-label.
+pub(crate) fn apply_tray_menu_labels<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    labels: &MenuLabels,
+) -> tauri::Result<()> {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return Ok(());
+    };
+    tray.set_menu(Some(build_tray_menu(app, labels)?))
+}
+
 fn build_tray_icon(app: &tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(
-        app,
-        TRAY_MENU_ID_SHOW,
-        TRAY_MENU_LABEL_SHOW,
-        true,
-        None::<&str>,
-    )?;
-    let quit = MenuItem::with_id(
-        app,
-        TRAY_MENU_ID_QUIT,
-        TRAY_MENU_LABEL_QUIT,
-        true,
-        None::<&str>,
-    )?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
+    // Built before the webview resolves the catalog locale; the localized
+    // labels arrive through `apply_tray_menu_labels`.
+    let menu = build_tray_menu(app, &Default::default())?;
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip(TRAY_TOOLTIP)
@@ -193,6 +227,48 @@ mod tests {
             button,
             button_state,
         }
+    }
+
+    #[test]
+    fn tray_labels_follow_the_resolved_catalog_with_english_fallback() {
+        assert_eq!(
+            tray_menu_label_keys().collect::<Vec<_>>(),
+            ["menu.showKoushi", "menu.quit"]
+        );
+
+        assert_eq!(
+            tray_menu_labels(&Default::default()),
+            [
+                (TRAY_MENU_ID_SHOW, "Show Koushi"),
+                (TRAY_MENU_ID_QUIT, "Quit Koushi")
+            ],
+            "before the webview resolves the locale the tray stays English"
+        );
+
+        for (show, quit) in [
+            ("Koushi を表示", "Koushi を終了"),
+            ("Koushi 표시", "Koushi 종료"),
+            ("显示 Koushi", "退出 Koushi"),
+            ("顯示 Koushi", "結束 Koushi"),
+        ] {
+            let labels = MenuLabels::from([
+                ("menu.showKoushi".to_owned(), show.to_owned()),
+                ("menu.quit".to_owned(), quit.to_owned()),
+            ]);
+            assert_eq!(
+                tray_menu_labels(&labels),
+                [(TRAY_MENU_ID_SHOW, show), (TRAY_MENU_ID_QUIT, quit)]
+            );
+        }
+
+        let partial = MenuLabels::from([("menu.quit".to_owned(), "Koushi を終了".to_owned())]);
+        assert_eq!(
+            tray_menu_labels(&partial),
+            [
+                (TRAY_MENU_ID_SHOW, "Show Koushi"),
+                (TRAY_MENU_ID_QUIT, "Koushi を終了")
+            ]
+        );
     }
 
     #[test]

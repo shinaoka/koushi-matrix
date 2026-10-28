@@ -50,3 +50,32 @@ pub async fn wait_for_session(runtime: &CoreRuntime, done: impl Fn(&SessionState
     }
     panic!("the session state did not settle in time");
 }
+
+/// A joined room summary for the room list.
+pub fn room(room_id: &str) -> koushi_state::RoomSummary {
+    koushi_state::RoomSummary {
+        display_name_placeholder: None,
+        display_label_placeholder: None,
+        room_id: room_id.to_owned(),
+        display_name: room_id.to_owned(),
+        display_label: room_id.to_owned(),
+        original_display_label: room_id.to_owned(),
+        avatar: None,
+        is_dm: false,
+        dm_user_ids: Vec::new(),
+        tags: koushi_state::RoomTags::default(),
+        unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
+        marked_unread: false,
+        recency_stamp: None,
+        conversation_activity: None,
+        latest_event: None,
+        parent_space_ids: Vec::new(),
+        dm_space_ids: Vec::new(),
+        is_encrypted: true,
+        joined_members: 2,
+    }
+}

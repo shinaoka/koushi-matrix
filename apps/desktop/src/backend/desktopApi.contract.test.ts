@@ -112,7 +112,10 @@ describe("DesktopApi command contract", () => {
         "cancelOidcLogin",
         "setSpaceChildSuggested",
         "joinSuggestedSpaceRooms",
-        "dismissSuggestedSpaceRooms"
+        "dismissSuggestedSpaceRooms",
+        "setThreadComposerReplyTarget",
+        "cancelThreadComposerReply",
+        "dismissAssistantDraftMarker"
       )
       .sort();
     expect(new Set(current).size).toBe(current.length);

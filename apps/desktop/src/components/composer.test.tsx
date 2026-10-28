@@ -154,6 +154,65 @@ describe("Composer", () => {
     expect(container.querySelector(".composer-sending-as")).toBeNull();
   });
 
+  it("marks an assistant-staged draft and lets the user dismiss only the marker (#1644)", () => {
+    const onDismiss = vi.fn();
+    const props = {
+      composerMode: { kind: "plain" as const },
+      isSending: false,
+      roomName: "Direct room",
+      document: documentFromText("Staged by the assistant"),
+      onCancelReply: () => undefined,
+      onSend: textSend(() => undefined),
+      onDocumentChange: textChange(() => undefined)
+    };
+    const { container, rerender } = render(
+      <Composer
+        {...props}
+        assistantDraft={{ client_name: "claude-code", revision: "7" as never }}
+        onDismissAssistantDraft={onDismiss}
+      />
+    );
+    const marker = container.querySelector(".composer-assistant-draft");
+    expect(marker?.textContent).toContain("Drafted by claude-code. Review it before sending.");
+    fireEvent.click(screen.getByRole("button", { name: "Hide assistant label" }));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".composer-inline-editor")?.textContent).toContain(
+      "Staged by the assistant"
+    );
+
+    rerender(<Composer {...props} />);
+    expect(container.querySelector(".composer-assistant-draft")).toBeNull();
+  });
+
+  it("adopts a staged draft into the open empty composer without moving focus (#1644)", () => {
+    const props = {
+      composerMode: { kind: "plain" as const },
+      isSending: false,
+      roomName: "Direct room",
+      onCancelReply: () => undefined,
+      onSend: textSend(() => undefined),
+      onDocumentChange: textChange(() => undefined)
+    };
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    const { container, rerender } = render(
+      <Composer {...props} draftKey={"room\u00000\u0000"} document={documentFromText("")} />
+    );
+    outside.focus();
+    rerender(
+      <Composer
+        {...props}
+        draftKey={"room\u00000\u00007"}
+        document={documentFromText("From the assistant")}
+        assistantDraft={{ client_name: "claude-code", revision: "7" as never }}
+      />
+    );
+    const editor = container.querySelector(".composer-inline-editor");
+    expect(editor?.textContent).toContain("From the assistant");
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
+  });
+
   it("stages ordinary files dropped on every composer region in deterministic order", async () => {
     const onAttachFiles = vi.fn(async (_files: File[]) => undefined);
     const { container } = render(

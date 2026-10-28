@@ -169,13 +169,14 @@ describe("TimelineView", () => {
   });
 
 
-  it("omits every reply-composition affordance from thread presentation", () => {
+  it("offers Reply but not Reply in thread from thread presentation (#1643)", () => {
     const key = threadTimelineKey(
       "@alice:example.invalid",
       "!room:example.invalid",
       "$thread-root:example.invalid"
     );
     const onOpenContextMenu = vi.fn();
+    const onReply = vi.fn();
     const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
       InitialItems: {
         request_id: null,
@@ -206,7 +207,7 @@ describe("TimelineView", () => {
           roomId="!room:example.invalid"
           currentUserId="@alice:example.invalid"
           transport={baseTransport({})}
-          onReply={vi.fn()}
+          onReply={onReply}
           onOpenThread={vi.fn()}
           onOpenContextMenu={onOpenContextMenu}
         />
@@ -215,16 +216,22 @@ describe("TimelineView", () => {
 
     const row = screen.getByText("thread reply").closest("article");
     expect(row).not.toBeNull();
-    expect(within(row!).queryByRole("button", { name: "Reply to message" })).toBeNull();
+    // Threads are not nested: no Reply in thread inside the thread pane.
     expect(within(row!).queryByRole("button", { name: "Reply in thread" })).toBeNull();
+    fireEvent.click(within(row!).getByRole("button", { name: "Reply to message" }));
+    expect(onReply).toHaveBeenCalledWith("!room:example.invalid", "$thread-reply");
 
     fireEvent.contextMenu(row!);
     expect(onOpenContextMenu).toHaveBeenCalledTimes(1);
     const menuItems = onOpenContextMenu.mock.calls[0][2] as Array<{ id: string }>;
-    expect(menuItems.map((item) => item.id)).not.toContain("replyToMessage");
+    expect(menuItems.map((item) => item.id)).toContain("replyToMessage");
     expect(menuItems.map((item) => item.id)).not.toContain("openThread");
-    // The menu still has to be useful for the remaining thread-event actions.
-    expect(menuItems.length).toBeGreaterThan(0);
+    // The menu target carries the row's own Reply route, so the shell's
+    // "Reply" item reaches the thread composer instead of the main composer.
+    const target = onOpenContextMenu.mock.calls[0][1] as { onReply?: () => void };
+    onReply.mockClear();
+    target.onReply?.();
+    expect(onReply).toHaveBeenCalledWith("!room:example.invalid", "$thread-reply");
   });
 
 

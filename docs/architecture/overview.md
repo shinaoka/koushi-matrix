@@ -33,14 +33,20 @@ with an Element Desktop/Web-like three-pane desktop UX:
   membership completeness is explicit Rust-owned projection input. A partial
   observation may add known-positive associations but must preserve prior
   positives; only a complete direct-member observation may remove one.
-- Threads are linear. The thread pane's composer sends ordinary thread messages,
-  and thread events expose no reply-composition affordance: no per-event Reply,
-  no Reply in thread, no nested thread. Rich replies authored by Element or
-  another Matrix client still render their quoted context inside a thread, and
-  core keeps a thread-keyed reply an ordinary thread message
-  (`EnforceThread::Threaded(ReplyWithinThread::No)`), so creating a thread rich
-  reply stays unreachable from the product UI. Reply and Reply in thread remain
-  room-timeline actions.
+- Threads are not nested. Thread-pane events offer Reply but never Reply in
+  thread or a nested thread; Reply in thread stays a room-timeline action.
+  Without a reply target the thread composer sends an ordinary thread message
+  (`m.thread` to the root with `is_falling_back: true` and no added mention),
+  matching Element X and Element Web. Choosing Reply on a thread-pane event puts
+  the thread composer into Rust-owned reply mode for that event; sending in that
+  mode produces a Matrix "reply within thread" (spec v1.4): `rel_type: m.thread`
+  to the root, `m.in_reply_to` set to the chosen event, and
+  `is_falling_back: false` (Ruma `Thread::reply`, SDK
+  `ReplyWithinThread::Yes`). Thread-pane attachments stay ordinary thread
+  messages (`ReplyWithinThread::No`). Reply mode belongs to the open thread's
+  composer only: switching or closing the thread, or restoring its composer from
+  the stored draft, clears it. Rich replies authored by other clients render
+  their quoted context inside a thread unchanged.
 - Opening a thread carries a Rust-owned creation intent. A root with a positive
   projected reply count and every Threads-list entry is an existing thread; a
   room-timeline root with no known replies is a new-thread draft. Draft panes
@@ -1360,7 +1366,9 @@ records the failure as a diagnostic, reports the capability as unavailable, and
 the app must still run as an ordinary windowed application. The tray carries no
 Matrix data — only a static tooltip and two commands, Show and Quit — so it is
 not an attention rendering surface and must not display room labels, counts, or
-message content.
+message content. Its Show and Quit labels are catalog message ids that ride the
+native app-menu label round trip, so they follow the app language like the app
+menu does.
 
 Close-to-hide is the default window-close behavior on all three desktop
 platforms. Requesting a window close hides the `main` window instead of
@@ -2020,12 +2028,15 @@ Ownership:
 - `koushi-core` remains the only production runtime owner. Search, send,
   attachment preparation, encryption, and projection stay in the existing
   actors; the bridge adds no alternate runtime and opens no crypto store.
-- Grants persist in `<data_dir>/mcp/connections.json` (schema 2: per assistant,
-  per account, `read`/`send`/`attachments`), written by the app and re-read on
-  every call. They are not settings: settings values must not contain user
-  IDs, and account ids embed them. Schema 1 files are still read. A file the
-  app cannot parse grants nothing and is never overwritten. Only the on/off
-  switch is a setting (`SettingsValues.mcp.enabled`, app scope).
+- Grants persist in `<data_dir>/mcp/connections.json` (schema 3: per assistant,
+  per account, `read`/`send`/`attachments`/`message_actions`/`draft`), written
+  by the app and re-read on every call. They are not settings: settings values
+  must not contain user IDs, and account ids embed them. Schema 1 and 2 files
+  are still read. A schema 3 row without a `draft` key grants no draft, and an
+  older build keeps the key as an unknown row field, so `draft` needs no schema
+  bump. A file the app cannot parse grants nothing and is never overwritten.
+  Only the on/off switch is a setting (`SettingsValues.mcp.enabled`, app
+  scope).
 
 Invariants:
 
@@ -2088,6 +2099,30 @@ Invariants:
   any visible thread root. Actions are bounded, per-account capped, and fenced
   on the account session, so a revoked grant is refused at submission while an
   already-submitted event is never rolled back.
+- **Assistant drafts are the one composer write (#1644).** `draft_message`
+  stages plain text in a room's main composer or in a thread composer and
+  never sends. It needs the `draft` grant, which is separate from and weaker
+  than `send`; the approval previews the text and the room like a send. Core
+  writes the draft through the Rust draft store (`AppActor`, envelope
+  `DirectComposerDraft`, action `AssistantDraftStaged`), never through the
+  renderer: it takes the successor of the stored revision and records Rust-owned
+  marker metadata naming the assistant's client name. The write is refused with
+  `conflict` when the target's stored draft is non-empty, when a renderer
+  draft or send command for that exact target is in flight (a command permit in
+  the composer lease registry), or when the open composer has a pending
+  submission. It is refused with `unavailable` until the account's draft store
+  has loaded. It does not select a room, account, pane, or thread, move focus
+  or scroll, or touch read state. When the target composer is open and empty
+  the staged document hydrates it at once (the `ComposerDraftsLoaded` rule),
+  and the renderer adopts it through the composer synchronization key without
+  moving focus; otherwise the draft appears when the user next opens that
+  composer. The marker survives edits, is removed with the content (an
+  accepted send, a clear to empty, a pruned room), and is removed by the
+  user's explicit dismissal (`dismiss_assistant_draft_marker`). If the user
+  starts typing in the renderer's 350 ms persistence debounce window just as
+  the draft lands, the user's text wins: the renderer re-persists it above the
+  staged revision and dismisses the marker. Reply relations and attachments
+  are not staged in this version.
 - **Polling, not push.** MCP cannot wake a host that is not calling. Room
   changes surface through a `wait_for_events` long-poll of at most 50 s over a
   sampled feed: the host samples each joined room's latest event every 2 s,
@@ -2116,7 +2151,9 @@ Invariants:
   reuses the download and managed-cache path, so an unviewed room needs no
   timeline actor or projected media entry. Progress, cancellation, and errors
   reach only the calling client. A sent message appearing through normal sync
-  is the expected exception, not a GUI operation. The other exception is
+  is the expected exception, not a GUI operation. `draft_message` is a
+  documented exception limited to the target composer's draft and its marker
+  (see "Assistant drafts" above). The other exception is
   consent: a call that needs approval publishes the broker's state to the
   WebView and requests window attention, without calling `set_focus`.
 - **No content telemetry.** Message bodies, queries, attachment bytes, tokens,

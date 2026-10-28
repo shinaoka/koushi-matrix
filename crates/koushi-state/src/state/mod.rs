@@ -284,7 +284,7 @@ pub use cjk::{
 
 // ── Re-exports: timeline ────────────────────────────────────────────────────
 pub use timeline::{
-    ComposerDraftPersistenceEntry, ComposerDraftPersistenceImportError,
+    AssistantDraftMarker, ComposerDraftPersistenceEntry, ComposerDraftPersistenceImportError,
     ComposerDraftPersistenceProjection, ComposerDraftStore, ComposerMode, ComposerState,
     ComposerSubmissionRecord, ComposerSubmissionRegistry, MAX_PERSISTED_COMPOSER_DRAFT_BYTES,
     MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT, MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT,

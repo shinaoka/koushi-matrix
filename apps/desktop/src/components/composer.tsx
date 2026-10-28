@@ -15,6 +15,7 @@ import {
 import {
   AtSign,
   Bold,
+  Bot,
   Clock3,
   Code2,
   Italic,
@@ -29,6 +30,7 @@ import {
 import { useActiveLocaleKey } from "../i18n/activeLocaleContext";
 import { t, type MessageId } from "../i18n/messages";
 import type {
+  AssistantDraftMarker,
   ComposerDocument,
   ComposerSurface,
   ResolveComposerKeyAction
@@ -129,7 +131,9 @@ export const Composer = memo(function Composer({
   onDiagnosticLogEntry,
   notice = null,
   scheduledSendCount = 0,
-  scheduledSendPersistenceFailed = false
+  scheduledSendPersistenceFailed = false,
+  assistantDraft = null,
+  onDismissAssistantDraft
 }: {
   surface?: ComposerSurface;
   editorOnly?: boolean;
@@ -172,6 +176,10 @@ export const Composer = memo(function Composer({
    *  staged uploads are ready, instead of sending the composer body. */
   onSendStagedUploads?: () => void;
   onDiagnosticLogEntry?: (entry: DiagnosticLogEntry) => void;
+  /** #1644: the Rust-owned marker of a draft an MCP assistant staged. */
+  assistantDraft?: AssistantDraftMarker | null;
+  /** #1644: removes the marker; the draft text stays. */
+  onDismissAssistantDraft?: () => void;
   /** Localized transient notice rendered above the composer (issue #450). */
   notice?: string | null;
   /**
@@ -911,6 +919,30 @@ export const Composer = memo(function Composer({
           {t("scheduled.persistenceFailed")}
         </p>
       ) : null}
+      {!editorOnly && assistantDraft ? (
+        <div className="composer-assistant-draft" role="note">
+          <span className="composer-assistant-draft-label">
+            <Bot size={ICON_SIZE.small} aria-hidden="true" />
+            <span>{t("composer.assistantDraftMarker", { client: assistantDraft.client_name })}</span>
+          </span>
+          {onDismissAssistantDraft ? (
+            <Tooltip label={t("composer.assistantDraftDismiss")} placement="below">
+              {(tooltipProps) => (
+                <button
+                  className="icon-button"
+                  type="button"
+                  aria-label={t("composer.assistantDraftDismiss")}
+                  onMouseDown={keepComposerFocus}
+                  onClick={onDismissAssistantDraft}
+                  {...tooltipProps}
+                >
+                  <X size={ICON_SIZE.small} />
+                </button>
+              )}
+            </Tooltip>
+          ) : null}
+        </div>
+      ) : null}
       {!editorOnly && composerMode.kind === "reply" ? (
         <div className="composer-reply-banner">
           <span className="composer-reply-label">{t("composer.replying")}</span>
@@ -1269,6 +1301,7 @@ function mentionOptionAriaLabel(candidate: MentionCandidate): string {
 
 const ThreadComposer = memo(function ThreadComposer({
   canEdit,
+  composerMode = PLAIN_COMPOSER_MODE,
   document,
   draftKey,
   hasStagedUploads = false,
@@ -1283,6 +1316,7 @@ const ThreadComposer = memo(function ThreadComposer({
   roomName = t("panel.thread"),
   resolveComposerKeyAction,
   onAttachFiles,
+  onCancelReply = ignoreCancelReply,
   onDocumentChange,
   onMathModeChange,
   onRecentEmojisChange,
@@ -1291,9 +1325,13 @@ const ThreadComposer = memo(function ThreadComposer({
   onSend,
   onSendStagedUploads,
   onDiagnosticLogEntry,
-  sendingAccount = null
+  sendingAccount = null,
+  assistantDraft = null,
+  onDismissAssistantDraft
 }: {
   canEdit: boolean;
+  /** #1643: the open thread composer's Rust-owned reply mode. */
+  composerMode?: ComposerModeProp;
   document: ComposerDocument;
   draftKey: string;
   hasStagedUploads?: boolean;
@@ -1309,6 +1347,7 @@ const ThreadComposer = memo(function ThreadComposer({
   roomName?: string;
   resolveComposerKeyAction: ResolveComposerKeyAction;
   onAttachFiles?: (files: File[]) => void | Promise<void>;
+  onCancelReply?: () => void;
   onDocumentChange: (document: ComposerDocument) => void;
   onMathModeChange?: (enabled: boolean) => void | Promise<void>;
   onRecentEmojisChange?: (emojis: string[]) => void | Promise<void>;
@@ -1318,6 +1357,8 @@ const ThreadComposer = memo(function ThreadComposer({
   onSendStagedUploads?: () => void;
   onDiagnosticLogEntry?: (entry: DiagnosticLogEntry) => void;
   sendingAccount?: ComposerSendingAccount | null;
+  assistantDraft?: AssistantDraftMarker | null;
+  onDismissAssistantDraft?: () => void;
 }) {
   // #1557: the `roomName` default and the labels below are catalog text.
   useActiveLocaleKey();
@@ -1326,7 +1367,7 @@ const ThreadComposer = memo(function ThreadComposer({
       surface="thread"
       sendingAccount={sendingAccount}
       canEdit={canEdit}
-      composerMode={PLAIN_COMPOSER_MODE}
+      composerMode={composerMode}
       hasStagedUploads={hasStagedUploads}
       stagedUploadsReady={stagedUploadsReady}
       isSending={isSending}
@@ -1345,20 +1386,22 @@ const ThreadComposer = memo(function ThreadComposer({
       placeholder={t("timeline.threadPlaceholder")}
       roomName={roomName}
       onAttachFiles={onAttachFiles}
-      onCancelReply={ignoreCancelReply}
+      onCancelReply={onCancelReply}
       onDocumentChange={onDocumentChange}
       onMentionQueryChange={onMentionQueryChange}
       onScheduleSend={onScheduleSend}
       onSend={onSend}
       onSendStagedUploads={onSendStagedUploads}
       onDiagnosticLogEntry={onDiagnosticLogEntry}
+      assistantDraft={assistantDraft}
+      onDismissAssistantDraft={onDismissAssistantDraft}
     />
   );
 });
 
 const PLAIN_COMPOSER_MODE = { kind: "plain" } as const;
 
-/** Thread replies have no reply target to cancel; one identity keeps Composer's memo. */
+/** Default for a thread composer without a cancel route; one identity keeps Composer's memo. */
 function ignoreCancelReply(): void {}
 
 export { ThreadComposer };

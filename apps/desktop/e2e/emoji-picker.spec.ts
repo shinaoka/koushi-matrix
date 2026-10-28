@@ -20,6 +20,11 @@
  */
 
 import { expect, test } from "@playwright/test";
+import {
+  EMOJI_PICKER_CELL_GAP_PX,
+  EMOJI_PICKER_CELL_SIZE_PX,
+  emojiPickerColumnsForWidth,
+} from "../src/components/EmojiPicker";
 import { t } from "../src/i18n/messages";
 import { seedTimelineItems } from "./support/basicOperations";
 
@@ -394,7 +399,22 @@ test("grid density matches the keyboard column step", async ({ page }) => {
   const columns = await grid.evaluate(
     (element) => getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length
   );
-  expect(columns).toBe(10);
+  // Cells keep a fixed pitch and the column count fills the body: the unused
+  // inline space is less than one more cell.
+  const fit = await picker.locator(".emoji-picker-body").evaluate((body) => {
+    const style = getComputedStyle(body);
+    const content =
+      body.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const cells = body.querySelectorAll<HTMLElement>(".emoji-picker-grid .emoji-picker-item");
+    return {
+      content,
+      pitch: cells[1].getBoundingClientRect().left - cells[0].getBoundingClientRect().left,
+      used: cells[0].parentElement!.getBoundingClientRect().width,
+    };
+  });
+  expect(fit.pitch).toBeCloseTo(EMOJI_PICKER_CELL_SIZE_PX + EMOJI_PICKER_CELL_GAP_PX, 0);
+  expect(columns).toBe(emojiPickerColumnsForWidth(fit.content));
+  expect(fit.content - fit.used).toBeLessThan(fit.pitch);
 
   const items = grid.locator(".emoji-picker-item");
   const firstItem = items.nth(0);

@@ -6,7 +6,7 @@ use super::*;
 #[test]
 fn definitions_are_unique_and_valid() {
     let tools = definitions();
-    assert_eq!(tools.len(), 14);
+    assert_eq!(tools.len(), 15);
     let mut names: Vec<&str> = tools.iter().map(|tool| tool.name).collect();
     names.sort_unstable();
     names.dedup();
@@ -31,6 +31,7 @@ fn account_scoped_tools_require_account_id() {
         "edit_message",
         "delete_message",
         "send_thread_reply",
+        "draft_message",
     ] {
         let tool = find(name).expect("tool");
         let required = tool.input_schema["required"].as_array().expect("required");
@@ -79,12 +80,12 @@ fn wait_for_events_publishes_its_coverage_and_cursor_contract() {
         json!(["sampled_room_changes"])
     );
     // Typed outputs: read_recent_activity, wait_for_events, get_message,
-    // and the five message actions (#1628).
+    // the five message actions (#1628), and draft_message (#1644).
     let others_typed = definitions()
         .iter()
         .filter(|tool| tool.output_schema.is_some())
         .count();
-    assert_eq!(others_typed, 8);
+    assert_eq!(others_typed, 9);
 }
 
 #[test]
@@ -121,8 +122,47 @@ fn read_only_flags_match_the_write_tools() {
             "edit_message",
             "delete_message",
             "send_thread_reply",
+            "draft_message",
         ]
     );
+}
+
+#[test]
+fn draft_message_never_sends_and_declares_its_permission_and_conflict() {
+    let tool = find("draft_message").expect("draft_message");
+    assert!(!tool.read_only, "a draft changes the user's composer");
+    for phrase in [
+        "Nothing is sent",
+        "draft permission",
+        "separate from send",
+        "conflict",
+        "does not switch",
+    ] {
+        assert!(tool.description.contains(phrase), "{phrase}");
+    }
+    let properties = tool.input_schema["properties"]
+        .as_object()
+        .expect("properties");
+    assert!(properties.contains_key("thread_root_event_id"));
+    assert!(!properties.contains_key("attachments"));
+    assert!(!properties.contains_key("reply_to_event_id"));
+    assert!(!properties.contains_key("client_request_id"));
+    assert!(
+        validate_arguments(
+            "draft_message",
+            &json!({"account_id": "a", "room_id": "!r", "body": "hi"})
+        )
+        .is_ok()
+    );
+    assert!(
+        validate_arguments(
+            "draft_message",
+            &json!({"account_id": "a", "room_id": "!r", "body": "hi", "attachments": []})
+        )
+        .is_err()
+    );
+    let output = tool.output_schema.expect("typed output");
+    assert_eq!(output["properties"]["status"]["const"], "staged");
 }
 
 #[test]

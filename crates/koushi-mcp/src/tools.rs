@@ -442,6 +442,31 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 "required": ["event_id", "transaction_id"]
             })),
         },
+        ToolDefinition {
+            name: "draft_message",
+            description: "Put plain text into a room's composer, or into a thread's composer when thread_root_event_id is given, as a draft the user reviews, edits, and sends from Koushi. Nothing is sent. Koushi does not switch the visible account or room, open a thread, move focus, or change read state; an open, empty composer shows the draft at once, otherwise it appears when the user next opens that composer, marked as written by this assistant. Fails with conflict, changing nothing, when that composer already holds a draft or the user is typing or sending in it; read the room and try again later rather than retrying at once. Replies to a specific message and attachments are not staged in this version. body is at most 16 KiB of UTF-8. Needs the draft permission, which is separate from send.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id_property(),
+                    "room_id": { "type": "string", "description": "Room id of a room this account is joined to." },
+                    "body": { "type": "string", "minLength": 1, "description": "Plain text of the draft." },
+                    "thread_root_event_id": { "type": "string", "description": "Stage the draft in this thread's composer instead of the room's. Must be a visible thread root, not a thread reply." }
+                },
+                "required": ["account_id", "room_id", "body"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "room_id": { "type": "string" },
+                    "thread_root_event_id": id_or_null(),
+                    "status": { "const": "staged", "description": "The draft is in the composer and was not sent." }
+                },
+                "required": ["room_id", "thread_root_event_id", "status"]
+            })),
+        },
     ]
 }
 

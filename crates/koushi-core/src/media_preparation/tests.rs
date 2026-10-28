@@ -42,6 +42,33 @@ fn png_input(id: &str, width: u32, height: u32) -> StageUploadBytesInput {
     }
 }
 
+/// 24-bit bottom-up BMP with a 54-byte header, the layout WeChat's screenshot
+/// tool serves for every image MIME it offers, `image/png` included (#1630).
+fn synthetic_bmp(width: u32, height: u32) -> Vec<u8> {
+    let row = (width * 3).div_ceil(4) * 4;
+    let pixels = row * height;
+    let mut bytes = Vec::with_capacity(54 + pixels as usize);
+    bytes.extend_from_slice(b"BM");
+    bytes.extend_from_slice(&(54 + pixels).to_le_bytes());
+    bytes.extend_from_slice(&[0; 4]);
+    bytes.extend_from_slice(&54u32.to_le_bytes());
+    bytes.extend_from_slice(&40u32.to_le_bytes());
+    bytes.extend_from_slice(&(width as i32).to_le_bytes());
+    bytes.extend_from_slice(&(height as i32).to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&24u16.to_le_bytes());
+    bytes.extend_from_slice(&[0; 4]);
+    bytes.extend_from_slice(&pixels.to_le_bytes());
+    bytes.extend_from_slice(&[0; 16]);
+    for y in 0..height {
+        for x in 0..width {
+            bytes.extend_from_slice(&[120, (y % 239) as u8, (x % 251) as u8]);
+        }
+        bytes.resize(bytes.len() + (row - width * 3) as usize, 0);
+    }
+    bytes
+}
+
 fn heif_input(id: &str) -> StageUploadBytesInput {
     StageUploadBytesInput {
         staged_id: id.to_owned(),
@@ -574,5 +601,105 @@ fn heif_original_preview_renders_converted_bytes_while_upload_stays_exact() {
             .expect("Original+Keep is selected")
             .bytes,
         original_bytes
+    );
+}
+
+/// #1630: a clipboard owner can declare `image/png` for bytes that are not a
+/// PNG. The initial preparation must report that as a decode failure, not an
+/// encode failure, and leave a categorical diagnostic naming the detected
+/// content so the failure is triageable from a diagnostics file.
+#[test]
+fn mislabeled_image_is_a_decode_failure_with_a_categorical_diagnostic() {
+    let _guard = koushi_diagnostics::test_support::lock();
+    let mut registry = MediaPreparationRegistry::default();
+    let target = target(None);
+    let mislabeled = StageUploadBytesInput {
+        staged_id: "mislabeled".to_owned(),
+        position: 1,
+        filename: "private-clipboard.png".to_owned(),
+        mime_type: "image/png".to_owned(),
+        bytes: b"\0\0\0\0private bytes that are not an image".to_vec(),
+    };
+
+    let items = registry.prepare_target(
+        &target,
+        vec![mislabeled],
+        ImageUploadCompressionPolicy::default(),
+    );
+
+    assert!(matches!(
+        items[0].preparation,
+        StagedUploadPreparation::Failed {
+            failure_kind: MediaPreparationFailureKind::Decode,
+            can_use_original: true,
+        }
+    ));
+    let records = koushi_diagnostics::snapshot().records;
+    let event = &records
+        .iter()
+        .rev()
+        .find(|record| {
+            record.event.source == "core.media_preparation"
+                && record.event.stage == "initial_failed"
+        })
+        .expect("initial preparation failure diagnostic")
+        .event;
+    let token = |key: &str| {
+        event.fields.iter().find_map(|field| match field.value {
+            koushi_diagnostics::DiagnosticValue::Token(value) if field.key == key => Some(value),
+            _ => None,
+        })
+    };
+    assert_eq!(token("declared"), Some("png"));
+    assert_eq!(token("detected"), Some("unknown"));
+    assert_eq!(token("failure"), Some("decode"));
+    let serialized = serde_json::to_string(event).unwrap();
+    assert!(!serialized.contains("private"));
+}
+
+/// #1630: WeChat's screenshot tool declares `image/png` for a 24-bit BMP. The
+/// staged item must be a ready PNG image, not a preparation failure.
+#[test]
+fn bmp_declared_as_png_stages_as_a_ready_png_image() {
+    let mut registry = MediaPreparationRegistry::default();
+    let target = target(None);
+    let pasted = StageUploadBytesInput {
+        staged_id: "pasted".to_owned(),
+        position: 1,
+        filename: "image.png".to_owned(),
+        mime_type: "image/png".to_owned(),
+        bytes: synthetic_bmp(30, 7),
+    };
+
+    let item = registry
+        .prepare_target(
+            &target,
+            vec![pasted],
+            ImageUploadCompressionPolicy::default(),
+        )
+        .pop()
+        .expect("one staged item");
+
+    assert!(
+        matches!(item.preparation, StagedUploadPreparation::Ready { .. }),
+        "{:?}",
+        item.preparation
+    );
+    assert!(matches!(
+        item.kind,
+        StagedUploadKind::Image {
+            width: Some(30),
+            height: Some(7)
+        }
+    ));
+    assert_eq!(item.mime_type, "image/png");
+    assert_eq!(item.filename, "image.png");
+    let upload = registry
+        .selected_upload(&target, "pasted")
+        .expect("selected upload");
+    assert!(upload.bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert_eq!(
+        image::load_from_memory(&upload.bytes).unwrap().dimensions(),
+        (30, 7)
     );
 }

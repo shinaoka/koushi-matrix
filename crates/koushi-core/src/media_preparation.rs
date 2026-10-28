@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_media::{
     ImageOutputFormat, ImageOutputRequest, ImagePreparationError, ImagePreparationPolicy,
-    ImageResizeScale, PreparedImageFormat, PreparedImageVariant, heif_mime_type,
-    prepare_decoded_image_output, prepare_image_output,
+    ImageResizeScale, PreparedImageFormat, PreparedImageVariant, detected_image_format_token,
+    heif_mime_type, prepare_decoded_image_output, prepare_image_output,
 };
 use koushi_state::{
     ComposerTarget, ImageUploadCompressionPolicy, MediaPreparationFailureKind,
@@ -791,17 +791,25 @@ impl MediaPreparationRegistry {
             resize: image_resize_scale(selected.resize),
             format: image_output_format(selected.format),
         };
-        let Ok(variant) =
-            prepare_image_output(&input.bytes, &input.filename, request, &encode_policy)
-        else {
-            return staged_failure(
-                target,
-                input,
-                byte_count,
-                MediaPreparationFailureKind::Encode,
-            );
-        };
+        let variant =
+            match prepare_image_output(&input.bytes, &input.filename, request, &encode_policy) {
+                Ok(variant) => variant,
+                Err(error) => {
+                    // #1630: keep the typed kind, and name what the bytes are,
+                    // so a mislabeled clipboard image is triageable.
+                    let failure_kind = image_preparation_failure_kind(error);
+                    record_initial_preparation_failure(&input, failure_kind);
+                    return staged_failure(target, input, byte_count, failure_kind);
+                }
+            };
         let descriptor = descriptor_from_image_variant(&variant, input.bytes.len(), selected);
+        // An untouched source is shared, but a decode-only source such as BMP
+        // (#1630) keeps as converted PNG bytes the upload must use instead.
+        let storage = if variant.bytes == input.bytes {
+            CachedVariantStorage::Source
+        } else {
+            CachedVariantStorage::Owned(variant.bytes)
+        };
         self.variants.insert(
             (
                 target.clone(),
@@ -810,7 +818,7 @@ impl MediaPreparationRegistry {
             ),
             CachedVariant {
                 descriptor: descriptor.clone(),
-                storage: CachedVariantStorage::Source,
+                storage,
                 preview_variant_id: None,
             },
         );
@@ -1046,6 +1054,46 @@ fn prepare_heif_output(
         .map_err(|_| MediaPreparationFailureKind::Encode)
 }
 
+/// Record a failed initial image preparation with categorical fields only:
+/// the declared and detected encodings and the failure kind, never the
+/// filename or bytes.
+fn record_initial_preparation_failure(
+    input: &StageUploadBytesInput,
+    failure_kind: MediaPreparationFailureKind,
+) {
+    let declared = match input.mime_type.trim().to_ascii_lowercase().as_str() {
+        "image/png" => "png",
+        "image/jpeg" => "jpeg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        _ => "other",
+    };
+    let failure = match failure_kind {
+        MediaPreparationFailureKind::Empty => "empty",
+        MediaPreparationFailureKind::Unsupported => "unsupported",
+        MediaPreparationFailureKind::Decode => "decode",
+        MediaPreparationFailureKind::Encode => "encode",
+        MediaPreparationFailureKind::MissingPreparedBytes => "missing_prepared_bytes",
+    };
+    record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Warn,
+            "core.media_preparation",
+            "initial_failed",
+        )
+        .field(DiagnosticField::token("declared", declared))
+        .field(DiagnosticField::token(
+            "detected",
+            detected_image_format_token(&input.bytes),
+        ))
+        .field(DiagnosticField::token("failure", failure))
+        .field(DiagnosticField::count(
+            "byte_count",
+            u64::try_from(input.bytes.len()).unwrap_or(u64::MAX),
+        )),
+    );
+}
+
 fn record_native_decode(
     backend: &'static str,
     detected_mime: &'static str,
@@ -1222,9 +1270,10 @@ fn descriptor_from_image_variant(
             PreparedImageFormat::Png => PreparedUploadFormat::Png,
             PreparedImageFormat::Jpeg => PreparedUploadFormat::Jpeg,
             PreparedImageFormat::WebP => PreparedUploadFormat::Webp,
-            PreparedImageFormat::Gif | PreparedImageFormat::Heif | PreparedImageFormat::Other => {
-                PreparedUploadFormat::Original
-            }
+            PreparedImageFormat::Gif
+            | PreparedImageFormat::Bmp
+            | PreparedImageFormat::Heif
+            | PreparedImageFormat::Other => PreparedUploadFormat::Original,
         },
         savings_percent,
         metadata_stripped: variant.metadata_stripped,

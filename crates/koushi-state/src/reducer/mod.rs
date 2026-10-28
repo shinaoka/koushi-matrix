@@ -91,6 +91,7 @@ pub(crate) fn clear_stale_verification_flow(state: &mut AppState) -> bool {
 
 pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
     let mut effects = reduce_action(state, action);
+    timeline::sync_assistant_draft_markers(state);
     contact_security::sync_verification_busy(state, &mut effects);
     scheduled_sends::reconcile_scheduled_sends_list(state);
     effects
@@ -1654,6 +1655,14 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::ComposerDraftSeeded { room_id, document } => {
             timeline::handle_composer_draft_seeded(state, room_id, document)
         }
+        AppAction::AssistantDraftStaged {
+            target,
+            document,
+            client_name,
+        } => timeline::handle_assistant_draft_staged(state, target, document, client_name),
+        AppAction::AssistantDraftMarkerDismissed { target } => {
+            timeline::handle_assistant_draft_marker_dismissed(state, target)
+        }
         AppAction::SendTextSubmitted {
             room_id,
             transaction_id,
@@ -1747,6 +1756,20 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             timeline::handle_composer_reply_target_selected(state, room_id, event_id)
         }
         AppAction::ComposerReplyCancelled => timeline::handle_composer_reply_cancelled(state),
+        AppAction::ThreadComposerReplyTargetSelected {
+            room_id,
+            root_event_id,
+            event_id,
+        } => thread::handle_thread_composer_reply_target_selected(
+            state,
+            room_id,
+            root_event_id,
+            event_id,
+        ),
+        AppAction::ThreadComposerReplyCancelled {
+            room_id,
+            root_event_id,
+        } => thread::handle_thread_composer_reply_cancelled(state, room_id, root_event_id),
         AppAction::ThreadComposerDraftChanged {
             room_id,
             root_event_id,

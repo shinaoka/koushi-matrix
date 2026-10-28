@@ -48,7 +48,8 @@ export function mcpWantsText(need: McpNeed, account: string): string {
     read: t("mcp.wantsRead", { account }),
     send: t("mcp.wantsSend", { account }),
     attachments: t("mcp.wantsAttachments", { account }),
-    message_actions: t("mcp.wantsMessageActions", { account })
+    message_actions: t("mcp.wantsMessageActions", { account }),
+    draft: t("mcp.wantsDraft", { account })
   }[need];
 }
 
@@ -57,7 +58,8 @@ export function mcpAllowLabel(need: McpNeed, account: string): string {
     read: t("mcp.allowRead", { account }),
     send: t("mcp.allowSend", { account }),
     attachments: t("mcp.allowAttachments", { account }),
-    message_actions: t("mcp.allowMessageActions", { account })
+    message_actions: t("mcp.allowMessageActions", { account }),
+    draft: t("mcp.allowDraft", { account })
   }[need];
 }
 
@@ -85,7 +87,8 @@ export function McpApprovalPrompt({
     read: t("mcp.approveReadTitle", { client }),
     send: t("mcp.approveSendTitle", { client }),
     attachments: t("mcp.approveAttachmentsTitle", { client }),
-    message_actions: t("mcp.approveMessageActionsTitle", { client })
+    message_actions: t("mcp.approveMessageActionsTitle", { client }),
+    draft: t("mcp.approveDraftTitle", { client })
   }[request.need];
   const wants = mcpWantsText(request.need, account);
   const allowLabel = mcpAllowLabel(request.need, account);
@@ -146,6 +149,24 @@ export function McpApprovalPrompt({
               <p className="mcp-approval-note">{t("mcp.sendNoLongerWaiting")}</p>
             )}
             <p className="mcp-approval-note">{t("mcp.sendExplain", { client, account })}</p>
+          </>
+        ) : null}
+
+        {request.need === "draft" ? (
+          <>
+            {request.waiting && request.message_preview !== null ? (
+              <>
+                <p className="mcp-approval-heading">
+                  {request.room_label
+                    ? t("mcp.draftPreviewHeadingRoom", { room: request.room_label })
+                    : t("mcp.draftPreviewHeading")}
+                </p>
+                <p className="mcp-approval-preview">{request.message_preview}</p>
+              </>
+            ) : (
+              <p className="mcp-approval-note">{t("mcp.draftNoLongerWaiting")}</p>
+            )}
+            <p className="mcp-approval-note">{t("mcp.draftExplain", { client, account })}</p>
           </>
         ) : null}
 

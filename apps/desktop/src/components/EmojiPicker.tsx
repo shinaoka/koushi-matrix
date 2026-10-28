@@ -43,11 +43,26 @@ const EMOJI_CATEGORY_ICONS: Record<EmojiCategory, string> = {
 };
 
 /**
- * Number of emoji columns in the grid. Single source of truth: it drives both
- * the rendered CSS grid (through `--emoji-picker-columns`) and the ArrowUp /
+ * Fallback emoji column count, used until the grid width has been measured.
+ * The measured count is the single source of truth: it drives both the
+ * rendered CSS grid (through `--emoji-picker-columns`) and the ArrowUp /
  * ArrowDown keyboard step, so the two can never disagree.
  */
 export const EMOJI_PICKER_GRID_COLUMNS = 10;
+/**
+ * Fixed cell pitch: resizing the panel changes how many rows and columns fit,
+ * never the spacing between emoji.
+ */
+export const EMOJI_PICKER_CELL_SIZE_PX = 24;
+export const EMOJI_PICKER_CELL_GAP_PX = 2;
+
+/** Columns of fixed-size cells that fit in a grid of the given inline size. */
+export function emojiPickerColumnsForWidth(width: number): number {
+  return Math.max(
+    1,
+    Math.floor((width + EMOJI_PICKER_CELL_GAP_PX) / (EMOJI_PICKER_CELL_SIZE_PX + EMOJI_PICKER_CELL_GAP_PX)),
+  );
+}
 /** Preferred panel inline size; narrowed to the available space when smaller. */
 export const EMOJI_PICKER_INLINE_SIZE_PX = 380;
 /** Preferred panel block size; narrowed to the available space when smaller. */
@@ -204,6 +219,8 @@ export function EmojiPicker({
     EmojiCategory | "recent"
   >("people");
   const panelRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [gridColumns, setGridColumns] = useState(EMOJI_PICKER_GRID_COLUMNS);
   const searchRef = useRef<HTMLInputElement>(null);
   const categoryRefs = useRef<Record<EmojiCategory, HTMLDivElement | null>>({
     people: null,
@@ -264,6 +281,20 @@ export function EmojiPicker({
   const markedZone: FrameZoneName =
     pinnedGeometry?.marked ??
     (`${resizeAbove ? "top" : "bottom"}-${resizeLeft ? "left" : "right"}` as FrameZoneName);
+
+  // Every section grid spans the body's content box, so one measurement there
+  // sets the column count for all of them.
+  useLayoutEffect(() => {
+    const body = bodyRef.current;
+    if (!body || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.width > 0) {
+        setGridColumns(emojiPickerColumnsForWidth(entry.contentRect.width));
+      }
+    });
+    observer.observe(body);
+    return () => observer.disconnect();
+  }, []);
 
   const initiallyFocused = useRef(false);
   useLayoutEffect(() => {
@@ -532,11 +563,11 @@ export function EmojiPicker({
         </div>
       )}
 
-      <div className="emoji-picker-body">
+      <div ref={bodyRef} className="emoji-picker-body">
         {savedSize.failed && <p role="alert">{t("composer.emojiSizeSaveFailed")}</p>}
         {searching ? (
           filtered && filtered.length > 0 ? (
-            <EmojiGrid entries={filtered} onSelect={handleSelect} />
+            <EmojiGrid entries={filtered} columns={gridColumns} onSelect={handleSelect} />
           ) : (
             <div className="emoji-picker-empty">{t("emoji.noResults")}</div>
           )
@@ -550,7 +581,7 @@ export function EmojiPicker({
                 className="emoji-picker-section"
               >
                 <h3>{t("composer.emojiRecent")}</h3>
-                <EmojiGrid entries={recentEntries} onSelect={handleSelect} />
+                <EmojiGrid entries={recentEntries} columns={gridColumns} onSelect={handleSelect} />
               </div>
             )}
             {EMOJI_CATEGORIES.map((category) => (
@@ -564,6 +595,7 @@ export function EmojiPicker({
                 <h3>{t(`emoji.category.${category}` as const)}</h3>
                 <EmojiGrid
                   entries={EMOJI_BY_CATEGORY[category]}
+                  columns={gridColumns}
                   onSelect={handleSelect}
                 />
               </div>
@@ -579,9 +611,11 @@ export function EmojiPicker({
 
 function EmojiGrid({
   entries,
+  columns,
   onSelect,
 }: {
   entries: EmojiEntry[];
+  columns: number;
   onSelect: (emoji: string) => void;
 }) {
   // focusedIndex drives tabIndex so the roving-tabindex pattern is consistent;
@@ -600,10 +634,10 @@ function EmojiGrid({
     } else if (event.key === "ArrowLeft") {
       next = index - 1 >= 0 ? index - 1 : index;
     } else if (event.key === "ArrowDown") {
-      const candidate = index + EMOJI_PICKER_GRID_COLUMNS;
+      const candidate = index + columns;
       next = candidate < entries.length ? candidate : index;
     } else if (event.key === "ArrowUp") {
-      const candidate = index - EMOJI_PICKER_GRID_COLUMNS;
+      const candidate = index - columns;
       next = candidate >= 0 ? candidate : index;
     } else if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
@@ -623,9 +657,13 @@ function EmojiGrid({
     <div
       className="emoji-picker-grid"
       role="grid"
-      // The rendered column count and the keyboard step share this constant.
+      // The rendered column count and the keyboard step share this value.
       style={
-        { "--emoji-picker-columns": EMOJI_PICKER_GRID_COLUMNS } as CSSProperties
+        {
+          "--emoji-picker-columns": columns,
+          "--emoji-picker-cell-size": `${EMOJI_PICKER_CELL_SIZE_PX}px`,
+          "--emoji-picker-cell-gap": `${EMOJI_PICKER_CELL_GAP_PX}px`,
+        } as CSSProperties
       }
     >
       {entries.map((entry, index) => (

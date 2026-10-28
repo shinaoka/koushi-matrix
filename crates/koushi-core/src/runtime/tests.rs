@@ -5753,3 +5753,6 @@ mod session_token_admission;
 
 #[path = "tests/direct_history.rs"]
 mod direct_history;
+
+#[path = "tests/assistant_drafts.rs"]
+mod assistant_drafts;

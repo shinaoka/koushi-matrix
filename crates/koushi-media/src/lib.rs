@@ -43,6 +43,9 @@ pub enum PreparedImageFormat {
     Jpeg,
     WebP,
     Gif,
+    /// Decode-only source: WeChat serves a BMP under every image MIME it
+    /// offers (#1630). Its Keep output is PNG.
+    Bmp,
     Heif,
     Other,
 }
@@ -168,7 +171,7 @@ pub fn prepare_image_output(
         prepared_format(guessed)
     };
     let decodable = match source_format {
-        PreparedImageFormat::Heif => true,
+        PreparedImageFormat::Heif | PreparedImageFormat::Bmp => true,
         PreparedImageFormat::Png | PreparedImageFormat::Jpeg | PreparedImageFormat::WebP => {
             !animated_webp(source) && !animated_png(source)
         }
@@ -212,6 +215,10 @@ pub fn prepare_image_output(
             .map_err(|_| ImagePreparationError::Decode)?,
     };
     let target_format = match request.format {
+        // A bitmap is not an upload format; keeping it means lossless PNG.
+        ImageOutputFormat::Keep if source_format == PreparedImageFormat::Bmp => {
+            PreparedImageFormat::Png
+        }
         ImageOutputFormat::Keep => source_format,
         ImageOutputFormat::Png => PreparedImageFormat::Png,
         ImageOutputFormat::Jpeg => PreparedImageFormat::Jpeg,
@@ -264,7 +271,7 @@ pub fn prepare_image_output_fitted(
         prepared_format(guessed)
     };
     let decodable = match source_format {
-        PreparedImageFormat::Heif => true,
+        PreparedImageFormat::Heif | PreparedImageFormat::Bmp => true,
         PreparedImageFormat::Png | PreparedImageFormat::Jpeg | PreparedImageFormat::WebP => {
             !animated_webp(source) && !animated_png(source)
         }
@@ -476,7 +483,7 @@ pub fn prepare_image_variants(
                 None,
             )?);
         }
-        PreparedImageFormat::Gif | PreparedImageFormat::Other => {}
+        PreparedImageFormat::Gif | PreparedImageFormat::Bmp | PreparedImageFormat::Other => {}
     }
 
     let original_len = source.len();
@@ -523,7 +530,10 @@ fn encoded_variant(
                 .write_image(&rgba, width, height, ExtendedColorType::Rgba8)
                 .map_err(|_| ImagePreparationError::Encode)?;
         }
-        PreparedImageFormat::Gif | PreparedImageFormat::Heif | PreparedImageFormat::Other => {
+        PreparedImageFormat::Gif
+        | PreparedImageFormat::Bmp
+        | PreparedImageFormat::Heif
+        | PreparedImageFormat::Other => {
             return Err(ImagePreparationError::Encode);
         }
     }
@@ -621,6 +631,7 @@ fn prepared_format(format: Option<ImageFormat>) -> PreparedImageFormat {
         Some(ImageFormat::Jpeg) => PreparedImageFormat::Jpeg,
         Some(ImageFormat::WebP) => PreparedImageFormat::WebP,
         Some(ImageFormat::Gif) => PreparedImageFormat::Gif,
+        Some(ImageFormat::Bmp) => PreparedImageFormat::Bmp,
         _ => PreparedImageFormat::Other,
     }
 }
@@ -631,6 +642,7 @@ fn actual_mime(format: PreparedImageFormat) -> &'static str {
         PreparedImageFormat::Jpeg => "image/jpeg",
         PreparedImageFormat::WebP => "image/webp",
         PreparedImageFormat::Gif => "image/gif",
+        PreparedImageFormat::Bmp => "image/bmp",
         PreparedImageFormat::Heif => "image/heif",
         PreparedImageFormat::Other => "application/octet-stream",
     }
@@ -642,6 +654,7 @@ fn extension(format: PreparedImageFormat, mime_type: Option<&str>) -> &'static s
         PreparedImageFormat::Jpeg => "jpg",
         PreparedImageFormat::WebP => "webp",
         PreparedImageFormat::Gif => "gif",
+        PreparedImageFormat::Bmp => "bmp",
         PreparedImageFormat::Heif => {
             if mime_type == Some("image/heic") {
                 "heic"
@@ -821,6 +834,26 @@ fn validate_decoded_dimensions(dimensions: (u32, u32)) -> Result<(u32, u32), ima
 struct HeifProbe {
     mime_type: &'static str,
     dimensions: Option<(u32, u32)>,
+}
+
+/// Categorical name of the encoding `source` actually carries, judged by its
+/// content rather than any declared MIME. Diagnostics use it to tell a
+/// mislabeled attachment from a corrupt one without recording any bytes.
+pub fn detected_image_format_token(source: &[u8]) -> &'static str {
+    if probe_heif(source).is_some() {
+        return "heif";
+    }
+    match image::guess_format(source) {
+        Ok(ImageFormat::Png) => "png",
+        Ok(ImageFormat::Jpeg) => "jpeg",
+        Ok(ImageFormat::WebP) => "webp",
+        Ok(ImageFormat::Gif) => "gif",
+        Ok(ImageFormat::Bmp) => "bmp",
+        Ok(ImageFormat::Tiff) => "tiff",
+        Ok(ImageFormat::Avif) => "avif",
+        Ok(_) => "other",
+        Err(_) => "unknown",
+    }
 }
 
 /// Return the normalized MIME for a recognized HEIF/HEIC `ftyp` box.

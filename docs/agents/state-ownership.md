@@ -1373,6 +1373,18 @@ normal QA-title mode and cannot change product title semantics.
   failure mapping; it must not implement a second edit, reaction, or relation
   semantic, and no part of this path may mount a `TimelineActor` or reduce an
   `AppAction`.
+- Assistant drafts (`draft_message`, #1644) are the documented exception: the
+  draft and its `AssistantDraftMarker` are `ComposerDraftStore` state, written
+  only by `AppActor` from the `DirectComposerDraft` envelope through
+  `AppAction::AssistantDraftStaged`, and persisted with the draft entry. Core
+  owns the empty-target, command-permit, pending-submission, and store-loaded
+  guards; the reducer keeps the open composers' `assistant_draft` in step with
+  the store after every action. The MCP host owns argument validation, the
+  `draft` grant, the thread-root check, and failure mapping. The renderer only
+  renders the marker DTO, keys composer adoption on its revision, resolves the
+  debounce race in favour of the user's text
+  (`domain/assistantDraftAdoption.ts`), and dispatches
+  `dismiss_assistant_draft_marker`.
 
 ## E2EE trust
 

@@ -2321,6 +2321,9 @@ test("thread composer delayed write is root isolated across churn", async ({
       accountDeviceId: "HARNESSDEVICE",
       roomId: "!harness-room:example.invalid",
       rootEventId: "$seed-event:example.invalid",
+      // #1426/#1643: without a thread reply target the composer sends a plain
+      // thread message, never a reply.
+      inReplyToEventId: null,
       document: {
         version: 2,
         inlines: [{ kind: "text", text: threadReplyBody }]

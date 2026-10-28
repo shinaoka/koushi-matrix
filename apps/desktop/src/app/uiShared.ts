@@ -64,6 +64,11 @@ export type ContextMenuTarget =
        */
       onOpenEdit?: () => void;
       /**
+       * Replies through the requesting row's own Reply route (#1643): a
+       * thread-pane row targets the thread composer, not the main composer.
+       */
+      onReply?: () => void;
+      /**
        * Visible message-text selection captured by the row before the menu took
        * focus (#1155). Renderer-local and ephemeral: it never enters Rust state,
        * a log, or persisted storage.

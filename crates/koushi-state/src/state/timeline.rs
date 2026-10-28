@@ -1023,6 +1023,8 @@ pub struct ComposerDraftPersistenceEntry {
     pub content: Option<ComposerDocument>,
     pub revision: ComposerDraftRevision,
     pub last_accepted_clear_revision: ComposerDraftRevision,
+    /// #1644: only meaningful with `content`; import drops it otherwise.
+    pub assistant: Option<AssistantDraftMarker>,
 }
 
 #[derive(Clone, Default, Eq, PartialEq)]
@@ -1038,6 +1040,18 @@ pub struct ComposerDraftPersistenceProjection {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ComposerDraftPersistenceImportError {
     InvalidProjection,
+}
+
+/// #1644: a draft an MCP assistant staged with `draft_message`. Rust-owned
+/// metadata kept beside the target's content; the composer renders it as a
+/// marker naming the assistant. It exists only while the target has content.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AssistantDraftMarker {
+    /// The assistant's self-declared, validated MCP client name.
+    pub client_name: String,
+    /// The revision the staged draft was written at. The renderer keys its
+    /// composer synchronization on it, so a newly staged draft is adopted.
+    pub revision: ComposerDraftRevision,
 }
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -1076,6 +1090,15 @@ pub struct ComposerDraftStore {
     quiescent_room_lru: VecDeque<String>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     quiescent_thread_lru: VecDeque<(String, String)>,
+    /// #1644: assistant markers, keyed like `rooms` / `threads`. A key is
+    /// present only while the matching content is.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub room_assistant_markers: std::collections::BTreeMap<String, AssistantDraftMarker>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub thread_assistant_markers: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, AssistantDraftMarker>,
+    >,
 }
 
 #[derive(Deserialize)]
@@ -1148,6 +1171,8 @@ impl ComposerDraftStore {
             && self.thread_last_accepted_clear_revisions.is_empty()
             && self.quiescent_room_lru.is_empty()
             && self.quiescent_thread_lru.is_empty()
+            && self.room_assistant_markers.is_empty()
+            && self.thread_assistant_markers.is_empty()
     }
 
     pub fn composer_for_room(&self, room_id: &str) -> ComposerState {
@@ -1162,7 +1187,129 @@ impl ComposerDraftStore {
             .get(room_id)
             .copied()
             .unwrap_or_default();
+        composer.assistant_draft = self.room_assistant_marker(room_id).cloned();
         composer
+    }
+
+    /// #1644: the marker of a room's main-composer draft, if an assistant
+    /// staged it and the content is still there.
+    pub fn room_assistant_marker(&self, room_id: &str) -> Option<&AssistantDraftMarker> {
+        self.rooms.contains_key(room_id).then_some(())?;
+        self.room_assistant_markers.get(room_id)
+    }
+
+    /// #1644: thread-target counterpart of [`Self::room_assistant_marker`].
+    pub fn thread_assistant_marker(
+        &self,
+        room_id: &str,
+        root_event_id: &str,
+    ) -> Option<&AssistantDraftMarker> {
+        self.threads
+            .get(room_id)
+            .is_some_and(|threads| threads.contains_key(root_event_id))
+            .then_some(())?;
+        self.thread_assistant_markers
+            .get(room_id)
+            .and_then(|markers| markers.get(root_event_id))
+    }
+
+    /// #1644: the stored document of `target`, empty when it has none.
+    pub fn target_is_empty(&self, target: &ComposerTarget) -> bool {
+        match target {
+            ComposerTarget::Main { room_id } => !self.rooms.contains_key(room_id),
+            ComposerTarget::Thread {
+                room_id,
+                root_event_id,
+            } => !self
+                .threads
+                .get(room_id)
+                .is_some_and(|threads| threads.contains_key(root_event_id)),
+        }
+    }
+
+    /// #1644: write an assistant-staged draft into an empty target at the
+    /// successor of its stored revision and mark it. Returns the revision, or
+    /// `None` when the target already has content or the revision space is
+    /// exhausted; nothing changes then.
+    pub fn stage_assistant_draft(
+        &mut self,
+        target: &ComposerTarget,
+        document: ComposerDocument,
+        client_name: String,
+    ) -> Option<ComposerDraftRevision> {
+        if document.is_empty() || !self.target_is_empty(target) {
+            return None;
+        }
+        let current = match target {
+            ComposerTarget::Main { room_id } => self.room_revision(room_id),
+            ComposerTarget::Thread {
+                room_id,
+                root_event_id,
+            } => self.thread_revision(room_id, root_event_id),
+        };
+        let revision =
+            ComposerDraftRevision::checked_successor(current, ComposerDraftRevision::ZERO).ok()?;
+        let marker = AssistantDraftMarker {
+            client_name,
+            revision,
+        };
+        match target {
+            ComposerTarget::Main { room_id } => {
+                if !matches!(
+                    self.apply_room_draft(room_id.clone(), document, revision),
+                    Ok(true)
+                ) {
+                    return None;
+                }
+                self.room_assistant_markers.insert(room_id.clone(), marker);
+            }
+            ComposerTarget::Thread {
+                room_id,
+                root_event_id,
+            } => {
+                if !matches!(
+                    self.apply_thread_draft(
+                        room_id.clone(),
+                        root_event_id.clone(),
+                        document,
+                        revision
+                    ),
+                    Ok(true)
+                ) {
+                    return None;
+                }
+                self.thread_assistant_markers
+                    .entry(room_id.clone())
+                    .or_default()
+                    .insert(root_event_id.clone(), marker);
+            }
+        }
+        Some(revision)
+    }
+
+    /// #1644: drop the marker of `target` and nothing else. Returns whether a
+    /// marker was removed.
+    pub fn dismiss_assistant_marker(&mut self, target: &ComposerTarget) -> bool {
+        match target {
+            ComposerTarget::Main { room_id } => {
+                self.room_assistant_markers.remove(room_id).is_some()
+            }
+            ComposerTarget::Thread {
+                room_id,
+                root_event_id,
+            } => self.remove_thread_assistant_marker(room_id, root_event_id),
+        }
+    }
+
+    fn remove_thread_assistant_marker(&mut self, room_id: &str, root_event_id: &str) -> bool {
+        let Some(markers) = self.thread_assistant_markers.get_mut(room_id) else {
+            return false;
+        };
+        let removed = markers.remove(root_event_id).is_some();
+        if markers.is_empty() {
+            self.thread_assistant_markers.remove(room_id);
+        }
+        removed
     }
 
     pub fn set_room_draft(&mut self, room_id: String, document: impl Into<ComposerDocument>) {
@@ -1196,6 +1343,7 @@ impl ComposerDraftStore {
         self.room_revisions.insert(room_id.clone(), revision);
         if document.is_empty() {
             self.rooms.remove(&room_id);
+            self.room_assistant_markers.remove(&room_id);
             self.touch_quiescent_room(&room_id);
         } else {
             self.rooms.insert(room_id.clone(), document);
@@ -1214,6 +1362,7 @@ impl ComposerDraftStore {
             ComposerDraftRevision::checked_successor(current_revision, submitted_revision)?;
         if current_revision <= submitted_revision {
             self.rooms.remove(room_id);
+            self.room_assistant_markers.remove(room_id);
             self.room_last_accepted_clear_revisions
                 .insert(room_id.to_owned(), revision);
         }
@@ -1278,6 +1427,7 @@ impl ComposerDraftStore {
 
     pub fn clear_room_draft(&mut self, room_id: &str) {
         self.rooms.remove(room_id);
+        self.room_assistant_markers.remove(room_id);
         self.room_revisions.remove(room_id);
         self.room_last_accepted_clear_revisions.remove(room_id);
         self.remove_room_from_lru(room_id);
@@ -1300,6 +1450,9 @@ impl ComposerDraftStore {
             .and_then(|room_threads| room_threads.get(root_event_id))
             .copied()
             .unwrap_or_default();
+        composer.assistant_draft = self
+            .thread_assistant_marker(room_id, root_event_id)
+            .cloned();
         composer
     }
 
@@ -1414,6 +1567,7 @@ impl ComposerDraftStore {
     }
 
     fn remove_thread_content(&mut self, room_id: &str, root_event_id: &str) {
+        self.remove_thread_assistant_marker(room_id, root_event_id);
         let should_remove_room = if let Some(room_threads) = self.threads.get_mut(room_id) {
             room_threads.remove(root_event_id);
             room_threads.is_empty()
@@ -1639,6 +1793,10 @@ impl ComposerDraftStore {
             .retain(|room_id| room_ids.contains(room_id));
         self.quiescent_thread_lru
             .retain(|(room_id, _)| room_ids.contains(room_id));
+        self.room_assistant_markers
+            .retain(|room_id, _| room_ids.contains(room_id));
+        self.thread_assistant_markers
+            .retain(|room_id, markers| room_ids.contains(room_id) && !markers.is_empty());
     }
 
     pub fn persisted_projection(
@@ -1711,6 +1869,7 @@ impl ComposerDraftStore {
                 .get(room_id)
                 .copied()
                 .unwrap_or_default(),
+            assistant: self.room_assistant_marker(room_id).cloned(),
         };
         let room_has_content = |room_id: &str| {
             self.rooms
@@ -1811,6 +1970,9 @@ impl ComposerDraftStore {
                 .and_then(|threads| threads.get(root_event_id))
                 .copied()
                 .unwrap_or_default(),
+            assistant: self
+                .thread_assistant_marker(room_id, root_event_id)
+                .cloned(),
         };
         let mut quiescent_thread_order = Vec::new();
         let mut seen_threads = BTreeSet::new();
@@ -1910,6 +2072,11 @@ impl ComposerDraftStore {
                     room_id.clone(),
                     content.truncated_to_plain_bytes(MAX_PERSISTED_COMPOSER_DRAFT_BYTES),
                 );
+                if let Some(marker) = entry.assistant {
+                    drafts
+                        .room_assistant_markers
+                        .insert(room_id.clone(), marker);
+                }
             } else if !retained_empty_rooms.contains(&room_id) {
                 continue;
             }
@@ -1930,6 +2097,13 @@ impl ComposerDraftStore {
                         root_event_id.clone(),
                         content.truncated_to_plain_bytes(MAX_PERSISTED_COMPOSER_DRAFT_BYTES),
                     );
+                    if let Some(marker) = entry.assistant {
+                        drafts
+                            .thread_assistant_markers
+                            .entry(room_id.clone())
+                            .or_default()
+                            .insert(root_event_id.clone(), marker);
+                    }
                 } else if !retained_empty_threads.contains(&target) {
                     continue;
                 }
@@ -2124,6 +2298,9 @@ pub struct ComposerState {
     #[serde(default)]
     pub document: ComposerDocument,
     pub mode: ComposerMode,
+    /// #1644: set while the hydrated draft is one an assistant staged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assistant_draft: Option<AssistantDraftMarker>,
 }
 
 pub(crate) const MAX_ACCEPTED_SUBMISSION_TOMBSTONES: usize = 128;

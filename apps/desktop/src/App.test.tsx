@@ -1870,7 +1870,7 @@ describe("desktop integration source guards", () => {
     expect(selectSearchResultSource).not.toContain("cssEscape");
   });
 
-  test("message context menu normal reply targets the room composer", () => {
+  test("message context menu reply uses the row's route, falling back to the room composer", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const actionStart = source.indexOf("function runContextMenuAction");
     const actionEnd = source.indexOf("async function runSearch", actionStart);
@@ -1880,6 +1880,7 @@ describe("desktop integration source guards", () => {
 
     expect(replyIndex).toBeGreaterThanOrEqual(0);
     expect(threadIndex).toBeGreaterThan(replyIndex);
+    expect(actionSource).toContain("target.onReply();");
     expect(actionSource).toContain(
       "runInBackground(setComposerReplyTarget(target.message.room_id, target.message.event_id));"
     );
