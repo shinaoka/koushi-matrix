@@ -722,6 +722,7 @@ export function TimelinePane({
   composerDocument,
   composerNotice = null,
   composerDraftKey,
+  onDismissComposerAssistantDraft,
   composerMode,
   resolveComposerKeyAction,
   searchQuery,
@@ -775,6 +776,8 @@ export function TimelinePane({
   canEdit?: boolean;
   composerDocument: ComposerDocument;
   composerDraftKey?: string;
+  /** #1644: removes the assistant marker of the open room's draft. */
+  onDismissComposerAssistantDraft?: () => void;
   composerMode: ComposerModeProp;
   resolveComposerKeyAction: ResolveComposerKeyAction;
   searchQuery: string;
@@ -949,6 +952,9 @@ export function TimelinePane({
     editMentionCandidateTarget?.completeness === "partial";
   const resolveComposerKeyActionStable = useStableEvent(resolveComposerKeyAction);
   const onCancelReplyStable = useStableEvent(onCancelReply);
+  const onDismissComposerAssistantDraftStable = useStableEvent(() =>
+    onDismissComposerAssistantDraft?.()
+  );
   const onCancelScheduledSendStable = useStableEvent(onCancelScheduledSend);
   const onAttachFilesStable = useStableEvent(onAttachFiles);
   const onClearUploadStagingStable = useStableEvent(onClearUploadStaging);
@@ -1343,6 +1349,8 @@ export function TimelinePane({
           snapshot.state.ui.errors
         )}
         draftKey={composerDraftKey ?? timelineRoomId ?? "no-room"}
+        assistantDraft={snapshot.state.ui.timeline.composer.assistant_draft ?? null}
+        onDismissAssistantDraft={onDismissComposerAssistantDraftStable}
         roomName={activeRoomName}
         onCancelReply={onCancelReplyStable}
         onAttachFiles={onAttachFilesStable}

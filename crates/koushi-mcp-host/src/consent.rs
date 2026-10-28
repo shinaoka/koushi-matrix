@@ -129,6 +129,8 @@ pub struct AssistantAccount {
     pub read: bool,
     pub send: bool,
     pub attachments: bool,
+    pub message_actions: bool,
+    pub draft: bool,
     /// Permissions denied for this account during this bridge run.
     pub denied: Vec<Need>,
 }
@@ -724,6 +726,7 @@ fn need_word(need: Need) -> &'static str {
         Need::Send => "send",
         Need::Attachments => "attachment",
         Need::MessageActions => "message actions",
+        Need::Draft => "draft",
     }
 }
 
@@ -867,6 +870,8 @@ fn view(inner: &Inner) -> McpAssistantsState {
                         read: account.read,
                         send: account.send,
                         attachments: account.attachments,
+                        message_actions: account.message_actions,
+                        draft: account.draft,
                         denied: Vec::new(),
                     })
                     .collect()
@@ -884,6 +889,8 @@ fn view(inner: &Inner) -> McpAssistantsState {
                         read: false,
                         send: false,
                         attachments: false,
+                        message_actions: false,
+                        draft: false,
                         denied: Vec::new(),
                     });
                     accounts.last_mut().expect("just pushed")

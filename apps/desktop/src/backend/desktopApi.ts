@@ -456,6 +456,10 @@ export interface DesktopApi {
     document: ComposerDocument,
     revision: ComposerDraftRevision
   ): Promise<CommandAdmission>;
+  dismissAssistantDraftMarker(
+    account: ComposerDraftAccountOwner,
+    target: ComposerTarget
+  ): Promise<CommandAdmission>;
   openThread(
     roomId: string,
     rootEventId: string,

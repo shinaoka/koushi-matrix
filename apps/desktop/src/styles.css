@@ -6279,6 +6279,30 @@ mark {
   color: var(--brand);
 }
 
+/* #1644: names the assistant that staged the draft. */
+.composer-assistant-draft {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-faint);
+  background: var(--surface-hover);
+  border-start-start-radius: 8px;
+  border-start-end-radius: 8px;
+}
+
+.composer-assistant-draft-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .upload-staging-overlay {
   padding: 12px;
   padding-block-start: calc(12px + var(--native-titlebar-safe-block, 0px));

@@ -1709,6 +1709,50 @@ pub async fn cancel_composer_reply(
     Ok(admission)
 }
 
+/// #1644: the user dismissed the assistant marker on a staged draft. Only the
+/// marker goes; the text and its revision stay, so this holds no composer
+/// lease. The account owner is revalidated in Core like the other draft
+/// commands.
+#[tauri::command]
+pub async fn dismiss_assistant_draft_marker(
+    account_tab_id: Option<String>,
+    account_homeserver: String,
+    account_user_id: String,
+    account_device_id: String,
+    target: koushi_state::ComposerTarget,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendCommandAdmission, String> {
+    let event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = event_conn.next_request_id();
+    let admission = event_conn
+        .command_with_admission(build_dismiss_assistant_draft_marker_command(
+            request_id,
+            koushi_protocol::SessionKeyId {
+                homeserver: account_homeserver,
+                user_id: account_user_id,
+                device_id: account_device_id,
+            },
+            target,
+        ))
+        .await
+        .map_err(|error| format!("command submit failed: {error}"))?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    Ok(FrontendCommandAdmission::from_core(admission))
+}
+
+pub(super) fn build_dismiss_assistant_draft_marker_command(
+    request_id: koushi_protocol::RequestId,
+    expected_account: koushi_protocol::SessionKeyId,
+    target: koushi_state::ComposerTarget,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::DismissAssistantDraftMarker {
+        request_id,
+        expected_account,
+        target,
+    })
+}
+
 #[tauri::command]
 #[expect(
     clippy::too_many_arguments,

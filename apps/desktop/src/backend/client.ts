@@ -1177,6 +1177,18 @@ export class TauriDesktopApi implements DesktopApi {
     });
   }
 
+  async dismissAssistantDraftMarker(
+    account: ComposerDraftAccountOwner,
+    target: ComposerTarget
+  ): Promise<CommandAdmission> {
+    return this.invokeCommand<CommandAdmission>("dismiss_assistant_draft_marker", {
+      accountHomeserver: account.homeserver,
+      accountUserId: account.userId,
+      accountDeviceId: account.deviceId,
+      target
+    });
+  }
+
   async openThread(
     roomId: string,
     rootEventId: string,

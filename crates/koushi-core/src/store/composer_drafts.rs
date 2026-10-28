@@ -11,8 +11,9 @@ use koushi_key::LocalUnlockSecret;
 use koushi_protocol::SessionKeyId;
 
 use koushi_state::{
-    ComposerDocument, ComposerDraftPersistenceEntry, ComposerDraftPersistenceProjection,
-    ComposerDraftProtection, ComposerDraftRevision, ComposerDraftStore, ComposerTarget,
+    AssistantDraftMarker, ComposerDocument, ComposerDraftPersistenceEntry,
+    ComposerDraftPersistenceProjection, ComposerDraftProtection, ComposerDraftRevision,
+    ComposerDraftStore, ComposerTarget,
 };
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +65,10 @@ struct PersistedComposerDraftEntry {
     content: Option<ComposerDocument>,
     revision: ComposerDraftRevision,
     last_accepted_clear_revision: ComposerDraftRevision,
+    /// #1644: absent unless an assistant staged the draft, so payloads
+    /// without an assistant draft stay readable by older builds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    assistant: Option<AssistantDraftMarker>,
 }
 
 #[derive(Deserialize)]
@@ -181,6 +186,7 @@ impl From<ComposerDraftPersistenceEntry> for PersistedComposerDraftEntry {
             content: entry.content,
             revision: entry.revision,
             last_accepted_clear_revision: entry.last_accepted_clear_revision,
+            assistant: entry.assistant,
         }
     }
 }
@@ -191,6 +197,7 @@ impl From<PersistedComposerDraftEntry> for ComposerDraftPersistenceEntry {
             content: entry.content,
             revision: entry.revision,
             last_accepted_clear_revision: entry.last_accepted_clear_revision,
+            assistant: entry.assistant,
         }
     }
 }
@@ -231,6 +238,7 @@ impl From<PersistedComposerDraftStoreV2> for ComposerDraftPersistenceProjection 
             content: entry.content.map(ComposerDocument::from_plain_text),
             revision: entry.revision,
             last_accepted_clear_revision: entry.last_accepted_clear_revision,
+            assistant: None,
         };
         Self {
             rooms: persisted
@@ -294,6 +302,7 @@ impl TryFrom<LegacyComposerDraftStoreV1> for ComposerDraftPersistenceProjection 
                             .copied()
                             .map(ComposerDraftRevision::from_u64)
                             .unwrap_or_default(),
+                        assistant: None,
                     },
                 )
             })
@@ -367,6 +376,7 @@ impl TryFrom<LegacyComposerDraftStoreV1> for ComposerDraftPersistenceProjection 
                     content,
                     revision,
                     last_accepted_clear_revision,
+                    assistant: None,
                 },
             );
         }

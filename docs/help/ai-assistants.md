@@ -20,6 +20,7 @@ account and each permission.
 | `get_attachment` | Downloads one attachment into Koushi's media cache and returns its path. | attachments |
 | `send_message` | Sends a message, optionally as a reply, or sends local files with an optional caption. | send; also attachments when sending files |
 | `send_thread_reply` | Posts a plain-text reply in a thread, under a visible thread root. | send |
+| `draft_message` | Puts plain text into a room's or a thread's composer as a draft for you to review, edit, and send. Never sends. | draft |
 | `get_message` | Fetches one message by its event id, with sender, time, the body after its latest edit, reactions, and its thread or reply relation. | read |
 | `react_to_message` | Adds the assistant account's reaction to a message. Repeating it with the same reaction does nothing. | message actions |
 | `unreact_to_message` | Removes every reaction of that account with the given key from a message. | message actions |
@@ -178,7 +179,10 @@ assistant's call waits for your answer (up to 40 seconds):
   allowed to send text asks again the first time it sends a file. **Message
   actions** covers reacting to, editing, and deleting messages the account
   already sent; it is separate from sending, because rewriting an existing
-  message is not the same as writing a new one.
+  message is not the same as writing a new one. **Drafts** lets the assistant
+  put text into a composer without sending it. It is weaker than sending and
+  asked for separately, so you can let an assistant draft while you keep every
+  send to yourself.
 - **Allow** keeps that permission for that account. After you allow sending,
   later messages are sent without asking again.
 - **Deny** refuses that permission. Koushi remembers the denial until you turn
@@ -189,9 +193,9 @@ assistant's call waits for your answer (up to 40 seconds):
   open requests so you can still answer them. If the assistant gave up
   waiting, it gets `consent_required`; once you allow, its next try works.
 
-For a send, the dialog shows the message the assistant is waiting to send, as
-context. If the assistant stopped waiting, that message is not sent; your answer
-still applies to its later messages.
+For a send or a draft, the dialog shows the text the assistant is waiting to
+send or add, as context. If the assistant stopped waiting, that text is not sent
+or added; your answer still applies to its later calls.
 
 The name in the dialog is the one the assistant passed with `--client-name`.
 Koushi cannot verify it: any program running as you could use the same name.
@@ -200,8 +204,8 @@ Allow a request only when you just set up or asked that assistant.
 ### Change or remove access
 
 **App Settings → AI assistants → Connected assistants** lists every assistant
-that has asked, with a **Read**, **Send**, **Attachments**, and **Change
-messages** switch for each account. A permission you denied shows **Denied**; turning its switch on allows
+that has asked, with a **Read**, **Send**, **Attachments**, **Change
+messages**, and **Write drafts** switch for each account. A permission you denied shows **Denied**; turning its switch on allows
 it. **Remove access** deletes everything for that assistant. Changes apply on
 the assistant's next call.
 
@@ -224,7 +228,7 @@ edit applies immediately:
       "client_name": "claude-code",
       "accounts": [
         { "account_id": "account:@you:example.org", "read": true, "send": false,
-          "attachments": false, "message_actions": false }
+          "attachments": false, "message_actions": false, "draft": false }
       ]
     }
   ]
@@ -234,7 +238,7 @@ edit applies immediately:
 Files written by earlier versions (`accounts` as a list of ids with
 `allow_read`, `allow_send`, and `allow_attachments`, or per-account rows without
 `message_actions`) still work, grant no message actions, and are upgraded the
-next time Koushi saves a change. If Koushi cannot read the file, no assistant
+next time Koushi saves a change. A row without `draft` grants no drafts. If Koushi cannot read the file, no assistant
 has access and the settings page says so; Koushi does not overwrite a file it
 cannot read, so fix or remove it.
 
@@ -321,6 +325,16 @@ Tool calls run inside Koushi's own runtime, but they are not GUI actions:
   selection, read markers, or unread counts. `get_message` never marks a
   message read. A thread reply appears through normal sync, like a sent
   message.
+- `draft_message` is the one call that changes the GUI, and only the target
+  composer's draft. It does not switch account or room, open a thread, move
+  focus or scroll, or mark anything read. If that composer is open and empty,
+  the draft appears there at once; otherwise it is waiting the next time you
+  open it. A draft written by an assistant shows **Drafted by** and the
+  assistant's name above the composer. Editing keeps the label; sending,
+  clearing the text, or hiding the label removes it. The assistant never
+  replaces text you wrote: a composer that already holds a draft, or that you
+  are typing or sending in, answers `conflict`. If you start typing at the very
+  moment a draft arrives, your text stays and the draft is dropped.
 
 ## Checking a connection
 
@@ -402,6 +416,8 @@ Two failures look similar and mean different things:
 | `unsupported` with reason `not_a_message` | The event id names a state event or another non-message event. | Use a message event id from `read_room_messages` or `search_messages`. |
 | `unsupported` with reason `redacted` | The target message was already deleted. | Nothing to change; `delete_message` on it already succeeds with `already_redacted`. |
 | `unsupported` with reason `not_thread_root` | The target of `send_thread_reply` is itself a thread reply. | Reply under the thread's root event instead. |
+| `conflict` | `draft_message` found a draft already in that composer, or you were typing or sending in it. Nothing changed. | Send or clear the existing draft, then ask the assistant again. |
+| `busy` with reason `drafts_loading` | Koushi has not finished loading the account's drafts. | Retry in a moment. |
 | `internal` with reason `relations_unavailable` | Koushi could not read the message's reactions (a truncated page or a failed request). | Retry the call; nothing was sent. |
 | `busy` | This account already runs the maximum number of concurrent searches from assistants, or too many approvals are waiting. | Answer or close waiting approvals, wait for earlier calls, and retry. |
 | `internal: Koushi could not save the approval` | `connections.json` could not be written or read. | See the message in **App Settings → AI assistants**; fix or remove the file. |

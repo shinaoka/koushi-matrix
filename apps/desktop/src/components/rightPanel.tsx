@@ -261,7 +261,8 @@ export function ContextualRightPanel({
   onThreadUpdateStagedUploadCaption = () => undefined,
   threadComposerDraftImeKey,
   threadComposerNotice = null,
-  threadComposerDocumentOverride
+  threadComposerDocumentOverride,
+  onDismissThreadAssistantDraft
 }: {
   activeRoom: DesktopSnapshot["state"]["domain"]["rooms"][number] | null;
   activeSpace: DesktopSnapshot["state"]["domain"]["spaces"][number] | null;
@@ -496,6 +497,8 @@ export function ContextualRightPanel({
   /** Localized transient notice for the open thread composer (#450). */
   threadComposerNotice?: string | null;
   threadComposerDocumentOverride?: ComposerDocument;
+  /** #1644: removes the assistant marker of the open thread's draft. */
+  onDismissThreadAssistantDraft?: () => void;
 }) {
   const composerSettings =
     snapshot.state.domain.settings?.values.composer ?? DEFAULT_COMPOSER_SETTINGS;
@@ -543,6 +546,9 @@ export function ContextualRightPanel({
       scope: "app",
       composer: { ...composerSettings, math_mode: enabled }
     })
+  );
+  const dismissThreadAssistantDraftStable = useStableEvent(() =>
+    onDismissThreadAssistantDraft?.()
   );
   const threadSendStagedUploadsStable = useStableEvent(() => {
     if (threadPreviewRoomId && threadPreviewRootEventId) {
@@ -1382,6 +1388,8 @@ export function ContextualRightPanel({
           `${threadRoomId ?? "no-room"}\u0000${rootEventId ?? "no-root"}\u00000`
         }
         isSending={threadSendPending}
+        assistantDraft={threadComposer?.assistant_draft ?? null}
+        onDismissAssistantDraft={dismissThreadAssistantDraftStable}
         hasStagedUploads={threadStagedUploads.length > 0}
         mathModeEnabled={composerSettings.math_mode}
         recentEmojis={composerSettings.recent_emojis}

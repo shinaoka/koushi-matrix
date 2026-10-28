@@ -279,3 +279,44 @@ pub enum DirectMessageFailure {
     /// The operation did not complete (network, server, or timeout).
     Unavailable,
 }
+
+/// An assistant draft to stage with MCP `draft_message` (#1644). The text is
+/// written into the target composer's Rust draft store and is never sent.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AssistantDraftRequest {
+    pub target: koushi_state::ComposerTarget,
+    pub document: koushi_state::ComposerDocument,
+    /// The calling assistant's validated client name, shown by the marker.
+    pub client_name: String,
+}
+
+impl std::fmt::Debug for AssistantDraftRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AssistantDraftRequest")
+            .field("target", &self.target)
+            .field("document", &"MessageBody(..)")
+            .finish_non_exhaustive()
+    }
+}
+
+/// A staged assistant draft (#1644).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StagedAssistantDraft {
+    /// The revision the draft was written at.
+    pub revision: koushi_state::ComposerDraftRevision,
+}
+
+/// Why an assistant draft was not staged (#1644). Nothing was written.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AssistantDraftFailure {
+    /// The account has no ready session.
+    AccountInactive,
+    /// The room is not in this account's room list.
+    RoomNotFound,
+    /// The target already has a draft, the renderer is writing or sending it,
+    /// or the open composer has a pending submission.
+    Conflict,
+    /// The account's draft store has not loaded (or failed to load).
+    Unavailable,
+}

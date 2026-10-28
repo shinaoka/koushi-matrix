@@ -55,7 +55,7 @@ function state(overrides: Partial<McpAssistantsState> = {}): McpAssistantsState 
       client_name: "claude-code",
       client_version: "2.1.0",
       last_used_ms: null,
-      accounts: [{ account_id: WORK, read: true, send: false, attachments: false, message_actions: false, denied: ["send"] }]
+      accounts: [{ account_id: WORK, read: true, send: false, attachments: false, message_actions: false, draft: false, denied: ["send"] }]
     }],
     registrations: [
       { client: "claude_code", client_name: "claude-code", kind: "command", text: "claude mcp add --scope user koushi -- '/opt/koushi/koushi-mcp' --client-name claude-code", config_hint: null, action: "run_command" },
@@ -239,7 +239,7 @@ test("an outdated launcher is reported", async () => {
 test("the message-actions permission is listed and turned on from the settings row", async () => {
   await renderSection(state({ assistants: [{
     client_name: "claude-code", client_version: "2.1.0", last_used_ms: null,
-    accounts: [{ account_id: WORK, read: true, send: true, attachments: true, message_actions: false, denied: [] }]
+    accounts: [{ account_id: WORK, read: true, send: true, attachments: true, message_actions: false, draft: false, denied: [] }]
   }] }));
   const card = screen.getByRole("article", { name: "claude-code" });
   expect(within(card).getByRole("columnheader", { name: "Change messages" })).toBeTruthy();
@@ -254,7 +254,7 @@ test("the message-actions permission is listed and turned on from the settings r
 test("a granted message-actions permission reads as on", async () => {
   await renderSection(state({ assistants: [{
     client_name: "claude-code", client_version: "2.1.0", last_used_ms: null,
-    accounts: [{ account_id: WORK, read: true, send: true, attachments: true, message_actions: true, denied: [] }]
+    accounts: [{ account_id: WORK, read: true, send: true, attachments: true, message_actions: true, draft: false, denied: [] }]
   }] }));
   const card = screen.getByRole("article", { name: "claude-code" });
   expect(within(card).getByRole("switch", { name: "Change messages for @member1:example.invalid" }).getAttribute("aria-checked"))
@@ -266,7 +266,7 @@ test("full Matrix IDs distinguish equal display names without changing permissio
   const sameNameTabs = ids.map(id => tab(`account:${id}`, "Member"));
   fixture.getState.mockResolvedValue(state({ assistants: [{
     client_name: "claude-code", client_version: "2.1.0", last_used_ms: null,
-    accounts: ids.map(id => ({ account_id: `account:${id}`, read: true, send: false, attachments: false, message_actions: false, denied: [] }))
+    accounts: ids.map(id => ({ account_id: `account:${id}`, read: true, send: false, attachments: false, message_actions: false, draft: false, denied: [] }))
   }] }));
   render(<AiAssistantsSection settings={{ enabled: true }} isSaving={false} accountTabs={sameNameTabs} onUpdateSettings={vi.fn()} />);
   const card = await screen.findByRole("article", { name: "claude-code" });

@@ -309,6 +309,7 @@ impl CoreCommandPolicy for CoreCommand {
                         | AppCommand::SetUploadStaging { .. }
                         | AppCommand::AcceptComposerDraft { .. }
                         | AppCommand::SeedComposerDraft { .. }
+                        | AppCommand::DismissAssistantDraftMarker { .. }
                         | AppCommand::UpdateStagedUploadCaption { .. }
                         | AppCommand::UpdateStagedUploadCompression { .. }
                         | AppCommand::SelectStagedUploadOutput { .. }

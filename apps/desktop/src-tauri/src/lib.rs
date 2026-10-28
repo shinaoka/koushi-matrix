@@ -1987,6 +1987,7 @@ pub fn run() {
             commands::timeline::set_composer_reply_target,
             commands::timeline::cancel_composer_reply,
             commands::timeline::set_composer_draft,
+            commands::timeline::dismiss_assistant_draft_marker,
             commands::timeline::set_thread_composer_draft,
             commands::timeline::send_reaction,
             commands::timeline::redact_reaction,

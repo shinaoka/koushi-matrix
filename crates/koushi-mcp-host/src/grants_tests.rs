@@ -112,6 +112,42 @@ fn schema_three_round_trips_message_actions_without_widening_another_need() {
 }
 
 #[test]
+fn a_schema_three_row_without_draft_grants_no_draft() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_raw(
+        dir.path(),
+        r#"{"schema":3,"connections":[{"client_name":"pi","accounts":[
+            {"account_id":"account:@alice:example.invalid","read":true,"send":true,"attachments":false,"message_actions":true}]}]}"#,
+    );
+    let loaded = load(dir.path());
+    assert_eq!(loaded.status, StoreStatus::Ok);
+    assert!(loaded.store.allows("pi", ALICE, Need::Send));
+    assert!(
+        !loaded.store.allows("pi", ALICE, Need::Draft),
+        "rows written before #1644 have no draft flag"
+    );
+}
+
+#[test]
+fn draft_round_trips_in_schema_three_without_granting_send() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut store = Store::default();
+    store.set("pi", ALICE, Need::Draft, true);
+    save(dir.path(), &store).expect("save");
+
+    let written: Value =
+        serde_json::from_slice(&std::fs::read(grants_path(dir.path())).expect("read"))
+            .expect("json");
+    assert_eq!(written["schema"], 3);
+    assert_eq!(written["connections"][0]["accounts"][0]["draft"], true);
+    assert_eq!(written["connections"][0]["accounts"][0]["send"], false);
+
+    let reloaded = load(dir.path());
+    assert!(reloaded.store.allows("pi", ALICE, Need::Draft));
+    assert!(!reloaded.store.allows("pi", ALICE, Need::Send));
+}
+
+#[test]
 fn setting_one_permission_touches_only_that_account_and_need() {
     let mut store = Store::default();
     store.set("claude-code", ALICE, Need::Read, true);

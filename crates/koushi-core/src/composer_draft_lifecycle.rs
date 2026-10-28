@@ -487,6 +487,13 @@ impl ComposerDraftLeaseRegistry {
             .collect()
     }
 
+    /// #1644: whether a renderer draft or send command for exactly this
+    /// target is in flight. An assistant draft must not race it.
+    pub(crate) fn has_command_permit(&self, scope: &ComposerDraftScope) -> bool {
+        let state = self.state.lock().expect("composer lease registry mutex");
+        state.command_permits.contains_key(scope)
+    }
+
     pub(crate) fn touch_protected_targets(
         &self,
         account: &SessionKeyId,

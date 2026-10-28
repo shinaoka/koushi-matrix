@@ -719,6 +719,136 @@ pub(crate) fn handle_composer_draft_seeded(
     Vec::new()
 }
 
+/// #1644: `draft_message` stages an assistant draft into an empty target and
+/// hydrates the open target composer under the `ComposerDraftsLoaded` rule.
+/// Navigation, focus, and read state are never touched.
+pub(crate) fn handle_assistant_draft_staged(
+    state: &mut AppState,
+    target: crate::ComposerTarget,
+    document: crate::ComposerDocument,
+    client_name: String,
+) -> Vec<AppEffect> {
+    let room_id = match &target {
+        crate::ComposerTarget::Main { room_id } | crate::ComposerTarget::Thread { room_id, .. } => {
+            room_id.clone()
+        }
+    };
+    if !is_session_ready(state) || !state.rooms.iter().any(|room| room.room_id == room_id) {
+        return Vec::new();
+    }
+    if state
+        .composer_drafts
+        .stage_assistant_draft(&target, document, client_name)
+        .is_none()
+    {
+        return Vec::new();
+    }
+    match &target {
+        crate::ComposerTarget::Main { room_id } => {
+            if state.timeline.room_id.as_deref() == Some(room_id.as_str())
+                && state.timeline.composer.pending_transaction_id.is_none()
+                && state.timeline.composer.draft.is_empty()
+            {
+                let hydrated = state.composer_drafts.composer_for_room(room_id);
+                hydrate_staged_draft(&mut state.timeline.composer, hydrated);
+                return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                    room_id: room_id.clone(),
+                })];
+            }
+        }
+        crate::ComposerTarget::Thread {
+            room_id,
+            root_event_id,
+        } => {
+            if let ThreadPaneState::Open {
+                room_id: open_room_id,
+                root_event_id: open_root_event_id,
+                composer,
+                ..
+            } = &mut state.thread
+                && open_room_id == room_id
+                && open_root_event_id == root_event_id
+                && composer.pending_transaction_id.is_none()
+                && composer.draft.is_empty()
+            {
+                let hydrated = state
+                    .composer_drafts
+                    .composer_for_thread(room_id, root_event_id);
+                hydrate_staged_draft(composer, hydrated);
+                return vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)];
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Copies only the draft fields, so the open composer keeps its mode and its
+/// submission tombstones.
+fn hydrate_staged_draft(composer: &mut crate::ComposerState, hydrated: crate::ComposerState) {
+    composer.draft = hydrated.draft;
+    composer.document = hydrated.document;
+    composer.draft_revision = hydrated.draft_revision;
+    composer.assistant_draft = hydrated.assistant_draft;
+}
+
+/// #1644: drop only the marker; the draft and its revision stay.
+pub(crate) fn handle_assistant_draft_marker_dismissed(
+    state: &mut AppState,
+    target: crate::ComposerTarget,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) || !state.composer_drafts.dismiss_assistant_marker(&target) {
+        return Vec::new();
+    }
+    match target {
+        crate::ComposerTarget::Main { room_id }
+            if state.timeline.room_id.as_deref() == Some(room_id.as_str()) =>
+        {
+            vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+        }
+        crate::ComposerTarget::Thread {
+            room_id,
+            root_event_id,
+        } if matches!(
+            &state.thread,
+            ThreadPaneState::Open { room_id: open_room, root_event_id: open_root, .. }
+                if *open_room == room_id && *open_root == root_event_id
+        ) =>
+        {
+            vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// #1644: the open composers mirror the store's marker after every action, so
+/// no draft path (edit, clear, send, prune, dismissal) can leave a stale one.
+pub(crate) fn sync_assistant_draft_markers(state: &mut AppState) {
+    let main_marker = state
+        .timeline
+        .room_id
+        .as_deref()
+        .and_then(|room_id| state.composer_drafts.room_assistant_marker(room_id))
+        .cloned();
+    if state.timeline.composer.assistant_draft != main_marker {
+        state.timeline.composer.assistant_draft = main_marker;
+    }
+    if let ThreadPaneState::Open {
+        room_id,
+        root_event_id,
+        composer,
+        ..
+    } = &mut state.thread
+    {
+        let marker = state
+            .composer_drafts
+            .thread_assistant_marker(room_id, root_event_id)
+            .cloned();
+        if composer.assistant_draft != marker {
+            composer.assistant_draft = marker;
+        }
+    }
+}
+
 pub(crate) fn handle_composer_draft_accepted(
     state: &mut AppState,
     target: crate::ComposerTarget,

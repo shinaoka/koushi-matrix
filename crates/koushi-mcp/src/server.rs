@@ -309,7 +309,7 @@ mod tests {
             false
         );
         let tools = output[1]["result"]["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 14);
+        assert_eq!(tools.len(), 15);
         let read = tools
             .iter()
             .find(|tool| tool["name"] == "read_room_messages")

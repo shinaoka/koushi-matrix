@@ -54,6 +54,7 @@ pub(crate) async fn dispatch_tool_call(
         "edit_message" => edit_message(shared, client, &arguments).await,
         "delete_message" => delete_message(shared, client, &arguments).await,
         "send_thread_reply" => send_thread_reply(shared, client, &arguments).await,
+        "draft_message" => draft_message(shared, client, &arguments).await,
         other => Err(WireError::new(
             ErrorCode::Unsupported,
             format!("unknown tool: {other}"),
@@ -109,9 +110,10 @@ fn list_accounts(shared: &Shared, client: &ClientIdentity) -> Result<Value, Wire
             "send": grant.is_some_and(|grant| grant.send),
             "attachments": grant.is_some_and(|grant| grant.attachments),
             "message_actions": grant.is_some_and(|grant| grant.message_actions),
+            "draft": grant.is_some_and(|grant| grant.draft),
         });
         if grant.is_some_and(|grant| {
-            grant.read || grant.send || grant.attachments || grant.message_actions
+            grant.read || grant.send || grant.attachments || grant.message_actions || grant.draft
         }) {
             let user_id = session.map(|info| info.user_id.clone());
             let homeserver = session
@@ -925,6 +927,147 @@ async fn send_thread_reply(
             shared.actions.release(&key);
             Err(error)
         }
+    }
+}
+
+/// Stages plain text in a room's or a thread's composer without sending it
+/// (#1644).
+///
+/// The draft goes through Core's Rust draft store, the only composer write an
+/// MCP call may make. It never selects a room, account, pane, or thread, and
+/// it never overwrites a draft: a non-empty or busy composer answers
+/// `conflict`.
+async fn draft_message(
+    shared: &Shared,
+    client: &ClientIdentity,
+    arguments: &Value,
+) -> Result<Value, WireError> {
+    let account_id = required_account_id(arguments)?;
+    let room_id = required_argument(arguments, "room_id")?.to_owned();
+    let body = arguments
+        .get("body")
+        .and_then(Value::as_str)
+        .filter(|body| !body.trim().is_empty())
+        .ok_or_else(|| WireError::new(ErrorCode::Unsupported, "body is empty"))?
+        .to_owned();
+    if body.len() > koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_BYTES {
+        return Err(WireError::with_reason(
+            ErrorCode::Unsupported,
+            "body_too_long",
+            "body is longer than a composer draft can hold (16 KiB)",
+        ));
+    }
+    if arguments.get("reply_to_event_id").is_some() || arguments.get("attachments").is_some() {
+        return Err(WireError::new(
+            ErrorCode::Unsupported,
+            "draft_message stages plain text only; replies and attachments are not supported",
+        ));
+    }
+    let thread_root_event_id = arguments
+        .get("thread_root_event_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned);
+
+    // As for a send, the approval previews the text, and the room only when
+    // this account has joined it; whether it exists is decided after consent.
+    let connection = account_connection(&shared.accounts, &account_id)?;
+    shared
+        .broker
+        .authorize(
+            client,
+            &account_id,
+            Need::Draft,
+            ConsentContext {
+                room_label: joined_room_label(&connection, &room_id),
+                message_preview: Some(body.clone()),
+            },
+        )
+        .await?;
+    ready_account_key(&connection.snapshot().session)?;
+    if joined_room_label(&connection, &room_id).is_none() {
+        return Err(WireError::new(
+            ErrorCode::RoomNotFound,
+            "the room is not joined",
+        ));
+    }
+
+    let target = match &thread_root_event_id {
+        None => koushi_state::ComposerTarget::Main {
+            room_id: room_id.clone(),
+        },
+        Some(root_event_id) => {
+            // The same root rule as `send_thread_reply`: a visible message that
+            // is not itself a thread reply.
+            let view = match connection
+                .direct_message_action(koushi_core::DirectMessageRequest::Read {
+                    room_id: room_id.clone(),
+                    event_id: root_event_id.clone(),
+                })
+                .await
+                .map_err(direct_message_failure)?
+            {
+                koushi_core::DirectMessageResponse::Read(view) => view,
+                _ => {
+                    return Err(WireError::new(
+                        ErrorCode::Internal,
+                        "Koushi answered a different action",
+                    ));
+                }
+            };
+            if view.is_redacted {
+                return Err(direct_message_failure(
+                    koushi_core::DirectMessageFailure::Redacted,
+                ));
+            }
+            if view.thread_root_event_id.is_some() {
+                return Err(direct_message_failure(
+                    koushi_core::DirectMessageFailure::NotThreadRoot,
+                ));
+            }
+            // A revocation during the read is honored before the write.
+            shared
+                .broker
+                .authorize(client, &account_id, Need::Draft, ConsentContext::default())
+                .await?;
+            koushi_state::ComposerTarget::Thread {
+                room_id: room_id.clone(),
+                root_event_id: root_event_id.clone(),
+            }
+        }
+    };
+
+    connection
+        .stage_assistant_draft(koushi_core::AssistantDraftRequest {
+            target,
+            document: ComposerDocument::from_plain_text(body),
+            client_name: client.name.clone(),
+        })
+        .await
+        .map_err(assistant_draft_failure)?;
+    Ok(json!({
+        "room_id": room_id,
+        "thread_root_event_id": thread_root_event_id,
+        "status": "staged",
+    }))
+}
+
+fn assistant_draft_failure(failure: koushi_core::AssistantDraftFailure) -> WireError {
+    use koushi_core::AssistantDraftFailure as Failure;
+    match failure {
+        Failure::AccountInactive => {
+            WireError::new(ErrorCode::AccountUnavailable, "account is not signed in")
+        }
+        Failure::RoomNotFound => WireError::new(ErrorCode::RoomNotFound, "the room is not joined"),
+        Failure::Conflict => WireError::new(
+            ErrorCode::Conflict,
+            "the composer already holds a draft or is in use; nothing was changed",
+        ),
+        Failure::Unavailable => WireError::with_reason(
+            ErrorCode::Busy,
+            "drafts_loading",
+            "Koushi has not loaded this account's drafts yet; try again shortly",
+        ),
     }
 }
 

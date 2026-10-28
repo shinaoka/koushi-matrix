@@ -5,6 +5,8 @@
 //! applies on the next call. Schema 3 keeps permissions per account; schema 1
 //! (one set of flags for a list of accounts) and schema 2 (no
 //! `message_actions` flag) are still read and are upgraded by the next write.
+//! The `draft` flag (#1644) needs no schema bump: a row without it grants no
+//! draft, and an older build keeps it as an unknown row key.
 //!
 //! The store fails closed: a missing, unreadable, malformed, or newer file
 //! grants nothing, and the app never writes over a file it could not parse.
@@ -26,14 +28,17 @@ pub enum Need {
     Send,
     Attachments,
     MessageActions,
+    /// #1644: stage a message in the composer without sending it.
+    Draft,
 }
 
 impl Need {
-    pub const ALL: [Need; 4] = [
+    pub const ALL: [Need; 5] = [
         Need::Read,
         Need::Send,
         Need::Attachments,
         Need::MessageActions,
+        Need::Draft,
     ];
 
     fn field(self) -> &'static str {
@@ -42,6 +47,7 @@ impl Need {
             Need::Send => "send",
             Need::Attachments => "attachments",
             Need::MessageActions => "message_actions",
+            Need::Draft => "draft",
         }
     }
 }
@@ -66,6 +72,7 @@ pub(crate) struct AccountGrant {
     pub(crate) send: bool,
     pub(crate) attachments: bool,
     pub(crate) message_actions: bool,
+    pub(crate) draft: bool,
     extra: Map<String, Value>,
 }
 
@@ -76,6 +83,7 @@ impl AccountGrant {
             Need::Send => self.send,
             Need::Attachments => self.attachments,
             Need::MessageActions => self.message_actions,
+            Need::Draft => self.draft,
         }
     }
 
@@ -85,6 +93,7 @@ impl AccountGrant {
             Need::Send => self.send = allowed,
             Need::Attachments => self.attachments = allowed,
             Need::MessageActions => self.message_actions = allowed,
+            Need::Draft => self.draft = allowed,
         }
     }
 }
@@ -358,6 +367,7 @@ fn parse_v1(value: Value) -> Result<Entry, ()> {
             send,
             attachments,
             message_actions: false,
+            draft: false,
             extra: Map::new(),
         });
     }
@@ -397,12 +407,15 @@ fn parse_v2(value: Value) -> Result<Entry, ()> {
         let attachments = take_flag(&mut row, "attachments")?;
         // Schema 2 rows have no `message_actions` key; a missing flag is false.
         let message_actions = take_flag(&mut row, "message_actions")?;
+        // Rows written before #1644 have no `draft` key; a missing flag is false.
+        let draft = take_flag(&mut row, "draft")?;
         accounts.push(AccountGrant {
             account_id,
             read,
             send,
             attachments,
             message_actions,
+            draft,
             extra: row,
         });
     }

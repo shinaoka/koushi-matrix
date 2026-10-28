@@ -40,6 +40,12 @@ pub enum AppCommand {
         room_id: String,
         document: ComposerDocument,
     },
+    /// #1644: drop the assistant marker of a staged draft; the text stays.
+    DismissAssistantDraftMarker {
+        request_id: RequestId,
+        expected_account: crate::SessionKeyId,
+        target: koushi_state::ComposerTarget,
+    },
     SetThreadComposerDraft {
         request_id: RequestId,
         expected_account: crate::SessionKeyId,
@@ -369,6 +375,11 @@ impl fmt::Debug for AppCommand {
                 .field("request_id", request_id)
                 .field("room_id", room_id)
                 .field("draft", &"MessageBody(..)")
+                .finish(),
+            Self::DismissAssistantDraftMarker { request_id, .. } => formatter
+                .debug_struct("DismissAssistantDraftMarker")
+                .field("request_id", request_id)
+                .field("target", &"ComposerTarget(..)")
                 .finish(),
             Self::SetThreadComposerDraft {
                 request_id,

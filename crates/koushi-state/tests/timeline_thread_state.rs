@@ -2499,6 +2499,7 @@ fn timeline_and_thread_actions_are_ignored_without_ready_session() {
                 draft: "draft".to_owned(),
                 document: "draft".into(),
                 mode: Default::default(),
+                assistant_draft: None,
             },
             submission_registry: Default::default(),
             scheduled_send_capability: Default::default(),

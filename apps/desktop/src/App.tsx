@@ -57,6 +57,11 @@ import {
   documentFromText,
   plainBodyFromDocument
 } from "./domain/composerDocument";
+import {
+  assistantDraftOverlayDecision,
+  overlayIsShown,
+  type AssistantDraftOverlayDecision
+} from "./domain/assistantDraftAdoption";
 import type { MatrixPermalinkTarget } from "./domain/matrixPermalink";
 import { resolveDirectorySubmission } from "./domain/directorySubmission";
 import { serverNameFromMatrixId } from "./domain/matrixPermalink";
@@ -814,6 +819,14 @@ function composerDraftApiAccount(scope: ComposerDraftScope): {
   };
 }
 
+
+/** The renderer's not-yet-acknowledged composer text for one draft scope. */
+type ComposerDraftOverlay = {
+  scope: ComposerDraftScope;
+  document: ComposerDocument;
+  revision: ComposerDraftRevision | null;
+};
+
 export function App() {
   useModalFocusTracking();
   const [helpOpen, setHelpOpen] = useState(false);
@@ -1285,16 +1298,8 @@ function AccountContent({
   // rooms are `SpaceRailItem.leave_candidates` and Rust re-admits the choice.
   const [pendingSpaceLeave, setPendingSpaceLeave] = useState<{ spaceId: string } | null>(null);
   const [spaceLeaveInFlight, setSpaceLeaveInFlight] = useState(false);
-  const mainComposerOverlayRef = useRef<{
-    scope: ComposerDraftScope;
-    document: ComposerDocument;
-    revision: ComposerDraftRevision | null;
-  } | null>(null);
-  const threadComposerOverlayRef = useRef<{
-    scope: ComposerDraftScope;
-    document: ComposerDocument;
-    revision: ComposerDraftRevision | null;
-  } | null>(null);
+  const mainComposerOverlayRef = useRef<ComposerDraftOverlay | null>(null);
+  const threadComposerOverlayRef = useRef<ComposerDraftOverlay | null>(null);
   const drainComposerForAccountSwitchRef = useRef<() => Promise<boolean>>(async () => true);
   const openedNotificationActivationRef = useRef<DesktopNotificationActivation | null>(null);
   // The composer documents below are derived from these refs during render, so
@@ -2094,18 +2099,29 @@ function AccountContent({
     ? composerDraftAccountOwnerKey(currentComposerAccount)
     : "no-account";
   const mainComposerOverlay = mainComposerOverlayRef.current;
-  const composerDocument =
+  const mainAssistantDraft = snapshot?.state.ui.timeline.composer.assistant_draft ?? null;
+  const activeMainComposerOverlay =
     timelineRoomId &&
     mainComposerOverlay?.scope.target.kind === "main" &&
     mainComposerOverlay.scope.target.room_id === timelineRoomId &&
     mainComposerOverlay.scope.account.homeserver === currentComposerAccount?.homeserver &&
     mainComposerOverlay.scope.account.user_id === currentComposerAccount?.userId &&
     mainComposerOverlay.scope.account.device_id === currentComposerAccount?.deviceId
-      ? mainComposerOverlay.document
+      ? mainComposerOverlay
+      : null;
+  // #1644: an assistant-staged draft replaces only an empty, older overlay.
+  const mainAssistantDecision = assistantDraftOverlayDecision(
+    activeMainComposerOverlay,
+    mainAssistantDraft
+  );
+  const composerDocument =
+    activeMainComposerOverlay && overlayIsShown(mainAssistantDecision)
+      ? activeMainComposerOverlay.document
       : snapshotComposerDocument;
   const mainComposerDraftImeKey = [accountOwnerKey, "main", timelineRoomId ?? "no-room",
     snapshot?.state.ui.timeline.composer.last_accepted_clear_revision ??
-      COMPOSER_DRAFT_REVISION_ZERO
+      COMPOSER_DRAFT_REVISION_ZERO,
+    mainAssistantDraft?.revision ?? ""
   ].join("\u0000");
   const activeThreadState = snapshot?.state.ui.thread;
   const activeThreadTarget: ComposerTarget | null =
@@ -2123,11 +2139,21 @@ function AccountContent({
       ? composerDraftScope(currentComposerAccount, activeThreadTarget)
       : null;
   const threadComposerOverlay = threadComposerOverlayRef.current;
-  const threadComposerDocumentOverride =
+  const threadAssistantDraft =
+    activeThreadState?.kind === "open" ? activeThreadState.composer?.assistant_draft ?? null : null;
+  const activeThreadComposerOverlay =
     activeThreadScope &&
     threadComposerOverlay &&
     composerDraftScopesEqual(activeThreadScope, threadComposerOverlay.scope)
-      ? threadComposerOverlay.document
+      ? threadComposerOverlay
+      : null;
+  const threadAssistantDecision = assistantDraftOverlayDecision(
+    activeThreadComposerOverlay,
+    threadAssistantDraft
+  );
+  const threadComposerDocumentOverride =
+    activeThreadComposerOverlay && overlayIsShown(threadAssistantDecision)
+      ? activeThreadComposerOverlay.document
       : undefined;
   const threadComposerDraftImeKey =
     activeThreadState?.kind === "open" && activeThreadState.composer
@@ -2136,9 +2162,23 @@ function AccountContent({
           "thread",
           activeThreadState.room_id,
           activeThreadState.root_event_id,
-          activeThreadState.composer.last_accepted_clear_revision
+          activeThreadState.composer.last_accepted_clear_revision,
+          threadAssistantDraft?.revision ?? ""
         ].join("\u0000")
       : undefined;
+  // #1644: settle the overlay against a newly staged assistant draft. An empty
+  // overlay retires so the staged text stays shown; text the user typed while
+  // the draft landed is re-persisted above it and the marker is dismissed.
+  // Neither path moves focus or changes the selected room.
+  useEffect(() => {
+    settleAssistantDraftOverlay("main", activeMainComposerOverlay, mainAssistantDecision);
+    settleAssistantDraftOverlay("thread", activeThreadComposerOverlay, threadAssistantDecision);
+  }, [
+    mainAssistantDraft?.revision,
+    threadAssistantDraft?.revision,
+    mainAssistantDecision,
+    threadAssistantDecision
+  ]);
   const stagedUploads = snapshot?.state.ui.timeline.staged_uploads ?? [];
   const retainedTimelineKeyIds = useMemo(
     () => retainedTimelineStoreKeyIds(snapshot),
@@ -5509,6 +5549,41 @@ function AccountContent({
     composerDraftLifecycleRegistryRef.current!.setDebounce(scope, handle);
   }
 
+  function settleAssistantDraftOverlay(
+    kind: "main" | "thread",
+    overlay: ComposerDraftOverlay | null,
+    decision: AssistantDraftOverlayDecision
+  ) {
+    if (!overlay || (decision !== "adopt" && decision !== "user_wins")) return;
+    const registry = composerDraftLifecycleRegistryRef.current!;
+    const scope = overlay.scope;
+    if (decision === "adopt") {
+      clearComposerDraftPersistTimer(scope);
+      if (kind === "main") mainComposerOverlayRef.current = null;
+      else threadComposerOverlayRef.current = null;
+      registry.setActiveOverlay(scope, null, null);
+      return;
+    }
+    const revision = registry.snapshot(scope)?.leaseId ? registry.nextDraft(scope) : null;
+    overlay.revision = revision;
+    registry.setActiveOverlay(scope, overlay.document, revision);
+    if (revision) {
+      if (kind === "main") queueComposerDraftPersist(scope, overlay.document, revision);
+      else queueThreadComposerDraftPersist(scope, overlay.document, revision);
+    }
+    void dismissAssistantDraftMarker(scope.target);
+  }
+
+  async function dismissAssistantDraftMarker(target: ComposerTarget): Promise<void> {
+    const account = readyComposerDraftAccountOwner(snapshot);
+    if (!account) return;
+    try {
+      await settleCommand(api.dismissAssistantDraftMarker(account, target));
+    } catch {
+      // Command failures are surfaced through the Rust-owned error/event path.
+    }
+  }
+
   function clearLocalComposerDraft(scope: ComposerDraftScope) {
     const overlay = mainComposerOverlayRef.current;
     if (!overlay || !composerDraftScopesEqual(overlay.scope, scope)) return;
@@ -7576,6 +7651,11 @@ function AccountContent({
             activeRoomName={roomDisplayLabel(activeRoom)}
             sendingAccount={sendingAccount}
             composerDocument={composerDocument}
+            onDismissComposerAssistantDraft={() => {
+              if (timelineRoomId) {
+                void dismissAssistantDraftMarker({ kind: "main", room_id: timelineRoomId });
+              }
+            }}
             composerNotice={
               composerNotice &&
               "Room" in composerNotice.key.kind &&
@@ -7949,6 +8029,9 @@ function AccountContent({
           }}
           threadComposerDraftImeKey={threadComposerDraftImeKey}
           threadComposerDocumentOverride={threadComposerDocumentOverride}
+          onDismissThreadAssistantDraft={() => {
+            if (activeThreadTarget) void dismissAssistantDraftMarker(activeThreadTarget);
+          }}
           threadComposerNotice={
             composerNotice &&
             activeThreadTarget &&

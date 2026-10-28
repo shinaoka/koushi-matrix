@@ -2020,12 +2020,15 @@ Ownership:
 - `koushi-core` remains the only production runtime owner. Search, send,
   attachment preparation, encryption, and projection stay in the existing
   actors; the bridge adds no alternate runtime and opens no crypto store.
-- Grants persist in `<data_dir>/mcp/connections.json` (schema 2: per assistant,
-  per account, `read`/`send`/`attachments`), written by the app and re-read on
-  every call. They are not settings: settings values must not contain user
-  IDs, and account ids embed them. Schema 1 files are still read. A file the
-  app cannot parse grants nothing and is never overwritten. Only the on/off
-  switch is a setting (`SettingsValues.mcp.enabled`, app scope).
+- Grants persist in `<data_dir>/mcp/connections.json` (schema 3: per assistant,
+  per account, `read`/`send`/`attachments`/`message_actions`/`draft`), written
+  by the app and re-read on every call. They are not settings: settings values
+  must not contain user IDs, and account ids embed them. Schema 1 and 2 files
+  are still read. A schema 3 row without a `draft` key grants no draft, and an
+  older build keeps the key as an unknown row field, so `draft` needs no schema
+  bump. A file the app cannot parse grants nothing and is never overwritten.
+  Only the on/off switch is a setting (`SettingsValues.mcp.enabled`, app
+  scope).
 
 Invariants:
 
@@ -2088,6 +2091,30 @@ Invariants:
   any visible thread root. Actions are bounded, per-account capped, and fenced
   on the account session, so a revoked grant is refused at submission while an
   already-submitted event is never rolled back.
+- **Assistant drafts are the one composer write (#1644).** `draft_message`
+  stages plain text in a room's main composer or in a thread composer and
+  never sends. It needs the `draft` grant, which is separate from and weaker
+  than `send`; the approval previews the text and the room like a send. Core
+  writes the draft through the Rust draft store (`AppActor`, envelope
+  `DirectComposerDraft`, action `AssistantDraftStaged`), never through the
+  renderer: it takes the successor of the stored revision and records Rust-owned
+  marker metadata naming the assistant's client name. The write is refused with
+  `conflict` when the target's stored draft is non-empty, when a renderer
+  draft or send command for that exact target is in flight (a command permit in
+  the composer lease registry), or when the open composer has a pending
+  submission. It is refused with `unavailable` until the account's draft store
+  has loaded. It does not select a room, account, pane, or thread, move focus
+  or scroll, or touch read state. When the target composer is open and empty
+  the staged document hydrates it at once (the `ComposerDraftsLoaded` rule),
+  and the renderer adopts it through the composer synchronization key without
+  moving focus; otherwise the draft appears when the user next opens that
+  composer. The marker survives edits, is removed with the content (an
+  accepted send, a clear to empty, a pruned room), and is removed by the
+  user's explicit dismissal (`dismiss_assistant_draft_marker`). If the user
+  starts typing in the renderer's 350 ms persistence debounce window just as
+  the draft lands, the user's text wins: the renderer re-persists it above the
+  staged revision and dismisses the marker. Reply relations and attachments
+  are not staged in this version.
 - **Polling, not push.** MCP cannot wake a host that is not calling. Room
   changes surface through a `wait_for_events` long-poll of at most 50 s over a
   sampled feed: the host samples each joined room's latest event every 2 s,
@@ -2116,7 +2143,9 @@ Invariants:
   reuses the download and managed-cache path, so an unviewed room needs no
   timeline actor or projected media entry. Progress, cancellation, and errors
   reach only the calling client. A sent message appearing through normal sync
-  is the expected exception, not a GUI operation. The other exception is
+  is the expected exception, not a GUI operation. `draft_message` is a
+  documented exception limited to the target composer's draft and its marker
+  (see "Assistant drafts" above). The other exception is
   consent: a call that needs approval publishes the broker's state to the
   WebView and requests window attention, without calling `set_focus`.
 - **No content telemetry.** Message bodies, queries, attachment bytes, tokens,

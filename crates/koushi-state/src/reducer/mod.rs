@@ -91,6 +91,7 @@ pub(crate) fn clear_stale_verification_flow(state: &mut AppState) -> bool {
 
 pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
     let mut effects = reduce_action(state, action);
+    timeline::sync_assistant_draft_markers(state);
     contact_security::sync_verification_busy(state, &mut effects);
     scheduled_sends::reconcile_scheduled_sends_list(state);
     effects
@@ -1653,6 +1654,14 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         } => timeline::handle_composer_draft_changed(state, room_id, document, revision),
         AppAction::ComposerDraftSeeded { room_id, document } => {
             timeline::handle_composer_draft_seeded(state, room_id, document)
+        }
+        AppAction::AssistantDraftStaged {
+            target,
+            document,
+            client_name,
+        } => timeline::handle_assistant_draft_staged(state, target, document, client_name),
+        AppAction::AssistantDraftMarkerDismissed { target } => {
+            timeline::handle_assistant_draft_marker_dismissed(state, target)
         }
         AppAction::SendTextSubmitted {
             room_id,

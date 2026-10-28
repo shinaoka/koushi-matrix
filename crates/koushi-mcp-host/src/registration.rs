@@ -194,7 +194,7 @@ fn shell_word(text: &str, windows: bool) -> String {
 }
 
 /// The tools the bridge offers, as the MCPB manifest lists them.
-const TOOLS: [(&str, &str); 14] = [
+const TOOLS: [(&str, &str); 15] = [
     ("list_accounts", "List the signed-in Koushi accounts"),
     (
         "list_rooms",
@@ -221,6 +221,10 @@ const TOOLS: [(&str, &str); 14] = [
     ("edit_message", "Edit a message you sent"),
     ("delete_message", "Delete a message you sent"),
     ("send_thread_reply", "Reply in a thread"),
+    (
+        "draft_message",
+        "Put a draft in a composer for you to review and send",
+    ),
 ];
 
 /// The `manifest.json` of the Claude Desktop extension. The launcher is
