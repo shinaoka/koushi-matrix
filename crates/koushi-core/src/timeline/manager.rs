@@ -1441,6 +1441,14 @@ impl TimelineManagerActor {
                     .await;
                 }
             }
+            TimelineCommand::ReturnToLive { request_id, key } => {
+                Box::pin(self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::ReturnToLive { request_id },
+                ))
+                .await;
+            }
             TimelineCommand::ObserveViewport {
                 request_id,
                 key,
@@ -2292,7 +2300,34 @@ impl TimelineManagerActor {
             record_subscribe_stage("build_begin", None);
             let build_started = Some(startup_trace::now());
             let sdk_started = executor::Instant::now();
-            let timeline_result = koushi_timeline_builder(&room, focus).build().await;
+            let observer: matrix_sdk::event_cache::focused_diagnostics::FocusedBuildObserver =
+                Arc::new(move |stage, outcome, duration_ms| {
+                    koushi_diagnostics::record(
+                        koushi_diagnostics::DiagnosticEvent::new(
+                            koushi_diagnostics::DiagnosticLevel::Debug,
+                            "core.focused_build",
+                            stage,
+                        )
+                        .field(koushi_diagnostics::DiagnosticField::count(
+                            "build",
+                            actor_generation,
+                        ))
+                        .field(koushi_diagnostics::DiagnosticField::token(
+                            "outcome", outcome,
+                        ))
+                        .field(koushi_diagnostics::DiagnosticField::count(
+                            "duration_ms",
+                            duration_ms,
+                        )),
+                    );
+                });
+            let timeline_result = Box::pin(
+                matrix_sdk::event_cache::focused_diagnostics::observe_focused_build(
+                    observer,
+                    koushi_timeline_builder(&room, focus).build(),
+                ),
+            )
+            .await;
             startup_trace::trace_phase(StartupPhase::TimelineBuild, build_started);
             record_subscribe_stage("build_done", None);
             // The actual SDK-internal wait for a completed build. Cancellation
@@ -2810,3 +2845,6 @@ mod thread_mention_projection_tests;
 
 #[cfg(test)]
 mod thread_hydration_tests;
+
+#[cfg(test)]
+mod return_to_live_tests;

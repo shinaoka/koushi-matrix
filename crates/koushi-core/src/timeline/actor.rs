@@ -277,6 +277,9 @@ pub(super) enum TimelineActorMessage {
         completion: PaginationCompletion,
     },
     OwnReadReceiptChanged,
+    ReturnToLive {
+        request_id: RequestId,
+    },
     ObserveViewport {
         observation: TimelineViewportObservation,
     },
@@ -1054,51 +1057,26 @@ fn canonical_pending_event_ids(
 
 impl TimelineActor {
     pub(super) fn display_projection_context(&self) -> DisplayProjectionContext {
-        DisplayProjectionContext::for_timeline(&self.key.kind, &self.viewport_observation)
-            .with_thread_roots(
-                self.thread_root_order,
-                self.thread_root_projection_service
-                    .lock()
-                    .expect("thread-root projection service lock must not be poisoned")
-                    .display_data_for_room(self.key.room_id()),
-            )
+        let mut context =
+            DisplayProjectionContext::for_timeline(&self.key.kind, &self.viewport_observation);
+        if matches!(self.key.kind, TimelineKind::Room { .. }) {
+            context.include_append = self.viewport_observation.at_bottom
+                && self
+                    .display_projection
+                    .window_reaches_live_end(self.navigation_items.len());
+        }
+        context.with_thread_roots(
+            self.thread_root_order,
+            self.thread_root_projection_service
+                .lock()
+                .expect("thread-root projection service lock must not be poisoned")
+                .display_data_for_room(self.key.room_id()),
+        )
     }
 
     pub(super) fn reproject_display_items(&mut self) -> Vec<TimelineDiff> {
         let context = self.display_projection_context();
         self.display_projection.reproject(&context)
-    }
-
-    /// #1443: when the reader leaves the live edge, re-materialize the canonical
-    /// prefix the bounded window trimmed, so the older rows become reachable in
-    /// order and later front insertions are boundary-adjacent. Emits incremental
-    /// prepends, never a replay or reset, so the reader's anchor is preserved.
-    async fn materialize_hidden_history(&mut self) {
-        if !matches!(self.key.kind, TimelineKind::Room { .. }) {
-            return;
-        }
-        if !matches!(
-            self.display_projection.first_visible_canonical_index(),
-            Some(index) if index > 0
-        ) {
-            return;
-        }
-        let context = self.display_projection_context();
-        let end = self.navigation_items.len();
-        let diffs =
-            self.display_projection
-                .rematerialize_window(&self.navigation_items, 0..end, &context);
-        if !diffs.is_empty() {
-            self.emit_items_updated(diffs);
-        }
-        // #1443: the newly displayed prefix can expose a gap whose boundaries were
-        // both hidden. Rebuild the projected gap set through the ordinary
-        // inspection instead of shifting stale display-relative offsets. Rooms
-        // with no known gaps do not pay for an extra inspection.
-        if self.gap_repair.gap_count > 0 || !self.gap_repair.projected_gaps.is_empty() {
-            self.request_timeline_gap_inspection(TimelineGapRepairTrigger::Automatic)
-                .await;
-        }
     }
 
     pub(super) fn update_send_status(
@@ -1679,7 +1657,11 @@ impl TimelineActor {
         }
         let mut display_projection = DisplayProjectionState::from_canonical_window(
             &navigation_items,
-            0..navigation_items.len(),
+            0..if matches!(key.kind, TimelineKind::Room { .. }) {
+                0
+            } else {
+                navigation_items.len()
+            },
         );
         let initial_display_context = DisplayProjectionContext::for_timeline(
             &key.kind,
@@ -1720,6 +1702,9 @@ impl TimelineActor {
             .filter_map(|projection| projection.sdk_transaction_id.clone())
             .collect::<std::collections::HashSet<_>>();
         suppressed.extend(settled_transaction_ids);
+        if matches!(key.kind, TimelineKind::Room { .. }) {
+            display_projection.return_to_live_window(&navigation_items, &initial_display_context);
+        }
         display_projection.replace_pending(pending_items, suppressed, &initial_display_context);
         let initial_media_gallery_items =
             media_gallery_items_from_timeline_items(&key, &initial_items);
@@ -2536,12 +2521,63 @@ impl TimelineActor {
             TimelineActorMessage::OwnReadReceiptChanged => {
                 Box::pin(self.handle_own_read_receipt_changed()).await;
             }
-            TimelineActorMessage::ObserveViewport { observation } => {
-                let was_at_bottom = self.viewport_observation.at_bottom;
-                self.viewport_observation = observation;
-                if was_at_bottom && !self.viewport_observation.at_bottom {
-                    Box::pin(self.materialize_hidden_history()).await;
+            TimelineActorMessage::ReturnToLive { request_id } => {
+                if !matches!(self.key.kind, TimelineKind::Room { .. }) {
+                    self.emit_failure(
+                        request_id,
+                        CoreFailure::TimelineOperationFailed {
+                            kind: TimelineFailureKind::InvalidDirection,
+                        },
+                    );
+                    return;
                 }
+                // The command moves presentation only. Receipt advancement waits
+                // for a fresh renderer observation of the new window.
+                self.viewport_observation = TimelineViewportObservation {
+                    at_bottom: true,
+                    ..Default::default()
+                };
+                let context = self.display_projection_context();
+                let diffs = self
+                    .display_projection
+                    .return_to_live_window(&self.navigation_items, &context);
+                self.emit_navigation_if_changed();
+                if !diffs.is_empty() {
+                    self.emit_items_updated(diffs);
+                }
+            }
+            TimelineActorMessage::ObserveViewport { mut observation } => {
+                if matches!(self.key.kind, TimelineKind::Room { .. }) {
+                    if observation.display_window_revision
+                        != Some(self.display_projection.window_revision)
+                    {
+                        return;
+                    }
+                    if !self.display_projection.observation_is_current(&observation) {
+                        if observation.visible_gap_ids.is_empty() {
+                            return;
+                        }
+                        // Gap-only evidence may wake repair, never imply reading.
+                        observation.first_visible_event_id = None;
+                        observation.last_visible_event_id = None;
+                        observation.at_bottom = false;
+                    }
+                    observation.at_bottom &= self
+                        .display_projection
+                        .window_reaches_live_end(self.navigation_items.len());
+                    let context = self.display_projection_context();
+                    let diffs = self.display_projection.reconcile_bounded_window(
+                        &self.navigation_items,
+                        &observation,
+                        &context,
+                        None,
+                    );
+                    self.emit_navigation_if_changed();
+                    if !diffs.is_empty() {
+                        self.emit_items_updated(diffs);
+                    }
+                }
+                self.viewport_observation = observation;
                 if let Some(target) = self.observe_local_viewed_boundary() {
                     let _ = Box::pin(self.manager_tx.send(
                         TimelineMessage::LocalReadBoundaryObserved {

@@ -154,6 +154,7 @@ pub(super) fn build_observe_timeline_viewport_command(
     at_bottom: bool,
     bottom_arrival: TimelineBottomArrival,
     thread_root_event_id: Option<String>,
+    display_window_revision: Option<u64>,
 ) -> CoreCommand {
     let key = match thread_root_event_id {
         Some(root_event_id) => TimelineKey {
@@ -174,6 +175,7 @@ pub(super) fn build_observe_timeline_viewport_command(
             visible_gap_ids,
             at_bottom,
             bottom_arrival,
+            display_window_revision,
         },
     })
 }
@@ -842,6 +844,28 @@ pub async fn paginate_timeline_backwards(
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(admission)
+}
+
+#[tauri::command]
+pub async fn return_timeline_to_live(
+    account_tab_id: Option<String>,
+    timeline_key: TimelineKey,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<(), String> {
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let key = TimelineKey {
+        account_key,
+        kind: timeline_key.kind,
+    };
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Timeline(TimelineCommand::ReturnToLive { request_id, key }),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    Ok(())
 }
 
 #[tauri::command]

@@ -1580,3 +1580,19 @@ Fork branch `chore/tantivy-0.27` (PR shinaoka/matrix-rust-sdk-work#29, commit
   has no issue or PR for this advisory, so this is an explicit fork delta.
   Upstreaming intent: drop it as soon as upstream moves to 0.27; it is a
   one-line requirement bump and rebases trivially.
+
+## Focused navigation build diagnostics (2026-10-28)
+
+The public timeline builder exposes only total build latency. It cannot separate
+waiting for the per-room focused-cache lock, the shared state/store lock, and
+fetching/preparing `/context`. Add an opt-in task-scoped observer in the SDK;
+Koushi scopes it around each focused build and records the actor generation.
+Stages emit start and terminal outcome (success, failure, cancellation) plus
+elapsed milliseconds. No Matrix identifiers, content, URLs or errors are exposed.
+`context` measures the paginator operation, including SDK response processing;
+it is not a pure HTTP wire-time measurement. `cache_initialization` includes
+state-lock and context time; nested durations must not be added together.
+The observer is synchronous and must not block or panic. It does not propagate
+to spawned tasks or change cache ownership, requests, or cancellation behavior.
+Upstream intent: propose opt-in construction timing hooks once useful stage
+boundaries have been confirmed. Existing public APIs cannot observe these waits.

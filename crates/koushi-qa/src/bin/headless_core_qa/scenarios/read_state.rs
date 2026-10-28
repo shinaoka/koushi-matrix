@@ -424,17 +424,24 @@ pub(super) async fn observe_viewport(
     key: &TimelineKey,
     event_id: &str,
 ) -> Result<(), String> {
-    let request_id = conn.next_request_id();
-    conn.command(CoreCommand::Timeline(TimelineCommand::ObserveViewport {
-        request_id,
-        key: key.clone(),
-        observation: TimelineViewportObservation {
+    let observation = super::viewport_observation::fresh_viewport_observation_for_qa(
+        conn,
+        key,
+        TimelineViewportObservation {
+            display_window_revision: None,
             first_visible_event_id: Some(event_id.to_owned()),
             last_visible_event_id: Some(event_id.to_owned()),
             visible_gap_ids: Vec::new(),
             at_bottom: true,
             bottom_arrival: TimelineBottomArrival::User,
         },
+    )
+    .await?;
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::ObserveViewport {
+        request_id,
+        key: key.clone(),
+        observation,
     }))
     .await
     .map_err(|_| "viewport submission failed".to_owned())

@@ -208,7 +208,17 @@ impl TimelineActor {
 
         self.emit_media_gallery_if_changed().await;
 
-        if self.emit_non_sdk_item_sets(core_diffs) {
+        let published = if matches!(self.key.kind, TimelineKind::Room { .. }) {
+            let context = self.display_projection_context();
+            let diffs = self
+                .display_projection
+                .rehydrate_bounded_visibility(&self.navigation_items, &context);
+            self.emit_navigation_if_changed();
+            diffs.is_empty() || self.emit_items_updated(diffs)
+        } else {
+            self.emit_non_sdk_item_sets(core_diffs)
+        };
+        if published {
             if let Some(activity_permit) = activity_permit {
                 activity_permit.send(vec![
                     canonical_activity_window_action(&self.key, &self.navigation_items)

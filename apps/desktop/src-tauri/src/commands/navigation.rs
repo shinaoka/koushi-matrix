@@ -489,6 +489,7 @@ pub async fn observe_timeline_viewport(
     at_bottom: bool,
     bottom_arrival: TimelineBottomArrival,
     thread_root_event_id: Option<String>,
+    display_window_revision: Option<u64>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<(), String> {
@@ -506,6 +507,7 @@ pub async fn observe_timeline_viewport(
             at_bottom,
             bottom_arrival,
             thread_root_event_id,
+            display_window_revision,
         ),
     )
     .await?;

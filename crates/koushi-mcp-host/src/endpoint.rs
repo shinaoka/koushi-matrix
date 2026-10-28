@@ -49,6 +49,8 @@ pub(crate) fn ensure_dir(data_dir: &Path) -> std::io::Result<PathBuf> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
     }
+    #[cfg(windows)]
+    koushi_mcp::windows_security::PrivateSecurity::new()?.apply(&dir)?;
     Ok(dir)
 }
 
@@ -153,7 +155,15 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     }
     #[cfg(windows)]
     {
-        std::fs::write(path, bytes)
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)?;
+        koushi_mcp::windows_security::PrivateSecurity::new()?.apply(path)?;
+        file.write_all(bytes)?;
+        file.sync_all()
     }
 }
 
@@ -186,7 +196,7 @@ mod tests {
     #[test]
     fn writes_and_removes_a_private_endpoint_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = write(dir.path(), "/tmp/mcp.sock", "tok", "0.26.0").expect("write");
+        let path = write(dir.path(), &transport_path(dir.path()), "tok", "0.26.0").expect("write");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

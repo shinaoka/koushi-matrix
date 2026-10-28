@@ -79,15 +79,15 @@ Claude Code and OpenCode have equivalent discovery entry points under
   installer after an external signing step. The public release workflow does
   not use those signing stages until the provider and protected CI gate are
   approved.
-- Every package bundles the `koushi-mcp` launcher (#1536). The build scripts
+- Every package bundles the `koushi-mcp` launcher and read-only `koushi` CLI (#1651). The build scripts
   build it for the release target, stage it as
-  `apps/desktop/src-tauri/binaries/koushi-mcp-<target>[.exe]`, and pass
+  `apps/desktop/src-tauri/binaries/<binary>-<target>[.exe]`, and pass
   `bundle.externalBin` through `--config`; `tauri.conf.json` never lists it, so
   plain cargo builds need no staged file. On macOS it is signed and notarized
-  with the app at `Contents/MacOS/koushi-mcp`, and the DMG script fails if it is
-  missing. A future Windows `--signed-input` flow must sign
-  `koushi-mcp.exe` as well as `koushi-desktop.exe`; the `--bundle-only` stage
-  requires the launcher staged by the build stage.
+  with the app at `Contents/MacOS/koushi-mcp` and `Contents/MacOS/koushi`,
+  and the DMG script fails if either is missing. A future Windows `--signed-input` flow must sign
+  `koushi-mcp.exe` and `koushi.exe` as well as `koushi-desktop.exe`; the `--bundle-only` stage
+  requires both executables staged by the build stage.
 - The Linux x64 AppImage, deb, and RPM packages are unsigned; users verify
   the adjacent SHA-256 files. Credentials use the freedesktop Secret Service
   (GNOME Keyring / KWallet) via the `koushi-desktop` service.

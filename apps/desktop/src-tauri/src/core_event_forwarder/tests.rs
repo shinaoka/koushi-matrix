@@ -1046,6 +1046,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
         serialize_core_event(&CoreEvent::Timeline(TimelineEvent::NavigationUpdated {
             key: key.clone(),
             snapshot: Box::new(TimelineNavigationSnapshot {
+                display_window: None,
                 read_marker_event_id: Some("$read:example.test".to_owned()),
                 read_marker_display_event_id: Some("$read:example.test".to_owned()),
                 first_unread_event_id: Some("$unread:example.test".to_owned()),

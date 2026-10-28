@@ -11,6 +11,9 @@
 //! Everything here is disposable: the homeserver, the account, the data
 //! directory, and the grant are created for one run and thrown away.
 
+#[path = "mcp_host/cli_fixture.rs"]
+mod cli_fixture;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -147,11 +150,13 @@ async fn host(
     bridge_dir: PathBuf,
     client_name: String,
 ) -> Result<String, String> {
-    let username = required(ENV_USER_A)?;
-    let password = required(ENV_PASSWORD_A)?;
+    let (username, password) = match cli_fixture::pipe_credentials()? {
+        Some(credentials) => credentials,
+        None => (required(ENV_USER_A)?, required(ENV_PASSWORD_A)?),
+    };
 
     let data_dir = qa_data_dir("mcp-host");
-    let participant = login_synced_participant_for_qa(
+    let mut participant = login_synced_participant_for_qa(
         &homeserver,
         data_dir.clone(),
         &username,
@@ -162,6 +167,10 @@ async fn host(
         QaParticipantLoginGate::BootstrapNewIdentity,
     )
     .await?;
+
+    if std::env::var("KOUSHI_QA_CLI_FIXTURE").as_deref() == Ok("1") {
+        cli_fixture::seed(&mut participant).await?;
+    }
 
     let account_id = format!("account:{}", participant.account_key.0);
     let media_cache_dir = account_media_cache_dir(&data_dir)?;

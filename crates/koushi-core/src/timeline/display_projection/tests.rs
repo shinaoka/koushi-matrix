@@ -251,6 +251,8 @@ fn synthetic_projection_items(count: usize) -> Vec<TimelineItem> {
 
 fn historical_display_projection_context() -> DisplayProjectionContext {
     DisplayProjectionContext {
+        room_window: false,
+        viewport: TimelineViewportObservation::default(),
         max_live_edge_items: None,
         include_append: true,
         project_thread_roots: true,

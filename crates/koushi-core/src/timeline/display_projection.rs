@@ -32,6 +32,7 @@ struct DisplayProjectionSlot {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct DisplayProjectionState {
     slots: Vec<DisplayProjectionSlot>,
+    pub(super) window_revision: u64,
     display_items: Vec<TimelineItem>,
     /// Manager-owned accepted sends which are not yet represented by an SDK slot.
     pending_items: Vec<TimelineItem>,
@@ -61,6 +62,7 @@ impl DisplayProjectionState {
             .collect();
         Self {
             slots,
+            window_revision: 0,
             display_items,
             pending_items: Vec::new(),
             suppressed_transaction_ids: HashSet::new(),
@@ -89,6 +91,124 @@ impl DisplayProjectionState {
         self.slots.first().map(|slot| slot.canonical_index)
     }
 
+    pub(super) fn canonical_window_range(&self, canonical_len: usize) -> std::ops::Range<usize> {
+        let start = self
+            .slots
+            .first()
+            .map(|s| s.canonical_index)
+            .unwrap_or(canonical_len.saturating_sub(120));
+        let end = self
+            .slots
+            .last()
+            .map(|s| s.canonical_index + 1)
+            .unwrap_or(canonical_len);
+        start..end
+    }
+
+    /// Policy changes can make sparse, previously suppressed slots visible again.
+    pub(super) fn rehydrate_bounded_visibility(
+        &mut self,
+        canonical: &[TimelineItem],
+        context: &DisplayProjectionContext,
+    ) -> Vec<TimelineDiff> {
+        let before = self.display_items.clone();
+        let range = self.canonical_window_range(canonical.len());
+        // Existing owners get capacity before previously unrepresented roots.
+        // Only indices are retained while scanning the sparse canonical span.
+        let mut replies = HashMap::<String, usize>::new();
+        let mut ordinary = std::collections::BTreeSet::new();
+        for slot in &self.slots {
+            if slot.canonical_index >= canonical.len() {
+                continue;
+            }
+            if let Some(root) = canonical[slot.canonical_index].thread_root.as_ref() {
+                replies.insert(root.clone(), slot.canonical_index);
+            } else {
+                ordinary.insert(slot.canonical_index);
+            }
+        }
+        let cursor = range
+            .end
+            .checked_sub(1)
+            .filter(|index| canonical[*index].is_hidden || canonical[*index].thread_root.is_some());
+        for (index, item) in canonical
+            .iter()
+            .enumerate()
+            .take(range.end)
+            .skip(range.start)
+        {
+            if let Some(root) = item.thread_root.as_ref()
+                && replies.contains_key(root)
+                && !item.is_hidden
+            {
+                replies.insert(root.clone(), index);
+            }
+        }
+        if let Some(index) = cursor {
+            ordinary.remove(&index);
+        }
+        let cursor_extra =
+            usize::from(cursor.is_some_and(|index| !replies.values().any(|owner| *owner == index)));
+        let row_budget = 240usize.saturating_sub(replies.len() + cursor_extra);
+        let mut new_rows = 0;
+        for (index, item) in canonical
+            .iter()
+            .enumerate()
+            .take(range.end)
+            .skip(range.start)
+        {
+            if new_rows >= 240 {
+                break;
+            }
+            if item_occupies_display_row(item) && Some(index) != cursor && ordinary.insert(index) {
+                new_rows += 1;
+            }
+        }
+        let candidates = ordinary.into_iter().collect::<Vec<_>>();
+        let endpoint = |id: Option<&str>| {
+            id.and_then(|id| self.slots.iter().find(|slot| matches!(&slot.item.id, TimelineItemId::Event { event_id } if event_id == id))).map(|slot|slot.canonical_index)
+        };
+        let first = endpoint(context.viewport.first_visible_event_id.as_deref());
+        let last = endpoint(context.viewport.last_visible_event_id.as_deref());
+        let first_pos = first
+            .and_then(|index| candidates.iter().position(|candidate| *candidate == index))
+            .unwrap_or(0);
+        let mut start = first_pos.saturating_sub(60.min(row_budget / 3));
+        if let Some(last_pos) =
+            last.and_then(|index| candidates.iter().position(|candidate| *candidate == index))
+            && last_pos >= first_pos
+            && last_pos - first_pos < row_budget
+        {
+            start = start.max((last_pos + 1).saturating_sub(row_budget));
+        }
+        start = start.min(candidates.len().saturating_sub(row_budget));
+        let mut selected = candidates
+            .into_iter()
+            .skip(start)
+            .take(row_budget)
+            .collect::<std::collections::BTreeSet<_>>();
+        selected.extend(replies.into_values());
+        if let Some(index) = cursor {
+            selected.insert(index);
+        }
+        self.slots = selected
+            .into_iter()
+            .take(240)
+            .map(|canonical_index| DisplayProjectionSlot {
+                canonical_index,
+                item: canonical[canonical_index].clone(),
+            })
+            .collect();
+        self.window_revision = self.window_revision.saturating_add(1);
+        self.display_items = project_display_items(
+            &self.slots,
+            &self.pending_items,
+            &self.suppressed_transaction_ids,
+            context,
+        );
+        finalize_display_projection_diffs(&before, &self.display_items, false).0
+    }
+
     /// #1443: re-materialize `window` of the canonical run in place, keeping
     /// pending sends and suppressed transaction ids. Returns the incremental
     /// diffs that turn the previous display into the rebuilt one; a prefix
@@ -101,6 +221,7 @@ impl DisplayProjectionState {
         context: &DisplayProjectionContext,
     ) -> Vec<TimelineDiff> {
         let before = self.display_items.clone();
+        self.window_revision = self.window_revision.saturating_add(1);
         let rebuilt = Self::from_canonical_window(canonical_items, window);
         self.slots = rebuilt.slots;
         self.display_items = project_display_items(
@@ -815,8 +936,10 @@ impl DisplayMembershipRope {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct DisplayProjectionContext {
+    pub(super) room_window: bool,
+    pub(super) viewport: TimelineViewportObservation,
     max_live_edge_items: Option<usize>,
-    include_append: bool,
+    pub(super) include_append: bool,
     project_thread_roots: bool,
     pub(super) thread_root_order: TimelineThreadRootOrder,
     pub(super) thread_roots: Vec<ThreadRootDisplayData>,
@@ -829,6 +952,8 @@ impl DisplayProjectionContext {
     ) -> Self {
         let bounded_live_edge = matches!(kind, TimelineKind::Room { .. }) && observation.at_bottom;
         Self {
+            room_window: matches!(kind, TimelineKind::Room { .. }),
+            viewport: observation.clone(),
             max_live_edge_items: bounded_live_edge.then_some(ROOM_REPLAY_INITIAL_ITEMS_MAX),
             include_append: true,
             project_thread_roots: matches!(kind, TimelineKind::Room { .. }),
@@ -850,6 +975,8 @@ impl DisplayProjectionContext {
     #[cfg(test)]
     fn bounded_live_edge() -> Self {
         Self {
+            room_window: false,
+            viewport: TimelineViewportObservation::default(),
             max_live_edge_items: Some(ROOM_REPLAY_INITIAL_ITEMS_MAX),
             include_append: true,
             project_thread_roots: true,
@@ -901,6 +1028,9 @@ fn project_sdk_batch(
     context: &DisplayProjectionContext,
 ) -> DisplayProjectionBatch {
     let display_before = display_state.display_items.clone();
+    if context.room_window && !canonical_diffs.is_empty() {
+        display_state.window_revision = display_state.window_revision.saturating_add(1);
+    }
     let (mut membership, mut translation_ambiguous) =
         DisplayMembershipRope::from_projection_state(canonical_items.len(), display_state);
     let mut pending_push_fronts = Vec::new();
@@ -979,14 +1109,24 @@ fn project_sdk_batch(
             }
             TimelineDiff::Reset { items } => {
                 *canonical_items = items.clone();
-                let start = context
-                    .max_live_edge_items
-                    .map(|max_items| live_edge_window_start(canonical_items, max_items))
-                    .unwrap_or(0);
-                membership = DisplayMembershipRope::from_canonical_window(
-                    canonical_items,
-                    start..canonical_items.len(),
-                );
+                if context.room_window {
+                    display_state.reset_bounded(canonical_items, context);
+                    let (rebuilt, ambiguous) = DisplayMembershipRope::from_projection_state(
+                        canonical_items.len(),
+                        display_state,
+                    );
+                    membership = rebuilt;
+                    translation_ambiguous |= ambiguous;
+                } else {
+                    let start = context
+                        .max_live_edge_items
+                        .map(|max| live_edge_window_start(canonical_items, max))
+                        .unwrap_or(0);
+                    membership = DisplayMembershipRope::from_canonical_window(
+                        canonical_items,
+                        start..canonical_items.len(),
+                    );
+                }
             }
         }
         membership.trim_to_live_edge(context.max_live_edge_items);
@@ -1000,6 +1140,7 @@ fn project_sdk_batch(
         membership.materialize(display_state, context);
     #[cfg(not(test))]
     let _ = (display_payload_visits, structural_node_visits);
+    display_state.bound_after_batch(context);
     let display_after = display_state.display_items.clone();
     let (display_diffs, used_reset_fallback) =
         finalize_display_projection_diffs(&display_before, &display_after, translation_ambiguous);
@@ -1878,3 +2019,17 @@ mod tests;
 
 #[cfg(test)]
 mod thread_refresh_tests;
+
+#[cfg(test)]
+#[path = "display_projection/window_tests.rs"]
+mod window_tests;
+
+#[path = "display_projection/bounded_window.rs"]
+mod bounded_window;
+#[cfg(test)]
+#[path = "display_projection/bounded_window_tests.rs"]
+mod bounded_window_tests;
+
+#[cfg(test)]
+#[path = "display_projection/bounded_visibility_tests.rs"]
+mod bounded_visibility_tests;

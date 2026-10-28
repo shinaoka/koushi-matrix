@@ -61,6 +61,9 @@ export function createTauriTimelineTransport(accountTabId?: string): TimelineTra
       await tauriCoreEventListenerReady;
       await invokeAccount("ensure_timeline_subscribed", { timelineKey });
     },
+    async returnToLive(timelineKey: TimelineKey) {
+      await invokeAccount("return_timeline_to_live", { timelineKey });
+    },
     async paginateBackwards(timelineKey: TimelineKey) {
       if ("Room" in timelineKey.kind) {
         await invokeAccount("paginate_timeline_backwards", {
@@ -168,7 +171,8 @@ export function createTauriTimelineTransport(accountTabId?: string): TimelineTra
       visibleGapIds: TimelineGapId[],
       atBottom: boolean,
       bottomArrival: TimelineBottomArrival,
-      threadRootEventId: string | null
+      threadRootEventId: string | null,
+      displayWindowRevision?: number
     ) {
       await invokeAccount("observe_timeline_viewport", {
         roomId,
@@ -177,7 +181,8 @@ export function createTauriTimelineTransport(accountTabId?: string): TimelineTra
         visibleGapIds,
         atBottom,
         bottomArrival,
-        threadRootEventId
+        threadRootEventId,
+        displayWindowRevision
       });
     },
     async updateScrollAnchor(roomId: string, anchor: TimelineScrollAnchor) {

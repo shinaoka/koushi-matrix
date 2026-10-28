@@ -136,6 +136,8 @@ mod scenario_thread_late_joiner;
 mod scenario_timeline;
 #[path = "headless_core_qa/scenarios/user_verification.rs"]
 mod scenario_user_verification;
+#[path = "headless_core_qa/viewport_observation.rs"]
+mod viewport_observation;
 
 use orchestrator::run_async;
 use registry::{

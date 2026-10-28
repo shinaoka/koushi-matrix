@@ -107,10 +107,12 @@ if (notarizing) {
     console.error(`desktop-build-dmg: the notarized app has no stapled ticket: ${app}`);
   });
 }
-const launcher = join(bundleDir, "macos", "Koushi.app", "Contents", "MacOS", "koushi-mcp");
-if (!existsSync(launcher)) {
-  console.error(`desktop-build-dmg: the koushi-mcp launcher is missing from the app bundle: ${launcher}`);
-  process.exit(1);
+for (const binary of ["koushi-mcp", "koushi"]) {
+  const launcher = join(bundleDir, "macos", "Koushi.app", "Contents", "MacOS", binary);
+  if (!existsSync(launcher)) {
+    console.error(`desktop-build-dmg: the ${binary} executable is missing from the app bundle: ${launcher}`);
+    process.exit(1);
+  }
 }
 run("codesign", ["--verify", "--deep", "--strict", app], repoRoot);
 

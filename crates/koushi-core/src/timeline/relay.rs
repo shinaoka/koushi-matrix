@@ -1164,6 +1164,7 @@ impl TimelineActor {
             &self.event_tx,
             &self.thread_root_projection_service,
             self.thread_root_order,
+            &self.viewport_observation,
             &self.timeline_actor_generations,
             &self.key,
             self.actor_generation,
@@ -1492,6 +1493,7 @@ pub(super) fn commit_authoritative_recovery_window<F>(
     event_tx: &broadcast::Sender<CoreEvent>,
     thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
     thread_root_order: koushi_state::TimelineThreadRootOrder,
+    viewport: &TimelineViewportObservation,
     timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
     key: &TimelineKey,
     actor_generation: u64,
@@ -1510,20 +1512,27 @@ where
             item,
         );
     }
-    let mut candidate_display = DisplayProjectionState::from_canonical_window(
-        &authoritative_items,
-        0..authoritative_items.len(),
+    let mut candidate_display = if matches!(key.kind, TimelineKind::Room { .. }) {
+        display_projection.clone()
+    } else {
+        DisplayProjectionState::from_canonical_window(
+            &authoritative_items,
+            0..authoritative_items.len(),
+        )
+    };
+    let context = DisplayProjectionContext::for_timeline(&key.kind, viewport).with_thread_roots(
+        thread_root_order,
+        thread_root_projection_service
+            .lock()
+            .expect("thread-root projection service lock must not be poisoned")
+            .display_data_for_room(key.room_id()),
     );
-    let context =
-        DisplayProjectionContext::for_timeline(&key.kind, &TimelineViewportObservation::default())
-            .with_thread_roots(
-                thread_root_order,
-                thread_root_projection_service
-                    .lock()
-                    .expect("thread-root projection service lock must not be poisoned")
-                    .display_data_for_room(key.room_id()),
-            );
-    candidate_display.reproject(&context);
+    if matches!(key.kind, TimelineKind::Room { .. }) {
+        candidate_display.reset_bounded(&authoritative_items, &context);
+        candidate_display.window_revision = display_projection.window_revision.saturating_add(1);
+    } else {
+        candidate_display.reproject(&context);
+    }
     let emitted_items = candidate_display.display_items().to_vec();
     let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
         return false;
@@ -1735,3 +1744,7 @@ mod ignored_reset_tests;
 mod reply_quote_actor_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "relay/recovery_window_tests.rs"]
+mod recovery_window_tests;

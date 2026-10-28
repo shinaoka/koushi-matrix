@@ -1838,6 +1838,19 @@ feasibility gate selects an engine and this section is amended before production
 replacement. The proposal does not establish a fixed recurrence or a supported
 large-room capacity.
 
+Room canonical display membership is a
+finite window, not a full-prefix expansion on leaving the live edge. Cached
+backward demand and near-forward-edge demand move it in bounded pages, retaining
+the visible span. Core provides revision, first/last event identities and whether
+the represented window reaches the canonical live end. Renderer observations echo
+the revision only after those boundaries are applied. Stale observations cannot
+move the window or advance read state. A historical physical bottom never enables
+live follow. Both movement directions use the existing pre-layout projection
+stabilization transaction. Reset/removal/replay invalidate changed boundaries.
+This bounds additional canonical display membership, not canonical SDK retention,
+payload bytes, media memory or process RSS. See
+[implementation and verification record](../experiments/2026-10-28-bounded-timeline.md).
+
 Timeline scrollback uses a two-layer contract: core owns Matrix ordering,
 subscriptions, diffs, and pagination state; React owns render lists, viewport
 measurement, and DOM anchoring.
@@ -1997,6 +2010,65 @@ metrics. Core viewport wakes use source `core.timeline_gap_repair`, stage
 candidate-changed boolean, and scheduler phase. Neither source may include room,
 event, transaction, or user identifiers, message content, or raw SDK errors.
 Repeated Core evaluations with the same coarse signature are deduplicated.
+
+## Local CLI
+
+The `koushi` executable is a read-only adapter in `crates/koushi-mcp`, bundled
+alongside `koushi-mcp`. It connects to the same running, enabled local bridge
+through `ipc::connect` / `Client::call("tools/call", ...)`, uses the shared
+bridge protocol and tool argument definitions, and adds no Matrix session,
+store owner, product policy, or independent login/sync engine. Existing bridge
+admission, membership, consent, session fencing, and GUI-independence contracts
+apply unchanged. No new Matrix functionality is introduced; Element's GUI
+flows remain the existing Core behavior behind this adapter.
+
+- Commands are a closed read-only set: `accounts`, `rooms`, `messages`,
+  `message`, and `search`. Each account operation requires `--account`, with
+  explicit room/event arguments where applicable. No raw tool execution, write
+  command, credential input, client-name override, or implicit GUI target exists.
+- The logical client name is `koushi-cli`. Grants are the host's existing
+  account/capability grants and remain revocable in App Settings → AI assistants.
+  Names are self-declared: this label is not process authentication or isolation
+  from other processes of the same OS user. Account enumeration retains the
+  bridge's existing pre-consent account-ID disclosure. No room allowlist is
+  promised.
+- Missing permission follows the existing bounded in-app approval wait. Piped
+  input does not imply consent; a script needs an existing grant or a user to
+  answer in Koushi. No CLI grant preflight or auto-approval is added. A total
+  command deadline includes stdin, connection, consent, operation, and result
+  delivery time;
+  expiry and Ctrl-C close the connection. An operation already admitted at the
+  host retains its existing revocation/settlement semantics.
+- Search requires `--query-stdin` and non-terminal stdin, bounded to 16 KiB.
+  Queries never enter argv, environment, diagnostics, or automatic history.
+  Help/examples instruct callers to use a private input source, rather than a
+  shell literal containing confidential text. CLI options and error output
+  never echo rejected values.
+- Deliberately requested authorized stdout is a confidential product result,
+  not a diagnostic log. It may carry account/room/message/search DTOs, never
+  credentials or cryptographic material. There is no automatic result storage.
+  The default is indented JSON for people; `--json` emits one compact JSON
+  object. Both carry `schema_version: 1`, `tool`, optional `account_id`, and
+  `result`; the result retains bridge fields/provenance/cursors. JSON escaping
+  also neutralizes terminal and bidirectional format controls while preserving
+  values when parsed. Help warns that scrollback, redirection, CI, and downstream
+  consumers can retain plaintext.
+- Failures emit only a closed code to stderr and no result to stdout; they
+  never print remote detail, input values, or raw I/O errors. Exit statuses are
+  documented in user help. Broken stdout pipes terminate cleanly. Stdin, IPC
+  frames, and result output are bounded; pagination is explicit, with no loop
+  that downloads all history. The adapter never retries a write.
+- Before presenting a token, the shared endpoint reader bounds and validates the
+  endpoint file, schema and local-only transport. Unix files/parent directories
+  must be private and owned by the effective user; sockets and peer credentials
+  must belong to that user. Windows host directories, token files, and named
+  pipes use protected DACLs granting only owner, SYSTEM and administrators;
+  the reader rejects broad/null endpoint DACLs and authenticates the connected
+  pipe owner/DACL before presenting the token; named pipes reject remote
+  clients. Frame bounds apply before allocation on both IPC peers.
+- Release scripts stage both executables for the package target and retain
+  existing signing/packaging behavior. Plain Cargo builds require no staged
+  sidecars. Installation does not edit shell startup files or PATH.
 
 ## External MCP Bridge (local IPC)
 

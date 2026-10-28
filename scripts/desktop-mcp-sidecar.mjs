@@ -1,4 +1,4 @@
-// Bundles the `koushi-mcp` launcher with the desktop app (#1536).
+// Bundles the `koushi-mcp` launcher and read-only `koushi` CLI with the desktop app (#1536).
 //
 // Tauri copies `bundle.externalBin` entries during the desktop crate's
 // build script, and fails when the staged file is missing. The entry is
@@ -11,11 +11,13 @@ import { copyFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /** Tauri resolves this to `binaries/koushi-mcp-<target-triple>[.exe]`. */
-export const MCP_SIDECAR_CONFIG = { bundle: { externalBin: ["binaries/koushi-mcp"] } };
+export const MCP_SIDECAR_CONFIG = { bundle: { externalBin: ["binaries/koushi-mcp", "binaries/koushi"] } };
 
-export function stagedSidecarPath(repoRoot, target) {
+export const BRIDGE_BINARIES = ["koushi-mcp", "koushi"];
+
+export function stagedSidecarPath(repoRoot, target, binary = "koushi-mcp") {
   const suffix = target.includes("windows") ? ".exe" : "";
-  return join(repoRoot, "apps", "desktop", "src-tauri", "binaries", `koushi-mcp-${target}${suffix}`);
+  return join(repoRoot, "apps", "desktop", "src-tauri", "binaries", `${binary}-${target}${suffix}`);
 }
 
 /** The Rust host triple, used when a build script passes no `--target`. */
@@ -35,26 +37,32 @@ export function hostTarget() {
 export function stageMcpSidecar({ repoRoot, target, env = process.env, shell = false }) {
   const result = spawnSync(
     "cargo",
-    ["build", "--release", "--locked", "-p", "koushi-mcp", "--bin", "koushi-mcp", "--target", target],
+    ["build", "--release", "--locked", "-p", "koushi-mcp", "--bins", "--target", target],
     { cwd: repoRoot, stdio: "inherit", env, shell }
   );
   if (result.error || result.status !== 0) {
     throw new Error(`building koushi-mcp for ${target} failed`);
   }
   const suffix = target.includes("windows") ? ".exe" : "";
-  const built = join(repoRoot, "target", target, "release", `koushi-mcp${suffix}`);
+  for (const binary of BRIDGE_BINARIES) {
+    const built = join(repoRoot, "target", target, "release", `${binary}${suffix}`);
+    const staged = stagedSidecarPath(repoRoot, target, binary);
+    mkdirSync(join(staged, ".."), { recursive: true });
+    copyFileSync(built, staged);
+  }
   const staged = stagedSidecarPath(repoRoot, target);
-  mkdirSync(join(staged, ".."), { recursive: true });
-  copyFileSync(built, staged);
   return staged;
 }
 
 /** Fails unless the staged launcher exists and is non-empty (bundle-only runs). */
 export function requireStagedSidecar(repoRoot, target) {
-  const staged = stagedSidecarPath(repoRoot, target);
-  if (!existsSync(staged) || statSync(staged).size === 0) {
-    throw new Error(`the koushi-mcp launcher is not staged at ${staged}; run the build stage first`);
+  for (const binary of BRIDGE_BINARIES) {
+    const staged = stagedSidecarPath(repoRoot, target, binary);
+    if (!existsSync(staged) || statSync(staged).size === 0) {
+      throw new Error(`the ${binary} executable is not staged at ${staged}; run the build stage first`);
+    }
   }
+  const staged = stagedSidecarPath(repoRoot, target);
   return staged;
 }
 

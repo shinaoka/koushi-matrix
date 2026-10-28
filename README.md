@@ -128,3 +128,5 @@ MIT OR Apache-2.0, at your option ([LICENSE-MIT](LICENSE-MIT),
 contribution intentionally submitted for inclusion, as defined in the
 Apache-2.0 license, is dual licensed as above without additional terms.
 Third-party attributions are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Terminal users can use the bundled read-only `koushi` CLI; see [Command-line access](docs/help/command-line.md).

@@ -50,6 +50,7 @@ fn observe_timeline_viewport_command_routes_viewport_facts_only() {
         false,
         TimelineBottomArrival::User,
         None,
+        None,
     );
     let debug = format!("{command:?}");
     assert!(!debug.contains("!room:example.org"), "{debug}");
@@ -100,6 +101,7 @@ fn observe_timeline_viewport_routes_thread_identity() {
         true,
         TimelineBottomArrival::User,
         Some("$root".to_owned()),
+        None,
     );
     let CoreCommand::Timeline(TimelineCommand::ObserveViewport { key, .. }) = command else {
         panic!("expected observe viewport command");
@@ -131,6 +133,7 @@ fn observe_timeline_viewport_parses_full_range_topology_revision() {
         visible_gap_ids,
         false,
         TimelineBottomArrival::User,
+        None,
         None,
     );
 

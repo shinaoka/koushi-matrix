@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::endpoint;
 use crate::wire::{
@@ -39,16 +39,47 @@ pub struct Client {
 async fn open(endpoint_path: &EndpointFile) -> Result<Stream, WireError> {
     #[cfg(unix)]
     {
-        tokio::net::UnixStream::connect(&endpoint_path.endpoint)
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        let unavailable = || WireError::new_without_detail(ErrorCode::KoushiUnavailable);
+        let metadata =
+            std::fs::symlink_metadata(&endpoint_path.endpoint).map_err(|_| unavailable())?;
+        // The token must never be sent to another OS user or a non-socket.
+        // SAFETY: geteuid has no preconditions and returns this process's UID.
+        let uid = unsafe { libc::geteuid() };
+        if !metadata.file_type().is_socket()
+            || metadata.uid() != uid
+            || metadata.mode() & 0o022 != 0
+        {
+            return Err(unavailable());
+        }
+        let stream = tokio::net::UnixStream::connect(&endpoint_path.endpoint)
             .await
-            .map_err(|_| WireError::new_without_detail(ErrorCode::KoushiUnavailable))
+            .map_err(|_| unavailable())?;
+        if stream.peer_cred().map_err(|_| unavailable())?.uid() != uid {
+            return Err(unavailable());
+        }
+        Ok(stream)
     }
     #[cfg(windows)]
     {
         use tokio::net::windows::named_pipe::ClientOptions;
-        ClientOptions::new()
-            .open(&endpoint_path.endpoint)
-            .map_err(|_| WireError::new_without_detail(ErrorCode::KoushiUnavailable))
+        let stream = loop {
+            match ClientOptions::new().open(&endpoint_path.endpoint) {
+                Ok(stream) => break stream,
+                // A connected instance can be busy while the host creates
+                // the next one. The outer CONNECT_TIMEOUT bounds this wait.
+                Err(error)
+                    if error.raw_os_error()
+                        == Some(windows_sys::Win32::Foundation::ERROR_PIPE_BUSY as i32) =>
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(_) => return Err(WireError::new_without_detail(ErrorCode::KoushiUnavailable)),
+            }
+        };
+        crate::windows_security::validate_pipe(&stream)
+            .map_err(|_| WireError::new_without_detail(ErrorCode::Unauthorized))?;
+        Ok(stream)
     }
 }
 
@@ -108,16 +139,12 @@ pub async fn connect(path: &Path, client: ClientInfo) -> Result<Client, WireErro
 
 impl Client {
     async fn read_message(&mut self) -> Result<ServerMessage, WireError> {
-        let mut line = String::new();
-        let read = tokio::time::timeout(CALL_TIMEOUT, self.reader.read_line(&mut line))
+        let line = tokio::time::timeout(CALL_TIMEOUT, read_frame(&mut self.reader))
             .await
             .map_err(|_| WireError::new_without_detail(ErrorCode::KoushiUnavailable))?
             .map_err(|_| WireError::new_without_detail(ErrorCode::KoushiUnavailable))?;
-        if read == 0 {
+        if line.is_empty() {
             return Err(WireError::new_without_detail(ErrorCode::KoushiUnavailable));
-        }
-        if line.len() > MAX_FRAME_BYTES {
-            return Err(WireError::new_without_detail(ErrorCode::Internal));
         }
         decode_line(&line).map_err(|_| WireError::new_without_detail(ErrorCode::Internal))
     }
@@ -136,6 +163,9 @@ impl Client {
             params,
         })
         .map_err(|_| WireError::new_without_detail(ErrorCode::Internal))?;
+        if line.len() > MAX_FRAME_BYTES {
+            return Err(WireError::new_without_detail(ErrorCode::Unsupported));
+        }
         self.writer
             .write_all(line.as_bytes())
             .await
@@ -169,4 +199,22 @@ impl Client {
             }
         }
     }
+}
+
+/// Read one frame with the limit applied before allocation, even without LF.
+/// Reused by both local bridge peers; a rejected stream must be closed.
+pub async fn read_frame<R: AsyncBufRead + Unpin>(reader: &mut R) -> std::io::Result<String> {
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_FRAME_BYTES + 1) as u64)
+        .read_until(b'\n', &mut bytes)
+        .await?;
+    if bytes.len() > MAX_FRAME_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "frame too large",
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid frame"))
 }

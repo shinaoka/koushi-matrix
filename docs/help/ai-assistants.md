@@ -452,3 +452,5 @@ An empty or exhausted feed does not establish that no messages occurred.
 
 Connected assistants' permission tables label accounts by their complete Matrix
 IDs, including homeservers, so matching display names remain distinguishable.
+
+For terminal or script access without an MCP client, see [Command-line access](command-line.md).

@@ -15,7 +15,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::executor;
 use koushi_protocol::event::{
     CoreEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineResyncReason,
-    TimelineSendState,
+    TimelineSendState, TimelineViewportObservation,
 };
 
 use koushi_protocol::ids::{TimelineBatchId, TimelineGeneration};
@@ -330,6 +330,7 @@ async fn relay_overflow_recovery_subscribes_once_emits_snapshot_then_next_live_u
         &event_tx,
         &projection_service,
         koushi_state::TimelineThreadRootOrder::LatestReply,
+        &TimelineViewportObservation::default(),
         &actor_generations,
         &key,
         actor_generation,
@@ -490,6 +491,7 @@ async fn authoritative_resync_projects_event_only_and_emits_ordered_recovery_eve
         &event_tx,
         &projection_service,
         koushi_state::TimelineThreadRootOrder::LatestReply,
+        &TimelineViewportObservation::default(),
         &actor_generations,
         &key,
         actor_generation,
@@ -555,6 +557,7 @@ async fn stale_generation_recovery_does_not_commit_candidate_or_publish() {
         &event_tx,
         &projection_service,
         koushi_state::TimelineThreadRootOrder::LatestReply,
+        &TimelineViewportObservation::default(),
         &actor_generations,
         &key,
         stale_generation,

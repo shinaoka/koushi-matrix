@@ -1,5 +1,4 @@
 import { expect, test, type Page } from "@playwright/test";
-import path from "node:path";
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -27,7 +26,7 @@ async function setup(page: Page, count: number) {
   await page.goto("/harness.html?variableHeights=true");
   const view = page.getByTestId("timeline-view");
   await expect(view).toBeVisible();
-  await page.addStyleTag({ path: path.resolve(import.meta.dirname, "../src/styles.css") });
+  await page.addStyleTag({ url: "/src/styles.css" });
   await page.evaluate(() => document.fonts.ready.then(() => undefined));
   await page.evaluate(({ key, items }) => {
     window.__harness.pushCoreEvent({ kind: "Timeline", event: {
@@ -182,4 +181,37 @@ test("input during a deferred prepend and native resize preserves the original v
     const actual = await offset(page, before.id);
     return actual === null ? Infinity : Math.abs(actual - before.offset - 4);
   }).toBeLessThanOrEqual(1);
+});
+
+test("two large history batches crossing virtualization preserve the original reading position", async ({ page }) => {
+  const view = await setup(page, 20);
+  await view.evaluate(node => {
+    node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -2 }));
+    node.scrollTop = 600;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  const before = await anchor(page);
+  await page.evaluate(({ key, items }) => {
+    window.__harness.pushCoreEvent({ kind: "Timeline", event: {
+      ItemsUpdated: { key, generation: 1, batch_id: 1, diffs: items.map(item => ({ PushFront: { item } })) }
+    } } as Parameters<typeof window.__harness.pushCoreEvent>[0]);
+  }, { key, items: Array.from({ length: 55 }, (_, i) => item(`$first-page-${i}`)) });
+  await expect(view).toHaveAttribute("data-total-items", "75");
+  await expect.poll(async () => {
+    const actual = await offset(page, before.id);
+    return actual === null ? Infinity : Math.abs(actual - before.offset);
+  }).toBeLessThanOrEqual(1);
+  await page.evaluate(({ key, items, changed }) => {
+    window.__harness.pushCoreEvent({ kind: "Timeline", event: {
+      ItemsUpdated: { key, generation: 1, batch_id: 2, diffs: [
+        ...items.map(item => ({ PushFront: { item } })),
+        { Set: { index: 85, item: changed } }
+      ] }
+    } } as Parameters<typeof window.__harness.pushCoreEvent>[0]);
+  }, { key, items: Array.from({ length: 83 }, (_, i) => item(`$second-page-${i}`)), changed: { ...item("$first-page-52"), body: "Synthetic edited history row" } });
+  await expect(view).toHaveAttribute("data-total-items", "158");
+  await expect.poll(async () => {
+    const actual = await offset(page, before.id);
+    return actual === null ? Infinity : Math.abs(actual - before.offset);
+  }, { message: "the same message must stay visible after virtualization starts" }).toBeLessThanOrEqual(1);
 });

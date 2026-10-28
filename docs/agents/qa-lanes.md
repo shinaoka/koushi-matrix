@@ -494,3 +494,25 @@ verifier rejection exits must not become the overall process exit. Private
 signer/build output and disposable
 keys are deleted in `finally`; failure output contains only the phase.
 See the [desktop release runbook](../releases/desktop-release.md) for dispatch.
+
+## Local CLI
+
+The deterministic CLI lane starts a disposable local Tuwunel, signs a fresh
+synthetic account into the production headless MCP host, seeds an encrypted
+room through Core, and runs the shipped `koushi` binary. It requires no model
+or API key. Generated credentials enter the QA host through a private FIFO,
+never argv or environment values. Process payloads remain in memory; only fixed success/failure tokens
+are printed, and all processes and temporary fixtures are cleaned up on exit.
+
+```bash
+KACHE_EXPLAIN_MISS=1 cargo build -p koushi-qa --features qa-bin --bin headless-core-qa --locked
+KACHE_EXPLAIN_MISS=1 cargo build -p koushi-mcp --bin koushi --locked
+node scripts/cli-local-qa.mjs
+```
+
+With CI-profile binaries use `node scripts/cli-local-qa.mjs --ci` and set
+`CARGO_TARGET_DIR` when the target root differs. Required tokens:
+`cli_accounts=ok`, `cli_encrypted_read=ok`, `cli_encrypted_search=ok`.
+The PR Tuwunel job enforces this lane. Host fixtures enable
+`KOUSHI_QA_CLI_FIXTURE=1` only in the existing debug/test-gated QA host mode;
+this is not a product credential injection or executable option.
