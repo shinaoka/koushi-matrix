@@ -10,6 +10,11 @@ use koushi_mcp::wire::{
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 fn write_endpoint(path: &Path, socket: &str, token: &str) {
+    std::fs::set_permissions(
+        path.parent().expect("parent"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("private directory");
     let payload = serde_json::json!({
         "schema": 1,
         "endpoint": socket,

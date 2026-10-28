@@ -63,10 +63,10 @@ describe("desktop release scripts", () => {
     ["scripts/desktop-build-windows.mjs", []],
     ["scripts/desktop-build-windows.mjs", ["--build-only"]],
     ["scripts/desktop-build-windows.mjs", ["--bundle-only", "--signed-input"]]
-  ])("%s %j bundles the koushi-mcp launcher (#1536)", (script, extra) => {
+  ])("%s %j bundles the MCP launcher and CLI (#1651)", (script, extra) => {
     const output = runScript(script, ["--print-command", ...extra]);
     const config = JSON.parse(output.match(/--config (\{.+\})/)?.[1] ?? "null");
-    expect(config.bundle.externalBin).toEqual(["binaries/koushi-mcp"]);
+    expect(config.bundle.externalBin).toEqual(["binaries/koushi-mcp", "binaries/koushi"]);
   });
 
   test("the launcher is never listed in tauri.conf.json, so plain cargo builds need no staged file", () => {

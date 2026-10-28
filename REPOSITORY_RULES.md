@@ -218,6 +218,11 @@ to upstream or revert.
   never entered input echoed back. Decrypted bodies and attachment filenames
   cross to the webview only as current visible UI state, never as logs,
   diagnostics, fixtures, screenshots, or secondary first-party stores.
+- Authorized CLI stdout is a deliberate product output surface: the read-only
+  `koushi` adapter may return the requested account, room, message, and search
+  results there. This exception never covers credentials/keys, stderr, logs,
+  crash reports, QA artifacts, or automatic plaintext persistence. See overview
+  "Local CLI" for input, output, and consent boundaries.
 - Real account private data MUST NOT appear in docs, tests, mocks, logs,
   screenshots, or QA artifacts: real room names, message bodies, attachment
   names, Matrix IDs, email addresses, institutions, workplaces, meeting titles,

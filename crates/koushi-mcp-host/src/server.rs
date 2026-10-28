@@ -293,15 +293,14 @@ async fn serve_connection(
     }
 
     loop {
-        let mut line = String::new();
-        let read = tokio::select! {
+        let line = tokio::select! {
             _ = shutdown.changed() => return,
-            read = reader.read_line(&mut line) => match read {
-                Ok(read) => read,
+            read = koushi_mcp::ipc::read_frame(&mut reader) => match read {
+                Ok(line) => line,
                 Err(_) => return,
             },
         };
-        if read == 0 {
+        if line.is_empty() {
             return;
         }
         if line.len() > MAX_FRAME_BYTES {
@@ -388,11 +387,10 @@ async fn read_hello<R: tokio::io::AsyncRead + Unpin>(
             "connection token rejected",
         ))
     };
-    let mut line = String::new();
-    let read = tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line))
+    let line = tokio::time::timeout(Duration::from_secs(5), koushi_mcp::ipc::read_frame(reader))
         .await
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "handshake timeout"))??;
-    if read == 0 || line.len() > MAX_FRAME_BYTES {
+    if line.is_empty() {
         return Ok(unauthorized());
     }
     let Ok(ClientMessage::Hello {
@@ -455,10 +453,21 @@ impl NamedPipeListener {
     /// not claim `first_pipe_instance`, or Windows rejects the bind.
     fn bind(name: &str, first: bool) -> Result<Self, String> {
         use tokio::net::windows::named_pipe::ServerOptions;
-        let server = ServerOptions::new()
-            .first_pipe_instance(first)
-            .create(name)
-            .map_err(|error| format!("mcp pipe: {error}"))?;
+        let security = koushi_mcp::windows_security::PrivateSecurity::new()
+            .map_err(|_| "mcp pipe ACL".to_owned())?;
+        let mut attributes = security.attributes();
+        // SAFETY: descriptor and attributes stay alive through synchronous
+        // CreateNamedPipe; Windows copies the descriptor before returning.
+        let server = unsafe {
+            ServerOptions::new()
+                .first_pipe_instance(first)
+                .reject_remote_clients(true)
+                .create_with_security_attributes_raw(
+                    name,
+                    std::ptr::from_mut(&mut attributes).cast(),
+                )
+        }
+        .map_err(|_| "mcp pipe".to_owned())?;
         Ok(Self {
             name: name.to_owned(),
             server,
