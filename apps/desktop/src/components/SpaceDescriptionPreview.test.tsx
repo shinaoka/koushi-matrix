@@ -79,6 +79,19 @@ describe("SpaceDescriptionPreview", () => {
     expect(text?.classList.contains("is-collapsed")).toBe(true);
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
   });
+
+  test("a changed description starts collapsed and drops a toggle it no longer needs", () => {
+    const view = render(<SpaceDescriptionPreview text={LONG} />);
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    view.rerender(<SpaceDescriptionPreview text={SHORT} />);
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(descriptionText()?.classList.contains("is-collapsed")).toBe(true);
+
+    view.rerender(<SpaceDescriptionPreview text={LONG} />);
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    view.rerender(<SpaceDescriptionPreview text={`${LONG}\nOne more line.`} />);
+    expect(screen.getByRole("button", { name: "Show more" }).getAttribute("aria-expanded")).toBe("false");
+  });
 });
 
 function sidebarProps() {
@@ -238,5 +251,7 @@ describe("not-joined sub-Space rows in Space info", () => {
     expect(descriptionText(subRow)?.textContent).toBe("Sub-Space guide\nSecond line");
     const plainRow = screen.getByText("Plain room").closest(".settings-detail-row") as HTMLElement;
     expect(descriptionText(plainRow)).toBeNull();
+    // A row's description is part of that row, not another landmark.
+    expect(screen.queryByRole("region", { name: "Description" })).toBeNull();
   });
 });

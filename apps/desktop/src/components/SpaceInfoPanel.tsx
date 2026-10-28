@@ -331,7 +331,11 @@ export function SpaceInfoPanel({
               <span dir="auto">{spaceChildLabel(child)}</span>
               {/* #1661: a sub-Space introduces itself with its description. */}
               {child.is_space ? (
-                <SpaceDescriptionPreview className="space-child-description" text={child.topic} />
+                <SpaceDescriptionPreview
+                  className="space-child-description"
+                  landmark={false}
+                  text={child.topic}
+                />
               ) : null}
               <small className="space-child-status">
                 <span className="room-membership-badge">

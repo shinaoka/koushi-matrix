@@ -7,16 +7,24 @@ import { t } from "../i18n/messages";
  * `text` is the Rust-projected topic (`SpaceSummary.topic` or
  * `SpaceChildSummary.topic`); editing stays in Space info. Long text is clamped
  * to a few lines with a toggle; whether it overflows and whether it is expanded
- * are presentation state only. Callers key the component by the Space so a
- * newly selected Space starts collapsed.
+ * are presentation state only. A changed description starts collapsed, and
+ * callers key the component by the Space so a newly selected Space does too.
+ * `landmark` is off where the description belongs to a list row rather than
+ * standing on its own.
  */
-export function SpaceDescriptionPreview({ text, className }: {
+export function SpaceDescriptionPreview({ text, className, landmark = true }: {
   text: string | null | undefined;
   className?: string;
+  landmark?: boolean;
 }) {
   const textId = useId();
   const textRef = useRef<HTMLParagraphElement>(null);
   const [expanded, setExpanded] = useState(false);
+  const [renderedText, setRenderedText] = useState(text);
+  if (renderedText !== text) {
+    setRenderedText(text);
+    setExpanded(false);
+  }
   const [overflowing, setOverflowing] = useState(false);
   const hasText = Boolean(text?.trim());
 
@@ -34,10 +42,11 @@ export function SpaceDescriptionPreview({ text, className }: {
   }, [text, expanded]);
 
   if (!hasText) return null;
+  const Container = landmark ? "section" : "div";
   return (
-    <section
+    <Container
       className={["space-description-preview", className].filter(Boolean).join(" ")}
-      aria-label={t("space.description")}
+      aria-label={landmark ? t("space.description") : undefined}
     >
       <p
         ref={textRef}
@@ -58,6 +67,6 @@ export function SpaceDescriptionPreview({ text, className }: {
           {t(expanded ? "space.descriptionShowLess" : "space.descriptionShowMore")}
         </button>
       ) : null}
-    </section>
+    </Container>
   );
 }
