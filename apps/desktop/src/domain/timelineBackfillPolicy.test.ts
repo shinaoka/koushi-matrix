@@ -6,8 +6,10 @@ import {
   EXTERNAL_TRANSITION_AUTO_RETRY_DELAYS_MS,
   evaluateTimelineBackfill,
   externalTransitionAutoRetryDelayMs,
+  shouldRequestTimelineForwardFill,
   type TimelineBackfillBlocker,
-  type TimelineBackfillSnapshot
+  type TimelineBackfillSnapshot,
+  type TimelineForwardFillSnapshot
 } from "./timelineBackfillPolicy";
 
 function snapshot(
@@ -288,5 +290,59 @@ describe("clearsExternalTransitionFence (#1473)", () => {
     for (let i = 1; i < delays.length; i += 1) {
       expect(delays[i]).toBeGreaterThan(delays[i - 1]!);
     }
+  });
+});
+
+describe("shouldRequestTimelineForwardFill (#1668)", () => {
+  function forward(
+    overrides: Partial<TimelineForwardFillSnapshot> = {}
+  ): TimelineForwardFillSnapshot {
+    return {
+      initialized: true,
+      awaitingResync: false,
+      paginationState: "Idle",
+      requestInFlight: false,
+      projectionSettled: true,
+      genuineUserScroll: false,
+      clientHeight: 600,
+      scrollHeight: 3_000,
+      scrollTop: 2_400,
+      nearBottomThreshold: 600,
+      ...overrides
+    };
+  }
+
+  test("requests newer history at the loaded bottom and when underfilled", () => {
+    expect(shouldRequestTimelineForwardFill(forward())).toBe(true);
+    expect(shouldRequestTimelineForwardFill(forward({ scrollTop: 1_900 }))).toBe(true);
+    expect(
+      shouldRequestTimelineForwardFill(forward({ scrollHeight: 400, scrollTop: 0 }))
+    ).toBe(true);
+  });
+
+  test("waits while the reader is far above the loaded bottom", () => {
+    expect(shouldRequestTimelineForwardFill(forward({ scrollTop: 1_000 }))).toBe(false);
+  });
+
+  test.each<[string, Partial<TimelineForwardFillSnapshot>]>([
+    ["uninitialized", { initialized: false }],
+    ["awaiting resync", { awaitingResync: true }],
+    ["in flight", { requestInFlight: true }],
+    ["unsettled projection", { projectionSettled: false }],
+    ["paginating", { paginationState: "Paginating" }],
+    ["at the live end", { paginationState: "EndReached" }],
+    ["unmeasured", { clientHeight: 0 }]
+  ])("is blocked when %s", (_label, overrides) => {
+    expect(shouldRequestTimelineForwardFill(forward(overrides))).toBe(false);
+  });
+
+  test("retries a failed page only on a genuine user scroll", () => {
+    const failed: PaginationState = { Failed: { kind: "Sdk" } };
+    expect(shouldRequestTimelineForwardFill(forward({ paginationState: failed }))).toBe(false);
+    expect(
+      shouldRequestTimelineForwardFill(
+        forward({ paginationState: failed, genuineUserScroll: true })
+      )
+    ).toBe(true);
   });
 });

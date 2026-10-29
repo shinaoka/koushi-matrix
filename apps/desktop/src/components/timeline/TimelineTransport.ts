@@ -20,6 +20,8 @@ export interface TimelineTransport {
   returnToLive?(timelineKey: TimelineKey): Promise<void>;
   /** Invoke a backward-pagination command for this timeline key. */
   paginateBackwards(timelineKey: TimelineKey): Promise<void>;
+  /** Request newer history for an anchored (`Focused`) timeline key. */
+  paginateForwards?(timelineKey: TimelineKey): Promise<void>;
   repairTimeline?(roomId: string): Promise<void>;
   /** Send a reaction command for a timeline event. */
   sendReaction(roomId: string, eventId: string, reactionKey: string): Promise<void>;

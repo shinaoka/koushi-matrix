@@ -2541,6 +2541,16 @@ stateDiagram-v2
   room's persisted `room_scroll_anchors` entry so the live timeline pins to the
   live edge rather than a stale pre-jump position. `ReturnMainTimelineToLive`
   clears the anchor for the active room without touching focused-context state.
+- The anchored view reaches newer history only through `Paginate { direction:
+  Forward }` on its `Focused` key (#1668); the bounded Room display window does
+  not apply to it. The renderer requests the next page while the reader is near
+  the loaded bottom, one page in flight, until Rust reports forward
+  `EndReached`; a failed page retries only on a genuine user scroll. Before
+  that end the loaded bottom is not the live edge, so it never takes live-edge
+  scroll intent. At the bottom, the renderer dispatches the existing
+  `CloseFocusedContext` live-edge return once the committed focused tail equals
+  the live latest event. A forward `EndReached` alone is not that proof: the
+  SDK can report it before the final page's diffs are committed.
 - An accepted main-composer send for the active room (`ComposerSubmissionAccepted`,
   its `AtRevision` form, legacy `SendTextSubmitted`, plain or reply, and the
   attachment path's main-target `ComposerDraftAccepted`, which prepared-upload
