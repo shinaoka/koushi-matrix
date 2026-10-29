@@ -1867,7 +1867,7 @@ pub fn run() {
             commands::timeline::ensure_timeline_subscribed,
             commands::timeline::return_timeline_to_live,
             commands::timeline::paginate_timeline_backwards,
-            commands::timeline::paginate_timeline_forwards,
+            commands::timeline::paginate_timeline,
             commands::timeline::paginate_thread_timeline_backwards,
             commands::timeline::send_text,
             commands::timeline::schedule_send,

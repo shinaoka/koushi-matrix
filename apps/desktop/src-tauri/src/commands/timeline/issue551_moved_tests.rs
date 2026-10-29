@@ -159,30 +159,33 @@ fn thread_timeline_backwards_pagination_builder_targets_thread_key() {
 }
 
 #[test]
-fn focused_timeline_forwards_pagination_builder_targets_focused_key() {
+fn focused_timeline_pagination_builder_targets_focused_key_in_both_directions() {
     let account_key = AccountKey("@alice:example.org".to_owned());
     let kind = koushi_protocol::TimelineKind::Focused {
         room_id: "!room:example.org".to_owned(),
         event_id: "$anchor".to_owned(),
     };
 
-    match build_paginate_timeline_forwards_command(
-        fake_request_id(23),
-        account_key.clone(),
-        kind.clone(),
-    ) {
-        CoreCommand::Timeline(TimelineCommand::Paginate {
-            request_id,
-            key,
-            direction,
-            event_count,
-        }) => {
-            assert_eq!(request_id, fake_request_id(23));
-            assert_eq!(key.account_key, account_key);
-            assert_eq!(key.kind, kind);
-            assert_eq!(direction, PaginationDirection::Forward);
-            assert_eq!(event_count, 100);
+    for expected_direction in [PaginationDirection::Forward, PaginationDirection::Backward] {
+        match build_paginate_timeline_command(
+            fake_request_id(23),
+            account_key.clone(),
+            kind.clone(),
+            expected_direction,
+        ) {
+            CoreCommand::Timeline(TimelineCommand::Paginate {
+                request_id,
+                key,
+                direction,
+                event_count,
+            }) => {
+                assert_eq!(request_id, fake_request_id(23));
+                assert_eq!(key.account_key, account_key);
+                assert_eq!(key.kind, kind);
+                assert_eq!(direction, expected_direction);
+                assert_eq!(event_count, 100);
+            }
+            other => panic!("unexpected command: {other:?}"),
         }
-        other => panic!("unexpected command: {other:?}"),
     }
 }

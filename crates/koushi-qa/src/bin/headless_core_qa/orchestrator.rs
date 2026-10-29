@@ -26,7 +26,10 @@ use super::registry::{
     should_run_normal_secondary_participant,
 };
 use super::scenario_account_notifications::run_account_notifications_stage;
-use super::scenario_anchored_history::{paginate_anchored_forward_to_live_end, seed_newer_history};
+use super::scenario_anchored_history::{
+    BACKWARD_ANCHOR_INDEX, paginate_anchored_backward_to, paginate_anchored_forward_to_live_end,
+    seed_newer_history,
+};
 use super::scenario_history_export::run_room_history_export_stage;
 use super::scenario_identity::{
     run_credential_health_stage, run_e2ee_login_store_scenario, run_e2ee_trust_stage,
@@ -939,7 +942,11 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
 
         // #1668: more newer history than one `/context` page, so the anchored
         // view must paginate forward to reach the present.
-        let newest_body = seed_newer_history(&mut conn_a, &key_a).await?;
+        let seeded = seed_newer_history(&mut conn_a, &key_a).await?;
+        let newest_body = seeded
+            .last()
+            .map(|message| message.body.clone())
+            .unwrap_or_default();
 
         // #1592: activating the quote opens the original through Rust-owned
         // focused-context navigation, not a React scroll.
@@ -976,6 +983,46 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
             }))
             .await
             .map_err(|e| format!("close reply quote jump: {e}"))?;
+
+        // #1675: a jump into the seeded history paginates backward until the
+        // first seeded message, which its `/context` page does not hold.
+        let backward_anchor = &seeded[BACKWARD_ANCHOR_INDEX];
+        let backward_jump_id = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::App(AppCommand::NavigateToEvent {
+                request_id: backward_jump_id,
+                room_id: room_id.clone(),
+                event_id: backward_anchor.event_id.clone(),
+                source: EventNavigationSource::ReplyQuote,
+                missing_target_policy: EventNavigationMissingTargetPolicy::Fail,
+            }))
+            .await
+            .map_err(|e| format!("submit backward anchor jump: {e}"))?;
+        wait_for_reply_quote_jump(
+            &mut conn_a,
+            &room_id,
+            &backward_anchor.event_id,
+            "backward anchor jump",
+        )
+        .await?;
+        let backward_key = TimelineKey {
+            account_key: key_a.account_key.clone(),
+            kind: TimelineKind::Focused {
+                room_id: room_id.clone(),
+                event_id: backward_anchor.event_id.clone(),
+            },
+        };
+        let backward_pages =
+            paginate_anchored_backward_to(&mut conn_a, &backward_key, &seeded[0].body).await?;
+        println!("anchored_backward_pages={backward_pages}");
+        println!("anchored_backward_history=ok");
+        let close_backward_id = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::App(AppCommand::CloseFocusedContext {
+                request_id: close_backward_id,
+            }))
+            .await
+            .map_err(|e| format!("close backward anchor jump: {e}"))?;
 
         let pin_id = conn_a.next_request_id();
         conn_a

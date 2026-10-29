@@ -197,7 +197,7 @@ const transport: TimelineTransport = {
         rootEventId: timelineKey.kind.Thread.root_event_id
       });
     }
-    return Promise.resolve();
+    return ipc.invoke("paginate_timeline", { timelineKey, direction: "Backward" });
   },
   sendReaction(roomId, eventId, reactionKey) {
     return ipc.invoke("send_reaction", { roomId, eventId, reactionKey });
@@ -259,7 +259,7 @@ const transport: TimelineTransport = {
     return ipc.invoke("return_timeline_to_live", { timelineKey });
   },
   paginateForwards(timelineKey) {
-    return ipc.invoke("paginate_timeline_forwards", { timelineKey });
+    return ipc.invoke("paginate_timeline", { timelineKey, direction: "Forward" });
   },
   observeViewport(
     roomId,

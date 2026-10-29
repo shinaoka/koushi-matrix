@@ -76,10 +76,12 @@ export function createTauriTimelineTransport(accountTabId?: string): TimelineTra
           roomId: timelineKey.kind.Thread.room_id,
           rootEventId: timelineKey.kind.Thread.root_event_id
         });
+        return;
       }
+      await invokeAccount("paginate_timeline", { timelineKey, direction: "Backward" });
     },
     async paginateForwards(timelineKey: TimelineKey) {
-      await invokeAccount("paginate_timeline_forwards", { timelineKey });
+      await invokeAccount("paginate_timeline", { timelineKey, direction: "Forward" });
     },
     async repairTimeline(roomId: string) {
       await invokeAccount("repair_room_timeline", { roomId });

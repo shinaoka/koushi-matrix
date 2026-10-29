@@ -2,6 +2,9 @@
 //! `/context` page ends before the present. Forward pagination of that key is
 //! the only way to reach newer history, so it must extend the focused
 //! projection until the SDK reports the live end.
+//!
+//! #1675: the same key reaches older history around the jump target through
+//! backward pagination.
 
 use koushi_protocol::CoreEvent;
 use koushi_protocol::event::{PaginationState, TimelineDiff, TimelineEvent};
@@ -16,15 +19,24 @@ use super::{
 /// More newer events than one SDK `/context` page (20 events around the
 /// target) can hold, so the focused timeline cannot start at the live end.
 const NEWER_HISTORY_MESSAGES: usize = 30;
-const FORWARD_PAGE_EVENTS: u16 = 20;
-const MAX_FORWARD_PAGES: usize = 10;
+const PAGE_EVENTS: u16 = 20;
+const MAX_PAGES: usize = 10;
+/// The backward jump target: its `/context` page holds about ten earlier
+/// events, so the first seeded message is out of reach without paginating.
+pub(super) const BACKWARD_ANCHOR_INDEX: usize = 25;
 
-/// Sends newer history after the jump target and returns the newest body.
+/// One seeded message: its body and its event id.
+pub(super) struct SeededMessage {
+    pub(super) body: String,
+    pub(super) event_id: String,
+}
+
+/// Sends newer history after the jump target, oldest first.
 pub(super) async fn seed_newer_history(
     conn: &mut CoreConnection,
     key: &TimelineKey,
-) -> Result<String, String> {
-    let mut newest = String::new();
+) -> Result<Vec<SeededMessage>, String> {
+    let mut seeded = Vec::with_capacity(NEWER_HISTORY_MESSAGES);
     for index in 0..NEWER_HISTORY_MESSAGES {
         let body = format!("Anchored forward QA message {index}");
         let request_id = conn.next_request_id();
@@ -36,10 +48,11 @@ pub(super) async fn seed_newer_history(
         }))
         .await
         .map_err(|e| format!("submit anchored forward message {index}: {e}"))?;
-        wait_for_send_completed(conn, request_id, key, "anchored forward message").await?;
-        newest = body;
+        let (_, event_id) =
+            wait_for_send_completed(conn, request_id, key, "anchored forward message").await?;
+        seeded.push(SeededMessage { body, event_id });
     }
-    Ok(newest)
+    Ok(seeded)
 }
 
 fn diff_contains_body(diff: &TimelineDiff, body: &str) -> bool {
@@ -54,6 +67,34 @@ fn diff_contains_body(diff: &TimelineDiff, body: &str) -> bool {
     }
 }
 
+/// Whether a diff adds a row carrying `body`. A backward page proves itself
+/// only by adding the row, never by a reset that could replay the initial
+/// `/context` page.
+fn diff_adds_body(diff: &TimelineDiff, body: &str) -> bool {
+    match diff {
+        TimelineDiff::PushFront { item } | TimelineDiff::Insert { item, .. } => {
+            item.body.as_deref() == Some(body)
+        }
+        _ => false,
+    }
+}
+
+/// Paginates the anchored focused timeline backward until a page adds the
+/// row carrying `oldest_body`, which its `/context` page does not hold.
+pub(super) async fn paginate_anchored_backward_to(
+    conn: &mut CoreConnection,
+    anchored_key: &TimelineKey,
+    oldest_body: &str,
+) -> Result<usize, String> {
+    paginate_anchored(
+        conn,
+        anchored_key,
+        PaginationDirection::Backward,
+        oldest_body,
+    )
+    .await
+}
+
 /// Paginates the anchored focused timeline forward until `EndReached` and
 /// requires the newest message to enter its projection on the way.
 pub(super) async fn paginate_anchored_forward_to_live_end(
@@ -61,40 +102,67 @@ pub(super) async fn paginate_anchored_forward_to_live_end(
     anchored_key: &TimelineKey,
     newest_body: &str,
 ) -> Result<usize, String> {
+    paginate_anchored(
+        conn,
+        anchored_key,
+        PaginationDirection::Forward,
+        newest_body,
+    )
+    .await
+}
+
+/// Forward pages run to `EndReached` and need `body` projected on the way;
+/// backward pages stop once a page adds `body`, or fail at the room start
+/// without it.
+async fn paginate_anchored(
+    conn: &mut CoreConnection,
+    anchored_key: &TimelineKey,
+    direction: PaginationDirection,
+    body: &str,
+) -> Result<usize, String> {
+    let label = match direction {
+        PaginationDirection::Forward => "forward",
+        PaginationDirection::Backward => "backward",
+    };
     if !matches!(anchored_key.kind, TimelineKind::Focused { .. }) {
-        return Err("anchored forward pagination needs a focused key".to_owned());
+        return Err(format!("anchored {label} pagination needs a focused key"));
     }
-    let mut newest_projected = false;
+    let projected = |diff: &TimelineDiff| match direction {
+        PaginationDirection::Forward => diff_contains_body(diff, body),
+        PaginationDirection::Backward => diff_adds_body(diff, body),
+    };
+    let mut body_projected = false;
     let mut skipped_pages = 0;
     let mut released_waits = 0;
-    for page in 1..=MAX_FORWARD_PAGES {
+    for page in 1..=MAX_PAGES {
         let mut paginating = false;
         let request_id = conn.next_request_id();
         conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
             request_id,
             key: anchored_key.clone(),
-            direction: PaginationDirection::Forward,
-            event_count: FORWARD_PAGE_EVENTS,
+            direction,
+            event_count: PAGE_EVENTS,
         }))
         .await
-        .map_err(|e| format!("submit anchored forward page {page}: {e}"))?;
+        .map_err(|e| format!("submit anchored {label} page {page}: {e}"))?;
         let state = tokio::time::timeout(EVENT_TIMEOUT, async {
             loop {
                 match conn.recv_event().await {
                     Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated { key, diffs, .. }))
                         if &key == anchored_key =>
                     {
-                        newest_projected |= diffs
-                            .iter()
-                            .any(|diff| diff_contains_body(diff, newest_body));
+                        body_projected |= diffs.iter().any(projected);
                     }
                     Ok(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
                         request_id: Some(id),
                         key,
-                        direction: PaginationDirection::Forward,
+                        direction: event_direction,
                         state,
                         ..
-                    })) if id == request_id && &key == anchored_key => {
+                    })) if id == request_id
+                        && &key == anchored_key
+                        && event_direction == direction =>
+                    {
                         if state == PaginationState::Paginating {
                             paginating = true;
                         } else {
@@ -105,75 +173,82 @@ pub(super) async fn paginate_anchored_forward_to_live_end(
                         request_id: id,
                         failure,
                     }) if id == request_id => {
-                        return Err(format!("anchored forward page {page} failed: {failure:?}"));
+                        return Err(format!("anchored {label} page {page} failed: {failure:?}"));
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        return Err(format!("anchored forward page {page}: stream: {error:?}"));
+                        return Err(format!("anchored {label} page {page}: stream: {error:?}"));
                     }
                 }
             }
         })
         .await
-        .map_err(|_| format!("anchored forward page {page}: timed out"))??;
+        .map_err(|_| format!("anchored {label} page {page}: timed out"))??;
         match state {
             PaginationState::EndReached => {
                 // The final page's diffs may follow the terminal event.
-                if !newest_projected {
-                    wait_for_newest_projection(conn, anchored_key, newest_body).await?;
+                if !body_projected {
+                    wait_for_projection(conn, anchored_key, &projected, label).await?;
                 }
-                println!("anchored_forward_declined_pages={skipped_pages}");
+                println!("anchored_{label}_declined_pages={skipped_pages}");
+                return Ok(page);
+            }
+            PaginationState::Idle
+                if paginating && direction == PaginationDirection::Backward && body_projected =>
+            {
+                println!("anchored_{label}_declined_pages={skipped_pages}");
                 return Ok(page);
             }
             // An Idle terminal without Paginating is Core declining the page
             // while gap repair owns the timeline; retry after its release.
             PaginationState::Idle if !paginating => {
                 skipped_pages += 1;
-                if wait_for_gap_repair_release(conn, anchored_key).await {
+                if wait_for_gap_repair_release(conn, anchored_key, &projected, &mut body_projected)
+                    .await
+                {
                     released_waits += 1;
                 }
             }
             PaginationState::Idle => {}
-            other => return Err(format!("anchored forward page {page}: {other:?}")),
+            other => return Err(format!("anchored {label} page {page}: {other:?}")),
         }
     }
     Err(format!(
-        "anchored forward pagination did not reach the end in {MAX_FORWARD_PAGES} pages \
-         (skipped={skipped_pages} released={released_waits} newest={newest_projected})"
+        "anchored {label} pagination did not finish in {MAX_PAGES} pages \
+         (skipped={skipped_pages} released={released_waits} projected={body_projected})"
     ))
 }
 
-async fn wait_for_newest_projection(
+async fn wait_for_projection(
     conn: &mut CoreConnection,
     anchored_key: &TimelineKey,
-    newest_body: &str,
+    projected: &impl Fn(&TimelineDiff) -> bool,
+    label: &str,
 ) -> Result<(), String> {
     tokio::time::timeout(EVENT_TIMEOUT, async {
         loop {
             match conn.recv_event().await {
                 Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated { key, diffs, .. }))
-                    if &key == anchored_key
-                        && diffs
-                            .iter()
-                            .any(|diff| diff_contains_body(diff, newest_body)) =>
+                    if &key == anchored_key && diffs.iter().any(projected) =>
                 {
                     return Ok(());
                 }
                 Ok(_) => {}
-                Err(error) => return Err(format!("anchored forward end: stream: {error:?}")),
+                Err(error) => return Err(format!("anchored {label} end: stream: {error:?}")),
             }
         }
     })
     .await
-    .map_err(|_| {
-        "anchored forward pagination reached the end without the newest message".to_owned()
-    })?
+    .map_err(|_| format!("anchored {label} pagination reached the end without its message"))?
 }
 
-/// Returns whether gap repair reported its release before the timeout.
+/// Returns whether gap repair reported its release before the timeout. An
+/// earlier accepted page's diffs can arrive meanwhile; they still count.
 async fn wait_for_gap_repair_release(
     conn: &mut CoreConnection,
     anchored_key: &TimelineKey,
+    projected: &impl Fn(&TimelineDiff) -> bool,
+    body_projected: &mut bool,
 ) -> bool {
     tokio::time::timeout(EVENT_TIMEOUT, async {
         loop {
@@ -182,6 +257,11 @@ async fn wait_for_gap_repair_release(
                     if &key == anchored_key =>
                 {
                     return true;
+                }
+                Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated { key, diffs, .. }))
+                    if &key == anchored_key =>
+                {
+                    *body_projected |= diffs.iter().any(projected);
                 }
                 Ok(_) => {}
                 Err(_) => return false,

@@ -4212,7 +4212,7 @@ mock.setCommandResponse("set_avatar", () =>
 );
 mock.setCommandResponse("paginate_timeline_backwards", () => currentSnapshot);
 mock.setCommandResponse("paginate_thread_timeline_backwards", () => currentSnapshot);
-mock.setCommandResponse("paginate_timeline_forwards", () => currentSnapshot);
+mock.setCommandResponse("paginate_timeline", () => currentSnapshot);
 
 function projectAliasSnapshot(
   snapshot: DesktopSnapshot,

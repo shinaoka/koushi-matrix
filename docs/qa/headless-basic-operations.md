@@ -106,6 +106,7 @@ activity_markread=ok
 reply=ok
 reply_quote=ok
 anchored_forward_live_end=ok
+anchored_backward_history=ok
 pin_event=ok
 pinned_state=ok
 unpin_event=ok
@@ -153,7 +154,9 @@ and routes pin/unpin through Rust-owned room state before any GUI affordance is
 considered. `anchored_forward_live_end=ok` (#1668) proves that the focused
 timeline opened by the reply-quote jump paginates forward through more than one
 `/context` page until the SDK reports its end, with the newest message in its
-projection.
+projection. `anchored_backward_history=ok` (#1675) proves that a jump into that
+history paginates its focused timeline backward until a page adds the first
+seeded message, which the target's `/context` page does not hold.
 
 `directory_query=ok` and `directory_join=ok` are the Phase A public-directory
 proof. The core lane creates a disposable public alias room through a Rust core

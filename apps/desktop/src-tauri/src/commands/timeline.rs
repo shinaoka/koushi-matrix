@@ -96,17 +96,18 @@ pub(super) fn build_paginate_timeline_backwards_command(
     })
 }
 
-/// #1668: an anchored (`Focused`) timeline reaches newer history only through
-/// forward pagination. Core owns the direction rule and rejects other kinds.
-pub(super) fn build_paginate_timeline_forwards_command(
+/// #1668/#1675: an anchored (`Focused`) timeline pages in both directions on
+/// its full key. Core owns the direction rule (forward only on `Focused`).
+pub(super) fn build_paginate_timeline_command(
     request_id: koushi_protocol::RequestId,
     account_key: AccountKey,
     kind: TimelineKind,
+    direction: PaginationDirection,
 ) -> CoreCommand {
     CoreCommand::Timeline(TimelineCommand::Paginate {
         request_id,
         key: TimelineKey { account_key, kind },
-        direction: PaginationDirection::Forward,
+        direction,
         event_count: TIMELINE_PAGE_EVENT_COUNT,
     })
 }
@@ -862,18 +863,23 @@ pub async fn paginate_timeline_backwards(
 }
 
 #[tauri::command]
-pub async fn paginate_timeline_forwards(
+pub async fn paginate_timeline(
     account_tab_id: Option<String>,
     timeline_key: TimelineKey,
+    direction: PaginationDirection,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
     let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
     let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
-    trace_tauri_timeline_command("submit", "paginate_forwards", request_id);
+    let operation = match direction {
+        PaginationDirection::Forward => "paginate_forwards",
+        PaginationDirection::Backward => "paginate_backwards",
+    };
+    trace_tauri_timeline_command("submit", operation, request_id);
     let admission = submit_core_command_with_admission(
         state.inner(),
-        build_paginate_timeline_forwards_command(request_id, account_key, timeline_key.kind),
+        build_paginate_timeline_command(request_id, account_key, timeline_key.kind, direction),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;

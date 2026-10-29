@@ -1,13 +1,17 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CoreEventPayload, TimelineItem } from "../domain/coreEvents";
+import { focusedTimelineKey, type CoreEventPayload, type TimelineItem, type TimelineKey } from "../domain/coreEvents";
 import { createManualTimelineViewportScheduler } from "./timeline/TimelineViewportScheduler";
 import { resetHoverIntentForTests } from "./hoverIntent";
 import { KEY, baseTransport, message, mockTimelineRects } from "./timelineViewTestSupport";
 import { TimelineView, clearTimelineViewportSessionMemoryForTests } from "./TimelineView";
 
+// jsdom omits scrollIntoView, which the anchored view uses to reveal its target.
+const originalScrollIntoView = Element.prototype.scrollIntoView;
+
 afterEach(() => {
+  Element.prototype.scrollIntoView = originalScrollIntoView;
   cleanup();
   clearTimelineViewportSessionMemoryForTests();
   resetHoverIntentForTests();
@@ -19,8 +23,15 @@ afterEach(() => {
 function setup(
   count: number,
   roundWrites = false,
-  itemFactory: (index: number) => TimelineItem = (index) => message(`$item${index}`, "Synthetic row")
+  itemFactory: (index: number) => TimelineItem = (index) => message(`$item${index}`, "Synthetic row"),
+  focusedTargetIndex: number | null = null
 ) {
+  // A Focused key mounts the anchored main pane an event jump opens (#1675).
+  const target = focusedTargetIndex === null ? null : `$item${focusedTargetIndex}`;
+  const key: TimelineKey = target === null
+    ? KEY
+    : focusedTimelineKey("@alice:example.invalid", "!room:example.invalid", target);
+  if (target !== null) Element.prototype.scrollIntoView = () => undefined;
   vi.useFakeTimers();
   const scheduler = createManualTimelineViewportScheduler();
   let listener: ((event: CoreEventPayload) => void) | null = null;
@@ -29,10 +40,11 @@ function setup(
   const containerRef: { current: HTMLElement | null } = { current: null };
   mockTimelineRects(rects, { top: 0, height: 600 }, containerRef);
   const diagnostics = vi.fn();
-  render(<TimelineView timelineKey={KEY} roomId="!room:example.invalid"
+  render(<TimelineView timelineKey={key} roomId="!room:example.invalid"
     transport={baseTransport({ listenCoreEvents(next) { listener = next; return () => undefined; } })}
     onReply={() => undefined} enableAvatarThumbnailDownloads={false} viewportScheduler={scheduler}
     onDiagnosticLogEntry={diagnostics}
+    initialTargetEventId={target} isAnchored={target !== null}
     listRefCallback={(node) => { containerRef.current = node?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null; }}
   />);
   const emit = (event: CoreEventPayload) => listener?.(event);
@@ -46,7 +58,7 @@ function setup(
     clientHeight: { configurable: true, value: 600 }
   });
   act(() => emit({ kind: "Timeline", event: { InitialItems: {
-    request_id: null, key: KEY, generation: 1,
+    request_id: null, key, generation: 1,
     items: Array.from({ length: count }, (_, i) => itemFactory(i))
   } } }));
   const drain = () => {
@@ -84,7 +96,7 @@ function setup(
     prepend(amount: number, delayedHeight: number, hideTail = true, applyRects = true) {
       act(() => {
         emit({ kind: "Timeline", event: { ItemsUpdated: {
-          key: KEY, generation: 1, batch_id: 1,
+          key, generation: 1, batch_id: 1,
           diffs: [
             ...Array.from({ length: amount }, (_, i) => ({ PushFront: { item: message(`$old${i}`, "Older synthetic row") } })),
             ...(hideTail ? [{ Set: { index: count + amount - 1, item: { ...message(`$item${count - 1}`, "Synthetic row"), is_hidden: true } as TimelineItem } }] : [])
@@ -298,6 +310,18 @@ describe("TimelineView unified viewport transaction", () => {
       expect(JSON.stringify(lifecycle)).not.toMatch(/example\.invalid|\$item|\$old/);
     });
   }
+
+  it("keeps the reader fixed when an older page is prepended above an anchored jump (#1675)", () => {
+    const fixture = setup(120, false, undefined, 60);
+    fixture.prepend(20, 0, false);
+    fixture.drain();
+    const row = [...fixture.view.querySelectorAll<HTMLElement>("[data-item-id]")].find(
+      (node) => node.dataset.itemId === fixture.anchor.id
+    );
+    expect(row).toBeDefined();
+    expect(row!.getBoundingClientRect().top).toBe(fixture.anchor.offset);
+    expect(fixture.writes.length).toBeGreaterThan(0);
+  });
 
   it("compensates a hidden-history prepend when every visible row is a latest-reply thread root", () => {
     const fixture = setup(120, false, latestReplyRoot);
