@@ -387,5 +387,63 @@ pub(super) async fn confirm_anchored_live_tail(
     if conn.snapshot().navigation.main_timeline_anchor.is_none() {
         return Err("anchored live tail: Core closed the anchored view on its own".to_owned());
     }
-    Ok(())
+    confirm_live_tail_replay(conn, anchored_key, &tail).await
+}
+
+/// A subscriber replay re-delivers the latch right after its `InitialItems`,
+/// fenced by the same actor and timeline generation the renderer accepts.
+async fn confirm_live_tail_replay(
+    conn: &mut CoreConnection,
+    anchored_key: &TimelineKey,
+    tail: &str,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::EnsureSubscribed {
+        request_id,
+        key: anchored_key.clone(),
+        replay_existing: true,
+    }))
+    .await
+    .map_err(|e| format!("submit anchored live tail replay: {e}"))?;
+    tokio::time::timeout(EVENT_TIMEOUT, async {
+        let mut replayed = None;
+        loop {
+            match conn.recv_event().await {
+                Ok(CoreEvent::Timeline(TimelineEvent::InitialItems {
+                    key,
+                    actor_generation,
+                    generation,
+                    ..
+                })) if &key == anchored_key => replayed = Some((actor_generation, generation)),
+                Ok(CoreEvent::Timeline(TimelineEvent::FocusedLiveTailReached {
+                    key,
+                    actor_generation,
+                    generation,
+                    tail_event_id,
+                })) if &key == anchored_key => {
+                    return match replayed {
+                        Some(fence)
+                            if fence == (actor_generation, generation) && tail_event_id == tail =>
+                        {
+                            Ok(())
+                        }
+                        Some(_) => Err("anchored live tail replay: wrong fence or tail".to_owned()),
+                        None => {
+                            Err("anchored live tail replay: report before InitialItems".to_owned())
+                        }
+                    };
+                }
+                Ok(CoreEvent::OperationFailed {
+                    request_id: id,
+                    failure,
+                }) if id == request_id => {
+                    return Err(format!("anchored live tail replay failed: {failure:?}"));
+                }
+                Ok(_) => {}
+                Err(error) => return Err(format!("anchored live tail replay: stream: {error:?}")),
+            }
+        }
+    })
+    .await
+    .map_err(|_| "anchored live tail replay: no re-delivered report".to_owned())?
 }

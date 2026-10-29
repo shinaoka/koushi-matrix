@@ -2561,9 +2561,11 @@ stateDiagram-v2
   processed that event (`Timeline::latest_event_id`). The SDK's newest row
   then is the final tail, with no Koushi rule for which events become rows.
   Once Core's projection holds that row, the actor emits
-  `FocusedLiveTailReached { key, actor_generation, generation, tail_event_id }`
-  under the same generation lease and right after the diffs that commit it,
-  and re-emits it after a replayed `InitialItems`. The latch is never cleared
+  `FocusedLiveTailReached { key, actor_generation, generation, tail_event_id }`:
+  under the committing batch's generation lease, right after its diffs, when
+  the tail was already pending; or under a fresh current-generation lease
+  with the pagination completion when the row was committed first. It
+  re-emits it after a replayed `InitialItems` under that replay's lease. The latch is never cleared
   for that actor generation. The renderer accepts it only for the key's
   current actor and timeline generation, and dispatches the existing
   `CloseFocusedContext` live-edge return only while the reader rests at the

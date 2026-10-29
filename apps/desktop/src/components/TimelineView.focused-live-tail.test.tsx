@@ -38,14 +38,18 @@ function forwardPagination(state: PaginationState): CoreEventPayload {
   };
 }
 
-function liveTailReached(tailEventId: string, actorGeneration = 3): CoreEventPayload {
+function liveTailReached(
+  tailEventId: string,
+  actorGeneration = 3,
+  generation = 1
+): CoreEventPayload {
   return {
     kind: "Timeline",
     event: {
       FocusedLiveTailReached: {
         key: FOCUSED_KEY,
         actor_generation: actorGeneration,
-        generation: 1,
+        generation,
         tail_event_id: tailEventId
       }
     }
@@ -190,6 +194,21 @@ describe("TimelineView anchored live-tail return (#1676)", () => {
       view.emit(finalPage());
       await screen.findByText("Final page message");
       view.emit(liveTailReached("$final:example.invalid", 2));
+      view.scrollTo(500);
+      await act(async () => Promise.resolve());
+      expect(view.onReturnToLive).not.toHaveBeenCalled();
+    } finally {
+      view.restore();
+    }
+  });
+
+  it("ignores a live tail reported for another timeline generation", async () => {
+    const view = await renderAnchoredView(500);
+    try {
+      view.emit(forwardPagination("EndReached"));
+      view.emit(finalPage());
+      await screen.findByText("Final page message");
+      view.emit(liveTailReached("$final:example.invalid", 3, 2));
       view.scrollTo(500);
       await act(async () => Promise.resolve());
       expect(view.onReturnToLive).not.toHaveBeenCalled();
