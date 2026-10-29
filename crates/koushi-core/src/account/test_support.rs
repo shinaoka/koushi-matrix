@@ -34,6 +34,13 @@ pub(super) async fn login_gated_actor_at(
     let cred_dir = tempdir().expect("tempdir").keep();
     let data_dir = tempdir().expect("tempdir").keep();
     let (handle, mut action_rx, _event_rx) = spawn_actor_with_dirs(&cred_dir, &data_dir);
+    // The SDK settles its recovery state asynchronously after login; on a
+    // loaded host that lands after promotion and starts a gate check and an
+    // inspection mid-test (#1674). Actor tests drive Secure Backup through
+    // explicit messages, so promotion never starts the SDK observer.
+    handle
+        .send(AccountMessage::DisableSecureBackupObserver)
+        .await;
     let updates = futures_util::stream::pending();
     handle
         .send(AccountMessage::ConfigureTrustObservation {

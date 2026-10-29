@@ -490,6 +490,7 @@ async fn reset_local_data_clears_current_account_persistence_and_signs_out_local
         send_read_receipts: true,
         pending_oidc_login: None,
         oidc_completion_override: None,
+        secure_backup_observer_disabled: false,
         search_actor: None,
         threads_list_actor: None,
         recovery_observer: None,

@@ -421,10 +421,10 @@ pub(crate) enum AccountMessage {
     ConfigureSecureBackupDeferWait {
         wait: Duration,
     },
-    /// Stops the SDK Secure Backup state observer so a test owns every
-    /// gate-check trigger (#1674).
+    /// Keeps promotion from starting the SDK Secure Backup state observer, so
+    /// a test owns every gate-check trigger (#1674).
     #[cfg(test)]
-    StopSecureBackupObserver,
+    DisableSecureBackupObserver,
     #[cfg(test)]
     SeedRevealedRecoveryKey {
         revealed: super::recovery_backup::RevealedRecoveryKey,
@@ -493,6 +493,18 @@ pub(crate) enum AccountMessage {
     #[cfg(test)]
     InspectTrustRecheckJoined {
         response: oneshot::Sender<bool>,
+    },
+    /// Whether any own-identity work (a trust recheck or a current-session
+    /// inspection) is in flight or owed.
+    #[cfg(test)]
+    InspectOwnIdentityWorkPending {
+        response: oneshot::Sender<bool>,
+    },
+    /// The SDK's own current-device trust, which settles asynchronously after
+    /// login.
+    #[cfg(test)]
+    InspectSdkDeviceTrust {
+        response: oneshot::Sender<Option<koushi_state::CurrentDeviceTrustState>>,
     },
     CurrentSessionStatusRefreshFinished {
         request_id: u64,
@@ -1330,6 +1342,8 @@ pub struct AccountActor {
     pub(super) pending_oidc_login: Option<PendingOidcAttempt>,
     #[cfg(test)]
     pub(super) oidc_completion_override: Option<MatrixClientSession>,
+    #[cfg(test)]
+    pub(super) secure_backup_observer_disabled: bool,
     /// Pending SDK verification request continuation, held only inside
     /// AccountActor and never projected into AppState.
     pub(super) verification_request: Option<PendingVerificationRequest>,
@@ -1627,6 +1641,8 @@ impl AccountActor {
             pending_oidc_login: None,
             #[cfg(test)]
             oidc_completion_override: None,
+            #[cfg(test)]
+            secure_backup_observer_disabled: false,
             verification_request: None,
             sas_verification: None,
             own_user_verification: None,
@@ -2292,6 +2308,22 @@ impl AccountActor {
                     let _ = response.send(self.session_check.trust_joined_inspection);
                 }
                 #[cfg(test)]
+                AccountMessage::InspectSdkDeviceTrust { response } => {
+                    let _ = response.send(
+                        self.session
+                            .as_ref()
+                            .map(|session| session.current_device_trust()),
+                    );
+                }
+                #[cfg(test)]
+                AccountMessage::InspectOwnIdentityWorkPending { response } => {
+                    let _ = response.send(
+                        self.trust_recheck_task.is_some()
+                            || self.trust_recheck_pending
+                            || self.current_session_status_task.is_some(),
+                    );
+                }
+                #[cfg(test)]
                 AccountMessage::ConfigureSessionCheckClock { base_epoch_ms } => {
                     self.session_check.clock = super::session_check::SessionCheckClock::Virtual {
                         base_epoch_ms,
@@ -2746,8 +2778,8 @@ impl AccountActor {
                     self.secure_backup_connectivity_wait = wait;
                 }
                 #[cfg(test)]
-                AccountMessage::StopSecureBackupObserver => {
-                    Box::pin(self.stop_secure_backup_observer()).await;
+                AccountMessage::DisableSecureBackupObserver => {
+                    self.secure_backup_observer_disabled = true;
                 }
                 #[cfg(test)]
                 AccountMessage::SeedRevealedRecoveryKey { revealed } => {

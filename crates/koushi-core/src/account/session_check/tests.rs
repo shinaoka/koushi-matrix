@@ -139,20 +139,52 @@ async fn promoted_actor() -> (
         })
         .await;
     acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+    // A proven edge that still sees the SDK trust as Unknown starts its own
+    // trust recheck; on a loaded host the SDK settles late, so wait for it
+    // before any test sends its first proven edge (#1674).
+    executor::timeout(LIVENESS, async {
+        loop {
+            let (response, trust) = tokio::sync::oneshot::channel();
+            assert!(
+                handle
+                    .send(AccountMessage::InspectSdkDeviceTrust { response })
+                    .await
+            );
+            if trust.await.expect("SDK trust probe")
+                != Some(koushi_state::CurrentDeviceTrustState::Unknown)
+            {
+                return;
+            }
+            executor::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("SDK device trust settles");
     (handle, action_rx, control)
 }
 
-/// Wait until the fixture's own-identity query count stops moving.
-async fn settled_query_count(control: &KeyQueryControl) -> usize {
-    let mut last = control.count.load(Ordering::SeqCst);
-    loop {
-        executor::sleep(Duration::from_millis(200)).await;
-        let now = control.count.load(Ordering::SeqCst);
-        if now == last {
-            return now;
+/// Wait until the actor owns no own-identity work, then read the fixture's
+/// query count. On a loaded host the first proven edge can still see the SDK
+/// trust as Unknown and start a recheck whose query lands well after a quiet
+/// window, so the baseline is taken from actor state, not elapsed time (#1674).
+async fn settled_query_count(handle: &AccountActorHandle, control: &KeyQueryControl) -> usize {
+    executor::timeout(LIVENESS, async {
+        loop {
+            let (response, pending) = tokio::sync::oneshot::channel();
+            assert!(
+                handle
+                    .send(AccountMessage::InspectOwnIdentityWorkPending { response })
+                    .await
+            );
+            if !pending.await.expect("own-identity work probe") {
+                return;
+            }
+            executor::sleep(Duration::from_millis(5)).await;
         }
-        last = now;
-    }
+    })
+    .await
+    .expect("own-identity work settles");
+    control.count.load(Ordering::SeqCst)
 }
 
 async fn wait_for_query_count(control: &KeyQueryControl, expected: usize) {
@@ -184,7 +216,7 @@ fn drain(action_rx: &mut mpsc::Receiver<Vec<AppAction>>) {
 #[tokio::test]
 async fn trust_recheck_during_an_inspection_joins_its_own_identity_query() {
     let (handle, mut action_rx, control) = promoted_actor().await;
-    let baseline = settled_query_count(&control).await;
+    let baseline = settled_query_count(&handle, &control).await;
     let devices_baseline = control.devices_count.load(Ordering::SeqCst);
     drain(&mut action_rx);
 
@@ -218,7 +250,7 @@ async fn trust_recheck_during_an_inspection_joins_its_own_identity_query() {
 #[tokio::test]
 async fn inspection_during_a_trust_recheck_reuses_the_fetched_identity() {
     let (handle, mut action_rx, control) = promoted_actor().await;
-    let baseline = settled_query_count(&control).await;
+    let baseline = settled_query_count(&handle, &control).await;
     let devices_baseline = control.devices_count.load(Ordering::SeqCst);
     drain(&mut action_rx);
 
@@ -260,7 +292,7 @@ async fn inspection_during_a_trust_recheck_reuses_the_fetched_identity() {
 #[tokio::test]
 async fn a_failed_trust_recheck_defers_the_next_request_behind_the_backoff() {
     let (handle, mut action_rx, control) = promoted_actor().await;
-    let baseline = settled_query_count(&control).await;
+    let baseline = settled_query_count(&handle, &control).await;
     drain(&mut action_rx);
 
     control.fail.store(true, Ordering::SeqCst);
@@ -314,7 +346,7 @@ async fn observe_actions(
 #[tokio::test]
 async fn inspection_observing_non_verified_trust_gates_with_exactly_one_identity_query() {
     let (handle, mut action_rx, control) = promoted_actor().await;
-    let baseline = settled_query_count(&control).await;
+    let baseline = settled_query_count(&handle, &control).await;
     drain(&mut action_rx);
 
     handle
@@ -346,7 +378,7 @@ async fn a_joined_demand_runs_standalone_when_the_inspection_fails() {
     handle
         .send(AccountMessage::SyncConnectivityChanged { proven: true })
         .await;
-    let baseline = settled_query_count(&control).await;
+    let baseline = settled_query_count(&handle, &control).await;
     drain(&mut action_rx);
 
     control.hold.store(true, Ordering::SeqCst);
@@ -382,7 +414,7 @@ async fn a_joined_demand_interrupted_by_connectivity_loss_runs_once_on_the_next_
     handle
         .send(AccountMessage::SyncConnectivityChanged { proven: true })
         .await;
-    let baseline = settled_query_count(&control).await;
+    let baseline = settled_query_count(&handle, &control).await;
     drain(&mut action_rx);
 
     control.hold.store(true, Ordering::SeqCst);
@@ -463,7 +495,7 @@ async fn a_stale_timer_notification_keeps_the_newer_timer_owned() {
 #[tokio::test]
 async fn a_demand_after_the_inspection_identity_query_returned_runs_its_own_recheck() {
     let (handle, mut action_rx, control) = promoted_actor().await;
-    let baseline = settled_query_count(&control).await;
+    let baseline = settled_query_count(&handle, &control).await;
     let probes_baseline = control.backup_probe_count.load(Ordering::SeqCst);
     drain(&mut action_rx);
 

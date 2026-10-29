@@ -53,10 +53,6 @@ async fn verified_actor_with_short_deadline(
             .await
     );
     acknowledge_next_verified_projection(&handle, &mut action_rx).await;
-    // The SDK settles its recovery state asynchronously after login; on a
-    // loaded host that lands after promotion and starts its own gate check
-    // and deferred inspection mid-test (#1674). These tests own every trigger.
-    assert!(handle.send(AccountMessage::StopSecureBackupObserver).await);
     (handle, action_rx)
 }
 

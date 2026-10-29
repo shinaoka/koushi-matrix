@@ -2366,6 +2366,10 @@ impl AccountActor {
         if let Some(task) = self.secure_backup_observer.take() {
             task.abort();
         }
+        #[cfg(test)]
+        if self.secure_backup_observer_disabled {
+            return;
+        }
         let generation = self.trust_generation;
         let mut observation = session.observe_secure_backup_state();
         let mut previous = observation.current;
