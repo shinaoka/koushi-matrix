@@ -460,8 +460,7 @@ for (const surface of ["main", "thread"] as const) {
     await expect(dialog.locator(".upload-staging-item")).toHaveCount(2);
     await expect(dialog.locator(".upload-staging-item.has-preview")).toHaveCount(0);
     const geometry = await stagingWidthGeometry(page);
-    expect(geometry.width, JSON.stringify(geometry)).toBeLessThanOrEqual(560);
-    expect(geometry.width, JSON.stringify(geometry)).toBeLessThan(geometry.overlayContentWidth - 120);
+    expect(geometry.width, JSON.stringify(geometry)).toBeCloseTo(560, 0);
     expect(Math.abs(geometry.leftGap - geometry.rightGap), JSON.stringify(geometry)).toBeLessThanOrEqual(1);
     // The long name truncates inside the compact card instead of widening it.
     const name = dialog.locator(".upload-staging-name").first();
@@ -500,6 +499,8 @@ for (const mixed of [false, true]) {
       .setInputFiles(mixed ? [stagedPlainFile("synthetic-a.pdf"), stagedPortraitImage()] : [stagedPortraitImage()]);
     const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle"), exact: true });
     await expect(dialog.locator(".upload-staging-preview")).toBeVisible();
+    await expect(dialog.locator(".upload-staging-item")).toHaveCount(mixed ? 2 : 1);
+    await expect(dialog.locator(".upload-staging-item.has-preview")).toHaveCount(1);
     const geometry = await stagingWidthGeometry(page);
     expect(geometry.width, JSON.stringify(geometry)).toBeCloseTo(geometry.overlayContentWidth, 0);
   });
