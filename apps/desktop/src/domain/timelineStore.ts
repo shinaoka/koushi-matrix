@@ -508,6 +508,9 @@ function timelineEventKeyId(event: TimelineEvent): string | null {
   if ("GapRepairReleased" in event) {
     return keyStr(event.GapRepairReleased.key);
   }
+  if ("FocusedLiveTailReached" in event) {
+    return keyStr(event.FocusedLiveTailReached.key);
+  }
   if ("SendCompleted" in event) {
     return keyStr(event.SendCompleted.key);
   }

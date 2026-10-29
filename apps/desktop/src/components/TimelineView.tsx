@@ -1513,7 +1513,9 @@ export const TimelineView = memo(function TimelineView({
                                     ? event.GapPositionsUpdated.key
                                     : "GapRepairReleased" in event
                                       ? event.GapRepairReleased.key
-                                      : event.ResyncRequired.key;
+                                      : "FocusedLiveTailReached" in event
+                                        ? event.FocusedLiveTailReached.key
+                                        : event.ResyncRequired.key;
       if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
         const currentKey = timelineKeyRef.current;
         const currentKind = timelineKindDiagnosticLabel(currentKey);

@@ -97,6 +97,17 @@ pub enum TimelineEvent {
         actor_generation: u64,
         generation: u64,
     },
+    /// #1676: a `Focused` timeline paged forward to its end and its projection
+    /// now holds the final row, `tail_event_id`. The focused cache never takes
+    /// newer live events, so the anchored view may return to live once the
+    /// reader rests at that bottom. Emitted after the diffs that commit it.
+    FocusedLiveTailReached {
+        key: TimelineKey,
+        /// Monotonic owner generation for actor replacement fencing.
+        actor_generation: u64,
+        generation: TimelineGeneration,
+        tail_event_id: String,
+    },
     SendCompleted {
         request_id: RequestId,
         key: TimelineKey,
@@ -245,6 +256,17 @@ impl fmt::Debug for TimelineEvent {
                 .field("key", &"TimelineKey(..)")
                 .field("actor_generation", actor_generation)
                 .field("generation", generation)
+                .finish(),
+            Self::FocusedLiveTailReached {
+                actor_generation,
+                generation,
+                ..
+            } => formatter
+                .debug_struct("FocusedLiveTailReached")
+                .field("key", &"TimelineKey(..)")
+                .field("actor_generation", actor_generation)
+                .field("generation", generation)
+                .field("tail_event_id", &"EventId(..)")
                 .finish(),
             Self::SendCompleted {
                 request_id,

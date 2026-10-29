@@ -563,6 +563,16 @@ export type TimelineEvent =
       };
     }
   | {
+      /** #1676: a Focused timeline's projection holds its forward end's final row. */
+      FocusedLiveTailReached: {
+        key: TimelineKey;
+        actor_generation: number;
+        /** TimelineGeneration newtype → number. */
+        generation: number;
+        tail_event_id: string;
+      };
+    }
+  | {
       SendCompleted: {
         request_id: RequestId;
         key: TimelineKey;
