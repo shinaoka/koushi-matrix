@@ -258,6 +258,9 @@ const transport: TimelineTransport = {
   returnToLive(timelineKey) {
     return ipc.invoke("return_timeline_to_live", { timelineKey });
   },
+  paginateForwards(timelineKey) {
+    return ipc.invoke("paginate_timeline_forwards", { timelineKey });
+  },
   observeViewport(
     roomId,
     firstVisibleEventId,

@@ -671,6 +671,7 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         QaStage::Reply => &[
             "reply=ok",
             "reply_quote=ok",
+            "anchored_forward_live_end=ok",
             "pin_event=ok",
             "pinned_state=ok",
             "unpin_event=ok",
@@ -881,6 +882,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "ime_guard=ok",
         "reply=ok",
         "reply_quote=ok",
+        "anchored_forward_live_end=ok",
         "pin_event=ok",
         "pinned_state=ok",
         "unpin_event=ok",
