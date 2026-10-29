@@ -91,24 +91,29 @@ pub(super) async fn paginate_anchored_backward_to(
         anchored_key,
         PaginationDirection::Backward,
         oldest_body,
+        &mut None,
     )
     .await
 }
 
 /// Paginates the anchored focused timeline forward until `EndReached` and
-/// requires the newest message to enter its projection on the way.
+/// requires the newest message to enter its projection on the way. Returns
+/// the page count and any `FocusedLiveTailReached` tail seen meanwhile.
 pub(super) async fn paginate_anchored_forward_to_live_end(
     conn: &mut CoreConnection,
     anchored_key: &TimelineKey,
     newest_body: &str,
-) -> Result<usize, String> {
-    paginate_anchored(
+) -> Result<(usize, Option<String>), String> {
+    let mut live_tail = None;
+    let pages = paginate_anchored(
         conn,
         anchored_key,
         PaginationDirection::Forward,
         newest_body,
+        &mut live_tail,
     )
-    .await
+    .await?;
+    Ok((pages, live_tail))
 }
 
 /// Forward pages run to `EndReached` and need `body` projected on the way;
@@ -119,6 +124,7 @@ async fn paginate_anchored(
     anchored_key: &TimelineKey,
     direction: PaginationDirection,
     body: &str,
+    live_tail: &mut Option<String>,
 ) -> Result<usize, String> {
     let label = match direction {
         PaginationDirection::Forward => "forward",
@@ -153,6 +159,11 @@ async fn paginate_anchored(
                     {
                         body_projected |= diffs.iter().any(projected);
                     }
+                    Ok(CoreEvent::Timeline(TimelineEvent::FocusedLiveTailReached {
+                        key,
+                        tail_event_id,
+                        ..
+                    })) if &key == anchored_key => *live_tail = Some(tail_event_id),
                     Ok(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
                         request_id: Some(id),
                         key,
@@ -188,7 +199,7 @@ async fn paginate_anchored(
             PaginationState::EndReached => {
                 // The final page's diffs may follow the terminal event.
                 if !body_projected {
-                    wait_for_projection(conn, anchored_key, &projected, label).await?;
+                    wait_for_projection(conn, anchored_key, &projected, label, live_tail).await?;
                 }
                 println!("anchored_{label}_declined_pages={skipped_pages}");
                 return Ok(page);
@@ -203,8 +214,14 @@ async fn paginate_anchored(
             // while gap repair owns the timeline; retry after its release.
             PaginationState::Idle if !paginating => {
                 skipped_pages += 1;
-                if wait_for_gap_repair_release(conn, anchored_key, &projected, &mut body_projected)
-                    .await
+                if wait_for_gap_repair_release(
+                    conn,
+                    anchored_key,
+                    &projected,
+                    &mut body_projected,
+                    live_tail,
+                )
+                .await
                 {
                     released_waits += 1;
                 }
@@ -224,6 +241,7 @@ async fn wait_for_projection(
     anchored_key: &TimelineKey,
     projected: &impl Fn(&TimelineDiff) -> bool,
     label: &str,
+    live_tail: &mut Option<String>,
 ) -> Result<(), String> {
     tokio::time::timeout(EVENT_TIMEOUT, async {
         loop {
@@ -233,6 +251,11 @@ async fn wait_for_projection(
                 {
                     return Ok(());
                 }
+                Ok(CoreEvent::Timeline(TimelineEvent::FocusedLiveTailReached {
+                    key,
+                    tail_event_id,
+                    ..
+                })) if &key == anchored_key => *live_tail = Some(tail_event_id),
                 Ok(_) => {}
                 Err(error) => return Err(format!("anchored {label} end: stream: {error:?}")),
             }
@@ -249,6 +272,7 @@ async fn wait_for_gap_repair_release(
     anchored_key: &TimelineKey,
     projected: &impl Fn(&TimelineDiff) -> bool,
     body_projected: &mut bool,
+    live_tail: &mut Option<String>,
 ) -> bool {
     tokio::time::timeout(EVENT_TIMEOUT, async {
         loop {
@@ -263,6 +287,11 @@ async fn wait_for_gap_repair_release(
                 {
                     *body_projected |= diffs.iter().any(projected);
                 }
+                Ok(CoreEvent::Timeline(TimelineEvent::FocusedLiveTailReached {
+                    key,
+                    tail_event_id,
+                    ..
+                })) if &key == anchored_key => *live_tail = Some(tail_event_id),
                 Ok(_) => {}
                 Err(_) => return false,
             }
@@ -270,4 +299,93 @@ async fn wait_for_gap_repair_release(
     })
     .await
     .unwrap_or(false)
+}
+
+/// #1676: Core reports that the anchored view reached the live tail once its
+/// projection holds the newest message, and a live message sent afterwards
+/// neither moves that tail nor closes the anchored view. The renderer, not
+/// Core, decides when to return to live.
+pub(super) async fn confirm_anchored_live_tail(
+    conn: &mut CoreConnection,
+    anchored_key: &TimelineKey,
+    live_key: &TimelineKey,
+    newest_event_id: &str,
+    seen_tail: Option<String>,
+) -> Result<(), String> {
+    let tail = match seen_tail {
+        Some(tail) => tail,
+        None => tokio::time::timeout(EVENT_TIMEOUT, async {
+            loop {
+                match conn.recv_event().await {
+                    Ok(CoreEvent::Timeline(TimelineEvent::FocusedLiveTailReached {
+                        key,
+                        tail_event_id,
+                        ..
+                    })) if &key == anchored_key => return Ok(tail_event_id),
+                    Ok(_) => {}
+                    Err(error) => return Err(format!("anchored live tail: stream: {error:?}")),
+                }
+            }
+        })
+        .await
+        .map_err(|_| "anchored live tail: Core never reported the live tail".to_owned())??,
+    };
+    if tail != newest_event_id {
+        return Err(
+            "anchored live tail: Core reported a tail other than the newest message".into(),
+        );
+    }
+
+    let body = "Anchored live tail QA message".to_owned();
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        request_id,
+        key: live_key.clone(),
+        transaction_id: "qa-anchored-live-tail-txn".to_owned(),
+        document: ComposerDocument::from_plain_text(body.clone()),
+    }))
+    .await
+    .map_err(|e| format!("submit anchored live tail message: {e}"))?;
+    let mut sent = false;
+    let mut live_projected = false;
+    tokio::time::timeout(EVENT_TIMEOUT, async {
+        while !(sent && live_projected) {
+            match conn.recv_event().await {
+                Ok(CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                    request_id: id, ..
+                })) if id == request_id => sent = true,
+                Ok(CoreEvent::OperationFailed {
+                    request_id: id,
+                    failure,
+                }) if id == request_id => {
+                    return Err(format!("anchored live tail message failed: {failure:?}"));
+                }
+                Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated { key, diffs, .. }))
+                    if &key == live_key =>
+                {
+                    live_projected |= diffs.iter().any(|diff| diff_contains_body(diff, &body));
+                }
+                Ok(CoreEvent::Timeline(TimelineEvent::FocusedLiveTailReached {
+                    key,
+                    tail_event_id,
+                    ..
+                })) if &key == anchored_key && tail_event_id != tail => {
+                    return Err("anchored live tail moved after a live message".to_owned());
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    return Err(format!("anchored live tail message: stream: {error:?}"));
+                }
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| {
+        "anchored live tail: the live message never reached the live timeline".to_owned()
+    })??;
+    if conn.snapshot().navigation.main_timeline_anchor.is_none() {
+        return Err("anchored live tail: Core closed the anchored view on its own".to_owned());
+    }
+    Ok(())
 }

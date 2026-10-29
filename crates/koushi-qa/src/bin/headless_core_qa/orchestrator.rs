@@ -27,8 +27,8 @@ use super::registry::{
 };
 use super::scenario_account_notifications::run_account_notifications_stage;
 use super::scenario_anchored_history::{
-    BACKWARD_ANCHOR_INDEX, paginate_anchored_backward_to, paginate_anchored_forward_to_live_end,
-    seed_newer_history,
+    BACKWARD_ANCHOR_INDEX, confirm_anchored_live_tail, paginate_anchored_backward_to,
+    paginate_anchored_forward_to_live_end, seed_newer_history,
 };
 use super::scenario_history_export::run_room_history_export_stage;
 use super::scenario_identity::{
@@ -971,10 +971,24 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
                 event_id: event1_id.clone(),
             },
         };
-        let pages =
+        let (pages, seen_tail) =
             paginate_anchored_forward_to_live_end(&mut conn_a, &anchored_key, &newest_body).await?;
         println!("anchored_forward_pages={pages}");
         println!("anchored_forward_live_end=ok");
+        // #1676: Core latches the live tail; a later live message keeps it.
+        let newest_event_id = seeded
+            .last()
+            .map(|message| message.event_id.clone())
+            .unwrap_or_default();
+        confirm_anchored_live_tail(
+            &mut conn_a,
+            &anchored_key,
+            &key_a,
+            &newest_event_id,
+            seen_tail,
+        )
+        .await?;
+        println!("anchored_live_tail=ok");
 
         let close_focused_id = conn_a.next_request_id();
         conn_a
