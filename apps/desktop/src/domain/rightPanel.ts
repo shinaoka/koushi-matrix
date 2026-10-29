@@ -104,8 +104,11 @@ export function rightPanelModeForEventNavigation(
     case "replyQuote":
       return current === "focusedContext" ? "closed" : current;
     default: {
+      // A source the renderer does not know yet must fail the typecheck, and at
+      // runtime it leaves the panel alone rather than inventing a mode.
       const unhandled: never = source;
-      return unhandled;
+      void unhandled;
+      return current;
     }
   }
 }

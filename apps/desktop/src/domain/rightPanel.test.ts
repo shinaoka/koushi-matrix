@@ -8,7 +8,12 @@ import {
   rightPanelModeForSearchQuery,
   roomOrSpaceForPeoplePanelScope
 } from "./rightPanel";
-import type { DesktopSnapshot, RoomSummary, SpaceSummary } from "./types";
+import type {
+  DesktopSnapshot,
+  EventNavigationSource,
+  RoomSummary,
+  SpaceSummary
+} from "./types";
 
 describe("right panel context menu routing", () => {
   test("routes room and Space menu actions through selection plus panel mode", () => {
@@ -70,6 +75,9 @@ describe("right panel context menu routing", () => {
       expect(rightPanelModeForEventNavigation("replyQuote", current)).toBe(current);
     }
     expect(rightPanelModeForEventNavigation("replyQuote", "focusedContext")).toBe("closed");
+    expect(
+      rightPanelModeForEventNavigation("futureSource" as EventNavigationSource, "thread")
+    ).toBe("thread");
   });
 
   test("resolves People/Profile context from an explicit room or Space scope", () => {
