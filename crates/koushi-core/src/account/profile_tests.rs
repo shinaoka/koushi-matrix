@@ -14,7 +14,7 @@ use matrix_sdk::test_utils::mocks::MatrixMockServer;
 use super::{
     actor::AccountMessage,
     profile::{AvatarResolution, prepare_avatar_content},
-    test_support::{shutdown_and_ack, spawn_actor_with_dirs},
+    test_support::{inspect_sync_owners, shutdown_and_ack, spawn_actor_with_dirs},
 };
 use crate::renderable_thumbnail::{
     AVATAR_THUMBNAIL_IDENTITY, AVATAR_THUMBNAIL_LONG_EDGE, RenderableThumbnailContent,
@@ -158,17 +158,36 @@ async fn cached_avatar_download_dispatches_authoritative_update() {
     shutdown_and_ack(&handle).await;
 }
 
+/// Holds every matched request open for the rest of the test and reports its
+/// arrival, so the test synchronizes on the request instead of a server delay.
+struct HeldAvatarResponse {
+    arrived: tokio::sync::mpsc::UnboundedSender<()>,
+}
+
+impl wiremock::Respond for HeldAvatarResponse {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        let _ = self.arrived.send(());
+        ResponseTemplate::new(200)
+            .set_body_raw(b"held-avatar", "image/jpeg")
+            .set_delay(Duration::from_secs(3600))
+    }
+}
+
 #[tokio::test]
 async fn avatar_actor_bounds_distinct_demand_and_rejects_capacity() {
     let _cache_guard = crate::renderable_thumbnail::test_cache_lock_async().await;
     let server = MatrixMockServer::new().await;
+    // #1674: the fetch asks for a server thumbnail first (#1396), so hold that
+    // request. Holding the original download let a loaded run shut down
+    // between the unmatched thumbnail and its download fallback.
+    let edge = u16::try_from(crate::renderable_thumbnail::AVATAR_THUMBNAIL_LONG_EDGE)
+        .expect("the avatar long edge fits a u16");
+    let (arrived_tx, mut arrived_rx) = tokio::sync::mpsc::unbounded_channel();
     server
-        .mock_authed_media_download()
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(b"delayed-avatar", "image/jpeg")
-                .set_delay(Duration::from_secs(5)),
-        )
+        .mock_authed_media_thumbnail(matrix_sdk::ruma::media::Method::Scale, edge, edge, false)
+        .respond_with(HeldAvatarResponse {
+            arrived: arrived_tx,
+        })
         .expect(1)
         .mount()
         .await;
@@ -202,22 +221,12 @@ async fn avatar_actor_bounds_distinct_demand_and_rejects_capacity() {
                 .await
         );
     }
-    timeout(Duration::from_secs(2), async {
-        loop {
-            if server.received_requests().await.is_some_and(|requests| {
-                requests
-                    .iter()
-                    .filter(|request| request.url.path().contains("/avatar-"))
-                    .count()
-                    == 1
-            }) {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the shared media permit should reach the delayed server");
+    // Liveness guard only: the held request settles nothing, so its arrival
+    // has no deadline to race.
+    timeout(Duration::from_secs(2), arrived_rx.recv())
+        .await
+        .expect("the shared media permit should reach the held server")
+        .expect("held responder");
     for sequence in
         (super::profile::AVATAR_DOWNLOAD_CONCURRENCY as u64 + 1)..=capacity_sequence as u64
     {
@@ -236,22 +245,20 @@ async fn avatar_actor_bounds_distinct_demand_and_rejects_capacity() {
         );
     }
 
-    let capacity_event = timeout(Duration::from_secs(2), async {
-        loop {
-            match event_rx.recv().await.expect("avatar event") {
-                CoreEvent::Account(AccountEvent::AvatarThumbnailDownloaded {
-                    request_id,
-                    thumbnail: AvatarThumbnailState::Failed { kind, .. },
-                    ..
-                }) if request_id.sequence == capacity_sequence as u64 => {
-                    break kind;
-                }
-                _ => {}
-            }
-        }
-    })
-    .await
-    .expect("capacity request should settle without waiting for active downloads");
+    // The actor handles commands in order and admission is synchronous, so
+    // once a later message is answered the capacity failure is already out,
+    // while the held downloads are still active.
+    let _ = inspect_sync_owners(&handle).await;
+    let capacity_event = std::iter::from_fn(|| event_rx.try_recv().ok())
+        .find_map(|event| match event {
+            CoreEvent::Account(AccountEvent::AvatarThumbnailDownloaded {
+                request_id,
+                thumbnail: AvatarThumbnailState::Failed { kind, .. },
+                ..
+            }) if request_id.sequence == capacity_sequence as u64 => Some(kind),
+            _ => None,
+        })
+        .expect("capacity request should settle without waiting for active downloads");
     assert_eq!(capacity_event, AvatarThumbnailFailureKind::Capacity);
     let _ = action_rx.try_recv().expect("capacity state action");
 

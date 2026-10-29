@@ -421,6 +421,10 @@ pub(crate) enum AccountMessage {
     ConfigureSecureBackupDeferWait {
         wait: Duration,
     },
+    /// Stops the SDK Secure Backup state observer so a test owns every
+    /// gate-check trigger (#1674).
+    #[cfg(test)]
+    StopSecureBackupObserver,
     #[cfg(test)]
     SeedRevealedRecoveryKey {
         revealed: super::recovery_backup::RevealedRecoveryKey,
@@ -2740,6 +2744,10 @@ impl AccountActor {
                 #[cfg(test)]
                 AccountMessage::ConfigureSecureBackupDeferWait { wait } => {
                     self.secure_backup_connectivity_wait = wait;
+                }
+                #[cfg(test)]
+                AccountMessage::StopSecureBackupObserver => {
+                    Box::pin(self.stop_secure_backup_observer()).await;
                 }
                 #[cfg(test)]
                 AccountMessage::SeedRevealedRecoveryKey { revealed } => {
