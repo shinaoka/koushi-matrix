@@ -549,7 +549,9 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    Convenience patches are rejected; every patch increases the cost of
    tracking upstream. Every SDK gitlink bump must keep the guarded submodule
    checkout in sync and update the root `Cargo.lock` when dependency resolution
-   changes.
+   changes. The fork follows upstream `main` every other day and SDK security
+   advisories pre-empt that schedule; the procedure lives in
+   [environment](../agents/environment.md#following-upstream).
 2. Local Tuwunel toolchain caveats are tracked in
    [environment](../agents/environment.md) and the QA scripts, not hand-run.
 3. Required local gates before merging product changes: the Rust lint gate

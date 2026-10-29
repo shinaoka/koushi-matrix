@@ -245,8 +245,8 @@ jobs:
             libdbus-1-dev
       - name: Submodule sync guard
         run: node scripts/check-sdk-submodule.mjs
-      - name: SDK upstream release checker tests
-        run: node --test scripts/sdk-upstream-release-check.test.mjs
+      - name: SDK upstream and advisory checker tests
+        run: node --test scripts/sdk-upstream-main-check.test.mjs scripts/sdk-security-advisory-check.test.mjs
       - name: Release version checker tests
         run: node --test scripts/desktop-release-version.test.mjs
       - name: Updater manifest tests

@@ -1,0 +1,249 @@
+[
+  {
+    "ghsa_id": "GHSA-45pr-7vv7-f64m",
+    "cve_id": null,
+    "summary": "Sending custom to-device message panics when using `IdentityBasedStrategy` and recipient identity is missing",
+    "severity": "low",
+    "html_url": "https://github.com/matrix-org/matrix-rust-sdk/security/advisories/GHSA-45pr-7vv7-f64m",
+    "published_at": "2026-09-29T07:16:18Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "rust",
+          "name": "matrix-sdk-crypto"
+        },
+        "vulnerable_version_range": "< 0.19.0",
+        "patched_versions": "0.19.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-h97m-27fx-42rx",
+    "cve_id": "CVE-2026-45057",
+    "summary": "Incomplete message edit validation",
+    "severity": "medium",
+    "html_url": "https://github.com/matrix-org/matrix-rust-sdk/security/advisories/GHSA-h97m-27fx-42rx",
+    "published_at": "2026-06-03T14:46:31Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "rust",
+          "name": "matrix-sdk-ui"
+        },
+        "vulnerable_version_range": "< 0.16.1",
+        "patched_versions": "0.16.1"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-wfq4-36m3-9g42",
+    "cve_id": "CVE-2026-45056",
+    "summary": "Sender-binding gaps in to-device messages allow for sender spoofing",
+    "severity": "high",
+    "html_url": "https://github.com/matrix-org/matrix-rust-sdk/security/advisories/GHSA-wfq4-36m3-9g42",
+    "published_at": "2026-06-03T18:40:26Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "rust",
+          "name": "matrix-sdk-crypto"
+        },
+        "vulnerable_version_range": ">= 0.12.0,  < 0.16.1",
+        "patched_versions": "0.16.1"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-jj6p-3m75-g2p3",
+    "cve_id": "CVE-2025-66622",
+    "summary": "Denial of service due to custom `m.room.join_rules` events",
+    "severity": "low",
+    "html_url": "https://github.com/matrix-org/matrix-rust-sdk/security/advisories/GHSA-jj6p-3m75-g2p3",
+    "published_at": "2025-12-08T11:30:54Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "rust",
+          "name": "matrix-sdk-base"
+        },
+        "vulnerable_version_range": "< 0.16.0",
+        "patched_versions": "0.16.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-qhj8-q5r6-8q6j",
+    "cve_id": "CVE-2025-59047",
+    "summary": "Panic in the `RoomMember::normalized_power_level()` method",
+    "severity": "low",
+    "html_url": "https://github.com/matrix-org/matrix-rust-sdk/security/advisories/GHSA-qhj8-q5r6-8q6j",
+    "published_at": "2025-09-11T11:19:53Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "rust",
+          "name": "matrix-sdk-base"
+        },
+        "vulnerable_version_range": "< 0.14.1",
+        "patched_versions": "0.14.1"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-275g-g844-73jh",
+    "cve_id": "CVE-2025-53549",
+    "summary": "SQL injection in the Matrix Rust SDK EventCache implementation",
+    "severity": "medium",
+    "html_url": "https://github.com/matrix-org/matrix-rust-sdk/security/advisories/GHSA-275g-g844-73jh",
+    "published_at": "2025-07-10T15:48:00Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "rust",
+          "name": "matrix-sdk"
+        },
+        "vulnerable_version_range": ">= 0.11, < 0.13",
+        "patched_versions": "0.13"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-x958-rvg6-956w",
+    "cve_id": "CVE-2025-48937",
+    "summary": "Sender of encrypted events can be spoofed by homeserver administrator",
+    "severity": "high",
+    "html_url": "https://github.com/matrix-org/matrix-rust-sdk/security/advisories/GHSA-x958-rvg6-956w",
+    "published_at": "2025-06-10T12:10:00Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "rust",
+          "name": " matrix-sdk-crypto"
+        },
+        "vulnerable_version_range": ">= 0.8.0, < 0.11.1",
+        "patched_versions": "0.11.1, 0.12.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-r5vf-wf4h-82gg",
+    "cve_id": "CVE-2024-52813",
+    "summary": "Missing facility to signal rotation of a verified cryptographic identity",
+    "severity": "medium",
+    "html_url": "https://github.com/matrix-org/matrix-rust-sdk/security/advisories/GHSA-r5vf-wf4h-82gg",
+    "published_at": "2025-01-07T11:21:31Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "rust",
+          "name": "matrix-sdk-crypto"
+        },
+        "vulnerable_version_range": "< 0.8.0",
+        "patched_versions": "0.8.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-4qg4-cvh2-crgg",
+    "cve_id": "CVE-2024-40648",
+    "summary": "`UserIdentity::is_verified` not checking verification status of own user identity while performing the check",
+    "severity": "medium",
+    "html_url": "https://github.com/matrix-org/matrix-rust-sdk/security/advisories/GHSA-4qg4-cvh2-crgg",
+    "published_at": "2024-07-18T14:21:07Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "rust",
+          "name": "matrix-sdk-crypto"
+        },
+        "vulnerable_version_range": "< 0.7.2",
+        "patched_versions": "0.7.2"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-9ggc-845v-gcgv",
+    "cve_id": "CVE-2024-34353",
+    "summary": "Log exposure of private key of the server-side key backup",
+    "severity": "medium",
+    "html_url": "https://github.com/matrix-org/matrix-rust-sdk/security/advisories/GHSA-9ggc-845v-gcgv",
+    "published_at": "2024-05-13T10:59:52Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "rust",
+          "name": "matrix-sdk-crypto"
+        },
+        "vulnerable_version_range": "0.7.0",
+        "patched_versions": "0.7.1"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-vp68-2wrm-69qm",
+    "cve_id": "CVE-2022-39252",
+    "summary": "When receiving forwarded room keys, we don't check that the forwarder device matches the device we requested from",
+    "severity": "low",
+    "html_url": "https://github.com/matrix-org/matrix-rust-sdk/security/advisories/GHSA-vp68-2wrm-69qm",
+    "published_at": "2022-09-29T10:23:37Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "rust",
+          "name": "matrix-sdk-crypto"
+        },
+        "vulnerable_version_range": "< 0.5",
+        "patched_versions": "0.6"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-j8cm-g7r6-hfpq",
+    "cve_id": "CVE-2024-40640",
+    "summary": "Usage of non-constant time base64 decoder could lead to leakage of secret key material",
+    "severity": "low",
+    "html_url": "https://github.com/matrix-org/vodozemac/security/advisories/GHSA-j8cm-g7r6-hfpq",
+    "published_at": "2024-07-17T14:31:02Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "rust",
+          "name": "vodozemac"
+        },
+        "vulnerable_version_range": "< 0.7.0",
+        "patched_versions": "0.7.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-c3hm-hxwf-g5c6",
+    "cve_id": "CVE-2024-34063",
+    "summary": "Degraded secret zeroization capabilities",
+    "severity": "low",
+    "html_url": "https://github.com/matrix-org/vodozemac/security/advisories/GHSA-c3hm-hxwf-g5c6",
+    "published_at": "2024-05-02T15:04:07Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "rust",
+          "name": "vodozemac"
+        },
+        "vulnerable_version_range": "0.5.0, 0.5.1",
+        "patched_versions": "0.6.0"
+      }
+    ]
+  }
+]

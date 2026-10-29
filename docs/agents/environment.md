@@ -22,10 +22,40 @@ dependencies. If it rejects submodule status, update the checkout to the
 recorded gitlink; do not work around the failure by adding a remote SDK
 revision.
 
-`.github/workflows/sdk-upstream-release-check.yml` compares the pinned fork base
-with upstream's latest `matrix-sdk` release once a day. When the base is behind,
-it opens one issue carrying the `sdk-update` label; close that issue only after
-the gitlink moves to a base that includes the newer release.
+### Following upstream
+
+The fork (`shinaoka/matrix-rust-sdk-work`) follows upstream
+`matrix-org/matrix-rust-sdk` `main`, not only its releases:
+
+- **Every other day**, merge upstream `main` into the fork and move the gitlink
+  through a normal koushi PR. `.github/workflows/sdk-upstream-main-check.yml`
+  measures the lag on the same cadence and keeps one open `sdk-update` issue
+  with the upstream range, the fork-only commit count and the crates touched;
+  it closes the issue once the gitlink contains upstream `main`.
+- **Security advisories pre-empt the schedule.**
+  `.github/workflows/sdk-security-advisory-check.yml` runs hourly and opens one
+  `security` issue per advisory (ids in the title) that affects a pinned
+  `matrix-sdk*`, `ruma*` or `vodozemac` version in the root `Cargo.lock`. The
+  fork's crate version can trail unreleased upstream fixes, so first check
+  whether the pinned commit already carries the fix; if not, sync now.
+
+To sync, in a fork checkout on a branch from the fork's `main`:
+
+```bash
+git remote add upstream https://github.com/matrix-org/matrix-rust-sdk.git  # once
+git fetch upstream main
+git merge upstream/main
+```
+
+Merge rather than rebase, so earlier gitlinks stay reachable on the fork.
+Resolve each conflict toward upstream: keep a fork change only while it is
+still indispensable under
+[engineering rules Build item 1](../policies/engineering-rules.md#build-dependencies-qa-gates),
+drop it when upstream now covers the need, and update
+`docs/upstream/matrix-rust-sdk-feedback.md` either way. Land the merge through
+a fork PR, then in a koushi worktree move `vendor/matrix-rust-sdk` to it, refresh
+`Cargo.lock` if resolution changed, run `node scripts/check-sdk-submodule.mjs`
+and the Rust gates, and open the PR. Its CI is the evidence for the bump.
 
 ## Local homeserver binaries
 

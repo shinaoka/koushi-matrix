@@ -1,0 +1,37 @@
+name: Matrix SDK upstream main check
+
+# Every other day, measure how far the pinned vendor/matrix-rust-sdk fork
+# commit trails upstream matrix-org/matrix-rust-sdk `main`. The issue is the
+# only signal: at most one OPEN issue carries the `sdk-update` label, updated
+# with the current upstream range and closed once the gitlink contains
+# upstream `main`. `*/2` restarts on day 1, so month ends can run two days in a
+# row; that is harmless.
+on:
+  schedule:
+    - cron: "23 5 */2 * *"
+  workflow_dispatch:
+
+# A rerun must not race an in-flight run into two issues.
+concurrency:
+  group: sdk-upstream-main-check
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Compare the pinned fork commit with upstream main
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # The checkout carries the gitlink; the script fetches both SDK histories
+      # without blobs instead of cloning the submodule.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Measure the upstream lag and sync the sdk-update issue
+        run: node scripts/sdk-upstream-main-check.mjs
