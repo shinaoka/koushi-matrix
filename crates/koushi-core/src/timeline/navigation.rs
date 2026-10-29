@@ -696,6 +696,7 @@ pub(super) fn commit_prepared_initial_window_for_generation(
     generation: TimelineGeneration,
     prefix_events: Vec<TimelineEvent>,
     prepared: PreparedInitialWindow,
+    suffix_events: Vec<TimelineEvent>,
 ) -> TimelineEmissionOutcome {
     let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
         return TimelineEmissionOutcome::default();
@@ -717,6 +718,7 @@ pub(super) fn commit_prepared_initial_window_for_generation(
             items: prepared.emitted_items,
         }],
     );
+    emit_timeline_events_with_lease(event_tx, &lease, suffix_events);
     TimelineEmissionOutcome {
         accepted: true,
         published,
@@ -956,10 +958,13 @@ pub(super) struct ActivePaginationTask {
     pub(super) task: executor::JoinHandle<()>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PaginationCompletion {
     state: PaginationState,
     prepend_expected: Option<bool>,
+    /// #1676: the SDK's final row after a `Focused` forward page reached the
+    /// end and the SDK timeline applied it.
+    pub(super) focused_end_tail: Option<String>,
 }
 
 fn backward_pagination_changed_oldest_edge(
@@ -1113,6 +1118,7 @@ impl TimelineActor {
         let actor_generation = self.actor_generation;
         let actor_tx = self.msg_tx.clone();
         let account_work = self.account_work.clone();
+        let focused_cache = self.focused_cache.clone();
         let task = executor::spawn(async move {
             let completion = Box::pin(Self::paginate_once_for(
                 request_id,
@@ -1124,6 +1130,7 @@ impl TimelineActor {
                 account_work,
                 direction,
                 event_count,
+                focused_cache,
             ))
             .await;
             let _ = actor_tx
@@ -1156,6 +1163,7 @@ impl TimelineActor {
         account_work: AccountWorkScheduler,
         direction: PaginationDirection,
         event_count: u16,
+        focused_cache: Option<matrix_sdk::event_cache::EventFocusedCache>,
     ) -> PaginationCompletion {
         let oldest_event_before = if direction == PaginationDirection::Backward {
             oldest_observable_event_id(&timeline).await
@@ -1177,6 +1185,7 @@ impl TimelineActor {
             return PaginationCompletion {
                 state: PaginationState::Idle,
                 prepend_expected: None,
+                focused_end_tail: None,
             };
         };
         let result = {
@@ -1231,12 +1240,42 @@ impl TimelineActor {
             None
         };
 
+        let focused_end_tail = match (&result, focused_cache) {
+            (PaginationAttempt::ReachedEnd, Some(cache))
+                if direction == PaginationDirection::Forward =>
+            {
+                super::focused_live_tail::final_tail(&timeline, &cache, TIMELINE_PAGINATION_TIMEOUT)
+                    .await
+            }
+            _ => None,
+        };
         let next_state = result.into_state();
 
         PaginationCompletion {
             state: next_state,
             prepend_expected,
+            focused_end_tail,
         }
+    }
+    /// #1676: report the live tail once the projection holds the pending
+    /// final row. Only the completion path calls this; SDK batches and
+    /// replays carry the signal under their own projection lease.
+    pub(super) fn emit_focused_live_tail_if_committed(&mut self) {
+        let Some(tail) = self.focused_live_tail.commit(&self.navigation_items) else {
+            return;
+        };
+        emit_timeline_events_for_generation(
+            &self.event_tx,
+            &self.timeline_actor_generations,
+            &self.key,
+            self.actor_generation,
+            vec![super::focused_live_tail::live_tail_event(
+                &self.key,
+                self.actor_generation,
+                self.generation,
+                tail,
+            )],
+        );
     }
     pub(super) fn emit_pagination_completion(
         &self,
@@ -1326,6 +1365,19 @@ impl TimelineActor {
                 display_projection: candidate_display_projection,
                 navigation_items: None,
             },
+            // #1676: a replay may reach a renderer that lost the latch.
+            self.focused_live_tail
+                .latched()
+                .map(|tail| {
+                    super::focused_live_tail::live_tail_event(
+                        &self.key,
+                        self.actor_generation,
+                        self.generation,
+                        tail.to_owned(),
+                    )
+                })
+                .into_iter()
+                .collect(),
         );
         if emitted.published {
             super::outbound_send::record_initial_pending_publication(

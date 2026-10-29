@@ -38,6 +38,21 @@ function forwardPagination(key: TimelineKey, state: PaginationState): CoreEventP
   };
 }
 
+/** #1676: Core's live-tail report for the current (default) actor. */
+function focusedLiveTail(key: TimelineKey, tailEventId: string): CoreEventPayload {
+  return {
+    kind: "Timeline",
+    event: {
+      FocusedLiveTailReached: {
+        key,
+        actor_generation: 0,
+        generation: 1,
+        tail_event_id: tailEventId
+      }
+    }
+  };
+}
+
 function installResizeObserverMock() {
   const originalResizeObserver = window.ResizeObserver;
   const observers: Array<{ trigger: () => void }> = [];
@@ -366,6 +381,11 @@ describe("TimelineView", () => {
         emit(forwardPagination(focusedKey, "EndReached"));
       });
       fireEvent.scroll(timeline);
+      // #1676: the end alone is not the proof; Core reports the live tail.
+      expect(onReturnToLive).not.toHaveBeenCalled();
+      act(() => {
+        emit(focusedLiveTail(focusedKey, "$live:example.invalid"));
+      });
 
       await waitFor(() => {
         expect(onReturnToLive).toHaveBeenCalledTimes(1);
@@ -575,6 +595,8 @@ describe("TimelineView", () => {
             }
           }
         });
+        // #1676: Core reports the live tail right after the committing batch.
+        emit(focusedLiveTail(focusedKey, "$live:example.invalid"));
       });
       // The reader rests at the bottom: committing the final page alone
       // completes the return, without another scroll.

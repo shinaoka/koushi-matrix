@@ -107,6 +107,7 @@ reply=ok
 reply_quote=ok
 anchored_forward_live_end=ok
 anchored_backward_history=ok
+anchored_live_tail=ok
 pin_event=ok
 pinned_state=ok
 unpin_event=ok
@@ -157,6 +158,10 @@ timeline opened by the reply-quote jump paginates forward through more than one
 projection. `anchored_backward_history=ok` (#1675) proves that a jump into that
 history paginates its focused timeline backward until a page adds the first
 seeded message, which the target's `/context` page does not hold.
+`anchored_live_tail=ok` (#1676) proves that once the forward end is reached,
+Core reports `FocusedLiveTailReached` naming the newest seeded message, and that
+a live message sent afterwards neither moves that tail nor closes the anchored
+view; the renderer owns the return to live.
 
 `directory_query=ok` and `directory_join=ok` are the Phase A public-directory
 proof. The core lane creates a disposable public alias room through a Rust core

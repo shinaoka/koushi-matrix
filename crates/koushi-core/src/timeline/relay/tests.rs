@@ -610,6 +610,7 @@ async fn stale_generation_prepared_initial_window_does_not_commit_or_publish() {
             TimelineGeneration(2),
             Vec::new(),
             prepared,
+            Vec::new(),
         )
         .accepted
     );

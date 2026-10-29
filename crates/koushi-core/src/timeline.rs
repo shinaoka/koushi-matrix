@@ -55,6 +55,7 @@ mod direct_message;
 mod direct_room_messages;
 mod display_projection;
 mod focused_build;
+mod focused_live_tail;
 mod gap_repair;
 pub(crate) mod html_sanitize;
 mod item_projection;

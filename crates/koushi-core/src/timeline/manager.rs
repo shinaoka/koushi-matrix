@@ -2296,6 +2296,16 @@ impl TimelineManagerActor {
         let Some(room) = session.client().get_room(&room_id) else {
             return Err(TimelineFailureKind::Sdk);
         };
+        let cache_key = match &focus {
+            TimelineFocus::Event {
+                target,
+                num_context_events,
+                thread_mode,
+                ..
+            } => Some((target.clone(), *num_context_events, *thread_mode)),
+            _ => None,
+        };
+        let client = session.client().clone();
         Ok(Box::pin(async move {
             record_subscribe_stage("build_begin", None);
             let build_started = Some(startup_trace::now());
@@ -2341,9 +2351,22 @@ impl TimelineManagerActor {
                 actor_generation,
                 Some(sdk_started.elapsed().as_millis()),
             );
-            timeline_result
-                .map(|timeline| PreparedFocusedTimeline::Sdk(Arc::new(timeline)))
-                .map_err(|_| FocusedBuildFailure::Sdk)
+            let timeline = timeline_result.map_err(|_| FocusedBuildFailure::Sdk)?;
+            // #1676: the build just memoized this cache under the same key, so
+            // the lookup returns it without another `/context` request.
+            let focused_cache = match cache_key {
+                Some((target, num_context_events, thread_mode)) => client
+                    .event_cache()
+                    .event_focused(&room_id, &target, thread_mode.into(), num_context_events)
+                    .await
+                    .ok()
+                    .map(|(cache, _drop_handles)| cache),
+                None => None,
+            };
+            Ok(PreparedFocusedTimeline::Sdk(
+                Arc::new(timeline),
+                focused_cache,
+            ))
         }))
     }
 
@@ -2370,10 +2393,11 @@ impl TimelineManagerActor {
             return;
         }
         let result = match completion.result {
-            Ok(PreparedFocusedTimeline::Sdk(timeline)) => match self.session.clone() {
+            Ok(PreparedFocusedTimeline::Sdk(timeline, focused_cache)) => match self.session.clone()
+            {
                 Some(session) => {
                     let subscription_generation = self.current_subscription_generation();
-                    Ok(Box::pin(self.spawn_timeline_actor(
+                    let handle = Box::pin(self.spawn_timeline_actor(
                         session,
                         pending.request_id,
                         &key,
@@ -2381,7 +2405,14 @@ impl TimelineManagerActor {
                         pending.activation.generation,
                         subscription_generation,
                     ))
-                    .await)
+                    .await;
+                    if let Some(cache) = focused_cache {
+                        let _ = handle
+                            .tx
+                            .send(TimelineActorMessage::BindFocusedCache(cache))
+                            .await;
+                    }
+                    Ok(handle)
                 }
                 None => Err(FocusedBuildFailure::Sdk),
             },

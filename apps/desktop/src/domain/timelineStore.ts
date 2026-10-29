@@ -80,6 +80,11 @@ export interface TimelineKeyState {
   mediaUploadProgress: Map<string, MediaTransferProgress>;
   gapPositions: TimelineGapPosition[];
   gapGeneration: number;
+  /**
+   * #1676: Core's live-tail report for a Focused key's current actor: the
+   * final row once the forward end is reached. Never cleared for that actor.
+   */
+  focusedLiveTailEventId: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,7 +238,8 @@ function emptyKeyState(): TimelineKeyState {
     paginationForward: "Idle",
     mediaUploadProgress: new Map(),
     gapPositions: [],
-    gapGeneration: 0
+    gapGeneration: 0,
+    focusedLiveTailEventId: null
   };
 }
 
@@ -281,6 +287,9 @@ export function applyTimelineEvent(
   }
   if ("GapPositionsUpdated" in event) {
     return applyGapPositionsUpdated(store, event.GapPositionsUpdated);
+  }
+  if ("FocusedLiveTailReached" in event) {
+    return applyFocusedLiveTailReached(store, event.FocusedLiveTailReached);
   }
   if ("ResyncRequired" in event) {
     return applyResyncRequired(store, event.ResyncRequired.key);
@@ -508,6 +517,9 @@ function timelineEventKeyId(event: TimelineEvent): string | null {
   if ("GapRepairReleased" in event) {
     return keyStr(event.GapRepairReleased.key);
   }
+  if ("FocusedLiveTailReached" in event) {
+    return keyStr(event.FocusedLiveTailReached.key);
+  }
   if ("SendCompleted" in event) {
     return keyStr(event.SendCompleted.key);
   }
@@ -560,6 +572,7 @@ function applyInitialItems(
     // EndReached belongs to the previous actor's loaded window, not the key forever.
     paginationBackward: actorChanged ? "Idle" : existing.paginationBackward,
     paginationForward: actorChanged ? "Idle" : existing.paginationForward,
+    focusedLiveTailEventId: actorChanged ? null : existing.focusedLiveTailEventId,
     projectionRequestId: payload.request_id,
     items: indexed.items,
     itemIndexById: indexed.itemIndexById,
@@ -720,6 +733,25 @@ function applyPaginationStateChanged(
       ? { ...existing, paginationBackward: payload.state }
       : { ...existing, paginationForward: payload.state };
   next.set(k, updated);
+  return withKeys(store, next);
+}
+
+function applyFocusedLiveTailReached(
+  store: TimelineStoreState,
+  payload: Extract<TimelineEvent, { FocusedLiveTailReached: unknown }>["FocusedLiveTailReached"]
+): TimelineStoreState {
+  const k = keyStr(payload.key);
+  const existing = store.keys.get(k);
+  // Only the current actor and timeline generation may report its tail.
+  if (
+    !existing ||
+    existing.actorGeneration !== payload.actor_generation ||
+    existing.generation !== payload.generation
+  ) {
+    return store;
+  }
+  const next = new Map(store.keys);
+  next.set(k, { ...existing, focusedLiveTailEventId: payload.tail_event_id });
   return withKeys(store, next);
 }
 
@@ -1157,6 +1189,14 @@ export function getMediaUploadProgress(
   transactionId: string
 ): MediaTransferProgress | null {
   return store.keys.get(keyStr(key))?.mediaUploadProgress.get(transactionId) ?? null;
+}
+
+/** #1676: Core's live-tail report for a Focused key's current actor. */
+export function getFocusedLiveTailEventId(
+  store: TimelineStoreState,
+  key: TimelineKey
+): string | null {
+  return store.keys.get(keyStr(key))?.focusedLiveTailEventId ?? null;
 }
 
 export function getPaginationState(

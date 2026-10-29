@@ -197,6 +197,7 @@ createTimelineStore,
 getItems,
 getKeyState,
 getMediaUploadProgress,
+getFocusedLiveTailEventId,
 getPaginationState,
 timelineStoreKeyId,
 timelineStoreLookupDiagnosticMessage,
@@ -740,6 +741,8 @@ export const TimelineView = memo(function TimelineView({
   // #1668: a focused timeline reaches the live end only when Rust reports
   // forward EndReached; before that its loaded bottom is anchored history.
   const forwardState = getPaginationState(store, timelineKey, "Forward");
+  // #1676: Core's live-tail report; a Focused key returns to live only on it.
+  const focusedLiveTailEventId = getFocusedLiveTailEventId(store, timelineKey);
   windowReachesLiveEndRef.current =
     displayWindow?.reaches_live_end ??
     (focusedTimelineTargetEventId === null || forwardState === "EndReached");
@@ -1513,7 +1516,9 @@ export const TimelineView = memo(function TimelineView({
                                     ? event.GapPositionsUpdated.key
                                     : "GapRepairReleased" in event
                                       ? event.GapRepairReleased.key
-                                      : event.ResyncRequired.key;
+                                      : "FocusedLiveTailReached" in event
+                                        ? event.FocusedLiveTailReached.key
+                                        : event.ResyncRequired.key;
       if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
         const currentKey = timelineKeyRef.current;
         const currentKind = timelineKindDiagnosticLabel(currentKey);
@@ -2277,17 +2282,21 @@ export const TimelineView = memo(function TimelineView({
       autoReturnToLiveIdentityRef.current = identityKey;
       autoReturnToLiveKeyRef.current = null;
     }
+    // A Focused key returns on Core's live-tail report: its focused cache never
+    // takes newer live messages, so the room's latest event cannot prove it.
+    const liveTailEventId =
+      focusedTimelineTargetEventId !== null ? focusedLiveTailEventId : liveLatestEventId;
     if (
       !onReturnToLive ||
       !viewportAtBottom ||
       !latestReadableEventId ||
-      !liveLatestEventId ||
-      latestReadableEventId !== liveLatestEventId
+      !liveTailEventId ||
+      latestReadableEventId !== liveTailEventId
     ) {
       return;
     }
 
-    const key = [identityKey, liveLatestEventId].join("\u0000");
+    const key = [identityKey, liveTailEventId].join("\u0000");
     if (autoReturnToLiveKeyRef.current === key) {
       return;
     }
@@ -2300,6 +2309,7 @@ export const TimelineView = memo(function TimelineView({
         }
       });
   }, [
+    focusedLiveTailEventId,
     focusedTimelineTargetEventId,
     initialTargetEventId,
     isAnchored,

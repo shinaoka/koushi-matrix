@@ -2553,10 +2553,26 @@ stateDiagram-v2
   the loaded bottom, one page in flight, until Rust reports forward
   `EndReached`; a failed page retries only on a genuine user scroll. Before
   that end the loaded bottom is not the live edge, so it never takes live-edge
-  scroll intent. At the bottom, the renderer dispatches the existing
-  `CloseFocusedContext` live-edge return once the committed focused tail equals
-  the live latest event. A forward `EndReached` alone is not that proof: the
-  SDK can report it before the final page's diffs are committed.
+  scroll intent. The SDK's event-focused cache never ingests sync events, so
+  newer live messages can never extend the anchored view (#1676). Core owns the
+  live-tail decision: when a forward page reaches the end, the focused actor's
+  pagination task reads the last event id of the focused cache it retained at
+  build and waits, within the pagination timeout, until the SDK timeline has
+  processed that event (`Timeline::latest_event_id`). The SDK's newest row
+  then is the final tail, with no Koushi rule for which events become rows.
+  Once Core's projection holds that row, the actor emits
+  `FocusedLiveTailReached { key, actor_generation, generation, tail_event_id }`:
+  under the committing batch's generation lease, right after its diffs, when
+  the tail was already pending; or under a fresh current-generation lease
+  with the pagination completion when the row was committed first. It
+  re-emits it after a replayed `InitialItems` under that replay's lease. The latch is never cleared
+  for that actor generation. The renderer accepts it only for the key's
+  current actor and timeline generation, and dispatches the existing
+  `CloseFocusedContext` live-edge return only while the reader rests at the
+  bottom and the committed focused tail is `tail_event_id`. A reader above the
+  bottom keeps the position; reaching the bottom later returns. A forward
+  `EndReached` alone is not that proof, and neither is the room's latest
+  event, which moves on with every live message.
 - The anchored view reaches older history through `Paginate { direction:
   Backward }` on the same `Focused` key (#1675), under the renderer's ordinary
   backfill rules: near-top or underfilled demand, one request in flight, an
