@@ -1824,8 +1824,9 @@ describe("desktop integration source guards", () => {
     expect(eventNavigationSource).toContain('eventNavigation?.kind !== "liveFallback"');
     expect(source).toContain('eventNavigation?.kind === "failed"');
     expect(eventNavigationSource).toContain('setPrimaryView("timeline")');
-    expect(eventNavigationSource).toContain('eventNavigation.source === "search"');
-    expect(eventNavigationSource).toContain('eventNavigation.source === "activity"');
+    expect(eventNavigationSource).toContain(
+      "rightPanelModeForEventNavigation(eventNavigation.source, current)"
+    );
     expect(eventNavigationSource).not.toContain("navigationFailure");
     expect(eventNavigationSource).not.toContain("api.");
     expect(searchSource).not.toContain('setPrimaryView("timeline")');

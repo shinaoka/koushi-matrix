@@ -150,6 +150,7 @@ import {
   type RightPanelContextMenuTarget,
   type RightPanelMode,
   rightPanelIntentForContextMenuAction,
+  rightPanelModeForEventNavigation,
   rightPanelModeForSearchQuery
 } from "./domain/rightPanel";
 import {
@@ -1579,12 +1580,8 @@ function AccountContent({
       return;
     }
     setPrimaryView("timeline");
-    setRightPanelMode(
-      eventNavigation.source === "activity" || eventNavigation.source === "notification"
-        ? "closed"
-        : eventNavigation.source === "search"
-          ? "search"
-          : "pinned"
+    updateRightPanelMode((current) =>
+      rightPanelModeForEventNavigation(eventNavigation.source, current)
     );
   }, [eventNavigation]);
   useEffect(() => {

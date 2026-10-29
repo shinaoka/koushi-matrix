@@ -1,5 +1,10 @@
 import type { ContextMenuActionId } from "./contextMenus";
-import type { DesktopSnapshot, RoomSummary, SpaceSummary } from "./types";
+import type {
+  DesktopSnapshot,
+  EventNavigationSource,
+  RoomSummary,
+  SpaceSummary
+} from "./types";
 
 export type RightPanelMode =
   | "closed"
@@ -78,6 +83,31 @@ export function rightPanelIntentForContextMenuAction(
 
 export function rightPanelModeForSearchQuery(query: string): RightPanelMode | null {
   return query.trim() ? "search" : null;
+}
+
+// The panel shown once a Rust event navigation anchors the main pane. Search and
+// Pinned keep the list the jump came from; a reply quote jumps within the
+// conversation, so it keeps the current panel and only drops a focused context
+// that the anchored main pane replaces.
+export function rightPanelModeForEventNavigation(
+  source: EventNavigationSource,
+  current: RightPanelMode
+): RightPanelMode {
+  switch (source) {
+    case "activity":
+    case "notification":
+      return "closed";
+    case "search":
+      return "search";
+    case "pinned":
+      return "pinned";
+    case "replyQuote":
+      return current === "focusedContext" ? "closed" : current;
+    default: {
+      const unhandled: never = source;
+      return unhandled;
+    }
+  }
 }
 
 export function roomOrSpaceForPeoplePanelScope(

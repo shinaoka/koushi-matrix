@@ -1408,7 +1408,12 @@ export type NavigationPreferenceUpdate =
       space_local_presentations: Record<string, SpaceLocalPresentation>;
     };
 
-export type EventNavigationSource = "activity" | "search" | "pinned" | "notification";
+export type EventNavigationSource =
+  | "activity"
+  | "search"
+  | "pinned"
+  | "notification"
+  | "replyQuote";
 
 export type EventNavigationFailureKind =
   | "targetMissing"

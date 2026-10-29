@@ -15,7 +15,7 @@ type EventNavigationKind = "idle" | "opening" | "anchored" | "liveFallback" | "f
 type NavigationFixture = {
   roomId: string;
   eventId: string;
-  source: "activity" | "search" | "pinned";
+  source: "activity" | "search" | "pinned" | "replyQuote";
   kind: EventNavigationKind;
   failureKind?: "targetMissing" | "roomUnavailable" | "sessionUnavailable" | "timeline";
 };
@@ -296,6 +296,23 @@ test("current Activity navigation failure is rendered from the Rust DTO", async 
   await expect(page.getByRole("alert")).toContainText(t("navigation.failed"));
   await assertTarget(page, failure);
   await expect(page.getByRole("main", { name: "Activity" })).toBeVisible();
+});
+
+test("an anchored reply-quote jump does not open the pinned messages panel (#1667)", async ({
+  page
+}) => {
+  await openActivityWithRows(page, "recent", [activityRow(ROOM_A, EVENT_A, "Activity A")]);
+  const replyQuote: NavigationFixture = {
+    roomId: ROOM_A,
+    eventId: EVENT_A,
+    source: "replyQuote",
+    kind: "anchored"
+  };
+  await publishNavigation(page, replyQuote);
+  await assertTarget(page, replyQuote);
+
+  await expect(page.getByRole("main", { name: "Conversation timeline" })).toBeVisible();
+  await expect(page.getByText(t("timeline.pinnedMessages"), { exact: true })).toHaveCount(0);
 });
 
 test("a late Activity event completion cannot overwrite an ordinary room selection", async ({
