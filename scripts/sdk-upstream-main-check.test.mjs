@@ -151,6 +151,16 @@ test("behind with an unchanged open issue: leaves it alone", () => {
   assert.match(result.stdout, /^issue_action=none$/m);
 });
 
+test("behind with duplicate open issues: keeps the oldest and closes the rest", () => {
+  const repos = fixture({
+    upstreamAfterFork: [["crates/matrix-sdk/src/client.rs", "sdk: fix client"]],
+  });
+  const result = run(repos, [{ ...openUpdateIssue, number: 1710 }, openUpdateIssue]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^issue_action=edit #1700$/m);
+  assert.match(result.stdout, /^issue_action=close #1710$/m);
+});
+
 test("fails when the pinned commit is missing from the fork", () => {
   const repos = fixture({});
   const result = run({ ...repos, pinned: "0".repeat(40) });

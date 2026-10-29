@@ -275,7 +275,7 @@ function rangeContains(range, version) {
 function compareVersions(left, right) {
   const leftParts = versionParts(left);
   const rightParts = versionParts(right);
-  for (let index = 0; index < 3; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     if (leftParts[index] !== rightParts[index]) {
       return leftParts[index] < rightParts[index] ? -1 : 1;
     }
@@ -283,11 +283,15 @@ function compareVersions(left, right) {
   return 0;
 }
 
-/** Major, minor, patch; pre-release and build metadata do not move a pinned crate across a bound. */
+/**
+ * Major, minor, patch, then 0 for a pre-release and 1 for a release, so
+ * `0.19.0-alpha.1` sorts below `0.19.0`. Pre-releases of one version compare
+ * equal; build metadata is ignored.
+ */
 function versionParts(version) {
-  const match = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?/.exec(version);
+  const match = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(version);
   if (!match) {
     throw new Error(`unsupported version: ${version}`);
   }
-  return [match[1], match[2] ?? "0", match[3] ?? "0"].map(Number);
+  return [match[1], match[2] ?? "0", match[3] ?? "0", match[4] ? "0" : "1"].map(Number);
 }

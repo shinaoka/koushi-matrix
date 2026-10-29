@@ -140,6 +140,15 @@ test("affected: real ranges with two-part versions, exact lists and padded names
   assert.doesNotMatch(result.stdout, /GHSA-9ggc-845v-gcgv/);
 });
 
+test("a pre-release pin sorts below its release", () => {
+  const result = run({
+    packages: { ...pinnedToday, "matrix-sdk-crypto": "0.19.0-alpha.1" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  // `< 0.19.0` covers 0.19.0-alpha.1.
+  assert.match(result.stdout, /^issue_action=create .*GHSA-45pr-7vv7-f64m/m);
+});
+
 test("cargo audit findings for SDK crates file issues; other crates are left to cargo-deny", () => {
   const result = run({
     auditList: [

@@ -160,14 +160,19 @@ function planIssueActions(openIssues, pinned, lag) {
     }));
   }
   const body = issueBody(pinned, lag);
-  const [current] = openIssues;
+  const [current, ...duplicates] = [...openIssues].sort((left, right) => left.number - right.number);
   if (!current) {
     return [{ kind: "create", title: issueTitle, body, labels: [issueLabel] }];
   }
-  if (current.title === issueTitle && current.body.trim() === body.trim()) {
-    return [];
+  const actions = duplicates.map((issue) => ({
+    kind: "close",
+    number: issue.number,
+    comment: `Duplicate of #${current.number}, which tracks the upstream lag.`,
+  }));
+  if (current.title !== issueTitle || current.body.trim() !== body.trim()) {
+    actions.unshift({ kind: "edit", number: current.number, title: issueTitle, body });
   }
-  return [{ kind: "edit", number: current.number, title: issueTitle, body }];
+  return actions;
 }
 
 function issueBody(pinned, lag) {
