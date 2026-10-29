@@ -6304,6 +6304,9 @@ mark {
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 8px;
   inline-size: 100%;
+  /* #1665: without a preview the dialog keeps a compact width; the overlay
+     centers it, and a narrow window still gets its full width. */
+  max-inline-size: min(560px, 100%);
   /* #1234: size to content so a previewless file does not leave blank space
      between its card and the send action. A fitted image still takes the
      available height through the :has rule below; every case is capped at the
@@ -6319,9 +6322,10 @@ mark {
   background: var(--surface);
 }
 
-/* #1234: a staged preview can use the spare height; without one the dialog hugs
-   its content. */
+/* #1234, #1665: a staged preview can use the spare height and width; without
+   one the dialog hugs its content. */
 .upload-staging-dialog:has(.upload-staging-item.has-preview) {
+  max-inline-size: 100%;
   block-size: 100%;
 }
 

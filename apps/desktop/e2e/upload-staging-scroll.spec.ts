@@ -423,3 +423,84 @@ test("mixed files and images stack without stretched gaps (#1012)", async ({ pag
     }
   }
 });
+
+/** #1665: the staging dialog's inline geometry against its overlay. */
+async function stagingWidthGeometry(page: Page) {
+  return page.evaluate(() => {
+    const overlay = document.querySelector<HTMLElement>(".upload-staging-overlay")!;
+    const dialog = overlay.querySelector<HTMLElement>(".upload-staging-dialog")!;
+    const style = getComputedStyle(overlay);
+    const outer = overlay.getBoundingClientRect();
+    const contentLeft = outer.left + parseFloat(style.paddingLeft);
+    const contentRight = outer.right - parseFloat(style.paddingRight);
+    const box = dialog.getBoundingClientRect();
+    return {
+      overlayContentWidth: contentRight - contentLeft,
+      width: box.width,
+      leftGap: box.left - contentLeft,
+      rightGap: contentRight - box.right
+    };
+  });
+}
+
+for (const surface of ["main", "thread"] as const) {
+  test(`${surface} previewless attachments open a compact centered dialog (#1665)`, async ({ page }) => {
+    await page.setViewportSize(STANDARD_VIEWPORT);
+    await gotoReadyShell(page);
+    if (surface === "thread") {
+      await page.getByRole("button", { name: /2 replies/ }).click();
+    }
+    const pane = surface === "thread" ? page.locator('aside[aria-label="Context panel"]') : page;
+    await pane.getByRole("button", { name: "Attach file", exact: true }).click();
+    const longName = `synthetic-${"very-long-file-name-".repeat(8)}report.pdf`;
+    await pane
+      .locator('input[type="file"][aria-label="Attach file input"]')
+      .setInputFiles([stagedPlainFile(longName), stagedPlainFile("synthetic-b.pdf")]);
+    const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle"), exact: true });
+    await expect(dialog.locator(".upload-staging-item")).toHaveCount(2);
+    await expect(dialog.locator(".upload-staging-item.has-preview")).toHaveCount(0);
+    const geometry = await stagingWidthGeometry(page);
+    expect(geometry.width, JSON.stringify(geometry)).toBeLessThanOrEqual(560);
+    expect(geometry.width, JSON.stringify(geometry)).toBeLessThan(geometry.overlayContentWidth - 120);
+    expect(Math.abs(geometry.leftGap - geometry.rightGap), JSON.stringify(geometry)).toBeLessThanOrEqual(1);
+    // The long name truncates inside the compact card instead of widening it.
+    const name = dialog.locator(".upload-staging-name").first();
+    expect(await name.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+    const card = (await dialog.locator(".upload-staging-item").first().boundingBox())!;
+    const box = (await dialog.locator(".upload-staging-dialog").boundingBox())!;
+    expect(card.x + card.width).toBeLessThanOrEqual(box.x + box.width);
+    const caption = dialog.getByRole("textbox", { name: `Caption for ${longName}` });
+    await caption.fill("Synthetic caption");
+    await expect(caption).toHaveText("Synthetic caption");
+    await expect(dialog.getByRole("button", { name: t("upload.sendAttachments") })).toBeInViewport();
+  });
+}
+
+test("previewless attachments use the full width of a narrow window (#1665)", async ({ page }) => {
+  await page.setViewportSize({ width: 480, height: 640 });
+  await gotoReadyShell(page);
+  await page.getByRole("button", { name: "Attach file", exact: true }).click();
+  await page
+    .locator('input[type="file"][aria-label="Attach file input"]')
+    .setInputFiles(stagedPlainFile("synthetic-report.pdf"));
+  const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle"), exact: true });
+  await expect(dialog.locator(".upload-staging-item")).toHaveCount(1);
+  const geometry = await stagingWidthGeometry(page);
+  expect(geometry.width, JSON.stringify(geometry)).toBeCloseTo(geometry.overlayContentWidth, 0);
+  await expect(dialog.getByRole("button", { name: t("upload.sendAttachments") })).toBeInViewport();
+});
+
+for (const mixed of [false, true]) {
+  test(`${mixed ? "mixed items with a preview" : "a previewed image"} keep the wide dialog (#1665)`, async ({ page }) => {
+    await page.setViewportSize(STANDARD_VIEWPORT);
+    await gotoReadyShell(page);
+    await page.getByRole("button", { name: "Attach file", exact: true }).click();
+    await page
+      .locator('input[type="file"][aria-label="Attach file input"]')
+      .setInputFiles(mixed ? [stagedPlainFile("synthetic-a.pdf"), stagedPortraitImage()] : [stagedPortraitImage()]);
+    const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle"), exact: true });
+    await expect(dialog.locator(".upload-staging-preview")).toBeVisible();
+    const geometry = await stagingWidthGeometry(page);
+    expect(geometry.width, JSON.stringify(geometry)).toBeCloseTo(geometry.overlayContentWidth, 0);
+  });
+}

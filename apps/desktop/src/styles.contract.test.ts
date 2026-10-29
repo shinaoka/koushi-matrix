@@ -158,8 +158,10 @@ describe("styles.css token system", () => {
     // #1234: the dialog sizes to its content unless a preview is staged.
     expect(dialog).toMatch(/block-size:\s*auto/);
     expect(dialog).toMatch(/max-block-size:\s*100%/);
+    // #1665: likewise the width is compact unless a preview is staged.
+    expect(dialog).toMatch(/max-inline-size:\s*min\(560px,\s*100%\)/);
     expect(css).toMatch(
-      /\.upload-staging-dialog:has\(\.upload-staging-item\.has-preview\)\s*\{\s*block-size:\s*100%/
+      /\.upload-staging-dialog:has\(\.upload-staging-item\.has-preview\)\s*\{\s*max-inline-size:\s*100%;\s*block-size:\s*100%/
     );
     expect(dialog).toMatch(/overflow:\s*hidden/);
     const list = selectorBlock(".upload-staging-list");
