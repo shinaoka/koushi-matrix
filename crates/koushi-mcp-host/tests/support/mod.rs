@@ -51,6 +51,25 @@ pub async fn wait_for_session(runtime: &CoreRuntime, done: impl Fn(&SessionState
     panic!("the session state did not settle in time");
 }
 
+/// Waits until the runtime's room list holds `room_id`. Injected actions are
+/// only queued, so a test that injects a room list after `sign_in` must wait
+/// for it before a request looks the room up.
+pub async fn wait_for_room(runtime: &CoreRuntime, room_id: &str) {
+    let connection = runtime.attach();
+    for _ in 0..500 {
+        if connection
+            .snapshot()
+            .rooms
+            .iter()
+            .any(|room| room.room_id == room_id)
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the room list did not settle in time");
+}
+
 /// A joined room summary for the room list.
 pub fn room(room_id: &str) -> koushi_state::RoomSummary {
     koushi_state::RoomSummary {

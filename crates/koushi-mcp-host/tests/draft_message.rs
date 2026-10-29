@@ -70,6 +70,7 @@ impl Harness {
             }],
         )
         .await;
+        support::wait_for_room(&core, ROOM).await;
         let media = dir.path().join("media");
         std::fs::create_dir_all(&media).expect("media dir");
         let accounts: Arc<dyn BridgeAccounts> = Arc::new(OneAccount { core, media });
