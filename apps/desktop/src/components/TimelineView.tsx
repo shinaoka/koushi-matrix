@@ -3443,11 +3443,12 @@ export const TimelineView = memo(function TimelineView({
   }, [forwardState, generation, items.length, projectionSettlementRevision, timelineInitialized]);
   const reportViewportObservationRef = useRef(reportViewportObservation);
   reportViewportObservationRef.current = reportViewportObservation;
-  // The end can arrive while the reader already rests at the focused bottom;
-  // re-measure so the live return does not wait for another scroll.
+  // The end, or its final page (whose diffs may follow the terminal), can
+  // arrive while the reader already rests at the focused bottom; re-measure
+  // so the live return does not wait for another scroll.
   useLayoutEffect(() => {
     if (forwardState === "EndReached") reportViewportObservationRef.current();
-  }, [forwardState]);
+  }, [forwardState, items.length]);
 
   useLayoutEffect(() => {
     const pending = pendingBackfillEvaluationRef.current;

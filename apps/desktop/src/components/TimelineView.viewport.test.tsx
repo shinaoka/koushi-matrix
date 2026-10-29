@@ -576,8 +576,8 @@ describe("TimelineView", () => {
           }
         });
       });
-      fireEvent.wheel(timeline, { deltaY: 1 });
-      fireEvent.scroll(timeline);
+      // The reader rests at the bottom: committing the final page alone
+      // completes the return, without another scroll.
       await waitFor(() => {
         expect(onReturnToLive).toHaveBeenCalledTimes(1);
       });

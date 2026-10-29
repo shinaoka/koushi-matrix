@@ -113,12 +113,12 @@ pub(super) async fn paginate_anchored_forward_to_live_end(
         .await
         .map_err(|_| format!("anchored forward page {page}: timed out"))??;
         match state {
-            PaginationState::EndReached if newest_projected => return Ok(page),
             PaginationState::EndReached => {
-                return Err(
-                    "anchored forward pagination reached the end without the newest message"
-                        .to_owned(),
-                );
+                // The final page's diffs may follow the terminal event.
+                if !newest_projected {
+                    wait_for_newest_projection(conn, anchored_key, newest_body).await?;
+                }
+                return Ok(page);
             }
             PaginationState::Idle => {}
             other => return Err(format!("anchored forward page {page}: {other:?}")),
@@ -127,4 +127,31 @@ pub(super) async fn paginate_anchored_forward_to_live_end(
     Err(format!(
         "anchored forward pagination did not reach the end in {MAX_FORWARD_PAGES} pages"
     ))
+}
+
+async fn wait_for_newest_projection(
+    conn: &mut CoreConnection,
+    anchored_key: &TimelineKey,
+    newest_body: &str,
+) -> Result<(), String> {
+    tokio::time::timeout(EVENT_TIMEOUT, async {
+        loop {
+            match conn.recv_event().await {
+                Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated { key, diffs, .. }))
+                    if &key == anchored_key
+                        && diffs
+                            .iter()
+                            .any(|diff| diff_contains_body(diff, newest_body)) =>
+                {
+                    return Ok(());
+                }
+                Ok(_) => {}
+                Err(error) => return Err(format!("anchored forward end: stream: {error:?}")),
+            }
+        }
+    })
+    .await
+    .map_err(|_| {
+        "anchored forward pagination reached the end without the newest message".to_owned()
+    })?
 }
