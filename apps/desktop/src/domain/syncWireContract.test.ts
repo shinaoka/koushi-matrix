@@ -1,7 +1,14 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, test } from "vitest";
 
 import generatedCoreEvents from "./coreEvents.generated.json";
-import type { RoomListReadiness, RoomListSource, SessionState } from "./types";
+import type {
+  EventNavigationSource,
+  RoomListReadiness,
+  RoomListSource,
+  SessionState
+} from "./types";
 
 const blockedSession = (
   failure: "unsupported" | "unreachable" | "invalidResponse"
@@ -70,5 +77,37 @@ describe("sync wire contract", () => {
     // @ts-expect-error Session-only failure tokens cannot appear on signed-out state.
     const invalidSignedOut: SessionState = { kind: "signedOut", failure: "unsupported" };
     expect(invalidSignedOut).toBeDefined();
+  });
+});
+
+// #1667: the TypeScript union must list exactly the variants Rust serializes
+// (camelCase), or a new Rust source falls through renderer switches unnoticed.
+const EVENT_NAVIGATION_SOURCES = {
+  activity: true,
+  search: true,
+  pinned: true,
+  notification: true,
+  replyQuote: true
+} satisfies Record<EventNavigationSource, true>;
+
+describe("event navigation source wire contract", () => {
+  test("mirrors every Rust EventNavigationSource variant", () => {
+    const rust = readFileSync(
+      new URL("../../../../crates/koushi-state/src/state/navigation.rs", import.meta.url),
+      "utf8"
+    );
+    const body = /#\[serde\(rename_all = "camelCase"\)\]\s*pub enum EventNavigationSource \{([^}]*)\}/.exec(
+      rust
+    )?.[1];
+    expect(body).toBeDefined();
+    const variants = (body ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("//"))
+      .map((line) => line.replace(/,$/, ""))
+      .map((variant) => variant.charAt(0).toLowerCase() + variant.slice(1));
+
+    expect(variants.length).toBeGreaterThan(0);
+    expect([...variants].sort()).toEqual(Object.keys(EVENT_NAVIGATION_SOURCES).sort());
   });
 });
