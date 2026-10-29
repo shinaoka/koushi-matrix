@@ -2333,6 +2333,12 @@ stateDiagram-v2
   Cleared wakes; a Clear is accepted only for the current generation and absent
   service record, then emits one validated display removal. InitialItems uses the
   same projected sequence as later ItemsUpdated.
+- A root with neither its root event nor its activity in the bounded window is
+  materialized only when its activity timestamp falls inside the window's
+  timed span, or past the window end only when the window reaches the live
+  end; otherwise it stays dormant until the window covers its activity. It is
+  ordered among timestamped rows only: untimed cursors (`TimelineStart`,
+  `ReadMarker`) never place a root before them (#1657).
 - TypeScript applies Rust display items/diffs and may add renderer-local date
   dividers, but it never prunes projection state, chooses a root/reply slot,
   synthesizes a pending/failed root, or interprets empty/reset/replay as deletion.

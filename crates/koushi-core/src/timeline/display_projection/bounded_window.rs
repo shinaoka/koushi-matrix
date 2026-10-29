@@ -24,6 +24,7 @@ impl DisplayProjectionState {
         canonical: &[TimelineItem],
         context: &DisplayProjectionContext,
     ) {
+        self.canonical_len = canonical.len();
         if context.viewport.at_bottom || canonical.is_empty() {
             self.return_to_live_window(canonical, context);
             return;
@@ -181,6 +182,7 @@ impl DisplayProjectionState {
         context: &DisplayProjectionContext,
     ) -> Vec<TimelineDiff> {
         let before = self.display_items.clone();
+        self.canonical_len = canonical.len();
         let mut slots = Vec::with_capacity(WINDOW_SLOTS);
         let mut rows = 0;
         let mut roots = HashSet::new();
@@ -341,6 +343,7 @@ impl DisplayProjectionState {
             return Vec::new();
         }
         let before = self.display_items.clone();
+        self.canonical_len = canonical.len();
         let mut page = Vec::with_capacity(PAGE_ROWS + 1);
         let mut rows = 0;
         let mut reply_roots = HashSet::new();
@@ -403,12 +406,7 @@ impl DisplayProjectionState {
     }
 
     fn rebuild_window_items(&mut self, context: &DisplayProjectionContext) {
-        self.display_items = project_display_items(
-            &self.slots,
-            &self.pending_items,
-            &self.suppressed_transaction_ids,
-            context,
-        );
+        self.display_items = project_display_items(self, context);
     }
 
     fn trim_slots(&mut self, context: &DisplayProjectionContext, keep_older: bool) {

@@ -33,6 +33,9 @@ struct DisplayProjectionSlot {
 pub(super) struct DisplayProjectionState {
     slots: Vec<DisplayProjectionSlot>,
     pub(super) window_revision: u64,
+    /// Canonical length the slots were last aligned with. #1657: thread roots
+    /// whose activity lies past the window end appear only at the live end.
+    canonical_len: usize,
     display_items: Vec<TimelineItem>,
     /// Manager-owned accepted sends which are not yet represented by an SDK slot.
     pending_items: Vec<TimelineItem>,
@@ -63,6 +66,7 @@ impl DisplayProjectionState {
         Self {
             slots,
             window_revision: 0,
+            canonical_len: canonical_items.len(),
             display_items,
             pending_items: Vec::new(),
             suppressed_transaction_ids: HashSet::new(),
@@ -75,12 +79,7 @@ impl DisplayProjectionState {
 
     pub(super) fn reproject(&mut self, context: &DisplayProjectionContext) -> Vec<TimelineDiff> {
         let before = self.display_items.clone();
-        self.display_items = project_display_items(
-            &self.slots,
-            &self.pending_items,
-            &self.suppressed_transaction_ids,
-            context,
-        );
+        self.display_items = project_display_items(self, context);
         finalize_display_projection_diffs(&before, &self.display_items, false).0
     }
 
@@ -199,13 +198,9 @@ impl DisplayProjectionState {
                 item: canonical[canonical_index].clone(),
             })
             .collect();
+        self.canonical_len = canonical.len();
         self.window_revision = self.window_revision.saturating_add(1);
-        self.display_items = project_display_items(
-            &self.slots,
-            &self.pending_items,
-            &self.suppressed_transaction_ids,
-            context,
-        );
+        self.display_items = project_display_items(self, context);
         finalize_display_projection_diffs(&before, &self.display_items, false).0
     }
 
@@ -224,12 +219,8 @@ impl DisplayProjectionState {
         self.window_revision = self.window_revision.saturating_add(1);
         let rebuilt = Self::from_canonical_window(canonical_items, window);
         self.slots = rebuilt.slots;
-        self.display_items = project_display_items(
-            &self.slots,
-            &self.pending_items,
-            &self.suppressed_transaction_ids,
-            context,
-        );
+        self.canonical_len = rebuilt.canonical_len;
+        self.display_items = project_display_items(self, context);
         finalize_display_projection_diffs(&before, &self.display_items, false).0
     }
 
@@ -280,12 +271,7 @@ impl DisplayProjectionState {
             return Vec::new();
         }
         let before = self.display_items.clone();
-        self.display_items = project_display_items(
-            &self.slots,
-            &self.pending_items,
-            &self.suppressed_transaction_ids,
-            context,
-        );
+        self.display_items = project_display_items(self, context);
         finalize_display_projection_diffs(&before, &self.display_items, false).0
     }
 
@@ -297,12 +283,7 @@ impl DisplayProjectionState {
     ) -> Vec<TimelineDiff> {
         let before = self.display_items.clone();
         self.set_pending_inputs(pending_items, suppressed_transaction_ids);
-        self.display_items = project_display_items(
-            &self.slots,
-            &self.pending_items,
-            &self.suppressed_transaction_ids,
-            context,
-        );
+        self.display_items = project_display_items(self, context);
         finalize_display_projection_diffs(&before, &self.display_items, false).0
     }
 }
@@ -917,12 +898,8 @@ impl DisplayMembershipRope {
             cursor = node.right.take();
         }
         display_state.slots = slots;
-        display_state.display_items = project_display_items(
-            &display_state.slots,
-            &display_state.pending_items,
-            &display_state.suppressed_transaction_ids,
-            context,
-        );
+        display_state.canonical_len = canonical_index;
+        display_state.display_items = project_display_items(display_state, context);
         #[cfg(test)]
         {
             (self.display_payload_visits, self.structural_node_visits)
@@ -1195,11 +1172,12 @@ pub(super) fn live_edge_window_start(items: &[TimelineItem], max_items: usize) -
 }
 
 fn project_display_items(
-    slots: &[DisplayProjectionSlot],
-    pending_items: &[TimelineItem],
-    suppressed_transaction_ids: &HashSet<String>,
+    state: &DisplayProjectionState,
     context: &DisplayProjectionContext,
 ) -> Vec<TimelineItem> {
+    let slots = &state.slots;
+    let pending_items = &state.pending_items;
+    let suppressed_transaction_ids = &state.suppressed_transaction_ids;
     if !context.project_thread_roots {
         let mut rendered = slots
             .iter()
@@ -1351,16 +1329,34 @@ fn project_display_items(
             }
         }
     }
+    // #1657: an off-window root belongs to this window only when its activity
+    // falls inside the window's time span, or past its end once the window
+    // reaches the live end. Untimed cursors (TimelineStart, ReadMarker) never
+    // order a root.
+    let reaches_live_end = state.window_reaches_live_end(state.canonical_len);
+    let timestamps = || slots.iter().filter_map(|slot| slot.item.timestamp_ms);
+    let timed_span = timestamps().min().zip(timestamps().max());
+    let belongs_to_window = |timestamp: Option<u64>| match (timestamp, timed_span) {
+        (Some(timestamp), Some((first, last))) => {
+            timestamp >= first && (timestamp <= last || reaches_live_end)
+        }
+        _ => reaches_live_end,
+    };
     for root in &context.thread_roots {
         let root_id = root.root_event_id.as_str();
         if scheduled_roots.contains(root_id) {
             continue;
         }
         let Some(item) = root.item.as_ref() else {
-            projected.push(root_placeholder_item(root));
+            if belongs_to_window(root.activity_timestamp_ms) {
+                projected.push(root_placeholder_item(root));
+            }
             continue;
         };
         let display_timestamp_ms = root.activity_timestamp_ms.or(item.timestamp_ms);
+        if !belongs_to_window(display_timestamp_ms) {
+            continue;
+        }
         let projected_item = root_display_item(
             root,
             item,
@@ -1370,15 +1366,15 @@ fn project_display_items(
         if !rendered_ids.insert(timeline_item_render_id(&projected_item)) {
             continue;
         }
-        let insertion_index = projected
-            .iter()
-            .position(|current| {
-                current
-                    .display_metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.display_timestamp_ms)
-                    .unwrap_or(u64::MAX)
-                    > display_timestamp_ms.unwrap_or(u64::MAX)
+        let insertion_index = display_timestamp_ms
+            .and_then(|timestamp| {
+                projected.iter().position(|current| {
+                    current
+                        .display_metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.display_timestamp_ms)
+                        .is_some_and(|current| current > timestamp)
+                })
             })
             .unwrap_or(projected.len());
         projected.insert(insertion_index, projected_item);
@@ -1946,12 +1942,7 @@ pub(super) fn apply_non_sdk_item_set_diffs_to_display_items(
             existing.item = item.clone();
         }
     }
-    display_projection.display_items = project_display_items(
-        &display_projection.slots,
-        &display_projection.pending_items,
-        &display_projection.suppressed_transaction_ids,
-        context,
-    );
+    display_projection.display_items = project_display_items(display_projection, context);
     let display_after = display_projection.display_items.clone();
     finalize_display_projection_diffs(&display_before, &display_after, false).0
 }

@@ -339,35 +339,59 @@ fn bounded_reset_historical_window_preserves_both_sparse_viewport_endpoints() {
     assert!(state.slots.len() <= 240);
 }
 
+/// A root whose root event and latest reply both lie outside the canonical
+/// slots, as when the reply reaches the room only through the thread list.
+/// #1657: it is displayed only while `activity_timestamp_ms` falls inside the
+/// window's time span, so callers place its activity there.
+const STANDALONE_REPLY: &str = "$reply:example.invalid";
+
 fn standalone_root_context(
     canonical: &[TimelineItem],
     root_index: usize,
-    activity_index: usize,
+    activity_timestamp_ms: u64,
     observation: &TimelineViewportObservation,
 ) -> DisplayProjectionContext {
     use crate::threads_list::{AuthoritativeThreadAggregate, ThreadRootDisplayData};
     let root_id = format!("$event{root_index}:example.invalid");
-    let activity_id = format!("$event{activity_index}:example.invalid");
     context(observation).with_thread_roots(
         TimelineThreadRootOrder::LatestReply,
         vec![ThreadRootDisplayData {
             root_event_id: root_id,
             unread: 0,
-            activity_event_id: activity_id.clone(),
-            activity_timestamp_ms: Some(activity_index as u64),
+            activity_event_id: STANDALONE_REPLY.to_owned(),
+            activity_timestamp_ms: Some(activity_timestamp_ms),
             item: Some(canonical[root_index].clone()),
             aggregate: AuthoritativeThreadAggregate {
                 reply_count: 1,
-                latest_event_id: Some(activity_id),
+                latest_event_id: Some(STANDALONE_REPLY.to_owned()),
                 latest_sender: None,
                 latest_sender_label: None,
                 latest_body_preview: None,
-                latest_timestamp_ms: Some(activity_index as u64),
+                latest_timestamp_ms: Some(activity_timestamp_ms),
             },
             pending: false,
             failure_kind: None,
         }],
     )
+}
+
+fn observe_root(
+    state: &DisplayProjectionState,
+    first: Option<usize>,
+    last: Option<usize>,
+) -> TimelineViewportObservation {
+    let id = |index: Option<usize>| {
+        index.map_or_else(
+            || STANDALONE_REPLY.to_owned(),
+            |index| format!("$event{index}:example.invalid"),
+        )
+    };
+    TimelineViewportObservation {
+        display_window_revision: Some(state.window_revision),
+        first_visible_event_id: Some(id(first)),
+        last_visible_event_id: Some(id(last)),
+        ..Default::default()
+    }
 }
 
 #[test]
@@ -376,10 +400,9 @@ fn standalone_root_at_top_allows_cached_backward_paging_and_rejects_duplicate_ev
     for (index, item) in canonical.iter_mut().enumerate() {
         item.timestamp_ms = Some(index as u64);
     }
-    canonical[10].thread_root = Some("$event0:example.invalid".to_owned());
     let mut state = DisplayProjectionState::from_canonical_window(&canonical, 880..1000);
-    let observation = observe(&state, 10, 890);
-    let context = standalone_root_context(&canonical, 0, 10, &observation);
+    let observation = observe_root(&state, None, Some(890));
+    let context = standalone_root_context(&canonical, 0, 880, &observation);
     state.reproject(&context);
     assert!(state.observation_is_current(&observation));
     let diffs = state.reconcile_bounded_window(
@@ -419,10 +442,9 @@ fn standalone_root_at_bottom_allows_cached_forward_paging() {
     for (index, item) in canonical.iter_mut().enumerate() {
         item.timestamp_ms = Some(index as u64);
     }
-    canonical[990].thread_root = Some("$event999:example.invalid".to_owned());
     let mut state = DisplayProjectionState::from_canonical_window(&canonical, 0..120);
-    let observation = observe(&state, 110, 990);
-    let context = standalone_root_context(&canonical, 999, 990, &observation);
+    let observation = observe_root(&state, Some(110), None);
+    let context = standalone_root_context(&canonical, 999, 119, &observation);
     state.reproject(&context);
     assert!(state.observation_is_current(&observation));
     let diffs = state.reconcile_bounded_window(&canonical, &observation, &context, None);
@@ -446,17 +468,18 @@ fn standalone_root_repeated_fresh_demand_always_advances_or_reaches_cached_start
     for (index, item) in canonical.iter_mut().enumerate() {
         item.timestamp_ms = Some(index as u64);
     }
-    canonical[10].thread_root = Some("$event0:example.invalid".to_owned());
     let mut state = DisplayProjectionState::from_canonical_window(&canonical, 880..1000);
-    let seed = observe(&state, 10, 890);
-    state.reproject(&standalone_root_context(&canonical, 0, 10, &seed));
+    let seed = observe_root(&state, None, Some(890));
+    state.reproject(&standalone_root_context(&canonical, 0, 880, &seed));
     for _ in 0..20 {
         let oldest = state.slots.first().unwrap().canonical_index;
         if oldest == 0 {
             break;
         }
-        let observation = observe(&state, 10, oldest + 10);
-        let context = standalone_root_context(&canonical, 0, 10, &observation);
+        // Keep the root at the top of each window: its activity is the
+        // window's oldest timed row, so it stays inside the time span.
+        let observation = observe_root(&state, None, Some(oldest + 10));
+        let context = standalone_root_context(&canonical, 0, oldest as u64, &observation);
         let before = state.display_items().to_vec();
         let diffs = state.reconcile_bounded_window(
             &canonical,
@@ -480,8 +503,8 @@ fn standalone_root_repeated_fresh_demand_always_advances_or_reaches_cached_start
         );
     }
     assert_eq!(state.first_visible_canonical_index(), Some(0));
-    let observation = observe(&state, 10, 20);
-    let context = standalone_root_context(&canonical, 0, 10, &observation);
+    let observation = observe_root(&state, None, Some(20));
+    let context = standalone_root_context(&canonical, 0, 0, &observation);
     assert!(
         state
             .reconcile_bounded_window(
@@ -515,10 +538,9 @@ fn standalone_root_only_viewport_forward_demand_makes_strict_progress() {
             item.is_hidden = true;
         }
     }
-    canonical[990].thread_root = Some("$event999:example.invalid".to_owned());
     let mut state = DisplayProjectionState::from_canonical_window(&canonical, 0..240);
-    let observation = observe(&state, 990, 990);
-    let context = standalone_root_context(&canonical, 999, 990, &observation);
+    let observation = observe_root(&state, None, None);
+    let context = standalone_root_context(&canonical, 999, 239, &observation);
     state.reproject(&context);
     assert_eq!(
         state

@@ -196,3 +196,106 @@ fn visibility_toggle_does_not_admit_unrepresented_reply_roots_or_lose_reading_ro
     }
     assert!(state.window_reaches_live_end(canonical.len()));
 }
+
+/// #1657: a room of 300 rows whose untimed hidden cursors (`TimelineStart`
+/// at 0, `ReadMarker` at 60) carry no timestamp. The thread root and its
+/// latest reply both lie outside every window used below.
+fn untimed_cursor_fixture(
+    activity_timestamp_ms: u64,
+) -> (Vec<TimelineItem>, ThreadRootDisplayData) {
+    let mut canonical = (0..300)
+        .map(|i| {
+            let mut item = timeline_item(
+                &format!("$event{i}:example.invalid"),
+                Some("synthetic"),
+                "@member:example.invalid",
+                false,
+            );
+            item.timestamp_ms = Some(1_000 + i as u64);
+            item
+        })
+        .collect::<Vec<_>>();
+    for (index, synthetic_id) in [(0, "timeline-start"), (60, "read-marker")] {
+        canonical[index].id = TimelineItemId::Synthetic {
+            synthetic_id: synthetic_id.to_owned(),
+        };
+        canonical[index].timestamp_ms = None;
+        canonical[index].is_hidden = true;
+    }
+    let mut root_item = timeline_item(
+        "$root:example.invalid",
+        Some("synthetic"),
+        "@member:example.invalid",
+        false,
+    );
+    root_item.timestamp_ms = Some(500);
+    let root = ThreadRootDisplayData {
+        root_event_id: "$root:example.invalid".to_owned(),
+        unread: 0,
+        activity_event_id: "$reply:example.invalid".to_owned(),
+        activity_timestamp_ms: Some(activity_timestamp_ms),
+        item: Some(root_item),
+        aggregate: AuthoritativeThreadAggregate {
+            reply_count: 1,
+            latest_event_id: Some("$reply:example.invalid".to_owned()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: None,
+            latest_timestamp_ms: Some(activity_timestamp_ms),
+        },
+        pending: false,
+        failure_kind: None,
+    };
+    (canonical, root)
+}
+
+fn untimed_cursor_context(root: ThreadRootDisplayData) -> DisplayProjectionContext {
+    let observation = TimelineViewportObservation {
+        first_visible_event_id: Some("$event1:example.invalid".to_owned()),
+        last_visible_event_id: Some("$event20:example.invalid".to_owned()),
+        display_window_revision: Some(0),
+        ..Default::default()
+    };
+    DisplayProjectionContext::for_timeline(&room_key().kind, &observation)
+        .with_thread_roots(TimelineThreadRootOrder::LatestReply, vec![root])
+}
+
+fn root_row(rows: &[TimelineItem]) -> Option<usize> {
+    rows.iter().position(
+        |item| matches!(&item.id, TimelineItemId::Event { event_id } if event_id == "$root:example.invalid"),
+    )
+}
+
+#[test]
+fn off_window_root_is_ordered_among_timed_rows_not_before_untimed_cursors() {
+    for (activity_timestamp_ms, after_event) in [(1_150, 150), (2_000, 299)] {
+        let (canonical, root) = untimed_cursor_fixture(activity_timestamp_ms);
+        let context = untimed_cursor_context(root);
+        let mut state = DisplayProjectionState::from_canonical_window(&canonical, 0..300);
+        state.reproject(&context);
+        let rows = state.display_items();
+        let root_position = root_row(rows).expect("the retained root keeps a row");
+        assert_eq!(rows[0].id, canonical[0].id, "TimelineStart stays first");
+        assert_eq!(
+            rows[root_position - 1].id,
+            canonical[after_event].id,
+            "activity {activity_timestamp_ms} follows its newest older row"
+        );
+        let timestamps = rows
+            .iter()
+            .filter_map(|item| item.display_metadata.as_ref()?.display_timestamp_ms)
+            .collect::<Vec<_>>();
+        assert!(timestamps.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
+}
+
+#[test]
+fn historical_window_omits_root_whose_activity_lies_past_its_end() {
+    let (canonical, root) = untimed_cursor_fixture(2_000);
+    let context = untimed_cursor_context(root);
+    let mut state = DisplayProjectionState::from_canonical_window(&canonical, 0..120);
+    state.reproject(&context);
+    assert!(!state.window_reaches_live_end(canonical.len()));
+    assert_eq!(root_row(state.display_items()), None);
+    assert_eq!(state.display_items()[0].id, canonical[0].id);
+}
