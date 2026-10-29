@@ -221,12 +221,12 @@ async fn avatar_actor_bounds_distinct_demand_and_rejects_capacity() {
                 .await
         );
     }
-    // Liveness guard only: the held request settles nothing, so its arrival
-    // has no deadline to race.
-    timeout(Duration::from_secs(2), arrived_rx.recv())
+    // The shared media permit admits one fetch; wait for it to reach the held
+    // server. The arrival is the barrier, so no wall-clock window races it.
+    arrived_rx
+        .recv()
         .await
-        .expect("the shared media permit should reach the held server")
-        .expect("held responder");
+        .expect("the shared media permit should reach the held server");
     for sequence in
         (super::profile::AVATAR_DOWNLOAD_CONCURRENCY as u64 + 1)..=capacity_sequence as u64
     {
