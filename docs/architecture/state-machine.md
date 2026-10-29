@@ -2554,8 +2554,9 @@ stateDiagram-v2
 - The anchored view reaches older history through `Paginate { direction:
   Backward }` on the same `Focused` key (#1675), under the renderer's ordinary
   backfill rules: near-top or underfilled demand, one request in flight, an
-  Idle terminal without `Paginating` retried only after `GapRepairReleased`,
-  and prepended pages keeping the reader's anchored row in place. The desktop
+  admission-rejected Idle (no `Paginating`) fenced until `GapRepairReleased`
+  unless a reset or timeline replacement invalidates that request, and
+  prepended pages keeping the reader's anchored row in place. The desktop
   transport sends both directions for a `Focused` key through one
   `paginate_timeline { timelineKey, direction }` command; Core alone decides
   which directions a timeline kind accepts.
