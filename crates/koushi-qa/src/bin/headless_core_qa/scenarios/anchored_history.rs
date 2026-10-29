@@ -65,7 +65,10 @@ pub(super) async fn paginate_anchored_forward_to_live_end(
         return Err("anchored forward pagination needs a focused key".to_owned());
     }
     let mut newest_projected = false;
+    let mut skipped_pages = 0;
+    let mut released_waits = 0;
     for page in 1..=MAX_FORWARD_PAGES {
+        let mut paginating = false;
         let request_id = conn.next_request_id();
         conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
             request_id,
@@ -91,11 +94,12 @@ pub(super) async fn paginate_anchored_forward_to_live_end(
                         direction: PaginationDirection::Forward,
                         state,
                         ..
-                    })) if id == request_id
-                        && &key == anchored_key
-                        && state != PaginationState::Paginating =>
-                    {
-                        return Ok(state);
+                    })) if id == request_id && &key == anchored_key => {
+                        if state == PaginationState::Paginating {
+                            paginating = true;
+                        } else {
+                            return Ok(state);
+                        }
                     }
                     Ok(CoreEvent::OperationFailed {
                         request_id: id,
@@ -118,14 +122,24 @@ pub(super) async fn paginate_anchored_forward_to_live_end(
                 if !newest_projected {
                     wait_for_newest_projection(conn, anchored_key, newest_body).await?;
                 }
+                println!("anchored_forward_declined_pages={skipped_pages}");
                 return Ok(page);
+            }
+            // An Idle terminal without Paginating is Core declining the page
+            // while gap repair owns the timeline; retry after its release.
+            PaginationState::Idle if !paginating => {
+                skipped_pages += 1;
+                if wait_for_gap_repair_release(conn, anchored_key).await {
+                    released_waits += 1;
+                }
             }
             PaginationState::Idle => {}
             other => return Err(format!("anchored forward page {page}: {other:?}")),
         }
     }
     Err(format!(
-        "anchored forward pagination did not reach the end in {MAX_FORWARD_PAGES} pages"
+        "anchored forward pagination did not reach the end in {MAX_FORWARD_PAGES} pages \
+         (skipped={skipped_pages} released={released_waits} newest={newest_projected})"
     ))
 }
 
@@ -154,4 +168,26 @@ async fn wait_for_newest_projection(
     .map_err(|_| {
         "anchored forward pagination reached the end without the newest message".to_owned()
     })?
+}
+
+/// Returns whether gap repair reported its release before the timeout.
+async fn wait_for_gap_repair_release(
+    conn: &mut CoreConnection,
+    anchored_key: &TimelineKey,
+) -> bool {
+    tokio::time::timeout(EVENT_TIMEOUT, async {
+        loop {
+            match conn.recv_event().await {
+                Ok(CoreEvent::Timeline(TimelineEvent::GapRepairReleased { key, .. }))
+                    if &key == anchored_key =>
+                {
+                    return true;
+                }
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false)
 }

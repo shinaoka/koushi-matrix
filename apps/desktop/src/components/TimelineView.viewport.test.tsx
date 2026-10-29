@@ -586,6 +586,90 @@ describe("TimelineView", () => {
     }
   });
 
+  it("asks for a declined forward page again once gap repair releases the timeline (#1668)", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const paginateForwards = vi.fn(async (_key: TimelineKey) => undefined);
+    const focusedKey = focusedTimelineKey(
+      "@alice:example.invalid",
+      "!room:example.invalid",
+      "$anchor:example.invalid"
+    );
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      paginateForwards
+    });
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    const rectSpy = mockTimelineRects(
+      { "$tail:example.invalid": { top: 920, height: 80 } },
+      { top: 0, height: 500 },
+      scrollContainerRef
+    );
+
+    try {
+      render(
+        <TimelineView
+          timelineKey={focusedKey}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+        />
+      );
+      const timeline = await screen.findByTestId("timeline-view");
+      scrollContainerRef.current = timeline;
+      Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
+      Object.defineProperty(timeline, "scrollHeight", { value: 1_000, configurable: true });
+      Object.defineProperty(timeline, "scrollTop", {
+        value: 500,
+        writable: true,
+        configurable: true
+      });
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key: focusedKey,
+              generation: 1,
+              items: [message("$tail:example.invalid", "End of the context page")]
+            }
+          }
+        });
+      });
+      fireEvent.wheel(timeline, { deltaY: 1 });
+      fireEvent.scroll(timeline);
+      await waitFor(() => {
+        expect(paginateForwards).toHaveBeenCalledTimes(1);
+      });
+
+      // Core declined the page: an Idle terminal without Paginating.
+      act(() => {
+        emit(forwardPagination(focusedKey, "Idle"));
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      expect(paginateForwards).toHaveBeenCalledTimes(1);
+
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            GapRepairReleased: { key: focusedKey, actor_generation: 1, generation: 1 }
+          }
+        });
+      });
+      await waitFor(() => {
+        expect(paginateForwards).toHaveBeenCalledTimes(2);
+      });
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
   it("does not re-request live mode after a transient loss of bottom proof", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const onReturnToLive = vi.fn(() => new Promise<void>(() => undefined));
