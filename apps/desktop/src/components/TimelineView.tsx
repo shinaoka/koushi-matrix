@@ -154,6 +154,7 @@ import {
 clearsExternalTransitionFence,
 evaluateTimelineBackfill,
 externalTransitionAutoRetryDelayMs,
+shouldRequestTimelineForwardFill,
 type TimelineBackfillDemand,
 type TimelineBackfillEvaluationTrigger
 } from "../domain/timelineBackfillPolicy";
@@ -736,7 +737,14 @@ export const TimelineView = memo(function TimelineView({
   // Refs also fence delayed callbacks that captured the previous navigation DTO.
   const returnToLivePendingRef = useRef<{ key: string } | null>(null);
   const windowReachesLiveEndRef = useRef(true);
-  windowReachesLiveEndRef.current = displayWindow?.reaches_live_end ?? true;
+  // #1668: a focused timeline reaches the live end only when Rust reports
+  // forward EndReached; before that its loaded bottom is anchored history.
+  const forwardState = getPaginationState(store, timelineKey, "Forward");
+  windowReachesLiveEndRef.current =
+    displayWindow?.reaches_live_end ??
+    (focusedTimelineTargetEventId === null || forwardState === "EndReached");
+  /** Key hash of the accepted forward page awaiting its terminal state. */
+  const forwardFillRequestKeyRef = useRef<string | null>(null);
   useLayoutEffect(() => { returnToLivePendingRef.current = null; }, [timelineKeyHash]);
 
   // Issue #460: immediate acknowledgment on the user's "Request keys and
@@ -1563,6 +1571,13 @@ export const TimelineView = memo(function TimelineView({
       }
       if ("GapRepairReleased" in event) {
         scheduleBackfillEvaluation("gap_repair_released");
+      }
+      if (
+        "PaginationStateChanged" in event &&
+        event.PaginationStateChanged.direction === "Forward" &&
+        event.PaginationStateChanged.state !== "Paginating"
+      ) {
+        forwardFillRequestKeyRef.current = null;
       }
       if (
         "PaginationStateChanged" in event &&
@@ -3370,6 +3385,70 @@ export const TimelineView = memo(function TimelineView({
   );
   evaluateAndMaybeRequestBackfillRef.current = evaluateAndMaybeRequestBackfill;
 
+  const evaluateForwardFill = useCallback(
+    (genuineUserScroll: boolean) => {
+      const paginateForwards = transport.paginateForwards;
+      const container = containerRef.current;
+      if (focusedTimelineTargetEventId === null || !paginateForwards || !container) {
+        return;
+      }
+      const clientHeight = Math.round(container.clientHeight);
+      const scrollHeight = Math.round(container.scrollHeight);
+      const scrollTop = Math.round(container.scrollTop);
+      const shouldRequest = shouldRequestTimelineForwardFill({
+        initialized: timelineKeyState !== undefined,
+        awaitingResync: timelineKeyState?.awaitingResync ?? false,
+        paginationState: forwardState,
+        requestInFlight: forwardFillRequestKeyRef.current !== null,
+        projectionSettled: viewportTransactionRef.current.active() === null,
+        genuineUserScroll,
+        clientHeight,
+        scrollHeight,
+        scrollTop,
+        nearBottomThreshold: timelineBackfillThreshold(clientHeight)
+      });
+      if (!shouldRequest) {
+        return;
+      }
+      const requestKey = timelineKeyHash;
+      forwardFillRequestKeyRef.current = requestKey;
+      emitDiagnosticLog(
+        "timeline.forward_fill",
+        `stage=request scroll_top_px=${scrollTop} scroll_height_px=${scrollHeight} client_height_px=${clientHeight} state=${paginationStateDiagnosticLabel(forwardState)}`
+      );
+      void paginateForwards(timelineKeyRef.current).catch(() => {
+        if (forwardFillRequestKeyRef.current === requestKey) {
+          forwardFillRequestKeyRef.current = null;
+        }
+        emitDiagnosticLog("timeline.forward_fill", "stage=failed reason=transport");
+      });
+    },
+    [
+      emitDiagnosticLog,
+      focusedTimelineTargetEventId,
+      forwardState,
+      timelineKeyHash,
+      timelineKeyState,
+      transport
+    ]
+  );
+  const evaluateForwardFillRef = useRef(evaluateForwardFill);
+  evaluateForwardFillRef.current = evaluateForwardFill;
+  // A page requested from a replaced actor never reports a terminal.
+  useLayoutEffect(() => {
+    forwardFillRequestKeyRef.current = null;
+  }, [generation, timelineKeyHash]);
+  useLayoutEffect(() => {
+    evaluateForwardFillRef.current(false);
+  }, [forwardState, generation, items.length, projectionSettlementRevision, timelineInitialized]);
+  const reportViewportObservationRef = useRef(reportViewportObservation);
+  reportViewportObservationRef.current = reportViewportObservation;
+  // The end can arrive while the reader already rests at the focused bottom;
+  // re-measure so the live return does not wait for another scroll.
+  useLayoutEffect(() => {
+    if (forwardState === "EndReached") reportViewportObservationRef.current();
+  }, [forwardState]);
+
   useLayoutEffect(() => {
     const pending = pendingBackfillEvaluationRef.current;
     pendingBackfillEvaluationRef.current = null;
@@ -3495,6 +3574,7 @@ export const TimelineView = memo(function TimelineView({
         }
       }
       evaluateAndMaybeRequestBackfillRef.current("user_scroll", isUserDrivenScroll);
+      evaluateForwardFillRef.current(isUserDrivenScroll);
       persistViewportAnchor();
     }
   }, [

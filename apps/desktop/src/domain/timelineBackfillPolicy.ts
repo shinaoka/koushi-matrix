@@ -163,3 +163,36 @@ export function evaluateTimelineBackfill(
   }
   return { kind: "request", demand };
 }
+
+export interface TimelineForwardFillSnapshot {
+  initialized: boolean;
+  awaitingResync: boolean;
+  paginationState: PaginationState;
+  requestInFlight: boolean;
+  projectionSettled: boolean;
+  genuineUserScroll: boolean;
+  clientHeight: number;
+  scrollHeight: number;
+  scrollTop: number;
+  nearBottomThreshold: number;
+}
+
+/**
+ * #1668: an anchored (`Focused`) timeline reaches newer history only through
+ * forward pagination. Request the next newer page while the reader is near the
+ * loaded bottom, until Rust reports `EndReached`. A failed page retries only on
+ * a genuine user scroll, so a permanent failure cannot loop.
+ */
+export function shouldRequestTimelineForwardFill(
+  snapshot: TimelineForwardFillSnapshot
+): boolean {
+  if (!snapshot.initialized || snapshot.awaitingResync) return false;
+  if (snapshot.requestInFlight || !snapshot.projectionSettled) return false;
+  if (snapshot.paginationState === "Paginating" || snapshot.paginationState === "EndReached") {
+    return false;
+  }
+  if (typeof snapshot.paginationState === "object" && !snapshot.genuineUserScroll) return false;
+  if (snapshot.clientHeight <= 0) return false;
+  const distanceToBottom = snapshot.scrollHeight - snapshot.clientHeight - snapshot.scrollTop;
+  return distanceToBottom <= snapshot.nearBottomThreshold;
+}

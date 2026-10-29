@@ -78,6 +78,9 @@ export function createTauriTimelineTransport(accountTabId?: string): TimelineTra
         });
       }
     },
+    async paginateForwards(timelineKey: TimelineKey) {
+      await invokeAccount("paginate_timeline_forwards", { timelineKey });
+    },
     async repairTimeline(roomId: string) {
       await invokeAccount("repair_room_timeline", { roomId });
     },

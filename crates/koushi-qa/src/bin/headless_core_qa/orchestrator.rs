@@ -26,6 +26,7 @@ use super::registry::{
     should_run_normal_secondary_participant,
 };
 use super::scenario_account_notifications::run_account_notifications_stage;
+use super::scenario_anchored_history::{paginate_anchored_forward_to_live_end, seed_newer_history};
 use super::scenario_history_export::run_room_history_export_stage;
 use super::scenario_identity::{
     run_credential_health_stage, run_e2ee_login_store_scenario, run_e2ee_trust_stage,
@@ -936,6 +937,10 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         }
         println!("reply_quote=ok");
 
+        // #1668: more newer history than one `/context` page, so the anchored
+        // view must paginate forward to reach the present.
+        let newest_body = seed_newer_history(&mut conn_a, &key_a).await?;
+
         // #1592: activating the quote opens the original through Rust-owned
         // focused-context navigation, not a React scroll.
         let jump_id = conn_a.next_request_id();
@@ -951,6 +956,18 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
             .map_err(|e| format!("submit reply quote jump: {e}"))?;
         wait_for_reply_quote_jump(&mut conn_a, &room_id, &event1_id, "reply quote jump").await?;
         println!("reply_quote_jump=ok");
+
+        let anchored_key = TimelineKey {
+            account_key: key_a.account_key.clone(),
+            kind: TimelineKind::Focused {
+                room_id: room_id.clone(),
+                event_id: event1_id.clone(),
+            },
+        };
+        let pages =
+            paginate_anchored_forward_to_live_end(&mut conn_a, &anchored_key, &newest_body).await?;
+        println!("anchored_forward_pages={pages}");
+        println!("anchored_forward_live_end=ok");
 
         let close_focused_id = conn_a.next_request_id();
         conn_a

@@ -106,6 +106,8 @@ mod participants;
 mod registry;
 #[path = "headless_core_qa/scenarios/account_notifications.rs"]
 mod scenario_account_notifications;
+#[path = "headless_core_qa/scenarios/anchored_history.rs"]
+mod scenario_anchored_history;
 #[path = "headless_core_qa/scenarios/avatars.rs"]
 mod scenario_avatars;
 #[path = "headless_core_qa/scenarios/hidden_state_acl.rs"]

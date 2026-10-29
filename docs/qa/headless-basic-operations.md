@@ -105,6 +105,7 @@ activity_unread=ok
 activity_markread=ok
 reply=ok
 reply_quote=ok
+anchored_forward_live_end=ok
 pin_event=ok
 pinned_state=ok
 unpin_event=ok
@@ -149,7 +150,10 @@ reply.
 `reply_quote=ok`, `pin_event=ok`, `pinned_state=ok`, and `unpin_event=ok` are
 the Phase A message-interaction proof. The core lane projects reply quote DTOs
 and routes pin/unpin through Rust-owned room state before any GUI affordance is
-considered.
+considered. `anchored_forward_live_end=ok` (#1668) proves that the focused
+timeline opened by the reply-quote jump paginates forward through more than one
+`/context` page until the SDK reports its end, with the newest message in its
+projection.
 
 `directory_query=ok` and `directory_join=ok` are the Phase A public-directory
 proof. The core lane creates a disposable public alias room through a Rust core

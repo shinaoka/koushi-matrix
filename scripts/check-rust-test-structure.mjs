@@ -814,7 +814,7 @@ export function checkDesktopTimelineCommandContract() {
   for (const marker of ["koushi_state::resolve_composer_key_action", "settings.values.keyboard.composer_send_shortcut"]) if (!body?.includes(marker)) failures.push(sourceContractFailure(rule, `composer resolver command lacks ${marker}`));
   const threadCommand = rustItemBody(source, "pub async fn paginate_thread_timeline_backwards");
   const threadBuilder = rustItemBody(source, "build_paginate_thread_timeline_backwards_command");
-  for (const marker of ["TimelineKind::Thread", "PaginationDirection::Backward", "event_count: TIMELINE_BACKWARDS_PAGE_EVENT_COUNT"]) if (!threadBuilder?.includes(marker)) failures.push(sourceContractFailure(rule, `thread pagination builder lacks ${marker}`));
+  for (const marker of ["TimelineKind::Thread", "PaginationDirection::Backward", "event_count: TIMELINE_PAGE_EVENT_COUNT"]) if (!threadBuilder?.includes(marker)) failures.push(sourceContractFailure(rule, `thread pagination builder lacks ${marker}`));
   if (!threadCommand) failures.push(sourceContractFailure(rule, "thread pagination command is missing"));
   for (const registration of ["commands::timeline::resolve_composer_key_action", "commands::timeline::paginate_thread_timeline_backwards"]) {
     if (!libSource.includes(registration)) failures.push(sourceContractFailure(rule, `timeline command registration is missing ${registration}`));

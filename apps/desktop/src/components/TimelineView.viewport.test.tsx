@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   focusedTimelineKey,
   type CoreEventPayload,
-  type TimelineGapId
+  type PaginationState,
+  type TimelineGapId,
+  type TimelineKey
 } from "../domain/coreEvents";
 import { setActiveLocaleProfile } from "../i18n/messages";
 import { KEY, baseTransport, message, mockTimelineRects } from "./timelineViewTestSupport";
@@ -20,6 +22,21 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+
+function forwardPagination(key: TimelineKey, state: PaginationState): CoreEventPayload {
+  return {
+    kind: "Timeline",
+    event: {
+      PaginationStateChanged: {
+        request_id: null,
+        key,
+        direction: "Forward",
+        state,
+        prepend_expected: null
+      }
+    }
+  };
+}
 
 function installResizeObserverMock() {
   const originalResizeObserver = window.ResizeObserver;
@@ -278,6 +295,7 @@ describe("TimelineView", () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const onReturnToLive = vi.fn();
     const observeViewport = vi.fn(async () => undefined);
+    const paginateForwards = vi.fn(async (_key: TimelineKey) => undefined);
     const focusedKey = focusedTimelineKey(
       "@alice:example.invalid",
       "!room:example.invalid",
@@ -288,7 +306,8 @@ describe("TimelineView", () => {
         emit = nextListener;
         return () => undefined;
       },
-      observeViewport
+      observeViewport,
+      paginateForwards
     });
     const scrollContainerRef: { current: HTMLElement | null } = { current: null };
     const rectSpy = mockTimelineRects(
@@ -338,6 +357,16 @@ describe("TimelineView", () => {
       fireEvent.wheel(timeline, { deltaY: 1 });
       fireEvent.scroll(timeline);
 
+      // #1668: the focused bottom is the live end only once Rust reports it.
+      await waitFor(() => {
+        expect(paginateForwards).toHaveBeenCalledWith(focusedKey);
+      });
+      expect(onReturnToLive).not.toHaveBeenCalled();
+      act(() => {
+        emit(forwardPagination(focusedKey, "EndReached"));
+      });
+      fireEvent.scroll(timeline);
+
       await waitFor(() => {
         expect(onReturnToLive).toHaveBeenCalledTimes(1);
       });
@@ -347,6 +376,215 @@ describe("TimelineView", () => {
     }
   });
 
+  it("loads newer focused history at the anchored bottom without moving the reader (#1668)", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const onReturnToLive = vi.fn();
+    const paginateForwards = vi.fn(async (_key: TimelineKey) => undefined);
+    const focusedKey = focusedTimelineKey(
+      "@alice:example.invalid",
+      "!room:example.invalid",
+      "$anchor:example.invalid"
+    );
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      paginateForwards
+    });
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    const rectSpy = mockTimelineRects(
+      {
+        "$context:example.invalid": { top: 800, height: 80 },
+        "$tail:example.invalid": { top: 920, height: 80 }
+      },
+      { top: 0, height: 500 },
+      scrollContainerRef
+    );
+
+    try {
+      render(
+        <TimelineView
+          timelineKey={focusedKey}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+          initialTargetEventId="$anchor:example.invalid"
+          isAnchored
+          onReturnToLive={onReturnToLive}
+          liveLatestEventId="$live:example.invalid"
+        />
+      );
+
+      const timeline = await screen.findByTestId("timeline-view");
+      scrollContainerRef.current = timeline;
+      Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
+      Object.defineProperty(timeline, "scrollHeight", { value: 1_000, configurable: true });
+      Object.defineProperty(timeline, "scrollTop", {
+        value: 500,
+        writable: true,
+        configurable: true
+      });
+
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key: focusedKey,
+              generation: 1,
+              items: [
+                message("$context:example.invalid", "Context message"),
+                message("$tail:example.invalid", "End of the context page")
+              ]
+            }
+          }
+        });
+      });
+      fireEvent.wheel(timeline, { deltaY: 1 });
+      fireEvent.scroll(timeline);
+
+      await waitFor(() => {
+        expect(paginateForwards).toHaveBeenCalledWith(focusedKey);
+      });
+      expect(paginateForwards).toHaveBeenCalledTimes(1);
+
+      act(() => {
+        emit(forwardPagination(focusedKey, "Paginating"));
+        emit({
+          kind: "Timeline",
+          event: {
+            ItemsUpdated: {
+              key: focusedKey,
+              generation: 1,
+              batch_id: 1,
+              diffs: [{ PushBack: { item: message("$newer:example.invalid", "Newer message") } }]
+            }
+          }
+        });
+      });
+      await screen.findByText("Newer message");
+      // The appended page lands below the reader; the anchored history is not
+      // the live edge, so nothing may pin the viewport to the new bottom.
+      expect(timeline.scrollTop).toBe(500);
+      expect(onReturnToLive).not.toHaveBeenCalled();
+
+      // One page in flight at a time; the Idle terminal releases the next.
+      fireEvent.scroll(timeline);
+      expect(paginateForwards).toHaveBeenCalledTimes(1);
+      act(() => {
+        emit(forwardPagination(focusedKey, "Idle"));
+      });
+      fireEvent.wheel(timeline, { deltaY: 1 });
+      fireEvent.scroll(timeline);
+      await waitFor(() => {
+        expect(paginateForwards).toHaveBeenCalledTimes(2);
+      });
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
+  it("returns an anchored focused timeline to live only after its final page is committed (#1668)", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const onReturnToLive = vi.fn();
+    const paginateForwards = vi.fn(async (_key: TimelineKey) => undefined);
+    const focusedKey = focusedTimelineKey(
+      "@alice:example.invalid",
+      "!room:example.invalid",
+      "$anchor:example.invalid"
+    );
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      paginateForwards
+    });
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    const rectSpy = mockTimelineRects(
+      {
+        "$tail:example.invalid": { top: 920, height: 80 },
+        "$live:example.invalid": { top: 920, height: 80 }
+      },
+      { top: 0, height: 500 },
+      scrollContainerRef
+    );
+
+    try {
+      render(
+        <TimelineView
+          timelineKey={focusedKey}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+          initialTargetEventId="$anchor:example.invalid"
+          isAnchored
+          onReturnToLive={onReturnToLive}
+          liveLatestEventId="$live:example.invalid"
+        />
+      );
+
+      const timeline = await screen.findByTestId("timeline-view");
+      scrollContainerRef.current = timeline;
+      Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
+      Object.defineProperty(timeline, "scrollHeight", { value: 1_000, configurable: true });
+      Object.defineProperty(timeline, "scrollTop", {
+        value: 500,
+        writable: true,
+        configurable: true
+      });
+
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key: focusedKey,
+              generation: 1,
+              items: [message("$tail:example.invalid", "End of the context page")]
+            }
+          }
+        });
+      });
+      fireEvent.wheel(timeline, { deltaY: 1 });
+      fireEvent.scroll(timeline);
+      await waitFor(() => {
+        expect(paginateForwards).toHaveBeenCalledWith(focusedKey);
+      });
+
+      // The SDK can report the end before the final page reaches the renderer.
+      act(() => {
+        emit(forwardPagination(focusedKey, "EndReached"));
+      });
+      fireEvent.wheel(timeline, { deltaY: 1 });
+      fireEvent.scroll(timeline);
+      expect(onReturnToLive).not.toHaveBeenCalled();
+
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            ItemsUpdated: {
+              key: focusedKey,
+              generation: 1,
+              batch_id: 1,
+              diffs: [{ PushBack: { item: message("$live:example.invalid", "Live message") } }]
+            }
+          }
+        });
+      });
+      fireEvent.wheel(timeline, { deltaY: 1 });
+      fireEvent.scroll(timeline);
+      await waitFor(() => {
+        expect(onReturnToLive).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
 
   it("does not re-request live mode after a transient loss of bottom proof", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
