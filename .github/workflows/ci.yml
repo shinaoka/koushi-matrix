@@ -133,7 +133,9 @@ jobs:
 
   browser-headless:
     name: Browser headless (Playwright DOM tier)
-    runs-on: ubuntu-latest
+    # `ubuntu-latest` is Ubuntu 26.04, for which Playwright 1.60 cannot install
+    # browser dependencies. Move back once Playwright supports it.
+    runs-on: ubuntu-24.04
     # Empty in required runs, so tracing stays off there; see playwright.config.ts
     # for the measured cost of turning it on.
     env:
