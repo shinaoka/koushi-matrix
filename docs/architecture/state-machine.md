@@ -2551,6 +2551,14 @@ stateDiagram-v2
   `CloseFocusedContext` live-edge return once the committed focused tail equals
   the live latest event. A forward `EndReached` alone is not that proof: the
   SDK can report it before the final page's diffs are committed.
+- The anchored view reaches older history through `Paginate { direction:
+  Backward }` on the same `Focused` key (#1675), under the renderer's ordinary
+  backfill rules: near-top or underfilled demand, one request in flight, an
+  Idle terminal without `Paginating` retried only after `GapRepairReleased`,
+  and prepended pages keeping the reader's anchored row in place. The desktop
+  transport sends both directions for a `Focused` key through one
+  `paginate_timeline { timelineKey, direction }` command; Core alone decides
+  which directions a timeline kind accepts.
 - An accepted main-composer send for the active room (`ComposerSubmissionAccepted`,
   its `AtRevision` form, legacy `SendTextSubmitted`, plain or reply, and the
   attachment path's main-target `ComposerDraftAccepted`, which prepared-upload
