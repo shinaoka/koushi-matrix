@@ -197,6 +197,9 @@ impl ThreadSummaryProjectionIngress {
 
 pub(super) enum TimelineActorMessage {
     BindHistoryRecovery(mpsc::Sender<crate::room::RoomMessage>),
+    /// #1676: the event-focused cache behind a `Focused` actor's SDK timeline,
+    /// retained from its build so the forward end can read its last event.
+    BindFocusedCache(matrix_sdk::event_cache::EventFocusedCache),
     ReadReceiptWindow {
         source: koushi_protocol::view::ReceiptSourceRef,
         start: u64,
@@ -952,6 +955,10 @@ pub(super) struct TimelineActor {
     /// coalesced emission; it runs at the end of the loop once the restore has
     /// flushed.
     pub(super) pagination_task: Option<ActivePaginationTask>,
+    /// #1676: retained event-focused cache of a `Focused` actor.
+    pub(super) focused_cache: Option<matrix_sdk::event_cache::EventFocusedCache>,
+    /// #1676: the anchored view's live-tail latch for this actor generation.
+    pub(super) focused_live_tail: super::focused_live_tail::FocusedLiveTail,
     pub(super) cache_reset_refill_pending: bool,
     pub(super) next_pagination_serial: u64,
     /// Application data directory for cached preview images.
@@ -2076,6 +2083,8 @@ impl TimelineActor {
             reply_quote_hydration,
             reply_quote_refresh: HashSet::new(),
             pagination_task: None,
+            focused_cache: None,
+            focused_live_tail: super::focused_live_tail::FocusedLiveTail::default(),
             cache_reset_refill_pending: false,
             next_pagination_serial: 0,
             data_dir,
@@ -2458,7 +2467,12 @@ impl TimelineActor {
                     .is_some_and(|active| active.serial == serial)
                 {
                     self.pagination_task = None;
+                    let focused_end_tail = completion.focused_end_tail.clone();
                     self.emit_pagination_completion(request_id, direction, completion);
+                    if let Some(tail) = focused_end_tail {
+                        self.focused_live_tail.expect(tail);
+                        self.emit_focused_live_tail_if_committed();
+                    }
                     Box::pin(self.start_pending_timeline_gap_inspection()).await;
                 }
             }
@@ -2706,6 +2720,9 @@ impl TimelineActor {
             TimelineActorMessage::BindHistoryRecovery(tx) => {
                 self.history_recovery = Some(tx);
                 Box::pin(self.report_history_decryption()).await;
+            }
+            TimelineActorMessage::BindFocusedCache(cache) => {
+                self.focused_cache = Some(cache);
             }
             TimelineActorMessage::RequestRoomKey {
                 request_id,

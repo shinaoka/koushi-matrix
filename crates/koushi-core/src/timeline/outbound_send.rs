@@ -2248,6 +2248,7 @@ impl TimelineActor {
                 navigation_items: Some(items),
                 emitted_items,
             },
+            Vec::new(),
         );
         self.publish_sender_device_window();
     }

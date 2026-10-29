@@ -47,7 +47,12 @@ const FOCUSED_BUILD_MAX_OBSERVERS: usize = 8;
 
 /// The prepared SDK timeline, before its actor is spawned on the manager.
 pub(super) enum PreparedFocusedTimeline {
-    Sdk(Arc<Timeline>),
+    /// The SDK timeline and its event-focused cache, retained at build so the
+    /// forward end never has to look it up again (#1676).
+    Sdk(
+        Arc<Timeline>,
+        Option<matrix_sdk::event_cache::EventFocusedCache>,
+    ),
     /// Sessionless manager fixtures install the residency test actor.
     #[cfg(any(test, feature = "test-hooks"))]
     TestActor,

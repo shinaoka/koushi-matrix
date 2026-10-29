@@ -636,15 +636,26 @@ impl TimelineActor {
                     display_projection.display_items().len(),
                 );
                 let display_diffs = projected_batch.display_diffs;
+                let mut events = vec![TimelineEvent::ItemsUpdated {
+                    key: self.key.clone(),
+                    generation: self.generation,
+                    batch_id: emitted_batch_id,
+                    diffs: display_diffs,
+                }];
+                // #1676: the batch that commits the final row carries the
+                // live-tail report under the same lease, right after it.
+                if let Some(tail) = self.focused_live_tail.commit(navigation_items) {
+                    events.push(super::focused_live_tail::live_tail_event(
+                        &self.key,
+                        self.actor_generation,
+                        self.generation,
+                        tail,
+                    ));
+                }
                 super::navigation::emit_timeline_events_with_lease(
                     &self.event_tx,
                     projection_lease,
-                    vec![TimelineEvent::ItemsUpdated {
-                        key: self.key.clone(),
-                        generation: self.generation,
-                        batch_id: emitted_batch_id,
-                        diffs: display_diffs,
-                    }],
+                    events,
                 );
                 self.next_batch_id = TimelineBatchId(emitted_batch_id.0 + 1);
                 let emitted = true;
