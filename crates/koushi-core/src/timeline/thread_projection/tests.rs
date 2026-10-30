@@ -1722,3 +1722,48 @@ fn raw_thread_projection_drops_a_falling_back_reply_target() {
         .expect("the projected event must render");
     assert_eq!(item.in_reply_to_event_id.as_deref(), Some("$root:test"));
 }
+
+/// #1704: roots projected from loaded JSON follow the same pin rule as the
+/// SDK path: message-like content only, never state, calls or malformed events.
+#[test]
+fn raw_root_pin_eligibility_matches_message_like_content() {
+    use serde_json::json;
+    let cases = [
+        (
+            json!({"type": "m.room.message", "content": {"msgtype": "m.text"}}),
+            true,
+        ),
+        (json!({"type": "m.sticker", "content": {}}), true),
+        (json!({"type": "m.room.encrypted", "content": {}}), true),
+        (json!({"type": "m.poll.start", "content": {}}), true),
+        (
+            json!({"type": "org.matrix.msc3381.poll.start", "content": {}}),
+            true,
+        ),
+        (
+            json!({"type": "m.room.message", "content": {"body": "no msgtype"}}),
+            false,
+        ),
+        (json!({"type": "m.call.invite", "content": {}}), false),
+        (
+            json!({"type": "org.matrix.msc4075.rtc.notification", "content": {}}),
+            false,
+        ),
+        (
+            json!({"type": "m.room.pinned_events", "state_key": "", "content": {}}),
+            false,
+        ),
+        (
+            json!({"type": "m.room.message", "state_key": "", "content": {"msgtype": "m.text"}}),
+            false,
+        ),
+    ];
+    for (raw, expected) in cases {
+        assert_eq!(
+            super::is_pinnable_raw_event(&raw),
+            expected,
+            "{}",
+            raw["type"]
+        );
+    }
+}

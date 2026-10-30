@@ -1475,11 +1475,29 @@ fn thread_root_projection_item_from_raw_with_context(
             actionable_body,
             media.is_some(),
             is_redacted,
-            raw.get("state_key").is_none(),
+            is_pinnable_raw_event(&raw),
         ),
         send_state: None,
         display_metadata: None,
     })
+}
+
+/// #1704: the raw-event counterpart of `item_projection::is_pinnable_content`
+/// for roots projected from loaded JSON.
+pub(super) fn is_pinnable_raw_event(raw: &serde_json::Value) -> bool {
+    if raw.get("state_key").is_some() {
+        return false;
+    }
+    match raw.get("type").and_then(serde_json::Value::as_str) {
+        Some("m.room.message") => raw
+            .get("content")
+            .and_then(|content| content.get("msgtype"))
+            .is_some_and(serde_json::Value::is_string),
+        Some(
+            "m.sticker" | "m.room.encrypted" | "m.poll.start" | "org.matrix.msc3381.poll.start",
+        ) => true,
+        _ => false,
+    }
 }
 
 fn thread_summary_from_loaded_root_raw(raw: &serde_json::Value) -> Option<ThreadSummaryDto> {
