@@ -1129,16 +1129,38 @@ pub async fn decline_invite(
     Ok(command_settlement(generation))
 }
 
-#[tauri::command]
-pub async fn start_direct_message(
-    account_tab_id: Option<String>,
+/// #1702: the policy for a missing direct chat. Only an explicit request
+/// creates one; otherwise Core reports it missing and creates nothing.
+pub(super) fn direct_message_missing_policy(
+    create_if_missing: bool,
+) -> koushi_protocol::command::DirectMessageMissingPolicy {
+    if create_if_missing {
+        koushi_protocol::command::DirectMessageMissingPolicy::Create
+    } else {
+        koushi_protocol::command::DirectMessageMissingPolicy::Report
+    }
+}
+
+/// What a direct-message start settled to.
+enum DirectMessageStart {
+    Missing { generation: u64 },
+    Started { room_id: String },
+}
+
+/// Submit `StartDirectMessage` and wait for its composite outcome (#368): the
+/// event payload and the same-account room projection, or `Missing` when the
+/// policy reports instead of creating (#1494). The caller passes the account
+/// key and generation of the one baseline snapshot it read, so the start is
+/// correlated with the session the caller checked. The caller finishes
+/// `operation`.
+async fn start_direct_message_outcome(
+    event_conn: &mut CoreConnection,
+    account_key: AccountKey,
+    baseline_generation: u64,
     user_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendCommandSettlement, String> {
-    let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
-    let baseline = event_conn.versioned_snapshot();
-    let account_key = account_key_from_app_state(&baseline.state);
+    create_if_missing: bool,
+    label: &str,
+) -> Result<(DirectMessageStart, koushi_core::NavigationOperation), String> {
     let request_id = event_conn.next_request_id();
     let operation = event_conn.begin_navigation_operation_for_request(
         koushi_diagnostics::NavigationCause::StartDm,
@@ -1149,12 +1171,10 @@ pub async fn start_direct_message(
         .command(build_start_direct_message_command(
             request_id,
             user_id,
-            koushi_protocol::command::DirectMessageMissingPolicy::Create,
+            direct_message_missing_policy(create_if_missing),
         ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    // Core settles the event payload and the same-account room projection as
-    // one composite outcome before the room is selected (#368).
     let outcome = event_conn
         .wait_for_request_outcome(
             OutcomeCorrelation::Request(request_id),
@@ -1162,13 +1182,56 @@ pub async fn start_direct_message(
                 request_id,
                 account_key,
             },
-            baseline.generation,
+            baseline_generation,
             tokio::time::Instant::now() + ROOM_OPERATION_EVENT_TIMEOUT,
         )
         .await
-        .map_err(|error| invoke_error_from_request_outcome("direct message start", error))?;
-    let RequestOutcome::DirectMessageStarted { room_id, .. } = outcome else {
-        return Err("direct message start returned an invalid outcome".to_owned());
+        .map_err(|error| invoke_error_from_request_outcome(label, error))?;
+    let start = match outcome {
+        RequestOutcome::DirectMessageMissing { generation, .. } => {
+            DirectMessageStart::Missing { generation }
+        }
+        RequestOutcome::DirectMessageStarted { room_id, .. } => {
+            DirectMessageStart::Started { room_id }
+        }
+        _ => return Err(format!("{label} returned an invalid outcome")),
+    };
+    Ok((start, operation))
+}
+
+/// Open the direct chat with `user_id`, creating it only when
+/// `create_if_missing` (#1702). Without it, a missing direct chat settles as
+/// a benign no-op with `status = "missing"` and nothing is created; the
+/// renderer asks the user before calling again with `create_if_missing`.
+#[tauri::command]
+pub async fn start_direct_message(
+    account_tab_id: Option<String>,
+    user_id: String,
+    create_if_missing: bool,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDirectMessageSettlement, String> {
+    let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
+    let baseline = event_conn.versioned_snapshot();
+    let account_key = account_key_from_app_state(&baseline.state);
+    let (start, operation) = start_direct_message_outcome(
+        &mut event_conn,
+        account_key,
+        baseline.generation,
+        user_id,
+        create_if_missing,
+        "direct message start",
+    )
+    .await?;
+    let room_id = match start {
+        DirectMessageStart::Missing { generation } => {
+            operation.finish(true);
+            return Ok(FrontendDirectMessageSettlement {
+                settlement: command_settlement(generation),
+                status: FrontendDirectMessageStatus::Missing,
+            });
+        }
+        DirectMessageStart::Started { room_id } => room_id,
     };
     let selected_generation = event_conn
         .select_room_and_wait(room_id.clone(), SELECT_ROOM_EVENT_TIMEOUT)
@@ -1176,7 +1239,10 @@ pub async fn start_direct_message(
         .map_err(super::navigation::invoke_error_from_select_room_error)?;
     operation.finish(true);
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(selected_generation))
+    Ok(FrontendDirectMessageSettlement {
+        settlement: command_settlement(selected_generation),
+        status: FrontendDirectMessageStatus::Opened,
+    })
 }
 
 /// #1494: open (or, only when `create_if_missing`, create) the direct chat
@@ -1195,52 +1261,33 @@ pub async fn start_advisory_direct_message(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendAdvisoryDirectMessageSettlement, String> {
     let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
+    // One baseline binds the session check, the seed's account and the start's
+    // correlation together.
     let baseline = event_conn.versioned_snapshot();
     let account_key = account_key_from_app_state(&baseline.state);
     let koushi_state::SessionState::Ready(info) = &baseline.state.session else {
         return Err("advisory direct message: session required".to_owned());
     };
     let expected_account = koushi_core::store::session_key_id_from_info(info);
-    let missing = if create_if_missing {
-        koushi_protocol::command::DirectMessageMissingPolicy::Create
-    } else {
-        koushi_protocol::command::DirectMessageMissingPolicy::Report
-    };
-    let request_id = event_conn.next_request_id();
-    let operation = event_conn.begin_navigation_operation_for_request(
-        koushi_diagnostics::NavigationCause::StartDm,
-        koushi_diagnostics::NavigationOrigin::RendererProgrammatic,
-        request_id,
-    );
-    event_conn
-        .command(build_start_direct_message_command(
-            request_id, user_id, missing,
-        ))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    let outcome = event_conn
-        .wait_for_request_outcome(
-            OutcomeCorrelation::Request(request_id),
-            RequestOutcomeExpectation::DirectMessageStarted {
-                request_id,
-                account_key,
-            },
-            baseline.generation,
-            tokio::time::Instant::now() + ROOM_OPERATION_EVENT_TIMEOUT,
-        )
-        .await
-        .map_err(|error| invoke_error_from_request_outcome("advisory direct message", error))?;
-    let room_id = match outcome {
-        RequestOutcome::DirectMessageMissing { generation, .. } => {
+    let (start, operation) = start_direct_message_outcome(
+        &mut event_conn,
+        account_key,
+        baseline.generation,
+        user_id,
+        create_if_missing,
+        "advisory direct message",
+    )
+    .await?;
+    let room_id = match start {
+        DirectMessageStart::Missing { generation } => {
             operation.finish(true);
             return Ok(FrontendAdvisoryDirectMessageSettlement {
                 settlement: command_settlement(generation),
-                status: FrontendAdvisoryDirectMessageStatus::Missing,
+                status: FrontendDirectMessageStatus::Missing,
                 draft: None,
             });
         }
-        RequestOutcome::DirectMessageStarted { room_id, .. } => room_id,
-        _ => return Err("advisory direct message returned an invalid outcome".to_owned()),
+        DirectMessageStart::Started { room_id } => room_id,
     };
     // The renderer names the room whose mounted editor already shows text; it
     // never decides which room is the direct chat. A stored draft is never
@@ -1274,7 +1321,7 @@ pub async fn start_advisory_direct_message(
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(FrontendAdvisoryDirectMessageSettlement {
         settlement: command_settlement(selected_generation),
-        status: FrontendAdvisoryDirectMessageStatus::Opened,
+        status: FrontendDirectMessageStatus::Opened,
         draft: Some(if keep_existing {
             FrontendAdvisoryDraft::KeptExisting
         } else {

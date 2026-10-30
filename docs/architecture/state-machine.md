@@ -1571,7 +1571,13 @@ stateDiagram-v2
   `missing = Report` (#1494; the default is `Create`) the command never
   creates a room: when no reusable DM exists it emits the request-correlated
   `RoomEvent::DirectMessageMissing`, which settles at once as a benign no-op
-  without waiting for a projection. These
+  without waiting for a projection. The Tauri `start_direct_message` command
+  takes `createIfMissing` and returns the settlement with `status: "opened" |
+  "missing"` (#1702). Person-targeted starts (a sender avatar, a People row's
+  Message, Profile's Send message) pass `false`: an existing DM opens, and a
+  missing one opens a confirmation whose only creating action, "Start chat",
+  repeats the command with `true` once. The New DM dialog, where the user types
+  the Matrix ID, passes `true`. These
   commands carry normal request ids; GUI pending/settle feedback must come from
   Rust events/snapshots. A direct-message start is pending in
   `AppState.basic_operation` (`StartingDirectMessage`, #1518; see Basic

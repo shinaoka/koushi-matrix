@@ -32,7 +32,7 @@ describe("qaSendSmoke", () => {
 
   test("finds the DM room for a synthetic send target without exposing room names", async () => {
     const api = createDesktopApiFixture();
-    const snapshot = await commandSnapshot(api, api.startDirectMessage("@approved-self-dm:example.invalid"));
+    const snapshot = await commandSnapshot(api, api.startDirectMessage("@approved-self-dm:example.invalid", true));
 
     const room = qaSendSmokeTargetRoom(snapshot, "@approved-self-dm:example.invalid");
 
@@ -42,7 +42,7 @@ describe("qaSendSmoke", () => {
 
   test("summarizes target DM encryption without exposing identifiers", async () => {
     const api = createDesktopApiFixture();
-    const started = await commandSnapshot(api, api.startDirectMessage("@approved-self-dm:example.invalid"));
+    const started = await commandSnapshot(api, api.startDirectMessage("@approved-self-dm:example.invalid", true));
     const room = qaSendSmokeTargetRoom(started, "@approved-self-dm:example.invalid");
     expect(room).not.toBeNull();
     const encryptedSnapshot = {

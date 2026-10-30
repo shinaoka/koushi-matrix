@@ -115,6 +115,21 @@ function normalizeCommandResponse(command: string, value: unknown, generation = 
   if (command === "create_room") {
     return { protocolVersion: 1, publishedGeneration: snapshotGeneration, spaceLinkFailure: null };
   }
+  // Mirrors `FrontendDirectMessageSettlement` (#1702) and
+  // `FrontendAdvisoryDirectMessageSettlement` (#1494): a start reports whether
+  // it opened a direct chat or found none.
+  if (command === "start_direct_message" || command === "start_advisory_direct_message") {
+    const reported = value as { status?: unknown; draft?: unknown };
+    const status = reported.status === "missing" ? "missing" : "opened";
+    return {
+      protocolVersion: 1,
+      publishedGeneration: snapshotGeneration,
+      status,
+      ...(command === "start_advisory_direct_message"
+        ? { draft: status === "opened" ? (reported.draft ?? "seeded") : null }
+        : {})
+    };
+  }
   return ADMISSION_COMMANDS.has(command)
     ? { protocolVersion: 1, admittedGeneration: snapshotGeneration }
     : { protocolVersion: 1, publishedGeneration: snapshotGeneration };

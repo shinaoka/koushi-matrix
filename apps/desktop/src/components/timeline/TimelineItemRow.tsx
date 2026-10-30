@@ -426,7 +426,7 @@ export function TimelineItemRow({
   onOpenMatrixTarget?: TimelineRowActionHandlers["onOpenMatrixTarget"];
   onOpenReplyQuote?: TimelineRowActionHandlers["onOpenReplyQuote"];
   onOpenSenderProfile?: TimelineRowActionHandlers["onOpenSenderProfile"];
-  onStartDirectMessage?: (userId: string) => void;
+  onStartDirectMessage?: (userId: string, displayLabel: string) => void;
   /** #1494: Rust lists this row's sender in `sender_device_advisories`. */
   senderHasUnconfirmedDevices?: boolean;
   onOpenSenderDeviceAdvisory?: OpenSenderDeviceAdvisory;
@@ -1110,7 +1110,7 @@ export function TimelineItemRow({
           aria-label={t("room.messageMember", { name: senderDisplayLabel })}
           onClick={(event) => {
             event.stopPropagation();
-            onStartDirectMessage?.(item.sender!);
+            onStartDirectMessage?.(item.sender!, senderDisplayLabel);
           }}
           {...tooltipProps}
         >

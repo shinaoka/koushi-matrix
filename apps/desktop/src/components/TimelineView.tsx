@@ -431,7 +431,7 @@ export const TimelineView = memo(function TimelineView({
   /** #1592: opens the message a reply quote previews. */
   onOpenReplyQuote?: TimelineRowActionHandlers["onOpenReplyQuote"];
   onOpenSenderProfile?: TimelineRowActionHandlers["onOpenSenderProfile"];
-  onStartDirectMessage?: (userId: string) => void;
+  onStartDirectMessage?: (userId: string, displayLabel: string) => void;
   /** #1494: `sender_device_advisories.rooms[roomId]`, rendered as-is. */
   senderDeviceAdvisoryUserIds?: readonly string[];
   onOpenSenderDeviceAdvisory?: OpenSenderDeviceAdvisory;

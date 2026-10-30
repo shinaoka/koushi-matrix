@@ -689,6 +689,9 @@ export type MessageId =
   | "room.rotationDiscardFailed"
   | "room.details"
   | "room.messageMember"
+  | "room.startDirectMessageConfirmTitle"
+  | "room.startDirectMessageConfirmBody"
+  | "room.startDirectMessageConfirmAction"
   | "room.aliasDialogTitle"
   | "room.aliasInput"
   | "room.clearAlias"
@@ -2975,6 +2978,9 @@ const en: Catalog = {
   "room.kickMember": "Kick {name}",
   "room.details": "Details",
   "room.messageMember": "Message {name}",
+  "room.startDirectMessageConfirmTitle": "Start a direct message?",
+  "room.startDirectMessageConfirmBody": "No chat with {name} ({userId}) exists yet. Starting one creates a new room and sends {name} an invite.",
+  "room.startDirectMessageConfirmAction": "Start chat",
   "room.memberRole": "Member role",
   "room.memberRoleFor": "Member role for {name}",
   "room.aliasDialogTitle": "Alias for {name}",
@@ -5320,6 +5326,9 @@ const ja: Catalog = {
   "room.kickMember": "{name}をキック",
   "room.details": "詳細",
   "room.messageMember": "{name}にメッセージ",
+  "room.startDirectMessageConfirmTitle": "DMを開始しますか？",
+  "room.startDirectMessageConfirmBody": "{name}（{userId}）とのチャットはまだありません。開始すると新しいルームが作成され、{name}に招待が送信されます。",
+  "room.startDirectMessageConfirmAction": "チャットを開始",
   "room.memberRole": "メンバーロール",
   "room.memberRoleFor": "{name}のメンバーロール",
   "room.aliasDialogTitle": "{name}のエイリアス",

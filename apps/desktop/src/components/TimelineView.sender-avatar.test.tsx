@@ -53,7 +53,7 @@ describe("TimelineView sender avatars", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Message Other Person" }));
-    expect(onStartDirectMessage).toHaveBeenCalledWith("@other:example.invalid");
+    expect(onStartDirectMessage).toHaveBeenCalledWith("@other:example.invalid", "Other Person");
     expect(screen.queryByRole("button", { name: "Message Me" })).toBeNull();
     expect(onOpenSenderProfile).not.toHaveBeenCalled();
   });
@@ -156,7 +156,7 @@ describe("TimelineView sender avatars", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Message Other Person" }));
-      expect(onStartDirectMessage).toHaveBeenCalledWith("@other:example.invalid");
+      expect(onStartDirectMessage).toHaveBeenCalledWith("@other:example.invalid", "Other Person");
     }
   );
 });

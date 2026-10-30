@@ -35,7 +35,7 @@ interface PeoplePanelProps {
   onOpenProfile: (userId: string) => void;
   onClose?: () => void;
   onInvitePeople?: () => void;
-  onStartDirectMessage?: (userId: string) => void;
+  onStartDirectMessage?: (userId: string, displayLabel: string) => void;
   /** #1421: accept a pending knock request (invite) or decline it (kick). */
   onResolveKnockRequest?: (
     roomId: string,
@@ -68,7 +68,7 @@ interface ProfilePanelProps {
   onReportUser?: (userId: string) => void;
   /** #1540: loads the profile picture thumbnail when it is not ready yet. */
   onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
-  onStartDirectMessage?: (userId: string) => void;
+  onStartDirectMessage?: (userId: string, displayLabel: string) => void;
   /** #1518: Rust is starting a direct message with this person. */
   startDirectMessagePending?: boolean;
   onSetLocalUserAlias?: (userId: string, alias: string | null) => void;
@@ -288,7 +288,7 @@ function PeopleListRow({
   position: number;
   setSize: number;
   onOpenProfile: (userId: string) => void;
-  onStartDirectMessage?: (userId: string) => void;
+  onStartDirectMessage?: (userId: string, displayLabel: string) => void;
 }) {
   const displayLabel = member.display_label;
   const isCurrentUser = member.user_id === currentUserId;
@@ -331,7 +331,7 @@ function PeopleListRow({
               className="icon-button people-list-action"
               type="button"
               aria-label={t("room.messageMember", { name: displayLabel })}
-              onClick={() => onStartDirectMessage(member.user_id)}
+              onClick={() => onStartDirectMessage(member.user_id, displayLabel)}
               {...tooltipProps}
             >
               <MessageCircle size={ICON_SIZE.small} />
@@ -447,7 +447,7 @@ export function ProfilePanel({
             type="button"
             disabled={startDirectMessagePending}
             aria-busy={startDirectMessagePending || undefined}
-            onClick={() => onStartDirectMessage(userId)}
+            onClick={() => onStartDirectMessage(userId, displayLabel)}
           >
             <MessageCircle size={ICON_SIZE.small} aria-hidden="true" />
             <span>{t("people.sendMessage")}</span>

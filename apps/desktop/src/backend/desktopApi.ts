@@ -16,6 +16,7 @@ import type {
   CommandAdmission,
   CommandSettlement,
   AdvisoryDirectMessageSettlement,
+  DirectMessageSettlement,
   CreateRoomSettlement,
   ComposerDocument,
   ComposerDraftAcceptanceResponse,
@@ -580,7 +581,11 @@ export interface DesktopApi {
   clearRoomAddressAvailability(): Promise<CommandAdmission>;
   acceptInvite(roomId: string): Promise<CommandSettlement>;
   declineInvite(roomId: string): Promise<CommandSettlement>;
-  startDirectMessage(userId: string): Promise<CommandSettlement>;
+  /**
+   * #1702: opens the direct chat with `userId`; creates it only when
+   * `createIfMissing`, otherwise settles `missing` and creates nothing.
+   */
+  startDirectMessage(userId: string, createIfMissing: boolean): Promise<DirectMessageSettlement>;
   startAdvisoryDirectMessage(
     userId: string,
     document: ComposerDocument,

@@ -1587,6 +1587,16 @@ normal QA-title mode and cannot change product title semantics.
   Focused checks: `cargo test -p koushi-state --test sender_device_advisories`,
   `cargo test -p koushi-sdk --lib contact_security`, and `npm --prefix
   apps/desktop test -- --run src/components/timeline/SenderDeviceAdvisory.test.tsx`.
+- Person-targeted direct-message starts (#1702: sender avatar, People row
+  Message, Profile Send message) call `start_direct_message(userId,
+  createIfMissing: false)`; Core decides whether a direct chat exists and
+  reports `status: "missing"` without creating one. React owns only the
+  confirmation's visibility, the Rust display label it names, and an in-flight
+  guard so "Start chat" sends `createIfMissing: true` once. It never decides
+  from `RoomSummary.dm_user_ids` whether a direct chat exists. The New DM dialog
+  passes `true`. Focused checks: `npm --prefix apps/desktop test -- --run
+  src/components/StartDirectMessageDialog.test.tsx` and the
+  `e2e/direct-message-confirm.spec.ts` app-harness spec.
 - Verification and device DTOs include user/device ids for Rust correlation, but
   the GUI should not display those ids by default. Use ordinal/status labels
   (`Device 1`, `Verified`, etc.) unless a Rust-owned redacted display model is

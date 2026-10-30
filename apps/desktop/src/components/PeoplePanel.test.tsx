@@ -319,7 +319,7 @@ describe("PeoplePanel", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Message Ada Lovelace" }));
-    expect(onStartDirectMessage).toHaveBeenCalledWith("@ada:example.invalid");
+    expect(onStartDirectMessage).toHaveBeenCalledWith("@ada:example.invalid", "Ada Lovelace");
   });
 
   test("does not show a message action for the current user", () => {
@@ -496,7 +496,7 @@ describe("PeoplePanel", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Message Ada Lovelace" }));
-    expect(onStartDirectMessage).toHaveBeenCalledWith("@ada:example.invalid");
+    expect(onStartDirectMessage).toHaveBeenCalledWith("@ada:example.invalid", "Ada Lovelace");
   });
 
   test("shows member role in space member profile", () => {
@@ -601,7 +601,7 @@ describe("ProfilePanel", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-    expect(onStartDirectMessage).toHaveBeenCalledWith("@ada:example.invalid");
+    expect(onStartDirectMessage).toHaveBeenCalledWith("@ada:example.invalid", "Ada Lovelace");
   });
 
   test("shows Send message as pending while Rust starts the direct message (#1518)", () => {
@@ -628,7 +628,7 @@ describe("ProfilePanel", () => {
     expect(settled.hasAttribute("disabled")).toBe(false);
     expect(settled.getAttribute("aria-busy")).toBeNull();
     fireEvent.click(settled);
-    expect(onStartDirectMessage).toHaveBeenCalledWith("@ada:example.invalid");
+    expect(onStartDirectMessage).toHaveBeenCalledWith("@ada:example.invalid", "Ada Lovelace");
   });
 
   function adaProfile(thumbnail: NonNullable<UserProfile["avatar"]>["thumbnail"]): UserProfile {
