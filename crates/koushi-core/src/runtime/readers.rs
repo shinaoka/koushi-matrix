@@ -166,12 +166,17 @@ impl AppActor {
             .iter()
             .map(|resource| resource.mxc_uri.clone())
             .collect();
-        self.view_scopes
-            .publish_current(work.scope, model, resources, &resolved)?;
-        // Still the same await-free actor turn and the work remains Running:
-        // no subsequent job can read the slot until completion below.
+        // Install the raw the host's avatar observations are fenced on before
+        // the model becomes visible: the host can receive, acknowledge and
+        // observe a published model before this turn continues, and a first
+        // model observed without its raw is refused with no later delivery to
+        // retry on (#1636). If publication then fails, the newer raw only fences
+        // the older installed model's observations closed; a superseded work
+        // publishes next, and any other failure retires the scope.
         self.view_scopes
             .accept_reader_raw(work, raw, thumbnail_sources.into_iter())?;
+        self.view_scopes
+            .publish_current(work.scope, model, resources, &resolved)?;
         Ok(())
     }
 }
