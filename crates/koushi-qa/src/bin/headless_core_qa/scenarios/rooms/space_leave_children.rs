@@ -49,15 +49,30 @@ pub(super) async fn verify(conn_a: &mut CoreConnection) -> Result<(), String> {
         .await
         .map_err(|e| format!("{LABEL}: submit leave space failed: {e}"))?;
     wait_for_room_left(conn_a, request_id, &space_id, "space_leave_children leave").await?;
-    wait_for_snapshot(conn_a, "space_leave_children memberships", |state| {
+    let memberships = |state: &AppState| {
         let joined = |room_id: &str| state.rooms.iter().any(|room| room.room_id == room_id);
-        !state.spaces.iter().any(|space| space.space_id == space_id)
-            && !joined(&children[0])
-            && !joined(&children[1])
-            && joined(&children[2])
-            && joined(&outside_id)
+        let locally_left = |room_id: &str| state.room_list.locally_left_room_ids.contains(room_id);
+        MembershipView {
+            space_listed: state.spaces.iter().any(|space| space.space_id == space_id),
+            space_locally_left: locally_left(&space_id),
+            left_children_joined: [joined(&children[0]), joined(&children[1])],
+            left_children_locally_left: [locally_left(&children[0]), locally_left(&children[1])],
+            kept_child_joined: joined(&children[2]),
+            outside_joined: joined(&outside_id),
+        }
+    };
+    if let Err(error) = wait_for_snapshot(conn_a, "space_leave_children memberships", |state| {
+        memberships(state).settled()
     })
-    .await?;
+    .await
+    {
+        // #1636: token-only, failure path only: which membership never settled.
+        println!(
+            "space_leave_children_memberships {}",
+            memberships(&conn_a.snapshot()).token()
+        );
+        return Err(error);
+    }
     println!("space_leave_children=ok");
 
     for room_id in [&children[2], &outside_id] {
@@ -72,6 +87,41 @@ pub(super) async fn verify(conn_a: &mut CoreConnection) -> Result<(), String> {
         wait_for_room_left(conn_a, leave_id, room_id, "space_leave_children cleanup").await?;
     }
     Ok(())
+}
+
+/// The memberships the stage expects after the leave, as booleans only.
+struct MembershipView {
+    space_listed: bool,
+    space_locally_left: bool,
+    left_children_joined: [bool; 2],
+    left_children_locally_left: [bool; 2],
+    kept_child_joined: bool,
+    outside_joined: bool,
+}
+
+impl MembershipView {
+    fn settled(&self) -> bool {
+        !self.space_listed
+            && !self.left_children_joined.iter().any(|joined| *joined)
+            && self.kept_child_joined
+            && self.outside_joined
+    }
+
+    fn token(&self) -> String {
+        format!(
+            "space_listed={} space_locally_left={} left_child0_joined={} left_child1_joined={} \
+             left_child0_locally_left={} left_child1_locally_left={} kept_child_joined={} \
+             outside_joined={}",
+            self.space_listed,
+            self.space_locally_left,
+            self.left_children_joined[0],
+            self.left_children_joined[1],
+            self.left_children_locally_left[0],
+            self.left_children_locally_left[1],
+            self.kept_child_joined,
+            self.outside_joined,
+        )
+    }
 }
 
 async fn create_room_in_space(
