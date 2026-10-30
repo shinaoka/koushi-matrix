@@ -695,10 +695,19 @@ export function checkDesktopProfileCommandContract() {
 
 export function checkDesktopDirectoryStartDmContract() {
   const rule = "desktop.directory.start_dm_contract";
-  const body = rustItemBody(readTauriSource("commands/room.rs"), "pub async fn start_direct_message");
+  const source = readTauriSource("commands/room.rs");
+  // #1702: both direct-message commands wait for Core's outcome through one
+  // shared helper.
+  const helper = rustItemBody(source, "async fn start_direct_message_outcome");
   const failures = [];
-  for (const marker of ["wait_for_request_outcome", "RequestOutcomeExpectation::DirectMessageStarted", "select_room_and_wait"]) if (!body?.includes(marker)) failures.push(sourceContractFailure(rule, `start_direct_message lacks Core outcome marker ${marker}`));
-  for (const marker of ["wait_for_direct_message_started", "wait_for_room_in_state", "recv_event"]) if (body?.includes(marker)) failures.push(sourceContractFailure(rule, `start_direct_message retains adapter waiter ${marker}`));
+  for (const marker of ["wait_for_request_outcome", "RequestOutcomeExpectation::DirectMessageStarted"]) if (!helper?.includes(marker)) failures.push(sourceContractFailure(rule, `start_direct_message_outcome lacks Core outcome marker ${marker}`));
+  for (const command of ["pub async fn start_direct_message", "pub async fn start_advisory_direct_message"]) {
+    const body = rustItemBody(source, command);
+    for (const marker of ["start_direct_message_outcome", "select_room_and_wait"]) if (!body?.includes(marker)) failures.push(sourceContractFailure(rule, `${command} lacks ${marker}`));
+  }
+  for (const [name, body] of [["start_direct_message_outcome", helper], ["start_direct_message", rustItemBody(source, "pub async fn start_direct_message")], ["start_advisory_direct_message", rustItemBody(source, "pub async fn start_advisory_direct_message")]]) {
+    for (const marker of ["wait_for_direct_message_started", "wait_for_room_in_state", "recv_event"]) if (body?.includes(marker)) failures.push(sourceContractFailure(rule, `${name} retains adapter waiter ${marker}`));
+  }
   return failures;
 }
 
