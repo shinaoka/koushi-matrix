@@ -119,6 +119,14 @@ pub(super) async fn run_search_crawler_stage(
         }
     }
     println!("crawl_backfill=ok");
+    let room_latest_event_id = |snap: &koushi_state::AppState| {
+        snap.rooms
+            .iter()
+            .find(|room| room.room_id == room_id)
+            .and_then(|room| room.latest_event.as_ref())
+            .map(|latest| latest.event_id.clone())
+    };
+    let latest_at_backfill = room_latest_event_id(&conn.snapshot());
 
     // 2. crawl_no_media_bytes — completing without an attachment-download failure
     //    proves no bytes were fetched. The failure kind for a bad download attempt
@@ -161,8 +169,13 @@ pub(super) async fn run_search_crawler_stage(
     match snap.search_crawler.rooms.get(room_id) {
         Some(SearchCrawlerRoomState::Completed { .. }) => {}
         other => {
+            // #1634: a room whose latest event changed after it completed gets a
+            // legitimate catch-up crawl (#996), which also reads as Queued. This
+            // token tells that apart from a speed change invalidating the room.
             return Err(format!(
-                "crawl_throttle: expected Completed after speed change, got {other:?}"
+                "crawl_throttle: expected Completed after speed change, got {other:?} \
+                 latest_changed_since_backfill={}",
+                room_latest_event_id(&snap) != latest_at_backfill
             ));
         }
     }
