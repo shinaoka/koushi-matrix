@@ -22,7 +22,8 @@ use serde_json::Value;
 use super::event_wait::{
     subscribe_timeline_for_qa, wait_for_encrypted_room_projection_for_qa,
     wait_for_invite_in_snapshot, wait_for_item_with_body, wait_for_media_send_flow_completion,
-    wait_for_send_flow_completion, wait_for_space_child_projection, wait_for_space_in_space_list,
+    wait_for_room_joined_members_for_qa, wait_for_send_flow_completion,
+    wait_for_space_child_projection, wait_for_space_in_space_list,
     wait_for_withheld_event_projection_from_source,
 };
 use super::fixtures::{
@@ -498,6 +499,10 @@ pub(super) async fn run_room_history_export_stage(
         let initial_c =
             subscribe_timeline_for_qa(conn_c, &key_c, "history export late member timeline")
                 .await?;
+        // A shares its next room key with the members it knows, so it must have
+        // seen C join before the messages C is expected to read.
+        wait_for_room_joined_members_for_qa(conn_a, &room_id, 2, "history export sender sees join")
+            .await?;
         let mut after_join = Vec::new();
         for index in 4..=5 {
             after_join.push(
