@@ -279,6 +279,31 @@ impl std::fmt::Debug for SearchIndexMessage {
 // Handle
 // ---------------------------------------------------------------------------
 
+/// Why a room's history crawl was queued, recorded token-only (#1634).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CrawlEnqueueCause {
+    /// A joined room the crawler has not crawled yet, or crawls again from
+    /// the start after its completed rooms were invalidated.
+    Initial,
+    /// A completed room whose latest event changed since (#996).
+    CatchUp,
+    /// An explicit `StartHistoryCrawl` command.
+    Manual,
+    /// A crawl restarted after a resolution reopened the room.
+    Reopen,
+}
+
+impl CrawlEnqueueCause {
+    fn token(self) -> &'static str {
+        match self {
+            Self::Initial => "initial",
+            Self::CatchUp => "catch_up",
+            Self::Manual => "manual",
+            Self::Reopen => "reopen",
+        }
+    }
+}
+
 /// Latest-wins snapshot of the joined rooms the crawler may index, from
 /// `AppEffect::NotifySearchCrawlerRoomsAvailable`.
 pub struct CrawlerRoomsNotification {
@@ -1675,6 +1700,7 @@ impl SearchActor {
                 true,
             ),
             request_id.sequence,
+            CrawlEnqueueCause::Manual,
         )
         .await;
         if settings.speed != SearchCrawlerSpeed::Paused {
@@ -1723,7 +1749,8 @@ impl SearchActor {
 
         for room_id in room_ids {
             if let Some(checkpoint) = self.catch_up_checkpoint(&room_id, &settings) {
-                self.enqueue_history_crawl(checkpoint, 0).await;
+                self.enqueue_history_crawl(checkpoint, 0, CrawlEnqueueCause::CatchUp)
+                    .await;
                 continue;
             }
             if self.history_crawl_room_is_known(&room_id) {
@@ -1737,14 +1764,26 @@ impl SearchActor {
                     false,
                 ),
                 0,
+                CrawlEnqueueCause::Initial,
             )
             .await;
         }
         self.start_next_history_crawl_page();
     }
 
-    async fn enqueue_history_crawl(&mut self, checkpoint: HistoryCrawlCheckpoint, request_id: u64) {
+    async fn enqueue_history_crawl(
+        &mut self,
+        checkpoint: HistoryCrawlCheckpoint,
+        request_id: u64,
+        cause: CrawlEnqueueCause,
+    ) {
         if self.queued_crawl_rooms.insert(checkpoint.room_id.clone()) {
+            // #1634: token-only, so a caller can tell a catch-up from a crawl
+            // that starts over.
+            record(
+                DiagnosticEvent::new(DiagnosticLevel::Debug, "core.search", "crawl_enqueued")
+                    .field(DiagnosticField::token("cause", cause.token())),
+            );
             self.crawl_queue.push_back(checkpoint);
             let Some(queued) = self.crawl_queue.back() else {
                 return;
@@ -1954,7 +1993,8 @@ impl SearchActor {
                         && let Some(catch_up) =
                             self.catch_up_checkpoint(&checkpoint.room_id, &checkpoint.settings)
                     {
-                        self.enqueue_history_crawl(catch_up, 0).await;
+                        self.enqueue_history_crawl(catch_up, 0, CrawlEnqueueCause::CatchUp)
+                            .await;
                     }
                 } else {
                     let next_checkpoint = checkpoint;
@@ -2046,6 +2086,7 @@ impl SearchActor {
                 false,
             ),
             0,
+            CrawlEnqueueCause::Reopen,
         )
         .await;
         self.start_next_history_crawl_page();
