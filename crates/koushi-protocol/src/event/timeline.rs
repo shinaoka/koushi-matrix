@@ -612,6 +612,10 @@ pub struct TimelineMessageActions {
     pub can_forward: bool,
     #[serde(default)]
     pub can_reply: bool,
+    /// #1704: a remote, non-redacted message-like event that may be pinned.
+    /// State events and room notices never are; Unpin does not depend on it.
+    #[serde(default)]
+    pub can_pin: bool,
     pub can_permalink: bool,
     pub can_view_source: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -628,6 +632,7 @@ impl fmt::Debug for TimelineMessageActions {
             .field("can_copy", &self.can_copy)
             .field("can_forward", &self.can_forward)
             .field("can_reply", &self.can_reply)
+            .field("can_pin", &self.can_pin)
             .field("can_permalink", &self.can_permalink)
             .field("can_view_source", &self.can_view_source)
             .field(

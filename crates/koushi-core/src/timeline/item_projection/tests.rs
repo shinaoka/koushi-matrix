@@ -857,6 +857,7 @@ fn captionless_media_projections_can_reply_and_keep_filename_reply_quotes() {
             projection.body.as_deref(),
             projection.media.is_some(),
             false,
+            true,
         );
         assert!(actions.can_reply, "{filename} should be replyable");
 

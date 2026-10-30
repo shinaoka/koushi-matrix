@@ -1995,6 +1995,23 @@ pub(super) fn key_request_withheld_code_token(code: &str) -> Option<RoomKeyReque
     }
 }
 
+/// #1704: the event kinds a user may pin: messages, media, stickers, polls and
+/// undecryptable messages. State events, room notices, calls, redactions and
+/// unknown or malformed message-like events are not pinnable.
+pub(super) fn is_pinnable_content(content: &TimelineItemContent) -> bool {
+    use matrix_sdk_ui::timeline::MsgLikeKind;
+    let TimelineItemContent::MsgLike(msg_like) = content else {
+        return false;
+    };
+    matches!(
+        msg_like.kind,
+        MsgLikeKind::Message(_)
+            | MsgLikeKind::Sticker(_)
+            | MsgLikeKind::Poll(_)
+            | MsgLikeKind::UnableToDecrypt(_)
+    )
+}
+
 pub(super) fn sdk_item_to_timeline_item_with_send_states(
     key: &TimelineKey,
     item: &Arc<SdkTimelineItem>,
@@ -2139,6 +2156,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 actionable_body,
                 media.is_some(),
                 is_redacted,
+                is_pinnable_content(content),
             );
             let mut mentioned_user_ids = Vec::new();
             let mut mentions_room = false;
@@ -4174,3 +4192,6 @@ mod receipt_scope_tests;
 
 #[cfg(test)]
 mod profile_notice_tests;
+
+#[cfg(test)]
+mod pin_action_tests;

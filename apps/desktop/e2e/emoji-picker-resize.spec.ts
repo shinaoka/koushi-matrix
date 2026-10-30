@@ -345,7 +345,16 @@ test("reaction pickers on another user's and the user's own message share the fr
       can_redact: false,
       is_edited: false,
       can_edit: false,
-      reactions: []
+      reactions: [],
+      // #1704: Rust sends actions for every message; a message is pinnable.
+      actions: {
+        can_copy: false,
+        can_forward: false,
+        can_reply: false,
+        can_pin: true,
+        can_permalink: false,
+        can_view_source: false
+      }
     },
     {
       id: { Event: { event_id: "$own-frame:example.invalid" } },
@@ -362,7 +371,16 @@ test("reaction pickers on another user's and the user's own message share the fr
       can_redact: true,
       is_edited: false,
       can_edit: true,
-      reactions: []
+      reactions: [],
+      // #1704: Rust sends actions for every message; a message is pinnable.
+      actions: {
+        can_copy: false,
+        can_forward: false,
+        can_reply: false,
+        can_pin: true,
+        can_permalink: false,
+        can_view_source: false
+      }
     }
   ]);
 

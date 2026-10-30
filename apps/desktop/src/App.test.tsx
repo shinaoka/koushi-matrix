@@ -2624,7 +2624,15 @@ describe("Timeline item row rendering", () => {
       can_redact: false,
       is_edited: false,
       can_edit: false,
-      reactions: []
+      reactions: [],
+      actions: {
+        can_copy: false,
+        can_forward: false,
+        can_reply: false,
+        can_pin: true,
+        can_permalink: false,
+        can_view_source: false
+      }
     } as TimelineItem;
 
     const unpinned = renderToStaticMarkup(

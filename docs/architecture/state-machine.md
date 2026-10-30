@@ -2877,14 +2877,20 @@ not resolve reply bodies, classify redactions, or repair missing quote state.
 
 Message action affordances are also Rust-owned timeline projections.
 `TimelineItem.actions` carries `can_copy`, `can_forward`, `can_reply`,
-`can_permalink`, `can_view_source`, and an optional `permalink`. Rust sets
-`can_reply` only for a non-redacted stable event that is a replyable message
-target, proven by a projected body or a projected media attachment;
-state/non-message events and local echoes remain non-replyable. The permalink
+`can_pin`, `can_permalink`, `can_view_source`, and an optional `permalink`.
+Rust sets `can_reply` only for a non-redacted stable event that is a replyable
+message target, proven by a projected body or a projected media attachment;
+state/non-message events and local echoes remain non-replyable. Rust sets
+`can_pin` only for a non-redacted stable message-like event (messages, media,
+polls, stickers, undecryptable message events); state events and room notices,
+including the pinned-events notice, redacted events, and local echoes are not
+pinnable. React offers Pin only when `can_pin` is true and offers Unpin for an
+event that is already pinned regardless of `can_pin`, so a previously pinned
+notice can still be removed. The permalink
 is generated in Rust from the owning `TimelineKey` room id plus the event id as a
 `https://matrix.to/#/<room>/<event>` URL. React may render or copy this value
 only when the DTO says it is available; it must use `can_reply` for reply
-eligibility and must not build Matrix permalinks, infer action eligibility from
+eligibility and `can_pin` for pin eligibility and must not build Matrix permalinks, infer action eligibility from
 `TimelineItemId`, body/media fields, or redaction flags, or invent
 forward/source behavior.
 

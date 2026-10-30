@@ -145,6 +145,7 @@ pub(crate) fn message_actions_for_timeline_item(
     body: Option<&str>,
     has_media: bool,
     is_redacted: bool,
+    is_message_like: bool,
 ) -> TimelineMessageActions {
     let TimelineItemId::Event { event_id } = item_id else {
         return TimelineMessageActions::default();
@@ -155,6 +156,9 @@ pub(crate) fn message_actions_for_timeline_item(
         can_copy: has_body && !is_redacted,
         can_forward: has_body && !is_redacted,
         can_reply: !is_redacted && !event_id.trim().is_empty() && (body.is_some() || has_media),
+        // #1704: only a remote message-like event is pinnable; state events
+        // and room notices are not (Element X offers Pin on remote events only).
+        can_pin: is_message_like && !is_redacted && !event_id.trim().is_empty(),
         can_permalink: permalink.is_some(),
         can_view_source: !event_id.trim().is_empty(),
         permalink,

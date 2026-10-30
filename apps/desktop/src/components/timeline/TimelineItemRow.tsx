@@ -752,6 +752,10 @@ export function TimelineItemRow({
   // threads are not nested, so Reply in thread stays a room-timeline action.
   const canShowReply = canShowActionButtons && item.actions?.can_reply === true;
   const canShowReplyInThread = canShowReply && presentationContext === "room";
+  // #1704: Rust decides which events may be pinned; an already pinned event
+  // (even a room notice) still offers Unpin.
+  const canShowPinToggle =
+    canShowActionButtons && (isPinned || item.actions?.can_pin === true);
   const canCopyMessage = Boolean(eventId && item.actions?.can_copy && item.body !== null);
   const canCopyPermalink = Boolean(
     eventId && item.actions?.can_permalink && item.actions.permalink
@@ -1525,7 +1529,7 @@ export function TimelineItemRow({
             )}
           </Tooltip>
         ) : null}
-        {!isEditing && canShowActionButtons ? (
+        {!isEditing && canShowPinToggle ? (
           <Tooltip
             label={isPinned ? t("timeline.unpinMessage") : t("timeline.pinMessage")}
             placement="below"
