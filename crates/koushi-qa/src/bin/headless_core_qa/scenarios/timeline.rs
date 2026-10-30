@@ -4687,11 +4687,37 @@ pub(super) async fn wait_for_timeline_navigation(
     minimum_newer_count: u64,
     label: &str,
 ) -> Result<(), String> {
+    // #1691: one deadline for the whole wait; the last snapshot for the key,
+    // as position and counts only, names what never matched.
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
+    let mut last_seen: Option<(TimelineUnreadPosition, u64, u64)> = None;
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out waiting for NavigationUpdated"))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        let event = match deadline.recv(conn).await {
+            Ok(event) => event,
+            Err(_) => {
+                match last_seen {
+                    Some((position, unread, newer)) => println!(
+                        "timeline_navigation_timeout last_position={position:?} \
+                         last_unread={unread} last_newer={newer}"
+                    ),
+                    None => println!("timeline_navigation_timeout last_position=none"),
+                }
+                return Err(format!("{label}: timed out waiting for NavigationUpdated"));
+            }
+        }
+        .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        if let CoreEvent::Timeline(TimelineEvent::NavigationUpdated {
+            key: ev_key,
+            snapshot,
+        }) = &event
+            && ev_key == key
+        {
+            last_seen = Some((
+                snapshot.unread_position,
+                snapshot.unread_event_count,
+                snapshot.newer_event_count,
+            ));
+        }
 
         match event {
             CoreEvent::Timeline(TimelineEvent::NavigationUpdated {
@@ -5201,12 +5227,125 @@ pub(super) fn assert_thread_reply_relation(
     Ok(())
 }
 
-/// Wait for an `ItemsUpdated` Set diff for the event identified by `event_id`
-/// OR a Set diff that has the given body substring (whichever arrives first).
-/// This asserts that an edit was reflected in the timeline. A failed edit
-/// operation (`OperationFailed` with the edit's request_id) is surfaced as an
-/// explicit error instead of a silent timeout.
-/// Timeout is extended to 60s because edit confirmation requires a sync round-trip.
+/// What an edit wait received for its key, printed only when it times out
+/// (#1691): each diff kind with whether its row is the edited event and carries
+/// the edited body, plus the edit mutation's settled outcomes. Token-only.
+#[derive(Default)]
+struct EditDiffTally {
+    diffs: std::collections::BTreeMap<String, usize>,
+}
+
+impl EditDiffTally {
+    fn record(&mut self, event: &CoreEvent, key: &TimelineKey, event_id: &str, edited_body: &str) {
+        use koushi_protocol::event::{TimelineDiff, TimelineItem, TimelineItemId};
+        let CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            key: ev_key, diffs, ..
+        }) = event
+        else {
+            return;
+        };
+        if ev_key != key {
+            return;
+        }
+        let shape = |item: &TimelineItem| {
+            let target =
+                matches!(&item.id, TimelineItemId::Event { event_id: id } if id == event_id);
+            let edited = item.body.as_deref().unwrap_or("").contains(edited_body);
+            format!("target={target}/edited={edited}")
+        };
+        for diff in diffs {
+            let (kind, items): (&str, Vec<&TimelineItem>) = match diff {
+                TimelineDiff::Set { item, .. } => ("set", vec![item]),
+                TimelineDiff::PushFront { item } => ("push_front", vec![item]),
+                TimelineDiff::PushBack { item } => ("push_back", vec![item]),
+                TimelineDiff::Insert { item, .. } => ("insert", vec![item]),
+                TimelineDiff::Reset { items } => ("reset", items.iter().collect()),
+                TimelineDiff::Remove { .. } => ("remove", Vec::new()),
+                TimelineDiff::Truncate { .. } => ("truncate", Vec::new()),
+                TimelineDiff::Clear => ("clear", Vec::new()),
+            };
+            if items.is_empty() {
+                *self.diffs.entry(kind.to_owned()).or_default() += 1;
+            }
+            for item in items {
+                *self
+                    .diffs
+                    .entry(format!("{kind}:{}", shape(item)))
+                    .or_default() += 1;
+            }
+        }
+    }
+
+    fn token(&self) -> String {
+        let diffs = self
+            .diffs
+            .iter()
+            .map(|(shape, count)| format!("{shape}={count}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mutations = koushi_diagnostics::snapshot()
+            .records
+            .iter()
+            .filter(|record| {
+                record.event.source == "core.timeline_mutation" && record.event.stage == "settled"
+            })
+            .filter_map(|record| {
+                record
+                    .event
+                    .fields
+                    .iter()
+                    .find_map(|field| match &field.value {
+                        koushi_diagnostics::DiagnosticValue::Token(outcome)
+                            if field.key == "outcome" =>
+                        {
+                            Some(outcome.to_string())
+                        }
+                        _ => None,
+                    })
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("diffs={diffs} mutations_settled={mutations}")
+    }
+}
+
+/// Whether one projection diff shows the edit. An in-place Set may still carry
+/// the old body (the SDK may apply it later), so the Set identity suffices. The
+/// display projection replaces a whole changed range with Remove + Insert when
+/// a coalesced batch changes its length (#1691), so an inserted or reset row of
+/// the same event counts too, but only with the edited body: the range can be
+/// re-inserted with the old body first.
+fn diff_reflects_edit(
+    diff: &koushi_protocol::event::TimelineDiff,
+    event_id: &str,
+    edited_body: &str,
+) -> bool {
+    use koushi_protocol::event::{TimelineDiff, TimelineItem, TimelineItemId};
+    let is_target = |item: &TimelineItem| match &item.id {
+        TimelineItemId::Event { event_id: id } => id == event_id,
+        TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => false,
+    };
+    let is_edited = |item: &TimelineItem| {
+        is_target(item) && item.body.as_deref().unwrap_or("").contains(edited_body)
+    };
+    match diff {
+        TimelineDiff::Set { item, .. } => {
+            is_target(item) || item.body.as_deref().unwrap_or("").contains(edited_body)
+        }
+        TimelineDiff::PushFront { item }
+        | TimelineDiff::PushBack { item }
+        | TimelineDiff::Insert { item, .. } => is_edited(item),
+        TimelineDiff::Reset { items } => items.iter().any(is_edited),
+        TimelineDiff::Remove { .. } | TimelineDiff::Truncate { .. } | TimelineDiff::Clear => false,
+    }
+}
+
+/// Wait for an `ItemsUpdated` diff that reflects the edit of `event_id` (see
+/// `diff_reflects_edit`). A failed edit operation (`OperationFailed` with the
+/// edit's request_id) is surfaced as an explicit error instead of a silent
+/// timeout. The 60 s deadline covers the whole wait, not each event, so a
+/// steady stream of unrelated events cannot hide a missing edit until the
+/// scenario budget runs out.
 pub(super) async fn wait_for_edit_diff(
     conn: &mut CoreConnection,
     key: &TimelineKey,
@@ -5215,14 +5354,18 @@ pub(super) async fn wait_for_edit_diff(
     edited_body: &str,
     label: &str,
 ) -> Result<(), String> {
-    let timeout = Duration::from_secs(60);
+    let deadline = QaEventDeadline::after(Duration::from_secs(60));
+    let mut seen = EditDiffTally::default();
     loop {
-        let event = tokio::time::timeout(timeout, conn.recv_event())
-            .await
-            .map_err(|_| {
-                format!("{label}: timed out waiting for edit Set diff (event_id: {event_id})")
-            })?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        let event = match deadline.recv(conn).await {
+            Ok(event) => event,
+            Err(_) => {
+                println!("edit_diff_timeout {}", seen.token());
+                return Err(format!("{label}: timed out waiting for edit diff"));
+            }
+        }
+        .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        seen.record(&event, key, event_id, edited_body);
 
         match event {
             CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
@@ -5230,20 +5373,11 @@ pub(super) async fn wait_for_edit_diff(
                 diffs,
                 ..
             }) if ev_key == key => {
-                for diff in &diffs {
-                    if let koushi_protocol::event::TimelineDiff::Set { item, .. } = diff {
-                        // Accept: item has the edited body, OR item is identified by event_id
-                        // (the SDK may not yet have applied the body to the item in all cases).
-                        let body_matches = item.body.as_deref().unwrap_or("").contains(edited_body);
-                        let event_id_matches = matches!(
-                            &item.id,
-                            koushi_protocol::event::TimelineItemId::Event { event_id: id }
-                            if id == event_id
-                        );
-                        if body_matches || event_id_matches {
-                            return Ok(());
-                        }
-                    }
+                if diffs
+                    .iter()
+                    .any(|diff| diff_reflects_edit(diff, event_id, edited_body))
+                {
+                    return Ok(());
                 }
             }
             CoreEvent::OperationFailed {
@@ -5259,17 +5393,18 @@ pub(super) async fn wait_for_edit_diff(
 
 /// Wait for an `ItemsUpdated` diff that signals a redaction: either a Remove
 /// or a Set where the body is None or empty (redacted message placeholder).
-/// A failed redact operation is surfaced as an explicit error.
-/// Timeout is extended to 60s because redaction requires a sync round-trip.
+/// A failed redact operation is surfaced as an explicit error. The 60 s
+/// deadline covers the whole wait, as in `wait_for_edit_diff`.
 pub(super) async fn wait_for_redact_diff(
     conn: &mut CoreConnection,
     key: &TimelineKey,
     request_id: koushi_protocol::ids::RequestId,
     label: &str,
 ) -> Result<(), String> {
-    let timeout = Duration::from_secs(60);
+    let deadline = QaEventDeadline::after(Duration::from_secs(60));
     loop {
-        let event = tokio::time::timeout(timeout, conn.recv_event())
+        let event = deadline
+            .recv(conn)
             .await
             .map_err(|_| format!("{label}: timed out waiting for redact diff"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;

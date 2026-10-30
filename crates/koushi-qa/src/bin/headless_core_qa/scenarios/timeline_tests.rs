@@ -1,7 +1,7 @@
 use super::{
     QaVisibleGapCapture, ReconnectPaginationStep, ReconnectPaginationWaiter, ReconnectProjection,
     RoomThreadSummaryObserver, assert_room_timeline_projects_root_activity_and_summary,
-    assert_thread_reply_relation, select_visible_gap_for_qa,
+    assert_thread_reply_relation, diff_reflects_edit, select_visible_gap_for_qa,
     thread_initial_items_need_paginate_backfill, thread_reply_should_repaginate_on_idle,
     timeline_item_has_thread_summary_reply, timeline_item_has_visible_payload,
 };
@@ -1278,4 +1278,42 @@ fn scheduled_send_scenario_runs_after_timeline_and_reports_private_tokens() {
             "restore_cleanup=ok",
         ]
     );
+}
+
+#[test]
+fn edit_wait_accepts_the_edited_row_from_a_range_replacement() {
+    // #1691: a batch that changes the display range's length replaces the range
+    // with Remove + Insert, so the edited row can arrive as an Insert. The same
+    // range can be re-inserted with the old body first; that is not the edit.
+    let edited = synthetic_timeline_item("$msg1", Some("message 1 EDITED"), None, None, None);
+    let original = synthetic_timeline_item("$msg1", Some("message 1"), None, None, None);
+    let other = synthetic_timeline_item("$msg2", Some("message 1 EDITED"), None, None, None);
+    let accepts = |diff: TimelineDiff| diff_reflects_edit(&diff, "$msg1", "EDITED");
+
+    assert!(accepts(TimelineDiff::Insert {
+        index: 0,
+        item: edited.clone()
+    }));
+    assert!(accepts(TimelineDiff::PushBack {
+        item: edited.clone()
+    }));
+    assert!(accepts(TimelineDiff::Reset {
+        items: vec![original.clone(), edited.clone()]
+    }));
+    assert!(accepts(TimelineDiff::Set {
+        index: 0,
+        item: edited
+    }));
+    assert!(!accepts(TimelineDiff::Insert {
+        index: 0,
+        item: original.clone()
+    }));
+    assert!(!accepts(TimelineDiff::Insert {
+        index: 0,
+        item: other
+    }));
+    assert!(!accepts(TimelineDiff::Reset {
+        items: vec![original]
+    }));
+    assert!(!accepts(TimelineDiff::Remove { index: 0 }));
 }
