@@ -5229,13 +5229,48 @@ pub(super) fn assert_thread_reply_relation(
 
 /// What an edit wait received for its key, printed only when it times out
 /// (#1691): each diff kind with whether its row is the edited event and carries
-/// the edited body, plus the edit mutation's settled outcomes. Token-only.
-#[derive(Default)]
+/// the edited body, plus the outcomes of mutations settled during the wait.
+/// Token-only.
 struct EditDiffTally {
     diffs: std::collections::BTreeMap<String, usize>,
+    /// Mutations that settled before the wait began are not this edit.
+    settled_before: usize,
+}
+
+/// The outcome tokens of every settled timeline mutation still in the
+/// diagnostic ring, oldest first.
+fn settled_mutation_outcomes() -> Vec<&'static str> {
+    koushi_diagnostics::snapshot()
+        .records
+        .iter()
+        .filter(|record| {
+            record.event.source == "core.timeline_mutation" && record.event.stage == "settled"
+        })
+        .filter_map(|record| {
+            record
+                .event
+                .fields
+                .iter()
+                .find_map(|field| match field.value {
+                    koushi_diagnostics::DiagnosticValue::Token(outcome)
+                        if field.key == "outcome" =>
+                    {
+                        Some(outcome)
+                    }
+                    _ => None,
+                })
+        })
+        .collect()
 }
 
 impl EditDiffTally {
+    fn new() -> Self {
+        Self {
+            diffs: std::collections::BTreeMap::new(),
+            settled_before: settled_mutation_outcomes().len(),
+        }
+    }
+
     fn record(&mut self, event: &CoreEvent, key: &TimelineKey, event_id: &str, edited_body: &str) {
         use koushi_protocol::event::{TimelineDiff, TimelineItem, TimelineItemId};
         let CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
@@ -5283,38 +5318,21 @@ impl EditDiffTally {
             .map(|(shape, count)| format!("{shape}={count}"))
             .collect::<Vec<_>>()
             .join(",");
-        let mutations = koushi_diagnostics::snapshot()
-            .records
-            .iter()
-            .filter(|record| {
-                record.event.source == "core.timeline_mutation" && record.event.stage == "settled"
-            })
-            .filter_map(|record| {
-                record
-                    .event
-                    .fields
-                    .iter()
-                    .find_map(|field| match &field.value {
-                        koushi_diagnostics::DiagnosticValue::Token(outcome)
-                            if field.key == "outcome" =>
-                        {
-                            Some(outcome.to_string())
-                        }
-                        _ => None,
-                    })
-            })
+        let mutations = settled_mutation_outcomes()
+            .into_iter()
+            .skip(self.settled_before)
             .collect::<Vec<_>>()
             .join(",");
         format!("diffs={diffs} mutations_settled={mutations}")
     }
 }
 
-/// Whether one projection diff shows the edit. An in-place Set may still carry
-/// the old body (the SDK may apply it later), so the Set identity suffices. The
-/// display projection replaces a whole changed range with Remove + Insert when
-/// a coalesced batch changes its length (#1691), so an inserted or reset row of
-/// the same event counts too, but only with the edited body: the range can be
-/// re-inserted with the old body first.
+/// Whether one projection diff shows the edit: a row of the edited event that
+/// carries the edited body. The display projection replaces a whole changed
+/// range with Remove + Insert when a coalesced batch changes its length
+/// (#1691), so the row can arrive in an Insert, Push or Reset as well as in a
+/// Set; the same range can be re-inserted with the old body first, and a Set of
+/// the event can carry an unrelated change, so identity alone is not the edit.
 fn diff_reflects_edit(
     diff: &koushi_protocol::event::TimelineDiff,
     event_id: &str,
@@ -5329,10 +5347,8 @@ fn diff_reflects_edit(
         is_target(item) && item.body.as_deref().unwrap_or("").contains(edited_body)
     };
     match diff {
-        TimelineDiff::Set { item, .. } => {
-            is_target(item) || item.body.as_deref().unwrap_or("").contains(edited_body)
-        }
-        TimelineDiff::PushFront { item }
+        TimelineDiff::Set { item, .. }
+        | TimelineDiff::PushFront { item }
         | TimelineDiff::PushBack { item }
         | TimelineDiff::Insert { item, .. } => is_edited(item),
         TimelineDiff::Reset { items } => items.iter().any(is_edited),
@@ -5355,7 +5371,7 @@ pub(super) async fn wait_for_edit_diff(
     label: &str,
 ) -> Result<(), String> {
     let deadline = QaEventDeadline::after(Duration::from_secs(60));
-    let mut seen = EditDiffTally::default();
+    let mut seen = EditDiffTally::new();
     loop {
         let event = match deadline.recv(conn).await {
             Ok(event) => event,

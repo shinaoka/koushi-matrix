@@ -1284,7 +1284,8 @@ fn scheduled_send_scenario_runs_after_timeline_and_reports_private_tokens() {
 fn edit_wait_accepts_the_edited_row_from_a_range_replacement() {
     // #1691: a batch that changes the display range's length replaces the range
     // with Remove + Insert, so the edited row can arrive as an Insert. The same
-    // range can be re-inserted with the old body first; that is not the edit.
+    // range can be re-inserted with the old body first, and a Set of the event
+    // can carry an unrelated change; neither is the edit.
     let edited = synthetic_timeline_item("$msg1", Some("message 1 EDITED"), None, None, None);
     let original = synthetic_timeline_item("$msg1", Some("message 1"), None, None, None);
     let other = synthetic_timeline_item("$msg2", Some("message 1 EDITED"), None, None, None);
@@ -1313,7 +1314,11 @@ fn edit_wait_accepts_the_edited_row_from_a_range_replacement() {
         item: other
     }));
     assert!(!accepts(TimelineDiff::Reset {
-        items: vec![original]
+        items: vec![original.clone()]
+    }));
+    assert!(!accepts(TimelineDiff::Set {
+        index: 0,
+        item: original
     }));
     assert!(!accepts(TimelineDiff::Remove { index: 0 }));
 }
