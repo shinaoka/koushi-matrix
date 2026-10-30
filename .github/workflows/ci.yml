@@ -278,6 +278,8 @@ jobs:
         run: node --test scripts/check-headless-qa-lanes.test.mjs
       - name: Headless QA lane coverage guard
         run: node scripts/check-headless-qa-lanes.mjs
+      - name: Nightly QA issue pass-streak tests
+        run: node --test scripts/nightly-qa-record-passes.test.mjs
       - name: Rust test structure checker tests
         run: node --test scripts/check-rust-test-structure.test.mjs
       - name: Rust test structure checker

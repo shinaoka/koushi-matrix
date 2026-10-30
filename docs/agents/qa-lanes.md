@@ -180,7 +180,11 @@ is the single source for which automation runs each scenario:
   (the aggregate job uses `nightly-qa/<server>/aggregate`), alongside the
   umbrella `nightly-qa` label; the title is only a readable summary. A
   recurrence that scrapes a different failure stage therefore comments on the
-  same issue instead of filing another one.
+  same issue instead of filing another one, and a recurrence after closure
+  reopens it. Each passing run is recorded on the open issue, which closes
+  after three consecutive passes
+  (`scripts/nightly-qa-record-passes.mjs`; REPOSITORY_RULES
+  "GitHub Issue Closure"). Only runs of `main` touch issues.
 - `EXCLUDED_SCENARIOS`: scenarios in no lane, each with a written reason.
 
 `node scripts/headless-qa-lane.mjs --lane=pr|nightly --server=<server>` runs a
