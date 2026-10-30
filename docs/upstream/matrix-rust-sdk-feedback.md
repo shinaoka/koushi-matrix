@@ -1596,3 +1596,32 @@ The observer is synchronous and must not block or panic. It does not propagate
 to spawned tasks or change cache ownership, requests, or cancellation behavior.
 Upstream intent: propose opt-in construction timing hooks once useful stage
 boundaries have been confirmed. Existing public APIs cannot observe these waits.
+
+## 2026-10-30 (#1637): invite acceptance survives a join seen by sync first
+
+Upstreamable bug fix, reported upstream as matrix-org/matrix-rust-sdk#7385.
+`Client::join_room_by_id` reads the inviter before `/join`, but
+`BaseClient::room_joined` stored the MSC4268 pending key-bundle acceptance only
+while the room was still `Invited`. When the sync response carrying our own join
+is processed between the `/join` request and `room_joined`, which is common on a
+slow client with Simplified Sliding Sync, the room is already `Joined`. The
+acceptance is then dropped, and a deferred history bundle is never imported. The
+`history_key_recovery_window` nightly scenario failed on every hosted-runner run
+because of this.
+
+- `BaseClient::room_joined` is unchanged.
+- New `BaseClient::room_joined_after_invite(room_id, inviter)`. The caller
+  asserts it saw the invite before joining. Under the state-store lock, it
+  records the acceptance when the room is `Invited`, or when it was already known
+  and has since been marked `Joined`. It records nothing for a room unknown
+  before the call.
+- `PreJoinRoomInfo` records the room the inviter was read from.
+  `finish_join_room` uses that inviter, for the acceptance and for
+  `maybe_accept_key_bundle`, only when the join response names the same room.
+
+Fork PR shinaoka/matrix-rust-sdk-work#32. The gitlink points at the fix branch
+head `d46fdfb2c`, which is based on the previous pin `0939d9d69` and is reachable
+from the fork's `main` through merge `ddbb33352`. It deliberately does not take
+the unrelated fork PR #31. Tests: sync v2 and Sliding Sync race tests and a
+negative test in `matrix-sdk-base`, plus mock-server race and room-mismatch tests
+in `matrix-sdk`. Drop the delta when upstream ships an equivalent fix for #7385.
