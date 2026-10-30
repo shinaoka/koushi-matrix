@@ -445,10 +445,12 @@ This policy does not change the language used to converse with the user.
   policy decision remains, move it to its own issue and close the original.
 - A `nightly-qa` issue tracks a scheduled-lane failure, which is often
   intermittent, so a single green run is not evidence that its cause is gone.
-  It closes only after its scenario passes in three consecutive nightly runs on
-  `main` once the fix has landed; `.github/workflows/nightly-qa.yml` records
-  each passing run on the issue, resets the count on a failure, and closes the
-  issue at the third pass. Do not close one by hand on a green run or a green
+  It closes only after a fix has landed (a commit on `main` references the
+  issue) and its scenario then passes in three consecutive nightly runs on
+  `main`. `.github/workflows/nightly-qa.yml` records each passing run on the
+  issue, counts only passes after a fix landed, resets the count on a failure,
+  and closes the issue at the third. A failure that stops recurring with no fix
+  stays open for triage. Do not close one by hand on a green run or a green
   local loop. A recurrence after closure reopens the same issue.
 - Put closing keywords (`Closes`, `Fixes`, `Resolves`) only in the PR body
   of a PR that meets the criteria above; commit messages use `Refs #N`, since

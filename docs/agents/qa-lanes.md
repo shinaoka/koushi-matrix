@@ -182,7 +182,7 @@ is the single source for which automation runs each scenario:
   recurrence that scrapes a different failure stage therefore comments on the
   same issue instead of filing another one, and a recurrence after closure
   reopens it. Each passing run is recorded on the open issue, which closes
-  after three consecutive passes
+  after three consecutive passes once a commit on `main` references it
   (`scripts/nightly-qa-record-passes.mjs`; REPOSITORY_RULES
   "GitHub Issue Closure"). Only runs of `main` touch issues.
 - `EXCLUDED_SCENARIOS`: scenarios in no lane, each with a written reason.

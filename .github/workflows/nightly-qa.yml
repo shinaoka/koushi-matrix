@@ -20,7 +20,8 @@ name: Nightly aggregate QA
 # recurrence of the same failure.
 #
 # A passing run is recorded on the open issue of each signature it covers, and
-# the issue closes after PASSES_TO_CLOSE consecutive passing runs
+# the issue closes after PASSES_TO_CLOSE consecutive passing runs once a commit
+# on main references it
 # (scripts/nightly-qa-record-passes.mjs, REPOSITORY_RULES "GitHub Issue
 # Closure"). A failure whose signature has only a closed issue reopens it.
 # Issues are filed and updated only for runs of `main`; a dispatch on another
@@ -54,6 +55,9 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
+          # Full history: a pass counts toward closing an issue only once a
+          # commit on main references it (scripts/nightly-qa-record-passes.mjs).
+          fetch-depth: 0
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@191af2e1955bbe165f9bbacff2d2438002dff4d4 # 1.96.0
       - name: Restore Rust build cache
@@ -110,10 +114,11 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           node scripts/nightly-qa-record-passes.mjs --server=${{ matrix.server }} \
-            --scenario=aggregate --run-url="$RUN_URL"
+            --scenario=aggregate --run-id="$RUN_ID" --run-url="$RUN_URL"
       - name: Upload QA logs on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -192,6 +197,9 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
+          # Full history: a pass counts toward closing an issue only once a
+          # commit on main references it (scripts/nightly-qa-record-passes.mjs).
+          fetch-depth: 0
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@191af2e1955bbe165f9bbacff2d2438002dff4d4 # 1.96.0
       - name: Restore Rust build cache
@@ -248,10 +256,12 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           node scripts/nightly-qa-record-passes.mjs --server=${{ matrix.server }} \
-            --failures="$RUNNER_TEMP/nightly-failures.json" --run-url="$RUN_URL"
+            --failures="$RUNNER_TEMP/nightly-failures.json" --run-id="$RUN_ID" \
+            --run-url="$RUN_URL"
       - name: Upload QA logs on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

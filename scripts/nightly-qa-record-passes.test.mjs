@@ -4,26 +4,48 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { NIGHTLY_SCENARIOS } from "./lib/headless-qa-lanes.mjs";
-import { PASS_MARKER, passStreak, passedScenarios } from "./nightly-qa-record-passes.mjs";
+import {
+  passRecord,
+  passStreak,
+  passedScenarios,
+  recordedRunIds
+} from "./nightly-qa-record-passes.mjs";
 
-const pass = { author: "github-actions", body: `${PASS_MARKER}\npassed` };
+const pass = (runId, fixLanded = true) => ({
+  author: "github-actions",
+  body: `${passRecord(runId, fixLanded)}\npassed`
+});
 const failure = { author: "github-actions", body: "The nightly scenario failed again" };
 const person = { author: "maintainer", body: "Looking into it." };
 
 test("an issue with no recorded passes has no streak", () => {
-  assert.equal(passStreak([]), 0);
-  assert.equal(passStreak([failure]), 0);
+  assert.equal(passStreak([]).size, 0);
+  assert.equal(passStreak([failure]).size, 0);
 });
 
 test("trailing workflow passes count, and a failure resets the streak", () => {
-  assert.equal(passStreak([pass, pass]), 2);
-  assert.equal(passStreak([pass, pass, failure, pass]), 1);
-  assert.equal(passStreak([pass, failure]), 0);
+  assert.equal(passStreak([pass("1"), pass("2")]).size, 2);
+  assert.equal(passStreak([pass("1"), pass("2"), failure, pass("3")]).size, 1);
+  assert.equal(passStreak([pass("1"), failure]).size, 0);
+});
+
+test("a re-run of the same workflow run counts once", () => {
+  assert.equal(passStreak([pass("1"), pass("1"), pass("2")]).size, 2);
+  assert.deepEqual([...recordedRunIds([pass("1"), failure, pass("2")])].sort(), ["1", "2"]);
+});
+
+test("passes recorded before a fix landed do not count toward closure", () => {
+  assert.equal(passStreak([pass("1", false), pass("2", false)]).size, 0);
+  assert.equal(passStreak([pass("1", false), pass("2"), pass("3")]).size, 2);
 });
 
 test("comments by people neither count nor break the streak", () => {
-  assert.equal(passStreak([pass, person, pass]), 2);
-  assert.equal(passStreak([{ author: "maintainer", body: PASS_MARKER }]), 0);
+  assert.equal(passStreak([pass("1"), person, pass("2")]).size, 2);
+  assert.equal(passStreak([{ author: "maintainer", body: passRecord("9", true) }]).size, 0);
+});
+
+test("the Actions bot login is accepted in both forms", () => {
+  assert.equal(passStreak([{ ...pass("1"), author: "github-actions[bot]" }]).size, 1);
 });
 
 test("the focused job passes every nightly scenario it did not record as failed", () => {
