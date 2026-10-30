@@ -2024,3 +2024,7 @@ mod bounded_window_tests;
 #[cfg(test)]
 #[path = "display_projection/bounded_visibility_tests.rs"]
 mod bounded_visibility_tests;
+
+#[cfg(test)]
+#[path = "display_projection/issue_1692_tests.rs"]
+mod issue_1692_tests;
