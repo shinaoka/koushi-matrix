@@ -1628,6 +1628,8 @@ function AccountContent({
   } | null>(null);
   const [directMessageConfirmBusy, setDirectMessageConfirmBusy] = useState(false);
   const directMessageConfirmPendingRef = useRef(false);
+  // Only the latest person-targeted lookup may open its chat or confirmation.
+  const directMessageLookupRef = useRef(0);
   const [resetLocalDataConfirmOpen, setResetLocalDataConfirmOpen] = useState(false);
   const logoutConfirmationInFlightRef = useRef(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -4862,8 +4864,13 @@ function AccountContent({
     }
     // #1518: the pending state is Rust's `basic_operation`, which the Profile
     // renders; a renderer-wide busy flag would silently drop this press. A
-    // repeated press only asks again, so it can never queue a creation.
+    // repeated press only asks again, so it can never queue a creation, and a
+    // lookup another press has since replaced neither navigates nor asks.
+    const lookup = ++directMessageLookupRef.current;
     const settlement = await settleCommand(api.startDirectMessage(trimmedUserId, false));
+    if (lookup !== directMessageLookupRef.current) {
+      return;
+    }
     if (settlement.status === "missing") {
       setDirectMessageConfirmation({ userId: trimmedUserId, name: displayLabel || trimmedUserId });
       return;

@@ -138,3 +138,58 @@ test("the New DM dialog still creates directly", async ({ page }) => {
   ]);
   await expect(confirmDialog(page)).toHaveCount(0);
 });
+
+test("only the latest of two overlapping lookups opens a confirmation", async ({ page }) => {
+  const FIRST = { label: "Harness Ada", userId: "@harness-ada:example.invalid" } as const;
+  await gotoReadyShell(page);
+  // The first person's answer arrives after the second person's.
+  await page.evaluate((firstUserId) => {
+    const harness = (window as unknown as { __harness: Harness }).__harness;
+    harness.setCommandResponse("start_direct_message", (args) => {
+      const settlement = {
+        ...harness.currentSnapshot(),
+        status: args.createIfMissing ? "opened" : "missing"
+      };
+      return args.userId === firstUserId
+        ? new Promise((resolve) =>
+            setTimeout(() => {
+              (window as unknown as { __staleLookupAnswered?: boolean }).__staleLookupAnswered =
+                true;
+              resolve(settlement);
+            }, 400)
+          )
+        : settlement;
+    });
+  }, FIRST.userId);
+  await page.evaluate(() => (window as unknown as { __harness: Harness }).__harness.clearInvocations());
+
+  await page.locator(".channel-actions").getByRole("button", { name: t("panel.people") }).click();
+  const members = page
+    .getByRole("complementary", { name: t("panel.context") })
+    .getByRole("list", { name: t("room.members") });
+  await members
+    .getByRole("button", { name: t("room.messageMember", { name: FIRST.label }) })
+    .click();
+  await members
+    .getByRole("button", { name: t("room.messageMember", { name: MEMBER.label }) })
+    .click();
+
+  const dialog = confirmDialog(page);
+  await expect(dialog).toContainText(
+    t("room.startDirectMessageConfirmBody", { name: MEMBER.label, userId: MEMBER.userId })
+  );
+  // Let the first, stale answer land; the dialog still names the second person.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as unknown as { __staleLookupAnswered?: boolean }).__staleLookupAnswered
+      )
+    )
+    .toBe(true);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve(null))));
+  await expect(dialog).toHaveCount(1);
+  await expect(dialog).toContainText(
+    t("room.startDirectMessageConfirmBody", { name: MEMBER.label, userId: MEMBER.userId })
+  );
+  expect((await startCalls(page)).filter((call) => call.createIfMissing)).toEqual([]);
+});

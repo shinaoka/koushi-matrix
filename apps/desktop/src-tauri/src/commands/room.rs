@@ -1149,15 +1149,18 @@ enum DirectMessageStart {
 
 /// Submit `StartDirectMessage` and wait for its composite outcome (#368): the
 /// event payload and the same-account room projection, or `Missing` when the
-/// policy reports instead of creating (#1494). The caller finishes `operation`.
+/// policy reports instead of creating (#1494). The caller passes the account
+/// key and generation of the one baseline snapshot it read, so the start is
+/// correlated with the session the caller checked. The caller finishes
+/// `operation`.
 async fn start_direct_message_outcome(
     event_conn: &mut CoreConnection,
+    account_key: AccountKey,
+    baseline_generation: u64,
     user_id: String,
     create_if_missing: bool,
     label: &str,
 ) -> Result<(DirectMessageStart, koushi_core::NavigationOperation), String> {
-    let baseline = event_conn.versioned_snapshot();
-    let account_key = account_key_from_app_state(&baseline.state);
     let request_id = event_conn.next_request_id();
     let operation = event_conn.begin_navigation_operation_for_request(
         koushi_diagnostics::NavigationCause::StartDm,
@@ -1179,7 +1182,7 @@ async fn start_direct_message_outcome(
                 request_id,
                 account_key,
             },
-            baseline.generation,
+            baseline_generation,
             tokio::time::Instant::now() + ROOM_OPERATION_EVENT_TIMEOUT,
         )
         .await
@@ -1209,8 +1212,12 @@ pub async fn start_direct_message(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDirectMessageSettlement, String> {
     let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
+    let baseline = event_conn.versioned_snapshot();
+    let account_key = account_key_from_app_state(&baseline.state);
     let (start, operation) = start_direct_message_outcome(
         &mut event_conn,
+        account_key,
+        baseline.generation,
         user_id,
         create_if_missing,
         "direct message start",
@@ -1254,13 +1261,18 @@ pub async fn start_advisory_direct_message(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendAdvisoryDirectMessageSettlement, String> {
     let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
-    let koushi_state::SessionState::Ready(info) = &event_conn.versioned_snapshot().state.session
-    else {
+    // One baseline binds the session check, the seed's account and the start's
+    // correlation together.
+    let baseline = event_conn.versioned_snapshot();
+    let account_key = account_key_from_app_state(&baseline.state);
+    let koushi_state::SessionState::Ready(info) = &baseline.state.session else {
         return Err("advisory direct message: session required".to_owned());
     };
     let expected_account = koushi_core::store::session_key_id_from_info(info);
     let (start, operation) = start_direct_message_outcome(
         &mut event_conn,
+        account_key,
+        baseline.generation,
         user_id,
         create_if_missing,
         "advisory direct message",
