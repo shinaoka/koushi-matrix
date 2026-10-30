@@ -427,6 +427,29 @@ pub fn room_attention_kind(
     }
 }
 
+/// The room activity a successful local mark-read cleared (#1683): the
+/// room-summary latest event and last-activity timestamps at that moment. A later
+/// unread room-list snapshot is stale only while it still shows this activity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoomReadActivity {
+    latest_event_id: Option<String>,
+    recency_stamp: Option<u64>,
+    conversation_activity: Option<ConversationActivity>,
+}
+
+impl RoomReadActivity {
+    pub fn of(room: &RoomSummary) -> Self {
+        Self {
+            latest_event_id: room
+                .latest_event
+                .as_ref()
+                .map(|event| event.event_id.clone()),
+            recency_stamp: room.recency_stamp,
+            conversation_activity: room.conversation_activity,
+        }
+    }
+}
+
 /// Persistent numeric unread shared by room/sidebar, account and native badges.
 ///
 /// #1238: the badge is the only place the main-timeline and thread counts meet.

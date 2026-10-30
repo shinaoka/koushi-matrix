@@ -2351,6 +2351,7 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     // #1238: the per-root thread-cache values feed room badges, so they must not
     // survive the session that observed them.
     state.thread_unread.clear();
+    state.locally_read_activity.clear();
     state.focused_context = FocusedContextState::Closed;
     state.search_request_connection_id = None;
     state.search = SearchState::Closed;

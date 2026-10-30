@@ -5,8 +5,9 @@ use crate::{
     state::{
         AppError, AppState, OperationFailureKind, PinOp, PinOperationState, PinnedEvent,
         RoomAccessObservation, RoomListFailureKind, RoomListFilter, RoomListReadiness,
-        RoomListSource, RoomSummary, RoomTagInfo, RoomTagKind, ScheduledSendsListState,
-        SpaceSummary, ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
+        RoomListSource, RoomReadActivity, RoomSummary, RoomTagInfo, RoomTagKind,
+        ScheduledSendsListState, SpaceSummary, ThreadAttentionState, ThreadPaneState,
+        ThreadsListState, TimelinePaneState,
     },
 };
 
@@ -346,6 +347,13 @@ fn handle_room_list_updated_with_crawler(
         .map(|room| room.room_id.clone())
         .collect::<BTreeSet<_>>();
     state.thread_unread.retain(|(room_id, _), _| {
+        if authoritative {
+            retained_room_ids.contains(room_id)
+        } else {
+            !state.room_list.locally_left_room_ids.contains(room_id)
+        }
+    });
+    state.locally_read_activity.retain(|room_id, _| {
         if authoritative {
             retained_room_ids.contains(room_id)
         } else {
@@ -818,7 +826,14 @@ fn suppress_stale_unread_after_local_read(state: &AppState, rooms: &mut [RoomSum
             .get(&room.room_id)
             .and_then(|signals| signals.fully_read_event_id.as_deref())
             .is_some();
-        if !fully_read_event_id_present || !same_room_activity(existing_room, room) {
+        // Compare with the activity the local read cleared, not with the
+        // current state: that can since have moved to a newer latest event
+        // without its counts (#1683), and that zero is no read of it.
+        let read_this_activity = state
+            .locally_read_activity
+            .get(&room.room_id)
+            .is_some_and(|read| *read == RoomReadActivity::of(room));
+        if !fully_read_event_id_present || !read_this_activity {
             continue;
         }
         room.marked_unread = false;
@@ -833,18 +848,6 @@ fn room_has_unread_metrics(room: &RoomSummary) -> bool {
         || room.notification_count > 0
         || room.highlight_count > 0
         || room.marked_unread
-}
-
-fn same_room_activity(left: &RoomSummary, right: &RoomSummary) -> bool {
-    left.recency_stamp == right.recency_stamp
-        && left.conversation_activity == right.conversation_activity
-        && latest_event_id(left) == latest_event_id(right)
-}
-
-fn latest_event_id(room: &RoomSummary) -> Option<&str> {
-    room.latest_event
-        .as_ref()
-        .map(|event| event.event_id.as_str())
 }
 
 fn preserve_known_avatar_thumbnails(
@@ -1206,6 +1209,8 @@ pub(crate) fn handle_room_marked_as_read_succeeded(
         room.unread_count = 0;
         room.notification_count = 0;
         room.highlight_count = 0;
+        let activity = RoomReadActivity::of(room);
+        state.locally_read_activity.insert(room_id, activity);
         recompute_room_list_projection(state);
     }
     vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]

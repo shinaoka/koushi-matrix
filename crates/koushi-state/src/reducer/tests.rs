@@ -1216,6 +1216,57 @@ fn room_list_update_preserves_unread_when_latest_event_changes_after_local_read(
 }
 
 #[test]
+fn room_list_update_keeps_a_new_message_unread_after_it_was_first_observed_without_counts() {
+    // #1683: the room list can report a newer latest event before the SDK has
+    // counted it. That zero is not a local read of the new event, so the count
+    // that follows for the same event is new information, not a stale snapshot.
+    let mut state = ready_state();
+    let mut room = test_room("!room:example.invalid", None);
+    room.latest_event = Some(latest_event("$read:example.invalid", 42));
+    room.recency_stamp = Some(42);
+    room.unread_count = 1;
+    room.notification_count = 1;
+    state.rooms = vec![room];
+    reduce(
+        &mut state,
+        AppAction::FullyReadMarkerUpdated {
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: Some("$read:example.invalid".to_owned()),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomMarkedAsReadSucceeded {
+            request_id: 7,
+            room_id: "!room:example.invalid".to_owned(),
+        },
+    );
+
+    for unread in [0, 1] {
+        let mut new_message = test_room("!room:example.invalid", None);
+        new_message.latest_event = Some(latest_event("$new:example.invalid", 43));
+        new_message.recency_stamp = Some(43);
+        new_message.unread_count = unread;
+        new_message.notification_count = unread;
+        reduce(
+            &mut state,
+            AppAction::RoomListUpdated {
+                spaces: Vec::new(),
+                rooms: vec![new_message],
+            },
+        );
+    }
+
+    let room = state
+        .rooms
+        .iter()
+        .find(|room| room.room_id == "!room:example.invalid")
+        .expect("room summary should exist");
+    assert_eq!(room.unread_count, 1);
+    assert_eq!(room.notification_count, 1);
+}
+
+#[test]
 fn room_list_update_refreshes_native_attention_badge_without_initial_sync_sound_candidate() {
     let mut state = ready_state();
     let mut unread_room = test_room("!room:example.invalid", None);

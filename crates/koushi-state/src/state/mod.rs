@@ -186,8 +186,9 @@ pub(crate) use room::compare_conversation_activity;
 pub use room::{
     ConversationActivity, ConversationActivitySource, InvitePreview, RoomAttentionKind,
     RoomAttentionProjection, RoomAttentionSummary, RoomLatestEventSummary, RoomNamePlaceholder,
-    RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary, room_activity_unread_count,
-    room_attention_kind, room_attention_projection, room_attention_summary,
+    RoomReadActivity, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary,
+    room_activity_unread_count, room_attention_kind, room_attention_projection,
+    room_attention_summary,
 };
 
 // ── Re-exports: room_activity ───────────────────────────────────────────────
@@ -394,6 +395,10 @@ pub struct AppState {
     /// the reducer sums both halves into the room's thread badge fields.
     #[serde(skip)]
     pub thread_unread: BTreeMap<(String, String), ThreadRootAttention>,
+    /// #1683: per room, the activity the last successful local mark-read
+    /// cleared. Decides which later unread snapshots are stale.
+    #[serde(skip)]
+    pub locally_read_activity: BTreeMap<String, RoomReadActivity>,
     #[serde(default)]
     pub device_cleanup: DeviceCleanupState,
     #[serde(default)]
@@ -547,6 +552,7 @@ impl Default for AppState {
             sliding_sync_capability: SlidingSyncCapabilityState::Unknown,
             thread_delivery: ThreadDeliveryDiagnostic::default(),
             thread_unread: BTreeMap::new(),
+            locally_read_activity: BTreeMap::new(),
             device_cleanup: DeviceCleanupState::Idle,
             current_session_status: CurrentSessionStatusState::Idle,
             current_session_status_schedule: SessionStatusSchedule::default(),
