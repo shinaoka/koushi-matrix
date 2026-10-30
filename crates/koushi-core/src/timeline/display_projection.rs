@@ -23,6 +23,38 @@ use super::navigation::{
 struct DisplayProjectionSlot {
     canonical_index: usize,
     item: TimelineItem,
+    /// The canonical run between the previous slot (or canonical 0) and this
+    /// one.
+    gap_before: GapEnds,
+}
+
+/// #1692: how much of an unrepresented canonical run, counted from each end,
+/// holds only items that occupy no display row (suppressed thread replies and
+/// hidden technical events). Those items are transparent for front-insertion
+/// adjacency; the rest of the run is trimmed. `lead == len` marks a run that
+/// holds no display row at all (`trail` is then 0).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct GapEnds {
+    lead: usize,
+    trail: usize,
+}
+
+impl GapEnds {
+    fn of(run: &[TimelineItem]) -> Self {
+        let lead = run
+            .iter()
+            .take_while(|item| !item_occupies_display_row(item))
+            .count();
+        if lead == run.len() {
+            return Self { lead, trail: 0 };
+        }
+        let trail = run
+            .iter()
+            .rev()
+            .take_while(|item| !item_occupies_display_row(item))
+            .count();
+        Self { lead, trail }
+    }
 }
 
 /// Pre-normalization ownership for the exact canonical slots represented by
@@ -36,6 +68,8 @@ pub(super) struct DisplayProjectionState {
     /// Canonical length the slots were last aligned with. #1657: thread roots
     /// whose activity lies past the window end appear only at the live end.
     canonical_len: usize,
+    /// The canonical run after the last slot (#1692, see [`GapEnds`]).
+    gap_after: GapEnds,
     display_items: Vec<TimelineItem>,
     /// Manager-owned accepted sends which are not yet represented by an SDK slot.
     pending_items: Vec<TimelineItem>,
@@ -57,20 +91,53 @@ impl DisplayProjectionState {
             .map(|(offset, item)| DisplayProjectionSlot {
                 canonical_index: start + offset,
                 item,
+                gap_before: GapEnds::default(),
             })
             .collect::<Vec<_>>();
         let display_items = normalize_display_projection_slots(&slots)
             .iter()
             .filter_map(decorate_event_item)
             .collect();
-        Self {
+        let mut state = Self {
             slots,
             window_revision: 0,
             canonical_len: canonical_items.len(),
+            gap_after: GapEnds::default(),
             display_items,
             pending_items: Vec::new(),
             suppressed_transaction_ids: HashSet::new(),
+        };
+        state.refresh_gap_ends(canonical_items);
+        state
+    }
+
+    /// #1692: recompute every run's transparent ends from canonical after a
+    /// path that chose the slots wholesale. Each run is scanned from both ends
+    /// only up to its first display row.
+    fn refresh_gap_ends(&mut self, canonical: &[TimelineItem]) {
+        let mut cursor = 0;
+        for slot in &mut self.slots {
+            let start = cursor.min(canonical.len());
+            let end = slot.canonical_index.clamp(start, canonical.len());
+            slot.gap_before = GapEnds::of(&canonical[start..end]);
+            cursor = slot.canonical_index + 1;
         }
+        self.gap_after = GapEnds::of(&canonical[cursor.min(canonical.len())..]);
+    }
+
+    /// #1692: [`Self::refresh_gap_ends`] for the two edge runs only, after the
+    /// bounded window dropped slots from its ends.
+    fn refresh_edge_gap_ends(&mut self, canonical: &[TimelineItem]) {
+        if let Some(first) = self.slots.first_mut() {
+            let end = first.canonical_index.min(canonical.len());
+            first.gap_before = GapEnds::of(&canonical[..end]);
+        }
+        let start = self
+            .slots
+            .last()
+            .map_or(0, |slot| slot.canonical_index + 1)
+            .min(canonical.len());
+        self.gap_after = GapEnds::of(&canonical[start..]);
     }
 
     pub(super) fn display_items(&self) -> &[TimelineItem] {
@@ -196,8 +263,10 @@ impl DisplayProjectionState {
             .map(|canonical_index| DisplayProjectionSlot {
                 canonical_index,
                 item: canonical[canonical_index].clone(),
+                gap_before: GapEnds::default(),
             })
             .collect();
+        self.refresh_gap_ends(canonical);
         self.canonical_len = canonical.len();
         self.window_revision = self.window_revision.saturating_add(1);
         self.display_items = project_display_items(self, context);
@@ -219,6 +288,7 @@ impl DisplayProjectionState {
         self.window_revision = self.window_revision.saturating_add(1);
         let rebuilt = Self::from_canonical_window(canonical_items, window);
         self.slots = rebuilt.slots;
+        self.gap_after = rebuilt.gap_after;
         self.canonical_len = rebuilt.canonical_len;
         self.display_items = project_display_items(self, context);
         finalize_display_projection_diffs(&before, &self.display_items, false).0
@@ -319,15 +389,38 @@ fn flush_pending_canonical_push_fronts(
     reason = "cells already live in boxed treap nodes over a window capped at 120 items; boxing Slot would add a second allocation per visible item"
 )]
 enum DisplayMembershipCell {
+    /// A trimmed canonical run: a front insertion next to it stays hidden.
     Gap(usize),
+    /// #1692: a hidden run that occupies no display row (a reply suppressed by
+    /// #873, a hidden technical event). It is not a trimmed prefix, so
+    /// adjacency looks through it to the nearest `Gap` or `Slot`.
+    Suppressed(usize),
     Slot(TimelineItem),
 }
 
 impl DisplayMembershipCell {
+    /// The hidden cell that stands for `item`.
+    fn hidden(item: &TimelineItem) -> Self {
+        if item_occupies_display_row(item) {
+            Self::Gap(1)
+        } else {
+            Self::Suppressed(1)
+        }
+    }
+
     fn canonical_len(&self) -> usize {
         match self {
-            Self::Gap(len) => *len,
+            Self::Gap(len) | Self::Suppressed(len) => *len,
             Self::Slot(_) => 1,
+        }
+    }
+
+    /// Adjacency visibility: `None` for a transparent cell.
+    fn opaque_visibility(&self) -> Option<bool> {
+        match self {
+            Self::Gap(_) => Some(false),
+            Self::Suppressed(_) => None,
+            Self::Slot(_) => Some(true),
         }
     }
 
@@ -341,7 +434,7 @@ impl DisplayMembershipCell {
     /// so none of them may consume display capacity.
     fn renderable_len(&self) -> usize {
         match self {
-            Self::Gap(_) => 0,
+            Self::Gap(_) | Self::Suppressed(_) => 0,
             Self::Slot(item) => usize::from(item_occupies_display_row(item)),
         }
     }
@@ -357,6 +450,9 @@ struct DisplayMembershipNode {
     canonical_len: usize,
     visible_len: usize,
     renderable_len: usize,
+    /// Visibility of the first / last non-`Suppressed` cell of the subtree.
+    first_opaque: Option<bool>,
+    last_opaque: Option<bool>,
 }
 
 struct PendingDisplayMembershipNode {
@@ -371,6 +467,7 @@ impl DisplayMembershipNode {
         let canonical_len = cell.canonical_len();
         let visible_len = cell.visible_len();
         let renderable_len = cell.renderable_len();
+        let opaque = cell.opaque_visibility();
         Box::new(Self {
             cell,
             left: None,
@@ -379,6 +476,8 @@ impl DisplayMembershipNode {
             canonical_len,
             visible_len,
             renderable_len,
+            first_opaque: opaque,
+            last_opaque: opaque,
         })
     }
 
@@ -392,7 +491,22 @@ impl DisplayMembershipNode {
         self.renderable_len = display_membership_renderable_len(&self.left)
             .saturating_add(self.cell.renderable_len())
             .saturating_add(display_membership_renderable_len(&self.right));
+        let opaque = self.cell.opaque_visibility();
+        self.first_opaque = display_membership_first_opaque(&self.left)
+            .or(opaque)
+            .or(display_membership_first_opaque(&self.right));
+        self.last_opaque = display_membership_last_opaque(&self.right)
+            .or(opaque)
+            .or(display_membership_last_opaque(&self.left));
     }
+}
+
+fn display_membership_first_opaque(link: &DisplayMembershipLink) -> Option<bool> {
+    link.as_ref().and_then(|node| node.first_opaque)
+}
+
+fn display_membership_last_opaque(link: &DisplayMembershipLink) -> Option<bool> {
+    link.as_ref().and_then(|node| node.last_opaque)
 }
 
 fn display_membership_canonical_len(link: &DisplayMembershipLink) -> usize {
@@ -416,9 +530,16 @@ fn collect_reply_slots(
     let Some(node) = link else {
         return;
     };
+    // Hidden runs hold no reply slot; skip them by weight.
+    if node.visible_len == 0 {
+        *canonical_index = canonical_index.saturating_add(node.canonical_len);
+        return;
+    }
     collect_reply_slots(&node.left, canonical_index, replies);
     match &node.cell {
-        DisplayMembershipCell::Gap(len) => *canonical_index = canonical_index.saturating_add(*len),
+        DisplayMembershipCell::Gap(len) | DisplayMembershipCell::Suppressed(len) => {
+            *canonical_index = canonical_index.saturating_add(*len)
+        }
         DisplayMembershipCell::Slot(item) => {
             if let Some(root_event_id) = item.thread_root.as_deref() {
                 replies.push((*canonical_index, root_event_id.to_owned()));
@@ -496,22 +617,48 @@ impl DisplayMembershipRope {
     ) -> (Self, bool) {
         let slots = std::mem::take(&mut display_state.slots);
         let payload_visits = slots.len();
-        let mut cells = Vec::with_capacity(slots.len().saturating_mul(2).saturating_add(1));
+        let mut cells = Vec::with_capacity(slots.len().saturating_mul(4).saturating_add(3));
         let mut cursor = 0;
         let mut ambiguous = false;
+        // A skipped slot leaves its run's transparency unknown: keep it trimmed.
+        let mut known = true;
         for slot in slots {
             if slot.canonical_index < cursor || slot.canonical_index >= canonical_len {
                 ambiguous = true;
+                known = false;
                 continue;
             }
-            cells.push(DisplayMembershipCell::Gap(slot.canonical_index - cursor));
+            let ends = if known {
+                slot.gap_before
+            } else {
+                GapEnds::default()
+            };
+            Self::push_run(&mut cells, slot.canonical_index - cursor, ends);
             cells.push(DisplayMembershipCell::Slot(slot.item));
             cursor = slot.canonical_index + 1;
+            known = true;
         }
-        cells.push(DisplayMembershipCell::Gap(
-            canonical_len.saturating_sub(cursor),
-        ));
+        let tail = canonical_len.saturating_sub(cursor);
+        let ends = if known {
+            display_state.gap_after
+        } else {
+            GapEnds::default()
+        };
+        Self::push_run(&mut cells, tail, ends);
         (Self::from_cells(cells, payload_visits), ambiguous)
+    }
+
+    /// One unrepresented run, with its transparent ends as `Suppressed` cells.
+    fn push_run(cells: &mut Vec<DisplayMembershipCell>, len: usize, ends: GapEnds) {
+        let lead = ends.lead.min(len);
+        if lead == len {
+            cells.push(DisplayMembershipCell::Suppressed(len));
+            return;
+        }
+        let trail = ends.trail.min(len - lead);
+        cells.push(DisplayMembershipCell::Suppressed(lead));
+        cells.push(DisplayMembershipCell::Gap(len - lead - trail));
+        cells.push(DisplayMembershipCell::Suppressed(trail));
     }
 
     fn from_canonical_window(
@@ -562,7 +709,10 @@ impl DisplayMembershipRope {
         let mut pending = Vec::<PendingDisplayMembershipNode>::with_capacity(cells.len());
         let mut stack = Vec::<usize>::with_capacity(cells.len());
         for cell in cells {
-            if matches!(cell, DisplayMembershipCell::Gap(0)) {
+            if matches!(
+                cell,
+                DisplayMembershipCell::Gap(0) | DisplayMembershipCell::Suppressed(0)
+            ) {
                 continue;
             }
             rope.record_structural_node_visit();
@@ -648,12 +798,17 @@ impl DisplayMembershipRope {
             return (Some(node), right);
         }
 
-        let DisplayMembershipCell::Gap(gap_len) = node.cell else {
-            unreachable!("a visible slot cannot be split inside its unit length");
+        let run = |len| match node.cell {
+            DisplayMembershipCell::Gap(_) => DisplayMembershipCell::Gap(len),
+            DisplayMembershipCell::Suppressed(_) => DisplayMembershipCell::Suppressed(len),
+            DisplayMembershipCell::Slot(_) => {
+                unreachable!("a visible slot cannot be split inside its unit length")
+            }
         };
         let offset = index - left_len;
-        let left_gap = self.node(DisplayMembershipCell::Gap(offset));
-        let right_gap = self.node(DisplayMembershipCell::Gap(gap_len - offset));
+        let (left_run, right_run) = (run(offset), run(cell_len - offset));
+        let left_gap = self.node(left_run);
+        let right_gap = self.node(right_run);
         let left = self.merge(node.left.take(), left_gap);
         let right = self.merge(right_gap, node.right.take());
         (left, right)
@@ -664,32 +819,18 @@ impl DisplayMembershipRope {
         self.split(root, index)
     }
 
-    fn edge_is_visible(&mut self, link: &DisplayMembershipLink, first: bool) -> bool {
-        let Some(mut node) = link.as_deref() else {
-            return false;
-        };
-        loop {
-            self.record_structural_node_visit();
-            let next = if first {
-                node.left.as_deref()
-            } else {
-                node.right.as_deref()
-            };
-            let Some(next) = next else {
-                return matches!(node.cell, DisplayMembershipCell::Slot(_));
-            };
-            node = next;
-        }
-    }
-
     fn insert(&mut self, index: usize, item: TimelineItem, include: Option<bool>) -> bool {
         if index > self.canonical_len() {
             return false;
         }
-        let was_empty = self.canonical_len() == 0;
         let (left, right) = self.split_root(index);
+        // #1443 adjacency, looking through #873/#1110 suppressed cells
+        // (#1692): the nearest trimmed or displayed cell on each side decides.
+        // With nothing but suppressed cells (or nothing) around, it is shown.
         let include = include.unwrap_or_else(|| {
-            was_empty || self.edge_is_visible(&left, false) || self.edge_is_visible(&right, true)
+            let before = display_membership_last_opaque(&left);
+            let after = display_membership_first_opaque(&right);
+            before == Some(true) || after == Some(true) || (before.is_none() && after.is_none())
         });
         let cell = if include {
             #[cfg(test)]
@@ -698,7 +839,7 @@ impl DisplayMembershipRope {
             }
             DisplayMembershipCell::Slot(item)
         } else {
-            DisplayMembershipCell::Gap(1)
+            DisplayMembershipCell::hidden(&item)
         };
         let middle = self.node(cell);
         let left = self.merge(left, middle);
@@ -727,8 +868,13 @@ impl DisplayMembershipRope {
         let Some((left, mut middle, right)) = self.split_one(index) else {
             return false;
         };
+        // A hidden cell follows its replacement: a row stays trimmed, an item
+        // that no longer occupies a row becomes transparent.
+        if !matches!(middle.cell, DisplayMembershipCell::Slot(_)) {
+            middle.cell = DisplayMembershipCell::hidden(&item);
+        }
         let valid = match &mut middle.cell {
-            DisplayMembershipCell::Gap(_) => true,
+            DisplayMembershipCell::Gap(_) | DisplayMembershipCell::Suppressed(_) => true,
             DisplayMembershipCell::Slot(old_item) => {
                 #[cfg(test)]
                 {
@@ -750,7 +896,7 @@ impl DisplayMembershipRope {
             return false;
         };
         let valid = match middle.cell {
-            DisplayMembershipCell::Gap(_) => true,
+            DisplayMembershipCell::Gap(_) | DisplayMembershipCell::Suppressed(_) => true,
             DisplayMembershipCell::Slot(old_item) => {
                 #[cfg(test)]
                 {
@@ -789,10 +935,11 @@ impl DisplayMembershipRope {
         self.record_structural_node_visit();
         self.hide_first_visible(&mut node.left, remaining_slots, remaining_rows);
         if (*remaining_slots > 0 || *remaining_rows > 0)
-            && matches!(node.cell, DisplayMembershipCell::Slot(_))
+            && let DisplayMembershipCell::Slot(item) = &node.cell
         {
             let renderable = node.cell.renderable_len() == 1;
-            node.cell = DisplayMembershipCell::Gap(1);
+            let hidden = DisplayMembershipCell::hidden(item);
+            node.cell = hidden;
             *remaining_slots = remaining_slots.saturating_sub(1);
             if renderable {
                 *remaining_rows = remaining_rows.saturating_sub(1);
@@ -836,8 +983,9 @@ impl DisplayMembershipRope {
         let Some((left, mut middle, right)) = self.split_one(index) else {
             return;
         };
-        if matches!(middle.cell, DisplayMembershipCell::Slot(_)) {
-            middle.cell = DisplayMembershipCell::Gap(1);
+        if let DisplayMembershipCell::Slot(item) = &middle.cell {
+            let hidden = DisplayMembershipCell::hidden(item);
+            middle.cell = hidden;
         }
         middle.refresh();
         let left = self.merge(left, Some(middle));
@@ -870,6 +1018,10 @@ impl DisplayMembershipRope {
         let visible_len = self.visible_len();
         let mut slots = Vec::with_capacity(visible_len);
         let mut canonical_index = 0_usize;
+        // The current unrepresented run: its transparent ends and whether it
+        // holds a trimmed cell yet. Only the ends persist; a suppressed run
+        // between two trimmed cells is kept as trimmed (conservative).
+        let (mut lead, mut trail, mut trimmed) = (0_usize, 0_usize, false);
         let mut pending = Vec::new();
         let mut cursor = self.root.take();
         while cursor.is_some() || !pending.is_empty() {
@@ -882,6 +1034,15 @@ impl DisplayMembershipRope {
             match node.cell {
                 DisplayMembershipCell::Gap(len) => {
                     canonical_index = canonical_index.saturating_add(len);
+                    trail = 0;
+                    trimmed |= len > 0;
+                }
+                DisplayMembershipCell::Suppressed(len) => {
+                    canonical_index = canonical_index.saturating_add(len);
+                    trail += len;
+                    if !trimmed {
+                        lead += len;
+                    }
                 }
                 DisplayMembershipCell::Slot(item) => {
                     #[cfg(test)]
@@ -891,12 +1052,15 @@ impl DisplayMembershipRope {
                     slots.push(DisplayProjectionSlot {
                         canonical_index,
                         item,
+                        gap_before: run_ends(lead, trail, trimmed),
                     });
                     canonical_index = canonical_index.saturating_add(1);
+                    (lead, trail, trimmed) = (0, 0, false);
                 }
             }
             cursor = node.right.take();
         }
+        display_state.gap_after = run_ends(lead, trail, trimmed);
         display_state.slots = slots;
         display_state.canonical_len = canonical_index;
         display_state.display_items = project_display_items(display_state, context);
@@ -908,6 +1072,14 @@ impl DisplayMembershipRope {
         {
             (0, 0)
         }
+    }
+}
+
+/// Without a trimmed cell the whole run is transparent (`lead == len`).
+fn run_ends(lead: usize, trail: usize, trimmed: bool) -> GapEnds {
+    GapEnds {
+        lead,
+        trail: if trimmed { trail } else { 0 },
     }
 }
 
@@ -1117,7 +1289,7 @@ fn project_sdk_batch(
         membership.materialize(display_state, context);
     #[cfg(not(test))]
     let _ = (display_payload_visits, structural_node_visits);
-    display_state.bound_after_batch(context);
+    display_state.bound_after_batch(canonical_items, context);
     let display_after = display_state.display_items.clone();
     let (display_diffs, used_reset_fallback) =
         finalize_display_projection_diffs(&display_before, &display_after, translation_ambiguous);
@@ -1353,16 +1525,22 @@ fn project_display_items(
             }
             continue;
         };
-        let display_timestamp_ms = root.activity_timestamp_ms.or(item.timestamp_ms);
-        if !belongs_to_window(display_timestamp_ms) {
+        // Membership follows the activity; placement follows the setting, as
+        // for a root with a visible slot (#1692).
+        let activity_timestamp_ms = root.activity_timestamp_ms.or(item.timestamp_ms);
+        if !belongs_to_window(activity_timestamp_ms) {
             continue;
         }
-        let projected_item = root_display_item(
-            root,
-            item,
-            root.activity_event_id.clone(),
-            display_timestamp_ms,
-        );
+        let (activity_event_id, display_timestamp_ms) = match context.thread_root_order {
+            TimelineThreadRootOrder::RootEvent => (
+                root.root_event_id.clone(),
+                item.timestamp_ms.or(activity_timestamp_ms),
+            ),
+            TimelineThreadRootOrder::LatestReply => {
+                (root.activity_event_id.clone(), activity_timestamp_ms)
+            }
+        };
+        let projected_item = root_display_item(root, item, activity_event_id, display_timestamp_ms);
         if !rendered_ids.insert(timeline_item_render_id(&projected_item)) {
             continue;
         }
@@ -2024,3 +2202,7 @@ mod bounded_window_tests;
 #[cfg(test)]
 #[path = "display_projection/bounded_visibility_tests.rs"]
 mod bounded_visibility_tests;
+
+#[cfg(test)]
+#[path = "display_projection/issue_1692_tests.rs"]
+mod issue_1692_tests;

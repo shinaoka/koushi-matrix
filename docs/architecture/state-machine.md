@@ -2349,7 +2349,11 @@ stateDiagram-v2
   timed span, or past the window end only when the window reaches the live
   end; otherwise it stays dormant until the window covers its activity. It is
   ordered among timestamped rows only: untimed cursors (`TimelineStart`,
-  `ReadMarker`) never place a root before them (#1657).
+  `ReadMarker`) never place a root before them (#1657). Membership follows the
+  activity, but placement follows `TimelineThreadRootOrder`: under `RootEvent`
+  any root whose own event is not a displayed slot is ordered and dated by the
+  root event's own timestamp, as a root with a visible slot is; only
+  `LatestReply` orders and dates it by its activity (#1692).
 - TypeScript applies Rust display items/diffs and may add renderer-local date
   dividers, but it never prunes projection state, chooses a root/reply slot,
   synthesizes a pending/failed root, or interprets empty/reset/replay as deletion.
@@ -2770,7 +2774,17 @@ stateDiagram-v2
   `Complete`/`StartReached` proof, and is shown only while the displayed oldest
   row reaches the canonical start: Core carries the hidden timeline-start row
   only when a front insertion is boundary-adjacent, so the marker cannot sit
-  above a trimmed prefix (#1443).
+  above a trimmed prefix (#1443). Adjacency looks through hidden items that
+  occupy no display row: the older replies suppressed by the one-reply-per-root
+  rule (#873) and other #1110 non-row items. They are not a trimmed prefix, so
+  an insertion next to them takes the visibility of the nearest displayed or
+  trimmed row beyond them, and a cached page whose oldest event is a superseded
+  reply stays visible (#1692). The projection keeps, for each unrepresented
+  run, how far such items reach from either end, so that transparency survives
+  a batch boundary; such items buried between two trimmed rows are kept as
+  trimmed, which can only hide, never show, a row. A `Set` reclassifies a
+  hidden item by its replacement, and a path that chooses the window wholesale
+  recomputes the runs from the canonical items.
 
 ## Timeline Reactions
 

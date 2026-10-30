@@ -151,7 +151,7 @@ fn sdk_growth_is_trimmed_around_the_observed_anchor() {
     let canonical = items(1000);
     let mut state = DisplayProjectionState::from_canonical_window(&canonical, 0..1000);
     let observation = observe(&state, 400, 410);
-    state.bound_after_batch(&context(&observation));
+    state.bound_after_batch(&canonical, &context(&observation));
     assert_eq!(state.slots.len(), 240);
     assert!(state.slots.iter().any(|slot| slot.canonical_index == 400));
     assert!(state.slots.iter().any(|slot| slot.canonical_index == 410));
