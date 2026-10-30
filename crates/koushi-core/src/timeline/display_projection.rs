@@ -868,8 +868,9 @@ impl DisplayMembershipRope {
         let Some((left, mut middle, right)) = self.split_one(index) else {
             return false;
         };
-        // A suppressed item that now occupies a row was never displayed.
-        if matches!(middle.cell, DisplayMembershipCell::Suppressed(_)) {
+        // A hidden cell follows its replacement: a row stays trimmed, an item
+        // that no longer occupies a row becomes transparent.
+        if !matches!(middle.cell, DisplayMembershipCell::Slot(_)) {
             middle.cell = DisplayMembershipCell::hidden(&item);
         }
         let valid = match &mut middle.cell {
@@ -1017,9 +1018,10 @@ impl DisplayMembershipRope {
         let visible_len = self.visible_len();
         let mut slots = Vec::with_capacity(visible_len);
         let mut canonical_index = 0_usize;
-        // The current unrepresented run: its length, transparent ends, and
-        // whether it holds a trimmed cell yet.
-        let (mut run_len, mut lead, mut trail, mut trimmed) = (0_usize, 0_usize, 0_usize, false);
+        // The current unrepresented run: its transparent ends and whether it
+        // holds a trimmed cell yet. Only the ends persist; a suppressed run
+        // between two trimmed cells is kept as trimmed (conservative).
+        let (mut lead, mut trail, mut trimmed) = (0_usize, 0_usize, false);
         let mut pending = Vec::new();
         let mut cursor = self.root.take();
         while cursor.is_some() || !pending.is_empty() {
@@ -1032,13 +1034,11 @@ impl DisplayMembershipRope {
             match node.cell {
                 DisplayMembershipCell::Gap(len) => {
                     canonical_index = canonical_index.saturating_add(len);
-                    run_len += len;
                     trail = 0;
                     trimmed |= len > 0;
                 }
                 DisplayMembershipCell::Suppressed(len) => {
                     canonical_index = canonical_index.saturating_add(len);
-                    run_len += len;
                     trail += len;
                     if !trimmed {
                         lead += len;
@@ -1052,15 +1052,15 @@ impl DisplayMembershipRope {
                     slots.push(DisplayProjectionSlot {
                         canonical_index,
                         item,
-                        gap_before: run_ends(run_len, lead, trail, trimmed),
+                        gap_before: run_ends(lead, trail, trimmed),
                     });
                     canonical_index = canonical_index.saturating_add(1);
-                    (run_len, lead, trail, trimmed) = (0, 0, 0, false);
+                    (lead, trail, trimmed) = (0, 0, false);
                 }
             }
             cursor = node.right.take();
         }
-        display_state.gap_after = run_ends(run_len, lead, trail, trimmed);
+        display_state.gap_after = run_ends(lead, trail, trimmed);
         display_state.slots = slots;
         display_state.canonical_len = canonical_index;
         display_state.display_items = project_display_items(display_state, context);
@@ -1075,14 +1075,11 @@ impl DisplayMembershipRope {
     }
 }
 
-fn run_ends(len: usize, lead: usize, trail: usize, trimmed: bool) -> GapEnds {
-    if trimmed {
-        GapEnds { lead, trail }
-    } else {
-        GapEnds {
-            lead: len,
-            trail: 0,
-        }
+/// Without a trimmed cell the whole run is transparent (`lead == len`).
+fn run_ends(lead: usize, trail: usize, trimmed: bool) -> GapEnds {
+    GapEnds {
+        lead,
+        trail: if trimmed { trail } else { 0 },
     }
 }
 

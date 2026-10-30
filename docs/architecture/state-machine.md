@@ -2780,9 +2780,11 @@ stateDiagram-v2
   an insertion next to them takes the visibility of the nearest displayed or
   trimmed row beyond them, and a cached page whose oldest event is a superseded
   reply stays visible (#1692). The projection keeps, for each unrepresented
-  run, how far such items reach from either end, so the same diffs give the
-  same display however they are split into batches; a path that chooses the
-  window wholesale recomputes it from the canonical items.
+  run, how far such items reach from either end, so that transparency survives
+  a batch boundary; such items buried between two trimmed rows are kept as
+  trimmed, which can only hide, never show, a row. A `Set` reclassifies a
+  hidden item by its replacement, and a path that chooses the window wholesale
+  recomputes the runs from the canonical items.
 
 ## Timeline Reactions
 

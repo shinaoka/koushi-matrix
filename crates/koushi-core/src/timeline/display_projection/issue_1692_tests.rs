@@ -137,8 +137,6 @@ fn cached_pages_behind_a_superseded_reply_match_a_one_shot_rebuild() {
 
     let mut rebuilt = DisplayProjectionState::default();
     rebuilt.return_to_live_window(&canonical, &context);
-    eprintln!("incremental: {:?}", rows(&incremental));
-    eprintln!("rebuilt:     {:?}", rows(&rebuilt));
     assert_eq!(
         rows(&incremental),
         rows(&rebuilt),
@@ -429,4 +427,27 @@ fn an_off_window_root_follows_the_thread_root_order() {
             "$m7@17"
         ]
     );
+}
+
+/// A trimmed row that a `Set` turns into a non-row item (for example a
+/// redaction while deleted messages are hidden) no longer blocks adjacency.
+#[test]
+fn a_set_that_hides_a_trimmed_row_makes_it_transparent() {
+    let context = DisplayProjectionContext::bounded_live_edge();
+    let mut canonical = vec![event("x", 1, None), event("a", 2, None)];
+    // x is outside the represented window.
+    let mut state = DisplayProjectionState::from_canonical_window(&canonical, 1..2);
+    let mut hidden_x = event("x", 1, None);
+    hidden_x.is_hidden = true;
+    let diffs = [
+        TimelineDiff::Set {
+            index: 0,
+            item: hidden_x,
+        },
+        TimelineDiff::PushFront {
+            item: event("y", 0, None),
+        },
+    ];
+    project_sdk_batch(&mut canonical, &mut state, &diffs, &context);
+    assert_eq!(shown(&state), ids(&["y", "a"]));
 }
