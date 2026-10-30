@@ -116,12 +116,16 @@ pub(super) async fn verify_live_reader_scope(
         })
         .await
         .map_err(|_| "reader scope: model timed out".to_owned())??;
-        // #1103: name the phase and the concrete scope error. The nightly lane
-        // reported only "observation rejected", which left the failing phase and
-        // the rejected precondition indistinguishable.
-        reader
-            .observe_avatars(revision, 1, &[expected_reader.to_owned()], &[])
-            .map_err(|error| format!("reader scope: {phase} observation rejected ({error:?})"))?;
+        let mut sequence = 0;
+        observe_following_next_model(
+            &mut reader,
+            phase,
+            revision,
+            &mut sequence,
+            expected_reader,
+            &mut ready_resource,
+        )
+        .await?;
         if ready_resource.is_none() {
             tokio::time::timeout(EVENT_TIMEOUT, async {
                 loop {
@@ -164,8 +168,9 @@ pub(super) async fn verify_live_reader_scope(
             // accessing the surviving scope's independent capability.
             drop(first);
             verify_avatar_bytes(&reader, ready_revision, &source_ref)?;
+            sequence += 1;
             reader
-                .observe_avatars(ready_revision, 2, &[expected_reader.to_owned()], &[])
+                .observe_avatars(ready_revision, sequence, &[expected_reader.to_owned()], &[])
                 .map_err(|_| "reader avatar: surviving demand rejected".to_owned())?;
         }
         // Keep demand live during a bounded no-additional-HTTP observation interval.
@@ -186,6 +191,64 @@ pub(super) async fn verify_live_reader_scope(
         }
     }
     Ok(())
+}
+
+/// Observe the expected reader's avatar on the installed model. A model whose
+/// timeline source was superseded after delivery rejects the observation with
+/// `SourceUnavailable`; the scope then delivers the next model, and the host
+/// observes again on that one, as the renderer does (#1636). Retirement or the
+/// deadline still fails the stage, naming the phase and the scope error.
+async fn observe_following_next_model(
+    reader: &mut koushi_core::runtime::ReaderSubscription,
+    phase: &str,
+    mut revision: koushi_protocol::view::ViewRevision,
+    sequence: &mut u64,
+    expected_reader: &str,
+    ready_resource: &mut Option<(koushi_protocol::view::ViewRevision, String)>,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    loop {
+        *sequence += 1;
+        // #1103: name the phase and the concrete scope error.
+        match reader.observe_avatars(revision, *sequence, &[expected_reader.to_owned()], &[]) {
+            Ok(()) => return Ok(()),
+            Err(koushi_core::runtime::ScopeError::SourceUnavailable) => {}
+            Err(error) => {
+                return Err(format!(
+                    "reader scope: {phase} observation rejected ({error:?})"
+                ));
+            }
+        }
+        let delivery = tokio::time::timeout_at(deadline, reader.next_delivery())
+            .await
+            .map_err(|_| format!("reader scope: {phase} no model after SourceUnavailable"))?;
+        let Some(ViewDelivery::Model {
+            revision: next,
+            model,
+            ..
+        }) = delivery
+        else {
+            return Err(format!(
+                "reader scope: {phase} retired after SourceUnavailable"
+            ));
+        };
+        reader
+            .ack_model(next)
+            .map_err(|error| format!("reader scope: {phase} ACK failed ({error:?})"))?;
+        revision = next;
+        // A resource belongs to the model that carried it.
+        *ready_resource = None;
+        if let ViewModel::ReaderReady(window) = model
+            && let Some(koushi_state::AvatarThumbnailState::Ready { source_ref, .. }) = window
+                .rows
+                .iter()
+                .find(|row| row.user_id == expected_reader)
+                .and_then(|row| row.avatar.as_ref())
+        {
+            verify_avatar_bytes(reader, revision, source_ref)?;
+            *ready_resource = Some((revision, source_ref.clone()));
+        }
+    }
 }
 
 fn verify_closed(
