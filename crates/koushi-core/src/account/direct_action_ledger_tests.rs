@@ -112,7 +112,10 @@ async fn a_settled_request_replays_until_the_ttl() {
     ledger.finish(&key, token, &edited(), Instant::now());
 
     match ledger.begin(key.clone(), Instant::now()) {
-        Begin::Replay(DirectMessageResponse::Edit(outcome)) => {
+        Begin::Replay(response) => {
+            let DirectMessageResponse::Edit(outcome) = *response else {
+                panic!("an edit replays an edit");
+            };
             assert_eq!(outcome.edit_event_id.as_deref(), Some("$edit"));
         }
         other => panic!("a settled request replays its result, got {other:?}"),
@@ -236,7 +239,7 @@ async fn an_action_that_hits_its_deadline_leaves_the_key_ambiguous_until_the_ttl
     drop(admitted.permit);
 
     assert!(matches!(
-        admit(&ledger, &slots, &request, Instant::now()),
+        admit(&ledger, &slots, &request, Instant::now()).map_err(|answer| *answer),
         Err(Err(DirectMessageFailure::DuplicatePending))
     ));
     tokio::time::advance(LEDGER_TTL).await;
@@ -270,7 +273,7 @@ async fn an_aborted_action_releases_its_key_after_its_deadline_and_the_ttl() {
     assert!(task.await.is_err());
 
     assert!(matches!(
-        admit(&ledger, &slots, &request, Instant::now()),
+        admit(&ledger, &slots, &request, Instant::now()).map_err(|answer| *answer),
         Err(Err(DirectMessageFailure::DuplicatePending))
     ));
     tokio::time::advance(ACTION_DEADLINE + LEDGER_TTL).await;
@@ -292,14 +295,14 @@ async fn a_settled_retry_replays_while_the_slots_are_busy_and_a_slotless_claim_i
         admit(&ledger, &slots, &edit_request("other"), Instant::now()).expect("the one slot");
     assert!(
         matches!(
-            admit(&ledger, &slots, &request, Instant::now()),
+            admit(&ledger, &slots, &request, Instant::now()).map_err(|answer| *answer),
             Err(Ok(DirectMessageResponse::Edit(_)))
         ),
         "a replay needs no slot"
     );
     let slotless = edit_request("uuid-2");
     assert!(matches!(
-        admit(&ledger, &slots, &slotless, Instant::now()),
+        admit(&ledger, &slots, &slotless, Instant::now()).map_err(|answer| *answer),
         Err(Err(DirectMessageFailure::Capacity))
     ));
     drop(busy);

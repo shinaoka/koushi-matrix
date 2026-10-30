@@ -96,7 +96,7 @@ pub(super) enum Begin {
     /// Nothing is remembered; the request was claimed and may act.
     Fresh(ClaimToken),
     /// The same request already settled; answer with its result again.
-    Replay(DirectMessageResponse),
+    Replay(Box<DirectMessageResponse>),
     /// The same request is running or ended ambiguously; do not act.
     Pending,
     /// Every remembered entry still guards a retry that may not act again, so
@@ -106,7 +106,7 @@ pub(super) enum Begin {
 
 enum EntryState {
     Running,
-    Settled(DirectMessageResponse),
+    Settled(Box<DirectMessageResponse>),
     Ambiguous,
 }
 
@@ -179,7 +179,7 @@ impl DirectActionLedger {
         }
         match outcome {
             Ok(response) => {
-                entry.state = EntryState::Settled(response.clone());
+                entry.state = EntryState::Settled(Box::new(response.clone()));
                 entry.expires_at = now + LEDGER_TTL;
             }
             Err(DirectMessageFailure::Unavailable) => {
@@ -249,7 +249,7 @@ pub(super) fn admit(
     slots: &Arc<tokio::sync::Semaphore>,
     request: &DirectMessageRequest,
     now: Instant,
-) -> Result<Admitted, DirectOutcome> {
+) -> Result<Admitted, Box<DirectOutcome>> {
     let claim = match DirectActionKey::for_request(request) {
         None => None,
         Some(key) => {
@@ -259,9 +259,11 @@ pub(super) fn admit(
                 .begin(key.clone(), now);
             match begin {
                 Begin::Fresh(token) => Some(Claim { key, token }),
-                Begin::Replay(response) => return Err(Ok(response)),
-                Begin::Pending => return Err(Err(DirectMessageFailure::DuplicatePending)),
-                Begin::Full => return Err(Err(DirectMessageFailure::Capacity)),
+                Begin::Replay(response) => return Err(Box::new(Ok(*response))),
+                Begin::Pending => {
+                    return Err(Box::new(Err(DirectMessageFailure::DuplicatePending)));
+                }
+                Begin::Full => return Err(Box::new(Err(DirectMessageFailure::Capacity))),
             }
         }
     };
@@ -276,7 +278,7 @@ pub(super) fn admit(
                     now,
                 );
             }
-            Err(Err(DirectMessageFailure::Capacity))
+            Err(Box::new(Err(DirectMessageFailure::Capacity)))
         }
     }
 }
