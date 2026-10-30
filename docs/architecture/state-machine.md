@@ -7161,8 +7161,11 @@ stateDiagram-v2
   `Running` and `Ambiguous` entries are never evicted before they expire; when
   only those remain the claim is refused with `Capacity`. Live `Running`
   entries are bounded by the four per-account slots, below the limit.
-- **Reset.** Session teardown aborts running tasks without settling them; their
-  claims expire by the rule above. A new account actor starts empty.
+- **Reset.** The ledger lives with the account actor and is not cleared by a
+  session change inside it, so an unexpired key keeps guarding its retry.
+  Actor shutdown aborts running tasks without settling them and drops the
+  ledger; a new account actor starts empty. Any task that ends without
+  settling leaves its claim to expire by the rule above.
 
 ## Historical key recovery
 

@@ -2189,8 +2189,9 @@ Invariants:
   ledger forgets the oldest settled entry, whose retry would then act again;
   running and ambiguous entries are never forgotten early, so when only those
   remain the new call answers `busy` at once and nothing waits. The ledger
-  holds ids and the action result only and lives with the account runtime, so
-  a retry after an app restart or a sign-out may act again. The state machine
+  holds ids and the action result only and lives with the account actor: a
+  session change inside the actor keeps it, and a retry after an app restart
+  or a new account actor may act again. The state machine
   is in `state-machine.md` "MCP Message-Action Retry Ledger".
 - **Assistant drafts are the one composer write (#1644).** `draft_message`
   stages plain text in a room's main composer or in a thread composer and
