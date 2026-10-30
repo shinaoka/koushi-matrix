@@ -155,14 +155,31 @@ pub(super) async fn run_search_crawler_stage(
         let event = tokio::time::timeout(Duration::from_secs(5), conn.recv_event()).await;
         let snap = conn.snapshot();
         if snap.settings.values.search_crawler.speed == SearchCrawlerSpeed::Slow {
+            // The reducer invalidates in the same reduction that applies the
+            // settings (Completed -> Idle, then InvalidateSearchCrawlerCache), so
+            // the first snapshot with the new speed already shows it.
+            if matches!(
+                snap.search_crawler.rooms.get(room_id),
+                None | Some(SearchCrawlerRoomState::Idle)
+            ) {
+                return Err("crawl_throttle: speed change reset the room to Idle".to_owned());
+            }
             break;
         }
         let _ = event;
     }
 
-    // Let a catch-up finish, then require that nothing started over.
+    // Let a catch-up finish, then require that nothing started over. The
+    // diagnostic ring is bounded, so check it on every turn, not once at the end.
     let completed_deadline = tokio::time::Instant::now() + Duration::from_secs(CRAWL_TIMEOUT_SECS);
     loop {
+        let restarted = crawls_enqueued_since(speed_changed_at_ms, "initial");
+        if restarted != 0 {
+            return Err(format!(
+                "crawl_throttle: speed change started {restarted} crawl(s) over (catch_ups={})",
+                crawls_enqueued_since(speed_changed_at_ms, "catch_up")
+            ));
+        }
         match conn.snapshot().search_crawler.rooms.get(room_id) {
             Some(SearchCrawlerRoomState::Completed { .. }) => break,
             Some(SearchCrawlerRoomState::Failed { kind }) => {
