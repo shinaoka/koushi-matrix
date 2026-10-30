@@ -1,4 +1,8 @@
-import { shortcutIdForKeyboardEvent } from "../domain/shortcuts";
+import {
+  defaultShortcutLabelProfile,
+  shortcutIdForKeyboardEvent,
+  type ShortcutPlatformProfile
+} from "../domain/shortcuts";
 
 const windowShortcutIds = new Set([
   "toggleFullscreen",
@@ -27,7 +31,19 @@ export function createLatestShortcutHandler(): {
   };
 }
 
-export function listenForAppShortcuts(handleShortcut: (id: string) => boolean): () => void {
+// One mouse-wheel notch in pixel delta mode (Chromium/WebView2 and WebKitGTK).
+const WHEEL_ZOOM_STEP_PIXELS = 100;
+
+function wheelDeltaModePixels(deltaMode: number): number {
+  if (deltaMode === WheelEvent.DOM_DELTA_LINE) return WHEEL_ZOOM_STEP_PIXELS;
+  if (deltaMode === WheelEvent.DOM_DELTA_PAGE) return WHEEL_ZOOM_STEP_PIXELS * 10;
+  return 1;
+}
+
+export function listenForAppShortcuts(
+  handleShortcut: (id: string) => boolean,
+  platform: ShortcutPlatformProfile = defaultShortcutLabelProfile().platform
+): () => void {
   // App-level and window operations remain available in dialogs and focused
   // widgets that stop bubbling keys. Room/composer shortcuts still defer to
   // those local handlers.
@@ -47,9 +63,24 @@ export function listenForAppShortcuts(handleShortcut: (id: string) => boolean): 
     }
   }
 
+  // #1694: a trackpad pinch arrives as a burst of Ctrl+wheel events with small
+  // pixel deltas. On macOS that is the only common source, and Cmd+=/- is the
+  // zoom gesture, so the pinch is consumed without zooming. Elsewhere Ctrl+wheel
+  // zooms one step per mouse-notch of accumulated travel.
+  let wheelZoomTravel = 0;
   function onWheel(event: WheelEvent) {
     if (event.defaultPrevented || !event.ctrlKey || event.deltaY === 0) return;
-    if (handleShortcut(event.deltaY < 0 ? "zoomIn" : "zoomOut")) event.preventDefault();
+    if (platform === "macos") {
+      event.preventDefault();
+      return;
+    }
+    const delta = event.deltaY * wheelDeltaModePixels(event.deltaMode);
+    if (Math.sign(delta) !== Math.sign(wheelZoomTravel)) wheelZoomTravel = 0;
+    wheelZoomTravel += delta;
+    event.preventDefault();
+    if (Math.abs(wheelZoomTravel) < WHEEL_ZOOM_STEP_PIXELS) return;
+    wheelZoomTravel = 0;
+    handleShortcut(delta < 0 ? "zoomIn" : "zoomOut");
   }
 
   window.addEventListener("keydown", onWindowKeyDown, true);

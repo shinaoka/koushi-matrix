@@ -113,23 +113,47 @@ test("one fullscreen keypress dispatches once and cleanup removes every listener
   expect(handle).toHaveBeenCalledTimes(1);
 });
 
+function wheel(ctrlKey: boolean, deltaY: number, deltaMode: number = WheelEvent.DOM_DELTA_PIXEL) {
+  const event = new WheelEvent("wheel", { ctrlKey, deltaY, deltaMode, bubbles: true, cancelable: true });
+  document.body.dispatchEvent(event);
+  return event.defaultPrevented;
+}
+
 test("Ctrl+wheel shares zoom handling, ordinary scrolling and cleanup retain browser behavior", () => {
   const handle = vi.fn(() => true);
-  dispose = listenForAppShortcuts(handle);
-  function wheel(ctrlKey: boolean, deltaY: number) {
-    const event = new WheelEvent("wheel", { ctrlKey, deltaY, bubbles: true, cancelable: true });
-    document.body.dispatchEvent(event);
-    return event.defaultPrevented;
-  }
-  expect(wheel(false, 1)).toBe(false);
+  dispose = listenForAppShortcuts(handle, "windows");
+  expect(wheel(false, 100)).toBe(false);
   expect(wheel(true, 0)).toBe(false);
   expect(handle).not.toHaveBeenCalled();
-  expect(wheel(true, -1)).toBe(true);
-  expect(wheel(true, 1)).toBe(true);
-  expect(handle.mock.calls).toEqual([["zoomIn"], ["zoomOut"]]);
+  expect(wheel(true, -100)).toBe(true);
+  expect(wheel(true, 100)).toBe(true);
+  expect(wheel(true, -1, WheelEvent.DOM_DELTA_LINE)).toBe(true);
+  expect(handle.mock.calls).toEqual([["zoomIn"], ["zoomOut"], ["zoomIn"]]);
   dispose();
-  expect(wheel(true, -1)).toBe(false);
-  expect(handle).toHaveBeenCalledTimes(2);
+  expect(wheel(true, -100)).toBe(false);
+  expect(handle).toHaveBeenCalledTimes(3);
+});
+
+test("#1694: a trackpad pinch's many small Ctrl+wheel deltas take at most one zoom step per mouse-notch of travel", () => {
+  const handle = vi.fn(() => true);
+  dispose = listenForAppShortcuts(handle, "windows");
+  // A short pinch: dozens of events, each a few pixels.
+  for (let i = 0; i < 30; i++) expect(wheel(true, -3)).toBe(true);
+  expect(handle).not.toHaveBeenCalled();
+  for (let i = 0; i < 4; i++) wheel(true, -3);
+  expect(handle.mock.calls).toEqual([["zoomIn"]]);
+  // Reversing direction starts a fresh accumulation instead of cancelling out.
+  for (let i = 0; i < 20; i++) wheel(true, 3);
+  expect(handle).toHaveBeenCalledTimes(1);
+});
+
+test("#1694: on macOS a trackpad pinch never zooms the app, and the webview does not zoom either", () => {
+  const handle = vi.fn(() => true);
+  dispose = listenForAppShortcuts(handle, "macos");
+  for (let i = 0; i < 200; i++) expect(wheel(true, i % 2 ? 40 : -40)).toBe(true);
+  expect(wheel(true, -400)).toBe(true);
+  expect(handle).not.toHaveBeenCalled();
+  expect(wheel(false, -400)).toBe(false);
 });
 
 test("room search still respects modal and previously consumed key events", () => {
