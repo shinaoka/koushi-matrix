@@ -1085,14 +1085,6 @@ fn room_list_update_does_not_reintroduce_stale_unread_after_fully_read_marker() 
 
     reduce(
         &mut state,
-        AppAction::RoomMarkedAsReadRequested {
-            request_id: 7,
-            room_id: "!room:example.invalid".to_owned(),
-            event_id: "$latest:example.invalid".to_owned(),
-        },
-    );
-    reduce(
-        &mut state,
         AppAction::FullyReadMarkerUpdated {
             room_id: "!room:example.invalid".to_owned(),
             event_id: Some("$latest:example.invalid".to_owned()),
@@ -1141,14 +1133,6 @@ fn room_list_update_suppresses_stale_unread_when_read_marker_event_differs_from_
     room.recency_stamp = Some(42);
     state.rooms = vec![room];
 
-    reduce(
-        &mut state,
-        AppAction::RoomMarkedAsReadRequested {
-            request_id: 7,
-            room_id: "!room:example.invalid".to_owned(),
-            event_id: "$visible-read-event:example.invalid".to_owned(),
-        },
-    );
     reduce(
         &mut state,
         AppAction::FullyReadMarkerUpdated {
@@ -1231,98 +1215,18 @@ fn room_list_update_preserves_unread_when_latest_event_changes_after_local_read(
     assert_eq!(room.notification_count, 1);
 }
 
-fn room_with_activity(
-    latest_event_id: &str,
-    recency_stamp: u64,
-    unread: u64,
-) -> crate::state::RoomSummary {
-    let mut room = test_room("!room:example.invalid", None);
-    room.latest_event = Some(latest_event(latest_event_id, recency_stamp));
-    room.recency_stamp = Some(recency_stamp);
-    room.unread_count = unread;
-    room.notification_count = unread;
-    room
-}
-
-fn mark_read_locally(state: &mut AppState, request_id: u64, event_id: &str) {
-    reduce(
-        state,
-        AppAction::RoomMarkedAsReadRequested {
-            request_id,
-            room_id: "!room:example.invalid".to_owned(),
-            event_id: event_id.to_owned(),
-        },
-    );
-    reduce(
-        state,
-        AppAction::FullyReadMarkerUpdated {
-            room_id: "!room:example.invalid".to_owned(),
-            event_id: Some(event_id.to_owned()),
-        },
-    );
-    reduce(
-        state,
-        AppAction::RoomMarkedAsReadSucceeded {
-            request_id,
-            room_id: "!room:example.invalid".to_owned(),
-        },
-    );
-}
-
-fn room_unread(state: &AppState) -> (u64, u64) {
-    let room = state
-        .rooms
-        .iter()
-        .find(|room| room.room_id == "!room:example.invalid")
-        .expect("room summary should exist");
-    (room.unread_count, room.notification_count)
-}
-
 #[test]
 fn room_list_update_keeps_a_new_message_unread_after_it_was_first_observed_without_counts() {
     // #1683: the room list can report a newer latest event before the SDK has
     // counted it. That zero is not a local read of the new event, so the count
     // that follows for the same event is new information, not a stale snapshot.
     let mut state = ready_state();
-    state.rooms = vec![room_with_activity("$read:example.invalid", 42, 1)];
-    mark_read_locally(&mut state, 7, "$read:example.invalid");
-    assert_eq!(room_unread(&state), (0, 0));
-
-    for unread in [0, 1] {
-        reduce(
-            &mut state,
-            AppAction::RoomListUpdated {
-                spaces: Vec::new(),
-                rooms: vec![room_with_activity("$new:example.invalid", 43, unread)],
-            },
-        );
-    }
-
-    assert_eq!(room_unread(&state), (1, 1));
-}
-
-#[test]
-fn a_message_that_arrived_during_the_mark_read_request_is_not_suppressed_afterwards() {
-    // #1683: the read covers the activity it was requested against. A message
-    // that arrived while the request was in flight is cleared with the rest on
-    // success, but the next snapshot of it is new information, not stale.
-    let mut state = ready_state();
-    state.rooms = vec![room_with_activity("$read:example.invalid", 42, 1)];
-    reduce(
-        &mut state,
-        AppAction::RoomMarkedAsReadRequested {
-            request_id: 7,
-            room_id: "!room:example.invalid".to_owned(),
-            event_id: "$read:example.invalid".to_owned(),
-        },
-    );
-    reduce(
-        &mut state,
-        AppAction::RoomListUpdated {
-            spaces: Vec::new(),
-            rooms: vec![room_with_activity("$new:example.invalid", 43, 2)],
-        },
-    );
+    let mut room = test_room("!room:example.invalid", None);
+    room.latest_event = Some(latest_event("$read:example.invalid", 42));
+    room.recency_stamp = Some(42);
+    room.unread_count = 1;
+    room.notification_count = 1;
+    state.rooms = vec![room];
     reduce(
         &mut state,
         AppAction::FullyReadMarkerUpdated {
@@ -1337,110 +1241,29 @@ fn a_message_that_arrived_during_the_mark_read_request_is_not_suppressed_afterwa
             room_id: "!room:example.invalid".to_owned(),
         },
     );
-    assert_eq!(room_unread(&state), (0, 0));
 
-    reduce(
-        &mut state,
-        AppAction::RoomListUpdated {
-            spaces: Vec::new(),
-            rooms: vec![room_with_activity("$new:example.invalid", 43, 1)],
-        },
-    );
-    assert_eq!(room_unread(&state), (1, 1));
-}
+    for unread in [0, 1] {
+        let mut new_message = test_room("!room:example.invalid", None);
+        new_message.latest_event = Some(latest_event("$new:example.invalid", 43));
+        new_message.recency_stamp = Some(43);
+        new_message.unread_count = unread;
+        new_message.notification_count = unread;
+        reduce(
+            &mut state,
+            AppAction::RoomListUpdated {
+                spaces: Vec::new(),
+                rooms: vec![new_message],
+            },
+        );
+    }
 
-#[test]
-fn a_success_without_its_request_suppresses_nothing() {
-    // A late or duplicate success (its request already failed, succeeded, or
-    // belonged to an earlier session) cannot vouch for the room's current
-    // activity.
-    let mut state = ready_state();
-    state.rooms = vec![room_with_activity("$read:example.invalid", 42, 1)];
-    mark_read_locally(&mut state, 7, "$read:example.invalid");
-    reduce(
-        &mut state,
-        AppAction::RoomListUpdated {
-            spaces: Vec::new(),
-            rooms: vec![room_with_activity("$new:example.invalid", 43, 1)],
-        },
-    );
-    reduce(
-        &mut state,
-        AppAction::RoomMarkedAsReadSucceeded {
-            request_id: 7,
-            room_id: "!room:example.invalid".to_owned(),
-        },
-    );
-    reduce(
-        &mut state,
-        AppAction::RoomListUpdated {
-            spaces: Vec::new(),
-            rooms: vec![room_with_activity("$new:example.invalid", 43, 1)],
-        },
-    );
-    assert_eq!(room_unread(&state), (1, 1));
-}
-
-#[test]
-fn overlapping_mark_read_requests_are_tracked_separately() {
-    // Request 8 is issued after a new message; request 7, issued before it,
-    // succeeds last and must not vouch for the new message.
-    let mut state = ready_state();
-    state.rooms = vec![room_with_activity("$read:example.invalid", 42, 1)];
-    reduce(
-        &mut state,
-        AppAction::RoomMarkedAsReadRequested {
-            request_id: 7,
-            room_id: "!room:example.invalid".to_owned(),
-            event_id: "$read:example.invalid".to_owned(),
-        },
-    );
-    reduce(
-        &mut state,
-        AppAction::RoomListUpdated {
-            spaces: Vec::new(),
-            rooms: vec![room_with_activity("$new:example.invalid", 43, 2)],
-        },
-    );
-    reduce(
-        &mut state,
-        AppAction::RoomMarkedAsReadRequested {
-            request_id: 8,
-            room_id: "!room:example.invalid".to_owned(),
-            event_id: "$new:example.invalid".to_owned(),
-        },
-    );
-    reduce(
-        &mut state,
-        AppAction::FullyReadMarkerUpdated {
-            room_id: "!room:example.invalid".to_owned(),
-            event_id: Some("$new:example.invalid".to_owned()),
-        },
-    );
-    reduce(
-        &mut state,
-        AppAction::RoomMarkedAsReadSucceeded {
-            request_id: 8,
-            room_id: "!room:example.invalid".to_owned(),
-        },
-    );
-    reduce(
-        &mut state,
-        AppAction::RoomMarkedAsReadSucceeded {
-            request_id: 7,
-            room_id: "!room:example.invalid".to_owned(),
-        },
-    );
-    // Request 8 covered the new message, so a stale snapshot of it stays
-    // cleared even though request 7 succeeded after it.
-    reduce(
-        &mut state,
-        AppAction::RoomListUpdated {
-            spaces: Vec::new(),
-            rooms: vec![room_with_activity("$new:example.invalid", 43, 2)],
-        },
-    );
-    assert_eq!(room_unread(&state), (0, 0));
+    let room = state
+        .rooms
+        .iter()
+        .find(|room| room.room_id == "!room:example.invalid")
+        .expect("room summary should exist");
+    assert_eq!(room.unread_count, 1);
+    assert_eq!(room.notification_count, 1);
 }
 
 #[test]

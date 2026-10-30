@@ -353,7 +353,7 @@ fn handle_room_list_updated_with_crawler(
             !state.room_list.locally_left_room_ids.contains(room_id)
         }
     });
-    state.local_reads.retain(|room_id, _| {
+    state.locally_read_activity.retain(|room_id, _| {
         if authoritative {
             retained_room_ids.contains(room_id)
         } else {
@@ -826,15 +826,14 @@ fn suppress_stale_unread_after_local_read(state: &AppState, rooms: &mut [RoomSum
             .get(&room.room_id)
             .and_then(|signals| signals.fully_read_event_id.as_deref())
             .is_some();
-        // Stale only while the room shows exactly the activity the local read
-        // cleared. The locally clear state may have since moved to a newer
-        // latest event without its counts (#1683); that zero is no read of it.
-        let cleared_this_activity = state
-            .local_reads
+        // Compare with the activity the local read cleared, not with the
+        // current state: that can since have moved to a newer latest event
+        // without its counts (#1683), and that zero is no read of it.
+        let read_this_activity = state
+            .locally_read_activity
             .get(&room.room_id)
-            .and_then(|local_read| local_read.cleared.as_ref())
-            .is_some_and(|cleared| *cleared == RoomReadActivity::of(room));
-        if !fully_read_event_id_present || !cleared_this_activity {
+            .is_some_and(|read| *read == RoomReadActivity::of(room));
+        if !fully_read_event_id_present || !read_this_activity {
             continue;
         }
         room.marked_unread = false;
@@ -1191,18 +1190,7 @@ pub(crate) fn handle_room_marked_as_read_requested(
         return Vec::new();
     }
 
-    let _ = event_id;
-    // Remember what the room showed when the read was issued: the read covers
-    // that activity, not whatever arrives while the request is in flight.
-    if let Some(room) = state.rooms.iter().find(|room| room.room_id == room_id) {
-        let activity = RoomReadActivity::of(room);
-        state
-            .local_reads
-            .entry(room_id)
-            .or_default()
-            .pending
-            .insert(request_id, activity);
-    }
+    let _ = (request_id, event_id);
     vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
 }
 
@@ -1215,21 +1203,14 @@ pub(crate) fn handle_room_marked_as_read_succeeded(
         return Vec::new();
     }
 
-    let local_read = state.local_reads.entry(room_id.clone()).or_default();
-    let requested = local_read.pending.remove(&request_id);
+    let _ = request_id;
     if let Some(room) = state.rooms.iter_mut().find(|room| room.room_id == room_id) {
         room.marked_unread = false;
         room.unread_count = 0;
         room.notification_count = 0;
         room.highlight_count = 0;
-        // Later snapshots of this activity are stale only if this request was
-        // issued against it. A message that arrived while the request was in
-        // flight, or a success with no matching request, vouches for nothing:
-        // the next snapshot restores the counts it reports.
-        let current = RoomReadActivity::of(room);
-        if requested.is_some_and(|requested| requested == current) {
-            local_read.cleared = Some(current);
-        }
+        let activity = RoomReadActivity::of(room);
+        state.locally_read_activity.insert(room_id, activity);
         recompute_room_list_projection(state);
     }
     vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
@@ -1245,10 +1226,7 @@ pub(crate) fn handle_room_marked_as_read_failed(
         return Vec::new();
     }
 
-    let _ = kind;
-    if let Some(local_read) = state.local_reads.get_mut(&room_id) {
-        local_read.pending.remove(&request_id);
-    }
+    let _ = (request_id, kind);
     vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
 }
 

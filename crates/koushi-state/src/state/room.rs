@@ -427,24 +427,14 @@ pub fn room_attention_kind(
     }
 }
 
-/// The room activity a local mark-read saw (#1683): the room-summary latest event
-/// and last-activity timestamps. A later room-list snapshot with unread counts is
-/// stale only while the room still shows exactly this activity.
+/// The room activity a successful local mark-read cleared (#1683): the
+/// room-summary latest event and last-activity timestamps at that moment. A later
+/// unread room-list snapshot is stale only while it still shows this activity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RoomReadActivity {
     latest_event_id: Option<String>,
     recency_stamp: Option<u64>,
     conversation_activity: Option<ConversationActivity>,
-}
-
-/// Local mark-read bookkeeping for one room (#1683). Reducer-internal.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct LocalRoomRead {
-    /// In-flight requests, by request id, and the room activity each one was
-    /// issued against.
-    pub pending: std::collections::BTreeMap<u64, RoomReadActivity>,
-    /// The room activity a successful read cleared.
-    pub cleared: Option<RoomReadActivity>,
 }
 
 impl RoomReadActivity {
