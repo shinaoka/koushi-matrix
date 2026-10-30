@@ -130,6 +130,7 @@ pub(super) enum QaScenario {
     ReadStateConvergence,
     HiddenStateAcl,
     ThreadLateJoiner,
+    ThreadReceiptFreshSession,
     HistoryKeyRecoveryWindow,
     IdleSyncGapInspection,
     NotificationDelivery,
@@ -178,6 +179,7 @@ pub(super) enum QaStage {
     ReadStateConvergence,
     HiddenStateAcl,
     ThreadLateJoiner,
+    ThreadReceiptFreshSession,
     HistoryKeyRecoveryWindow,
     IdleSyncGapInspection,
     NotificationDelivery,
@@ -262,6 +264,7 @@ impl QaScenario {
             "read_state_convergence" => Ok(Self::ReadStateConvergence),
             "hidden_state_acl" => Ok(Self::HiddenStateAcl),
             "thread_late_joiner" => Ok(Self::ThreadLateJoiner),
+            "thread_receipt_fresh_session" => Ok(Self::ThreadReceiptFreshSession),
             "history_key_recovery_window" => Ok(Self::HistoryKeyRecoveryWindow),
             "idle_sync_gap_inspection" => Ok(Self::IdleSyncGapInspection),
             "notification_delivery" => Ok(Self::NotificationDelivery),
@@ -270,7 +273,7 @@ impl QaScenario {
             "account_notifications" => Ok(Self::AccountNotifications),
             "user_verification" => Ok(Self::UserVerification),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, e2ee_trust, e2ee_login_store, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, redact_edit_convergence, search_crawler, search_crawler_catchup, room_history_export, scheduled_send, restore_cleanup, link_preview, read_state_convergence, hidden_state_acl, thread_late_joiner, history_key_recovery_window, avatar_demand, account_notifications, user_verification, notification_delivery, mcp_message_actions; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, e2ee_trust, e2ee_login_store, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, redact_edit_convergence, search_crawler, search_crawler_catchup, room_history_export, scheduled_send, restore_cleanup, link_preview, read_state_convergence, hidden_state_acl, thread_late_joiner, thread_receipt_fresh_session, history_key_recovery_window, avatar_demand, account_notifications, user_verification, notification_delivery, mcp_message_actions; got {other}"
             )),
         }
     }
@@ -286,6 +289,7 @@ impl QaScenario {
                     | QaStage::HiddenStateAcl
                     | QaStage::SearchCrawlerCatchup
                     | QaStage::ThreadLateJoiner
+                    | QaStage::ThreadReceiptFreshSession
                     | QaStage::HistoryKeyRecoveryWindow
                     | QaStage::AvatarDemand
                     | QaStage::AccountNotifications
@@ -501,6 +505,9 @@ impl QaScenario {
                 matches!(stage, QaStage::Safety | QaStage::HistoryKeyRecoveryWindow)
             }
             Self::ThreadLateJoiner => matches!(stage, QaStage::Safety | QaStage::ThreadLateJoiner),
+            Self::ThreadReceiptFreshSession => {
+                matches!(stage, QaStage::Safety | QaStage::ThreadReceiptFreshSession)
+            }
             Self::NotificationDelivery => {
                 matches!(stage, QaStage::Safety | QaStage::NotificationDelivery)
             }
@@ -784,6 +791,13 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "thread_late_joiner_withheld_open_settled=ok",
             "thread_late_joiner_withheld_retry_close=ok",
             "thread_late_joiner=ok",
+        ],
+        QaStage::ThreadReceiptFreshSession => &[
+            "thread_receipt_fresh_unthreaded=ok",
+            "thread_receipt_fresh_clash=ok",
+            "thread_receipt_fresh_read=ok",
+            "thread_receipt_fresh_restart=ok",
+            "thread_receipt_fresh_session=ok",
         ],
         QaStage::AvatarDemand => &["avatar_window_requests=ok"],
         QaStage::IdleSyncGapInspection => &["idle_sync_gap_inspection=ok"],
@@ -1165,6 +1179,9 @@ pub(super) fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             vec![QaStage::Safety, QaStage::HistoryKeyRecoveryWindow]
         }
         QaScenario::ThreadLateJoiner => vec![QaStage::Safety, QaStage::ThreadLateJoiner],
+        QaScenario::ThreadReceiptFreshSession => {
+            vec![QaStage::Safety, QaStage::ThreadReceiptFreshSession]
+        }
         QaScenario::McpMessageActions => vec![QaStage::Safety, QaStage::McpMessageActions],
         QaScenario::SearchCrawlerCatchup => vec![QaStage::Safety, QaStage::SearchCrawlerCatchup],
         QaScenario::All => vec![
@@ -1259,6 +1276,7 @@ pub(super) fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static st
         | QaScenario::HiddenStateAcl
         | QaScenario::SearchCrawlerCatchup
         | QaScenario::ThreadLateJoiner
+        | QaScenario::ThreadReceiptFreshSession
         | QaScenario::HistoryKeyRecoveryWindow
         | QaScenario::IdleSyncGapInspection
         | QaScenario::NotificationDelivery

@@ -51,6 +51,7 @@ export const NIGHTLY_SCENARIOS = Object.freeze([
   "hidden_state_acl",
   "search_crawler_catchup",
   "thread_late_joiner",
+  "thread_receipt_fresh_session",
   "account_notifications",
   "user_verification",
   "idle_sync_gap_inspection",
