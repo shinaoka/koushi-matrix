@@ -434,7 +434,7 @@ describe("desktop release scripts", () => {
 
     expect(output).toContain("VITE_KOUSHI_QA_SEND_SMOKE_USER_ID=@approved-self-dm:example.invalid");
     expect(source).toContain("qaSendSmokeTargetUserId");
-    expect(source).toContain("api.startDirectMessage(targetUserId)");
+    expect(source).toContain("api.startDirectMessage(targetUserId, true)");
     expect(source).toContain("void selectRoom(targetRoom.room_id)");
     expect(source).toContain("await drainActiveComposerScopesForNavigation(true, true)");
   });

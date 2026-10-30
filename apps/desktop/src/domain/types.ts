@@ -795,12 +795,20 @@ export interface CreateRoomSettlement extends CommandSettlement {
 }
 
 /**
- * `start_advisory_direct_message` settlement (#1494). `missing` means Core
- * found no reusable direct chat and created nothing; `draft` says whether the
- * opened chat now holds the advisory or kept the user's existing draft.
+ * `start_direct_message` settlement (#1702). `missing` means Core found no
+ * reusable direct chat and, because creation was not requested, created
+ * nothing.
  */
-export interface AdvisoryDirectMessageSettlement extends CommandSettlement {
+export interface DirectMessageSettlement extends CommandSettlement {
   status: "opened" | "missing";
+}
+
+/**
+ * `start_advisory_direct_message` settlement (#1494): a direct-message start
+ * whose `draft` says whether the opened chat now holds the advisory or kept
+ * the user's existing draft.
+ */
+export interface AdvisoryDirectMessageSettlement extends DirectMessageSettlement {
   draft: "seeded" | "kept_existing" | null;
 }
 

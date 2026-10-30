@@ -834,7 +834,7 @@ export function TimelinePane({
   onOpenMatrixTarget?: TimelineRowActionHandlers["onOpenMatrixTarget"];
   onOpenReplyQuote?: TimelineRowActionHandlers["onOpenReplyQuote"];
   onOpenSenderProfile?: TimelineRowActionHandlers["onOpenSenderProfile"];
-  onStartDirectMessage?: (userId: string) => void;
+  onStartDirectMessage?: (userId: string, displayLabel: string) => void;
   onOpenSenderDeviceAdvisory?: OpenSenderDeviceAdvisory;
   onRescheduleScheduledSend: (scheduledId: string, body: string, sendAtMs: number) => void;
   onResultSelect: (roomId: string, eventId: string) => void;

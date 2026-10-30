@@ -879,7 +879,7 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
     .poll(async () =>
       page.evaluate(() => window.__harness.invocationsOf("start_direct_message")[0]?.args)
     )
-    .toEqual({ userId: "@target:example.invalid" });
+    .toEqual({ userId: "@target:example.invalid", createIfMissing: true });
   await expect(
     page
       .locator('[data-room-section="dms"]')

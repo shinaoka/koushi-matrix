@@ -128,6 +128,7 @@ import {
 import { TimelineStoreContext } from "./components/timelineStoreContext";
 import { writeClipboardText } from "./components/timeline/TimelineMessageBody";
 import { SenderDeviceAdvisoryDialog } from "./components/timeline/SenderDeviceAdvisoryDialog";
+import { StartDirectMessageDialog } from "./components/StartDirectMessageDialog";
 import { webSearchUrl } from "./domain/externalLinks";
 import {
   type ContextMenuActionId,
@@ -1619,6 +1620,14 @@ function AccountContent({
     userId: string;
     senderDisplayLabel: string;
   } | null>(null);
+  // #1702: the person a direct-message start found no chat with; React owns
+  // only this confirmation's visibility, Core decides whether a chat exists.
+  const [directMessageConfirmation, setDirectMessageConfirmation] = useState<{
+    userId: string;
+    name: string;
+  } | null>(null);
+  const [directMessageConfirmBusy, setDirectMessageConfirmBusy] = useState(false);
+  const directMessageConfirmPendingRef = useRef(false);
   const [resetLocalDataConfirmOpen, setResetLocalDataConfirmOpen] = useState(false);
   const logoutConfirmationInFlightRef = useRef(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -2681,7 +2690,7 @@ function AccountContent({
       ) {
         if (!targetRoom && !qaSendTargetRequested.current) {
           qaSendTargetRequested.current = true;
-          void api.startDirectMessage(targetUserId).then(applyCommandReceipt).catch(() => {
+          void api.startDirectMessage(targetUserId, true).then(applyCommandReceipt).catch(() => {
             qaSendPending.current = false;
             setQaSendStatus("failed");
           });
@@ -4832,7 +4841,8 @@ function AccountContent({
     }
     setIsBusy(true);
     try {
-      await settleCommand(api.startDirectMessage(userId));
+      // The user typed this Matrix ID to start a chat, so it creates directly.
+      await settleCommand(api.startDirectMessage(userId, true));
       closeNewDmDialog();
       setPrimaryView("timeline");
     } finally {
@@ -4840,15 +4850,46 @@ function AccountContent({
     }
   }
 
-  async function startDirectMessage(userId: string) {
+  /**
+   * #1702: a person-targeted start (sender avatar, People list, Profile) never
+   * creates a room by itself. Core opens an existing direct chat or reports it
+   * missing; only the confirmation's "Start chat" asks it to create one.
+   */
+  async function startDirectMessage(userId: string, displayLabel: string) {
     const trimmedUserId = userId.trim();
     if (!trimmedUserId) {
       return;
     }
     // #1518: the pending state is Rust's `basic_operation`, which the Profile
-    // renders; a renderer-wide busy flag would silently drop this press. The
-    // Room actor runs starts one at a time, so a repeat reuses the same chat.
-    await settleCommand(api.startDirectMessage(trimmedUserId));
+    // renders; a renderer-wide busy flag would silently drop this press. A
+    // repeated press only asks again, so it can never queue a creation.
+    const settlement = await settleCommand(api.startDirectMessage(trimmedUserId, false));
+    if (settlement.status === "missing") {
+      setDirectMessageConfirmation({ userId: trimmedUserId, name: displayLabel || trimmedUserId });
+      return;
+    }
+    await showStartedDirectMessage();
+  }
+
+  async function confirmDirectMessage() {
+    const target = directMessageConfirmation;
+    // A second press while the first is in flight must not create twice.
+    if (!target || directMessageConfirmPendingRef.current) {
+      return;
+    }
+    directMessageConfirmPendingRef.current = true;
+    setDirectMessageConfirmBusy(true);
+    try {
+      await settleCommand(api.startDirectMessage(target.userId, true));
+      setDirectMessageConfirmation(null);
+      await showStartedDirectMessage();
+    } finally {
+      directMessageConfirmPendingRef.current = false;
+      setDirectMessageConfirmBusy(false);
+    }
+  }
+
+  async function showStartedDirectMessage() {
     setPrimaryView("timeline");
     await setRightPanelModeClosingFocusedContext("closed");
   }
@@ -7782,8 +7823,8 @@ function AccountContent({
             onOpenSenderProfile={(roomId, userId) => {
               runInBackground(openRoomUserProfile(roomId, userId));
             }}
-            onStartDirectMessage={(userId) => {
-              runInBackground(startDirectMessage(userId));
+            onStartDirectMessage={(userId, displayLabel) => {
+              runInBackground(startDirectMessage(userId, displayLabel));
             }}
             onOpenSenderDeviceAdvisory={setSenderDeviceAdvisoryTarget}
             onReply={(roomId, eventId) => {
@@ -8038,8 +8079,8 @@ function AccountContent({
           onOpenSenderProfile={(roomId, userId) => {
             runInBackground(openRoomUserProfile(roomId, userId));
           }}
-          onStartDirectMessage={(userId) => {
-            runInBackground(startDirectMessage(userId));
+          onStartDirectMessage={(userId, displayLabel) => {
+            runInBackground(startDirectMessage(userId, displayLabel));
           }}
           onOpenSenderDeviceAdvisory={setSenderDeviceAdvisoryTarget}
           onUpdateMemberRole={(roomId, targetUserId, powerLevel) => {
@@ -8345,6 +8386,17 @@ function AccountContent({
             </div>
           </div>
         </ModalDialog>
+      ) : null}
+      {directMessageConfirmation ? (
+        <StartDirectMessageDialog
+          name={directMessageConfirmation.name}
+          userId={directMessageConfirmation.userId}
+          isBusy={directMessageConfirmBusy}
+          onCancel={() => setDirectMessageConfirmation(null)}
+          onConfirm={() => {
+            runInBackground(confirmDirectMessage());
+          }}
+        />
       ) : null}
       {senderDeviceAdvisoryTarget ? (
         <SenderDeviceAdvisoryDialog

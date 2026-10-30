@@ -137,12 +137,23 @@ pub struct FrontendCreateRoomSettlement {
     pub space_link_failure: Option<koushi_state::OperationFailureKind>,
 }
 
-/// #1494: whether the advisory flow opened a direct chat or found none.
+/// #1494/#1702: whether a direct-message start opened a direct chat or, when
+/// asked not to create one, found none.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum FrontendAdvisoryDirectMessageStatus {
+pub enum FrontendDirectMessageStatus {
     Opened,
     Missing,
+}
+
+/// #1702: `start_direct_message` settlement. `missing` means Core found no
+/// direct chat and created nothing.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendDirectMessageSettlement {
+    #[serde(flatten)]
+    pub settlement: FrontendCommandSettlement,
+    pub status: FrontendDirectMessageStatus,
 }
 
 /// #1494: whether the opened direct chat's draft is the advisory text or the
@@ -159,7 +170,7 @@ pub enum FrontendAdvisoryDraft {
 pub struct FrontendAdvisoryDirectMessageSettlement {
     #[serde(flatten)]
     pub settlement: FrontendCommandSettlement,
-    pub status: FrontendAdvisoryDirectMessageStatus,
+    pub status: FrontendDirectMessageStatus,
     pub draft: Option<FrontendAdvisoryDraft>,
 }
 

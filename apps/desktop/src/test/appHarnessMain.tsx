@@ -3028,7 +3028,7 @@ mock.setCommandResponse("create_room", () => setCurrentSnapshot(afterCreateRoomS
 mock.setCommandResponse("create_space", () => setCurrentSnapshot(afterCreateSpaceSnapshot()));
 mock.setCommandResponse("accept_invite", () => currentSnapshot);
 mock.setCommandResponse("decline_invite", () => currentSnapshot);
-mock.setCommandResponse("start_direct_message", () => currentSnapshot);
+mock.setCommandResponse("start_direct_message", () => ({ ...currentSnapshot, status: "opened" }));
 mock.setCommandResponse("start_advisory_direct_message", () => ({
   ...currentSnapshot,
   status: "opened",

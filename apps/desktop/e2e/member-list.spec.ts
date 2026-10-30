@@ -200,8 +200,12 @@ test("People list rows start DMs through typed commands", async ({ page }) => {
     .click();
 
   await expect.poll(() => invocationCount(page, "start_direct_message")).toBe(1);
-  const args = await firstInvocationArgs<{ userId: string }>(page, "start_direct_message");
-  expect(args.userId).toBe(HARNESS_MEMBERS[1].userId);
+  const args = await firstInvocationArgs<{ userId: string; createIfMissing: boolean }>(
+    page,
+    "start_direct_message"
+  );
+  // #1702: a person-targeted start only asks; it never creates by itself.
+  expect(args).toEqual({ userId: HARNESS_MEMBERS[1].userId, createIfMissing: false });
 });
 
 test("People rows open Profile while preserving Rust member identity", async ({ page }) => {

@@ -2043,3 +2043,32 @@ fn account_notification_keyword_commands_route_their_request() {
         }
     }
 }
+
+#[test]
+fn direct_message_start_creates_only_when_asked() {
+    // #1702: a person-targeted start asks first; only an explicit request
+    // creates the direct chat.
+    assert_eq!(
+        direct_message_missing_policy(false),
+        koushi_protocol::command::DirectMessageMissingPolicy::Report
+    );
+    assert_eq!(
+        direct_message_missing_policy(true),
+        koushi_protocol::command::DirectMessageMissingPolicy::Create
+    );
+
+    let missing = serde_json::to_value(crate::dto::FrontendDirectMessageSettlement {
+        settlement: command_settlement(7),
+        status: crate::dto::FrontendDirectMessageStatus::Missing,
+    })
+    .expect("settlement serializes");
+    assert_eq!(missing["status"], "missing");
+    // The command settlement stays flattened beside the status.
+    assert_eq!(missing["publishedGeneration"], 7);
+    let opened = serde_json::to_value(crate::dto::FrontendDirectMessageSettlement {
+        settlement: command_settlement(8),
+        status: crate::dto::FrontendDirectMessageStatus::Opened,
+    })
+    .expect("settlement serializes");
+    assert_eq!(opened["status"], "opened");
+}

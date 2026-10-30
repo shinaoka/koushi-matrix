@@ -371,7 +371,7 @@ export function ContextualRightPanel({
   onOpenSenderProfile?: TimelineRowActionHandlers["onOpenSenderProfile"];
   /** #1494: thread and focused rows read the room's sender device advisories. */
   onOpenSenderDeviceAdvisory?: OpenSenderDeviceAdvisory;
-  onStartDirectMessage?: (userId: string) => void;
+  onStartDirectMessage?: (userId: string, displayLabel: string) => void;
   onUpdateMemberRole?: (
     roomId: string,
     targetUserId: string,
