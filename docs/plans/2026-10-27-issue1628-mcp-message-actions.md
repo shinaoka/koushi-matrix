@@ -65,7 +65,9 @@ timestamps-or-sender check written here.
    pending-send projection, refreshes resident actors, and emits `SendCompleted`
    to the WebView, which the contract forbids.
 5. **`client_request_id` dedupes in the MCP host, because the SDK queue
-   cannot.** `send_queue().send()` mints its own transaction id
+   cannot.** *(Superseded by #1681 and #1660: the ledger moved to Core's
+   account actor, as the canon already required, and a claim now ages out; see
+   overview "The message-action retry key is Core retry policy".)* `send_queue().send()` mints its own transaction id
    (`Queue::push` creates a fresh one), so passing the caller's id as a label
    does not prevent a second event. A bounded, in-memory ledger in
    `koushi-mcp-host` maps (client, account, target, kind, `client_request_id`)
@@ -193,7 +195,8 @@ compiles against a settled earlier one.
   that read and the SDK enqueue is not observed; the event is then not rolled
   back, as the contract already states. Closing that window needs a
   Core-visible authorization port; it is not part of this phase.
-- **An ambiguous failure keeps the retry key.** A thread reply or edit that
+- **An ambiguous failure keeps the retry key.** *(Implemented in Core by
+  #1660; the key answers `busy` for 600 s after the failure.)* A thread reply or edit that
   failed with `internal` may already have reached the homeserver, so its
   `client_request_id` stays claimed for the ledger's ten minutes and a retry
   answers `busy` instead of risking a second event.

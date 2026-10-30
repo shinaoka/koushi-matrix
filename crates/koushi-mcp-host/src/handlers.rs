@@ -469,6 +469,11 @@ fn direct_message_failure(failure: koushi_core::DirectMessageFailure) -> WireErr
             ErrorCode::Busy,
             "too many concurrent message actions for this account",
         ),
+        Failure::DuplicatePending => WireError::with_reason(
+            ErrorCode::Busy,
+            "duplicate_pending",
+            "a request with this client_request_id is still running or its outcome is unknown",
+        ),
         Failure::Unavailable => {
             WireError::new(ErrorCode::Internal, "Koushi could not complete this action")
         }
@@ -681,78 +686,40 @@ async fn edit_message(
     let event_id = required_argument(arguments, "event_id")?.to_owned();
     let body = required_argument(arguments, "body")?.to_owned();
     let request_id = client_request_id(arguments)?.to_owned();
-    let target = format!("{room_id}/{event_id}");
-    let key =
-        crate::actions::ActionLedger::key(&client.name, &account_id, &target, "edit", &request_id);
-    match shared.actions.begin(key.clone()) {
-        crate::actions::Replay::Settled(result) => {
-            // A retry must not answer from the ledger after the grant or the
-            // session went away.
-            authorize_message_action(shared, client, &account_id, &room_id).await?;
-            return Ok(result);
-        }
-        crate::actions::Replay::InFlight => {
-            return Err(WireError::new(
-                ErrorCode::Busy,
-                "an identical edit is already running",
-            ));
-        }
-        crate::actions::Replay::Fresh => {}
-    }
-    let connection = match authorize_message_action(shared, client, &account_id, &room_id).await {
-        Ok(connection) => connection,
-        Err(error) => {
-            shared.actions.release(&key);
-            return Err(error);
-        }
-    };
+    // Core's retry ledger answers a repeated key; every call is authorized
+    // first, so a repeat never answers after the grant or the session went away.
+    let connection = authorize_message_action(shared, client, &account_id, &room_id).await?;
     let formatting = connection
         .snapshot()
         .settings
         .values
         .composer
         .formatting_options();
-    let result = async {
-        match connection
-            .direct_message_action(koushi_core::DirectMessageRequest::Edit {
-                room_id,
-                event_id,
-                body,
-                formatting,
-            })
-            .await
-            .map_err(direct_message_failure)?
-        {
-            koushi_core::DirectMessageResponse::Edit(outcome) => Ok(json!({
-                "edit_event_id": outcome.edit_event_id,
-                // A direct edit sends one event without the queue, so there is
-                // no SDK transaction id; the caller's retry key is echoed here
-                // for correlation.
-                "transaction_id": request_id,
-            })),
-            _ => Err(WireError::new(
-                ErrorCode::Internal,
-                "Koushi answered a different action",
-            )),
-        }
-    }
-    .await;
-    match result {
-        Ok(value) => {
-            shared.actions.settle(&key, value.clone());
-            Ok(value)
-        }
-        Err(error) if error.code == ErrorCode::Internal => {
-            // The submission may have reached the homeserver before the failure
-            // (`internal` covers a timeout or a queue error after enqueue), so a
-            // retry with this key is refused until the ledger forgets it instead
-            // of risking a second event.
-            Err(error)
-        }
-        Err(error) => {
-            shared.actions.release(&key);
-            Err(error)
-        }
+    match connection
+        .direct_message_action(koushi_core::DirectMessageRequest::Edit {
+            room_id,
+            event_id,
+            body,
+            formatting,
+            retry: Some(koushi_core::DirectRetryKey {
+                client: client.name.clone(),
+                client_request_id: request_id.clone(),
+            }),
+        })
+        .await
+        .map_err(direct_message_failure)?
+    {
+        koushi_core::DirectMessageResponse::Edit(outcome) => Ok(json!({
+            "edit_event_id": outcome.edit_event_id,
+            // A direct edit sends one event without the queue, so there is
+            // no SDK transaction id; the caller's retry key is echoed here
+            // for correlation.
+            "transaction_id": request_id,
+        })),
+        _ => Err(WireError::new(
+            ErrorCode::Internal,
+            "Koushi answered a different action",
+        )),
     }
 }
 
@@ -796,38 +763,12 @@ async fn send_thread_reply(
     let root_event_id = required_argument(arguments, "thread_root_event_id")?.to_owned();
     let body = required_argument(arguments, "body")?.to_owned();
     let request_id = client_request_id(arguments)?.to_owned();
-    let target = format!("{room_id}/{root_event_id}");
-    let key = crate::actions::ActionLedger::key(
-        &client.name,
-        &account_id,
-        &target,
-        "thread_reply",
-        &request_id,
-    );
-    match shared.actions.begin(key.clone()) {
-        crate::actions::Replay::Settled(result) => {
-            // A retry must not answer from the ledger after the grant or the
-            // session went away.
-            authorize_message_action(shared, client, &account_id, &room_id).await?;
-            return Ok(result);
-        }
-        crate::actions::Replay::InFlight => {
-            return Err(WireError::new(
-                ErrorCode::Busy,
-                "an identical thread reply is already running",
-            ));
-        }
-        crate::actions::Replay::Fresh => {}
-    }
-    let connection = match account_connection(&shared.accounts, &account_id) {
-        Ok(connection) => connection,
-        Err(error) => {
-            shared.actions.release(&key);
-            return Err(error);
-        }
-    };
+    // Core's retry ledger answers a repeated key at the submission below; every
+    // call is authorized first, so a repeat never answers after the grant or
+    // the session went away.
+    let connection = account_connection(&shared.accounts, &account_id)?;
     let room_label = joined_room_label(&connection, &room_id);
-    if let Err(error) = shared
+    shared
         .broker
         .authorize(
             client,
@@ -838,15 +779,8 @@ async fn send_thread_reply(
                 message_preview: (!body.trim().is_empty()).then(|| body.clone()),
             },
         )
-        .await
-    {
-        shared.actions.release(&key);
-        return Err(error);
-    }
-    if let Err(error) = ready_account_key(&connection.snapshot().session) {
-        shared.actions.release(&key);
-        return Err(error);
-    }
+        .await?;
+    ready_account_key(&connection.snapshot().session)?;
     let operation = connection.begin_navigation_operation(
         koushi_diagnostics::NavigationCause::DirectSend,
         koushi_diagnostics::NavigationOrigin::Mcp,
@@ -895,6 +829,10 @@ async fn send_thread_reply(
                 root_event_id: root_event_id.clone(),
                 body,
                 formatting,
+                retry: Some(koushi_core::DirectRetryKey {
+                    client: client.name.clone(),
+                    client_request_id: request_id,
+                }),
             })
             .await
             .map_err(direct_message_failure)?
@@ -911,23 +849,7 @@ async fn send_thread_reply(
     }
     .await;
     operation.finish(result.is_ok());
-    match result {
-        Ok(value) => {
-            shared.actions.settle(&key, value.clone());
-            Ok(value)
-        }
-        Err(error) if error.code == ErrorCode::Internal => {
-            // The submission may have reached the homeserver before the failure
-            // (`internal` covers a timeout or a queue error after enqueue), so a
-            // retry with this key is refused until the ledger forgets it instead
-            // of risking a second event.
-            Err(error)
-        }
-        Err(error) => {
-            shared.actions.release(&key);
-            Err(error)
-        }
-    }
+    result
 }
 
 /// Stages plain text in a room's or a thread's composer without sending it
@@ -1691,5 +1613,22 @@ fn ready_account_key(
             ErrorCode::AccountUnavailable,
             "account is not signed in",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A repeated `client_request_id` that Core's ledger holds is `busy` with a
+    /// stable reason, distinct from the account's action cap (#1660).
+    #[test]
+    fn a_pending_retry_key_is_busy_with_its_own_reason() {
+        let pending = direct_message_failure(koushi_core::DirectMessageFailure::DuplicatePending);
+        assert_eq!(pending.code, ErrorCode::Busy);
+        assert_eq!(pending.reason.as_deref(), Some("duplicate_pending"));
+        let capacity = direct_message_failure(koushi_core::DirectMessageFailure::Capacity);
+        assert_eq!(capacity.code, ErrorCode::Busy);
+        assert_eq!(capacity.reason, None);
     }
 }

@@ -734,6 +734,7 @@ pub(crate) async fn run_direct_message_action(
             event_id,
             body,
             formatting,
+            retry: _,
         } => edit_direct(session, &room_id, &event_id, &body, formatting)
             .await
             .map(Response::Edit),
@@ -745,6 +746,7 @@ pub(crate) async fn run_direct_message_action(
             root_event_id,
             body,
             formatting,
+            retry: _,
         } => thread_reply_direct(session, &room_id, &root_event_id, &body, formatting)
             .await
             .map(Response::ThreadReply),

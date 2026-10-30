@@ -278,6 +278,18 @@ export function findLeafCrateBoundaryViolations(root) {
   if (fs.existsSync(path.join(root, "crates/koushi-core/src/room_key_recovery.rs"))) {
     violations.push("room-key recovery model remains at the Core crate root");
   }
+  // The MCP message-action retry ledger is Core retry policy (#1681); the MCP
+  // host owns only argument validation, the grant, and failure mapping.
+  const directActionLedger =
+    read(root, "crates/koushi-core/src/account/direct_action_ledger.rs") ?? "";
+  if (!directActionLedger.includes("struct DirectActionLedger")) {
+    violations.push("Core direct action ledger definition missing: struct DirectActionLedger");
+  }
+  for (const [relativePath, source] of rustSources(root, "crates/koushi-mcp-host/src")) {
+    if (/\bActionLedger\b|\bLEDGER_TTL\b/u.test(source)) {
+      violations.push(`MCP host defines a message-action retry ledger: ${relativePath}`);
+    }
+  }
   const recoveryModel = read(root, "crates/koushi-core/src/timeline/recovery_model.rs") ?? "";
   if (!recoveryModel.includes("pub struct RecoveryOperation")) {
     violations.push("timeline recovery model owner is missing RecoveryOperation");

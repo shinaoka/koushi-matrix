@@ -394,6 +394,11 @@ async fn reset_local_data_clears_current_account_persistence_and_signs_out_local
     let mut actor = AccountActor {
         direct_message_action_slots: Arc::new(tokio::sync::Semaphore::new(1)),
         direct_message_action_tasks: Vec::new(),
+        direct_action_ledger: Arc::new(std::sync::Mutex::new(
+            super::super::direct_action_ledger::DirectActionLedger::new(
+                std::time::Duration::from_secs(45),
+            ),
+        )),
         direct_reaction_lane: Arc::new(tokio::sync::Mutex::new(())),
         avatar_capacity_evicted: std::collections::HashSet::new(),
         session: None,
