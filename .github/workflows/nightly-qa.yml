@@ -18,6 +18,14 @@ name: Nightly aggregate QA
 # body and the comments, because it varies run to run ("unknown" when the log
 # line is missing) and a title that carried it filed a fresh issue for every
 # recurrence of the same failure.
+#
+# A passing run is recorded on the open issue of each signature it covers, and
+# the issue closes after PASSES_TO_CLOSE consecutive passing runs once a commit
+# on main references it
+# (scripts/nightly-qa-record-passes.mjs, REPOSITORY_RULES "GitHub Issue
+# Closure"). A failure whose signature has only a closed issue reopens it.
+# Issues are filed and updated only for runs of `main`; a dispatch on another
+# branch runs the lanes without touching issues.
 on:
   schedule:
     - cron: "0 18 * * *"
@@ -47,6 +55,9 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
+          # Full history: a pass counts toward closing an issue only once a
+          # commit on main references it (scripts/nightly-qa-record-passes.mjs).
+          fetch-depth: 0
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@191af2e1955bbe165f9bbacff2d2438002dff4d4 # 1.96.0
       - name: Restore Rust build cache
@@ -97,6 +108,17 @@ jobs:
           node scripts/desktop-headless-local-qa.mjs --run \
             --server=${{ matrix.server }} --core --scenario=all \
             --cargo-profile=ci --timeout-ms=600000
+      - name: Record the passing run on its open issue
+        if: success() && github.ref == 'refs/heads/main'
+        # Bookkeeping, not the gate: a transient `gh` failure must not fail the lane.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          node scripts/nightly-qa-record-passes.mjs --server=${{ matrix.server }} \
+            --scenario=aggregate --run-id="$RUN_ID" --run-url="$RUN_URL"
       - name: Upload QA logs on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -110,7 +132,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: File or update the failure issue
-        if: failure()
+        if: failure() && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
           SERVER: ${{ matrix.server }}
@@ -135,6 +157,15 @@ jobs:
           if [ -n "$number" ]; then
             gh issue comment "$number" --body \
               "The nightly aggregate lane failed again on \`${SERVER}\` (stage \`${stage}\`): ${RUN_URL}"
+            exit 0
+          fi
+          # A recurrence after closure reopens the closed issue, so the failure's
+          # history and its earlier fix attempts stay in one place.
+          number=$(gh issue list --label nightly-qa --label "$signature" --state closed \
+            --limit 1 --json number --jq '.[0].number // ""')
+          if [ -n "$number" ]; then
+            gh issue reopen "$number" --comment \
+              "The nightly aggregate lane failed again on \`${SERVER}\` after this issue was closed (stage \`${stage}\`): ${RUN_URL}"
             exit 0
           fi
           body=$(cat <<EOF
@@ -166,6 +197,9 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
+          # Full history: a pass counts toward closing an issue only once a
+          # commit on main references it (scripts/nightly-qa-record-passes.mjs).
+          fetch-depth: 0
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@191af2e1955bbe165f9bbacff2d2438002dff4d4 # 1.96.0
       - name: Restore Rust build cache
@@ -216,6 +250,18 @@ jobs:
           node scripts/headless-qa-lane.mjs --lane=nightly \
             --server=${{ matrix.server }} --cargo-profile=ci \
             --failures-out="$RUNNER_TEMP/nightly-failures.json"
+      - name: Record passing scenarios on their open issues
+        # The lane step fails when any scenario fails; the others still passed.
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          node scripts/nightly-qa-record-passes.mjs --server=${{ matrix.server }} \
+            --failures="$RUNNER_TEMP/nightly-failures.json" --run-id="$RUN_ID" \
+            --run-url="$RUN_URL"
       - name: Upload QA logs on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -229,7 +275,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: File or update one issue per failing scenario
-        if: failure()
+        if: failure() && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
           SERVER: ${{ matrix.server }}
@@ -253,6 +299,13 @@ jobs:
             if [ -n "$number" ]; then
               gh issue comment "$number" </dev/null --body \
                 "The nightly \`${scenario}\` scenario failed again on \`${SERVER}\` (stage \`${stage}\`): ${RUN_URL}"
+              continue
+            fi
+            number=$(gh issue list --label nightly-qa --label "$signature" --state closed \
+              --limit 1 </dev/null --json number --jq '.[0].number // ""')
+            if [ -n "$number" ]; then
+              gh issue reopen "$number" </dev/null --comment \
+                "The nightly \`${scenario}\` scenario failed again on \`${SERVER}\` after this issue was closed (stage \`${stage}\`): ${RUN_URL}"
               continue
             fi
             body=$(printf '%s\n' \
