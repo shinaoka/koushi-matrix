@@ -236,6 +236,7 @@ describe("TimelineView", () => {
         can_reply: true,
         can_permalink: true,
         can_view_source: true,
+        can_pin: true,
         editable_document: documentFromText("old body")
       }
     };
@@ -322,6 +323,7 @@ describe("TimelineView", () => {
             can_reply: true,
             can_permalink: true,
             can_view_source: true,
+            can_pin: true,
             editable_document: documentFromText("old body")
           }
         };
@@ -377,6 +379,7 @@ describe("TimelineView", () => {
           can_reply: true,
           can_permalink: true,
           can_view_source: true,
+          can_pin: true,
           editable_document: documentFromText("old body")
         }
       };
@@ -434,6 +437,7 @@ describe("TimelineView", () => {
         can_reply: true,
         can_permalink: true,
         can_view_source: true,
+        can_pin: true,
         editable_document: {
           version: 2 as const,
           inlines: [
@@ -720,7 +724,8 @@ describe("TimelineView", () => {
               can_forward: false,
               can_reply: true,
               can_permalink: false,
-              can_view_source: false
+              can_view_source: false,
+              can_pin: true
             }
           }
         ]
@@ -818,6 +823,60 @@ describe("TimelineView", () => {
     ).toEqual(["Add reaction", "Reply to message", "Reply in thread", "Pin message"]);
   });
 
+  it("offers Pin only for pinnable messages and keeps Unpin for a pinned notice", () => {
+    // #1704: Rust decides pinnability; a room notice is not pinnable.
+    const notice = (eventId: string): TimelineItem => ({
+      ...message(eventId, "fallback pinned notice"),
+      message_kind: "notice",
+      notice_i18n: { key: "timeline.notice.roomPinnedEventPinned" },
+      actions: {
+        can_copy: false,
+        can_forward: false,
+        can_reply: false,
+        can_pin: false,
+        can_permalink: false,
+        can_view_source: false
+      }
+    });
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          message("$pinnable", "Pinnable message"),
+          notice("$notice"),
+          notice("$pinned-notice")
+        ]
+      }
+    });
+
+    render(
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={baseTransport({})}
+          onReply={vi.fn()}
+          pinnedEventIds={["$pinned-notice"]}
+        />
+      </TimelineStoreContext.Provider>
+    );
+
+    const rowFor = (eventId: string) =>
+      document.querySelector<HTMLElement>(`[data-event-id="${eventId}"]`)?.closest("article");
+    const labels = (eventId: string) => {
+      const row = rowFor(eventId);
+      expect(row).toBeTruthy();
+      return Array.from(
+        row!.querySelectorAll<HTMLButtonElement>(".message-actions .message-action")
+      ).map((button) => button.getAttribute("aria-label"));
+    };
+    expect(labels("$pinnable")).toContain("Pin message");
+    expect(labels("$notice")).not.toContain("Pin message");
+    expect(labels("$pinned-notice")).toContain("Unpin message");
+  });
+
   it("localizes both reply action names and tooltips in Japanese", () => {
     setActiveLocaleProfile("ja", "none");
     const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
@@ -870,7 +929,8 @@ describe("TimelineView", () => {
               can_forward: false,
               can_reply: false,
               can_permalink: false,
-              can_view_source: false
+              can_view_source: false,
+              can_pin: true
             }
           }
         ]
@@ -906,6 +966,7 @@ describe("TimelineView", () => {
       can_forward: false,
       can_permalink: false,
       can_view_source: false,
+      can_pin: true,
       can_reply: true
     };
     const nonReplyableActions = { ...replyableActions, can_reply: false };
@@ -1018,7 +1079,8 @@ describe("TimelineView", () => {
               can_forward: true,
               can_reply: true,
               can_permalink: true,
-              can_view_source: true
+              can_view_source: true,
+              can_pin: true
             }
           }
         ]

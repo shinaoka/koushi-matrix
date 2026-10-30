@@ -29,6 +29,7 @@ export function message(eventId: string, body: string): TimelineItem {
       can_copy: false,
       can_forward: false,
       can_reply: true,
+      can_pin: true,
       can_permalink: false,
       can_view_source: false
     }

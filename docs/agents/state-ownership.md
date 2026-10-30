@@ -818,9 +818,11 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   existing Rust failure surface.
 - `TimelineItem.actions` is a Rust-owned action-affordance projection. React may
   render/copy only the DTO-provided body/permalink affordances; it must not build
-  `matrix.to` permalinks, infer copy/forward/source eligibility from event ids,
-  body/media fields, or redaction flags, or synthesize message-source / forward
-  semantics locally.
+  `matrix.to` permalinks, infer copy/forward/source/pin eligibility from event
+  ids, body/media fields, message kinds, or redaction flags, or synthesize
+  message-source / forward semantics locally. Pin is offered only when
+  `actions.can_pin` is true (#1704); Unpin is offered for any already pinned
+  event.
 - `TimelineCommand::LoadMessageSource` and `TimelineCommand::ForwardMessage` are
   the typed path for view-source/forward GUI work. The source DTO is a safe Rust
   projection, not raw Matrix JSON. Forwarding sends the Rust-projected visible

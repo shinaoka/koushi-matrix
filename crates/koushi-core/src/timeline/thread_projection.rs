@@ -1475,6 +1475,7 @@ fn thread_root_projection_item_from_raw_with_context(
             actionable_body,
             media.is_some(),
             is_redacted,
+            raw.get("state_key").is_none(),
         ),
         send_state: None,
         display_metadata: None,

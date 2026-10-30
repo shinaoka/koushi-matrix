@@ -4493,6 +4493,7 @@ async function boot() {
       can_reply: true,
       can_permalink: true,
       can_view_source: true,
+      can_pin: true,
       permalink: "https://matrix.to/#/!harness-room%3Aexample.invalid/%24seed-event%3Aexample.invalid"
     },
     reactions: [

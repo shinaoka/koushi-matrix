@@ -2139,6 +2139,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 actionable_body,
                 media.is_some(),
                 is_redacted,
+                matches!(content, TimelineItemContent::MsgLike(_)),
             );
             let mut mentioned_user_ids = Vec::new();
             let mut mentions_room = false;
@@ -4174,3 +4175,6 @@ mod receipt_scope_tests;
 
 #[cfg(test)]
 mod profile_notice_tests;
+
+#[cfg(test)]
+mod pin_action_tests;

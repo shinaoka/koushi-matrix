@@ -230,6 +230,8 @@ export interface TimelineMessageActions {
   can_copy: boolean;
   can_forward: boolean;
   can_reply: boolean;
+  /** #1704: Rust-owned Pin eligibility; Unpin does not depend on it. */
+  can_pin: boolean;
   can_permalink: boolean;
   can_view_source: boolean;
   permalink?: string | null;

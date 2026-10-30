@@ -386,6 +386,7 @@ fn timeline_item_serializes_rust_owned_message_actions() {
             Some("copyable body"),
             false,
             false,
+            true,
         ),
         send_state: None,
         unable_to_decrypt: None,
@@ -400,6 +401,7 @@ fn timeline_item_serializes_rust_owned_message_actions() {
                 "can_copy": true,
                 "can_forward": true,
                 "can_reply": true,
+                "can_pin": true,
                 "can_permalink": true,
                 "can_view_source": true,
                 "permalink": "https://matrix.to/#/!room%3Atest/%24event%3Atest"
@@ -419,9 +421,11 @@ fn timeline_item_serializes_rust_owned_message_actions() {
         Some("redacted body"),
         true,
         true,
+        true,
     );
     assert!(!redacted.can_copy);
     assert!(!redacted.can_forward);
+    assert!(!redacted.can_pin);
     assert!(redacted.can_permalink);
     assert!(redacted.can_view_source);
 
@@ -433,6 +437,7 @@ fn timeline_item_serializes_rust_owned_message_actions() {
         None,
         true,
         false,
+        true,
     );
     assert!(!media_without_body.can_copy);
     assert!(!media_without_body.can_forward);
@@ -447,8 +452,23 @@ fn timeline_item_serializes_rust_owned_message_actions() {
         Some("local echo"),
         false,
         false,
+        true,
     );
     assert_eq!(local_echo, TimelineMessageActions::default());
+
+    // #1704: a state event or room notice is never pinnable.
+    let state_notice = message_actions_for_timeline_item(
+        "!room:test",
+        &TimelineItemId::Event {
+            event_id: "$state:test".to_owned(),
+        },
+        Some("notice body"),
+        false,
+        false,
+        false,
+    );
+    assert!(!state_notice.can_pin);
+    assert!(state_notice.can_view_source);
 }
 #[test]
 fn message_actions_allow_reply_for_captionless_stable_events() {
@@ -461,6 +481,7 @@ fn message_actions_allow_reply_for_captionless_stable_events() {
             None,
             true,
             false,
+            true,
         );
 
         assert!(actions.can_reply, "{media_kind} event should be replyable");
@@ -474,6 +495,7 @@ fn message_actions_allow_reply_for_captionless_stable_events() {
         None,
         true,
         true,
+        true,
     );
     assert!(!redacted.can_reply);
 
@@ -485,6 +507,7 @@ fn message_actions_allow_reply_for_captionless_stable_events() {
         None,
         true,
         false,
+        true,
     );
     assert!(!local_echo.can_reply);
 }
@@ -498,6 +521,7 @@ fn message_actions_reject_stable_non_message_events() {
         None,
         false,
         false,
+        true,
     );
 
     assert!(!actions.can_reply);
@@ -512,6 +536,7 @@ fn message_actions_allow_reply_for_empty_text_body() {
         Some(""),
         false,
         false,
+        true,
     );
 
     assert!(actions.can_reply);

@@ -825,7 +825,8 @@ describe("TimelineView", () => {
                   can_forward: true,
                   can_reply: true,
                   can_permalink: false,
-                  can_view_source: true
+                  can_view_source: true,
+                  can_pin: true
                 }
               }
             ]

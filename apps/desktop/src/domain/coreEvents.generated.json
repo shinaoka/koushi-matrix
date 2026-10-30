@@ -871,6 +871,7 @@
               "can_copy": true,
               "can_forward": true,
               "can_permalink": true,
+              "can_pin": true,
               "can_reply": true,
               "can_view_source": true,
               "editable_document": {
@@ -974,6 +975,7 @@
               "can_copy": true,
               "can_forward": true,
               "can_permalink": true,
+              "can_pin": true,
               "can_reply": true,
               "can_view_source": true,
               "editable_document": {
@@ -1082,6 +1084,7 @@
               "can_copy": true,
               "can_forward": true,
               "can_permalink": true,
+              "can_pin": true,
               "can_reply": true,
               "can_view_source": true,
               "editable_document": {
@@ -1188,6 +1191,7 @@
               "can_copy": true,
               "can_forward": true,
               "can_permalink": true,
+              "can_pin": true,
               "can_reply": true,
               "can_view_source": true,
               "editable_document": {
@@ -1294,6 +1298,7 @@
               "can_copy": true,
               "can_forward": true,
               "can_permalink": true,
+              "can_pin": true,
               "can_reply": true,
               "can_view_source": true,
               "editable_document": {
@@ -1400,6 +1405,7 @@
               "can_copy": true,
               "can_forward": true,
               "can_permalink": true,
+              "can_pin": true,
               "can_reply": true,
               "can_view_source": true,
               "editable_document": {
@@ -1530,6 +1536,7 @@
                   "can_copy": true,
                   "can_forward": true,
                   "can_permalink": true,
+                  "can_pin": true,
                   "can_reply": true,
                   "can_view_source": true,
                   "editable_document": {
@@ -1662,6 +1669,7 @@
               "can_copy": true,
               "can_forward": true,
               "can_permalink": true,
+              "can_pin": true,
               "can_reply": true,
               "can_view_source": true,
               "permalink": "https://matrix.to/#/!r%3Aexample.test/%24linkpreview1"
@@ -1812,6 +1820,7 @@
               "can_copy": true,
               "can_forward": true,
               "can_permalink": true,
+              "can_pin": true,
               "can_reply": true,
               "can_view_source": true,
               "permalink": "https://matrix.to/#/!r%3Aexample.test/%24media1"
@@ -2044,6 +2053,7 @@
               "can_copy": true,
               "can_forward": true,
               "can_permalink": true,
+              "can_pin": true,
               "can_reply": true,
               "can_view_source": true,
               "permalink": "https://matrix.to/#/!r%3Aexample.test/%24reply1"
@@ -2137,6 +2147,7 @@
               "can_copy": false,
               "can_forward": false,
               "can_permalink": false,
+              "can_pin": false,
               "can_reply": false,
               "can_view_source": false
             },
