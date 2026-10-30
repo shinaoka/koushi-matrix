@@ -1621,7 +1621,8 @@ because of this.
 
 Fork PR shinaoka/matrix-rust-sdk-work#32. The gitlink points at the fix branch
 head `d46fdfb2c`, which is based on the previous pin `0939d9d69` and is reachable
-from the fork's `main` through merge `ddbb33352`. It deliberately does not take
-the unrelated fork PR #31. Tests: sync v2 and Sliding Sync race tests and a
+from the fork's `main` through merge `ddbb33352`. Fork PR #31 is already
+included: its head is the previous pin `0939d9d69`, so its merge adds no files.
+Tests: sync v2 and Sliding Sync race tests and a
 negative test in `matrix-sdk-base`, plus mock-server race and room-mismatch tests
 in `matrix-sdk`. Drop the delta when upstream ships an equivalent fix for #7385.
