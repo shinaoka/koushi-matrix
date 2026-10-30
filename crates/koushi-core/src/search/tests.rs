@@ -1114,6 +1114,55 @@ async fn a_settled_room_is_not_crawled_again_but_queued_work_is() {
     );
 }
 
+/// #1634: each queued crawl records why it was queued, so a caller can tell a
+/// completed room's catch-up from a crawl that starts over.
+#[tokio::test]
+async fn a_queued_crawl_records_whether_it_catches_up_or_starts_over() {
+    let _diagnostics = koushi_diagnostics::test_support::lock_async().await;
+    let (mut actor, _action_rx) = progress_fixture().await;
+    let settings = SearchCrawlerSettings::default();
+    const SETTLED: &str = "!settled:example.invalid";
+    const NEW: &str = "!new:example.invalid";
+
+    let mut progress = progress_record("instance", &settings);
+    let settled = progress.room_mut(SETTLED);
+    settled.backfill_complete = true;
+    settled.latest_event_id = Some("$settled-latest".to_owned());
+    actor.search_progress = Some(progress);
+    actor.search_progress_index_instance = "instance".to_owned();
+
+    let cursor = koushi_diagnostics::test_support::detail_cursor();
+    actor
+        .handle_rooms_available(rooms_available(
+            &[SETTLED, NEW],
+            &[(SETTLED, "$newer-than-completion"), (NEW, "$new-latest")],
+            &settings,
+        ))
+        .await;
+
+    // Other search tests may record in parallel; these two must be present.
+    let causes = koushi_diagnostics::test_support::detail_records_since(cursor)
+        .into_iter()
+        .filter(|record| {
+            record.event.source == "core.search" && record.event.stage == "crawl_enqueued"
+        })
+        .filter_map(|record| {
+            record
+                .event
+                .fields
+                .iter()
+                .find_map(|field| match field.value {
+                    koushi_diagnostics::DiagnosticValue::Token(cause) if field.key == "cause" => {
+                        Some(cause)
+                    }
+                    _ => None,
+                })
+        })
+        .collect::<Vec<_>>();
+    assert!(causes.contains(&"catch_up"), "the settled room catches up");
+    assert!(causes.contains(&"initial"), "the new room starts its crawl");
+}
+
 /// The record is only trusted for the index and content policy it was written
 /// under.
 #[tokio::test]

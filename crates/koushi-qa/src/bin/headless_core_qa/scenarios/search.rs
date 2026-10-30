@@ -119,22 +119,18 @@ pub(super) async fn run_search_crawler_stage(
         }
     }
     println!("crawl_backfill=ok");
-    let room_latest_event_id = |snap: &koushi_state::AppState| {
-        snap.rooms
-            .iter()
-            .find(|room| room.room_id == room_id)
-            .and_then(|room| room.latest_event.as_ref())
-            .map(|latest| latest.event_id.clone())
-    };
-    let latest_at_backfill = room_latest_event_id(&conn.snapshot());
 
     // 2. crawl_no_media_bytes — completing without an attachment-download failure
     //    proves no bytes were fetched. The failure kind for a bad download attempt
     //    would be `Sdk`; `Completed` is the implicit proof.
     println!("crawl_no_media_bytes=ok");
 
-    // 3. crawl_throttle — change speed Standard → Slow; verify completed rooms
-    //    stay Completed (pure speed change must not invalidate).
+    // 3. crawl_throttle — change speed Standard → Slow; a pure speed change
+    //    must not start any room's crawl over. A completed room whose latest
+    //    event changed may still catch up (#996): the stage before this one
+    //    redacts the room's latest message, and `crawl_backfill` can read the
+    //    Completed from before the crawler learned of it (#1634).
+    let speed_changed_at_ms = epoch_millis_now();
     let throttle_rid = conn.next_request_id();
     conn.command(CoreCommand::App(AppCommand::UpdateSettings {
         request_id: throttle_rid,
@@ -159,25 +155,55 @@ pub(super) async fn run_search_crawler_stage(
         let event = tokio::time::timeout(Duration::from_secs(5), conn.recv_event()).await;
         let snap = conn.snapshot();
         if snap.settings.values.search_crawler.speed == SearchCrawlerSpeed::Slow {
+            // The reducer invalidates in the same reduction that applies the
+            // settings (Completed -> Idle, then InvalidateSearchCrawlerCache), so
+            // the first snapshot with the new speed already shows it.
+            if matches!(
+                snap.search_crawler.rooms.get(room_id),
+                None | Some(SearchCrawlerRoomState::Idle)
+            ) {
+                return Err("crawl_throttle: speed change reset the room to Idle".to_owned());
+            }
             break;
         }
         let _ = event;
     }
 
-    // Verify the room is still Completed (pure speed change must not reset).
-    let snap = conn.snapshot();
-    match snap.search_crawler.rooms.get(room_id) {
-        Some(SearchCrawlerRoomState::Completed { .. }) => {}
-        other => {
-            // #1634: a room whose latest event changed after it completed gets a
-            // legitimate catch-up crawl (#996), which also reads as Queued. This
-            // token tells that apart from a speed change invalidating the room.
+    // Let a catch-up finish, then require that nothing started over. The
+    // diagnostic ring is bounded, so check it on every turn, not once at the end.
+    let completed_deadline = tokio::time::Instant::now() + Duration::from_secs(CRAWL_TIMEOUT_SECS);
+    loop {
+        let restarted = crawls_enqueued_since(speed_changed_at_ms, "initial");
+        if restarted != 0 {
             return Err(format!(
-                "crawl_throttle: expected Completed after speed change, got {other:?} \
-                 latest_changed_since_backfill={}",
-                room_latest_event_id(&snap) != latest_at_backfill
+                "crawl_throttle: speed change started {restarted} crawl(s) over (catch_ups={})",
+                crawls_enqueued_since(speed_changed_at_ms, "catch_up")
             ));
         }
+        match conn.snapshot().search_crawler.rooms.get(room_id) {
+            Some(SearchCrawlerRoomState::Completed { .. }) => break,
+            Some(SearchCrawlerRoomState::Failed { kind }) => {
+                return Err(format!(
+                    "crawl_throttle: room crawler failed after speed change with kind={kind:?}"
+                ));
+            }
+            other => {
+                if tokio::time::Instant::now() >= completed_deadline {
+                    return Err(format!(
+                        "crawl_throttle: room did not complete again after speed change, \
+                         got {other:?}"
+                    ));
+                }
+            }
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(5), conn.recv_event()).await;
+    }
+    let restarted = crawls_enqueued_since(speed_changed_at_ms, "initial");
+    if restarted != 0 {
+        return Err(format!(
+            "crawl_throttle: speed change started {restarted} crawl(s) over (catch_ups={})",
+            crawls_enqueued_since(speed_changed_at_ms, "catch_up")
+        ));
     }
     println!("crawl_throttle=ok");
 
@@ -472,4 +498,33 @@ async fn wait_for_search_result(
             _ => continue,
         }
     }
+}
+
+/// Crawls the search actors queued for `cause` since `since_ms`, from the
+/// token-only `core.search crawl_enqueued` diagnostic (#1634).
+fn crawls_enqueued_since(since_ms: u64, cause: &str) -> usize {
+    koushi_diagnostics::snapshot()
+        .records
+        .iter()
+        .filter(|record| {
+            record.timestamp_ms >= since_ms
+                && record.event.source == "core.search"
+                && record.event.stage == "crawl_enqueued"
+                && record.event.fields.iter().any(|field| {
+                    field.key == "cause"
+                        && matches!(
+                            field.value,
+                            koushi_diagnostics::DiagnosticValue::Token(value) if value == cause
+                        )
+                })
+        })
+        .count()
+}
+
+fn epoch_millis_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            elapsed.as_millis().try_into().unwrap_or(u64::MAX)
+        })
 }

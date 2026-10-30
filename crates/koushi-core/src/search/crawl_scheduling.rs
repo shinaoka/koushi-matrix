@@ -140,6 +140,7 @@ async fn a_pending_page_index_queue_holds_the_next_page_but_a_retry_does_not() {
                 false,
             ),
             0,
+            CrawlEnqueueCause::Initial,
         )
         .await;
 
