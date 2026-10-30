@@ -1079,7 +1079,10 @@ fn run_ends(len: usize, lead: usize, trail: usize, trimmed: bool) -> GapEnds {
     if trimmed {
         GapEnds { lead, trail }
     } else {
-        GapEnds { lead: len, trail: 0 }
+        GapEnds {
+            lead: len,
+            trail: 0,
+        }
     }
 }
 
@@ -1540,8 +1543,7 @@ fn project_display_items(
                 (root.activity_event_id.clone(), activity_timestamp_ms)
             }
         };
-        let projected_item =
-            root_display_item(root, item, activity_event_id, display_timestamp_ms);
+        let projected_item = root_display_item(root, item, activity_event_id, display_timestamp_ms);
         if !rendered_ids.insert(timeline_item_render_id(&projected_item)) {
             continue;
         }

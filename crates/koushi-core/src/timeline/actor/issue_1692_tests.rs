@@ -327,7 +327,7 @@ async fn back_paginated_pages_behind_a_superseded_reply_stay_visible_at_the_live
                 }) = &event
                     && *id == request_id
                 {
-                    terminal = Some(state.clone());
+                    terminal = Some(*state);
                 }
                 let shown = shown_event_ids(&observed.items);
                 if terminal.is_some()
