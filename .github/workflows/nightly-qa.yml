@@ -106,6 +106,8 @@ jobs:
             --cargo-profile=ci --timeout-ms=600000
       - name: Record the passing run on its open issue
         if: success() && github.ref == 'refs/heads/main'
+        # Bookkeeping, not the gate: a transient `gh` failure must not fail the lane.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -243,6 +245,7 @@ jobs:
       - name: Record passing scenarios on their open issues
         # The lane step fails when any scenario fails; the others still passed.
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
