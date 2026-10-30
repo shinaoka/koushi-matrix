@@ -440,8 +440,9 @@ pub struct RoomReadActivity {
 /// Local mark-read bookkeeping for one room (#1683). Reducer-internal.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct LocalRoomRead {
-    /// The in-flight request and the room activity it was issued against.
-    pub pending: Option<(u64, RoomReadActivity)>,
+    /// In-flight requests, by request id, and the room activity each one was
+    /// issued against.
+    pub pending: std::collections::BTreeMap<u64, RoomReadActivity>,
     /// The room activity a successful read cleared.
     pub cleared: Option<RoomReadActivity>,
 }

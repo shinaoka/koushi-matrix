@@ -1085,6 +1085,14 @@ fn room_list_update_does_not_reintroduce_stale_unread_after_fully_read_marker() 
 
     reduce(
         &mut state,
+        AppAction::RoomMarkedAsReadRequested {
+            request_id: 7,
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$latest:example.invalid".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
         AppAction::FullyReadMarkerUpdated {
             room_id: "!room:example.invalid".to_owned(),
             event_id: Some("$latest:example.invalid".to_owned()),
@@ -1133,6 +1141,14 @@ fn room_list_update_suppresses_stale_unread_when_read_marker_event_differs_from_
     room.recency_stamp = Some(42);
     state.rooms = vec![room];
 
+    reduce(
+        &mut state,
+        AppAction::RoomMarkedAsReadRequested {
+            request_id: 7,
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$visible-read-event:example.invalid".to_owned(),
+        },
+    );
     reduce(
         &mut state,
         AppAction::FullyReadMarkerUpdated {
@@ -1286,10 +1302,10 @@ fn room_list_update_keeps_a_new_message_unread_after_it_was_first_observed_witho
 }
 
 #[test]
-fn mark_read_success_keeps_counts_for_a_message_that_arrived_during_the_request() {
-    // #1683: the read covers the event it was requested for. A message that
-    // arrived while the request was in flight stays unread, and later
-    // snapshots of it are not suppressed as stale.
+fn a_message_that_arrived_during_the_mark_read_request_is_not_suppressed_afterwards() {
+    // #1683: the read covers the activity it was requested against. A message
+    // that arrived while the request was in flight is cleared with the rest on
+    // success, but the next snapshot of it is new information, not stale.
     let mut state = ready_state();
     state.rooms = vec![room_with_activity("$read:example.invalid", 42, 1)];
     reduce(
@@ -1321,7 +1337,7 @@ fn mark_read_success_keeps_counts_for_a_message_that_arrived_during_the_request(
             room_id: "!room:example.invalid".to_owned(),
         },
     );
-    assert_eq!(room_unread(&state), (2, 2));
+    assert_eq!(room_unread(&state), (0, 0));
 
     reduce(
         &mut state,
@@ -1331,6 +1347,100 @@ fn mark_read_success_keeps_counts_for_a_message_that_arrived_during_the_request(
         },
     );
     assert_eq!(room_unread(&state), (1, 1));
+}
+
+#[test]
+fn a_success_without_its_request_suppresses_nothing() {
+    // A late or duplicate success (its request already failed, succeeded, or
+    // belonged to an earlier session) cannot vouch for the room's current
+    // activity.
+    let mut state = ready_state();
+    state.rooms = vec![room_with_activity("$read:example.invalid", 42, 1)];
+    mark_read_locally(&mut state, 7, "$read:example.invalid");
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: Vec::new(),
+            rooms: vec![room_with_activity("$new:example.invalid", 43, 1)],
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomMarkedAsReadSucceeded {
+            request_id: 7,
+            room_id: "!room:example.invalid".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: Vec::new(),
+            rooms: vec![room_with_activity("$new:example.invalid", 43, 1)],
+        },
+    );
+    assert_eq!(room_unread(&state), (1, 1));
+}
+
+#[test]
+fn overlapping_mark_read_requests_are_tracked_separately() {
+    // Request 8 is issued after a new message; request 7, issued before it,
+    // succeeds last and must not vouch for the new message.
+    let mut state = ready_state();
+    state.rooms = vec![room_with_activity("$read:example.invalid", 42, 1)];
+    reduce(
+        &mut state,
+        AppAction::RoomMarkedAsReadRequested {
+            request_id: 7,
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$read:example.invalid".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: Vec::new(),
+            rooms: vec![room_with_activity("$new:example.invalid", 43, 2)],
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomMarkedAsReadRequested {
+            request_id: 8,
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$new:example.invalid".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::FullyReadMarkerUpdated {
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: Some("$new:example.invalid".to_owned()),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomMarkedAsReadSucceeded {
+            request_id: 8,
+            room_id: "!room:example.invalid".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomMarkedAsReadSucceeded {
+            request_id: 7,
+            room_id: "!room:example.invalid".to_owned(),
+        },
+    );
+    // Request 8 covered the new message, so a stale snapshot of it stays
+    // cleared even though request 7 succeeded after it.
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: Vec::new(),
+            rooms: vec![room_with_activity("$new:example.invalid", 43, 2)],
+        },
+    );
+    assert_eq!(room_unread(&state), (0, 0));
 }
 
 #[test]

@@ -1196,7 +1196,12 @@ pub(crate) fn handle_room_marked_as_read_requested(
     // that activity, not whatever arrives while the request is in flight.
     if let Some(room) = state.rooms.iter().find(|room| room.room_id == room_id) {
         let activity = RoomReadActivity::of(room);
-        state.local_reads.entry(room_id).or_default().pending = Some((request_id, activity));
+        state
+            .local_reads
+            .entry(room_id)
+            .or_default()
+            .pending
+            .insert(request_id, activity);
     }
     vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
 }
@@ -1211,22 +1216,19 @@ pub(crate) fn handle_room_marked_as_read_succeeded(
     }
 
     let local_read = state.local_reads.entry(room_id.clone()).or_default();
-    let requested = local_read
-        .pending
-        .take_if(|(pending_request_id, _)| *pending_request_id == request_id)
-        .map(|(_, activity)| activity);
+    let requested = local_read.pending.remove(&request_id);
     if let Some(room) = state.rooms.iter_mut().find(|room| room.room_id == room_id) {
-        let current = RoomReadActivity::of(room);
         room.marked_unread = false;
-        // A message that arrived while the request was in flight is not covered
-        // by it: keep its counts, and do not let it pass for a cleared room.
-        if requested.is_none_or(|requested| requested == current) {
-            room.unread_count = 0;
-            room.notification_count = 0;
-            room.highlight_count = 0;
+        room.unread_count = 0;
+        room.notification_count = 0;
+        room.highlight_count = 0;
+        // Later snapshots of this activity are stale only if this request was
+        // issued against it. A message that arrived while the request was in
+        // flight, or a success with no matching request, vouches for nothing:
+        // the next snapshot restores the counts it reports.
+        let current = RoomReadActivity::of(room);
+        if requested.is_some_and(|requested| requested == current) {
             local_read.cleared = Some(current);
-        } else {
-            local_read.cleared = None;
         }
         recompute_room_list_projection(state);
     }
@@ -1245,9 +1247,7 @@ pub(crate) fn handle_room_marked_as_read_failed(
 
     let _ = kind;
     if let Some(local_read) = state.local_reads.get_mut(&room_id) {
-        local_read
-            .pending
-            .take_if(|(pending_request_id, _)| *pending_request_id == request_id);
+        local_read.pending.remove(&request_id);
     }
     vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
 }
@@ -1294,11 +1294,6 @@ pub(crate) fn handle_room_marked_as_unread_failed(
         return Vec::new();
     }
 
-    let _ = kind;
-    if let Some(local_read) = state.local_reads.get_mut(&room_id) {
-        local_read
-            .pending
-            .take_if(|(pending_request_id, _)| *pending_request_id == request_id);
-    }
+    let _ = (request_id, kind);
     vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
 }
