@@ -9,7 +9,6 @@
 //! [`consent::ConsentBroker`], which asks the user in the app when a host has a
 //! consent surface and fails closed when it does not.
 
-mod actions;
 pub mod consent;
 mod endpoint;
 mod events;

@@ -131,7 +131,7 @@ const DIRECT_SEARCH_LIMIT: usize = 4;
 
 /// Maximum number of concurrent direct (non-GUI) message operations per account
 /// (#1628).
-const DIRECT_MESSAGE_ACTION_LIMIT: usize = 4;
+pub(super) const DIRECT_MESSAGE_ACTION_LIMIT: usize = 4;
 
 /// One absolute deadline for a direct message operation, covering admission,
 /// the reaction lane wait, target resolution and submission (#1628).
@@ -1177,6 +1177,9 @@ pub struct AccountActor {
     /// (#1628).
     pub(super) direct_message_action_slots: Arc<tokio::sync::Semaphore>,
     pub(super) direct_message_action_tasks: Vec<crate::executor::JoinHandle<()>>,
+    /// The retry ledger for direct message actions (#1681, #1660).
+    pub(super) direct_action_ledger:
+        Arc<std::sync::Mutex<super::direct_action_ledger::DirectActionLedger>>,
     pub(super) direct_reaction_lane: Arc<tokio::sync::Mutex<()>>,
     pub(super) direct_attachment_tasks: Vec<crate::executor::JoinHandle<()>>,
     pub(super) session_promoted: bool,
@@ -1544,6 +1547,9 @@ impl AccountActor {
                 DIRECT_MESSAGE_ACTION_LIMIT,
             )),
             direct_message_action_tasks: Vec::new(),
+            direct_action_ledger: Arc::new(std::sync::Mutex::new(
+                super::direct_action_ledger::DirectActionLedger::new(DIRECT_MESSAGE_ACTION_TIMEOUT),
+            )),
             direct_reaction_lane: Arc::new(tokio::sync::Mutex::new(())),
             direct_attachment_tasks: Vec::new(),
             session_promoted: false,
@@ -3291,31 +3297,40 @@ impl AccountActor {
         >,
     ) {
         use crate::direct_operations::DirectMessageFailure as Failure;
-        let Ok(permit) = Arc::clone(&self.direct_message_action_slots).try_acquire_owned() else {
-            let _ = response.send(Err(Failure::Capacity));
-            return;
-        };
         let Some(session) = self.session.clone() else {
             let _ = response.send(Err(Failure::AccountInactive));
             return;
         };
+        // A repeated retry key is answered from the ledger before a slot is
+        // taken; a fresh claim is settled by the task on every path.
+        let admitted = match super::direct_action_ledger::admit(
+            &self.direct_action_ledger,
+            &self.direct_message_action_slots,
+            &request,
+            crate::executor::Instant::now(),
+        ) {
+            Ok(admitted) => admitted,
+            Err(answer) => {
+                let _ = response.send(answer);
+                return;
+            }
+        };
         let lane = Arc::clone(&self.direct_reaction_lane);
+        let ledger = Arc::clone(&self.direct_action_ledger);
         self.direct_message_action_tasks
             .retain(|task| !task.is_finished());
         self.direct_message_action_tasks
             .push(crate::executor::spawn(async move {
-                let _permit = permit;
-                let outcome = match crate::executor::timeout(
+                let _permit = admitted.permit;
+                let outcome = super::direct_action_ledger::run_claimed(
+                    &ledger,
+                    admitted.claim,
                     DIRECT_MESSAGE_ACTION_TIMEOUT,
                     Box::pin(crate::timeline::run_direct_message_action(
                         session, lane, request,
                     )),
                 )
-                .await
-                {
-                    Ok(outcome) => outcome,
-                    Err(_) => Err(Failure::Unavailable),
-                };
+                .await;
                 if !response.is_closed() {
                     let _ = response.send(outcome);
                 }

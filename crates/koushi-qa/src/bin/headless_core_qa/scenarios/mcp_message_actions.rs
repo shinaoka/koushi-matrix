@@ -275,6 +275,22 @@ async fn run_mcp_message_actions_flow(
         edit.edit_event_id.is_some(),
         "mcp message actions edit: the edit carried no edit event id",
     )?;
+    // A retry with the same client_request_id is answered from Core's ledger
+    // with the first result; a second edit would carry a new event id and
+    // become the edit the next read reports (#1681).
+    let edit_retry = edit_message(
+        conn_a,
+        &room_id,
+        &body_event_id,
+        EDITED_BODY,
+        formatting,
+        "mcp message actions edit retry",
+    )
+    .await?;
+    check(
+        edit_retry.edit_event_id == edit.edit_event_id,
+        "mcp message actions edit retry: the retry did not replay the first edit event id",
+    )?;
     let edited = read_message(
         conn_a,
         &room_id,
@@ -287,8 +303,8 @@ async fn run_mcp_message_actions_flow(
         "mcp message actions read edited: the read did not return the edited body",
     )?;
     check(
-        edited.edited.is_some(),
-        "mcp message actions read edited: the read reported no edit for the message",
+        edited.edited.as_ref().map(|edit| edit.event_id.as_str()) == edit.edit_event_id.as_deref(),
+        "mcp message actions read edited: the applied edit is not the one edit sent",
     )?;
 
     let redacted = delete_message(
@@ -349,6 +365,20 @@ async fn run_mcp_message_actions_flow(
     check(
         !reply.event_id.is_empty(),
         "mcp message actions thread reply: the reply carried no event id",
+    )?;
+    let reply_retry = thread_reply(
+        conn_a,
+        &room_id,
+        &root_event_id,
+        THREAD_REPLY_BODY,
+        formatting,
+        "mcp message actions thread reply retry",
+    )
+    .await?;
+    check(
+        reply_retry.event_id == reply.event_id
+            && reply_retry.transaction_id == reply.transaction_id,
+        "mcp message actions thread reply retry: the retry posted instead of replaying the first reply",
     )?;
     let reply_view = read_message(
         conn_a,
@@ -535,6 +565,15 @@ async fn unreact(
     .await
 }
 
+/// One fixed retry key per action, as an MCP caller retrying the same call
+/// would send it.
+fn qa_retry_key(client_request_id: &str) -> koushi_core::DirectRetryKey {
+    koushi_core::DirectRetryKey {
+        client: "qa".to_owned(),
+        client_request_id: client_request_id.to_owned(),
+    }
+}
+
 async fn edit_message(
     conn: &CoreConnection,
     room_id: &str,
@@ -550,6 +589,7 @@ async fn edit_message(
             event_id: event_id.to_owned(),
             body: body.to_owned(),
             formatting,
+            retry: Some(qa_retry_key("edit")),
         },
         label,
         |response| match response {
@@ -596,6 +636,7 @@ async fn thread_reply(
             root_event_id: root_event_id.to_owned(),
             body: body.to_owned(),
             formatting,
+            retry: Some(qa_retry_key("thread-reply")),
         },
         label,
         |response| match response {

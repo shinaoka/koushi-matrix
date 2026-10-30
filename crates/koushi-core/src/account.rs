@@ -16,6 +16,7 @@ mod avatar_demand;
 mod contact_security;
 #[cfg(test)]
 mod contact_security_tests;
+mod direct_action_ledger;
 mod history_export;
 mod local_data_cleanup;
 mod own_sessions;

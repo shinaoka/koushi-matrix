@@ -181,6 +181,27 @@ impl std::fmt::Debug for DirectThreadReplyOutcome {
     }
 }
 
+/// An out-of-band caller's retry key for an action that sends an event
+/// (#1628, #1681). The account runtime answers a repeat of the same key with
+/// the first result instead of acting again.
+///
+/// `Debug` records presence only: the client name and the request id are
+/// caller-chosen labels.
+#[derive(Clone, Eq, PartialEq)]
+pub struct DirectRetryKey {
+    /// The calling assistant's validated client name.
+    pub client: String,
+    pub client_request_id: String,
+}
+
+impl std::fmt::Debug for DirectRetryKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DirectRetryKey")
+            .finish_non_exhaustive()
+    }
+}
+
 /// What a direct (non-GUI) message operation asks the account to do (#1628).
 ///
 /// `Debug` records the case only: a body and a reaction key are user content.
@@ -205,6 +226,7 @@ pub enum DirectMessageRequest {
         event_id: String,
         body: String,
         formatting: koushi_state::ComposerFormattingOptions,
+        retry: Option<DirectRetryKey>,
     },
     Delete {
         room_id: String,
@@ -215,6 +237,7 @@ pub enum DirectMessageRequest {
         root_event_id: String,
         body: String,
         formatting: koushi_state::ComposerFormattingOptions,
+        retry: Option<DirectRetryKey>,
     },
 }
 
@@ -274,8 +297,12 @@ pub enum DirectMessageFailure {
     /// One bounded relations page could not establish the reaction set this
     /// action has to decide on, so nothing was sent.
     RelationsUnavailable,
-    /// This account already runs the maximum number of direct actions.
+    /// This account already runs the maximum number of direct actions, or its
+    /// retry ledger is full of requests whose retry may not act yet.
     Capacity,
+    /// A request with the same retry key is still running or ended without a
+    /// known outcome, so this one did nothing (#1660).
+    DuplicatePending,
     /// The operation did not complete (network, server, or timeout).
     Unavailable,
 }
