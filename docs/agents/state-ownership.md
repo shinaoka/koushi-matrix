@@ -1377,7 +1377,9 @@ normal QA-title mode and cannot change product title semantics.
   search, attachment, and send paths. Core owns target resolution, the
   own-author and thread-root guards, the edit document policy it already owns
   (`timeline/item_projection`), the reaction verdict, the thread content shape,
-  the bounded `client_request_id` ledger, and the account-session fence. The
+  the bounded `client_request_id` ledger (`account/direct_action_ledger.rs`,
+  owned by the account actor; see overview "The message-action retry key is
+  Core retry policy"), and the account-session fence. The
   MCP host owns only argument validation, the `message_actions` grant, and the
   failure mapping; it must not implement a second edit, reaction, or relation
   semantic, and no part of this path may mount a `TimelineActor` or reduce an

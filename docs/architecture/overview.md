@@ -2171,6 +2171,27 @@ Invariants:
   any visible thread root. Actions are bounded, per-account capped, and fenced
   on the account session, so a revoked grant is refused at submission while an
   already-submitted event is never rolled back.
+- **The message-action retry key is Core retry policy (#1681, #1660).**
+  `edit_message` and `send_thread_reply` carry the caller's `client_request_id`
+  into the Core request, and the account runtime keeps one bounded ledger keyed
+  by (client, action, room, target, `client_request_id`). The host validates
+  the id's format and authorizes every call before Core sees it, so a repeat
+  never answers past a revoked grant or a gone session. Core answers a repeat
+  from the ledger before it takes one of the account's action slots, and the
+  claimed action's own task settles the claim on every path: success records
+  the result, which a repeat gets back without acting again; `Unavailable`,
+  including the 45 s action deadline, may already have reached the homeserver
+  and marks the key ambiguous, which a repeat answers `busy`
+  (`duplicate_pending`); any other failure submitted nothing and frees the key.
+  Every entry ages out: a settled or ambiguous entry 600 s after it settled,
+  and a claim nobody settled (an aborted task) 600 s after its action deadline.
+  The ledger holds at most 128 entries per account. A new claim on a full
+  ledger forgets the oldest settled entry, whose retry would then act again;
+  running and ambiguous entries are never forgotten early, so when only those
+  remain the new call answers `busy` at once and nothing waits. The ledger
+  holds ids and the action result only and lives with the account runtime, so
+  a retry after an app restart or a sign-out may act again. The state machine
+  is in `state-machine.md` "MCP Message-Action Retry Ledger".
 - **Assistant drafts are the one composer write (#1644).** `draft_message`
   stages plain text in a room's main composer or in a thread composer and
   never sends. It needs the `draft` grant, which is separate from and weaker

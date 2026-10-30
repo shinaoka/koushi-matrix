@@ -7128,6 +7128,42 @@ stateDiagram-v2
   newer bridge's files. On process exit the stop signals and resets without
   waiting.
 
+## MCP Message-Action Retry Ledger
+
+The account actor owns one bounded ledger for direct message actions that
+carry a caller retry key (`DirectRetryKey` on `DirectMessageRequest::Edit` and
+`ThreadReply`; `account/direct_action_ledger.rs`, #1681, #1660). It is keyed by
+(client, action, room, target event, `client_request_id`), holds at most 128
+entries, and is not persisted. Every transition takes a `std::sync::Mutex`
+with no await under it.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running: fresh key, ledger has room, a slot is free
+    [*] --> [*]: no slot (Capacity), or ledger full of running/ambiguous entries
+    Running --> Settled: action succeeded (result kept)
+    Running --> Ambiguous: Unavailable, including the 45 s action deadline
+    Running --> [*]: any other failure (nothing was submitted)
+    Running --> [*]: unsettled 600 s after its action deadline (aborted task)
+    Settled --> [*]: 600 s after settling, or evicted as the oldest settled entry
+    Ambiguous --> [*]: 600 s after the failure
+```
+
+- **Admission.** A request with no retry key bypasses the ledger. A known key
+  answers before any slot is taken: `Settled` replays its result, `Running`
+  and `Ambiguous` answer `DuplicatePending`. A fresh key is claimed, then takes
+  a direct-action slot; if none is free the claim is removed and the call
+  answers `Capacity`. The session must be ready before the ledger is read.
+- **Settle guard.** A claim carries a generation token. Only the task that
+  holds the current token settles it, so a late completion of a claim that
+  aged out cannot overwrite a newer claim of the same key.
+- **Capacity.** A claim on a full ledger evicts the oldest `Settled` entry.
+  `Running` and `Ambiguous` entries are never evicted before they expire; when
+  only those remain the claim is refused with `Capacity`. Live `Running`
+  entries are bounded by the four per-account slots, below the limit.
+- **Reset.** Session teardown aborts running tasks without settling them; their
+  claims expire by the rule above. A new account actor starts empty.
+
 ## Historical key recovery
 
 `RoomManagementState.history_keys` projects room-scoped recovery attempts.

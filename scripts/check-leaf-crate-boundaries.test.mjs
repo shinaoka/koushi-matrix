@@ -87,6 +87,12 @@ function fixture() {
   write(root, "crates/koushi-core/src/account/actor.rs", "pub struct AccountActorHandle;\n");
   write(
     root,
+    "crates/koushi-core/src/account/direct_action_ledger.rs",
+    "pub(super) struct DirectActionLedger;\n"
+  );
+  write(root, "crates/koushi-mcp-host/src/handlers.rs", "pub fn edit_message() {}\n");
+  write(
+    root,
     "crates/koushi-core/src/timeline/recovery_model.rs",
     "pub struct RecoveryOperation;\n"
   );
@@ -243,6 +249,26 @@ test("detects Core runtime reverse edges, concrete child construction, and mispl
   assert(
     violations.includes(
       "owner-local feature layer missing: crates/koushi-core/src/runtime/navigation.rs"
+    )
+  );
+});
+
+test("detects a message-action retry ledger outside Core", () => {
+  const root = fixture();
+  fs.rmSync(path.join(root, "crates/koushi-core/src/account/direct_action_ledger.rs"));
+  write(
+    root,
+    "crates/koushi-mcp-host/src/actions.rs",
+    "pub(crate) const LEDGER_TTL: u64 = 600;\npub(crate) struct ActionLedger;\n"
+  );
+
+  const violations = findLeafCrateBoundaryViolations(root);
+  assert(
+    violations.includes("Core direct action ledger definition missing: struct DirectActionLedger")
+  );
+  assert(
+    violations.includes(
+      "MCP host defines a message-action retry ledger: crates/koushi-mcp-host/src/actions.rs"
     )
   );
 });
