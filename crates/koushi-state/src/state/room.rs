@@ -427,6 +427,38 @@ pub fn room_attention_kind(
     }
 }
 
+/// The room activity a local mark-read saw (#1683): the room-summary latest event
+/// and last-activity timestamps. A later room-list snapshot with unread counts is
+/// stale only while the room still shows exactly this activity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoomReadActivity {
+    latest_event_id: Option<String>,
+    recency_stamp: Option<u64>,
+    conversation_activity: Option<ConversationActivity>,
+}
+
+/// Local mark-read bookkeeping for one room (#1683). Reducer-internal.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LocalRoomRead {
+    /// The in-flight request and the room activity it was issued against.
+    pub pending: Option<(u64, RoomReadActivity)>,
+    /// The room activity a successful read cleared.
+    pub cleared: Option<RoomReadActivity>,
+}
+
+impl RoomReadActivity {
+    pub fn of(room: &RoomSummary) -> Self {
+        Self {
+            latest_event_id: room
+                .latest_event
+                .as_ref()
+                .map(|event| event.event_id.clone()),
+            recency_stamp: room.recency_stamp,
+            conversation_activity: room.conversation_activity,
+        }
+    }
+}
+
 /// Persistent numeric unread shared by room/sidebar, account and native badges.
 ///
 /// #1238: the badge is the only place the main-timeline and thread counts meet.

@@ -1215,6 +1215,124 @@ fn room_list_update_preserves_unread_when_latest_event_changes_after_local_read(
     assert_eq!(room.notification_count, 1);
 }
 
+fn room_with_activity(
+    latest_event_id: &str,
+    recency_stamp: u64,
+    unread: u64,
+) -> crate::state::RoomSummary {
+    let mut room = test_room("!room:example.invalid", None);
+    room.latest_event = Some(latest_event(latest_event_id, recency_stamp));
+    room.recency_stamp = Some(recency_stamp);
+    room.unread_count = unread;
+    room.notification_count = unread;
+    room
+}
+
+fn mark_read_locally(state: &mut AppState, request_id: u64, event_id: &str) {
+    reduce(
+        state,
+        AppAction::RoomMarkedAsReadRequested {
+            request_id,
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: event_id.to_owned(),
+        },
+    );
+    reduce(
+        state,
+        AppAction::FullyReadMarkerUpdated {
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: Some(event_id.to_owned()),
+        },
+    );
+    reduce(
+        state,
+        AppAction::RoomMarkedAsReadSucceeded {
+            request_id,
+            room_id: "!room:example.invalid".to_owned(),
+        },
+    );
+}
+
+fn room_unread(state: &AppState) -> (u64, u64) {
+    let room = state
+        .rooms
+        .iter()
+        .find(|room| room.room_id == "!room:example.invalid")
+        .expect("room summary should exist");
+    (room.unread_count, room.notification_count)
+}
+
+#[test]
+fn room_list_update_keeps_a_new_message_unread_after_it_was_first_observed_without_counts() {
+    // #1683: the room list can report a newer latest event before the SDK has
+    // counted it. That zero is not a local read of the new event, so the count
+    // that follows for the same event is new information, not a stale snapshot.
+    let mut state = ready_state();
+    state.rooms = vec![room_with_activity("$read:example.invalid", 42, 1)];
+    mark_read_locally(&mut state, 7, "$read:example.invalid");
+    assert_eq!(room_unread(&state), (0, 0));
+
+    for unread in [0, 1] {
+        reduce(
+            &mut state,
+            AppAction::RoomListUpdated {
+                spaces: Vec::new(),
+                rooms: vec![room_with_activity("$new:example.invalid", 43, unread)],
+            },
+        );
+    }
+
+    assert_eq!(room_unread(&state), (1, 1));
+}
+
+#[test]
+fn mark_read_success_keeps_counts_for_a_message_that_arrived_during_the_request() {
+    // #1683: the read covers the event it was requested for. A message that
+    // arrived while the request was in flight stays unread, and later
+    // snapshots of it are not suppressed as stale.
+    let mut state = ready_state();
+    state.rooms = vec![room_with_activity("$read:example.invalid", 42, 1)];
+    reduce(
+        &mut state,
+        AppAction::RoomMarkedAsReadRequested {
+            request_id: 7,
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$read:example.invalid".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: Vec::new(),
+            rooms: vec![room_with_activity("$new:example.invalid", 43, 2)],
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::FullyReadMarkerUpdated {
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: Some("$read:example.invalid".to_owned()),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomMarkedAsReadSucceeded {
+            request_id: 7,
+            room_id: "!room:example.invalid".to_owned(),
+        },
+    );
+    assert_eq!(room_unread(&state), (2, 2));
+
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: Vec::new(),
+            rooms: vec![room_with_activity("$new:example.invalid", 43, 1)],
+        },
+    );
+    assert_eq!(room_unread(&state), (1, 1));
+}
+
 #[test]
 fn room_list_update_refreshes_native_attention_badge_without_initial_sync_sound_candidate() {
     let mut state = ready_state();

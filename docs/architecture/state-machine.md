@@ -1131,9 +1131,15 @@ room unread counts must be driven by a successful RoomActor/SDK operation or by
 a later SDK/server room-list snapshot that already reports the room as read.
 After a local successful mark-read, the reducer may suppress a later nonzero
 room-list snapshot only when the room was locally clear, a fully-read marker is
-known, and the incoming room-summary latest event and last-activity timestamp
-match the locally cleared room. If latest activity changes, the unread snapshot
-is treated as new information and is preserved.
+known, and the incoming room-summary latest event and last-activity timestamps
+match the activity that read cleared. The reducer records that activity when the
+mark-read is requested. On success it clears the counts only if the room still
+shows that activity; a message that arrived while the request was in flight keeps
+its counts. A locally clear state that has since moved to a newer latest event
+(for example a room-list update that carries the new event before its count) is
+not a read of that event, so its later unread snapshot is preserved (#1683). If
+latest activity changes, the unread snapshot is treated as new information and
+is preserved.
 On startup there is no prior `AppState` to compare against, so the SDK room-list
 projection also reads persisted room account data / own receipts. If
 `m.fully_read` or the current user's unthreaded private read receipt points at

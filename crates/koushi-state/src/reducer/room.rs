@@ -5,8 +5,9 @@ use crate::{
     state::{
         AppError, AppState, OperationFailureKind, PinOp, PinOperationState, PinnedEvent,
         RoomAccessObservation, RoomListFailureKind, RoomListFilter, RoomListReadiness,
-        RoomListSource, RoomSummary, RoomTagInfo, RoomTagKind, ScheduledSendsListState,
-        SpaceSummary, ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
+        RoomListSource, RoomReadActivity, RoomSummary, RoomTagInfo, RoomTagKind,
+        ScheduledSendsListState, SpaceSummary, ThreadAttentionState, ThreadPaneState,
+        ThreadsListState, TimelinePaneState,
     },
 };
 
@@ -346,6 +347,13 @@ fn handle_room_list_updated_with_crawler(
         .map(|room| room.room_id.clone())
         .collect::<BTreeSet<_>>();
     state.thread_unread.retain(|(room_id, _), _| {
+        if authoritative {
+            retained_room_ids.contains(room_id)
+        } else {
+            !state.room_list.locally_left_room_ids.contains(room_id)
+        }
+    });
+    state.local_reads.retain(|room_id, _| {
         if authoritative {
             retained_room_ids.contains(room_id)
         } else {
@@ -818,7 +826,15 @@ fn suppress_stale_unread_after_local_read(state: &AppState, rooms: &mut [RoomSum
             .get(&room.room_id)
             .and_then(|signals| signals.fully_read_event_id.as_deref())
             .is_some();
-        if !fully_read_event_id_present || !same_room_activity(existing_room, room) {
+        // Stale only while the room shows exactly the activity the local read
+        // cleared. The locally clear state may have since moved to a newer
+        // latest event without its counts (#1683); that zero is no read of it.
+        let cleared_this_activity = state
+            .local_reads
+            .get(&room.room_id)
+            .and_then(|local_read| local_read.cleared.as_ref())
+            .is_some_and(|cleared| *cleared == RoomReadActivity::of(room));
+        if !fully_read_event_id_present || !cleared_this_activity {
             continue;
         }
         room.marked_unread = false;
@@ -833,18 +849,6 @@ fn room_has_unread_metrics(room: &RoomSummary) -> bool {
         || room.notification_count > 0
         || room.highlight_count > 0
         || room.marked_unread
-}
-
-fn same_room_activity(left: &RoomSummary, right: &RoomSummary) -> bool {
-    left.recency_stamp == right.recency_stamp
-        && left.conversation_activity == right.conversation_activity
-        && latest_event_id(left) == latest_event_id(right)
-}
-
-fn latest_event_id(room: &RoomSummary) -> Option<&str> {
-    room.latest_event
-        .as_ref()
-        .map(|event| event.event_id.as_str())
 }
 
 fn preserve_known_avatar_thumbnails(
@@ -1187,7 +1191,13 @@ pub(crate) fn handle_room_marked_as_read_requested(
         return Vec::new();
     }
 
-    let _ = (request_id, event_id);
+    let _ = event_id;
+    // Remember what the room showed when the read was issued: the read covers
+    // that activity, not whatever arrives while the request is in flight.
+    if let Some(room) = state.rooms.iter().find(|room| room.room_id == room_id) {
+        let activity = RoomReadActivity::of(room);
+        state.local_reads.entry(room_id).or_default().pending = Some((request_id, activity));
+    }
     vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
 }
 
@@ -1200,12 +1210,24 @@ pub(crate) fn handle_room_marked_as_read_succeeded(
         return Vec::new();
     }
 
-    let _ = request_id;
+    let local_read = state.local_reads.entry(room_id.clone()).or_default();
+    let requested = local_read
+        .pending
+        .take_if(|(pending_request_id, _)| *pending_request_id == request_id)
+        .map(|(_, activity)| activity);
     if let Some(room) = state.rooms.iter_mut().find(|room| room.room_id == room_id) {
+        let current = RoomReadActivity::of(room);
         room.marked_unread = false;
-        room.unread_count = 0;
-        room.notification_count = 0;
-        room.highlight_count = 0;
+        // A message that arrived while the request was in flight is not covered
+        // by it: keep its counts, and do not let it pass for a cleared room.
+        if requested.is_none_or(|requested| requested == current) {
+            room.unread_count = 0;
+            room.notification_count = 0;
+            room.highlight_count = 0;
+            local_read.cleared = Some(current);
+        } else {
+            local_read.cleared = None;
+        }
         recompute_room_list_projection(state);
     }
     vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
@@ -1221,7 +1243,12 @@ pub(crate) fn handle_room_marked_as_read_failed(
         return Vec::new();
     }
 
-    let _ = (request_id, kind);
+    let _ = kind;
+    if let Some(local_read) = state.local_reads.get_mut(&room_id) {
+        local_read
+            .pending
+            .take_if(|(pending_request_id, _)| *pending_request_id == request_id);
+    }
     vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
 }
 
@@ -1267,6 +1294,11 @@ pub(crate) fn handle_room_marked_as_unread_failed(
         return Vec::new();
     }
 
-    let _ = (request_id, kind);
+    let _ = kind;
+    if let Some(local_read) = state.local_reads.get_mut(&room_id) {
+        local_read
+            .pending
+            .take_if(|(pending_request_id, _)| *pending_request_id == request_id);
+    }
     vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
 }

@@ -184,10 +184,11 @@ pub use space_members::{
 // ── Re-exports: room ────────────────────────────────────────────────────────
 pub(crate) use room::compare_conversation_activity;
 pub use room::{
-    ConversationActivity, ConversationActivitySource, InvitePreview, RoomAttentionKind,
-    RoomAttentionProjection, RoomAttentionSummary, RoomLatestEventSummary, RoomNamePlaceholder,
-    RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary, room_activity_unread_count,
-    room_attention_kind, room_attention_projection, room_attention_summary,
+    ConversationActivity, ConversationActivitySource, InvitePreview, LocalRoomRead,
+    RoomAttentionKind, RoomAttentionProjection, RoomAttentionSummary, RoomLatestEventSummary,
+    RoomNamePlaceholder, RoomReadActivity, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
+    SpaceSummary, room_activity_unread_count, room_attention_kind, room_attention_projection,
+    room_attention_summary,
 };
 
 // ── Re-exports: room_activity ───────────────────────────────────────────────
@@ -394,6 +395,10 @@ pub struct AppState {
     /// the reducer sums both halves into the room's thread badge fields.
     #[serde(skip)]
     pub thread_unread: BTreeMap<(String, String), ThreadRootAttention>,
+    /// #1683: local mark-read requests and the room activity each one cleared,
+    /// keyed by room. Decides which later unread snapshots are stale.
+    #[serde(skip)]
+    pub local_reads: BTreeMap<String, LocalRoomRead>,
     #[serde(default)]
     pub device_cleanup: DeviceCleanupState,
     #[serde(default)]
@@ -547,6 +552,7 @@ impl Default for AppState {
             sliding_sync_capability: SlidingSyncCapabilityState::Unknown,
             thread_delivery: ThreadDeliveryDiagnostic::default(),
             thread_unread: BTreeMap::new(),
+            local_reads: BTreeMap::new(),
             device_cleanup: DeviceCleanupState::Idle,
             current_session_status: CurrentSessionStatusState::Idle,
             current_session_status_schedule: SessionStatusSchedule::default(),
