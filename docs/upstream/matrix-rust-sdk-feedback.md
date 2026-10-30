@@ -1625,3 +1625,28 @@ from the fork's `main` through merge `ddbb33352`. It deliberately does not take
 the unrelated fork PR #31. Tests: sync v2 and Sliding Sync race tests and a
 negative test in `matrix-sdk-base`, plus mock-server race and room-mismatch tests
 in `matrix-sdk`. Drop the delta when upstream ships an equivalent fix for #7385.
+
+## 2026-10-30 (#1636): a left room revived by an in-flight sync response
+
+`Room::leave` marks the room `Left` (`BaseClient::room_left`) once `/leave`
+returns. A Simplified Sliding Sync response that was already in flight can list
+the room without our membership. The MSC4186 processor defaulted every
+non-invite room to joined, so it revived the room. The server does not send the
+leave again, so it stayed joined. On Synapse, a Space left together with chosen
+child rooms kept the Space or a child in the room list for over 90 s
+(`space_leave_children`). A local probe confirmed the path: in the failing run,
+a `Left` room arrived with no own-membership state event and ended `Joined`.
+Passing runs only showed left rooms arriving with their own leave event.
+
+Fork PR shinaoka/matrix-rust-sdk-work#33 (merge `401be3df7`) adds a
+non-persisted `RoomInfo::left_locally`, set by `room_left` and cleared by any
+state change or by our membership in `required_state`. `membership()` keeps such
+a room left when the request asked for our membership (`$ME`, our user id or
+`*`). A rejoin always arrives as our join membership in such a request. Without
+that request, the old default applies.
+
+Known limits, unchanged by the patch: a stale response that carries our *old*
+join event still re-joins the room, because membership presence cannot tell it
+from a genuine rejoin; and forgetting the room drops the marker. Upstream
+intent: report it as the leave-side twin of matrix-org/matrix-rust-sdk#7385,
+where the ordering question (event identity or request generation) belongs.
