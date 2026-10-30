@@ -643,6 +643,53 @@ pub(super) async fn wait_for_encrypted_room_projection_for_qa(
     }
 }
 
+/// Wait until `conn`'s own room list counts at least `min_joined` joined members
+/// in the room. A sender must have seen a new member's join before it sends:
+/// its next room key is shared with the members it knows, so a message it sends
+/// earlier stays undecryptable for that member by design.
+pub(super) async fn wait_for_room_joined_members_for_qa(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    min_joined: u64,
+    label: &str,
+) -> Result<AppState, String> {
+    let joined = |snapshot: &AppState| {
+        snapshot
+            .rooms
+            .iter()
+            .find(|room| room.room_id == room_id)
+            .map(|room| room.joined_members)
+    };
+
+    let snapshot = conn.snapshot();
+    if joined(&snapshot).is_some_and(|count| count >= min_joined) {
+        return Ok(snapshot);
+    }
+
+    let deadline = tokio::time::Instant::now() + ROOM_LIST_EVENT_TIMEOUT;
+    loop {
+        let event = tokio::time::timeout_at(deadline, conn.recv_event())
+            .await
+            .map_err(|_| {
+                format!(
+                    "{label}: timed out waiting for {min_joined} joined members (joined={:?})",
+                    joined(&conn.snapshot()),
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        if matches!(
+            event,
+            CoreEvent::Room(RoomEvent::RoomListUpdated) | CoreEvent::StateDelta(_)
+        ) {
+            let snapshot = conn.snapshot();
+            if joined(&snapshot).is_some_and(|count| count >= min_joined) {
+                return Ok(snapshot);
+            }
+        }
+    }
+}
+
 pub(super) async fn wait_for_space_in_space_list(
     conn: &mut CoreConnection,
     expected_space_id: &str,
