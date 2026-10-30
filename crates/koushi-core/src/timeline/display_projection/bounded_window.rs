@@ -55,6 +55,8 @@ impl DisplayProjectionState {
             for slot in &mut self.slots {
                 slot.item = canonical[slot.canonical_index].clone();
             }
+            // The replacement may change the unrepresented runs (#1692).
+            self.refresh_gap_ends(canonical);
             self.window_revision = self.window_revision.saturating_add(1);
             self.rebuild_window_items(context);
             return;
@@ -170,8 +172,10 @@ impl DisplayProjectionState {
             .map(|canonical_index| DisplayProjectionSlot {
                 canonical_index,
                 item: canonical[canonical_index].clone(),
+                gap_before: GapEnds::default(),
             })
             .collect();
+        self.refresh_gap_ends(canonical);
         self.window_revision = self.window_revision.saturating_add(1);
         self.rebuild_window_items(context);
     }
@@ -197,6 +201,7 @@ impl DisplayProjectionState {
                 slots.push(DisplayProjectionSlot {
                     canonical_index: index,
                     item: item.clone(),
+                    gap_before: GapEnds::default(),
                 });
             }
             if row {
@@ -208,6 +213,7 @@ impl DisplayProjectionState {
         }
         slots.reverse();
         self.slots = slots;
+        self.refresh_gap_ends(canonical);
         self.window_revision = self.window_revision.saturating_add(1);
         self.rebuild_window_items(context);
         finalize_display_projection_diffs(&before, &self.display_items, false).0
@@ -364,12 +370,14 @@ impl DisplayProjectionState {
                 page.push(DisplayProjectionSlot {
                     canonical_index: index,
                     item: canonical[index].clone(),
+                    gap_before: GapEnds::default(),
                 });
             }
             if item_occupies_display_row(&canonical[index]) {
                 page.push(DisplayProjectionSlot {
                     canonical_index: index,
                     item: canonical[index].clone(),
+                    gap_before: GapEnds::default(),
                 });
                 rows += 1;
                 if rows == PAGE_ROWS {
@@ -383,6 +391,7 @@ impl DisplayProjectionState {
             page.push(DisplayProjectionSlot {
                 canonical_index: index,
                 item: canonical[index].clone(),
+                gap_before: GapEnds::default(),
             });
         }
         if page.is_empty() {
@@ -400,6 +409,7 @@ impl DisplayProjectionState {
             ..context.clone()
         };
         self.trim_slots(&observation_context, backwards);
+        self.refresh_gap_ends(canonical);
         self.window_revision = self.window_revision.wrapping_add(1);
         self.rebuild_window_items(context);
         finalize_display_projection_diffs(&before, &self.display_items, false).0
@@ -430,11 +440,17 @@ impl DisplayProjectionState {
         self.slots.drain(..start);
     }
 
-    pub(in crate::timeline) fn bound_after_batch(&mut self, context: &DisplayProjectionContext) {
+    pub(in crate::timeline) fn bound_after_batch(
+        &mut self,
+        canonical: &[TimelineItem],
+        context: &DisplayProjectionContext,
+    ) {
         if !context.room_window || self.slots.len() <= WINDOW_SLOTS {
             return;
         }
         self.trim_slots(context, !context.viewport.at_bottom);
+        // Only the edge runs absorbed dropped slots (#1692).
+        self.refresh_edge_gap_ends(canonical);
         self.window_revision = self.window_revision.wrapping_add(1);
         self.rebuild_window_items(context);
     }

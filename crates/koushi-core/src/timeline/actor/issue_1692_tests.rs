@@ -98,6 +98,9 @@ fn rows(items: &[TimelineItem]) -> Vec<String> {
 struct Observed {
     items: Vec<TimelineItem>,
     window_revision: Option<u64>,
+    /// A batch publishes `ItemsUpdated` and then `NavigationUpdated`; the
+    /// revision is current once the navigation follows the last items.
+    revision_current: bool,
 }
 
 impl Observed {
@@ -105,13 +108,16 @@ impl Observed {
         match event {
             CoreEvent::Timeline(TimelineEvent::InitialItems { items, .. }) => {
                 self.items = items.clone();
+                self.revision_current = false;
             }
             CoreEvent::Timeline(TimelineEvent::ItemsUpdated { diffs, .. }) => {
                 apply_timeline_diffs_to_display_items(&mut self.items, diffs);
+                self.revision_current = false;
             }
             CoreEvent::Timeline(TimelineEvent::NavigationUpdated { snapshot, .. }) => {
                 if let Some(window) = &snapshot.display_window {
                     self.window_revision = Some(window.revision);
+                    self.revision_current = true;
                 }
             }
             _ => {}
@@ -155,13 +161,6 @@ async fn drain_until(
     })
     .await
     .expect("actor event within the deadline");
-}
-
-/// Drain whatever is already queued without waiting for more.
-fn drain_ready(events: &mut broadcast::Receiver<CoreEvent>, observed: &mut Observed) {
-    while let Ok(event) = events.try_recv() {
-        observed.absorb(&event);
-    }
 }
 
 #[tokio::test]
@@ -288,61 +287,79 @@ async fn back_paginated_pages_behind_a_superseded_reply_stay_visible_at_the_live
     drain_until(&mut events, &mut observed, |event| {
         matches!(
             event,
-            CoreEvent::Timeline(TimelineEvent::InitialItems { .. })
+            CoreEvent::Timeline(TimelineEvent::NavigationUpdated { snapshot, .. })
+                if snapshot.display_window.is_some()
         )
     })
     .await;
-    drain_ready(&mut events, &mut observed);
-    eprintln!("initial: {:?}", shown_event_ids(&observed.items));
 
     // The renderer's `underfilled` backfill: the view stays at the bottom and
-    // reports it before each request.
-    let mut end_reached = false;
-    for round in 0..8_u64 {
+    // reports it before each request. Each page must publish its ordinary rows.
+    let pages: [&[(&str, Option<&str>)]; 3] = [NEWER_PAGE, MIDDLE_PAGE, OLDEST_PAGE];
+    for (round, page) in pages.into_iter().enumerate() {
+        let expected = page
+            .iter()
+            .filter(|(_, root)| root.is_none())
+            .map(|(name, _)| (*name).to_owned())
+            .collect::<Vec<_>>();
         actor
             .send(TimelineActorMessage::ObserveViewport {
                 observation: observed.at_bottom(),
             })
             .await;
+        let request_id = fake_rid(100 + round as u64);
         actor
             .send(TimelineActorMessage::Paginate {
-                request_id: fake_rid(100 + round),
+                request_id,
                 direction: PaginationDirection::Backward,
                 event_count: 20,
             })
             .await;
-        let mut state = None;
-        tokio::time::timeout(Duration::from_secs(10), async {
+        let mut terminal = None;
+        let settled = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let event = events.recv().await.expect("actor event stream");
                 observed.absorb(&event);
                 if let CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
-                    state: s @ (PaginationState::Idle | PaginationState::EndReached),
-                    prepend_expected,
+                    request_id: Some(id),
+                    state: state @ (PaginationState::Idle | PaginationState::EndReached),
                     ..
                 }) = &event
+                    && *id == request_id
                 {
-                    state = Some((s.clone(), *prepend_expected));
+                    terminal = Some(state.clone());
+                }
+                let shown = shown_event_ids(&observed.items);
+                if terminal.is_some()
+                    && observed.revision_current
+                    && expected.iter().all(|name| shown.contains(name))
+                {
                     break;
                 }
             }
         })
-        .await
-        .expect("pagination settles");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        drain_ready(&mut events, &mut observed);
-        eprintln!(
-            "round {round}: state={state:?} shown={:?}",
+        .await;
+        assert!(
+            settled.is_ok(),
+            "#1692: page {round} never showed its ordinary rows {expected:?} \
+             (terminal {terminal:?}); shown {:?}",
             shown_event_ids(&observed.items)
         );
-        if end_reached {
-            break;
-        }
-        end_reached = matches!(state, Some((PaginationState::EndReached, _)));
+        let last = round + 1 == pages.len();
+        assert_eq!(
+            terminal,
+            Some(if last {
+                PaginationState::EndReached
+            } else {
+                PaginationState::Idle
+            }),
+            "page {round}"
+        );
     }
     let incremental = shown_event_ids(&observed.items);
+    assert_eq!(incremental, ORDINARY, "#1692: every ordinary row in order");
 
-    // A room switch on the same actor: `ReplayInitialItems`.
+    // A room switch replays the retained actor's projection.
     actor
         .send_control(TimelineActorControl::ReplayInitialItems {
             cause_request_id: fake_rid(900),
@@ -355,43 +372,38 @@ async fn back_paginated_pages_behind_a_superseded_reply_stay_visible_at_the_live
         )
     })
     .await;
-    let replay = shown_event_ids(&observed.items);
-    eprintln!("incremental={incremental:?}\nreplay={replay:?}");
-    eprintln!("replay rows: {:?}", rows(&observed.items));
+    let replay = rows(&observed.items);
 
-    // Oracle: a one-shot rebuild of the same canonical history.
+    // A one-shot rebuild of the same canonical history shows the same rows.
+    let revision = observed.window_revision;
     actor
         .send(TimelineActorMessage::ReturnToLive {
             request_id: fake_rid(901),
         })
         .await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    drain_ready(&mut events, &mut observed);
-    let rebuilt = shown_event_ids(&observed.items);
-    eprintln!("one-shot rebuild={rebuilt:?}");
-    eprintln!("rebuild rows: {:?}", rows(&observed.items));
-
-    let missing = |shown: &[String]| {
-        ORDINARY
-            .iter()
-            .filter(|name| !shown.iter().any(|shown| shown == *name))
-            .copied()
-            .collect::<Vec<_>>()
-    };
-    assert!(
-        missing(&rebuilt).is_empty(),
-        "the one-shot rebuild oracle must show every ordinary row: {rebuilt:?}"
-    );
-    assert!(
-        missing(&incremental).is_empty(),
-        "#1692: incremental cached paging at the live edge hides ordinary rows {:?}: \
-         shown {incremental:?}, one-shot rebuild {rebuilt:?}",
-        missing(&incremental)
-    );
-    assert!(
-        missing(&replay).is_empty(),
-        "#1692: a room-switch replay on the retained actor keeps ordinary rows {:?} hidden: \
-         shown {replay:?}",
-        missing(&replay)
+    drain_until(&mut events, &mut observed, |event| {
+        matches!(
+            event,
+            CoreEvent::Timeline(TimelineEvent::NavigationUpdated { snapshot, .. })
+                if snapshot.display_window.as_ref().map(|window| window.revision) > revision
+        )
+    })
+    .await;
+    actor
+        .send_control(TimelineActorControl::ReplayInitialItems {
+            cause_request_id: fake_rid(902),
+        })
+        .await;
+    drain_until(&mut events, &mut observed, |event| {
+        matches!(
+            event,
+            CoreEvent::Timeline(TimelineEvent::InitialItems { .. })
+        )
+    })
+    .await;
+    assert_eq!(
+        replay,
+        rows(&observed.items),
+        "#1692: the incremental projection must equal a one-shot rebuild"
     );
 }
