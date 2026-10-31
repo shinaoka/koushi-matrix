@@ -89,8 +89,9 @@ Related Koushi checks passed with the unchanged root lockfile:
   headless-QA-lane, Rust-test-structure, SDK-submodule and user-help checks.
 
 Broader Linux-local checks subsequently ran as recorded below. This is not a
-claim that all cross-platform, browser or hosted-CI gates are green. No PR,
-push or SDK gitlink update has occurred while Tuwunel acceptance is parked.
+claim that all cross-platform, browser or hosted-CI gates are green. Publication
+was held until the required unmodified-SDK baseline established the Tuwunel
+main-badge discrepancy as pre-existing, as documented below.
 
 The application-level commands were:
 
@@ -154,8 +155,10 @@ node scripts/desktop-headless-local-qa.mjs --run --core --server=tuwunel \
   --scenario=thread,read_state_convergence --timeout-ms=480000
 ```
 
-The known Tuwunel fresh-session acceptance failure was not rerun merely to
-reconfirm its parked boundary. Native macOS/Windows and hosted CI were not run.
+The maintainer then required an unmodified-SDK baseline and a documented
+pre-existing-gap classification before publication. That baseline and a paired
+corrected-SDK comparison are recorded below. Native macOS/Windows checks were
+not run locally; hosted CI results are not inferred from these local passes.
 
 ## Completed post-review and history-only correction
 
@@ -195,32 +198,38 @@ completed against the actual diff and line-numbered immediate callers.
 These completed reports cover their bounded SDK and Koushi QA/canon scopes;
 they do not establish merge readiness, prove authorship history, rerun tests,
 or approve the parked server failure. The user accepted the QA correction and
-approved the minimal SDK history refresh. PRs, pushes and the SDK gitlink
-update remain on hold pending the user's Tuwunel acceptance decision; other
-regressions and local gates continue independently.
+approved the minimal SDK history refresh. The later publication decision was
+conditional on reproducing the same Tuwunel main-badge mismatch without the SDK
+fix. That condition was met; publication proceeds with the server gap recorded,
+not with weaker assertions or an acceptance waiver.
 
-## Local commit snapshot and publication hold
+## Publication after baseline verification
 
-The SDK fix is saved on local branch
-`feat/1696-unthreaded-thread-receipts` at
-`c681d5e9bf6e5cce00aec65c66fc4d6653afffec`. The Koushi RED scenario, QA
-corrections and documentation are collected on
-`feat/1696-thread-unread-after-sign-in`.
+The SDK topic was submitted first as
+[SDK PR #34](https://github.com/shinaoka/matrix-rust-sdk-work/pull/34).
+Its final commit is `292b89c4500cff6bdbcaac4770cff36a14714076` on
+`feat/1696-unthreaded-thread-receipts`. This replaces the initially submitted
+`c681d5e9bf6e5cce00aec65c66fc4d6653afffec` in one finished-state push, with
+**only two doc-comment wording changes** to satisfy nightly comment wrapping;
+no executable code changed. The exact nightly formatter now accepts those
+new comments; unrelated whole-package formatting deviations remain.
 
-The parent repository's tracked SDK gitlink remains
-`401be3df774170499be743de26bdd88c1cb58f56`. Its local SDK checkout now contains
-the topic commit, so the unstaged submodule HEAD difference is intentional;
-it is not an authorized gitlink update. The earlier SDK-pin guard PASS
-preceded the local SDK commit. This snapshot is not a self-contained consumer
-integration until an authorized gitlink update is made.
+The consumer branch `feat/1696-thread-unread-after-sign-in` updates the tracked
+SDK gitlink from `401be3df774170499be743de26bdd88c1cb58f56` to that final SDK
+commit. No lockfile, public API shape or runtime ownership change is included.
+The same headless scenario was run with the old unmodified pin and with the
+functional SDK correction; the comment-only replacement does not change that
+runtime evidence.
 
-SDK and Koushi PR body drafts are prepared locally, without opening a PR.
-Pushes, PR creation and the gitlink update remain on hold until the user
-decides the Tuwunel boundary. Assertions are not relaxed and no acceptance
-waiver is inferred. No additional measurements, reviews or issues are needed
-for this local commit snapshot.
+The initial SDK CI run also exposed an unresolved `Mutex` type in
+`matrix-sdk-crypto/src/identities/manager.rs` under the integration job's
+feature selection. That file is byte-identical to the unmodified SDK pin;
+this topic changes no crypto source, Cargo features or dependencies. Broad
+SDK CI also reports existing nightly formatting deviations. These failures
+are not described as green or fixed, and unrelated fork repairs are not
+folded into this receipt correction. Current CI remains a separate merge gate.
 
-## Parked: Tuwunel's initial receipt omission
+## Known pre-existing Tuwunel initial receipt omission
 
 For the clash room, the writer sets both an unthreaded and a root-specific
 receipt on the last reply. Token-only raw-response diagnostics prove that:
@@ -240,6 +249,50 @@ The failed attempts and the pre-fix evidence are retained in local QA
 artifacts, with only counts/booleans in the scenario output. Raw payloads and
 private identifiers are not copied here.
 
-The Tuwunel case needs a server correction or an explicitly agreed acceptance
-boundary before the both-server deliverable can be called complete. Do not
-merge or describe the issue as fixed while that required check remains red.
+### Required pre-existing check and paired comparison
+
+The exact same `thread_receipt_fresh_session` scenario and current QA observer
+were run at Koushi `8d3d6e4c97902bb496d42cb21a92277547cebfb5`, first with a
+clean, unmodified SDK checkout at the existing tracked pin
+`401be3df774170499be743de26bdd88c1cb58f56`. The SDK pin guard passed before
+that run. The scenario exited **1**, and all five thread replies and the room
+summary were observed in every phase:
+
+| SDK / clash phase | Chip | Thread unread | MAIN badge |
+| --- | ---: | ---: | ---: |
+| Unmodified, fresh open | 0 | 0 | 2 |
+| Unmodified, after threaded read | 0 | 0 | 2 |
+| Unmodified, after restart | 0 | 0 | 2 |
+| Corrected, fresh open | 0 | 0 | 2 |
+| Corrected, after threaded read | 0 | 0 | 2 |
+| Corrected, after restart | 0 | 0 | 2 |
+
+Both runs reported `room=clash unthreaded=false threaded=true` for the initial
+Simplified Sliding Sync receipt, while the fixture confirmed both scopes were
+set. The old SDK additionally showed the original thread-coverage bug in the
+unthreaded-only control (fresh counts 5). The corrected SDK's control is green
+at fresh open and restart. A fresh Synapse run with the correction again
+passed the complete scenario: all five replies and chip/thread/main badge zero
+at fresh open, threaded read and restart.
+
+Baseline reproduction from a clean checkout/worktree at Koushi `8d3d6e4c`:
+
+```bash
+git submodule update --init --recursive vendor/matrix-rust-sdk
+node scripts/desktop-headless-local-qa.mjs --run --core \
+  --server=tuwunel --scenario=thread_receipt_fresh_session --timeout-ms=480000
+```
+
+The comparison establishes the remaining MAIN badge mismatch as pre-existing,
+not a regression from this SDK correction. The maintainer authorized PRs on
+that basis as documentation of a homeserver constraint, **not an acceptance
+waiver**. The known gap, reproduction, sanitized log evidence and main-badge
+impact are tracked in [Koushi #1708](https://github.com/shinaoka/koushi-matrix/issues/1708)
+using the existing `bug` and `nightly-qa` labels. No Tuwunel upstream issue was
+opened; that decision belongs to the maintainer.
+
+The original assertions and zero-count acceptance criteria are unchanged. The
+Tuwunel clash scenario remains red; this work neither claims full both-server
+green nor fixes that server gap. No fabricated receipt, counter suppression,
+legacy fallback or new mechanism has been added. Required CI results must be
+checked separately before any merge.

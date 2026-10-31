@@ -68,8 +68,12 @@ or SDK boundary without logging private Matrix payloads.
   unknown targets, newer threaded boundaries and root ownership. Synapse
   headless QA additionally covers history loading, duplicate read confirmation
   and restart. Tuwunel's initial Simplified Sliding Sync can omit the
-  unthreaded receipt when a threaded receipt has the same target; the separate
-  main-counter failure is parked, not hidden. The post-review room-history
+  unthreaded receipt when a threaded receipt has the same target. The separate
+  main-counter mismatch was reproduced on the unmodified SDK pin as well as
+  the correction and is tracked in [Koushi #1708](https://github.com/shinaoka/koushi-matrix/issues/1708),
+  with unchanged assertions and no acceptance waiver. The SDK correction is
+  submitted as [SDK PR #34](https://github.com/shinaoka/matrix-rust-sdk-work/pull/34).
+  The post-review room-history
   refresh gap is covered by a pagination-only regression: after normal
   backwards pagination or targeted gap repair persists an outside target, the
   existing per-room cache owner refreshes its pending thread receipts outside

@@ -243,6 +243,11 @@ other clients after signing in again. Open a thread to read its visible
 replies; a reply already on screen is marked read without requiring an extra
 scroll. A manually marked unread room uses a red dot on its row, not an
 invented numeric message count.
+
+On Tuwunel, a known fresh-sign-in issue can leave the main unread count stale
+when another client set room-wide and thread receipts on the same message
+([#1708](https://github.com/shinaoka/koushi-matrix/issues/1708)).
+
 Leaving a room discards its cached thread counts; rejoining starts a fresh
 read of those threads.
 
