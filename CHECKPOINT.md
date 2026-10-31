@@ -1,5 +1,72 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Final stop — 2026-11-01 01:00 JST, integrated source reviewed
+
+**Stop for the maintainer's context-budget limit. No PR: required Synapse Core
+aggregate is RED and dedicated migration QA remains unrun.** No gate was waived,
+no new issue/scope/measurement was added, and no further aggregate retry ran.
+
+- Tested/reviewed Koushi head: `c0054a718cb3f5f6170e0f7196a459fe5e67cae8`.
+  SDK pin: `1c669ef107eba11b395efa275ed4f615a94c7c3b`. Both branch heads were
+  pushed with ahead count zero. This final checkpoint-only commit follows them.
+- SDK history now includes current-main receipt fix `292b89c45` as well as
+  upstream `d477953d6`; the earlier intermediate dependency omission is resolved.
+- **Combined-state final gates PASS**, each own exit status zero: feature-unified
+  workspace `cargo test -j8 --profile ci --locked --workspace --exclude
+  sidebar-composition --exclude key-management` (**4,615 passed, zero failed,
+  16 ignored**); strict workspace all-targets clippy; strict QA-bin all-targets
+  clippy; strict release workspace clippy with both stack lints; release
+  `stack_budget` (**3 passed**); release QA `--features qa-bin --bins` build.
+  Logs/exit files: private temporary `koushi-1677-combined-<gate>.log/.exit`
+  (`workspace`, `clippy-dev`, `clippy-qa`, `clippy-release-stack`, `stack`,
+  `qa-build`). Actual idle-picker CPUs **0-7**, jobs8/tests8, incremental off;
+  kache used normally, no miss-diagnostic environment and no target deletion.
+- **Integrated independent POST review COMPLETE**, exact model
+  `openai/gpt-6.1-sol`, one review of this candidate. Reviewer read all 4,880
+  branch-diff lines including new files, the entire receipt merge delta and
+  connected source/canon. No new BLOCKER/IMPORTANT/MINOR code finding. Cache
+  lifecycle/admission, separate missing identity/Unknown, generation/fence,
+  ACK correlation, checkpoints, late decryption/search, auth continuation,
+  receipt lock ordering, readiness/privacy and provenance passed source review.
+  Historical six SDK-resolution packets were selectively traced, not all reread;
+  their earlier completed review remains separately scoped evidence.
+- Review delivery was truncated, **not** accepted on its visible prefix. The
+  complete persisted history output was recovered through its final Summary,
+  provenance, limits and remaining-risk sections, without a new review round.
+  Full private report: `koushi-1677-integrated-post-review-complete.md` in
+  temporary storage. It explicitly says source-acceptable, **not publication
+  ready**, because Synapse QA is RED. No correction was requested or made.
+- The preceding phase2 owner acknowledged exclusive handoff and no remaining
+  owned gate PID. Its feedback edit was preserved and refreshed for the combined
+  SDK pin; its frontend tests **2,362/2,362**, build, typecheck/lint/privacy,
+  fixture/source guard tests and help/docs successes remain recorded. No
+  affecting frontend edit followed. Prior leaf wasm/fmt/structural/privacy
+  results below remain scoped evidence, not a claim of additional reruns here.
+- The latest both-server aggregate **exit1** remains authoritative: Tuwunel Core
+  aggregate and both SDK smoke lanes passed; Synapse Core stopped at structured
+  mention receive (`undecryptable_seen=false sync=reconnecting session=ready`).
+  Prior owner parsed 746 native-sync access statuses: 648 HTTP200 and 98 HTTP200!
+  (disconnected responses), zero AssertionError/Traceback. Those observations do
+  not establish a production cause. The earlier Space-leave failure is retained
+  below. No blind rerun, timeout increase, assertion relaxation or server swap.
+- Required dedicated `timeline_reconnect`, `user_verification`,
+  `redact_edit_convergence`, `search_crawler_catchup` on both disposable servers
+  are **not run on the combined state**. Do not replace this boundary with the
+  aggregate/SDK-only successes. Native platform QA/hosted final CI are unclaimed.
+- No #1677 SDK-update fork PR exists; the API listed only the separate existing
+  receipt PR #34. No Koushi PR was opened. Preservation pushes are not final
+  publication or permission to bypass required local QA.
+
+**Next single action:** use the preserved failed Synapse attempt and existing
+harness to choose a focused reproducible delivery/reconnection check before
+any production fix or another aggregate. Finish the dedicated both-server
+migration QA; only after required gates are green create the finished fork-to-
+Koushi PR chain in English with `Refs #1677`. Keep existing source review unless
+an actual scope/design change requires reopening it. Park only a concrete new
+Tier-C decision with choices and a recommendation; no such new design decision
+was made here. Do not repeat successful gates without an affecting change.
+
+
 ## Resume audit — 2026-11-01, receipt reconciliation
 
 This resume supersedes the old session-only publication/QA restrictions below.
