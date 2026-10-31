@@ -1,5 +1,35 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest resume — 2026-11-01 03:04 JST — self-review, post-fix QA, then affected gates
+
+Resumed at clean/pushed1ae6e673 with context45%, original04:26:24 JST budget
+unchanged. Latest maintainer instruction authorizes **ONE Koushi PR**, only
+when every mandatory gate is GREEN, then CI confirmation/merge; it supersedes
+older fork-PR-chain wording. No SDK fork PR operation/pin change/new issue.
+Any required RED means no PR and stop/report; do not investigate the accepted
+external-rejoin limitation. Paid resources, other publication, or destructive
+production DB operations require stop/report.
+
+Whole root diff self-reviewed: all4,613 lines excluding this checkpoint, plus
+all957 checkpoint lines and connected local-leave dispatch/projection source.
+No new source blocker in the audited scope. Private detailed record:
+`/tmp/koushi-1677-postfix-self-review.md`. This does not claim a new review of
+all upstream SDK commits or waive QA. Both original regressions already have
+separate RED101→GREEN0 artifacts; no source change since08b89c19.
+
+Only affected release core QA binary is being prepared by a bounded build-only
+worker, while main reviews; no concurrent Cargo run. Worker environment,
+selected8 idle CPUs/taskset/jobs8/tests8, kache, unchanged source. Command:
+`cargo build -j8 --release --locked -p koushi-qa --features qa-bin
+--bin headless-core-qa`; own log/exit/conditions under
+`/tmp/koushi-1677-postfix-qa-build*`. Build status not yet claimed GREEN.
+Main runs one fresh Synapse room-management QA with the updated binary via
+existing prebuilt-only launcher and before/after hash evidence. Only whole
+scenario GREEN permits one final both-server aggregate; preserve existing
+attempt history. Then affected mandatory checks and scoped post-review before
+any single finished PR. All old source/gate results remain scoped, not new
+post-fix evidence.
+
 ## Latest audit resume — 2026-11-01 — conservative correction authorized
 
 The maintainer's tier-A audit explicitly lifts PARK: implement the existing
