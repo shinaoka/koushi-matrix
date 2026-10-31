@@ -1,5 +1,28 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Final cutoff handoff — 2026-11-01 04:41 JST — review COMPLETE, CI pending
+
+Integrated exact-GPT post-review of frozen495e5b11 is **COMPLETE**: eight
+completed reports cover all4,613 source-diff lines, all1,310 checkpoint lines
+and the entire119-line fa03358a..495e5b11 addition, with NONE/no must-fix.
+Turn-limited initialB/C reports were excluded; their unread scopes were
+completed in six smaller slices, not counted while incomplete. Full receipts:
+`/tmp/koushi-1677-review-495e5b11/integrated-complete.md` and individual reports.
+No source change or successful gate rerun. All Step2/mandatoryboth GREEN stay
+scoped below. This final addition is operational handoff only.
+
+Required CI for495e5b11 at04:41:11: **8 pass /1 pending**, bounded watch
+exit124, NOT a check failure. Draft#1712 body records completed review;
+**DRAFT retained**, no ready/auto-merge/admin/force/merge. Merge SHA absent.
+Hard04:42 cutoff: no extension or merge while a required check remains pending.
+Clean status was0 entries; target retained. `.local-secrets` size **1.1G**
+(du exit0), retained, no sudo or deletion. No worktree removal/prune attempted
+before actual merge. Next: wait for required CI on the submitted head, update
+body/final-head status, then normal ready + authorized squash auto-merge;
+verify actual merge before clean-status/owned-target/worktree cleanup. Report
+root-owned secrets paths/sizes rather than using sudo. No source review or
+successful gate rerun needed for this handoff-only checkpoint change.
+
 ## Latest verified Step2 boundary — 2026-11-01 04:12 JST — A/B/C all GREEN
 
 **All nine affected mandatory commands completed, own exits independently
