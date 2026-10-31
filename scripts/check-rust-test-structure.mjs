@@ -3204,7 +3204,7 @@ function coreQaItemBody(relativePath, marker) {
 }
 
 function coreIntegrationSource(relativePath) {
-  return readRustSource(`crates/koushi-core-testkit/tests/${relativePath}`);
+  return readRustSource(`crates/koushi-core-testkit/tests/contracts/${relativePath}`);
 }
 
 export function checkCoreQaReconnectEncryptionGate() {

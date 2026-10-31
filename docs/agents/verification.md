@@ -81,9 +81,10 @@ A subagent's "gates passed" claim is not evidence — re-run the gate yourself.
   when those binaries run zero tests.
 - When running a focused Rust integration test, target the integration-test
   binary with `--test <name>` instead of using only a package-wide name filter.
-  Example: use `cargo test -p koushi-state --test search_state`, not `cargo test
-  -p koushi-state search`, because the latter launches every integration-test
-  binary and then filters inside each one.
+  Example: use `cargo test -p koushi-state --profile ci --test state search_state::`,
+  not `cargo test -p koushi-state search`, because the latter launches every
+  integration-test binary and then filters inside each one. Suite ownership and
+  the canonical workspace gate are in [test suites](../architecture/test-suites.md).
 - Do not run a long-duration end-to-end or homeserver scenario after every small
   implementation edit. First complete the coherent assertion-driven flow, using
   compile checks, focused unit/integration tests, and short fail-fast

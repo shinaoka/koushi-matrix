@@ -1342,13 +1342,13 @@ is absent: through the unchanged first-party enable adapter, a fresh session's
 first enable check returns `Enabled`, failing the new `AlreadyEnabled` oracle.
 Record the actual assertion failure separately from compile failures.
 
-- `crates/koushi-sdk/tests/event_cache.rs`: automatic cache availability before
+- `crates/koushi-sdk/tests/sdk/event_cache.rs`: automatic cache availability before
   any manual enable call; repeated enable checks and restored sessions report
   `AlreadyEnabled`; persisted encrypted room-cache events survive drop/restore;
   a disabled-cache fixture fails through the existing fallible enable boundary.
   Keep the existing encrypted-store/wrong-key assertions.
 - New Core integration coverage belongs in
-  `crates/koushi-core-testkit/tests/event_cache_lifecycle.rs`, using isolated
+  `crates/koushi-core-testkit/tests/contracts/event_cache_lifecycle.rs`, using isolated
   runtimes and disposable/mock server fixtures. Prove first-sync delivery and
   restored delivery without a manual cache-start call; failed cache admission
   cannot create a running session. Keep existing lifecycle ownership tests and

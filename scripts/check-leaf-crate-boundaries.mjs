@@ -49,7 +49,10 @@ export const testkitTargets = [
   "send_queue_fast.rs",
   "stack_budget.rs",
   "thread_bundled_reply_timestamp.rs"
-];
+].map((file) => {
+  if (file === "runtime_navigation.rs" || file === "stack_budget.rs") return file;
+  return `${file.startsWith("runtime_") ? "runtime" : "contracts"}/${file}`;
+}).concat(["contracts/main.rs", "runtime/main.rs"]);
 
 export const coreLocalIntegrationTargets = [
   "emoji_picker_size.rs",
@@ -60,7 +63,7 @@ export const coreLocalIntegrationTargets = [
   // Exercise the production runtime without the testkit's test-hooks feature.
   "runtime_stack.rs",
   "sliding_sync_diagnostics.rs"
-];
+].map((file) => `core/${file}`).concat(["core/main.rs"]);
 
 function read(root, relativePath) {
   const absolutePath = path.join(root, relativePath);
@@ -88,8 +91,14 @@ function directRustFiles(root, relativeDirectory) {
   if (!fs.existsSync(directory)) return [];
   return fs
     .readdirSync(directory, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".rs"))
-    .map((entry) => entry.name)
+    .flatMap((entry) => {
+      if (entry.isFile() && entry.name.endsWith(".rs")) return [entry.name];
+      const suite = path.join(directory, entry.name);
+      if (!entry.isDirectory() || !fs.existsSync(path.join(suite, "main.rs"))) return [];
+      return fs.readdirSync(suite, { withFileTypes: true })
+        .filter((file) => file.isFile() && file.name.endsWith(".rs"))
+        .map((file) => `${entry.name}/${file.name}`);
+    })
     .sort();
 }
 
