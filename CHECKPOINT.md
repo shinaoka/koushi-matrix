@@ -1,5 +1,72 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest handoff — maintainer audit, 2026-10-31 19:31 JST
+
+**Stop here. The nonzero-exit reason is identified; do not rerun this lane.**
+The maintainer requested committing/pushing the five current WIP files and
+ending this session. SDK pin PR/todo #3, new investigations, PRs and issues
+are deferred to the next session. No aggregate GREEN is claimed.
+
+- One direct Core execution, without `scripts/desktop-headless-local-qa.mjs`,
+  finished at 19:31:33 JST with exit status **1**.
+- Confirmed failure: `Headless core QA failed: space_leave_children memberships: timed out`.
+- Same prior Core CPU affinity: **`18-20,22-23,25-26,54`**; **jobs=8**.
+  Existing QA environment variables were restored without printing credentials.
+  The stopped disposable Synapse fixture was recreated with the same connection
+  endpoint/account inputs. Prior failed Core stores were preserved before fresh
+  stores were prepared at the same environment paths.
+- Reproduction command, with that disposable QA environment already supplied:
+
+  ```bash
+  CARGO_BUILD_JOBS=8 KACHE_EXPLAIN_MISS=1 \
+    taskset -c 18-20,22-23,25-26,54 \
+    cargo run --quiet --release -p koushi-qa --features qa-bin --bin headless-core-qa \
+    > /tmp/koushi-1677-direct-core-stdout.raw.log \
+    2> /tmp/koushi-1677-direct-core-stderr.raw.log
+  ```
+
+- Raw stdout: `/tmp/koushi-1677-direct-core-stdout.raw.log`.
+  Raw stderr: `/tmp/koushi-1677-direct-core-stderr.raw.log`.
+  Both are private temporary files with mode0600. Do not copy their raw contents
+  into shared logs, PRs or issues. The file paths above are recorded explicitly
+  at the maintainer's request; no account values or home-directory paths appear.
+- Closed membership observations:
+  `space_listed=true`, `space_locally_left=false`,
+  `left_child0_joined=false`, `left_child1_joined=false`,
+  `left_child0_locally_left=true`, `left_child1_locally_left=true`.
+  In particular, the child observations were **joined=false but locally_left=true**.
+  `kept_child_joined=true` and `outside_joined=true` were also observed.
+  These identify the failed QA condition; no unproven production root-cause
+  attribution is added. The maintainer declared exit-reason identification done.
+- Before the direct run, the own readiness diff was checked: its probe executes
+  before SDK/Core startup, and its failure throws before the SDK success line.
+  New JavaScript assertions exist in the test file only. The actual Core child,
+  not a post-success readiness assertion, returned1 in the direct execution.
+- The three-migration readiness correction has deterministic behavioral RED
+  followed by **20 fixture tests PASS**, including real read-only SQLite probe
+  cases, pending/error/deadline paths and unchanged Tuwunel/disabled-feature
+  fixtures. A fresh corrected Synapse aggregate removed the original server
+  assertion but still failed; a later run reached the Space leave case above.
+  Thus the correction is **not** claimed to resolve Core aggregate.
+- The first detached readiness pre-review was incomplete at its tool limit.
+  A smaller completed exact-GPT permission/root-cause pre-review, using a live
+  server-only same-request500-before/200-after migration proof, allowed enforcing
+  the existing fixture prerequisite with canon first. Integrated post-review
+  and final gates remain pending; neither review nor focused PASS replaces them.
+- `crates/koushi-core/src/sync.rs` contains a **temporary closed-enum diagnostic**
+  at the existing Reconnecting control, included solely in this requested WIP
+  preservation. It changes no API/transition and must be removed or explicitly
+  justified before the finished diff/review/PR; it is not a production fix.
+- The earlier historical estimate of58 native HTTP500 responses was corrected
+  to **56** by parsing the actual HTTP status field, not matching digits in
+  timings or pagination tokens. Preserve the failed attempt and this correction.
+- No further Core/Synapse `all` run is authorized in this session. No PR or issue
+  was opened. Required validation and the SDK-fork→Koushi finished PR chain stay
+  incomplete/parked. Existing admission/ACK corrections are not reverted.
+
+The sections below preserve the preceding investigation history; where status
+paragraphs disagree, this latest handoff takes precedence.
+
 Date: 2026-10-31. Branch: `chore/1677-sdk-upstream-main`.
 
 **WIP, not merge-ready.** The maintainer explicitly requested this checkpoint
@@ -189,3 +256,46 @@ has been fixed.
 Resource discipline remains serialized Cargo/shared target, idle-selected
 8 CPUs, jobs8, tests8, invocation-scoped `KACHE_EXPLAIN_MISS=1`. Do not delete
 shared build targets or alter unrelated worktrees/services.
+
+## Investigation after the pushed WIP (not yet a correction)
+
+- The requested checkpoint was committed and pushed as
+  `e91cc1264412d58eee6a0d6e4457c76f743b3c88`. This addendum records subsequent
+  read-only investigation; it does not authorize another incomplete-state push.
+- The pinned image selects its internal fallback precisely when
+  `have_finished_sliding_sync_background_jobs()` is false. That predicate checks
+  `sliding_sync_prefill_joined_rooms_to_recalculate_table_bg_update`,
+  `sliding_sync_joined_rooms_bg_update`, and
+  `sliding_sync_membership_snapshots_bg_update`.
+- Its membership snapshot filters forgotten rooms. Its newly-left delta can
+  still contain ordinary leave events with a non-null event ID; the absent-
+  snapshot-room branch incorrectly assumes such a room must represent state
+  reset and asserts the event ID is null.
+- SDK `Room::leave` automatically forgets a room when declining an invitation.
+  This is present at both old and current pins; do not remove it as an alleged
+  new upstream regression. The aggregate executes invitation decline first.
+- Read-only queries of the owned failed disposable database found one current
+  leave membership with `forgotten=1`; current joined/invited memberships had
+  `forgotten=0`. No identifiers were printed. Safe server-log sequence:
+  successful forget +10.933 s, first assertion +11.007 s, 56 assertions through
+  +40.104 s, 56 native-sync HTTP 500 responses; the three required migration
+  jobs finish around +40.699 s (all background updates +62.931 s). These are
+  timestamps from one diagnostic attempt, not a performance benchmark.
+- A narrow proposal to make existing `waitForHomeserver` enforce the server's
+  own three-job readiness predicate is under exact-GPT pre-review. No product,
+  SDK, QA implementation, API, server-version or architecture change has been
+  made for it. Review must reject mere failure masking or any new policy need.
+- The attempted narrowed run initially timed out before Core while the SDK QA
+  release binary was absent. Separate SDK and Core release prebuilds passed;
+  that setup timeout is not behavioral RED. Owned descendants/containers were
+  checked after timeout; none remained. Cache verification: 2,604 valid entries,
+  zero corrupted/missing/checksum failures.
+- With prepared binaries, `invites_dm,room_people_projection` passed, but the
+  runner executes comma-separated scenarios in **separate fresh fixtures**.
+  This did not reproduce their shared-state aggregate sequence and neither
+  fixes nor invalidates the recorded aggregate failures. Do not cite it as
+  aggregate GREEN or an exact reduced reproducer.
+- The B3 source investigator completed its report. Mailbox delivery and
+  event-before-projection ordering remain candidate discriminators only; no
+  deterministic evidence establishing either cause was returned, and no patch
+  is authorized merely by those hypotheses.

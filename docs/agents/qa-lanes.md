@@ -24,6 +24,18 @@ selection, probing, or forcing, so no lane takes a backend argument.
   non-secret entrypoint with execute permission for that numeric identity.
   Fixture retention/replay is preserved; neither world-writable fixture data
   nor ownership changes outside the exact fixture directory are permitted.
+- Synapse startup readiness requires both the Matrix versions endpoint and the
+  completed background migrations that its pinned native Sliding Sync dispatcher
+  uses to declare the membership tables safe. The fixture checks that same
+  predicate read-only inside its already-owned container before registering QA
+  users or starting SDK/Core scenarios. A versions response alone is not this
+  capability proof: during migration, the server's internal room-list calculation
+  can fail after an ordinary invitation decline/forget. This is fixture schema
+  preparation, not client backend selection or a change to SDK leave semantics.
+  One monotonic startup deadline bounds the HTTP request, container probe and
+  polling; unexpected probe errors fail closed without child output. Do not add
+  a fixed warmup sleep, extend the deadline, change the server pin, or weaken a
+  scenario to obtain readiness. Feature-disabled fixtures remain disabled.
 
 ## Output must be private-data-free
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import childProcess, { spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +10,8 @@ import {
   homeserverFixtureCapabilities,
   selectedServers,
   synapseDockerfile,
-  synapseEntrypoint
+  synapseEntrypoint,
+  waitForHomeserver
 } from "./local-homeserver-qa.mjs";
 
 function extractedSlidingSyncBoolean(entrypoint) {
@@ -34,6 +36,107 @@ function extractedPythonUpdater(entrypoint) {
   assert.equal(programs.length, 1, "expected exactly one structured YAML updater");
   return programs[0][1];
 }
+
+function mockReadiness(t, probe) {
+  t.mock.method(globalThis, "fetch", async () => ({ ok: true }));
+  t.mock.method(childProcess, "spawnSync", probe);
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+}
+
+test("Synapse readiness waits for its native membership-table migrations", async (t) => {
+  const runPython = spawnSync;
+  let probes = 0;
+  let program;
+  mockReadiness(t, (command, args, options) => {
+    assert.equal(command, "docker");
+    assert.deepEqual(args.slice(0, 4), ["exec", "synthetic-owned", "python3", "-c"]);
+    assert.ok(options.timeout > 0 && options.timeout <= 2000);
+    program = args[4];
+    return { status: ++probes === 1 ? 2 : 0 };
+  });
+  await waitForHomeserver("http://example.invalid", {
+    exitCode: null, koushiDockerContainerName: "synthetic-owned"
+  }, 2000, "synthetic.log");
+  assert.equal(probes, 2, "versions alone must not declare native Sliding Sync ready");
+
+  const runDir = mkdtempSync(join(tmpdir(), "koushi-synapse-readiness-test-"));
+  try {
+    const database = join(runDir, "homeserver.db");
+    const setup = runPython("python3", ["-c", `import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+c.execute("CREATE TABLE background_updates (update_name TEXT)")
+c.commit()
+`, database]);
+    assert.equal(setup.status, 0);
+    assert.match(program, /mode=ro/);
+    const probe = program.replace("/data/homeserver.db", database);
+    for (const name of [
+      "sliding_sync_prefill_joined_rooms_to_recalculate_table_bg_update",
+      "sliding_sync_joined_rooms_bg_update",
+      "sliding_sync_membership_snapshots_bg_update"
+    ]) {
+      const insert = runPython("python3", ["-c", `import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+c.execute("INSERT INTO background_updates VALUES (?)", (sys.argv[2],))
+c.commit()
+`, database, name]);
+      assert.equal(insert.status, 0);
+      assert.equal(runPython("python3", ["-c", probe]).status, 2);
+      const remove = runPython("python3", ["-c", `import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+c.execute("DELETE FROM background_updates")
+c.commit()
+`, database]);
+      assert.equal(remove.status, 0);
+    }
+    const unrelated = runPython("python3", ["-c", `import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+c.execute("INSERT INTO background_updates VALUES ('synthetic_unrelated_job')")
+c.commit()
+`, database]);
+    assert.equal(unrelated.status, 0);
+    assert.equal(runPython("python3", ["-c", probe]).status, 0);
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+test("Synapse readiness probe errors fail without exposing child output", async (t) => {
+  mockReadiness(t, () => ({ status: 1, stderr: "synthetic-private-output" }));
+  await assert.rejects(waitForHomeserver("http://example.invalid", {
+    exitCode: null, koushiDockerContainerName: "synthetic-owned"
+  }, 1000, "synthetic.log"), { message: "Synapse Sliding Sync readiness probe failed" });
+});
+
+test("Synapse pending readiness expires on one monotonic deadline", { timeout: 1000 }, async (t) => {
+  let probes = 0;
+  let now = 0;
+  mockReadiness(t, () => { probes++; now = 20; return { status: 2 }; });
+  t.mock.method(Date, "now", () => 0);
+  t.mock.method(performance, "now", () => now);
+  await assert.rejects(waitForHomeserver("http://example.invalid", {
+    exitCode: null, koushiDockerContainerName: "synthetic-owned"
+  }, 20, "synthetic.log"), /Synapse Sliding Sync table migrations pending/);
+  assert.equal(probes, 1);
+});
+
+test("Synapse readiness rejects a probe that finishes beyond its deadline", async (t) => {
+  let now = 0;
+  mockReadiness(t, () => { now = 20; return { status: 0 }; });
+  t.mock.method(performance, "now", () => now);
+  await assert.rejects(waitForHomeserver("http://example.invalid", {
+    exitCode: null, koushiDockerContainerName: "synthetic-owned"
+  }, 20, "synthetic.log"), /Synapse Sliding Sync readiness deadline expired/);
+});
+
+test("Tuwunel readiness never invokes the Synapse probe", async (t) => {
+  mockReadiness(t, () => assert.fail("unexpected container probe"));
+  await waitForHomeserver("http://example.invalid", { exitCode: null }, 1000, "synthetic.log");
+});
 
 test("Synapse fixture pins matrixdotorg/synapse v1.157.0", () => {
   const dockerfile = synapseDockerfile();

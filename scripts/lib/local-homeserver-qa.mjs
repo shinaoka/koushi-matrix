@@ -394,22 +394,48 @@ PYTHON
 }
 
 export async function waitForHomeserver(homeserver, child, maxWaitMs, logPath) {
-  const deadline = Date.now() + maxWaitMs;
+  const deadline = performance.now() + maxWaitMs;
   let lastError = "not attempted";
-  while (Date.now() < deadline) {
+  while (performance.now() < deadline) {
     if (child.exitCode !== null) {
       throw new Error(`homeserver exited before readiness; see ${logPath}`);
     }
+    let response;
     try {
-      const response = await fetch(`${homeserver}/_matrix/client/versions`);
-      if (response.ok) {
-        return;
-      }
-      lastError = `HTTP ${response.status}`;
+      response = await fetch(`${homeserver}/_matrix/client/versions`, {
+        signal: AbortSignal.timeout(Math.max(1, Math.ceil(deadline - performance.now())))
+      });
     } catch (error) {
       lastError = error.message;
     }
-    await sleep(500);
+    if (response?.ok) {
+      const remainingMs = Math.ceil(deadline - performance.now());
+      if (remainingMs <= 0) break;
+      if (!child.koushiDockerContainerName) return;
+      // Match the pinned Synapse native dispatcher's membership-table safety predicate.
+      const probe = spawnSync("docker", ["exec", child.koushiDockerContainerName, "python3", "-c", `import sqlite3, sys
+c = sqlite3.connect("file:/data/homeserver.db?mode=ro", uri=True, timeout=0)
+pending = c.execute(
+    "SELECT 1 FROM background_updates WHERE update_name IN (?, ?, ?) LIMIT 1",
+    (
+        "sliding_sync_prefill_joined_rooms_to_recalculate_table_bg_update",
+        "sliding_sync_joined_rooms_bg_update",
+        "sliding_sync_membership_snapshots_bg_update",
+    ),
+).fetchone()
+sys.exit(2 if pending else 0)
+`], { cwd: repoRoot, env: minimalEnvironment(), encoding: "utf8", timeout: remainingMs });
+      if (probe.error || (probe.status !== 0 && probe.status !== 2)) {
+        throw new Error("Synapse Sliding Sync readiness probe failed");
+      }
+      if (probe.status === 0 && performance.now() < deadline) return;
+      lastError = probe.status === 2
+        ? "Synapse Sliding Sync table migrations pending"
+        : "Synapse Sliding Sync readiness deadline expired";
+    } else if (response) {
+      lastError = `HTTP ${response.status}`;
+    }
+    await sleep(Math.max(0, Math.min(500, deadline - performance.now())));
   }
   throw new Error(`homeserver did not become ready: ${lastError}; see ${logPath}`);
 }
