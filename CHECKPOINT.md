@@ -15,6 +15,19 @@ by one both-server aggregate and the conditional PR chain. Prior passing checks
 are not repeated without an affecting change; required RED cannot be waived.
 Original bounded-work deadline04:26:24 JST remains in force.
 
+Context-safety audit:87.1% reported by maintainer; stop editing at90%, save and
+push, then hand off this same worktree. Current production edit is applied but
+**not tested yet**: known-Space admission, deleted list-driven release, and
+Space filtering only. No absence-driven release or new mechanism. Save this
+boundary immediately, then run the first exact regression; every individual
+RED→GREEN result is checkpointed/committed/pushed before the next test. Next:
+`cargo test -j8 --profile ci --locked -p koushi-state --test navigation_state
+local_leave::space_local_leave_removes_space_immediately -- --exact
+--test-threads=8`, then the corresponding
+`local_leave::space_local_leave_survives_stale_authoritative_room_list`.
+Source worker environment, pick8 idle CPUs, kache explain, save own exits.
+No new QA fixture/rebuild/aggregate/PR has been started.
+
 **Known residual limitation (explicitly accepted out of scope):** conservative
 projection suppression is not released by list presence or absence, nor by an
 external rejoin on another device. In this session it remains until an admitted
