@@ -1,5 +1,61 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest handoff — scoped resume, 2026-10-31 19:44 JST
+
+This section supersedes the older stop/resume instructions below. The maintainer
+resumed **todo #7 only**, not SDK pin PR/todo #3 or the cross-repository publication
+chain. No new PR, issue, branch or publication is authorized; only this existing
+branch's checkpoint commit/push is permitted. Do not run the known failing
+Synapse lane again, and do not run aggregate QA in this scoped work.
+
+- Re-read the confirmed 19:31 handoff first. `space_leave_children memberships:
+  timed out` remains a known unresolved fact, with the exact private-log paths,
+  CPU affinity and membership booleans preserved below. It is not admission
+  evidence and has not been re-investigated or re-run here.
+- **Removed** the temporary closed-enum Reconnecting stderr diagnostic from
+  `crates/koushi-core/src/sync.rs`; no temporary diagnostic is left there.
+  This restores its preceding control handling without changing transitions,
+  actor ownership or any public interface.
+- Canon consulted: `docs/architecture/state-machine.md:584–588`, beginning
+  **“A genuine missing cross-signing identity may enter mandatory bootstrap.”**
+  Existing identity without proof remains gated; no skip/reset/verify-later exit
+  is introduced.
+- The admission implementation and regression tests were already in the saved
+  WIP. They were inspected rather than duplicated or redesigned: the existing
+  `request_user_identity` result carries the separate identity classification,
+  while the SDK subscriber's `Unknown` verdict remains unchanged. Only successful
+  genuine absence, current generation and the existing restricted-sync fence
+  permit the ordered bootstrap phase-entry batch. Existing identity, partial
+  query failure and stale results cannot offer bootstrap. No second discovery
+  query, retained guard, registry or admission relaxation was added.
+- The existing compiled behavioral **RED** was re-read: the genuine-missing
+  actor regression exhausted its30-second mandatory-bootstrap deadline before
+  the fix. This is an assertion/deadline failure, not a compilation failure.
+  It remains preserved as `koushi-1677-admission-red.log` in private temporary
+  storage; no raw log content is copied into the repository.
+- Fresh focused **GREEN** on this scoped tree: Core missing-identity actor
+  tests **2/2**, SDK authoritative identity/trust recheck tests **2/2**, state
+  missing-identity bootstrap reducer tests **2/2**, authentication audit
+  integration tests **3/3**. **9 passed, zero failed/ignored.** The oracles cover
+  unchanged SDK Unknown, exact query counts/no extra discovery, fence and stale
+  generation handling, existing-identity/error rejection, and protection of
+  bootstrap/key-confirmation/Ready states. No production behavior was rewritten
+  merely to manufacture another RED.
+- Commands were the existing `cargo test -j8 --profile ci --locked` focused
+  targets: Core `--lib account::trust_gate::missing_identity_tests`; SDK
+  `--lib current_device_trust_recheck_tests`; state
+  `--test session_missing_identity_bootstrap`; testkit
+  `--test issue_1105_authentication_audit`. Tests ran serially across packages,
+  each with `--test-threads=8`, invocation-scoped `KACHE_EXPLAIN_MISS=1` and CPU
+  affinity **`27-29,31-35`**, jobs8. These are mock/local focused Rust tests,
+  not the prohibited Synapse or aggregate lane.
+- Submodule guard and plain `cargo fmt --check` passed. Cache doctor verified
+  **4,556 valid entries, zero corrupted/missing/checksum failures**, no repair.
+- This is a scoped progress checkpoint, **not** a finished deliverable or new
+  validation of the full workspace. Integrated post-review and broader gates
+  remain unclaimed. SDK pin and todo #3 remain untouched; no PR/issue was opened.
+
+
 ## Latest handoff — maintainer audit, 2026-10-31 19:31 JST
 
 **Stop here. The nonzero-exit reason is identified; do not rerun this lane.**

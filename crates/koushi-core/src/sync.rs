@@ -405,16 +405,6 @@ impl SyncActor {
                 &[SyncLifecycle::Starting, SyncLifecycle::Running],
             ) =>
             {
-                let diagnostic = self.diagnostics.snapshot();
-                eprintln!(
-                    "qa_sync_reconnecting reason={reason} origin={:?} kind={:?} stage={:?} http={:?} matrix={:?} retry={:?}",
-                    diagnostic.last_failure_origin,
-                    diagnostic.last_failure_kind,
-                    diagnostic.last_failure_stage,
-                    diagnostic.last_http_status,
-                    diagnostic.last_matrix_error_kind,
-                    diagnostic.last_failure_retryability,
-                );
                 self.lifecycle = SyncLifecycle::Reconnecting;
                 self.emit(CoreEvent::Sync(SyncEvent::Reconnecting));
                 self.project_sync_status(SyncLifecycleStatus::Reconnecting {
