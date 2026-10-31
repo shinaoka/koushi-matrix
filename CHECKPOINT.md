@@ -1,5 +1,85 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest one-level isolation — 2026-11-01 01:31 JST — BLOCKED, STOP
+
+The maintainer authorized exactly one fresh Synapse `room_management` attempt
+with existing release binaries, followed by a remaining Synapse aggregate only
+if the targeted Space-leave failure did not reproduce. **The targeted oracle
+was not reached**, so neither reproduction nor non-reproduction is established;
+no aggregate follow-up, gate bypass or PR was justified or run.
+
+- Source head: `5e5b27cf`; SDK unchanged at
+  `1c669ef107eba11b395efa275ed4f615a94c7c3b`. No rebuild and no shared-target
+  modification. Existing private prebuilt-only PATH launcher reused; both
+  prepared executable hashes and mtimes stayed unchanged.
+- Exact command: `npm --prefix apps/desktop run qa:headless-local --
+  --server=synapse --scenario=room_management --core --timeout-ms=600000
+  --cargo-profile=release`. `--scenario` follows the actual harness; fresh
+  disposable fixture, not a replay. **One** scenario invocation, no retry.
+- Time: **2026-11-01 01:27:41–01:28:43 JST**. Idle-selected CPUs
+  **`0-1,5,7-9,12-13`**, **jobs8/tests8**, incremental off; existing runner
+  deadlines unchanged, safety ceiling1500s.
+- Actual **exit1 / RED before Space leave**. Closed failure label:
+  **`space_access membership create failed`**, app failure type
+  **`RoomOperationFailed`**, kind **`PolicyNotVerified`**. The last success
+  tokens include `space_topic_basic=ok` and `space_topic=ok`. No Space-leave
+  membership boolean line or `space_leave_children=ok` was emitted.
+- This ordering is explicit in `scenarios/rooms.rs:965–967`: space-access,
+  add-existing, then Space-leave, each fallible. The rejected restricted-room
+  Create is awaited at `scenarios/rooms/space_access.rs:226`; the correlated
+  `OperationFailed` path returns its label and typed failure through
+  `event_wait.rs:120–124`. This is not a timeout at the target membership oracle.
+  Do not weaken the authorization gate or classify this as a shared-state
+  non-reproduction. No authentication/product correction was attempted.
+- Server log: zero `AssertionError`, zero `Traceback`. That is not evidence of
+  a GREEN scenario, and says nothing conclusive about the new policy rejection.
+- Runner log: `/tmp/koushi-1677-room-management-synapse.log`;
+  exit: `/tmp/koushi-1677-room-management-synapse.exit`;
+  conditions/unchanged binary identities:
+  `/tmp/koushi-1677-room-management-resume.json`.
+- Private retained fixture:
+  `.local-secrets/headless-local-qa/2026-10-31T16-27-41-911Z-synapse-room_management-UfowHp/`.
+  Child logs: `core-core-stderr.log`, `core-core-stdout.log`; server:
+  `homeserver.log`. Raw fixture/session data remain private and ignored.
+
+### Comparison with main and the preceding aggregate
+
+- Read-only download of main nightly **41135492942**, head
+  `eea1cbe1cdb8b557ad6150acc15adf75525a6986`, confirms the reported main success
+  token. Overall run failure is not absence of that stage's success. Main log
+  has **no individual membership boolean line**: the helper emits it only on
+  failure. Do not fabricate main's `locally_left` values from an `ok` token.
+  Private downloaded run/log: `/tmp/koushi-1677-main-nightly-41135492942.json`
+  and `/tmp/koushi-1677-main-nightly-41135492942.private.log`.
+- The Space-leave helper is **identical** between that main head and this branch
+  (empty `/tmp/koushi-1677-space-leave-main-vs-branch.diff`). Its settled oracle
+  requires Space absent, both selected children absent from joined-room
+  projection, and kept/outside rooms present; it does **not** require any
+  `locally_left` boolean to be false.
+- The **previous aggregate**, not this early-failing focused attempt, recorded:
+  `space_listed=true space_locally_left=false left_child0_joined=false
+  left_child1_joined=false left_child0_locally_left=true
+  left_child1_locally_left=true kept_child_joined=true outside_joined=true`.
+  Thus both children and both retained rooms satisfy that oracle. The observed
+  mismatch is **Space remains listed**. `joined` in this diagnostic reads
+  `AppState.rooms`, **not a server membership query**. No new evidence supports
+  an SDK decline/forget-versus-app attribution for the Space itself.
+
+**Stop / remaining decision:** recommended next is bounded read-only diagnosis
+of the observed `PolicyNotVerified` rejection so an authorized test can reach
+the Space-leave oracle, with no gate weakening, rebuild, SDK/policy/server
+change or additional attempt until authorized. Alternatively keep the phase
+parked with the existing evidence. A small canon correction cannot be claimed
+RED→GREEN under the no-rebuild boundary; no such correction is demonstrated.
+There is no evidence yet requiring an SDK/policy change or upstream feedback;
+if established, park only that unit under escalation2/4. No new issue or
+protected issue/PR/pin was touched. The remaining Synapse aggregate, both-server
+follow-up, PR/auto-merge/CI and post-merge cleanup were **not run**. This
+checkpoint is the only tracked edit; commit/push and stop, retaining the
+unmerged worktree and targets. Previous integrated source review/static PASS
+remain scoped evidence, not a waiver of these RED checks.
+
+
 ## Latest bounded audit — 2026-11-01 01:13 JST — RED, STOP
 
 This section supersedes the old pending-readiness proposal and stop/resume
