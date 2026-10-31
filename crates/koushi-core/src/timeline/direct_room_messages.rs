@@ -135,6 +135,10 @@ fn describe(msgtype: &MessageType) -> (RoomMessageKind, Option<String>) {
 }
 
 #[cfg(test)]
+#[path = "direct_room_messages_tests.rs"]
+mod pagination_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use koushi_state::SessionInfo;
