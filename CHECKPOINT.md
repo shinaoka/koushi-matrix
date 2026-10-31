@@ -32,8 +32,10 @@ one newly authorized fresh Synapse `room_management` invocation returned
   was RED. Old successful gates and the two unit RED→GREENs remain scoped;
   no current integrated GREEN is claimed. No PR/CI/merge, new issue, pin,
   oracle, server, policy, paid infrastructure, production DB or cleanup change.
-- The narrow exact-GPT corrective post-review timed out (exit124) and returned
-  an explicit **INCOMPLETE** report; it is **not a completed review** and is
+- The narrow exact-GPT corrective post-review hit its **24-tool-call limit**
+  (persisted exit124) and returned an explicit **INCOMPLETE** report; the
+  delayed completion clarified the limit, not a wall-clock timeout. It is
+  **not a completed review** and is
   not publication evidence. No rerun after the required RED. Private report:
   `/tmp/koushi-1677-postfix-post-review.md`, persisted history alongside.
   The earlier completed integrated review still predates the correction.
