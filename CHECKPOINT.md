@@ -1,5 +1,17 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest Step2 boundary — 2026-11-01 04:01 JST — groupA GREEN
+
+Own receipts confirm command1 fmt **exit0**, command2 workspace tests
+**exit0**, **4,616 passed /0 failed /16 ignored**. Safe counts from the
+bounded worker; no parent bulk-log read. Artifacts:
+`/tmp/koushi-1677-step2-{fmt,workspace-test}.{exit,log,json}` and
+`/tmp/koushi-1677-step2-index.json`. No source edits or retry. GroupB/C
+not run yet. Save/push this group boundary, then send ONLY groupB commands3–5
+to the SAME retained worker`sa_0e9ce1d3-01ac-40a5-989c-698c432f3ef9`.
+Mandatory both/all remains previously verified exit0, not rerun. Final
+post-review/PR remain unstarted. Hard04:45/context90% cutoff remains binding.
+
 ## Latest Step2-only audit — 2026-11-01 03:50 JST — cutoff04:45 strict
 
 The remaining target tonight is ONLY the nine affected mandatory commands in
