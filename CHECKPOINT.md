@@ -17,6 +17,13 @@ exits, safe counts and paths. If a group fails, no later group/review/PR.
 At cutoff save completed versus not-run commands and exact next action; no
 silent extension or paid/destructive/protected-item/target-cleanup operation.
 No Step2 result is claimed yet; final integrated post-review remains pending.
+Single retained worker`sa_0e9ce1d3-01ac-40a5-989c-698c432f3ef9`
+(`step2_serial_gates`) is executing ONLY groupA this turn, max25min with
+workspace timeout1200s. It must pause at A for main checkpoint/push before
+receiving groupB, then pause again beforeC. Private index:
+`/tmp/koushi-1677-step2-index.json`, per-command own exits/logs/conditions
+`/tmp/koushi-1677-step2-<slug>.{exit,log,json}`. All nine commands have been
+assigned to this same worker, not nine agents. No main source/log inspection.
 
 ## Latest verified boundary — 2026-11-01 03:43 JST — mandatory both/all exit0
 
