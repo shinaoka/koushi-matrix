@@ -635,8 +635,10 @@ Details and mirrors: [i18n](../architecture/i18n.md).
 - **Integration-style or projection tests belong under `tests/` per feature.**
   Tests that exercise reducer/command/event/runtime projection, DTO snapshots,
   or state-machine transitions are integration-style. Put them in
-  `crates/<crate>/tests/<feature>.rs`, not inside a monolithic
-  `#[cfg(test)] mod tests` block in a source file.
+  `crates/<crate>/tests/<suite>/<feature>.rs`, declared by the suite's
+  `main.rs`, not inside a monolithic `#[cfg(test)] mod tests` block in a source
+  file. [Test suites](../architecture/test-suites.md) owns suite names, process
+  boundaries, migration exceptions and the canonical correctness-gate command.
 - **Pure unit tests may stay inline.** Small tests for a single pure helper,
   parser, or private algorithm may remain in the source file under
   `#[cfg(test)] mod tests`. A directly attached inline `cfg(test)` module is a
@@ -652,9 +654,8 @@ Details and mirrors: [i18n](../architecture/i18n.md).
   structure checker, not to Rust behavioral tests. Behavioral tests must drive
   callable behavior and assert its outcome; they must not inspect source text.
 - **Do not add new tests to existing monolithic test files.** Add a new
-  `tests/<feature>.rs` file instead. Current crate integration tests, including
-  `crates/koushi-core/tests/`, are the placement example; existing monolithic
-  files may be split opportunistically when they are touched for a new feature.
+  `tests/<suite>/<feature>.rs` module and wire it in `main.rs` instead. Existing
+  monolithic files may be split opportunistically when touched for a new feature.
 - **Tests never touch the real profile.** Runtime tests start through
   `CoreRuntime::start_isolated` (or `restart_isolated` for persistence), which
   owns temporary data and file-credential directories; there is no

@@ -363,10 +363,11 @@ to upstream or revert.
 
 ### Test Placement
 
-- Integration-style tests live in per-feature `crates/<crate>/tests/<feature>.rs`
-  files, never in new additions to monolithic test files; inline `cfg(test)`
-  modules have a 200-line hard ceiling. Full rules: engineering rules "Test
-  Placement".
+- Integration-style tests live in per-feature modules under
+  `crates/<crate>/tests/<suite>/`, wired by `main.rs`, never in new additions to
+  monolithic test files; inline `cfg(test)` modules have a 200-line hard ceiling.
+  Suite ownership and process boundaries: [test suites](docs/architecture/test-suites.md).
+  Full rules: engineering rules "Test Placement".
 
 ### Shared Hot Files
 
