@@ -1,5 +1,115 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest bounded read-only diagnosis — 2026-11-01 01:51 JST — RED, STOP
+
+Maintainer scope: read-only diagnosis, no rebuild, then **one** same-fixture
+predecessor-condition attempt; no third Synapse aggregate. Started **01:37:46
+JST**, hard limit **02:17:46 JST**; diagnosis stopped **01:51:08 JST**, before
+that limit, because the single allowed execution was consumed and further
+causal attribution would need new evidence, not another blind attempt.
+Source head `23de0f83`, SDK pin unchanged `1c669ef10`. Only checkpoint edited.
+
+### 1. What the focused authorization failure means
+
+- Opened the existing failed focused fixture's Synapse SQLite DB with `mode=ro`
+  and `PRAGMA query_only=ON`; queried only synthetic role-labelled state.
+  Attachment Space: v10, invite rule, A/B joined, A creator/power100, state
+  threshold50. Allow Space: v10, invite rule, A/B joined, B creator/power100,
+  A default power0. Child: invite rule, A joined. No explicit allow policies
+  on these Spaces, as expected; requested restricted room does not exist.
+- All **8** recorded server `POST createRoom` accesses returned **HTTP200**.
+  Existing client failure is `RoomOperationFailed { kind: PolicyNotVerified }`.
+  Its production source is `crates/koushi-core/src/room/operations.rs:411–426`,
+  **before** the SDK create request: the single selected allow target failed
+  `matrix_is_joined_verified_space`. This is not server power-level refusal
+  or E2EE account verification. The canon does not require A to administer B's
+  allow Space (`state-machine.md:4503–4516,4580–4589`).
+- That helper requires an SDK room in Joined state and a positive unredacted
+  **Sync** create-event proof of Space type from the state store
+  (`crates/koushi-sdk/src/room_projection.rs:2191–2242`). The prior settings read
+  does not establish that every such store predicate was positive at the
+  subsequent check. Exact negative sub-branch (room lookup/state, missing or
+  stripped event, deserialization) was **not recorded** by the old binary;
+  do not invent it or relabel Unknown as permission. No gate relaxation.
+- Safe state report: `/tmp/koushi-1677-policy-fixture-state.json`; read-only
+  extractor `/tmp/koushi-1677-policy-fixture-state.py`. No IDs/credentials or
+  raw event payloads were printed. Initial extractor key-name error was fixed
+  before the successful query; no DB write was performed.
+
+### 2. One existing same-fixture predecessor route, target reached, RED
+
+The native registry offers no custom same-participant prefix selection. CSV
+runner scenarios create fresh fixtures, so that would not reproduce shared
+state. The unchanged `All` path is the existing selection that runs
+`InvitesDm → RoomSpace → Directory → RoomManagement` on the same live
+participants (`registry.rs:1187–1196`). Used it **once**, without changing the
+harness, server version, SDK, oracle, timeout or stage order.
+
+- Command: `npm --prefix apps/desktop run qa:headless-local --
+  --server=synapse --scenario=all --core --timeout-ms=600000
+  --cargo-profile=release`, via the same private prebuilt-only PATH exec launcher.
+- Time **01:43:36–01:46:18 JST**. Idle-selected CPUs **`0-3,5-8`**,
+  **jobs8/tests8**. Both prepared binary hashes and mtimes unchanged.
+  Aggregate ordinal **2/2**, single predecessor-condition attempt **1/1**.
+  Counter recorded in `/tmp/koushi-1677-bounded-resume.json`; no third run.
+- Actual **exit1 / RED**: `space_leave_children memberships: timed out`.
+  `PolicyNotVerified` absent; `space_access=ok` and `space_add_existing=ok` passed.
+  Thus the target is reachable on the same binaries with this prefix; this
+  single observation is not proof that ordering rather than timing caused it.
+- Exact closed oracle row:
+  `space_listed=true space_locally_left=false left_child0_joined=true
+  left_child1_joined=false left_child0_locally_left=false
+  left_child1_locally_left=true kept_child_joined=true outside_joined=true`.
+  Compared with the prior aggregate, Space remains listed in both, but child0
+  is now also listed; preserve that difference rather than claiming equal rows.
+- Read-only server DB confirms current memberships and complete membership
+  histories: Space, selected child0 and child1 each **join→leave**, while kept
+  child and outside remain **join**. All five have **forgotten=false**. Hence
+  the selected leaves succeeded remotely; this target failure is not a
+  decline→forget operation or the historical migration assertion. Server log
+  has zero AssertionError/Traceback. No claim about the SDK's live room state
+  at the failed client projection is possible from server state alone.
+- Private runner/exit: `/tmp/koushi-1677-prefix-condition-synapse.log/.exit`;
+  conditions/tokens/binary identities: `/tmp/koushi-1677-prefix-condition-resume.json`;
+  server-state report/extractor: `/tmp/koushi-1677-space-leave-server-state.json`
+  and `/tmp/koushi-1677-space-leave-server-state.py`.
+- Retained private fixture:
+  `.local-secrets/headless-local-qa/2026-10-31T16-43-36-918Z-synapse-all-SecswX/`;
+  `core-core-stdout.log`, `core-core-stderr.log`, `homeserver.log` stay there.
+
+### 3. Narrow owner findings, limitations and next choices
+
+- SDK projection separates Spaces from ordinary rooms (`room_projection.rs:
+  2614–2634`). App local-leave reducer admits only IDs in `state.rooms`, not
+  `state.spaces` (`crates/koushi-state/src/reducer/room.rs:272–275`); its ordinary
+  room filter also does not filter Spaces. RoomActor does dispatch local leave
+  after the manager ACK before emitting RoomLeft (`room/operations.rs:1215–1241`).
+  This is a concrete existing app-side gap for immediate Space suppression.
+- The same reducer clears an ordinary room's local-left marker when that ID
+  appears in an authoritative list (`room.rs:326–335`). This can explain a
+  reappearing child only if such a list arrived; the exact live callback order
+  was **not captured**, so do not assert that causal sequence as observed.
+- These owner files and the oracle are **unchanged versus main**. Main nightly
+  41135492942's success remains valid, but cannot prove environment-only
+  causality at8CPUs. A new app-code regression is not demonstrated either.
+  A latent app gap exposed by new SDK/timing is plausible, not a tested fix.
+  No app/SDK/policy/harness edit or speculative upstream feedback was made.
+- **Recommended next choice (~1–2h, needs permission to compile/test):** drive
+  deterministic reducer/actor REDs for Space local leave and stale list/rejoin
+  ordering against the existing residency canon, then fix only proven app gaps.
+  A Space-only patch cannot be claimed complete while child0 reappearance is
+  unexplained. Do not weaken the gate or reopen unrelated SDK work.
+- **Alternative (~1–2h):** obtain bounded identifier-free SDK room-state and
+  list-authority receipt-order evidence, plus a valid matching main8CPU baseline
+  if available, before selecting the owner. No server/pin/policy change is
+  justified yet; if evidence requires one, park only that unit (escalation2/4).
+
+No remaining gate, both-server aggregate, PR, auto-merge, hosted CI, new issue,
+protected issue/PR/pin or cleanup deletion was performed. No third aggregate is
+authorized. Keep the unmerged worktree and targets; push this checkpoint and
+stop. Prior static/source-review PASS never converts this RED to GREEN.
+
+
 ## Latest one-level isolation — 2026-11-01 01:31 JST — BLOCKED, STOP
 
 The maintainer authorized exactly one fresh Synapse `room_management` attempt
