@@ -1,5 +1,48 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest STOP — 2026-11-01 03:13 JST — post-fix focused QA RED, no PR
+
+Latest instruction: stop at a required RED, do not open a PR. **Stopped.**
+Whole-diff self-review and affected release binary preparation completed, but
+one newly authorized fresh Synapse `room_management` invocation returned
+**exit1** before the Space-leave oracle. No further test/gate attempt follows.
+
+- Command: `npm --prefix apps/desktop run qa:headless-local --
+  --server=synapse --scenario=room_management --core --timeout-ms=600000
+  --cargo-profile=release`, existing prebuilt-only launcher.
+- Actual03:11:48–03:12:49 JST, selected CPU affinity`0-5,7-8`, jobs8/tests8,
+  worker environment. Source1ae6e673/production08b89c19; only checkpoint
+  commits followed. Fresh disposable fixture, single post-fix focused attempt
+  **1/1**; no aggregate invocation after this correction.
+- SDK smoke **PASS**. Core closed failure:
+  **`space_access membership create failed: RoomOperationFailed { kind:
+  PolicyNotVerified }`**. `space_topic=ok` present in retained Core stdout;
+  no `space_access=ok`, `space_add_existing=ok`, or `space_leave_children=ok`.
+  The runner intentionally omits failing child output; failure/tokens were
+  recovered from the retained private child logs, not inferred from omission.
+  This is a pre-target failure, not proof for or against the corrected
+  Space-leave oracle. No new attribution or policy correction is attempted.
+- Both executable SHA256/mtime identities were unchanged during QA; core
+  SHA256`aef1db81b951…` is the newly built corrected binary, not the old one.
+  Own exit/log/conditions and binary identities:
+  `/tmp/koushi-1677-postfix-room-management.{exit,log,json}`. Private fixture:
+  `.local-secrets/headless-local-qa/2026-10-31T18-11-48-584Z-synapse-room_management-EKbhTS/`.
+  Raw server/child data remain ignored/private; no payloads or IDs copied here.
+- **Step2 affected mandatory reruns NOT STARTED**, because ordered step1 QA
+  was RED. Old successful gates and the two unit RED→GREENs remain scoped;
+  no current integrated GREEN is claimed. No PR/CI/merge, new issue, pin,
+  oracle, server, policy, paid infrastructure, production DB or cleanup change.
+- The narrow exact-GPT corrective post-review timed out (exit124) and returned
+  an explicit **INCOMPLETE** report; it is **not a completed review** and is
+  not publication evidence. No rerun after the required RED. Private report:
+  `/tmp/koushi-1677-postfix-post-review.md`, persisted history alongside.
+  The earlier completed integrated review still predates the correction.
+- External-rejoin limitation remains exactly as previously accepted; not
+  investigated. Preserve unmerged worktree and all targets. A future resume
+  needs a bounded approved way to address/reach the pre-target authorization
+  failure, not a blind retry, longer wait, weaker oracle or implicit SDK/policy
+  change. Original04:26:24 budget was not exceeded.
+
 ## Latest resume — 2026-11-01 03:04 JST — self-review, post-fix QA, then affected gates
 
 Resumed at clean/pushed1ae6e673 with context45%, original04:26:24 JST budget
@@ -17,8 +60,8 @@ No new source blocker in the audited scope. Private detailed record:
 all upstream SDK commits or waive QA. Both original regressions already have
 separate RED101→GREEN0 artifacts; no source change since08b89c19.
 
-Only affected release core QA binary is being prepared by a bounded build-only
-worker, while main reviews; no concurrent Cargo run. Worker environment,
+Only affected release core QA binary was prepared by a bounded build-only
+worker while main reviewed; no concurrent Cargo run. Worker environment,
 selected8 idle CPUs/taskset/jobs8/tests8, kache, unchanged source. Command:
 `cargo build -j8 --release --locked -p koushi-qa --features qa-bin
 --bin headless-core-qa`; own log/exit/conditions under
