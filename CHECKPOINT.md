@@ -12,10 +12,26 @@ Starting head `bc364a0d`, SDK `1c669ef10`, both clean/pushed; context audit81%.
 - Budget **02:26:24–04:26:24 JST**, no silent extension. At each boundary save
   checkpoint and push before proceeding; if context cannot support safe work,
   leave exact artifacts/next command and stop rather than lose state.
-- First add two no-server behavioral unit regressions on unchanged production
-  code: successful Space local leave immediately removes its `state.spaces`
-  entry; an older authoritative list cannot resurrect that left Space.
-  Record names and real nonzero exits in `/tmp/koushi-1677-spaceleave-red-*.log`.
+- **RED boundary verified 02:33 JST, production still unchanged.** Added
+  `tests/navigation_state/local_leave.rs` to the existing state test suite.
+  `local_leave::space_local_leave_removes_space_immediately` and
+  `local_leave::space_local_leave_survives_stale_authoritative_room_list`
+  each ran separately with **exit101, one assertion failure, zero compile
+  errors**. Logs and own exits:
+  `/tmp/koushi-1677-spaceleave-red-immediate.{log,exit}` and
+  `/tmp/koushi-1677-spaceleave-red-stale.{log,exit}`. The second fixture
+  isolates already-settled leave markers before an old authoritative payload,
+  including the selected child; no server or altered production branch.
+  Commands: `cargo test -j8 --profile ci --locked -p koushi-state
+  --test navigation_state <exact-test-name> -- --exact --test-threads=8`.
+  CPU affinity`8-11,13,15-17`, jobs8/tests8, kache; doctor verified8,886 valid
+  entries, zero corruption/missing/checksum failures. No target deletion.
+- A bounded exact-GPT pre-review checks the proposed guard plus combined
+  room/Space marker retention/filter correction against actual canon and
+  authoritative caller assumptions. Proposal:
+  `/tmp/koushi-1677-spaceleave-correction-plan.md`. No production edit until
+  this narrow permission question is resolved; a canon gap still means PARK.
+  Review is not claimed complete yet.
 - Only after both RED, change the existing local-leave early return and
   local-left retention/filter interaction. No new mechanism/public API/wire
   type/dependency/oracle. Consult state-machine/engineering canon; a missing

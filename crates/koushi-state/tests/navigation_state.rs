@@ -2,6 +2,8 @@
 mod anchors;
 #[path = "navigation_state/home_room_scope.rs"]
 mod home_room_scope;
+#[path = "navigation_state/local_leave.rs"]
+mod local_leave;
 #[path = "navigation_state/room_list.rs"]
 mod room_list;
 #[path = "navigation_state/selection.rs"]
