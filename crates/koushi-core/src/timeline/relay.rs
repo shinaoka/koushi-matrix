@@ -1080,7 +1080,7 @@ impl TimelineActor {
         let timeline = self.timeline.clone();
         let Some(prepared) =
             prepare_relay_recovery(self.generation, overflow_generation, move || async move {
-                timeline.subscribe().await
+                koushi_timeline_subscribe(timeline).await
             })
             .await
         else {
@@ -1381,6 +1381,37 @@ async fn sdk_thread_cache_counts(
         ),
         Err(_) => (false, (0, 0, 0)),
     }
+}
+
+pub(super) async fn koushi_timeline_subscribe(
+    timeline: Arc<matrix_sdk_ui::Timeline>,
+) -> (
+    eyeball_im::Vector<Arc<SdkTimelineItem>>,
+    impl futures_util::Stream<Item = Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>> + Send + use<>,
+) {
+    use futures_util::{FutureExt, StreamExt};
+
+    // Core owns display capacity; SDK presentation skip counts hidden rows.
+    // The generator owns the Arc because the SDK raw stream borrows Timeline.
+    let mut stream = Box::pin(async_stream::stream! {
+        let (items, updates) = timeline.subscribe_filter_map(Some).await;
+        yield vec![eyeball_im::VectorDiff::Reset { values: items }];
+        let updates = updates.fuse();
+        futures_util::pin_mut!(updates);
+        while let Some(first) = updates.next().await {
+            let mut batch = vec![first];
+            while let Some(Some(diff)) = updates.next().now_or_never() {
+                batch.push(diff);
+            }
+            yield batch;
+        }
+    });
+    let Some(eyeball_im::VectorDiff::Reset { values }) =
+        stream.next().await.and_then(|mut batch| batch.pop())
+    else {
+        unreachable!("the canonical subscription yields its snapshot first");
+    };
+    (values, stream)
 }
 
 pub(super) fn koushi_timeline_builder(
@@ -1746,6 +1777,8 @@ pub(super) async fn run_diff_relay(
     }
 }
 
+#[cfg(test)]
+mod canonical_subscription_tests;
 #[cfg(test)]
 mod display_policy_visibility_tests;
 #[cfg(test)]

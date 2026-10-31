@@ -8,8 +8,9 @@
 //! - export every observed ACL update as a hidden item, never a resurrected
 //!   blank row (a lagged stream is re-observed through a replay);
 //! - keep the room list's latest event and unread count on the message;
-//! - keep the ordinary message in a re-subscription replay even though more
-//!   hidden updates than the replay capacity follow it;
+//! - keep the ordinary message and all 125 distinct ACL events in one
+//!   correlated re-subscription replay, within the existing replay deadline
+//!   while Rust's asynchronous limited-sync recovery finishes;
 //! - show a message sent after the burst in the timeline and the room list;
 //! - acknowledge that message from the viewport, converging to the
 //!   server-confirmed read boundary and a cleared unread count.
@@ -198,6 +199,9 @@ async fn run_hidden_state_acl_flow(
     .await?;
     let acl_event_ids = send_acl_updates(auditor, &room_id).await?;
     let acl_set: HashSet<&str> = acl_event_ids.iter().map(String::as_str).collect();
+    if acl_set.len() != ACL_UPDATE_COUNT {
+        return Err("hidden-state acl: ACL writes did not produce 125 distinct events".to_owned());
+    }
     let last_acl = acl_event_ids
         .last()
         .ok_or_else(|| "hidden-state acl: no ACL update was sent".to_owned())?
@@ -257,33 +261,21 @@ async fn run_hidden_state_acl_flow(
     )
     .await?;
 
-    // Subscribing again replays the Core-held timeline through the live-edge
-    // window, which must still contain the message.
-    let replay = subscribe_timeline_for_qa(reader, &key, "hidden-state acl replay").await?;
+    // Last-ACL delivery does not settle the asynchronous recovery of a limited
+    // sync window. Require the capacity premise in one actual replay.
+    let replay = wait_for_acl_replay(
+        reader,
+        &key,
+        &message_event_id,
+        &acl_set,
+        &mut acl_observation,
+    )
+    .await?;
+    acl_observation.require_all_hidden()?;
     let message = replay
         .iter()
         .find(|item| item_event_id(item) == Some(message_event_id.as_str()))
-        .ok_or_else(|| {
-            let events = replay.iter().filter(|item| item_event_id(item).is_some()).count();
-            let hidden = replay.iter().filter(|item| item.is_hidden).count();
-            let acl = replay
-                .iter()
-                .filter(|item| item_event_id(item).is_some_and(|id| acl_set.contains(id)))
-                .count();
-            let visible_kinds: Vec<String> = replay
-                .iter()
-                .filter(|item| !item.is_hidden)
-                .map(|item| match &item.id {
-                    TimelineItemId::Event { .. } => format!("event:{:?}", item.message_kind),
-                    TimelineItemId::Transaction { .. } => "transaction".to_owned(),
-                    TimelineItemId::Synthetic { .. } => "synthetic".to_owned(),
-                })
-                .collect();
-            format!(
-                "hidden-state acl: hidden updates evicted the message (items={} events={events} hidden={hidden} acl={acl} visible={visible_kinds:?})",
-                replay.len()
-            )
-        })?;
+        .ok_or_else(|| acl_replay_failure(&replay, &acl_set))?;
     if message.is_hidden || message.body.as_deref() != Some(MESSAGE_BODY) {
         return Err("hidden-state acl: the message is not visible after replay".to_owned());
     }
@@ -384,6 +376,88 @@ async fn send_acl_updates(
     Ok(event_ids)
 }
 
+fn acl_replay_ready(items: &[TimelineItem], message_id: &str, acl_set: &HashSet<&str>) -> bool {
+    items
+        .iter()
+        .any(|item| item_event_id(item) == Some(message_id))
+        && acl_set
+            .iter()
+            .all(|id| items.iter().any(|item| item_event_id(item) == Some(*id)))
+}
+
+fn acl_replay_failure(replay: &[TimelineItem], acl_set: &HashSet<&str>) -> String {
+    let events = replay
+        .iter()
+        .filter(|item| item_event_id(item).is_some())
+        .count();
+    let hidden = replay.iter().filter(|item| item.is_hidden).count();
+    let acl = replay
+        .iter()
+        .filter(|item| item_event_id(item).is_some_and(|id| acl_set.contains(id)))
+        .count();
+    let visible_kinds: Vec<String> = replay
+        .iter()
+        .filter(|item| !item.is_hidden)
+        .map(|item| match &item.id {
+            TimelineItemId::Event { .. } => format!("event:{:?}", item.message_kind),
+            TimelineItemId::Transaction { .. } => "transaction".to_owned(),
+            TimelineItemId::Synthetic { .. } => "synthetic".to_owned(),
+        })
+        .collect();
+    format!(
+        "hidden-state acl: replay did not retain the message and all ACL updates before the deadline (items={} events={events} hidden={hidden} acl={acl} visible={visible_kinds:?})",
+        replay.len()
+    )
+}
+
+async fn wait_for_acl_replay(
+    reader: &mut CoreConnection,
+    key: &TimelineKey,
+    message_id: &str,
+    acl_set: &HashSet<&str>,
+    observation: &mut AclObservation,
+) -> Result<Vec<TimelineItem>, String> {
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
+    let mut replay = Vec::new();
+    loop {
+        if tokio::time::Instant::now() >= deadline.instant {
+            return Err(acl_replay_failure(&replay, acl_set));
+        }
+        let (_, snapshot) = tokio::time::timeout_at(
+            deadline.instant,
+            reobserve_replay_snapshot(
+                reader,
+                key,
+                "hidden-state acl replay",
+                deadline,
+                &mut ReaderItemWait::default(),
+                &mut |item| {
+                    observation.observe(item, acl_set);
+                    false
+                },
+            ),
+        )
+        .await
+        .map_err(|_| acl_replay_failure(&replay, acl_set))?
+        .map_err(|error| format!("{}; {error}", acl_replay_failure(&replay, acl_set)))?;
+        replay = snapshot;
+        observation.require_all_hidden()?;
+        if acl_replay_ready(&replay, message_id, acl_set) {
+            return Ok(replay);
+        }
+        tokio::time::timeout_at(
+            deadline.instant,
+            wait_for_reader_items(reader, key, "hidden-state acl replay recovery", |item| {
+                observation.observe(item, acl_set);
+                item_event_id(item).is_some_and(|id| id == message_id || acl_set.contains(id))
+            }),
+        )
+        .await
+        .map_err(|_| acl_replay_failure(&replay, acl_set))??;
+        observation.require_all_hidden()?;
+    }
+}
+
 /// Counts the ACL updates observed on the event stream and records any that
 /// were exported as visible rows.
 #[derive(Default)]
@@ -433,7 +507,7 @@ struct ReaderItemWait {
 /// Feed one reader event to `visit`, counting room-list publications and
 /// timeline items for `key`.
 fn observe_reader_event(
-    event: CoreEvent,
+    event: &CoreEvent,
     key: &TimelineKey,
     wait: &mut ReaderItemWait,
     mut visit: impl FnMut(&TimelineItem),
@@ -444,8 +518,8 @@ fn observe_reader_event(
             key: event_key,
             items,
             ..
-        }) if event_key == *key => {
-            for item in &items {
+        }) if event_key == key => {
+            for item in items {
                 visit(item);
             }
         }
@@ -453,8 +527,8 @@ fn observe_reader_event(
             key: event_key,
             diffs,
             ..
-        }) if event_key == *key => {
-            visit_timeline_diff_items(&diffs, |item| {
+        }) if event_key == key => {
+            visit_timeline_diff_items(diffs, |item| {
                 visit(item);
                 Ok(())
             })?;
@@ -493,6 +567,7 @@ async fn wait_for_reader_items(
                 wait.skipped += lag.skipped;
                 if reobserve_replay_snapshot(conn, key, label, deadline, &mut wait, &mut predicate)
                     .await?
+                    .0
                 {
                     return Ok(wait);
                 }
@@ -500,7 +575,7 @@ async fn wait_for_reader_items(
             }
         };
         let mut matched = false;
-        observe_reader_event(event, key, &mut wait, |item| matched |= predicate(item))?;
+        observe_reader_event(&event, key, &mut wait, |item| matched |= predicate(item))?;
         if matched {
             return Ok(wait);
         }
@@ -524,7 +599,7 @@ async fn reobserve_replay_snapshot(
     deadline: QaEventDeadline,
     wait: &mut ReaderItemWait,
     predicate: &mut impl FnMut(&TimelineItem) -> bool,
-) -> Result<bool, String> {
+) -> Result<(bool, Vec<TimelineItem>), String> {
     let request_id = conn.next_request_id();
     let initial_backfill = if matches!(key.kind, TimelineKind::Thread { .. }) {
         koushi_protocol::command::InitialBackfillPolicy::RequiredForExistingThread
@@ -554,6 +629,12 @@ async fn reobserve_replay_snapshot(
     })?;
     let mut matched = false;
     loop {
+        if tokio::time::Instant::now() >= deadline.instant {
+            return Err(format!(
+                "{label}: replay snapshot timed out (skipped={})",
+                wait.skipped
+            ));
+        }
         let event = match deadline.recv(conn).await {
             Err(_) => {
                 return Err(format!(
@@ -575,9 +656,10 @@ async fn reobserve_replay_snapshot(
                 ..
             }) if event_key == key && *cause_request_id == request_id
         );
-        observe_reader_event(event, key, wait, |item| matched |= predicate(item))?;
-        if correlated {
-            return Ok(matched);
+        observe_reader_event(&event, key, wait, |item| matched |= predicate(item))?;
+        if correlated && let CoreEvent::Timeline(TimelineEvent::InitialItems { items, .. }) = event
+        {
+            return Ok((matched, items));
         }
     }
 }
@@ -614,6 +696,10 @@ async fn wait_for_synced_read(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "hidden_state_acl_tests.rs"]
+mod tests;
 
 /// Polls the published room summary while draining the event stream.
 async fn wait_for_room(

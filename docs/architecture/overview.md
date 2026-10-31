@@ -2094,6 +2094,11 @@ measurement, and DOM anchoring.
 Runtime responsibilities:
 
 - Treat SDK timeline order and indices as a canonical, Core-internal domain.
+  Initial, post-hydration and overflow-recovery subscriptions observe the raw
+  retained SDK sequence before its presentation skip, matching authoritative
+  `items()` snapshots. The SDK's raw-item quota must not hide messages behind
+  technical state rows; Core's existing display projection alone bounds visible
+  membership. This does not expand SDK retention or admit extra pagination.
   One Core-owned projection transaction applies each SDK batch exactly once,
   advances the bounded display membership/mirror, and emits only display-space
   diffs. No raw canonical SDK index crosses `TimelineEvent::ItemsUpdated`.

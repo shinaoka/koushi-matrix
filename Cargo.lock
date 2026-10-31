@@ -3335,6 +3335,7 @@ dependencies = [
 name = "koushi-core"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
  "base64 0.22.1",
  "dirs",
  "eyeball",
