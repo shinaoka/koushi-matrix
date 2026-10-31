@@ -1,5 +1,47 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest audit resume — 2026-11-01 — single main probe, cutoff04:45 JST
+
+The maintainer lifts STOP with a concrete tier-B experiment and extends the
+hard cutoff to **04:45 JST**. Compare ONE fresh standalone Synapse
+`room_management` on detached unchanged`origin/main` (Koushi
+`ce25e243304f491780ce9e8e415b65a726c4fcbc`, its unchanged SDK gitlink
+`292b89c4500cff6bdbcaac4770cff36a14714076`), using a new mainprobe worktree
+and its own target. One release QA build, jobs8/tests8/taskset idle8/kache.
+Branch comparison is production08b89c19 at source1ae6e673 with SDK1c669ef10;
+its exact pre-target failure is preserved below. Do not alter either source,
+predicate, oracle, timeout, server or pin. No blind retry. Branch source and
+build artifacts stay untouched during the probe; boundary checkpoint pushes
+remain required.
+
+If main shows the same `space_access membership create failed:
+PolicyNotVerified`, record the standalone path as existing/CI-uncovered, then
+run exactly one corrected-branch both-server `all --core` mandatory gate.
+Only GREEN permits affected mandatory reruns, whole-diff exact-GPT post-review
+in bounded complete slices, ONE PR with pin/fix rationale/Refs#1677, normal
+CI/auto-merge and authorized cleanup. If main is GREEN, inspect only SDK
+create-event/sync-state/state lookup differences and make a canon-compatible
+minimal proven correction; no authorization relaxation. If comparison is
+inconclusive, save and stop. Never claim the supplied membership-timeout
+observation proves this separate PolicyNotVerified baseline comparison.
+
+### Maintainer-supplied pB budget evidence (not rerun locally)
+
+Source: maintainer-shared pB experiment,2026-11-01; raw log path and SHA not supplied.
+Knob: `ROOM_LIST_EVENT_TIMEOUT`, reported default90s; membership wait extended to300s.
+Reported observation: timeout at300s,exit1; Space still listed, both selected children absent.
+Scope: supports a local-leave projection gap rather than insufficient timeout; not PolicyNotVerified baseline proof.
+
+Latest clarification makes the single main focused probe **mandatory**; the
+omission suggestion is not a decision. No main probe has run yet. Build and
+scenario execution are delegated as one bounded command-only task; parent
+receives only own exits, artifact paths and closed success/failure tokens,
+not bulk logs (context81%). Mainprobe uses detached unchanged main and its
+own target; the unchanged-source SDK smoke binary is prepared in the same
+single Cargo build invocation because the existing runner needs both binary
+paths. No branch executable/source is reused as main evidence. No further
+timeout experiment or external-rejoin investigation.
+
 ## Latest STOP — 2026-11-01 03:13 JST — post-fix focused QA RED, no PR
 
 Latest instruction: stop at a required RED, do not open a PR. **Stopped.**
