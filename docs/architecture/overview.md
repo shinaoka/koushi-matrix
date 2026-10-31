@@ -292,6 +292,9 @@ Crate responsibilities:
   cleanup in the same effect/controller; product retry and session lifecycle
   remain Rust-owned.
 
+Rust integration suite layout, test ownership, shared-process constraints and
+canonical correctness-gate invocation are defined in [test suites](test-suites.md).
+
 Upstream SDK deltas are consumed exclusively from the checked-out
 `vendor/matrix-rust-sdk` submodule. Root workspace Matrix SDK dependencies are
 exact paths beneath that checkout, and the parent repository gitlink is the
