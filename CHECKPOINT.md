@@ -1,5 +1,45 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Active correction handoff — 2026-11-01 02:26 JST
+
+The maintainer now authorizes **only the small existing-canon app correction
+for Space local-leave suppression**, with deterministic no-server RED before
+production edits, then the same tests GREEN. This supersedes the diagnosis-
+only stop below; it does not waive any gate or authorize SDK/policy changes.
+Starting head `bc364a0d`, SDK `1c669ef10`, both clean/pushed; context audit81%.
+**First action: checkpoint/push this state before implementation.**
+
+- Budget **02:26:24–04:26:24 JST**, no silent extension. At each boundary save
+  checkpoint and push before proceeding; if context cannot support safe work,
+  leave exact artifacts/next command and stop rather than lose state.
+- First add two no-server behavioral unit regressions on unchanged production
+  code: successful Space local leave immediately removes its `state.spaces`
+  entry; an older authoritative list cannot resurrect that left Space.
+  Record names and real nonzero exits in `/tmp/koushi-1677-spaceleave-red-*.log`.
+- Only after both RED, change the existing local-leave early return and
+  local-left retention/filter interaction. No new mechanism/public API/wire
+  type/dependency/oracle. Consult state-machine/engineering canon; a missing
+  design contract is parked, not silently written or guessed.
+- Same units GREEN, then refresh only affected QA release binaries so the
+  subsequent QA actually contains the fix (old binaries cannot prove it).
+  Run fresh Synapse `room_management` **once** using existing prebuilt-only
+  launcher, worker environment,8 idle CPUs/jobs8/tests8 and before/after hashes.
+  If and only if the whole scenario including Space leave passes, run one
+  final `--server=both --scenario=all` gate. This is the newly authorized
+  post-correction gate, not permission to repeat the old unchanged RED until
+  green. No retries/third post-correction aggregate.
+- Only if required checks are green: one English Koushi PR into `main`,
+  `Refs #1677`, explaining the existing fork pin and the canon correction;
+  auto-merge/CI confirmation and merged unshared-target/worktree cleanup.
+  No admin/force merge, force-push, new issue, protected issue/PR/pin change,
+  or shared-target deletion. Preserve SDK fork PR34 and other worktrees.
+- Current evidence remains: four dedicated migration scenarios PASS on both
+  servers (8/8), all recorded static/workspace checks and integrated source
+  review PASS; old aggregate RED is not erased. #5 actual remote memberships
+  left while local Space/child0 remained; exact callback cause unproven.
+  No production correction, new RED unit, or new GREEN is claimed yet.
+
+
 ## Latest remaining-gate resume — 2026-11-01 02:16 JST — dedicated8/8 PASS, overall RED / STOP
 
 The maintainer resumed #2 remaining gates and authorized #4 publication **only
