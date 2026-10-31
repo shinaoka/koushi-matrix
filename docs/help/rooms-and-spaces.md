@@ -235,11 +235,14 @@ does not offer a bulk read action because a room count cannot identify the
 right event IDs to acknowledge. A failure to load older Recent history does
 not hide the confirmed room entries in Unread conversations.
 
-The context-menu action **Mark room timeline as read** applies to the main
-timeline only. It appears only when the app has a current main-timeline event
-to mark. Open a thread to read its visible replies; a reply already on screen
-is marked read without requiring an extra scroll. A manually marked unread room
-uses a red dot on its row, not an invented numeric message count.
+The context-menu action **Mark room timeline as read** advances the read
+boundary to the current main-timeline event. It appears only when that event
+is available. This room-wide receipt also covers earlier thread messages;
+later replies remain unread. Koushi also respects covering receipts set by
+other clients after signing in again. Open a thread to read its visible
+replies; a reply already on screen is marked read without requiring an extra
+scroll. A manually marked unread room uses a red dot on its row, not an
+invented numeric message count.
 Leaving a room discards its cached thread counts; rejoining starts a fresh
 read of those threads.
 

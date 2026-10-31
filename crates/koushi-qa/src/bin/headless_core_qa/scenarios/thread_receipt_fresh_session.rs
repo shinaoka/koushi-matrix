@@ -262,15 +262,7 @@ async fn run_fresh_session_checks(
         require_no_thread_unread(conn, account_key, clash, "fresh open", Expect::NeverUnread).await,
     );
 
-    // A reads the clash room's thread, already open, to its end.
-    let request_id = conn.next_request_id();
-    conn.command(CoreCommand::Timeline(TimelineCommand::SendReadReceipt {
-        request_id,
-        key: thread_key(account_key, clash),
-        event_id: clash.last_reply_event_id.clone(),
-    }))
-    .await
-    .map_err(|e| format!("thread receipt fresh: submit threaded read failed: {e}"))?;
+    // The check submits and observes the correlated threaded read itself.
     record(
         failures,
         "thread_receipt_fresh_read",
@@ -521,6 +513,33 @@ async fn print_server_receipts(session: &koushi_sdk::MatrixClientSession, rooms:
         return;
     };
     let user_id = session.client().user_id().map(ToString::to_string);
+    let mut initial = sync_events::v5::Request::new();
+    initial.conn_id = Some("qa-receipts".to_owned());
+    initial.extensions.receipts.enabled = Some(true);
+    for room in rooms {
+        let mut subscription = sync_events::v5::request::RoomSubscription::default();
+        subscription.timeline_limit = 20_u32.into();
+        if let Ok(room_id) = OwnedRoomId::try_from(room.room_id.as_str()) {
+            initial.room_subscriptions.insert(room_id, subscription);
+        }
+    }
+    if let Ok(sliding) = session.client().send(initial).await {
+        for room in rooms {
+            let receipt = OwnedRoomId::try_from(room.room_id.as_str())
+                .ok()
+                .and_then(|id| sliding.extensions.receipts.rooms.get(&id))
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw.json().get()).ok());
+            let receipt = &receipt.as_ref().unwrap_or(&serde_json::Value::Null)["content"]
+                [&room.last_reply_event_id]["m.read"][user_id.as_deref().unwrap_or_default()];
+            let unthreaded = receipt.is_object() && receipt.get("thread_id").is_none();
+            let threaded = receipt.get("thread_id").and_then(serde_json::Value::as_str)
+                == Some(room.root_event_id.as_str());
+            println!(
+                "thread_receipt_fresh_initial room={} unthreaded={unthreaded} threaded={threaded}",
+                room.label
+            );
+        }
+    }
     for room in rooms {
         let (mut unthreaded, mut threaded) = (false, false);
         let joined = OwnedRoomId::try_from(room.room_id.as_str())
@@ -584,29 +603,63 @@ async fn require_no_thread_unread(
     phase: &str,
     expect: Expect,
 ) -> Result<(), String> {
-    // The thread first, so that every room-window event after it is observed.
     let thread = thread_key(account_key, room);
-    let thread_initial =
-        subscribe_timeline_for_qa(conn, &thread, "thread receipt fresh open thread").await?;
     let key = TimelineKey {
         account_key: account_key.clone(),
         kind: TimelineKind::Room {
             room_id: room.room_id.clone(),
         },
     };
-    let initial = subscribe_timeline_for_qa(conn, &key, "thread receipt fresh open room").await?;
+    // One collector owns both streams: a per-key waiter would discard the
+    // other timeline's initial/history updates while opening the room.
+    let thread_request = conn.next_request_id();
+    let room_request = conn.next_request_id();
+    for (request_id, timeline_key, initial_backfill) in [
+        (
+            thread_request,
+            &thread,
+            koushi_protocol::command::InitialBackfillPolicy::RequiredForExistingThread,
+        ),
+        (
+            room_request,
+            &key,
+            koushi_protocol::command::InitialBackfillPolicy::Disabled,
+        ),
+    ] {
+        conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+            request_id,
+            key: timeline_key.clone(),
+            initial_backfill,
+        }))
+        .await
+        .map_err(|_| "thread receipt fresh: subscribe failed".to_owned())?;
+    }
     let mut observed = ThreadUnreadObservation::default();
-    observed.observe_thread_items(&thread_initial, &room.root_event_id);
-    observed.observe_items(&initial, &room.root_event_id);
-    observed.observe_snapshot(&conn.snapshot(), &room.room_id);
-    let deadline = tokio::time::Instant::now() + OBSERVATION_WINDOW;
+    let (mut room_ready, mut thread_ready, mut observing) = (false, false, false);
+    let mut read_request = None;
+    let mut receipt_confirmed = false;
+    let mut deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut next_paginate = tokio::time::Instant::now();
     loop {
+        if room_ready && thread_ready && !observing {
+            observing = true;
+            deadline = tokio::time::Instant::now() + OBSERVATION_WINDOW;
+            if expect == Expect::SettlesRead {
+                let request_id = conn.next_request_id();
+                conn.command(CoreCommand::Timeline(TimelineCommand::SendReadReceipt {
+                    request_id,
+                    key: thread.clone(),
+                    event_id: room.last_reply_event_id.clone(),
+                }))
+                .await
+                .map_err(|_| "thread receipt fresh: submit threaded read failed".to_owned())?;
+                read_request = Some(request_id);
+            }
+        }
         // Scrolling the thread pane up: page the thread backwards until every
         // reply is loaded, as a reader of the whole thread does.
-        if observed.thread_replies.len() < REPLY_COUNT as usize
-            && tokio::time::Instant::now() >= next_paginate
-        {
+        let needs_history = thread_ready && observed.thread_replies.len() < REPLY_COUNT as usize;
+        if needs_history && tokio::time::Instant::now() >= next_paginate {
             let request_id = conn.next_request_id();
             conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
                 request_id,
@@ -618,7 +671,7 @@ async fn require_no_thread_unread(
             .map_err(|e| format!("thread receipt fresh: submit thread paginate failed: {e}"))?;
             next_paginate = tokio::time::Instant::now() + THREAD_PAGINATE_INTERVAL;
         }
-        let wake = if observed.thread_replies.len() < REPLY_COUNT as usize {
+        let wake = if needs_history {
             deadline.min(next_paginate)
         } else {
             deadline
@@ -635,11 +688,32 @@ async fn require_no_thread_unread(
             }
         };
         match event {
+            CoreEvent::LiveSignals(koushi_protocol::event::LiveSignalsEvent::ReadReceiptSent {
+                request_id,
+                key: event_key,
+                event_id,
+            }) if Some(request_id) == read_request
+                && event_key == thread
+                && event_id == room.last_reply_event_id =>
+            {
+                receipt_confirmed = true
+            }
+            CoreEvent::OperationFailed { request_id, .. }
+                if Some(request_id) == read_request
+                    || request_id == thread_request
+                    || request_id == room_request =>
+            {
+                return Err("thread receipt fresh: subscribe or read failed".to_owned());
+            }
             CoreEvent::Timeline(TimelineEvent::InitialItems {
                 key: event_key,
+                cause_request_id,
                 items,
                 ..
-            }) if event_key == key => observed.observe_items(&items, &room.root_event_id),
+            }) if event_key == key => {
+                room_ready |= cause_request_id == Some(room_request);
+                observed.observe_items(&items, &room.root_event_id);
+            }
             CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
                 key: event_key,
                 diffs,
@@ -650,11 +724,20 @@ async fn require_no_thread_unread(
                     Ok(())
                 })?;
             }
+            CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                key: event_key,
+                state,
+                ..
+            }) if event_key == thread => observed.observe_thread_pagination(&state),
             CoreEvent::Timeline(TimelineEvent::InitialItems {
                 key: event_key,
+                cause_request_id,
                 items,
                 ..
-            }) if event_key == thread => observed.observe_thread_items(&items, &room.root_event_id),
+            }) if event_key == thread => {
+                thread_ready |= cause_request_id == Some(thread_request);
+                observed.observe_thread_items(&items, &room.root_event_id);
+            }
             CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
                 key: event_key,
                 diffs,
@@ -669,7 +752,9 @@ async fn require_no_thread_unread(
         }
         observed.observe_snapshot(&conn.snapshot(), &room.room_id);
     }
+    let loaded_evidence = observed.require_loaded_evidence();
     let ThreadUnreadObservation {
+        thread_pagination,
         max_reply_count,
         thread_replies,
         max_chip,
@@ -678,11 +763,12 @@ async fn require_no_thread_unread(
         last_chip,
         last_thread_unread,
         last_badge,
+        ..
     } = observed;
     // Private-data-free: counts only.
     println!(
         "thread_receipt_fresh_detail room={} phase={} summary_replies={max_reply_count} \
-         thread_replies={} chip_max={max_chip} \
+         thread_replies={} thread_pagination={thread_pagination:?} chip_max={max_chip} \
          thread_unread_max={max_thread_unread} badge_max={max_badge} chip_last={last_chip} \
          thread_unread_last={last_thread_unread} badge_last={last_badge}",
         room.label,
@@ -691,12 +777,12 @@ async fn require_no_thread_unread(
     );
     // The thread timeline is the loaded-events evidence; a server's bundled
     // summary on the root can lag behind it.
-    if thread_replies.len() < REPLY_COUNT as usize {
-        return Err(format!(
-            "{} {phase}: the thread never loaded its {REPLY_COUNT} replies (saw {})",
-            room.label,
-            thread_replies.len()
-        ));
+    if !observing {
+        return Err("thread receipt fresh: both subscriptions did not become ready".to_owned());
+    }
+    loaded_evidence.map_err(|error| format!("{} {phase}: {error}", room.label))?;
+    if read_request.is_some() && !receipt_confirmed {
+        return Err("thread receipt fresh: threaded read was not confirmed".to_owned());
     }
     let (chip, thread_unread, badge) = match expect {
         Expect::NeverUnread => (max_chip, max_thread_unread, max_badge),
@@ -713,6 +799,9 @@ async fn require_no_thread_unread(
 
 #[derive(Default)]
 struct ThreadUnreadObservation {
+    saw_room_summary: bool,
+    /// Diagnostic: thread pagination outcomes (paginating/idle/end/failed).
+    thread_pagination: [u32; 4],
     max_reply_count: u32,
     thread_replies: HashSet<String>,
     max_chip: u32,
@@ -724,6 +813,33 @@ struct ThreadUnreadObservation {
 }
 
 impl ThreadUnreadObservation {
+    fn require_loaded_evidence(&self) -> Result<(), String> {
+        if !self.saw_room_summary {
+            return Err("no room summary was observed".to_owned());
+        }
+        if self.thread_replies.len() < REPLY_COUNT as usize {
+            return Err(format!(
+                "the thread never loaded its {REPLY_COUNT} replies (saw {})",
+                self.thread_replies.len()
+            ));
+        }
+        if self.max_reply_count == 0 {
+            return Err("no root chip with replies was observed".to_owned());
+        }
+        Ok(())
+    }
+
+    fn observe_thread_pagination(&mut self, state: &koushi_protocol::event::PaginationState) {
+        use koushi_protocol::event::PaginationState;
+        let slot = match state {
+            PaginationState::Paginating => 0,
+            PaginationState::Idle => 1,
+            PaginationState::EndReached => 2,
+            PaginationState::Failed { .. } => 3,
+        };
+        self.thread_pagination[slot] += 1;
+    }
+
     fn observe_thread_items(&mut self, items: &[TimelineItem], root_event_id: &str) {
         for item in items {
             if let Some(event_id) = timeline_item_event_id(item)
@@ -752,6 +868,7 @@ impl ThreadUnreadObservation {
 
     fn observe_snapshot(&mut self, snapshot: &koushi_state::AppState, room_id: &str) {
         if let Some(room) = snapshot.rooms.iter().find(|room| room.room_id == room_id) {
+            self.saw_room_summary = true;
             self.last_thread_unread = room.thread_unread_count;
             self.last_badge = koushi_state::room_activity_unread_count(room);
             self.max_thread_unread = self.max_thread_unread.max(self.last_thread_unread);
@@ -759,3 +876,7 @@ impl ThreadUnreadObservation {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "thread_receipt_fresh_session/tests.rs"]
+mod tests;

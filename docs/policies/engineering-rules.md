@@ -21,6 +21,13 @@ policy those owners do not state.
 4. Put the smallest necessary guard at the authoritative boundary. This never
    weakens security, privacy, trust-boundary validation, data-loss prevention,
    accessibility, or explicitly approved requirements.
+5. Receipt-count regressions assert app-visible chip and badge state, not only
+   receipt-send success. Prove that known covering receipts exclude earlier
+   events, later unseen events remain unread, and history loading/fresh sign-in
+   and restore preserve that boundary. Unthreaded public/private receipts cover
+   threads too; see overview "Runtime Model" and state machines "Timeline And
+   Thread".
+   Do not replace these invariants with a blanket non-increasing-count rule.
 
 ## Secrets and Private Data
 
