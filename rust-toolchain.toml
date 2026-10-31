@@ -3,4 +3,3 @@ channel = "1.96.0"
 profile = "minimal"
 # The CI lint gate (docs/agents/verification.md) needs both; minimal omits them.
 components = ["clippy", "rustfmt"]
-targets = ["wasm32-unknown-unknown"]

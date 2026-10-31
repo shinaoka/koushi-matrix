@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -74,7 +74,6 @@ test("toolchain and dev dependency profile are pinned for stable incremental bui
   const desktopLock = JSON.parse(readRepoFile("apps/desktop/package-lock.json"));
 
   assert.match(toolchain, /channel = "1\.96\.0"/);
-  assert.match(toolchain, /targets = \["wasm32-unknown-unknown"\]/);
   assert.match(rootCargo, /^\[profile\.dev\]$/m);
   assert.match(rootCargo, /^debug = "line-tables-only"$/m);
   assert.match(rootCargo, /^\[profile\.dev\.package\."\*"\]$/m);
@@ -87,6 +86,19 @@ test("toolchain and dev dependency profile are pinned for stable incremental bui
   assert.match(rootCargo, /^incremental = false$/m);
   assert.equal(desktopPackage.overrides["deepmerge-ts"], "8.0.1");
   assert.equal(desktopLock.packages["node_modules/deepmerge-ts"].version, "8.0.1");
+});
+
+test("browser wasm builds are not CI or local requirements", () => {
+  assert.doesNotMatch(readRepoFile("rust-toolchain.toml"), /wasm32/);
+  const desktopPackage = JSON.parse(readRepoFile("apps/desktop/package.json"));
+  assert.equal(Object.hasOwn(desktopPackage.scripts, "qa:wasm-check"), false);
+  for (const file of readdirSync(join(repoRoot, ".github/workflows"))) {
+    if (!/\.ya?ml$/.test(file)) continue;
+    assert.doesNotMatch(readRepoFile(`.github/workflows/${file}`), /wasm32/, file);
+  }
+  // Branch protection still requires this historical name, not a wasm build.
+  const rustJob = workflowJobSource(readRepoFile(".github/workflows/ci.yml"), "rust");
+  assert.match(rustJob, /name: Rust \(workspace \/ src-tauri \/ wasm\)/);
 });
 
 test("CI and npm scripts use the unified workspace contracts", () => {

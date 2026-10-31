@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-10-31.
+Last amended: 2026-11-01.
 
 The evidence-based classification of remaining frontend-owned resources and
 semantic migration candidates is maintained in
@@ -54,9 +54,9 @@ with an Element Desktop/Web-like three-pane desktop UX:
   ineligible for automatic backward history until an accepted local thread send
   or matching event-backed thread activity promotes them. React renders this
   state and must not infer thread existence from an empty viewport.
-- A browser-hosted build (Element Web-like deployment of the same core) is a
-  potential future target. It is not scheduled, but the architecture must not
-  preclude it; see Platform Portability.
+- A browser-hosted build is no longer a planned target. The retired browser
+  requirement and the retained native/headless boundaries are documented in
+  Platform Portability.
 
 ## Layers
 
@@ -472,13 +472,15 @@ absent.
 
 ## Platform Portability
 
-The desktop app is the only shipping target today, but a browser-hosted build
-of the same core (Element Web-like) is a plausible future. matrix-rust-sdk
-already supports `wasm32` (executor abstraction over tokio /
-`wasm_bindgen_futures`, IndexedDB store besides SQLite), so portability is
-decided by our own code discipline, not by the SDK. These rules keep the
-option open at near-zero ongoing cost; retrofitting them later would mean
-rewriting the runtime.
+The browser-hosted target and its wasm portability requirement were withdrawn
+by the maintainer on 2026-10-11 and confirmed retired on 2026-10-29
+([#1659](https://github.com/shinaoka/koushi-matrix/issues/1659)). There is no
+required browser build, wasm compilation gate, or single-threaded browser
+executor support. Existing wasm-specific code is not removed by this policy
+change.
+
+The following boundaries remain for native hosts, headless QA, testability,
+and clear ownership; they do not require browser compatibility.
 
 1. **The command/event boundary is transport-neutral.** `koushi-protocol`
    owns `CoreCommand`, `CoreEvent`, identities, failures and state-update DTOs;
@@ -486,38 +488,28 @@ rewriting the runtime.
    identities, failures and snapshots preserve safe serde contracts. Commands
    that carry secrets remain typed Rust inputs: each adapter validates its IPC
    payload and constructs them without requiring the secret-bearing aggregate
-   itself to implement serde. Tauri IPC is one transport; a WebWorker
-   `postMessage` / wasm-bindgen bridge must be addable without changing the
-   protocol shapes.
+   itself to implement serde. Tauri IPC and headless QA consume the same typed
+   boundary without coupling product semantics to a renderer or host.
 2. **Core logic uses executor abstractions, not tokio directly.** Task spawn,
    timers, and timeouts in `koushi-core` go through the SDK's
    executor layer (`matrix_sdk_common::executor`) or a thin core-owned
    wrapper. No `tokio::spawn`/`tokio::time` calls scattered through actor
    logic; no thread-blocking (`block_on`, blocking locks held across await)
-   inside actors. The actor runtime must be able to run on a single-threaded
-   executor (wasm) as well as multi-threaded tokio.
+   inside actors. The existing native Tokio-backed executor boundary keeps
+   task/timer mechanics separate from actor policy and supports headless
+   lifecycle tests; it does not promise a browser executor.
 3. **Platform capabilities live behind ports, owned by `StoreActor` and the
    adapters.** OS credential store (`keyring`), filesystem paths, SQLite
    store config, media-save filesystem operations, history export folders,
    and process/OS APIs appear only behind traits with platform backends
    (today: OS keychain + SQLite, the native media-save port, the native
-   `HistoryExportFilesystem`, and the optional `NativeStillImageDecoder`; browser later: WebCrypto-derived keys +
-   IndexedDB). `koushi-store` may implement native credential/encrypted-file
-   mechanics behind those ports, but `StoreActor` is the only actor allowed
+   `HistoryExportFilesystem`, and the optional `NativeStillImageDecoder`).
+   `koushi-store` may implement native credential/encrypted-file mechanics
+   behind those ports, but `StoreActor` is the only actor allowed
    platform-conditional policy and remains the account/path/key/migration
-   owner. The fail-closed local-encryption rule still applies on every
-   platform: a weaker browser at-rest story must be an explicit, surfaced
-   property, never a silent fallback.
-4. **Pure crates stay wasm-clean.** `koushi-state`, `koushi-search`, and
-   `koushi-protocol` compile for `wasm32-unknown-unknown`, enforced by CI.
-   `koushi-core`'s
-   portability is enforced structurally by rules 1–3 until a web spike makes
-   a wasm CI check for it practical.
-5. **Known open items for a web target** (recorded, not designed): ngram
-   search index backend on wasm, credential storage UX without an OS
-   keychain, and multi-tab/single-runtime coordination. None of these may be
-   solved by weakening the desktop security model.
-6. **The shared Rust core is the semantic owner across renderers.** Product
+   owner. These ports isolate native platform mechanics for testing and keep
+   the fail-closed local-encryption rule intact on every supported platform.
+4. **The shared Rust core is the semantic owner across renderers.** Product
    state, Matrix behavior, operation state, selection, retry/cancellation,
    resource demand, and scheduling that must be reusable belong in the
    toolkit-independent `koushi-state`/`koushi-core`/`koushi-protocol` boundary.

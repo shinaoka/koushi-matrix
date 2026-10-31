@@ -188,10 +188,8 @@ jobs:
           # The vendored Matrix SDK is a public submodule; recursive checkout
           # clones it over the HTTPS URL in .gitmodules without any secret.
           submodules: recursive
-      - name: Install Rust toolchain (1.96.0 + wasm target)
+      - name: Install Rust toolchain (1.96.0)
         uses: dtolnay/rust-toolchain@1.96.0
-        with:
-          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         id: rust-cache
         with:
@@ -318,8 +316,6 @@ jobs:
         run: |
           [ -f "$RUNNER_TEMP/rust-metrics/workspace-tests.log" ] || exit 0
           node scripts/ci-rust-cache-metrics.mjs --log "$RUNNER_TEMP/rust-metrics/workspace-tests.log" --target-dir "$CARGO_TARGET_DIR" --mode rust-workspace --cache-hit "${{ steps.sdk-cache.outputs.cache-hit == 'true' }}"
-      - name: wasm build check (state + search + protocol)
-        run: cargo check --profile ci --target wasm32-unknown-unknown -p koushi-state -p koushi-search -p koushi-protocol
       # --- Dependency hygiene (#87 Phase 0) ---
       # cargo-deny: license compliance + advisory check + bans.
       - name: Install cargo-deny

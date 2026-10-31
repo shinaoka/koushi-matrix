@@ -39,7 +39,6 @@
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
     "qa:secret-scan": "node ../../scripts/desktop-secret-scan.mjs",
-    "qa:wasm-check": "cargo check --target wasm32-unknown-unknown -p koushi-state -p koushi-search -p koushi-protocol",
     "qa:release-gates": "node ../../scripts/desktop-release-gate-check.mjs"
   },
   "dependencies": {

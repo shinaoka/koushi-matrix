@@ -269,8 +269,8 @@ Covered by standing automated gates:
   forward actions, media/file/link-preview surfaces, live signals, search,
   threads, locale/RTL/CJK/pseudo-locale, typography/font tokens, settings,
   security, device sessions, reports, and scroll/navigation surfaces.
-- Structural gates cover IPC contract drift, TypeScript typecheck, wasm
-  compilation for state/search crates, secret scanning, release-gate structure,
+- Structural gates cover IPC contract drift, TypeScript typecheck,
+  secret scanning, release-gate structure,
   QA token privacy checks, and Rust/Tauri focused contract tests.
 
 Failures found in this pass and fixed in the same hardening branch:

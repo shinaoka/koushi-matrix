@@ -578,8 +578,10 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    run automated QA against matrix.org or another external homeserver, even
    with a dedicated test account. Local headless and virtual-display lanes
    must pass before GUI-level confidence claims.
-5. Core crates stay platform-portable as specified in overview "Platform
-   Portability". Test-only shared Core integration support belongs in
+5. Core crates retain transport-neutral DTOs, actor/executor boundaries, and
+   platform ports for native hosts, headless QA, and testability as specified in
+   overview "Platform Portability"; browser/wasm compatibility is not required.
+   Test-only shared Core integration support belongs in
    non-default `koushi-core-testkit`, never a Core self-dev-dependency or
    production API.
 6. Signed distribution builds must run the platform-specific credential gate

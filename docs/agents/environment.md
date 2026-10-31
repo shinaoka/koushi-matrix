@@ -109,7 +109,6 @@ Enable the repo pre-commit hook once per clone: `git config core.hooksPath
 Gate commands (from `apps/desktop`):
 
 - `npm run qa:secret-scan`
-- `npm run qa:wasm-check` (requires `rustup target add wasm32-unknown-unknown`)
 - `npm run qa:release-gates` — structural credential-gate check plus `cargo
   check --release`. The compile step is slow on a cold target dir; use `node
   ../../scripts/desktop-release-gate-check.mjs --no-compile` for the quick
@@ -210,9 +209,8 @@ each resolves its own dependency graph and feature set and only recompiles the
 vendored SDK and Koushi stack. No test
 is gated on `not(feature = "test-hooks")`. Production feature sets (without
 dev-dependency features) are compiled by `macOS Tauri cargo check` and the
-release workflow. QA binaries, wasm, macOS, Windows, and homeserver jobs stay
-separate because they provide distinct feature, platform, target, or runtime
-coverage.
+release workflow. QA binaries, macOS, Windows, and homeserver jobs stay
+separate because they provide distinct feature, platform, or runtime coverage.
 
 ## Rust test stack and debug information
 
