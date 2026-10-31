@@ -2629,7 +2629,8 @@ See
 ## QA Model
 
 QA is layered; GUI automation is the last and weakest layer, never the
-primary correctness gate.
+primary correctness gate. Rust integration binary layout, process isolation and
+canonical workspace execution follow [Rust test suites](test-suites.md).
 
 1. **Unit tests** — network-free: routing, redaction, unauthenticated command
    rejection, state transitions with fake ports, normalization, reducer.

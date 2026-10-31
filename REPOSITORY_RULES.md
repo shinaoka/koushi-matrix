@@ -363,8 +363,10 @@ to upstream or revert.
 
 ### Test Placement
 
-- Integration-style tests live in per-feature `crates/<crate>/tests/<feature>.rs`
-  files, never in new additions to monolithic test files; inline `cfg(test)`
+- Integration-style tests live in per-feature modules under
+  `crates/<crate>/tests/<suite>/`, registered by `main.rs`, never in new additions
+  to monolithic test files. Suite membership, isolation exceptions and execution
+  policy: [Rust test suites](docs/architecture/test-suites.md). Inline `cfg(test)`
   modules have a 200-line hard ceiling. Full rules: engineering rules "Test
   Placement".
 
