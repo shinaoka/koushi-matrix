@@ -157,7 +157,10 @@ async fn simultaneous_accounts_keep_notification_policy_and_same_named_routes_in
         "account-b@example.invalid"
     );
     drop(a);
-    drop(account_a);
+    account_a
+        .shutdown_checked()
+        .await
+        .expect("ordered shutdown");
     let restarted_a = CoreRuntime::restart_isolated(&stores);
     let mut a = ready_account(&restarted_a, "@account-a:example.invalid").await;
     support::wait_for_state(&mut a, |state| {
