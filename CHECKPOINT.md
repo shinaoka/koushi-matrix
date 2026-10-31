@@ -257,12 +257,82 @@ reviews only after the required gates pass; complete every assigned slice and
 split a tool-limited slice further rather than count an incomplete report.
 No production edit, gate rerun, or speculative design was added by preparation.
 
-### Maintainer-supplied pB budget evidence (not rerun locally)
+### pB budget evidence — first-hand receipt added after the experiment (no rerun)
 
-Source: maintainer-shared pB experiment,2026-11-01; raw log path and SHA not supplied.
-Knob: `ROOM_LIST_EVENT_TIMEOUT`, reported default90s; membership wait extended to300s.
-Reported observation: timeout at300s,exit1; Space still listed, both selected children absent.
-Scope: supports a local-leave projection gap rather than insufficient timeout; not PolicyNotVerified baseline proof.
+This records the **historical pre-fix** experiment at source `bc364a0d`, SDK
+`1c669ef107eba11b395efa275ed4f615a94c7c3b`, run on 2026-11-01
+**02:36:02–02:42:12 JST**. It does not supersede the later corrected-branch
+GREEN evidence above. This checkpoint-only follow-up ran no new experiment,
+measurement, product gate, source change, push or PR operation.
+
+- **Actual knob:** the private `wait_for_snapshot` in
+  `crates/koushi-qa/src/bin/headless_core_qa/scenarios/rooms/space_leave_children.rs`
+  constructs `QaEventDeadline::after(ROOM_LIST_EVENT_TIMEOUT)`; that compile-time
+  constant in `headless_core_qa/registry.rs` is **90 seconds**. The runner's
+  `--timeout-ms=600000` is a separate outer child/startup limit, not this oracle's
+  membership budget. The diagnostic changed only the membership-labelled wait
+  to **300 seconds**; other waits and the settled predicate were unchanged.
+- Exactly **one** fresh Synapse fixture was run, preserving the aggregate's
+  pre-target participant/stage ordering. Temporary QA-only instrumentation
+  reported elapsed seconds and stopped the flow after RoomManagement, before
+  Timeline and the remaining aggregate stages. A private runner copy skipped
+  the already-passing SDK lane and required diagnostic, not full-aggregate,
+  success tokens. This was a bounded prefix probe, **not a full gate-suite run**.
+  All temporary tracked-source changes and the original release executable
+  (including its original hash/mtime) were restored before the probe ran.
+- The command wrapper and the observed container cpuset were both **CPU 0–7**;
+  the Docker wrapper explicitly added `--cpuset-cpus=0-7` (taskset alone would
+  not constrain a daemon-created container). Own container inspection exit **0**.
+  The experiment finished and its container was confirmed no longer running.
+
+Historical commands and own exits (the personal home prefix is normalized to
+`$HOME`; private artifacts retained under `/tmp/koushi-1677-space-budget-7gOGJP`,
+abbreviated `$probe` below):
+
+```bash
+# QA-only diagnostic build while the saved qa-budget.patch was temporarily applied:
+taskset -c 0-7 env CARGO_BUILD_JOBS=8 RUST_TEST_THREADS=8 CARGO_INCREMENTAL=0 KACHE_EXPLAIN_MISS=1 "$HOME/.cargo/bin/cargo" build --release --locked -j 8 -p koushi-qa --features qa-bin --bin headless-core-qa
+# build.exit: 0; output: $probe/build.log
+# Diagnostic executable copied aside; original sources/executable then restored.
+taskset -c 0-7 python3 /tmp/koushi-1677-space-budget-7gOGJP/run-once.py
+# Wrapper own exit: 0 (receipt collection); actual child run.exit: 1.
+# Exact child command, with PATH prefixed by $probe/bin and jobs/tests=8:
+taskset -c 0-7 node /tmp/koushi-1677-space-budget-7gOGJP/runner.mjs --run --server=synapse --scenario=all --core --timeout-ms=600000 --cargo-profile=release
+# Actual child own exit: 1; not an outer timeout and not a passing aggregate.
+```
+
+Receipts: `$probe/run.json`, `run.exit`, `run.log`, `qa-budget.patch`,
+`before.json`; diagnostic executable SHA-256:
+`491a118b41190d5212b52b2bd3894b7554ca0305d23a59eebffe8fe900827968`.
+Raw validated oracle output is retained in
+`.local-secrets/headless-local-qa/2026-10-31T17-36-02-360Z-synapse-all-iUR5Y4/core-core-stdout.log`
+and the failing line in the adjacent `core-core-stderr.log`:
+
+```text
+space_leave_budget_probe_wait_started budget_seconds=300
+space_leave_children_memberships space_listed=true space_locally_left=false left_child0_joined=false left_child1_joined=false left_child0_locally_left=true left_child1_locally_left=true kept_child_joined=true outside_joined=true
+space_leave_budget_probe_wait_seconds=300
+Headless core QA failed: space_leave_children memberships: timed out
+```
+
+**Conclusion:** reproduced **yes**, still RED at **300 seconds**, exit **1**;
+increasing this wait from 90 to 300 seconds did **not** clear it. Space remained
+listed while both selected children were absent and kept/outside rooms remained
+present. This supports, and does not contradict, the app local-leave projection
+gap: `handle_room_left_locally` rejects IDs absent from `state.rooms` (including
+Space IDs), and the room-list update path does not suppress locally-left Spaces.
+The recorded authoritative-list branch can also clear an ordinary child's local
+leave marker when that child is present; this experiment did not trace that
+callback ordering and did not reproduce child reappearance in its final row.
+
+**Pre-existing attribution:** the relevant helper/local-leave owner source gap
+was already present on main; identical main-head timeout behaviour is **not
+proved** by that source identity. The saved main nightly `41135492942` at
+`eea1cbe1cdb8b557ad6150acc15adf75525a6986` actually emitted
+`space_leave_children=ok`. This probe did not run a matching main binary, so it
+cannot exclude changed SDK/projection timing on this branch as an exposure
+factor or establish environment-only causality. It is not a
+`PolicyNotVerified` baseline proof, not a fix, and not a gate waiver.
 
 Latest clarification makes the single main focused probe **mandatory**; the
 omission suggestion is not a decision. No main probe has run yet. Build and
