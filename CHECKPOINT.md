@@ -1,5 +1,46 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest comparison boundary — 2026-11-01 03:35 JST — main SAME_POLICY_RED
+
+**The required unchanged-main focused experiment is complete; no retry.**
+Koushi main`ce25e243304f491780ce9e8e415b65a726c4fcbc` / SDK
+`292b89c4500cff6bdbcaac4770cff36a14714076` stayed clean/unchanged. One
+combined release build **exit0**,03:24:53–03:31:38 JST. One fresh focused
+scenario **exit1**,03:33:33–03:34:05 JST. Both used idle-selected CPUs`0-7`,
+jobs8/tests8, taskset/kache and the detached mainprobe's dedicated target.
+Both mainprobe executables were used and their hashes/mtimes stayed unchanged
+across QA; parent checked own exit receipts, source SHAs and immutability.
+
+Exact same command/scenario/order as the branch: `npm --prefix apps/desktop
+run qa:headless-local -- --server=synapse --scenario=room_management --core
+--timeout-ms=600000 --cargo-profile=release`, with prebuilt-only launchers.
+Exact closed Core failure on **both** compared trees:
+`Headless core QA failed: space_access membership create failed:
+RoomOperationFailed { kind: PolicyNotVerified }`. Only`space_topic=ok` precedes
+it; no Space-leave success. This does not prove the target membership oracle
+GREEN and does not use the separate300-second experiment as baseline evidence.
+
+Per the explicit audit branch, **standalone room_management is an existing,
+CI-uncovered same-shape RED, not an established #1677 regression**, and is not
+the mandatory product gate. Main nightly/all success alone was not used as
+proof of this classification. One unchanged-main focused comparison now is.
+Private source/command/time/hash/exit evidence:
+`/tmp/koushi-1677-mainprobe-build.{exit,log,json}` and
+`/tmp/koushi-1677-mainprobe-focused.{exit,log,json}`; main fixture(relative):
+`.local-secrets/headless-local-qa/2026-10-31T18-33-33-401Z-synapse-room_management-J5QnYK/`.
+Branch comparison receipts:`/tmp/koushi-1677-postfix-room-management.{exit,log,json}`,
+source1ae6e673 / production08b89c19 / SDK1c669ef10. No raw identifiers/secrets
+are copied. No new issue or predicate/policy/SDK change is justified here.
+
+**Next, immediately:** one corrected-branch mandatory product gate
+`qa:headless-local -- --server=both --scenario=all --core
+--timeout-ms=600000 --cargo-profile=release`, prepared binaries only, fresh
+fixtures, idle8/taskset/jobs8/tests8, hashes/own exit/closed tokens retained.
+Only aggregate GREEN permits affected mandatory reruns and complete split
+exact-GPT post-review, then the one finished PR/normal CI/auto-merge. A required
+RED or inconclusive result means stop and save. Hard cutoff04:45 JST; no
+external-rejoin work, extra comparison, blind retry, new issue or admin merge.
+
 ## Latest audit resume — 2026-11-01 — single main probe, cutoff04:45 JST
 
 The maintainer lifts STOP with a concrete tier-B experiment and extends the
