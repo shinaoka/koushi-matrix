@@ -37,7 +37,18 @@ are copied. No new issue or predicate/policy/SDK change is justified here.
 --timeout-ms=600000 --cargo-profile=release`, prepared binaries only, fresh
 fixtures, idle8/taskset/jobs8/tests8, hashes/own exit/closed tokens retained.
 Only aggregate GREEN permits affected mandatory reruns and complete split
-exact-GPT post-review, then the one finished PR/normal CI/auto-merge. A required
+exact-GPT post-review, then the one finished PR/normal CI/auto-merge.
+Before starting that one aggregate, this comparison boundary was committed
+and pushed as`42d1bc47` with tracking ahead0. Active bounded scenario worker:
+`sa_ef58cac2-972f-4c09-9bd8-ff3c809a2b89` (`postfix_both_all_once`), max27min
+including outer1500s scenario ceiling. It uses existing corrected binaries,
+not a rebuild; do not launch another aggregate. Own receipts will be
+`/tmp/koushi-1677-postfix-both-all.{exit,log,json}`. No result is claimed yet.
+The maintainer independently audited the main receipts, including baseline
+binary-hash prefixes`bc2d4cc…`/`a04d4bc…`, and confirms SAME_POLICY_RED; no
+extra comparison is requested. Conditional exact commands/review-slice and
+publication handoff are saved in`/tmp/koushi-1677-step2-continuation.md`.
+Current context was reported86%; edit stop90% remains binding, as does04:45. A required
 RED or inconclusive result means stop and save. Hard cutoff04:45 JST; no
 external-rejoin work, extra comparison, blind retry, new issue or admin merge.
 
