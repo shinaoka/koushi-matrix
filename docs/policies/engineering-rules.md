@@ -269,7 +269,9 @@ released, not reliably zeroized. No credential, device or trust mutation occurs.
 ## Async and Runtime
 
 The general async design rules are overview "Async Design Rules"; the items
-below are the policy those rules do not state.
+below are the policy those rules do not state. SDK-owned cache startup,
+notifications, and the boundary between Core settlement and SDK abort-on-drop
+are specified in overview [SDK Event Cache Lifecycle](../architecture/overview.md#sdk-event-cache-lifecycle).
 
 1. No fixed sleeps in QA or product code waiting for Matrix effects — wait
    on events with timeouts. A multi-event waiter owns one monotonic absolute
@@ -559,7 +561,7 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    [verification](../agents/verification.md#rust-lint-gate)), the same
    feature-unified workspace test run CI uses (`cargo test --workspace` with
    CI's `--exclude` list from `.github/workflows/ci.yml`), frontend tests +
-   typecheck, and `qa:headless-local -- --server=both`. During iteration, use
+   typecheck + lint, and `qa:headless-local -- --server=both`. During iteration, use
    focused checks first; this does not waive merge gates. Documentation-only
    changes that do not change executable code, dependencies, or QA runner
    contracts run the affected documentation checks and `git diff --check`;

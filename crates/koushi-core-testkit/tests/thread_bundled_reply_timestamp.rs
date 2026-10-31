@@ -117,15 +117,17 @@ async fn wait_for_batch(updates: &mut Subscriber<RoomEventCacheUpdate>, event_id
 async fn a_bundled_thread_summary_keeps_the_reply_timestamp() {
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
 
     let room_id = room_id!("!thread-timestamps:example.invalid");
     server.sync_joined_room(&client, room_id).await;
     let room = client.get_room(room_id).expect("the synced room");
-    let (cache, _handles) = room.event_cache().await.expect("room event cache");
+    let (cache, _handles) = room
+        .client()
+        .event_cache()
+        .unwrap()
+        .room(room.room_id())
+        .await
+        .expect("room event cache");
     let (_, mut updates) = cache
         .subscribe()
         .await

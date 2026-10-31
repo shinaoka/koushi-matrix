@@ -249,8 +249,13 @@ async fn run_history_crawl_page(
                 // returned by backward pagination, so the first page of a crawl
                 // indexes them too. Reading them does not load anything new.
                 let mut cached = if first_page {
-                    let (event_cache, _drop_handles) =
-                        room.event_cache().await.map_err(|_| ())?;
+                    let (event_cache, _drop_handles) = room
+                        .client()
+                        .event_cache()
+                        .ok_or(())?
+                        .room(room.room_id())
+                        .await
+                        .map_err(|_| ())?;
                     event_cache.events().await.map_err(|_| ())?
                 } else {
                     Vec::new()
@@ -265,8 +270,13 @@ async fn run_history_crawl_page(
                 }
                 match history_source {
                     CrawlHistorySource::Network => {
-                        let (event_cache, _drop_handles) =
-                            room.event_cache().await.map_err(|_| ())?;
+                        let (event_cache, _drop_handles) = room
+                            .client()
+                            .event_cache()
+                            .ok_or(())?
+                            .room(room.room_id())
+                            .await
+                            .map_err(|_| ())?;
                         let page = event_cache
                             .pagination()
                             .run_backwards_once(batch_size as u16)

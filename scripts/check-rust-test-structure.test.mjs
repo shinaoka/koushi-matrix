@@ -32,6 +32,7 @@ import {
   checkCoreSearchQueryFailureClassification,
   checkCoreSearchEmptyQueryOwnership,
   checkCoreSearchPageCancellation,
+  checkCoreSearchPageWorkKind,
   checkCoreSyncSingleAllRoomsOwner,
   checkCoreThreadsReliableRelays,
   checkCoreTimelineUnsubscribeCleanupOrder,
@@ -151,6 +152,7 @@ test("runs representative migrated core source-contract rules", () => {
     checkCoreSearchQueryFailureClassification,
     checkCoreSearchEmptyQueryOwnership,
     checkCoreSearchPageCancellation,
+    checkCoreSearchPageWorkKind,
     checkCoreSyncSingleAllRoomsOwner,
     checkCoreThreadsReliableRelays
   ]) assert.deepEqual(check(), []);

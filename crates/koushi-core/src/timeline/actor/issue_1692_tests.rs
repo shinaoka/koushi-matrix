@@ -167,7 +167,6 @@ async fn drain_until(
 async fn back_paginated_pages_behind_a_superseded_reply_stay_visible_at_the_live_edge() {
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client.event_cache().subscribe().unwrap();
     let room_id = room_id!("!issue-1692:example.invalid");
     let alice = user_id!("@alice:example.invalid");
     let factory = EventFactory::new().room(room_id);

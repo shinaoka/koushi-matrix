@@ -270,6 +270,8 @@ pub(super) fn spawn_quarantine_password_server() -> String {
 
 #[derive(Default)]
 pub(super) struct KeyQueryControl {
+    /// Model an existing, locally unverified cross-signing identity.
+    pub(super) existing_identity: bool,
     pub(super) count: std::sync::atomic::AtomicUsize,
     pub(super) hold: std::sync::atomic::AtomicBool,
     /// Answer `/keys/query` with an undecodable body (a failed query).
@@ -313,6 +315,20 @@ pub(super) fn spawn_named_quarantine_password_server_with_controls(
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("address");
+    let identity = key_query_control
+        .as_ref()
+        .filter(|control| control.existing_identity)
+        .map(|_| {
+            matrix_sdk_test::test_json::keys_query_sets::KeyQueryResponseTemplate::new(
+                user_id.try_into().expect("fixture user"),
+            )
+            .with_cross_signing_keys(
+                vodozemac::Ed25519SecretKey::from_slice(&[1; 32]),
+                vodozemac::Ed25519SecretKey::from_slice(&[2; 32]),
+                vodozemac::Ed25519SecretKey::from_slice(&[3; 32]),
+            )
+            .build_response()
+        });
     let uploaded_device_keys = std::sync::Arc::new(std::sync::Mutex::new(None));
     let uploaded_device_keys_for_server = uploaded_device_keys.clone();
     let mut login_device_id: Option<String> = None;
@@ -428,20 +444,25 @@ pub(super) fn spawn_named_quarantine_password_server_with_controls(
                     .clone();
                 if failing {
                     "not json".to_owned()
-                } else if let Some(keys) = uploaded {
-                    let user = keys["user_id"].as_str().unwrap_or(user_id).to_owned();
-                    let device = keys["device_id"].as_str().unwrap_or(device_id).to_owned();
-                    let mut devices = serde_json::Map::new();
-                    devices.insert(device, keys);
-                    let mut users = serde_json::Map::new();
-                    users.insert(user, serde_json::Value::Object(devices));
-                    serde_json::json!({
-                        "device_keys": serde_json::Value::Object(users),
-                        "failures": {}
-                    })
-                    .to_string()
                 } else {
-                    r#"{"device_keys":{},"failures":{}}"#.to_owned()
+                    let mut response = serde_json::json!({"device_keys": {}, "failures": {}});
+                    if let Some(keys) = uploaded {
+                        let user = keys["user_id"].as_str().unwrap_or(user_id).to_owned();
+                        let device = keys["device_id"].as_str().unwrap_or(device_id).to_owned();
+                        response["device_keys"] = serde_json::json!({user: {device: keys}});
+                    }
+                    if let Some(identity) = identity.as_ref() {
+                        // The SDK refreshes trust only for an own-user device entry.
+                        if response["device_keys"].get(user_id).is_none() {
+                            response["device_keys"][user_id] = serde_json::json!({});
+                        }
+                        response["master_keys"] = serde_json::json!(identity.master_keys);
+                        response["self_signing_keys"] =
+                            serde_json::json!(identity.self_signing_keys);
+                        response["user_signing_keys"] =
+                            serde_json::json!(identity.user_signing_keys);
+                    }
+                    response.to_string()
                 }
             } else if text.starts_with("GET /_matrix/client/")
                 && text.contains("/room_keys/version")

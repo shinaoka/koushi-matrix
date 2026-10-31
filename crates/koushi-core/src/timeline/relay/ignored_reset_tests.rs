@@ -89,7 +89,6 @@ async fn exercise_ignored_reset(case: ResetCase) {
     let cancel_refill = matches!(case, ResetCase::Cancel | ResetCase::CoalescedCancel);
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client.event_cache().subscribe().unwrap();
     let room_id = room_id!("!ignore-reset:example.invalid");
     let alice = user_id!("@alice:example.invalid");
     let bob = user_id!("@bob:example.invalid");

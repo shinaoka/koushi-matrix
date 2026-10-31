@@ -170,7 +170,6 @@ fn pending_quote_state(items: &[TimelineItem]) -> Option<ReplyQuoteState> {
 async fn redacting_a_canonical_original_refreshes_a_pending_only_reply() {
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client.event_cache().subscribe().unwrap();
     let room_id = room_id!("!pending-refresh:example.invalid");
     let alice = user_id!("@alice:example.invalid");
     let factory = EventFactory::new().room(room_id);

@@ -107,22 +107,18 @@ async fn final_tail_is_the_sdk_final_row_after_a_trailing_reaction() {
     use matrix_sdk::event_cache::EventFocusThreadMode;
     use matrix_sdk::ruma::{event_id, room_id};
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
-    use matrix_sdk_test::{ALICE, event_factory::EventFactory};
+    use matrix_sdk_test::{User, event_factory::EventFactory};
     use matrix_sdk_ui::timeline::{TimelineEventFocusThreadMode, TimelineFocus};
     use wiremock::matchers::{method, path_regex, query_param};
     use wiremock::{Mock, ResponseTemplate};
 
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
     let room_id = room_id!("!live-tail:example.org");
     let target = event_id!("$anchor:example.org");
     let final_row = event_id!("$final:example.org");
     let room = server.sync_joined_room(&client, room_id).await;
-    let factory = EventFactory::new().room(room_id).sender(&ALICE);
+    let factory = EventFactory::new().room(room_id).sender(User::Alice);
     let anchor = factory.text_msg("anchor").event_id(target).into_event();
     Mock::given(method("GET"))
         .and(path_regex(r"/context/"))
@@ -167,6 +163,7 @@ async fn final_tail_is_the_sdk_final_row_after_a_trailing_reaction() {
     .expect("focused timeline");
     let (cache, _handles) = client
         .event_cache()
+        .unwrap()
         .event_focused(
             room_id,
             target,

@@ -527,16 +527,12 @@ pub async fn restore_session_with_verified_store(
 pub async fn enable_event_cache(
     session: &MatrixClientSession,
 ) -> Result<MatrixEventCacheStatus, MatrixEventCacheError> {
-    let client = session.client();
-    let event_cache = client.event_cache();
-    if event_cache.has_subscribed() {
-        return Ok(MatrixEventCacheStatus::AlreadyEnabled);
-    }
-
-    event_cache
-        .subscribe()
-        .map_err(|_| MatrixEventCacheError::SubscribeFailed)?;
-    Ok(MatrixEventCacheStatus::Enabled)
+    // Upstream starts the event cache with the client, before sync processing.
+    session
+        .client()
+        .event_cache()
+        .ok_or(MatrixEventCacheError::SubscribeFailed)?;
+    Ok(MatrixEventCacheStatus::AlreadyEnabled)
 }
 
 pub(super) async fn build_client(
@@ -559,6 +555,7 @@ pub(super) fn desktop_client_builder_defaults(
     builder: matrix_sdk::ClientBuilder,
 ) -> matrix_sdk::ClientBuilder {
     builder
+        .with_event_cache(true)
         .handle_refresh_tokens()
         .with_room_key_recipient_strategy(desktop_room_key_recipient_strategy())
         .with_encryption_settings(EncryptionSettings {

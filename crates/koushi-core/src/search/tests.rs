@@ -1005,7 +1005,6 @@ fn contiguous_pending_queries_coalesce_to_latest_without_crossing_non_query_mess
 async fn progress_fixture() -> (SearchActor, mpsc::Receiver<Vec<AppAction>>) {
     let server = matrix_sdk::test_utils::mocks::MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client.event_cache().subscribe().expect("event cache");
     let session = MatrixClientSession::from_client_for_testing(
         client.clone(),
         koushi_state::SessionInfo {
@@ -1265,7 +1264,6 @@ async fn files_query_rebuilds_rows_for_a_room_the_restart_skipped() {
 
     let server = matrix_sdk::test_utils::mocks::MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client.event_cache().subscribe().expect("event cache");
     let room_id = room_id!("!files-rebuild:example.invalid");
     let attachment_event_id = matrix_sdk::ruma::event_id!("$files-rebuild:example.invalid");
     let f = EventFactory::new()

@@ -31,10 +31,6 @@ async fn in_room_request_received_before_sender_device_keys_remains_actionable()
         .update_tracked_users_for_testing([recipient_id])
         .await;
     server.mock_sync().ok_and_run(&sender, |_| {}).await;
-    recipient
-        .event_cache()
-        .subscribe()
-        .expect("event cache should start");
     let room_id = room_id!("!request:example.invalid");
     let factory = EventFactory::new().room(room_id).sender(sender_id);
     let room = JoinedRoomBuilder::new(room_id)
@@ -113,6 +109,7 @@ async fn in_room_request_received_before_sender_device_keys_remains_actionable()
         .await;
     let (cache, _cache_handles) = recipient
         .event_cache()
+        .unwrap()
         .room(room_id)
         .await
         .expect("room cache should exist");

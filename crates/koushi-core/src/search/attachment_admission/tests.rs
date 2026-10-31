@@ -9,7 +9,6 @@ const TARGET: &str = "$original";
 async fn fixture(joined: bool) -> (MatrixMockServer, SearchActor) {
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client.event_cache().subscribe().unwrap();
     if joined {
         join(&server, &client).await;
     }
@@ -98,7 +97,13 @@ async fn redact(server: &MatrixMockServer, actor: &SearchActor, id: &str) {
     let room = client
         .get_room(matrix_sdk::ruma::room_id!("!admission:example.invalid"))
         .unwrap();
-    let (cache, _handles) = room.event_cache().await.unwrap();
+    let (cache, _handles) = room
+        .client()
+        .event_cache()
+        .unwrap()
+        .room(room.room_id())
+        .await
+        .unwrap();
     let (_, mut updates) = cache.subscribe().await.unwrap();
     let factory = EventFactory::new()
         .room(room.room_id())
@@ -302,7 +307,13 @@ async fn an_earlier_crawl_page_text_edit_cannot_expose_the_original_file() {
     let room = client
         .get_room(matrix_sdk::ruma::room_id!("!admission:example.invalid"))
         .unwrap();
-    let (cache, _handles) = room.event_cache().await.unwrap();
+    let (cache, _handles) = room
+        .client()
+        .event_cache()
+        .unwrap()
+        .room(room.room_id())
+        .await
+        .unwrap();
     let (_, mut updates) = cache.subscribe().await.unwrap();
     let original: matrix_sdk::ruma::serde::Raw<matrix_sdk::ruma::events::AnySyncTimelineEvent> =
         serde_json::from_value(serde_json::json!({
@@ -348,7 +359,13 @@ async fn crawled_foreign_sender_edit_is_rejected_before_or_after_root_admission(
         let room = client
             .get_room(matrix_sdk::ruma::room_id!("!admission:example.invalid"))
             .unwrap();
-        let (cache, _handles) = room.event_cache().await.unwrap();
+        let (cache, _handles) = room
+            .client()
+            .event_cache()
+            .unwrap()
+            .room(room.room_id())
+            .await
+            .unwrap();
         let (_, mut updates) = cache.subscribe().await.unwrap();
         let root_json = serde_json::json!({
             "event_id": TARGET, "sender": "@member:example.invalid", "origin_server_ts": 1,

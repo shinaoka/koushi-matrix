@@ -377,7 +377,6 @@ async fn hidden_alias_keeps_sdk_identity_in_live_and_paginated_timelines() {
     use matrix_sdk_ui::timeline::TimelineFocus;
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client.event_cache().subscribe().unwrap();
     let room_id = room_id!("!live-policy:example.invalid");
     let room = server.sync_joined_room(&client, room_id).await;
     let alias: Raw<AnySyncTimelineEvent> = Raw::from_json_string(

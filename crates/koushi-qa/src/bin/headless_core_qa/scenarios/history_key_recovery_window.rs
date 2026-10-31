@@ -16,6 +16,7 @@ use koushi_sdk::{MatrixClientSession, MatrixClientStoreConfig, MatrixClientStore
 use koushi_state::{AuthSecret, LoginRequest};
 use matrix_sdk::{
     Client, RoomState,
+    config::RequestConfig,
     media::{MediaFetcher, MediaRequestParameters},
     ruma::{
         MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId,
@@ -54,6 +55,15 @@ impl MediaFetcher for DeferredMedia {
                     .into(),
             ))
         })
+    }
+
+    fn fetch_media_content_with_config<'a>(
+        &'a self,
+        client: &'a Client,
+        request: &'a MediaRequestParameters,
+        _request_config: RequestConfig,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, matrix_sdk::Error>> + Send + 'a>> {
+        self.fetch_media_content(client, request)
     }
 }
 

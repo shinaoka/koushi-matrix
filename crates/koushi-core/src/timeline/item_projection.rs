@@ -2077,7 +2077,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
             let has_renderable_content =
                 timeline_content_is_renderable(body.as_deref(), media.as_ref(), formatted.as_ref());
             let is_redacted = content.is_redacted();
-            let can_hold_reactions = content.reactions().is_some();
+            let can_hold_reactions = content.as_msglike().is_some();
             let can_react = timeline_item_can_react(
                 event_item.event_id().is_some(),
                 can_hold_reactions,
@@ -2122,10 +2122,9 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 .content()
                 .thread_summary()
                 .map(thread_summary_from_sdk);
-            let reactions = event_item
-                .content()
-                .reactions()
-                .map(|reactions| reaction_groups_from_sdk(reactions, own_user_id))
+            let reactions = content
+                .as_msglike()
+                .map(|_| reaction_groups_from_sdk(event_item.reactions(), own_user_id))
                 .unwrap_or_default();
             let is_edited = content
                 .as_message()

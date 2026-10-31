@@ -1363,12 +1363,11 @@ async fn sdk_thread_cache_counts(
     let Ok(root_event_id) = matrix_sdk::ruma::EventId::parse(root_event_id) else {
         return (false, (0, 0, 0));
     };
-    let Ok((cache, _drop_handles)) = session
-        .client()
-        .event_cache()
-        .thread(&room_id, &root_event_id)
-        .await
-    else {
+    let client = session.client();
+    let Some(event_cache) = client.event_cache() else {
+        return (false, (0, 0, 0));
+    };
+    let Ok((cache, _drop_handles)) = event_cache.thread(&room_id, &root_event_id).await else {
         return (false, (0, 0, 0));
     };
     match cache.read_receipts().await {

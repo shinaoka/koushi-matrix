@@ -20,7 +20,7 @@ use matrix_sdk::{
     ruma::{event_id, room_id},
     test_utils::mocks::MatrixMockServer,
 };
-use matrix_sdk_test::{ALICE, JoinedRoomBuilder, event_factory::EventFactory};
+use matrix_sdk_test::{JoinedRoomBuilder, User, event_factory::EventFactory};
 use matrix_sdk_ui::timeline::TimelineFocus;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -64,14 +64,18 @@ impl Fixture {
         let server = MatrixMockServer::new().await;
         let client = server
             .client_builder()
-            .logged_in_with_token("synthetic".into(), ALICE.to_owned(), "SYNTHETIC".into())
+            .logged_in_with_token("synthetic".into(), User::Alice.into(), "SYNTHETIC".into())
             .build()
             .await;
-        client.event_cache().subscribe().unwrap();
         let room_id = room_id!("!mutation:example.invalid");
-        server.mock_room_state_encryption().plain().mount().await;
+        server
+            .mock_room_state_encryption()
+            .expect_access_token("synthetic")
+            .plain()
+            .mount()
+            .await;
         let room = server.sync_joined_room(&client, room_id).await;
-        let factory = EventFactory::new().room(room_id).sender(&ALICE);
+        let factory = EventFactory::new().room(room_id).sender(User::Alice);
         let event = factory
             .text_msg("Synthetic original")
             .event_id(event_id!("$mutation:example.invalid"));
@@ -86,7 +90,7 @@ impl Fixture {
                 }))).mount(server.server()).await;
             (
                 TimelineKey {
-                    account_key: AccountKey(ALICE.to_string()),
+                    account_key: AccountKey(User::Alice.to_string()),
                     kind: koushi_protocol::ids::TimelineKind::Focused {
                         room_id: room_id.to_string(),
                         event_id: TARGET.to_owned(),
@@ -115,7 +119,7 @@ impl Fixture {
                 )
                 .await;
             (
-                TimelineKey::room(AccountKey(ALICE.to_string()), room_id.to_string()),
+                TimelineKey::room(AccountKey(User::Alice.to_string()), room_id.to_string()),
                 TimelineFocus::Live {
                     hide_threaded_events: false,
                 },
@@ -126,7 +130,7 @@ impl Fixture {
             client.clone(),
             SessionInfo {
                 homeserver: server.uri(),
-                user_id: ALICE.to_string(),
+                user_id: User::Alice.to_string(),
                 device_id: "SYNTHETIC".into(),
                 authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
             },
@@ -265,7 +269,7 @@ impl Fixture {
                 "Synthetic pending",
                 None,
                 None,
-                Some(ALICE.as_str()),
+                Some(User::Alice.as_str()),
             ),
             sdk_transaction_id: None,
             handle: None,

@@ -13,6 +13,7 @@ export const testkitTargets = [
   "composer_draft_lifecycle.rs",
   "composer_draft_wire.rs",
   "dm_space_ids.rs",
+  "event_cache_lifecycle.rs",
   "event_redaction.rs",
   "issue_1105_authentication_audit.rs",
   "issue_1105_lifecycle_audit.rs",

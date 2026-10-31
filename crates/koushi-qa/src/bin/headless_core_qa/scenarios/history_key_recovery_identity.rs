@@ -1,9 +1,6 @@
 //! Same-device master rotations must invalidate paused historical recovery.
 use super::*;
-use matrix_sdk::{
-    encryption::CrossSigningResetAuthType,
-    ruma::api::client::uiaa::{AuthData, MatrixUserIdentifier, Password, UserIdentifier},
-};
+use matrix_sdk::encryption::CrossSigningResetAuthType;
 
 async fn rotate_and_refresh(
     observer: &Client,
@@ -33,13 +30,8 @@ async fn rotate_and_refresh(
         let CrossSigningResetAuthType::Uiaa(info) = handle.auth_type() else {
             return Err("history recovery: unsupported reset authentication".to_owned());
         };
-        let mut auth = Password::new(
-            UserIdentifier::Matrix(MatrixUserIdentifier::new(user.to_string())),
-            password.to_owned(),
-        );
-        auth.session = info.session.clone();
         handle
-            .auth(Some(AuthData::Password(auth)))
+            .auth(info.as_password_auth_data(user.to_owned().into(), password.to_owned()))
             .await
             .map_err(|_| "history recovery: reset authentication failed")?;
     }

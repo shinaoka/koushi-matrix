@@ -832,7 +832,7 @@ pub(crate) async fn sdk_thread_unread_counts(
     let root_event_id = matrix_sdk::ruma::EventId::parse(root_event_id).ok()?;
     let (cache, _drop_handles) = session
         .client()
-        .event_cache()
+        .event_cache()?
         .thread(&room_id, &root_event_id)
         .await
         .ok()?;
@@ -1019,7 +1019,13 @@ async fn load_thread_root_projection_item_from_room(
             mxc_uri: avatar_url.to_string(),
             thumbnail: AvatarThumbnailState::NotRequested,
         });
-    let relation_events = match room.event_cache().await {
+    let relation_events = match room
+        .client()
+        .event_cache()
+        .ok_or(OperationFailureKind::Sdk)?
+        .room(room.room_id())
+        .await
+    {
         Ok((cache, _drop_handles)) => cache
             .find_event_relations(&root_event_id, None)
             .await

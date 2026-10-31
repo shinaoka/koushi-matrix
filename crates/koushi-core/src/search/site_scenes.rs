@@ -76,7 +76,6 @@ async fn run_scenes() -> BTreeMap<String, SceneResults> {
         })
         .build()
         .await;
-    client.event_cache().subscribe().unwrap();
     let session = Arc::new(MatrixClientSession::from_client_for_testing(
         client.clone(),
         SessionInfo {
@@ -96,7 +95,7 @@ async fn run_scenes() -> BTreeMap<String, SceneResults> {
         for message in &room.messages {
             let event = matrix_sdk_test::event_factory::EventFactory::new()
                 .room(&rid)
-                .sender(&matrix_sdk::ruma::UserId::parse(&message.sender).unwrap())
+                .sender(matrix_sdk::ruma::UserId::parse(&message.sender).unwrap())
                 .text_msg(message.body.as_str())
                 .event_id(&matrix_sdk::ruma::EventId::parse(&message.event_id).unwrap())
                 .server_ts(message.origin_server_ts)

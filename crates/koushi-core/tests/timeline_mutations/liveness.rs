@@ -102,7 +102,7 @@ async fn held_remote_edit_preparation_publishes_pending_items() {
         "GET",
         "/event/",
         serde_json::json!({
-            "event_id": TARGET, "type": "m.room.message", "sender": matrix_sdk_test::ALICE.as_str(),
+            "event_id": TARGET, "type": "m.room.message", "sender": matrix_sdk_test::User::Alice.as_str(),
             "room_id": "!mutation:example.invalid", "origin_server_ts": 1,
             "content": { "msgtype": "m.text", "body": "Synthetic original" }
         }),

@@ -46,14 +46,20 @@ async fn sync_room(
     } else {
         create
     };
-    let mut levels: BTreeMap<OwnedUserId, Int> = BTreeMap::from([(own.clone(), Int::from(power))]);
+    let levels: BTreeMap<OwnedUserId, Int> = BTreeMap::from([(own.clone(), Int::from(power))]);
     server
         .sync_room(
             client,
             JoinedRoomBuilder::new(&room_id)
                 .add_state_event(create.sender(&own))
                 .add_state_event(factory.member(&own))
-                .add_state_event(factory.power_levels(&mut levels).state_key("").sender(&own)),
+                .add_state_event(
+                    factory
+                        .power_levels()
+                        .set_users(levels)
+                        .state_key("")
+                        .sender(&own),
+                ),
         )
         .await;
 }

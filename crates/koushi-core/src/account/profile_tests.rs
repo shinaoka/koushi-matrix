@@ -1,6 +1,6 @@
 use koushi_protocol::{
     command::AccountCommand,
-    event::{AccountEvent, CoreEvent},
+    event::{AccountEvent, CoreEvent, EventCacheSubscribeStatus, LocalEncryptionEvent},
     ids::{RequestId, RuntimeConnectionId},
 };
 use koushi_state::{AppAction, AvatarThumbnailFailureKind, AvatarThumbnailState, SessionInfo};
@@ -95,6 +95,15 @@ async fn cached_avatar_download_dispatches_authoritative_update() {
             .install_residency_test_session(std::sync::Arc::new(session))
             .await
     );
+    assert!(matches!(
+        event_rx.recv().await.expect("cache admission diagnostic"),
+        CoreEvent::LocalEncryption(LocalEncryptionEvent::EventCacheStatus {
+            encrypted_store: false,
+            subscribed: true,
+            subscribe_status: EventCacheSubscribeStatus::AlreadyEnabled,
+            reason_class: None,
+        })
+    ));
     let mxc_uri = "mxc://localhost/cached-avatar";
     let first_request_id = RequestId {
         connection_id: RuntimeConnectionId(7),
@@ -291,6 +300,15 @@ async fn canceling_last_avatar_waiter_aborts_active_fetch_and_admits_pending_wor
             .await
     );
 
+    assert!(matches!(
+        event_rx.recv().await.expect("cache admission diagnostic"),
+        CoreEvent::LocalEncryption(LocalEncryptionEvent::EventCacheStatus {
+            encrypted_store: false,
+            subscribed: true,
+            subscribe_status: EventCacheSubscribeStatus::AlreadyEnabled,
+            reason_class: None,
+        })
+    ));
     for sequence in 1..=super::profile::AVATAR_DOWNLOAD_CONCURRENCY as u64 {
         assert!(
             handle

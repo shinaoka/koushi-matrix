@@ -99,7 +99,6 @@ async fn spawn_fixture() -> (
 async fn session_fixture() -> (MatrixMockServer, Arc<MatrixClientSession>) {
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client.event_cache().subscribe().unwrap();
     let session = MatrixClientSession::from_client_for_testing(
         client.clone(),
         SessionInfo {

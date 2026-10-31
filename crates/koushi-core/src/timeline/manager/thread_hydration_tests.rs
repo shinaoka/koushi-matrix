@@ -78,7 +78,7 @@ async fn initial_thread_hydrates_across_hidden_cached_chunks() {
     let timeline = super::koushi_timeline_builder(
         &room,
         TimelineFocus::Thread {
-            root_event_id: root.to_owned(),
+            thread_id: root.to_owned(),
         },
     )
     .build()
@@ -165,7 +165,7 @@ async fn initial_thread_classifies_withheld_root_relations_errors() {
         let timeline = super::koushi_timeline_builder(
             &room,
             TimelineFocus::Thread {
-                root_event_id: root.to_owned(),
+                thread_id: root.to_owned(),
             },
         )
         .build()

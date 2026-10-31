@@ -50,9 +50,6 @@ async fn late_decrypted_in_room_request_reaches_incoming_observer() {
         .on_builder(move |builder| builder.with_encryption_settings(settings()))
         .build()
         .await;
-    bob.event_cache()
-        .subscribe()
-        .expect("the event cache should start");
     server.exchange_e2ee_identities(&alice, &bob).await;
 
     let factory = EventFactory::new().room(room_id).sender(alice_user_id);

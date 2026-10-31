@@ -16,7 +16,7 @@ use matrix_sdk::{
     ruma::{event_id, room_id},
     test_utils::mocks::MatrixMockServer,
 };
-use matrix_sdk_test::{ALICE, event_factory::EventFactory};
+use matrix_sdk_test::{User, event_factory::EventFactory};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -30,10 +30,11 @@ async fn edit_uses_command_formatting_options_in_the_sdk_local_echo() {
         .set_enabled(false);
     let factory = EventFactory::new()
         .room(room_id!("!mutation:example.invalid"))
-        .sender(&ALICE);
+        .sender(User::Alice);
     fixture
         .server
         .mock_room_event()
+        .expect_access_token("synthetic")
         .ok(factory
             .text_msg("Synthetic original")
             .event_id(event_id!("$mutation:example.invalid"))

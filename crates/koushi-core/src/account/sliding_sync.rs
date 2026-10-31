@@ -424,6 +424,7 @@ impl AccountActor {
             .expect("matching Sliding Sync admission remains pending");
         match pending {
             PendingSlidingSyncAdmission::NewLogin {
+                core_request_id,
                 login_session,
                 persistable,
                 key_id,
@@ -432,8 +433,23 @@ impl AccountActor {
                 ..
             } => {
                 self.stored_sliding_sync_admission = None;
-                self.prepare_store_backed_session(&login_session, true)
+                if let Err(failure) = self
+                    .prepare_store_backed_session(&login_session, true)
+                    .await
+                {
+                    self.abort_login(login_session, &key_id, false, true).await;
+                    self.send_actions(vec![AppAction::LoginFailed {
+                        attempt_id: LoginAttemptId::new(
+                            core_request_id.connection_id.0,
+                            core_request_id.sequence,
+                        ),
+                        message: "login failed".to_owned(),
+                        reason: None,
+                    }])
                     .await;
+                    self.emit_failure(core_request_id, failure);
+                    return;
+                }
                 self.install_provisional_session(login_session, persistable, key_id, action)
                     .await;
                 self.emit_login_admitted(&ready_events);

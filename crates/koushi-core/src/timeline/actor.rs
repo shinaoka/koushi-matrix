@@ -1494,9 +1494,11 @@ impl TimelineActor {
         // load's provenance (store=cache vs network) is observed. The helper
         // decides whether to mirror the observation to stderr.
         {
+            let client = session.client();
             if let Ok(parsed_room_id) = matrix_sdk::ruma::RoomId::parse(key.room_id())
-                && let Some(observer_room) = session.client().get_room(&parsed_room_id)
-                && let Ok((cache, drop_guards)) = observer_room.event_cache().await
+                && let Some(observer_room) = client.get_room(&parsed_room_id)
+                && let Some(event_cache) = client.event_cache()
+                && let Ok((cache, drop_guards)) = event_cache.room(&parsed_room_id).await
                 && let Ok((initial, mut updates)) = cache.subscribe().await
             {
                 if !initial.is_empty() {

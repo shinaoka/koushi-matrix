@@ -3,7 +3,6 @@ use std::{
     net::TcpListener,
     path::Path,
     thread,
-    time::Duration,
 };
 
 use koushi_sdk::{MatrixClientStoreConfig, MatrixClientStoreKey};
@@ -104,19 +103,60 @@ fn enable_event_cache_is_idempotent() {
             .await
             .expect("password login with encrypted store should succeed");
 
-        assert!(!session.client().event_cache().has_subscribed());
+        assert!(
+            session.client().event_cache().is_some(),
+            "login starts the event cache automatically"
+        );
+        assert!(
+            session.client().latest_events().await.is_some(),
+            "the automatically started event cache serves latest events"
+        );
 
         let first = koushi_sdk::enable_event_cache(&session)
             .await
-            .expect("event cache subscription should succeed");
+            .expect("enabling an already running event cache should succeed");
         let second = koushi_sdk::enable_event_cache(&session)
             .await
-            .expect("event cache subscription should remain idempotent");
+            .expect("event cache enable should remain idempotent");
 
-        assert_eq!(first, koushi_sdk::MatrixEventCacheStatus::Enabled);
+        assert_eq!(first, koushi_sdk::MatrixEventCacheStatus::AlreadyEnabled);
         assert_eq!(second, koushi_sdk::MatrixEventCacheStatus::AlreadyEnabled);
-        assert!(session.client().event_cache().has_subscribed());
+        assert!(session.client().event_cache().is_some());
     });
+}
+
+#[tokio::test]
+async fn disabled_event_cache_is_rejected_by_the_availability_boundary() {
+    let server = matrix_sdk::test_utils::mocks::MatrixMockServer::new().await;
+    let client = server
+        .client_builder()
+        .on_builder(|builder| builder.with_event_cache(false))
+        .build()
+        .await;
+    let room_id = matrix_sdk::ruma::room_id!("!cache-fixture:example.invalid");
+    server.sync_joined_room(&client, room_id).await;
+    let session = koushi_sdk::MatrixClientSession::from_client_for_testing(
+        client,
+        koushi_state::SessionInfo {
+            homeserver: server.uri(),
+            user_id: "@cache-fixture:example.invalid".to_owned(),
+            device_id: "CACHE-FIXTURE".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        },
+    );
+    assert_eq!(
+        koushi_sdk::enable_event_cache(&session).await,
+        Err(koushi_sdk::MatrixEventCacheError::SubscribeFailed)
+    );
+    assert!(matches!(
+        koushi_sdk::resolve_cached_message(
+            &session,
+            room_id.as_str(),
+            "$cache-fixture:example.invalid",
+        )
+        .await,
+        Err(koushi_sdk::MatrixSearchError::Internal)
+    ));
 }
 
 #[test]
@@ -142,9 +182,6 @@ fn event_cache_persists_across_drop_and_restore() {
         let session = koushi_sdk::login_with_password_with_store(&request, Some(&store_config))
             .await
             .expect("password login with encrypted store should succeed");
-        let _ = koushi_sdk::enable_event_cache(&session)
-            .await
-            .expect("event cache should enable before sync");
         koushi_sdk::sync_once(&session)
             .await
             .expect("sync should succeed");
@@ -159,36 +196,26 @@ fn event_cache_persists_across_drop_and_restore() {
             .expect("store-backed session should restore");
         let status = koushi_sdk::enable_event_cache(&restored)
             .await
-            .expect("restored session should enable the event cache");
-        assert_eq!(status, koushi_sdk::MatrixEventCacheStatus::Enabled);
+            .expect("restored session should keep the event cache enabled");
+        assert_eq!(status, koushi_sdk::MatrixEventCacheStatus::AlreadyEnabled);
 
         let room_id = RoomId::parse("!persisted-room:example.invalid").expect("room id");
         let room = restored
             .client()
             .get_room(&room_id)
             .expect("room should be restored from sync state");
-        let (room_event_cache, _drop_handles) = room.event_cache().await.expect("room cache");
+        let (room_event_cache, _drop_handles) = room
+            .client()
+            .event_cache()
+            .unwrap()
+            .room(room.room_id())
+            .await
+            .expect("room cache");
         let expected_body = "persistent cache payload";
-        let (events, _subscriber) = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let (events, subscriber) = room_event_cache
-                    .subscribe()
-                    .await
-                    .expect("room event cache should subscribe");
-
-                if events
-                    .iter()
-                    .any(|event| message_event_body(event).as_deref() == Some(expected_body))
-                {
-                    break (events, subscriber);
-                }
-
-                drop(subscriber);
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-        })
-        .await
-        .expect("timed out waiting for restored room event cache");
+        let (events, _subscriber) = room_event_cache
+            .subscribe()
+            .await
+            .expect("restored room event cache should subscribe");
 
         assert!(
             events

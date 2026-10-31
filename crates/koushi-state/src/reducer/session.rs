@@ -263,7 +263,7 @@ pub(crate) fn handle_verification_method_discovery_retry_started(
         }
         | SessionState::Provisional {
             info,
-            phase: ProvisionalPhase::RecheckingTrust { failure: Some(_) },
+            phase: ProvisionalPhase::RecheckingTrust { .. },
         } => info.clone(),
         _ => return Vec::new(),
     };

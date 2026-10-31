@@ -208,6 +208,7 @@ pub async fn search_message_candidates_scoped(
             };
 
             return Ok(candidates
+                .events
                 .into_iter()
                 .take(limit)
                 .enumerate()
@@ -449,7 +450,10 @@ pub async fn cached_redacted_event_ids(
         .get_room(&room_id)
         .ok_or(MatrixSearchError::Query)?;
     let (cache, _handles) = room
+        .client()
         .event_cache()
+        .ok_or(MatrixSearchError::Internal)?
+        .room(room.room_id())
         .await
         .map_err(|_| MatrixSearchError::Internal)?;
     let redacted = cache
@@ -484,7 +488,10 @@ pub async fn cached_invalid_replacement_ids(
         .get_room(&room_id)
         .ok_or(MatrixSearchError::Query)?;
     let (cache, _handles) = room
+        .client()
         .event_cache()
+        .ok_or(MatrixSearchError::Internal)?
+        .room(room.room_id())
         .await
         .map_err(|_| MatrixSearchError::Internal)?;
     let Some(root) = cache
@@ -715,7 +722,10 @@ pub async fn index_room_events_now(
         return Err(MatrixSearchError::Query);
     };
     let (room_cache, _drop_handles) = room
+        .client()
         .event_cache()
+        .ok_or(MatrixSearchError::Internal)?
+        .room(room.room_id())
         .await
         .map_err(|_| MatrixSearchError::Internal)?;
     let redaction_rules = room.clone_info().room_version_rules_or_default().redaction;

@@ -83,7 +83,7 @@ async fn thread_focus_projection_preserves_element_mention_anchors() {
     let timeline = super::koushi_timeline_builder(
         &room,
         TimelineFocus::Thread {
-            root_event_id: root.to_owned(),
+            thread_id: root.to_owned(),
         },
     )
     .build()
