@@ -1,5 +1,33 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest remaining-gate resume — 2026-11-01 — IN PROGRESS
+
+The maintainer resumed #2 remaining gates and authorized #4 publication **only
+if all required gates are GREEN**; #5 stays diagnosis-only. Earlier no-third-
+Synapse-aggregate/protected-item/shared-target constraints remain preserved.
+No app/SDK/policy/oracle change, rebuild or additional aggregate was made.
+
+- Source head `27e488ee`, SDK `1c669ef10`; same prepared executables, verified
+  unchanged hash/mtime before and after each command. Idle-selected8CPUs,
+  jobs8/tests8, existing private prebuilt-only PATH launcher and fresh fixtures.
+- `npm --prefix apps/desktop run qa:headless-local -- --server=both
+  --scenario=timeline_reconnect --core --timeout-ms=600000 --cargo-profile=release`
+  **exit0 / PASS both**, CPUs`0-7`. Both checkpoint and gap-repaired tokens plus
+  final timeline-reconnect token present on each server.
+- Same command with `--scenario=user_verification`: **exit0 / PASS both**,
+  CPUs`0-1,3-8`. Both servers reached incoming-request, SAS match, done and
+  identity-verified tokens; source request/observer delivery requirement retained.
+- Private logs/exit/conditions/fixture paths and binary identities are saved as
+  `/tmp/koushi-1677-remaining-timeline-reconnect.{log,exit,json}` and
+  `/tmp/koushi-1677-remaining-user-verification.{log,exit,json}`.
+- Remaining dedicated gates: `redact_edit_convergence`, `search_crawler_catchup`
+  on both disposable servers. Run sequentially; stop on the first RED, preserve
+  that gate's own exit, and do not turn partial successes into aggregate GREEN.
+- Known Synapse Space-leave aggregate **RED remains**, ordinal2/2, diagnosed
+  below. Completed static/workspace/integrated source review PASS remain valid
+  in their recorded scope. No PR, hosted CI/auto-merge or cleanup deletion yet.
+
+
 ## Latest bounded read-only diagnosis — 2026-11-01 01:51 JST — RED, STOP
 
 Maintainer scope: read-only diagnosis, no rebuild, then **one** same-fixture
