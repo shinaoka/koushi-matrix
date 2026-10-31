@@ -1,6 +1,6 @@
 # Issue #1677 — WIP recovery checkpoint
 
-## Latest remaining-gate resume — 2026-11-01 — IN PROGRESS
+## Latest remaining-gate resume — 2026-11-01 02:16 JST — dedicated8/8 PASS, overall RED / STOP
 
 The maintainer resumed #2 remaining gates and authorized #4 publication **only
 if all required gates are GREEN**; #5 stays diagnosis-only. Earlier no-third-
@@ -17,15 +17,46 @@ No app/SDK/policy/oracle change, rebuild or additional aggregate was made.
 - Same command with `--scenario=user_verification`: **exit0 / PASS both**,
   CPUs`0-1,3-8`. Both servers reached incoming-request, SAS match, done and
   identity-verified tokens; source request/observer delivery requirement retained.
-- Private logs/exit/conditions/fixture paths and binary identities are saved as
-  `/tmp/koushi-1677-remaining-timeline-reconnect.{log,exit,json}` and
-  `/tmp/koushi-1677-remaining-user-verification.{log,exit,json}`.
-- Remaining dedicated gates: `redact_edit_convergence`, `search_crawler_catchup`
-  on both disposable servers. Run sequentially; stop on the first RED, preserve
-  that gate's own exit, and do not turn partial successes into aggregate GREEN.
-- Known Synapse Space-leave aggregate **RED remains**, ordinal2/2, diagnosed
-  below. Completed static/workspace/integrated source review PASS remain valid
-  in their recorded scope. No PR, hosted CI/auto-merge or cleanup deletion yet.
+- Same command with `--scenario=redact_edit_convergence`: **exit0 / PASS both**,
+  CPUs`0-7`. Both servers emitted `redact_edit_convergence=ok` and
+  `thread_summary_convergence=ok`.
+- Same command with `--scenario=search_crawler_catchup`: **exit0 / PASS both**,
+  CPUs`0-7`. Both emitted `crawl_catchup_live=ok`, `crawl_catchup_restart=ok`,
+  `search_crawler_catchup=ok`, including the required real startup-delay path.
+- Actual JST execution windows: timeline **02:00:40–02:01:52**;
+  verification **02:02:38–02:07:08**; redact/edit **02:08:30–02:09:40**;
+  crawler **02:10:22–02:15:33**. Each gate has its own actual exit0; all four
+  binary hash/mtime checks were unchanged, two fresh fixtures per command.
+  No successful check was rerun and no negative result was discarded.
+- Private logs/own exits/conditions/fixture paths/binary identities are saved
+  under `/tmp/koushi-1677-remaining-<slug>.{log,exit,json}`, with slugs
+  `timeline-reconnect`, `user-verification`, `redact-edit-convergence`, and
+  `search-crawler-catchup`. Full synthetic server/child evidence is retained
+  in the ignored per-server fixtures listed in each JSON; no raw payloads are
+  copied to public records. The first two results were checkpoint-pushed as
+  `f641554d`; the last two affect no source or dependency revision.
+- **#2:** all four dedicated migration scenarios now pass on both servers,
+  **8/8 cells**. Previous wording that these dedicated scenarios are pending
+  is historical. Static/workspace/integrated source-review PASS remain valid
+  in their recorded scope; these successes do not replace the aggregate.
+- **#4: NOT STARTED / blocked by required RED.** The known Synapse Space-leave
+  aggregate remains **exit1**, ordinal2/2, signature
+  `space_leave_children memberships: timed out`. No correction has turned
+  that oracle GREEN. No third aggregate or gate waiver was authorized/run.
+  Thus not all required gates are green: no fork-to-Koushi PR, hosted CI,
+  auto-merge/admin merge, branch deletion or post-merge target/worktree cleanup.
+- **#5:** retain the read-only diagnosis below: remote selected memberships
+  left, local Space/child0 still projected; concrete existing app local-leave
+  handling gap, exact SDK-versus-app callback cause unconfirmed. No further
+  investigation or speculative product/SDK/harness/policy change in this resume.
+
+**Stop reason:** required aggregate remains RED despite the now-finished
+missing dedicated evidence. Preserve this distinction; never mark #2/#4 done
+or report final GREEN solely from8/8. Save/push this final checkpoint, retain
+unmerged worktree/shared targets, and report the failed gate rather than open
+an incomplete PR. No protected item, new issue, force-push or paid resource
+was touched. Remaining technical work is a proven correction for the diagnosed
+Space-leave failure and its relevant checks, not another blind aggregate run.
 
 
 ## Latest bounded read-only diagnosis — 2026-11-01 01:51 JST — RED, STOP
