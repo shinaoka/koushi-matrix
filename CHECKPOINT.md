@@ -1,5 +1,49 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest verified boundary — 2026-11-01 03:43 JST — mandatory both/all exit0
+
+**Mandatory product aggregate GREEN on both disposable servers.** Exactly one
+post-correction both-server invocation; no retry/rebuild/extra experiment.
+Command: `npm --prefix apps/desktop run qa:headless-local -- --server=both
+--scenario=all --core --timeout-ms=600000 --cargo-profile=release` through the
+existing prebuilt-only launcher. Actual03:39:00–03:42:28 JST, idle-selected
+CPU affinity`0-1,4-9` (8CPUs), jobs8/tests8. Own runner **exit0**; Tuwunel
+Core **exit0** and Synapse Core **exit0**. On BOTH servers:
+`space_access=ok space_add_existing=ok space_leave_children=ok
+restore_cleanup=ok`; no closed failure/child timeout. The formerly failing
+Space-leave membership oracle was actually reached and passed, not skipped.
+
+Own receipts: `/tmp/koushi-1677-postfix-both-all.{exit,log,json}`. Parent
+verified own exit0 against JSON, source diff clean, SDK clean, cpu_count8,
+binaries immutable, and per-server Core exits/tokens. Both executable hashes/
+mtimes stayed unchanged; corrected core SHA256`aef1db81b951…`, SDK smoke
+`d2d6a67aa575…`. Source1ae6e673/production08b89c19, SDK1c669ef10; later
+commits checkpoint-only. Individual failed attempts and main SAME_POLICY_RED
+comparison remain recorded below; no known RED has been erased or reclassified
+as an aggregate success. Focused diagnostic exclusion is explicitly audit-
+approved from unchanged-main matching receipts, not a gate relaxation.
+
+**Context-safety handoff before further integration:** prior reported context
+86%, hard90% edit stop. Save/push this verified boundary; do not lose the
+successful single-run evidence. No active build/scenario remains. Step2
+**affected mandatory reruns are NOT STARTED**; integrated final post-review
+is **NOT COMPLETE**; no PR/CI/merge/cleanup is claimed. The earlier incomplete
+corrective review is not evidence and must not be counted.
+
+**Next exact sequence in this same worktree:** execute the serialized8-core
+Step2 commands in`/tmp/koushi-1677-step2-continuation.md`, bounded workers and
+own exits per command, stop on any required RED; then one integrated exact-GPT
+post-review round split over complete source slices. Prepared manifest:
+`/tmp/koushi-1677-final-post-review/manifest.json` (source bytes unchanged,
+worklog/header slices need refreshing to final submitted checkpoint). Split
+any tool-limited unread scope further; do not count unfinished review. Only
+all mandatory checks/review GREEN permits ONE English base-main PR, Refs#1677,
+explaining fork pin/Koushi migration/Space fix/focused exclusion; normal
+CI/auto-merge, no admin/force-push. Original all-gate must NOT be rerun merely
+to resume. Known external-rejoin limitation stays out of scope. Do not touch
+protected issues/SDK PR34 or shared targets. Hard cutoff04:45 JST remains;
+no silent extension. Root/SDK source and all prepared targets are retained.
+
 ## Latest comparison boundary — 2026-11-01 03:35 JST — main SAME_POLICY_RED
 
 **The required unchanged-main focused experiment is complete; no retry.**
