@@ -1,5 +1,28 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest audit resume — 2026-11-01 — conservative correction authorized
+
+The maintainer's tier-A audit explicitly lifts PARK: implement the existing
+canon, without amendment or an absence-based membership inference. Accept known
+Space IDs in `RoomLeftLocally`, remove the authoritative-list marker release,
+and filter both rooms and Spaces through the unchanged pending set. Keep only
+the existing successful `RoomJoinedLocally` release path, plus normal session
+cleanup. No field/API/wire/dependency/oracle/pin/policy/new mechanism. The two
+requested REDs remain the acceptance checks; their own prior exit101 logs are
+preserved. Same tests GREEN, coherent self-review and affected local checks,
+then the authorized fresh focused Synapse gate once, followed only on success
+by one both-server aggregate and the conditional PR chain. Prior passing checks
+are not repeated without an affecting change; required RED cannot be waived.
+Original bounded-work deadline04:26:24 JST remains in force.
+
+**Known residual limitation (explicitly accepted out of scope):** conservative
+projection suppression is not released by list presence or absence, nor by an
+external rejoin on another device. In this session it remains until an admitted
+successful local join clears it; account/session cleanup still retires its
+state. This correction adds no external-membership ordering mechanism and does
+not claim that external-rejoin visibility is fixed. Record the limitation in
+handoff/PR reporting without creating an issue.
+
 ## Latest canon-gap stop — 2026-11-01 — requested PARK, two REDs saved
 
 **Stopped before any production edit, per the maintainer's explicit canon-gap
