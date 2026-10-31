@@ -15,17 +15,14 @@ by one both-server aggregate and the conditional PR chain. Prior passing checks
 are not repeated without an affecting change; required RED cannot be waived.
 Original bounded-work deadline04:26:24 JST remains in force.
 
-Context-safety audit:87.1% reported by maintainer; stop editing at90%, save and
-push, then hand off this same worktree. Current production edit is applied but
-**not tested yet**: known-Space admission, deleted list-driven release, and
-Space filtering only. No absence-driven release or new mechanism. Save this
-boundary immediately, then run the first exact regression; every individual
-RED→GREEN result is checkpointed/committed/pushed before the next test. Next:
-`cargo test -j8 --profile ci --locked -p koushi-state --test navigation_state
-local_leave::space_local_leave_removes_space_immediately -- --exact
---test-threads=8`, then the corresponding
-`local_leave::space_local_leave_survives_stale_authoritative_room_list`.
-Source worker environment, pick8 idle CPUs, kache explain, save own exits.
+**Context-safety handoff:** maintainer reported87.1% and requires a hard90%
+edit stop. Both exact regressions are now GREEN, saved one at a time. End this
+session at this verified boundary rather than spend the remaining context on
+integration. Resume in this same worktree/branch; no new design is needed.
+Production correction is `08b89c19`: known-Space admission, deleted list-driven
+release, and Space filtering only. No absence-driven release or new mechanism.
+The audit scope was first pushed as54838a69, applied/unverified production was
+immediately pushed as08b89c19, and the first GREEN was pushed as5ed75617.
 No new QA fixture/rebuild/aggregate/PR has been started.
 
 First RED→GREEN boundary: production source `08b89c19`,
@@ -33,8 +30,32 @@ First RED→GREEN boundary: production source `08b89c19`,
 zero failed** (previously its own exit101 assertion failure). Worker env,
 kache, CPUs`0-7`, jobs8/tests8. Own evidence:
 `/tmp/koushi-1677-spaceleave-green-immediate.{log,exit,env}`.
-Commit/push this result before running the second regression. Second test,
-self-review, post-review and post-correction integrated gates remain pending.
+This result was committed/pushed as5ed75617 before the second regression.
+
+Second RED→GREEN boundary: same production `08b89c19`,
+`local_leave::space_local_leave_survives_stale_authoritative_room_list`
+**exit0,1 passed,zero failed**, previous own exit101 assertion failure.
+Worker env, kache, CPUs`0-7`, jobs8/tests8. Own evidence:
+`/tmp/koushi-1677-spaceleave-green-stale.{log,exit,env}`. Exactly the original
+requested two tests remain tracked; no assertion/oracle was changed.
+
+**Next session, in order:** read this latest section and governing canon;
+self-review the coherent corrective delta (`git diff be61605b..HEAD`, including
+new tests already added in23e167cb), run affected state-suite/workspace/lint/
+stack checks with8 idle CPUs/jobs8/tests8, and obtain the narrow exact-GPT
+post-review of this new corrective diff (the old integrated review predates it).
+Prior successful unaffected frontend/SDK checks are recorded below, not new
+post-correction results. Refresh only the affected release QA binary so it
+contains08b89c19; old prepared binaries do not prove this fix. Then run exactly
+one fresh Synapse `room_management --core --timeout-ms=600000
+--cargo-profile=release` through the existing prebuilt-only launcher, recording
+before/after executable hashes. Only if the entire scenario including Space
+leave is GREEN, run one `--server=both --scenario=all` aggregate. Required RED
+means save/report, no blind retry or assertion/deadline/server/pin/policy edit.
+Only all mandatory gates GREEN permits the English base-main PR chain,
+`Refs #1677`, CI/auto-merge and authorized unshared cleanup. No new issue or
+protected-item operation. Preserve existing prepared binaries and targets.
+Original04:26:24 JST deadline still applies unless the maintainer changes it.
 
 **Known residual limitation (explicitly accepted out of scope):** conservative
 projection suppression is not released by list presence or absence, nor by an
