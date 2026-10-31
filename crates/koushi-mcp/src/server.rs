@@ -335,7 +335,12 @@ mod tests {
                 .as_array()
                 .is_some_and(|required| required.iter().any(|key| key == "coverage"))
         );
-        assert!(read.get("outputSchema").is_none());
+        assert_eq!(read["outputSchema"]["type"], "object");
+        assert_eq!(
+            read["outputSchema"]["properties"]["messages"]["items"]["properties"]["content_available"]
+                ["type"],
+            "boolean"
+        );
     }
 
     #[tokio::test]

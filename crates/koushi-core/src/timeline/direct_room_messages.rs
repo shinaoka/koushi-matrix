@@ -66,9 +66,24 @@ pub(crate) async fn read_room_messages(
 /// Projects one timeline event, or `None` when it is not a room message.
 fn item_for_event(event: &TimelineEvent) -> Option<RoomMessageItem> {
     let parsed: AnySyncTimelineEvent = event.raw().deserialize().ok()?;
-    let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(message)) = parsed
-    else {
-        return None;
+    let message = match parsed {
+        AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(message)) => message,
+        AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomEncrypted(message))
+            if event.encryption_info().is_none() =>
+        {
+            // Match get_message: missing keys leave a readable envelope, not a missing event.
+            return Some(RoomMessageItem {
+                event_id: message.event_id().to_string(),
+                sender_id: message.sender().to_string(),
+                timestamp_ms: u64::from(message.origin_server_ts().0),
+                body: None,
+                content_available: false,
+                kind: RoomMessageKind::Other,
+                is_encrypted: true,
+                is_redacted: false,
+            });
+        }
+        _ => return None,
     };
     let sender_id = message.sender().to_string();
     let timestamp_ms = u64::from(message.origin_server_ts().0);
@@ -80,6 +95,7 @@ fn item_for_event(event: &TimelineEvent) -> Option<RoomMessageItem> {
                 event_id: original.event_id.to_string(),
                 sender_id,
                 timestamp_ms,
+                content_available: body.is_some(),
                 body,
                 kind,
                 is_encrypted,
@@ -91,6 +107,7 @@ fn item_for_event(event: &TimelineEvent) -> Option<RoomMessageItem> {
             sender_id,
             timestamp_ms,
             body: None,
+            content_available: false,
             kind: RoomMessageKind::Other,
             is_encrypted,
             is_redacted: true,

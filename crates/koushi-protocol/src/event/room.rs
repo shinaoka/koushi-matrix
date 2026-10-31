@@ -473,6 +473,8 @@ pub struct RoomMessageItem {
     /// The message text, when this device could read it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// True exactly when `body` is present, as in a direct message read.
+    pub content_available: bool,
     #[serde(default)]
     pub kind: RoomMessageKind,
     /// The event arrived encrypted, whichever way it was decrypted.
