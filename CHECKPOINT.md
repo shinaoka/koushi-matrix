@@ -1,5 +1,23 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest Step2-only audit — 2026-11-01 03:50 JST — cutoff04:45 strict
+
+The remaining target tonight is ONLY the nine affected mandatory commands in
+`/tmp/koushi-1677-step2-continuation.md`. One retained command-only worker,
+serialized8 idle CPUs/taskset, jobs8/tests8/kache, each own exit, stop on first
+failure without retry or separate rebuild. No source edits, parent bulk logs,
+new aggregate/focused run, post-review or PR launch. Preserve the verified
+both/all exit0 below; do not rerun it. Hard04:45/context90% stop/save/report.
+
+Group boundaries are A:commands1–2(fmt/workspace), B:3–5(clippy), C:6–9
+(stack/QA-bin/wasm/structural+whitespace). The SAME worker receives all nine
+commands but pauses after each group so main can checkpoint/push before its
+next turn. Receipt/log prefixes `/tmp/koushi-1677-step2-*`; report only own
+exits, safe counts and paths. If a group fails, no later group/review/PR.
+At cutoff save completed versus not-run commands and exact next action; no
+silent extension or paid/destructive/protected-item/target-cleanup operation.
+No Step2 result is claimed yet; final integrated post-review remains pending.
+
 ## Latest verified boundary — 2026-11-01 03:43 JST — mandatory both/all exit0
 
 **Mandatory product aggregate GREEN on both disposable servers.** Exactly one
