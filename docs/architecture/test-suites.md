@@ -38,9 +38,11 @@ support-module instance via a relative path declaration: this preserves helper
 state scope AND every compiled helper test instance. In particular, the OAuth
 fixture currently contributes two tests to each Core testkit module that imports
 support; consolidating these repeated cases would change coverage inventory and
-is not part of this migration. The existing exported test-only helper macro
-must become module-scoped when several former roots share a suite, with local
-imports rather than duplicate `macro_export` definitions. No product API changes.
+is not part of this migration. Use item-scoped `clippy::duplicate_mod`
+expectations for these deliberate fixture instances rather than merging them.
+The existing exported test-only helper macro must become module-scoped when
+several former roots share a suite, with local imports rather than duplicate
+`macro_export` definitions. No product API changes.
 Crate-only recursion-limit attributes move to the entry point (maximum of the
 former roots); module cfg attributes remain on their original feature module.
 
@@ -55,6 +57,10 @@ ignored cases remain opt-in; do not introduce ignores to get a suite green.
 State tests construct their own state; Core tests keep isolated runtime/store
 and credential directories, and mock servers keep dynamically allocated local
 ports. No suite-level homeserver, runtime or store singleton is introduced.
+Persistence restart fixtures release the first runtime's connections and await
+`shutdown_checked()` before reopening the same stores; dropping a runtime alone
+does not wait for its ordered persistence/teardown barrier. Case names,
+assertions and timeouts remain unchanged.
 Existing diagnostic ring readers retain the shared diagnostic lock. Existing
 module-local locks remain module-local. Process-wide environment, current
 working directory and global tracing/diagnostic state are shared by all cases:
@@ -88,6 +94,16 @@ Earlier separate Core testkit/desktop runs had the same problem. Cargo retains
 old hashes; directory totals include these stale executables until removed.
 This is not evidence that libtest ran each case twice in one invocation.
 
+The configuration split is reproducible after SDK integration #1677 with
+`cargo tree --workspace -e normal,build,dev --prefix none -f '{p} {f}'`
+versus the same command with `-p koushi-core-testkit` instead of `--workspace`.
+Both select the same Matrix SDK feature names, but only the workspace selects
+Tokio `io-std`, `process`, `signal` and `signal-hook-registry`, and reqwest
+`system-proxy`. Those transitive differences change SDK and test artifact hashes
+without changing `RUSTFLAGS`. Removing the redundant OAuth CI invocation avoids
+this second graph in the ordinary Rust job; historical mixed-tree hashes can
+also be stale artifacts, not active duplicate gates.
+
 Focused iteration remains allowed and is deliberately not an artifact-size
 baseline: `cargo test -p <crate> --profile ci --test <suite> <feature>::` compiles
 only the owning suite but may select another dependency feature graph. Do not
@@ -99,7 +115,7 @@ is needed. Profile/feature/toolchain/flags changes legitimately produce new hash
 ## Relinking cost and verification
 
 A suite statically links the SDK once instead of once per feature module. Using
-the issue's roughly 150 MB SDK-linked executable as an estimate, 40 testkit
+the issue's roughly 150 MB SDK-linked executable as an estimate, 41 testkit
 integration roots become two suites plus two process-isolated targets:
 roughly 6 GB becomes 600 MB for one configuration, before actual platform/code
 size differences. State is SDK-free and benefits mainly from fewer rustc/link

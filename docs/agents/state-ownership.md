@@ -111,7 +111,7 @@ artifact.
 Focused checks:
 
 ```bash
-cargo test -p koushi-state --test core_batch_a_state
+cargo test -p koushi-state --test state core_batch_a_state::
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml core_event_wire_format_matches_checked_in_contract_artifact
 npm --prefix apps/desktop run typecheck
 ```
@@ -333,7 +333,7 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   rotation, checkpoint, or recovery behavior. Do not add a second
   `RoomListService`, an LRU/timer, a persistence format, or a crypto override.
 - Cross-actor checks live in
-  `crates/koushi-core/tests/room_subscription_residency.rs`; only pure helper
+  `crates/koushi-core-testkit/tests/contracts/room_subscription_residency.rs`; only pure helper
   tests may stay inline.
 
 ## Timeline navigation
@@ -522,10 +522,10 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   `TimelineItem.thread_summary`, or visible thread rows. Total reply count stays
   in `thread_summary.reply_count`; successful threaded read acknowledgement
   clears new/unread attention through the Rust actor/reducer snapshot path.
-- Focused checks: `cargo test -p koushi-state --test attention_surface`,
-  `cargo test -p koushi-sdk --test attention_surface`,
+- Focused checks: `cargo test -p koushi-state --test state attention_surface::`,
+  `cargo test -p koushi-sdk --test sdk attention_surface::`,
   `npm --prefix apps/desktop run test -- src/domain/desktopAttention.test.ts`, and
-  `cargo test -p koushi-state --test session_state logout_clears_native_attention_state_and_notifies_ui`.
+  `cargo test -p koushi-state --test state logout_clears_native_attention_state_and_notifies_ui`.
 
 ## Live signals
 
@@ -753,7 +753,7 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   `compose_sidebar_with_account_facts` takes notification settings and the invite
   count; the three-argument `compose_sidebar` wrapper is for callers that
   genuinely hold neither.
-- Focused checks: `cargo test -p koushi-state --test navigation_state`,
+- Focused checks: `cargo test -p koushi-state --test state navigation_state::`,
   `cargo test -p koushi-desktop --lib`, and
   `npx playwright test e2e/home-scoped-navigation.spec.ts`.
 
@@ -1565,7 +1565,7 @@ normal QA-title mode and cannot change product title semantics.
   "Your verification" row renders `e2ee_trust.verification` only when its
   `target.user_id` is the open contact, and offers Accept only for
   `initiator: "them"`. Focused checks: `cargo test -p
-  koushi-state --test contact_security_state`, `cargo test -p koushi-sdk --lib
+  koushi-state --test state contact_security_state::`, `cargo test -p koushi-sdk --lib
   contact_security`, `cargo test -p koushi-core --lib contact_security`, and
   `npm --prefix apps/desktop test -- --run
   src/components/ContactSecurityDetails.test.tsx`.
@@ -1586,7 +1586,7 @@ normal QA-title mode and cannot change product title semantics.
   drafts only); React must not write the advisory through
   `updateComposerDraft`. The slice carries user ids only, never device ids,
   names, or counts.
-  Focused checks: `cargo test -p koushi-state --test sender_device_advisories`,
+  Focused checks: `cargo test -p koushi-state --test state sender_device_advisories::`,
   `cargo test -p koushi-sdk --lib contact_security`, and `npm --prefix
   apps/desktop test -- --run src/components/timeline/SenderDeviceAdvisory.test.tsx`.
 - Person-targeted direct-message starts (#1702: sender avatar, People row
@@ -1654,7 +1654,7 @@ normal QA-title mode and cannot change product title semantics.
 - Private-data-free diagnostics use source `device_cleanup` with stages
   `offered`, `remote_started`, `uia_required`, `uia_submitted`, `remote_settled`,
   `remote_failed`, `local_reset_started`, `local_reset_failed`, and `completed`.
-- Focused checks: `cargo test -p koushi-state --test session_state`,
+- Focused checks: `cargo test -p koushi-state --test state session_state::`,
   `cargo test -p koushi-core --lib device_cleanup`, and
   `npm --prefix apps/desktop exec -- playwright test e2e/session-verification-gate.spec.ts -g "device cleanup" --workers=1`.
 - Rich device naming and account-management presentation remain #369. Do not
@@ -1678,7 +1678,7 @@ normal QA-title mode and cannot change product title semantics.
 - Fast Tier 1 checks:
 
 ```bash
-cargo test -p koushi-state --test local_encryption_state
+cargo test -p koushi-state --test state local_encryption_state::
 cargo test -p koushi-key credential_backend
 cargo test -p koushi-core store_actor_probe_maps_credential_backend_health_without_raw_errors
 cargo test -p koushi-core reset_local_data_clears_current_account_persistence_and_signs_out_locally
@@ -1699,7 +1699,7 @@ cargo test -p koushi-core reset_local_data_clears_current_account_persistence_an
   `apps/desktop/e2e/profile-settings-session.spec.ts`,
   `apps/desktop/e2e/composer-send-queue-upload.spec.ts`,
   `crates/koushi-state/src/locale_profile.rs`,
-  `crates/koushi-state/tests/locale_display_profile.rs`,
+  `crates/koushi-state/tests/state/locale_display_profile.rs`,
   `crates/koushi-search/src/document.rs`, `crates/koushi-search/src/verify.rs`,
   `crates/koushi-search/tests/search_adapter.rs`, and
   `crates/koushi-core/src/search.rs`.
@@ -1709,7 +1709,7 @@ cargo test -p koushi-core reset_local_data_clears_current_account_persistence_an
 npm --prefix apps/desktop run test -- --run src/i18n/messages.test.ts
 cd apps/desktop && npx playwright test e2e/profile-settings-session.spec.ts e2e/composer-send-queue-upload.spec.ts -g "Japanese locale renders shell labels and CJK text without clipping|thread and edit composers composing Enter" --workers=1
 cargo test -p koushi-search --test search_adapter
-cargo test -p koushi-state --test locale_display_profile
+cargo test -p koushi-state --test state locale_display_profile::
 ```
 
 ## GUI presentation contracts

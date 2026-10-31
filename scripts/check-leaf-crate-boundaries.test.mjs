@@ -356,6 +356,8 @@ test("detects testkit default or production leakage, self-dependency, and missin
     path.join("crates/koushi-core-testkit/tests", coreLocalIntegrationTargets[0]),
     "#[test]\nfn misplaced() {}\n"
   );
+  write(root, "crates/koushi-core/tests/contracts/main.rs", "mod command_redaction;\n");
+  write(root, "crates/koushi-core-testkit/tests/core/main.rs", "mod emoji_picker_size;\n");
   fs.writeFileSync(path.join(root, ".github/workflows/ci.yml"), "jobs: {}\n");
   fs.writeFileSync(
     path.join(root, "Cargo.toml"),

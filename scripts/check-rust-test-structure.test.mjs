@@ -323,7 +323,7 @@ test("formats source-contract failures without source contents", () => {
 test("allows exactly the four current non-Rust artifacts and keeps source diagnostics private", () => {
   const repositoryRoot = "/workspace";
   const sources = [
-    ["crates/koushi-state/tests/focused_context_state.rs", 'include_str!("../../../docs/architecture/state-machine.md");'],
+    ["crates/koushi-state/tests/state/focused_context_state.rs", 'include_str!("../../../../docs/architecture/state-machine.md");'],
     ["apps/desktop/src-tauri/src/lib.rs", 'include_str!("../capabilities/windows-overlay.json");'],
     ["apps/desktop/src-tauri/src/core_event_forwarder.rs", 'include_str!("../../src/domain/coreEvents.generated.json");\ninclude_str!("../../src/domain/coreEvents.generated.json");'],
     ["apps/desktop/src-tauri/src/lib.rs", 'include_str!("lib.rs");']

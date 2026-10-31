@@ -56,14 +56,15 @@ pub fn restore_ready_actions() -> Vec<AppAction> {
     ]
 }
 
-#[macro_export]
-macro_rules! restore_ready_actions {
+macro_rules! ready_actions {
     ($($action:expr),* $(,)?) => {{
-        let mut actions = $crate::support::restore_ready_actions();
+        let mut actions = restore_ready_actions();
         actions.extend([$($action),*]);
         actions
     }};
 }
+
+pub(crate) use ready_actions as restore_ready_actions;
 
 pub fn dark_theme_settings_patch() -> SettingsPatch {
     SettingsPatch {
