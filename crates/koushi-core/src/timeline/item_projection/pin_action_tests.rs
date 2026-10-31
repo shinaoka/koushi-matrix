@@ -20,7 +20,6 @@ use crate::timeline::relay::koushi_timeline_builder;
 async fn only_message_like_events_offer_pin() {
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client.event_cache().subscribe().unwrap();
     let room_id = room_id!("!pin:example.invalid");
     let alice = user_id!("@alice:example.invalid");
     let message = event_id!("$pin-message:example.invalid");

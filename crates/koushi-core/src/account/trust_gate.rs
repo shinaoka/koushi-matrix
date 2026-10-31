@@ -930,7 +930,6 @@ impl AccountActor {
             && self.session_promoted;
         if is_current
             && let Some(trust) = current_session_status_observed_non_verified_trust(&result)
-            && trust == koushi_state::CurrentDeviceTrustState::Unverified
         {
             self.current_session_status_request = None;
             self.current_session_status_task = None;
@@ -1417,7 +1416,10 @@ impl AccountActor {
         let Some(pending) = self.pending_trust_transition.as_ref() else {
             return;
         };
-        if generation != self.trust_generation {
+        if generation != self.trust_generation
+            || pending.generation != generation
+            || pending.transition_id != transition_id
+        {
             return;
         }
         if !trust_projection_ack_matches(pending, generation, transition_id, ready, locked) {
@@ -1520,5 +1522,9 @@ impl AccountActor {
     }
 }
 
+#[cfg(test)]
+mod missing_identity_tests;
+#[cfg(test)]
+mod projection_ack_tests;
 #[cfg(test)]
 mod tests;

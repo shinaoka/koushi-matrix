@@ -2453,6 +2453,19 @@ async fn authoritative_trust_runs_through_app_actor_ack_and_restarts_real_childr
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let server_stop = stop.clone();
     let address = listener.local_addr().expect("address");
+    let identity = matrix_sdk_test::test_json::keys_query_sets::KeyQueryResponseTemplate::new(
+        "@fixture-user:example.invalid"
+            .try_into()
+            .expect("fixture user"),
+    )
+    .with_cross_signing_keys(
+        vodozemac::Ed25519SecretKey::from_slice(&[1; 32]),
+        vodozemac::Ed25519SecretKey::from_slice(&[2; 32]),
+        vodozemac::Ed25519SecretKey::from_slice(&[3; 32]),
+    )
+    .build_response();
+    let identity = Arc::new(matrix_sdk_test::ruma_response_to_json(identity));
+    let uploaded_device_keys = Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
     let server_thread = std::thread::spawn(move || {
         loop {
             let Ok((mut stream, _)) = listener.accept() else {
@@ -2461,6 +2474,8 @@ async fn authoritative_trust_runs_through_app_actor_ack_and_restarts_real_childr
             if server_stop.load(std::sync::atomic::Ordering::Acquire) {
                 break;
             }
+            let identity = identity.clone();
+            let uploaded_device_keys = uploaded_device_keys.clone();
             std::thread::spawn(move || {
                 let mut request = Vec::new();
                 let mut buffer = [0_u8; 4096];
@@ -2486,7 +2501,28 @@ async fn authoritative_trust_runs_through_app_actor_ack_and_restarts_real_childr
                     }
                 }
                 let text = String::from_utf8_lossy(&request);
-                let body = if text.starts_with("GET /_matrix/client/versions ") {
+                let keys_body;
+                let body = if text.contains("/keys/upload") {
+                    let body: serde_json::Value =
+                        serde_json::from_str(text.split_once("\r\n\r\n").expect("request body").1)
+                            .expect("upload JSON");
+                    if !body["device_keys"].is_null() {
+                        *uploaded_device_keys.lock().expect("device keys") =
+                            Some(body["device_keys"].clone());
+                    }
+                    r#"{"one_time_key_counts":{}}"#
+                } else if text.contains("/keys/query") {
+                    let mut response = identity.as_ref().clone();
+                    response["device_keys"]["@fixture-user:example.invalid"] =
+                        serde_json::json!({});
+                    if let Some(keys) = uploaded_device_keys.lock().expect("device keys").as_ref() {
+                        let user = keys["user_id"].as_str().expect("fixture user");
+                        let device = keys["device_id"].as_str().expect("fixture device");
+                        response["device_keys"] = serde_json::json!({user: {device: keys}});
+                    }
+                    keys_body = response.to_string();
+                    &keys_body
+                } else if text.starts_with("GET /_matrix/client/versions ") {
                     r#"{"versions":["v1.7"],"unstable_features":{"org.matrix.simplified_msc3575":true}}"#
                 } else if text.contains("/_matrix/client/") && text.contains("login") {
                     let requested_device_id = text
@@ -2571,7 +2607,7 @@ async fn authoritative_trust_runs_through_app_actor_ack_and_restarts_real_childr
             .account_actor_test_handle
             .send(AccountMessage::ConfigureTrustObservation {
                 observation: koushi_sdk::CurrentDeviceTrustObservation {
-                    current: koushi_state::CurrentDeviceTrustState::Verified,
+                    current: koushi_state::CurrentDeviceTrustState::Unknown,
                     updates: Box::pin(updates),
                 },
             })
@@ -2593,6 +2629,20 @@ async fn authoritative_trust_runs_through_app_actor_ack_and_restarts_real_childr
         .await
         .expect("login command");
 
+    // Settle real SDK identity knowledge before driving synthetic lifecycle trust.
+    wait_for_runtime_session(&runtime, "existing identity fixture", |session| {
+        matches!(
+            session,
+            SessionState::Provisional {
+                phase: koushi_state::ProvisionalPhase::DiscoveringMethods,
+                ..
+            }
+        )
+    })
+    .await;
+    trust_tx
+        .send(koushi_state::CurrentDeviceTrustState::Verified)
+        .expect("initial verified observation");
     wait_for_runtime_session(&runtime, "initial promotion", |session| {
         matches!(session, SessionState::Ready(_))
     })
@@ -2601,6 +2651,10 @@ async fn authoritative_trust_runs_through_app_actor_ack_and_restarts_real_childr
     assert_eq!(
         inspect_runtime_children(&runtime).await,
         (true, true, true, true)
+    );
+    assert_eq!(
+        probe_rx.recv().await,
+        Some("provisional_encryption_sync_terminated")
     );
     assert_eq!(probe_rx.recv().await, Some("ready_projection_ack"));
     assert_eq!(

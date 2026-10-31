@@ -1333,14 +1333,10 @@ fn causal_projection_domains_route_equal_raw_serial_without_collision() {
 async fn room_actor_hydrates_a_historical_sender_without_a_live_event() {
     use matrix_sdk::ruma::events::room::member::MembershipState;
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
-    use matrix_sdk_test::{ALICE, CAROL, JoinedRoomBuilder, event_factory::EventFactory};
+    use matrix_sdk_test::{JoinedRoomBuilder, User, event_factory::EventFactory};
 
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
     let sdk_room_id = matrix_sdk::ruma::room_id!("!historical-profile:example.org");
     let event_id = matrix_sdk::ruma::event_id!("$historical-profile:example.org");
     let room = server.sync_joined_room(&client, sdk_room_id).await;
@@ -1351,7 +1347,7 @@ async fn room_actor_hydrates_a_historical_sender_without_a_live_event() {
             JoinedRoomBuilder::new(sdk_room_id).add_timeline_event(
                 factory
                     .text_msg("historical")
-                    .sender(&CAROL)
+                    .sender(User::Carol)
                     .event_id(event_id)
                     .into_raw_sync(),
             ),
@@ -1361,11 +1357,11 @@ async fn room_actor_hydrates_a_historical_sender_without_a_live_event() {
         .mock_get_members()
         .ok(vec![
             factory
-                .member(&ALICE)
+                .member(User::Alice)
                 .membership(MembershipState::Join)
                 .into_raw(),
             factory
-                .member(&CAROL)
+                .member(User::Carol)
                 .display_name("Carol")
                 .membership(MembershipState::Join)
                 .into_raw(),
@@ -1390,12 +1386,12 @@ async fn room_actor_hydrates_a_historical_sender_without_a_live_event() {
         client,
         SessionInfo {
             homeserver: "http://example.invalid".to_owned(),
-            user_id: ALICE.to_string(),
+            user_id: User::Alice.to_string(),
             device_id: "DEVICE".to_owned(),
             authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
         },
     ));
-    let key = TimelineKey::room(AccountKey(ALICE.to_string()), sdk_room_id.to_string());
+    let key = TimelineKey::room(AccountKey(User::Alice.to_string()), sdk_room_id.to_string());
     let mut manager = live_tail_test_manager(HashMap::new());
     let (action_tx, mut action_rx) = mpsc::channel(8);
     manager.action_tx = action_tx;
@@ -1476,16 +1472,12 @@ async fn room_actor_hydrates_a_historical_sender_without_a_live_event() {
 #[tokio::test]
 async fn timeline_actor_spawn_returns_before_authoritative_publish_waits_for_manager_capacity() {
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
-    use matrix_sdk_test::{ALICE, JoinedRoomBuilder, event_factory::EventFactory};
+    use matrix_sdk_test::{JoinedRoomBuilder, User, event_factory::EventFactory};
 
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
     let room_id = matrix_sdk::ruma::room_id!("!startup-capacity:example.org");
-    let factory = EventFactory::new().room(room_id).sender(&ALICE);
+    let factory = EventFactory::new().room(room_id).sender(User::Alice);
     let room = server.sync_joined_room(&client, room_id).await;
     server
         .sync_room(
@@ -1513,7 +1505,7 @@ async fn timeline_actor_spawn_returns_before_authoritative_publish_waits_for_man
         client,
         SessionInfo {
             homeserver: "http://example.invalid".to_owned(),
-            user_id: ALICE.to_string(),
+            user_id: User::Alice.to_string(),
             device_id: "DEVICE".to_owned(),
             authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
         },
@@ -2262,17 +2254,13 @@ async fn paginate_on_unsubscribed_key_returns_not_subscribed() {
 #[tokio::test]
 async fn sdk_vector_diff_batch_preserves_prefix_for_append_and_pop_variants() {
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
-    use matrix_sdk_test::{ALICE, JoinedRoomBuilder, event_factory::EventFactory};
+    use matrix_sdk_test::{JoinedRoomBuilder, User, event_factory::EventFactory};
 
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
     let room_id = matrix_sdk::ruma::room_id!("!sdk-diff-shapes:example.org");
     let room = server.sync_joined_room(&client, room_id).await;
-    let factory = EventFactory::new().room(room_id).sender(&ALICE);
+    let factory = EventFactory::new().room(room_id).sender(User::Alice);
     server
         .sync_room(
             &client,
@@ -2324,10 +2312,18 @@ async fn sdk_vector_diff_batch_preserves_prefix_for_append_and_pop_variants() {
             .cloned()
             .expect("fixture SDK event")
     };
-    let key = TimelineKey::room(AccountKey(ALICE.to_string()), room_id.to_string());
+    let key = TimelineKey::room(AccountKey(User::Alice.to_string()), room_id.to_string());
     let mut canonical = vec![
-        sdk_item_to_timeline_item(&key, &event("$prefix-a:example.org"), Some(&ALICE)),
-        sdk_item_to_timeline_item(&key, &event("$prefix-b:example.org"), Some(&ALICE)),
+        sdk_item_to_timeline_item(
+            &key,
+            &event("$prefix-a:example.org"),
+            Some(User::Alice.into()),
+        ),
+        sdk_item_to_timeline_item(
+            &key,
+            &event("$prefix-b:example.org"),
+            Some(User::Alice.into()),
+        ),
     ];
     let diffs = sdk_vector_diffs_to_timeline_diffs(
         &[
@@ -2342,7 +2338,7 @@ async fn sdk_vector_diff_batch_preserves_prefix_for_append_and_pop_variants() {
         ],
         canonical.len(),
         &key,
-        Some(&ALICE),
+        Some(User::Alice.into()),
         &HashMap::new(),
         None,
         None,
@@ -2814,14 +2810,13 @@ fn unread_divider_without_display_rows_keeps_the_canonical_row() {
 #[tokio::test]
 async fn replay_initial_items_republishes_unchanged_read_navigation() {
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
-    use matrix_sdk_test::{ALICE, JoinedRoomBuilder, event_factory::EventFactory};
+    use matrix_sdk_test::{JoinedRoomBuilder, User, event_factory::EventFactory};
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client.event_cache().subscribe().unwrap();
     let room_id = matrix_sdk::ruma::room_id!("!read-replay:example.org");
     let latest = matrix_sdk::ruma::event_id!("$latest:example.org");
     let room = server.sync_joined_room(&client, room_id).await;
-    let factory = EventFactory::new().room(room_id).sender(&ALICE);
+    let factory = EventFactory::new().room(room_id).sender(User::Alice);
     server
         .sync_room(
             &client,
@@ -2845,12 +2840,12 @@ async fn replay_initial_items_republishes_unchanged_read_navigation() {
         client,
         SessionInfo {
             homeserver: "http://example.invalid".into(),
-            user_id: ALICE.to_string(),
+            user_id: User::Alice.to_string(),
             device_id: "DEVICE".into(),
             authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
         },
     ));
-    let key = TimelineKey::room(AccountKey(ALICE.to_string()), room_id.to_string());
+    let key = TimelineKey::room(AccountKey(User::Alice.to_string()), room_id.to_string());
     let mut manager = live_tail_test_manager(HashMap::new());
     let (action_tx, mut action_rx) = mpsc::channel(8);
     manager.action_tx = action_tx;

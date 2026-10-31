@@ -51,12 +51,17 @@ pub struct MatrixRetentionDiagnostics {
 
 /// Sample the client's retention counters now.
 ///
-/// Infallible: the SDK reads are in-memory counters and snapshots; an account
-/// without a search session reports the event-cache side with zero search
-/// counters rather than an error, so the diagnostic path stays best-effort.
+/// Requires the cache availability check performed during session admission.
+/// The SDK reads are in-memory counters and snapshots; an account without a
+/// search session reports zero search counters rather than an error.
 pub async fn retention_diagnostics(session: &MatrixClientSession) -> MatrixRetentionDiagnostics {
     let search = session.client().search_index().diagnostics().await;
-    let event_cache = session.client().event_cache().memory_diagnostics().await;
+    let event_cache = session
+        .client()
+        .event_cache()
+        .expect("Koushi clients enable the event cache")
+        .memory_diagnostics()
+        .await;
     MatrixRetentionDiagnostics {
         search: MatrixSearchIndexDiagnostics {
             rooms_total: search.rooms_total,

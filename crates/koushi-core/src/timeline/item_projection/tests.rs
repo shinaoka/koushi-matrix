@@ -1537,7 +1537,6 @@ async fn real_bundled_projection_is_admitted_without_a_cached_edit() {
 
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client.event_cache().subscribe().unwrap();
     let rid = room_id!("!bundled:example.invalid");
     let room = server.sync_joined_room(&client, rid).await;
     let timeline = super::super::relay::koushi_timeline_builder(
@@ -1586,7 +1585,13 @@ async fn real_bundled_projection_is_admitted_without_a_cached_edit() {
     })
     .await
     .unwrap();
-    let (cache, _handles) = room.event_cache().await.unwrap();
+    let (cache, _handles) = room
+        .client()
+        .event_cache()
+        .unwrap()
+        .room(room.room_id())
+        .await
+        .unwrap();
     assert!(
         cache
             .find_event(event_id!("$bundled-edit"))

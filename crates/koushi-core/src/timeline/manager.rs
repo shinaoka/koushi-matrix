@@ -181,6 +181,7 @@ async fn hydrate_initial_thread(
         // edits/reactions. Consume a bounded raw-event window across such chunks.
         let (cache, _drop_handles) = client
             .event_cache()
+            .ok_or(TimelineFailureKind::Sdk)?
             .thread(room_id, root_event_id)
             .await
             .map_err(|_| {
@@ -2357,6 +2358,7 @@ impl TimelineManagerActor {
             let focused_cache = match cache_key {
                 Some((target, num_context_events, thread_mode)) => client
                     .event_cache()
+                    .ok_or(FocusedBuildFailure::Sdk)?
                     .event_focused(&room_id, &target, thread_mode.into(), num_context_events)
                     .await
                     .ok()
@@ -2574,7 +2576,7 @@ impl TimelineManagerActor {
             TimelineKind::Thread { root_event_id, .. } => {
                 match matrix_sdk::ruma::EventId::parse(root_event_id.as_str()) {
                     Ok(event_id) => TimelineFocus::Thread {
-                        root_event_id: event_id,
+                        thread_id: event_id,
                     },
                     Err(_) => return Err(TimelineFailureKind::Sdk),
                 }

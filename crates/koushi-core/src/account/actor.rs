@@ -519,7 +519,10 @@ pub(crate) enum AccountMessage {
     CurrentDeviceTrustRecheckFinished {
         generation: u64,
         result: Result<
-            koushi_state::CurrentDeviceTrustState,
+            (
+                koushi_state::CurrentDeviceTrustState,
+                koushi_state::VerificationAccountKind,
+            ),
             koushi_sdk::CurrentDeviceTrustRecheckError,
         >,
     },
@@ -605,7 +608,7 @@ pub(crate) enum AccountMessage {
     #[cfg(any(test, feature = "test-hooks"))]
     ResidencyTestInstallSession {
         session: Arc<MatrixClientSession>,
-        completed: oneshot::Sender<()>,
+        completed: oneshot::Sender<bool>,
     },
     #[cfg(any(test, feature = "test-hooks"))]
     ResidencyTestRoomCommand {
@@ -965,7 +968,7 @@ impl AccountActorHandle {
         {
             return false;
         }
-        acknowledged.await.is_ok()
+        acknowledged.await.unwrap_or(false)
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
@@ -2353,13 +2356,13 @@ impl AccountActor {
                         continue;
                     }
                     let settled_stage = match &result {
-                        Ok(koushi_state::CurrentDeviceTrustState::Verified) => {
+                        Ok((koushi_state::CurrentDeviceTrustState::Verified, _)) => {
                             "trust_recheck_finished_verified"
                         }
-                        Ok(koushi_state::CurrentDeviceTrustState::Unverified) => {
+                        Ok((koushi_state::CurrentDeviceTrustState::Unverified, _)) => {
                             "trust_recheck_finished_unverified"
                         }
-                        Ok(koushi_state::CurrentDeviceTrustState::Unknown) => {
+                        Ok((koushi_state::CurrentDeviceTrustState::Unknown, _)) => {
                             "trust_recheck_finished_unknown"
                         }
                         Err(_) => "trust_recheck_finished_failed",
@@ -2377,8 +2380,15 @@ impl AccountActor {
                     let replay_after_settlement = self.trust_recheck_pending;
                     self.trust_recheck_pending = false;
                     let recheck_succeeded = result.is_ok();
+                    let confirmed_missing = matches!(
+                        &result,
+                        Ok((
+                            koushi_state::CurrentDeviceTrustState::Unknown,
+                            koushi_state::VerificationAccountKind::NewIdentity
+                        ))
+                    );
                     let trust = match result {
-                        Ok(trust) => Some(trust),
+                        Ok((trust, _)) => Some(trust),
                         Err(_)
                             if self.session_promoted
                                 || matches!(
@@ -2396,6 +2406,27 @@ impl AccountActor {
                     };
                     if let Some(trust) = trust {
                         Box::pin(self.handle_current_device_trust(generation, trust)).await;
+                    }
+                    // Missing identity permits bootstrap, not a different SDK trust verdict.
+                    if confirmed_missing
+                        && self.session.is_some()
+                        && !self.session_promoted
+                        && self.provisional_encryption_sync_ready
+                    {
+                        Box::pin(self.send_actions(vec![
+                            AppAction::VerificationMethodDiscoveryRetryStarted { generation },
+                            AppAction::VerificationMethodsDiscovered(
+                                koushi_state::VerificationGateState {
+                                    account_kind:
+                                        koushi_state::VerificationAccountKind::NewIdentity,
+                                    methods: vec![
+                                        koushi_state::VerificationMethodCapability::Bootstrap,
+                                    ],
+                                    failure: None,
+                                },
+                            ),
+                        ]))
+                        .await;
                     }
                     // A trust recheck follows own cross-signing changes
                     // (import, bootstrap, own verification), which decide
@@ -2847,8 +2878,8 @@ impl AccountActor {
                 }
                 #[cfg(any(test, feature = "test-hooks"))]
                 AccountMessage::ResidencyTestInstallSession { session, completed } => {
-                    Box::pin(self.install_residency_test_session(session)).await;
-                    let _ = completed.send(());
+                    let installed = Box::pin(self.install_residency_test_session(session)).await;
+                    let _ = completed.send(installed);
                 }
                 #[cfg(any(test, feature = "test-hooks"))]
                 AccountMessage::ResidencyTestRoomCommand { command, accepted } => {

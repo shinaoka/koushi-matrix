@@ -63,10 +63,6 @@ async fn crawler_page_is_visible_to_the_normal_room_event_cache() {
     // The sync timeline establishes the SDK-owned pagination boundary. The
     // crawler must consume this boundary through RoomEventCache pagination so
     // its result is available to an ordinary room subscription.
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
     server
         .mock_sync()
         .ok_and_run(&client, |builder| {
@@ -148,7 +144,13 @@ async fn crawler_page_is_visible_to_the_normal_room_event_cache() {
     // History the store did not hold is fetched through pagination, which is the
     // one path that still inserts into the shared linked chunk.
     let room = client.get_room(room_id).expect("joined room");
-    let (cache, _drop_handles) = room.event_cache().await.expect("room event cache");
+    let (cache, _drop_handles) = room
+        .client()
+        .event_cache()
+        .unwrap()
+        .room(room.room_id())
+        .await
+        .expect("room event cache");
     let visible = cache.events().await.expect("cached timeline events");
     let visible_ids = visible
         .iter()
@@ -173,10 +175,6 @@ async fn crawler_page_reads_persisted_history_without_hydrating_the_room_cache()
     let f = EventFactory::new()
         .room(room_id)
         .sender(user_id!("@crawler:test.invalid"));
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
     server
         .mock_sync()
         .ok_and_run(&client, |builder| {
@@ -215,8 +213,14 @@ async fn crawler_page_reads_persisted_history_without_hydrating_the_room_cache()
     assert_eq!(first_ids, ["$store-newest", "$store-older"]);
 
     let room = client.get_room(room_id).expect("joined room");
-    let (cache, _drop_handles) = room.event_cache().await.expect("room event cache");
-    let resident_before = client.event_cache().memory_diagnostics().await;
+    let (cache, _drop_handles) = room
+        .client()
+        .event_cache()
+        .unwrap()
+        .room(room.room_id())
+        .await
+        .expect("room event cache");
+    let resident_before = client.event_cache().unwrap().memory_diagnostics().await;
     let visible_before = cache.events().await.expect("cached timeline events").len();
 
     let second = HistoryCrawlCheckpoint::new(
@@ -244,7 +248,7 @@ async fn crawler_page_reads_persisted_history_without_hydrating_the_room_cache()
         "the persisted walk covers the same history"
     );
 
-    let resident_after = client.event_cache().memory_diagnostics().await;
+    let resident_after = client.event_cache().unwrap().memory_diagnostics().await;
     let visible_after = cache.events().await.expect("cached timeline events").len();
     assert_eq!(
         resident_after.events, resident_before.events,
@@ -275,10 +279,6 @@ async fn crawler_page_indexes_history_that_is_not_resident() {
     let f = EventFactory::new()
         .room(room_id)
         .sender(user_id!("@crawler:test.invalid"));
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
     let fetched = (0..FETCHED_EVENTS)
         .map(|index| {
             let id = matrix_sdk::ruma::OwnedEventId::try_from(format!(
@@ -335,16 +335,22 @@ async fn crawler_page_indexes_history_that_is_not_resident() {
     // store keeps every chunk; only the in-memory window shrinks to the newest
     // chunk, which is what makes the second crawl's evidence meaningful.
     let room = client.get_room(room_id).expect("joined room");
-    let (cache, _drop_handles) = room.event_cache().await.expect("room event cache");
+    let (cache, _drop_handles) = room
+        .client()
+        .event_cache()
+        .unwrap()
+        .room(room.room_id())
+        .await
+        .expect("room event cache");
     let (_events, subscriber) = cache.subscribe().await.expect("room subscription");
     drop(subscriber);
-    let mut resident_after_release = client.event_cache().memory_diagnostics().await;
+    let mut resident_after_release = client.event_cache().unwrap().memory_diagnostics().await;
     for _ in 0..100 {
         if resident_after_release.events < (FETCHED_EVENTS + 1) as u64 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        resident_after_release = client.event_cache().memory_diagnostics().await;
+        resident_after_release = client.event_cache().unwrap().memory_diagnostics().await;
     }
     assert!(
         resident_after_release.events < (FETCHED_EVENTS + 1) as u64,
@@ -375,7 +381,7 @@ async fn crawler_page_indexes_history_that_is_not_resident() {
         "every stored document is reachable from the persisted walk"
     );
 
-    let resident_after = client.event_cache().memory_diagnostics().await;
+    let resident_after = client.event_cache().unwrap().memory_diagnostics().await;
     let visible_after = cache.events().await.expect("cached timeline events").len();
     assert_eq!(
         resident_after.events, resident_after_release.events,
@@ -464,10 +470,6 @@ async fn catch_up_page_indexes_only_events_newer_than_the_boundary_from_the_cach
     let f = EventFactory::new()
         .room(room_id)
         .sender(user_id!("@catchup:test.invalid"));
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
     server
         .mock_sync()
         .ok_and_run(&client, |builder| {
@@ -524,10 +526,6 @@ async fn catch_up_page_repairs_a_gap_before_accepting_the_boundary() {
     let f = EventFactory::new()
         .room(room_id)
         .sender(user_id!("@catchup:test.invalid"));
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
     server
         .mock_sync()
         .ok_and_run(&client, |builder| {
@@ -602,10 +600,6 @@ async fn catch_up_page_continues_through_pagination_to_reach_the_boundary() {
     let f = EventFactory::new()
         .room(room_id)
         .sender(user_id!("@catchup:test.invalid"));
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
     server
         .mock_sync()
         .ok_and_run(&client, |builder| {
@@ -668,10 +662,6 @@ async fn preempted_page_keeps_its_checkpoint() {
     let f = EventFactory::new()
         .room(room_id)
         .sender(user_id!("@catchup:test.invalid"));
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
     server
         .mock_sync()
         .ok_and_run(&client, |builder| {

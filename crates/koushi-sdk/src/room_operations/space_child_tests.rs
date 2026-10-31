@@ -85,7 +85,8 @@ async fn sync_fixture(server: &MatrixMockServer, client: &Client, fixture: RoomF
     }
     builder = builder.add_state_event(
         factory
-            .power_levels(&mut power_levels)
+            .power_levels()
+            .set_users(power_levels)
             .state_key("")
             .sender(&own),
     );

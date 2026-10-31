@@ -34,7 +34,6 @@ async fn production_query_reports_cached_resolution_failure_instead_of_success()
         })
         .build()
         .await;
-    client.event_cache().subscribe().unwrap();
     let rid = matrix_sdk::ruma::room_id!("!query-failure:example.invalid");
     let room = server.sync_joined_room(&client, rid).await;
     let f = matrix_sdk_test::event_factory::EventFactory::new()
@@ -150,7 +149,6 @@ async fn encrypted_history_index_grows_without_resident_first_party_bodies() {
         })
         .build()
         .await;
-    client.event_cache().subscribe().unwrap();
     let room_id = matrix_sdk::ruma::room_id!("!scale:example.invalid");
     server
         .mock_sync()

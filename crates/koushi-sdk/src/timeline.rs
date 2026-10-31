@@ -592,8 +592,11 @@ impl MatrixClientSession {
             .client
             .get_room(&room_id)
             .ok_or(MatrixTimelineGapError::RoomUnavailable)?;
-        let (cache, _drop_handles) = room
+        let (cache, _drop_handles) = self
+            .client
             .event_cache()
+            .ok_or(MatrixTimelineGapError::Sdk)?
+            .room(room.room_id())
             .await
             .map_err(|_| MatrixTimelineGapError::Sdk)?;
         let inspection = cache
@@ -638,8 +641,11 @@ impl MatrixClientSession {
             .client
             .get_room(&gap.room_id)
             .ok_or(MatrixTimelineGapError::RoomUnavailable)?;
-        let (cache, _drop_handles) = room
+        let (cache, _drop_handles) = self
+            .client
             .event_cache()
+            .ok_or(MatrixTimelineGapError::Sdk)?
+            .room(room.room_id())
             .await
             .map_err(|_| MatrixTimelineGapError::Sdk)?;
         let result = cache
@@ -694,7 +700,10 @@ impl MatrixClientSession {
         let Some(room) = self.client.get_room(&room_id) else {
             return failed_live_tail_refresh_result();
         };
-        let Ok((cache, _drop_handles)) = room.event_cache().await else {
+        let Some(event_cache) = self.client.event_cache() else {
+            return failed_live_tail_refresh_result();
+        };
+        let Ok((cache, _drop_handles)) = event_cache.room(room.room_id()).await else {
             return failed_live_tail_refresh_result();
         };
         map_live_tail_refresh_result(

@@ -270,7 +270,10 @@ pub(crate) fn handle_room_list_updated(
 /// Provisional snapshots deliberately merge with the previous list, so they
 /// cannot be used to remove a room that has just been left.
 pub(crate) fn handle_room_left_locally(state: &mut AppState, room_id: String) -> Vec<AppEffect> {
-    if !is_session_ready(state) || !state.rooms.iter().any(|room| room.room_id == room_id) {
+    if !is_session_ready(state)
+        || (!state.rooms.iter().any(|room| room.room_id == room_id)
+            && !state.spaces.iter().any(|space| space.space_id == room_id))
+    {
         return Vec::new();
     }
     state
@@ -323,16 +326,7 @@ fn handle_room_list_updated_with_crawler(
 
     let own_user_id = session_user_id(state).map(str::to_owned);
     let mut rooms = rooms;
-    if authoritative {
-        let observed_room_ids = rooms
-            .iter()
-            .map(|room| room.room_id.as_str())
-            .collect::<BTreeSet<_>>();
-        state
-            .room_list
-            .locally_left_room_ids
-            .retain(|room_id| !observed_room_ids.contains(room_id.as_str()));
-    }
+    // shortcut: external rejoins stay suppressed; revisit with ordered membership evidence.
     rooms.retain(|room| {
         !state
             .room_list
@@ -361,6 +355,12 @@ fn handle_room_list_updated_with_crawler(
         }
     });
     let mut spaces = spaces;
+    spaces.retain(|space| {
+        !state
+            .room_list
+            .locally_left_room_ids
+            .contains(&space.space_id)
+    });
     preserve_known_avatar_thumbnails(state, &mut spaces, &mut rooms);
     suppress_stale_unread_after_local_read(state, &mut rooms);
     // #1238: a room-list snapshot never carries the thread counts, so re-derive

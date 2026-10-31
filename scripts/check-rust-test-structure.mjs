@@ -2027,7 +2027,7 @@ export function checkCoreSearchPageWorkKind() {
   const acquire = body?.indexOf("AccountWorkKind::SearchCrawl") ?? -1;
   const fetches = [
     body?.indexOf("result = room.messages(options)") ?? -1,
-    body?.indexOf("room.event_cache()") ?? -1,
+    body?.indexOf(".event_cache()") ?? -1,
   ].filter((index) => index >= 0);
   const pageFetch = fetches.length > 0 ? Math.min(...fetches) : -1;
   return acquire >= 0 && pageFetch >= 0 && acquire < pageFetch

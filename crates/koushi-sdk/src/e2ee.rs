@@ -916,29 +916,27 @@ impl MatrixIdentityResetHandle {
         session: &MatrixClientSession,
         request: &IdentityResetAuthRequest,
     ) -> Result<(), E2eeTrustError> {
-        let auth = match request {
-            IdentityResetAuthRequest::OAuthApproved => None,
-            IdentityResetAuthRequest::UiaaPassword { password } => {
-                let matrix_sdk::encryption::CrossSigningResetAuthType::Uiaa(uiaa) =
-                    self.inner.auth_type()
-                else {
-                    return Err(E2eeTrustError::Sdk(
-                        "identity reset auth type mismatch".to_owned(),
-                    ));
-                };
+        use matrix_sdk::encryption::CrossSigningResetAuthType;
+
+        let auth = match (request, self.inner.auth_type()) {
+            (IdentityResetAuthRequest::OAuthApproved, CrossSigningResetAuthType::OAuth(oauth)) => {
+                oauth.as_auth_data()
+            }
+            (
+                IdentityResetAuthRequest::UiaaPassword { password },
+                CrossSigningResetAuthType::Uiaa(uiaa),
+            ) => {
                 let identifier = matrix_sdk::ruma::api::client::uiaa::UserIdentifier::Matrix(
                     matrix_sdk::ruma::api::client::uiaa::MatrixUserIdentifier::new(
                         session.info.user_id.clone(),
                     ),
                 );
-                let mut password_auth = matrix_sdk::ruma::api::client::uiaa::Password::new(
-                    identifier,
-                    password.expose_secret().to_owned(),
-                );
-                password_auth.session.clone_from(&uiaa.session);
-                Some(matrix_sdk::ruma::api::client::uiaa::AuthData::Password(
-                    password_auth,
-                ))
+                uiaa.as_password_auth_data(identifier, password.expose_secret().to_owned())
+            }
+            _ => {
+                return Err(E2eeTrustError::Sdk(
+                    "identity reset auth type mismatch".to_owned(),
+                ));
             }
         };
 
@@ -2771,7 +2769,8 @@ impl MatrixClientSession {
     }
     pub async fn recheck_current_device_trust(
         &self,
-    ) -> Result<CurrentDeviceTrustState, CurrentDeviceTrustRecheckError> {
+    ) -> Result<(CurrentDeviceTrustState, VerificationAccountKind), CurrentDeviceTrustRecheckError>
+    {
         // Subscribe before the request so the returned value belongs to the
         // same observation that sees the own-user keys-query settlement.
         let subscriber = self.client().encryption().verification_state();
@@ -2782,9 +2781,14 @@ impl MatrixClientSession {
             return Err(error);
         };
         match client.encryption().request_user_identity(user_id).await {
-            Ok(_) => {
+            Ok(identity) => {
+                let account_kind = if identity.is_some() {
+                    VerificationAccountKind::ExistingIdentity
+                } else {
+                    VerificationAccountKind::NewIdentity
+                };
                 record_current_device_trust_recheck_finished("success", None);
-                Ok(map_sdk_verification_state(subscriber.get()))
+                Ok((map_sdk_verification_state(subscriber.get()), account_kind))
             }
             Err(error) => {
                 let error = classify_current_device_trust_recheck_error(&error);
@@ -3137,12 +3141,26 @@ mod current_device_trust_recheck_tests {
             .mount_as_scoped()
             .await;
 
-        let trust = session
+        let (trust, account_kind) = session
             .recheck_current_device_trust()
             .await
             .expect("empty authoritative response still settles");
 
-        assert_eq!(trust, CurrentDeviceTrustState::Unverified);
+        let client = session.client();
+        assert!(
+            client
+                .encryption()
+                .get_user_identity(client.user_id().expect("fixture user"))
+                .await
+                .expect("local identity lookup")
+                .is_none()
+        );
+        // Upstream keeps trust unknown until an own identity is available.
+        assert_eq!(trust, CurrentDeviceTrustState::Unknown);
+        assert_eq!(
+            account_kind,
+            koushi_state::VerificationAccountKind::NewIdentity
+        );
         assert!(
             koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
                 .iter()
@@ -3153,6 +3171,64 @@ mod current_device_trust_recheck_tests {
                 }),
             "successful trust rechecks must record a closed completion diagnostic"
         );
+    }
+
+    #[tokio::test]
+    async fn recheck_preserves_sdk_verdict_for_existing_identity_and_rejects_partial_failure() {
+        use matrix_sdk_test::{
+            ruma_response_to_json, test_json::keys_query_sets::KeyQueryResponseTemplate,
+        };
+        use vodozemac::Ed25519SecretKey;
+        use wiremock::ResponseTemplate;
+
+        for failed in [false, true] {
+            let server = MatrixMockServer::new().await;
+            let client = server.client_builder().build().await;
+            let user_id = client.user_id().expect("fixture user").to_owned();
+            let info = SessionInfo {
+                homeserver: server.server().uri(),
+                user_id: user_id.to_string(),
+                device_id: client.device_id().expect("fixture device").to_string(),
+                authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+            };
+            let session = MatrixClientSession::from_client_for_testing(client, info);
+            let response = KeyQueryResponseTemplate::new(user_id.clone())
+                .with_cross_signing_keys(
+                    Ed25519SecretKey::from_slice(&[1; 32]),
+                    Ed25519SecretKey::from_slice(&[2; 32]),
+                    Ed25519SecretKey::from_slice(&[3; 32]),
+                )
+                .build_response();
+            let mut response = ruma_response_to_json(response);
+            if failed {
+                response["failures"] = serde_json::json!({user_id.server_name(): {"status": 503, "errcode": "M_UNAVAILABLE", "error": "synthetic"}});
+            }
+            let _query = server
+                .mock_query_keys()
+                .respond_with(ResponseTemplate::new(200).set_body_json(response))
+                .expect(1)
+                .mount_as_scoped()
+                .await;
+            let result = session.recheck_current_device_trust().await;
+            if failed {
+                assert!(
+                    result.is_err(),
+                    "partial failure is not proof of missing identity"
+                );
+            } else {
+                let (trust, account_kind) = result.expect("existing identity query");
+                assert_eq!(
+                    account_kind,
+                    koushi_state::VerificationAccountKind::ExistingIdentity
+                );
+                assert_eq!(trust, CurrentDeviceTrustState::Unknown);
+                assert_eq!(
+                    trust,
+                    session.current_device_trust(),
+                    "identity facts must not replace the SDK verdict"
+                );
+            }
+        }
     }
 }
 
@@ -3788,14 +3864,14 @@ fn optional_bool_token(value: Option<bool>) -> &'static str {
 mod megolm_send_parity_tests {
     use std::sync::{Arc, Mutex};
 
+    use matrix_sdk::ruma::{
+        RoomVersionId, device_id, events::room::message::RoomMessageEventContent, room_id, user_id,
+    };
     use matrix_sdk::{
         encryption::{RoomKeyDiagnosticEvent, RoomKeyDiagnosticObserver},
         test_utils::mocks::MatrixMockServer,
     };
     use matrix_sdk_test::{JoinedRoomBuilder, event_factory::EventFactory, test_json};
-    use ruma::{
-        RoomVersionId, device_id, events::room::message::RoomMessageEventContent, room_id, user_id,
-    };
     use wiremock::{
         Mock, ResponseTemplate,
         matchers::{method, path_regex},
@@ -4171,7 +4247,10 @@ pub async fn room_key_receive_diagnostics(
 ) -> MatrixRoomKeyReceiveDiagnostics {
     let client = session.client();
     let crypto = client.encryption().room_key_receive_counters().await;
-    let late_decryption = client.event_cache().room_key_receive_diagnostics();
+    let late_decryption = client
+        .event_cache()
+        .expect("Koushi clients enable the event cache")
+        .room_key_receive_diagnostics();
     MatrixRoomKeyReceiveDiagnostics {
         crypto,
         late_decryption,
@@ -4197,7 +4276,11 @@ pub fn request_late_decryption(
         utd_session_ids: utd_session_ids.into_iter().collect(),
         refresh_info_session_ids: Default::default(),
     };
-    session.client().event_cache().request_decryption(request);
+    session
+        .client()
+        .event_cache()
+        .expect("Koushi clients enable the event cache")
+        .request_decryption(request);
 }
 
 /// Subscribe to the SDK event-cache redecryptor reports (Lagging,
@@ -4212,7 +4295,10 @@ pub fn late_decryption_report_stream(
     >,
 > + use<> {
     let client = session.client();
-    client.event_cache().subscribe_to_decryption_reports()
+    client
+        .event_cache()
+        .expect("Koushi clients enable the event cache")
+        .subscribe_to_decryption_reports()
 }
 
 fn map_sdk_recovery_state(

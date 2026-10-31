@@ -42,7 +42,6 @@ const HIDDEN_UPDATE_COUNT: usize = ROOM_REPLAY_INITIAL_ITEMS_MAX + 5;
 async fn fresh_room_subscription_reaches_a_message_behind_hidden_state_events() {
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client.event_cache().subscribe().unwrap();
     let room_id = room_id!("!fresh-hydration:example.invalid");
     let alice = user_id!("@alice:example.invalid");
     let factory = EventFactory::new().room(room_id);

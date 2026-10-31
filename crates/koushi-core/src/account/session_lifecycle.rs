@@ -445,7 +445,14 @@ impl AccountActor {
     pub(super) async fn install_residency_test_session(
         &mut self,
         session: Arc<MatrixClientSession>,
-    ) {
+    ) -> bool {
+        if self
+            .prepare_store_backed_session(&session, false)
+            .await
+            .is_err()
+        {
+            return false;
+        }
         if self.session.is_some() {
             self.residency_preserve_room_session = true;
             self.stop_current_session_runtime().await;
@@ -455,6 +462,7 @@ impl AccountActor {
         self.session_key_id = None;
         self.spawn_sync_actor(session.clone()).await;
         let _ = self.room_actor.wait_for_session(&session).await;
+        true
     }
 
     pub(super) fn start_scheduled_send_capability_probe(&self, session: Arc<MatrixClientSession>) {
@@ -1518,6 +1526,20 @@ impl AccountActor {
             }
         };
 
+        if let Err(failure) = self
+            .prepare_store_backed_session(&login_session, true)
+            .await
+        {
+            self.abort_login(login_session, &key_id, false, true).await;
+            self.locked_session_record = Some(LockedSessionRecord {
+                info,
+                key_id,
+                persistable: old_persistable,
+                binding: Some(binding),
+            });
+            self.emit_failure(request_id, failure);
+            return;
+        }
         self.pending_ready_events
             .push(CoreEvent::Account(AccountEvent::LoggedIn {
                 request_id,
@@ -1528,8 +1550,6 @@ impl AccountActor {
             "core.login_store_reauth",
             "installing",
         ));
-        self.prepare_store_backed_session(&login_session, true)
-            .await;
         self.install_provisional_session(
             login_session,
             persistable,
@@ -2214,19 +2234,20 @@ impl AccountActor {
             }
         };
         self.prepare_store_backed_session(&session, encrypted_store)
-            .await;
+            .await?;
         Ok(session)
     }
 
-    /// Install the event-cache and room-key diagnostic hooks on the exact
-    /// authenticated persistent client before it can enter admission.
+    /// Require the automatically started cache before reading diagnostics or
+    /// admitting the exact authenticated persistent client.
     pub(super) async fn prepare_store_backed_session(
         &self,
         session: &MatrixClientSession,
         encrypted_store: bool,
-    ) {
+    ) -> Result<(), CoreFailure> {
         let event_cache_result = koushi_sdk::enable_event_cache(session).await;
         self.emit_event_cache_status(encrypted_store, &event_cache_result);
+        event_cache_result.map_err(|_| CoreFailure::LocalEncryptionUnavailable)?;
         crate::room_key_receive::reset_late_decryption_counters();
         let diagnostics = koushi_sdk::room_key_receive_diagnostics(session).await;
         crate::room_key_receive::record_room_key_receive_summary(
@@ -2240,6 +2261,7 @@ impl AccountActor {
             &protection_counters,
             crate::account::verification::VERIFICATION_PROTECTION_SUMMARY_TRIGGER_RESTORE,
         );
+        Ok(())
     }
 
     /// Roll back a failed login bootstrap: best-effort server logout of the

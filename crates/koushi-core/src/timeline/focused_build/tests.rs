@@ -508,16 +508,12 @@ async fn sdk_focused_cache_context_error_does_not_poison_retry() {
     use matrix_sdk::event_cache::EventFocusThreadMode;
     use matrix_sdk::ruma::{event_id, room_id};
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
-    use matrix_sdk_test::{ALICE, event_factory::EventFactory};
+    use matrix_sdk_test::{User, event_factory::EventFactory};
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, ResponseTemplate};
 
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
     let room = room_id!("!focused-error:example.org");
     let target = event_id!("$focused-error:example.org");
     server.sync_joined_room(&client, room).await;
@@ -534,6 +530,7 @@ async fn sdk_focused_cache_context_error_does_not_poison_retry() {
     assert!(
         client
             .event_cache()
+            .unwrap()
             .event_focused(room, target, mode, 20)
             .await
             .is_err()
@@ -541,7 +538,7 @@ async fn sdk_focused_cache_context_error_does_not_poison_retry() {
 
     let event = EventFactory::new()
         .room(room)
-        .sender(&ALICE)
+        .sender(User::Alice)
         .text_msg("target")
         .event_id(target)
         .into_event();
@@ -555,6 +552,7 @@ async fn sdk_focused_cache_context_error_does_not_poison_retry() {
         .await;
     let (cache, _handles) = client
         .event_cache()
+        .unwrap()
         .event_focused(room, target, mode, 20)
         .await
         .expect("context failure must not strand registered cache state");
@@ -576,21 +574,17 @@ async fn sdk_focused_build_waiting_on_context_is_cancelled_and_retry_starts_fres
     use koushi_sdk::MatrixClientSession;
     use matrix_sdk::ruma::{event_id, room_id};
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
-    use matrix_sdk_test::{ALICE, event_factory::EventFactory};
+    use matrix_sdk_test::{User, event_factory::EventFactory};
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, ResponseTemplate};
 
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
     let sdk_room_id = room_id!("!focused-build:example.org");
     let target = event_id!("$focused-target:example.org");
     server.sync_joined_room(&client, sdk_room_id).await;
     // `/context` is slow while sync stays healthy.
-    let factory = EventFactory::new().room(sdk_room_id).sender(&ALICE);
+    let factory = EventFactory::new().room(sdk_room_id).sender(User::Alice);
     let target_event = factory.text_msg("target").event_id(target).into_event();
     let context = serde_json::json!({
         "event": target_event.into_raw().json(),
@@ -611,14 +605,14 @@ async fn sdk_focused_build_waiting_on_context_is_cancelled_and_retry_starts_fres
         client,
         koushi_state::SessionInfo {
             homeserver: "http://example.invalid".to_owned(),
-            user_id: ALICE.to_string(),
+            user_id: User::Alice.to_string(),
             device_id: "DEVICE".to_owned(),
             authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
         },
     ));
     let mut harness = spawn_harness_with(|manager| manager.session = Some(session));
     let key = TimelineKey {
-        account_key: AccountKey(ALICE.to_string()),
+        account_key: AccountKey(User::Alice.to_string()),
         kind: TimelineKind::Focused {
             room_id: sdk_room_id.to_string(),
             event_id: target.to_string(),

@@ -1840,7 +1840,10 @@ async fn unknown_token_fences_an_in_flight_verified_trust_completion() {
     handle
         .send(AccountMessage::CurrentDeviceTrustRecheckFinished {
             generation: 2,
-            result: Ok(koushi_state::CurrentDeviceTrustState::Verified),
+            result: Ok((
+                koushi_state::CurrentDeviceTrustState::Verified,
+                koushi_state::VerificationAccountKind::ExistingIdentity,
+            )),
         })
         .await;
     let _ = inspect_session_runtime(&handle).await;

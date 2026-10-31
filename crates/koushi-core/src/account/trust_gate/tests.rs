@@ -673,7 +673,10 @@ async fn authoritative_trust_recheck_completion_promotes_through_generation_gate
     handle
         .send(AccountMessage::CurrentDeviceTrustRecheckFinished {
             generation: 2,
-            result: Ok(koushi_state::CurrentDeviceTrustState::Verified),
+            result: Ok((
+                koushi_state::CurrentDeviceTrustState::Verified,
+                koushi_state::VerificationAccountKind::ExistingIdentity,
+            )),
         })
         .await;
     acknowledge_next_verified_projection(&handle, &mut action_rx).await;
@@ -764,7 +767,10 @@ async fn authoritative_trust_recheck_stale_generation_cannot_promote_session() {
     handle
         .send(AccountMessage::CurrentDeviceTrustRecheckFinished {
             generation: 1,
-            result: Ok(koushi_state::CurrentDeviceTrustState::Verified),
+            result: Ok((
+                koushi_state::CurrentDeviceTrustState::Verified,
+                koushi_state::VerificationAccountKind::ExistingIdentity,
+            )),
         })
         .await;
     let runtime = inspect_session_runtime(&handle).await;

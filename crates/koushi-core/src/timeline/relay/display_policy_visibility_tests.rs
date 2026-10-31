@@ -70,7 +70,6 @@ fn hidden_state(items: &[TimelineItem], event_id: &str) -> Option<bool> {
 async fn redaction_preference_toggle_is_published_as_row_diffs() {
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client.event_cache().subscribe().unwrap();
     let room_id = room_id!("!visibility:example.invalid");
     let alice = user_id!("@alice:example.invalid");
     let factory = EventFactory::new().room(room_id);

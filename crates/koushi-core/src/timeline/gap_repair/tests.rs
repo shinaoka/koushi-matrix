@@ -2083,7 +2083,7 @@ async fn gap_repair_room_switch_cancels_completion() {
         test_utils::mocks::{MatrixMockServer, RoomMessagesResponseTemplate},
     };
     use matrix_sdk_base::event_cache::Gap;
-    use matrix_sdk_test::{ALICE, event_factory::EventFactory};
+    use matrix_sdk_test::{User, event_factory::EventFactory};
 
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
@@ -2091,7 +2091,7 @@ async fn gap_repair_room_switch_cancels_completion() {
     let older_id = matrix_sdk::ruma::event_id!("$cancel-older:example.org");
     let newer_id = matrix_sdk::ruma::event_id!("$cancel-newer:example.org");
     let missing_id = matrix_sdk::ruma::event_id!("$cancel-missing:example.org");
-    let factory = EventFactory::new().room(room_id).sender(&ALICE);
+    let factory = EventFactory::new().room(room_id).sender(User::Alice);
     {
         let store = client
             .event_cache_store()
@@ -2135,10 +2135,6 @@ async fn gap_repair_room_switch_cancels_completion() {
             .await
             .expect("seed persisted gap");
     }
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscribe");
     server.sync_joined_room(&client, room_id).await;
     server
         .mock_room_messages()
@@ -2157,7 +2153,7 @@ async fn gap_repair_room_switch_cancels_completion() {
         client,
         SessionInfo {
             homeserver: "http://example.invalid".to_owned(),
-            user_id: ALICE.to_string(),
+            user_id: User::Alice.to_string(),
             device_id: "DEVICE".to_owned(),
             authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
         },

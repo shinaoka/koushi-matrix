@@ -11,9 +11,9 @@
 //! because an invitation was received), use its local state to project the
 //! name and membership. Only completely unknown rooms remain opaque.
 
+use matrix_sdk::ruma::{self, RoomId, room::JoinRuleSummary};
 use matrix_sdk::{RoomMemberships, RoomState};
 use matrix_sdk_ui::spaces::{SpaceRoom, SpaceRoomList, room_list::SpaceRoomListPaginationState};
-use ruma::{RoomId, room::JoinRuleSummary};
 
 use crate::{
     client_session::MatrixClientSession,
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn only_rules_that_admit_a_plain_join_offer_one() {
-        use ruma::{
+        use matrix_sdk::ruma::{
             events::room::join_rules::{AllowRule, JoinRule, Restricted},
             owned_room_id,
         };

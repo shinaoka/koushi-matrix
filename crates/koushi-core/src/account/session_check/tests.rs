@@ -122,7 +122,10 @@ async fn promoted_actor() -> (
     mpsc::Receiver<Vec<AppAction>>,
     Arc<KeyQueryControl>,
 ) {
-    let control = Arc::new(KeyQueryControl::default());
+    let control = Arc::new(KeyQueryControl {
+        existing_identity: true,
+        ..KeyQueryControl::default()
+    });
     let homeserver = spawn_named_quarantine_password_server_with_controls(
         "@fixture-user:example.invalid",
         "FIXTUREDEVICE",
@@ -132,6 +135,28 @@ async fn promoted_actor() -> (
     );
     let (handle, mut action_rx) = login_gated_actor_at(homeserver).await;
     consume_initial_unknown_trust_projection(&mut action_rx).await;
+    handle.send(AccountMessage::CheckCurrentDeviceTrust).await;
+    executor::timeout(LIVENESS, async {
+        loop {
+            let batch = action_rx
+                .recv()
+                .await
+                .expect("existing identity trust result");
+            if batch.iter().any(|action| {
+                matches!(
+                    action,
+                    AppAction::AuthoritativeDeviceTrustChanged {
+                        trust: koushi_state::CurrentDeviceTrustState::Unverified,
+                        ..
+                    }
+                )
+            }) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("existing unverified identity is fetched before promotion");
     handle
         .send(AccountMessage::CurrentDeviceTrustChanged {
             generation: 2,

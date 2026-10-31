@@ -948,7 +948,17 @@ pub(super) async fn wait_for_sync_started_and_running(
         let event = deadline
             .recv(conn)
             .await
-            .map_err(|_| format!("{label}: timed out waiting for Started/Running state"))?
+            .map_err(|_| {
+                let snapshot = conn.snapshot();
+                let diagnostics = koushi_diagnostics::snapshot();
+                format!(
+                    "{label}: timed out waiting for Started/Running state; started={saw_started} sync={} session={} {} {}",
+                    sync_state_diagnostic_label(&snapshot.sync),
+                    session_state_diagnostic_label(&snapshot.session),
+                    sync_diagnostic_summary(&diagnostics),
+                    runtime_sync_diagnostic_summary(&diagnostics),
+                )
+            })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
@@ -2417,17 +2427,15 @@ pub(super) async fn wait_for_item_with_body(
     expected_body: &str,
     label: &str,
 ) -> Result<koushi_protocol::event::TimelineItem, String> {
-    let body_matches = |item: &koushi_protocol::event::TimelineItem| {
-        item.body
-            .as_ref()
-            .map(|body| body.contains(expected_body))
-            .unwrap_or(false)
-    };
-
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
+    let mut observer = BodyWaitObserver::new(expected_body);
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+        let event = deadline.recv(conn)
             .await
-            .map_err(|_| format!("{label}: timed out waiting for body {expected_body:?}"))?
+            .map_err(|_| {
+                let snapshot = conn.snapshot();
+                format!("{label}: timed out waiting for expected body; undecryptable_seen={} sync={} session={}", observer.saw_decryption_failure, sync_state_diagnostic_label(&snapshot.sync), session_state_diagnostic_label(&snapshot.session))
+            })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
@@ -2436,7 +2444,7 @@ pub(super) async fn wait_for_item_with_body(
                 items,
                 ..
             }) if ev_key == key => {
-                if let Some(item) = find_timeline_item_with_body(&items, expected_body) {
+                if let Some(item) = observer.observe_items(&items) {
                     return Ok(item);
                 }
             }
@@ -2445,23 +2453,8 @@ pub(super) async fn wait_for_item_with_body(
                 diffs,
                 ..
             }) if ev_key == key => {
-                for diff in diffs {
-                    let item = match diff {
-                        koushi_protocol::event::TimelineDiff::PushBack { item }
-                        | koushi_protocol::event::TimelineDiff::PushFront { item }
-                        | koushi_protocol::event::TimelineDiff::Insert { item, .. }
-                        | koushi_protocol::event::TimelineDiff::Set { item, .. } => item,
-                        koushi_protocol::event::TimelineDiff::Reset { items } => {
-                            if let Some(item) = items.into_iter().find(|item| body_matches(item)) {
-                                return Ok(item);
-                            }
-                            continue;
-                        }
-                        _ => continue,
-                    };
-                    if body_matches(&item) {
-                        return Ok(item.clone());
-                    }
+                if let Some(item) = observer.observe_diffs(&diffs)? {
+                    return Ok(item);
                 }
             }
             _ => {}

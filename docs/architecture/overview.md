@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-09-29.
+Last amended: 2026-10-31.
 
 The evidence-based classification of remaining frontend-owned resources and
 semantic migration candidates is maintained in
@@ -1156,6 +1156,230 @@ forged `RequestId`. `TimelineKey` always includes the account so late
 events from a previous account switch can be rejected. Timeline item events
 also carry a monotonic `generation`; after any reset/resync the UI discards
 diffs from older generations.
+
+## SDK Event Cache Lifecycle
+
+The event cache is an account-session resource, not a room-selection resource.
+Koushi builds its authenticated SDK clients with the cache enabled; SDK client
+construction creates the cache and SDK session activation starts its redecryptor
+after the crypto machine exists. Login and restore use the same lifecycle.
+`Client::event_cache() -> Option<&EventCache>` is an availability lookup, not
+lazy initialization. Koushi must not restore the removed `EventCache::subscribe`
+startup API or introduce a second cache, startup task, or sync-update relay.
+
+### Availability and First-Party Call Sites
+
+- Desktop client builder defaults explicitly enable the cache for every login
+  and restore path, including OAuth. Before an authenticated session enters
+  runtime admission, the existing `enable_event_cache` adapter checks that exact
+  client's availability. It returns `AlreadyEnabled` on every successful call;
+  missing cache returns the existing `SubscribeFailed` error and fails admission
+  through an existing session failure. The legacy `Enabled` enum variant may
+  remain for source compatibility but is no longer produced. This adapter does
+  not start tasks or subscribe to anything.
+- A cache-required operation returns its existing SDK/domain failure when the
+  cache is absent: live/thread/focused timeline construction, pagination and gap
+  inspection/repair, search hydration, redaction filtering, and crawler history
+  reads. It must not publish an empty successful timeline, a completed crawl,
+  a healthy gap proof, or an empty successful search as a substitute. Optional
+  enrichment retains its existing `None`/unavailable result; that absence does
+  not authorize deletion of previously known projection data. In
+  `room_projection`, an unavailable `latest_events().await` skips optional
+  listener registration and retains the existing `room.latest_event()` fallback;
+  missing cached-activity/event enrichment returns `None`. The relay's optional
+  thread-receipt lookup returns its existing unavailable result, thread-summary
+  receipt enrichment returns `None`, and the actor's cache-warm diagnostic
+  observer is omitted. None of these branches substitutes for the authoritative
+  timeline's required subscription.
+- Existing infallible session diagnostics and local redecryption adapters may
+  assert the cache-enabled session invariant. This is an internal construction
+  invariant, not validation of server or user input; it is established before
+  those adapters are used. Negative fixtures use the fallible boundary rather
+  than calling invariant-only APIs with an invalid session.
+- The removed `Room::event_cache().await` lookup becomes
+  `room.client().event_cache()` followed by `.room(room.room_id()).await`.
+  Thread and event-focused caches use the same enabled client's `.thread(...)`
+  and `.event_focused(...)`. These calls may initialize a room/thread/focused
+  cache lazily; they do not initialize or enable the client cache. Existing
+  room-cache `subscribe().await` and timeline `subscribe()` remain valid.
+
+The #1677 migration census is the pre-migration Koushi tree at
+`eea1cbe1cdb8b557ad6150acc15adf75525a6986`: 79 `.event_cache()` expressions in
+35 first-party Rust files. Counts refer to expressions, not later line numbers;
+Client and Room receivers are distinct even though their old spelling matched.
+The migration must account for every expression, including fixture setup that
+is deleted rather than replaced.
+
+| Mutually exclusive baseline category | Client | Room | Sites | Migration decision |
+| --- | ---: | ---: | ---: | --- |
+| Production startup/status | 2 | 0 | 2 | Check availability; register latest-event listener through optional `latest_events`, never restart the cache |
+| Production diagnostics, redecryption, reports | 4 | 0 | 4 | Assert admitted-session invariant; keep existing diagnostics/retry/report APIs and owners |
+| Production thread/focused access | 4 | 0 | 4 | Required manager builds fail through existing errors; optional relay/summary receipt enrichment stays unavailable |
+| Production room access | 0 | 12 | 12 | Use client `.room(...)`; required reads/repair fail, optional room projection/warm diagnostics remain absent |
+| Test setup and assertions | 48 | 9 | 57 | Remove manual startup; require `Some` before retained operations; update status assertions to automatic availability |
+| **Total** | **58** | **21** | **79** | **22 production sites / 11 files; 57 test sites / 24 files** |
+
+The 48 test Client sites comprise 37 startup calls, five memory-diagnostic
+reads, two status assertions, three focused-cache accesses, and one room-cache
+access. Only startup calls disappear; operations and their behavioral assertions
+remain. The nine test Room accesses migrate to client `.room(...)`.
+
+File census below uses paths relative to `crates/`; C/R count the original
+Client/Room receivers. **F** means the fixture rule above, **E** availability
+check, **D** admitted-session diagnostics/redecryption, **Q** required operation
+with existing failure, **O** optional enrichment/observer with existing absence.
+Mixed files explicitly identify their two policies.
+
+| File | C | R | Policy |
+| --- | ---: | ---: | --- |
+| `koushi-core-testkit/tests/thread_bundled_reply_timestamp.rs` | 1 | 1 | F |
+| `koushi-core/src/search/attachment_admission/tests.rs` | 1 | 3 | F |
+| `koushi-core/src/search/crawl_scheduling.rs` | 1 | 0 | F (`cfg(test)`) |
+| `koushi-core/src/search/history_scale.rs` | 2 | 0 | F (`cfg(test)`) |
+| `koushi-core/src/search/site_scenes.rs` | 1 | 0 | F (`cfg(test)`) |
+| `koushi-core/src/search/tests.rs` | 2 | 0 | F |
+| `koushi-core/src/search_crawler.rs` | 0 | 2 | Q: cached/history page reads |
+| `koushi-core/src/search_crawler/tests.rs` | 12 | 3 | F |
+| `koushi-core/src/timeline/actor.rs` | 0 | 1 | O: cache-warm/raw observer, not authoritative timeline build |
+| `koushi-core/src/timeline/actor/fresh_room_hydration_tests.rs` | 1 | 0 | F |
+| `koushi-core/src/timeline/actor/issue_1692_tests.rs` | 1 | 0 | F |
+| `koushi-core/src/timeline/focused_build/tests.rs` | 4 | 0 | F |
+| `koushi-core/src/timeline/focused_live_tail/tests.rs` | 2 | 0 | F |
+| `koushi-core/src/timeline/gap_repair/tests.rs` | 1 | 0 | F |
+| `koushi-core/src/timeline/item_projection/content_policy_tests.rs` | 1 | 0 | F |
+| `koushi-core/src/timeline/item_projection/pin_action_tests.rs` | 1 | 0 | F |
+| `koushi-core/src/timeline/item_projection/tests.rs` | 1 | 1 | F |
+| `koushi-core/src/timeline/manager.rs` | 2 | 0 | Q: thread/focused cache |
+| `koushi-core/src/timeline/navigation/tests.rs` | 4 | 0 | F |
+| `koushi-core/src/timeline/relay.rs` | 1 | 0 | O: thread receipts |
+| `koushi-core/src/timeline/relay/display_policy_visibility_tests.rs` | 1 | 0 | F |
+| `koushi-core/src/timeline/relay/ignored_reset_tests.rs` | 1 | 0 | F |
+| `koushi-core/src/timeline/relay/reply_quote_actor_tests.rs` | 1 | 0 | F |
+| `koushi-core/src/timeline/thread_projection.rs` | 1 | 1 | O: thread receipts; Q: room relations |
+| `koushi-core/tests/timeline_mutations/fixture.rs` | 1 | 0 | F |
+| `koushi-sdk/src/client_session.rs` | 1 | 0 | E |
+| `koushi-sdk/src/e2ee.rs` | 3 | 0 | D |
+| `koushi-sdk/src/e2ee/e2ee_in_room_request_tests.rs` | 2 | 0 | F (including Client `.room(...)`) |
+| `koushi-sdk/src/retention.rs` | 1 | 0 | D |
+| `koushi-sdk/src/room_projection.rs` | 1 | 2 | O: latest-event listener and cached enrichment |
+| `koushi-sdk/src/room_projection/tests.rs` | 3 | 0 | F |
+| `koushi-sdk/src/search.rs` | 0 | 3 | Q: redactions/relations/hydration |
+| `koushi-sdk/src/timeline.rs` | 0 | 3 | Q: gap inspection/repair/live-tail refresh |
+| `koushi-sdk/tests/event_cache.rs` | 2 | 1 | F: lifecycle/status/restore |
+| `koushi-sdk/tests/late_decrypted_verification_request.rs` | 1 | 0 | F |
+| **Total: 35 files** | **58** | **21** | **No unclassified site** |
+
+### Notification Wiring, Ownership, and Stopping
+
+Removing `EventCache::subscribe` removes manual startup, not a product update
+subscription. Use the upstream notifications for their actual purpose:
+
+| Consumer | Notification and owner | Lifetime / concurrency |
+| --- | --- | --- |
+| Room-list latest-event projection | SDK `LatestEvents` listens through `subscribe_to_room_generic_updates`; Koushi consumes the existing SDK latest-event observable | SDK owns the listener and compute tasks; share one client-level `LatestEvents` instance, do not add a Koushi generic-update fan-out |
+| Live room/raw-event observer and UI timeline diffs | `RoomEventCache::subscribe().await` and SDK UI `Timeline::subscribe()`; existing Core timeline actor/relay owns receivers and retained cache drop handles | Existing per-`TimelineKey` actor lifetime and generation fences; no additional task per sync response or cache lookup |
+| Automatic Matrix thread subscription acknowledgements | SDK thread-subscriber task; `subscribe_thread_subscriber_updates()` is a `testing`-only notification, not a production event stream | SDK owns one thread-subscriber task per client cache; tests retain the receiver before the triggering action, then await the notification under one deadline and drop it |
+| Late-decryption reports | SDK `subscribe_to_decryption_reports`; existing timeline auxiliary task and SearchActor report task forward to their actors | One existing receiver per owning actor; replacement/session teardown cancels owned forwarding work; no replacement generic/thread stream |
+| Sync checkpoint provenance | Existing RoomListService retained per-room checkpoints and global response-commit observable | SyncActor owns the SyncService, Core relays only committed observations; generic/thread notifications never stand in for a commit fence |
+
+The account session retains the SDK Client; each room/thread/focused consumer
+retains its returned cache handles for the period it uses them. SDK owns its
+ignore-list, shrink, thread-subscriber, search-indexing, and redecryptor workers
+under its cache/drop handles. Receiving generic updates does not activate a
+room-cache subscriber or request thread subscriptions; dropping that receiver
+has no room-subscription side effect.
+
+Room unsubscribe retires only that consumer under its existing Core ownership
+contract; it does not stop the account's cache or SyncService. Account/session
+replacement, logout, account removal, and application shutdown stop admission,
+settle Core-owned work, stop the owning SyncService through its async stop API,
+and release receivers, timelines, cache/drop handles, and session references.
+SDK cache workers use SDK abort-on-drop ownership when the last relevant handles
+are released; the public SDK does not expose an awaitable cache-worker shutdown
+API. Do not claim that dropping a cache handle joins those tasks, and do not add
+a fork shutdown API or redesign Core thread ownership in this migration. The
+existing, explicitly parked cold-room-retirement/child-teardown deviation in
+engineering rules "Async and Runtime" item 2 remains parked; #1677 neither fixes
+nor broadens it. Keep the existing owners and cancellation/settlement boundaries;
+no new Koushi forwarding task is introduced. Stale actor/session generations
+cannot publish into a replacement session.
+
+### Checkpoints, Late Decryption, and Search
+
+- **Checkpoint ordering:** await SDK cache/topology application and required
+  persistence before publishing the successful response-commit fence or saving
+  the resumable sync position. Propagate cache update failures; do not advance
+  a checkpoint past failed cache work. Restore the exact persisted Sliding Sync
+  position together with its matching room subscriptions. Retained per-room
+  checkpoints and the global committed-response identity keep the existing
+  omission/no-update distinction described in "Room Timeline Gap Repair".
+  A generic room notification, thread acknowledgement, timeout, or room-list
+  presence alone is not checkpoint/continuity evidence.
+- **Late decryption:** SDK activation starts the existing redecryptor once the
+  crypto machine is available, on both fresh login and restore. Preserve its
+  fork diagnostics, resolved-UTD reports, bounded local retry requests, and
+  verification delivery after resolution. Core keeps the existing visible-UTD
+  retry policy and SearchActor invalidation: resolved room UTDs reopen that
+  room's completed indexing; lagged reports conservatively invalidate the
+  existing joined-room crawl completion claims. Do not duplicate the SDK
+  redecryption loop or request/rebroadcast keys from a new task.
+- **Search:** preserve the existing Koushi encrypted index format, passphrase
+  compatibility, bounded indexing/crawler scheduling, literal/cursor semantics,
+  and edit/redaction convergence. An incorrect passphrase must fail without
+  deleting/recreating the existing index. Cache unavailability or failed history
+  reads are failures, not proof of completed indexing. Upstream SDK-internal
+  indexing stays SDK-owned; the existing Koushi SearchActor remains the product
+  projection/mutation owner, with no new parallel indexing mechanism.
+
+### Migration Acceptance and Headless RED Coverage
+
+Before reconciling or extending the preserved implementation edits, establish
+focused failing behavioral coverage for missing/new lifecycle guarantees; retain
+existing regression oracles rather than weakening them to make the migration
+pass. A compiler error demonstrates an API mismatch, not a behavioral RED test.
+Use the already merged old pin as the lifecycle baseline where the new guarantee
+is absent: through the unchanged first-party enable adapter, a fresh session's
+first enable check returns `Enabled`, failing the new `AlreadyEnabled` oracle.
+Record the actual assertion failure separately from compile failures.
+
+- `crates/koushi-sdk/tests/event_cache.rs`: automatic cache availability before
+  any manual enable call; repeated enable checks and restored sessions report
+  `AlreadyEnabled`; persisted encrypted room-cache events survive drop/restore;
+  a disabled-cache fixture fails through the existing fallible enable boundary.
+  Keep the existing encrypted-store/wrong-key assertions.
+- New Core integration coverage belongs in
+  `crates/koushi-core-testkit/tests/event_cache_lifecycle.rs`, using isolated
+  runtimes and disposable/mock server fixtures. Prove first-sync delivery and
+  restored delivery without a manual cache-start call; failed cache admission
+  cannot create a running session. Keep existing lifecycle ownership tests and
+  assert no stale-session publication after replacement/logout. Reuse existing
+  test hooks, not a new production observer or teardown framework.
+- Keep focused SDK/core headless regressions for cache-before-checkpoint ordering,
+  matching restored position/subscriptions, late keys resolving cached UTDs and
+  their search invalidation, thread edits/redactions, and non-destructive wrong
+  search passphrases. SDK-level cache ordering/failure tests live with the SDK
+  event-cache/Sliding Sync tests; pure SearchActor invalidation tests stay with
+  that owner. New cross-module behavior tests use crate `tests/` targets, never
+  additions to monolithic inline test modules.
+- Run the Koushi-used SDK graph only: `matrix-sdk`, `matrix-sdk-base`,
+  `matrix-sdk-common`, `matrix-sdk-crypto`, `matrix-sdk-search`,
+  `matrix-sdk-sqlite`, `matrix-sdk-store-encryption`, and `matrix-sdk-ui`, with
+  Koushi's actual features, unit/integration tests and applicable lint gates.
+  Unused FFI/labs/IndexedDB targets are not migration prerequisites.
+- Before publication run the repository Rust fmt/clippy/workspace-test gates,
+  frontend tests, typecheck, lint and build, plus the documented
+  `qa:headless-local -- --server=both` disposable Tuwunel/Synapse gate. Retain
+  focused evidence for `timeline_reconnect`, `user_verification`,
+  `redact_edit_convergence`, and `search_crawler_catchup` on both servers because
+  the aggregate lane alone does not cover every one of those scenarios. No
+  matrix.org, external homeserver, or real-account QA is permitted. Serialize
+  Cargo runs with the agreed CPU budget and selected idle cores; existing
+  successful checks need rerunning only after an affecting change.
+
+No new first-party public API/DTO shape, compatibility shim, subscription
+manager, or task-ownership redesign is required by this design. If compiler or
+runtime evidence proves one indispensable, stop that slice and report the
+specific unsettled contract instead of inventing it during conflict resolution.
 
 ## Async Design Rules
 

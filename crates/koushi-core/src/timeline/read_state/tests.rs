@@ -2387,7 +2387,7 @@ async fn local_receipt_observation_helper_builds_profile_then_receipt_actions() 
     use matrix_sdk::assert_next_with_timeout;
     use matrix_sdk::ruma::{event_id, room_id, user_id};
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
-    use matrix_sdk_test::{ALICE, JoinedRoomBuilder, event_factory::EventFactory};
+    use matrix_sdk_test::{JoinedRoomBuilder, User, event_factory::EventFactory};
 
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
@@ -2459,7 +2459,7 @@ async fn local_receipt_observation_helper_builds_profile_then_receipt_actions() 
         client,
         SessionInfo {
             homeserver: "http://example.invalid".to_owned(),
-            user_id: ALICE.to_string(),
+            user_id: User::Alice.to_string(),
             device_id: "DEVICE".to_owned(),
             authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
         },
@@ -2537,7 +2537,7 @@ async fn production_receipt_diff_delivery_refreshes_unknown_with_room_profile() 
     use koushi_state::{AppState, reduce};
     use matrix_sdk::ruma::{event_id, room_id, user_id};
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
-    use matrix_sdk_test::{ALICE, JoinedRoomBuilder, event_factory::EventFactory};
+    use matrix_sdk_test::{JoinedRoomBuilder, User, event_factory::EventFactory};
 
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
@@ -2561,7 +2561,7 @@ async fn production_receipt_diff_delivery_refreshes_unknown_with_room_profile() 
         client,
         SessionInfo {
             homeserver: "http://example.invalid".to_owned(),
-            user_id: ALICE.to_string(),
+            user_id: User::Alice.to_string(),
             device_id: "DEVICE".to_owned(),
             authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
         },
@@ -2609,7 +2609,7 @@ async fn production_receipt_diff_delivery_refreshes_unknown_with_room_profile() 
         "the production batch must refresh an already-projected Unknown receipt"
     );
 
-    let key = TimelineKey::room(AccountKey(ALICE.to_string()), room_id.to_string());
+    let key = TimelineKey::room(AccountKey(User::Alice.to_string()), room_id.to_string());
     let generations = Arc::new(TimelineActorGenerationGate::default());
     let actor_generation = generations.activate_after_quiescence(&key).await.generation;
     let (action_tx, mut action_rx) = mpsc::channel(1);
@@ -2660,7 +2660,7 @@ async fn production_receipt_diff_delivery_uses_global_cache_when_local_lookup_mi
     use koushi_state::{AppState, reduce};
     use matrix_sdk::ruma::{event_id, room_id};
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
-    use matrix_sdk_test::ALICE;
+    use matrix_sdk_test::User;
 
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
@@ -2670,7 +2670,7 @@ async fn production_receipt_diff_delivery_uses_global_cache_when_local_lookup_mi
         client,
         SessionInfo {
             homeserver: "http://example.invalid".to_owned(),
-            user_id: ALICE.to_string(),
+            user_id: User::Alice.to_string(),
             device_id: "DEVICE".to_owned(),
             authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
         },
@@ -2702,7 +2702,7 @@ async fn production_receipt_diff_delivery_uses_global_cache_when_local_lookup_mi
         },
     );
 
-    let key = TimelineKey::room(AccountKey(ALICE.to_string()), room_id.to_string());
+    let key = TimelineKey::room(AccountKey(User::Alice.to_string()), room_id.to_string());
     let generations = Arc::new(TimelineActorGenerationGate::default());
     let actor_generation = generations.activate_after_quiescence(&key).await.generation;
     let (action_tx, mut action_rx) = mpsc::channel(1);
@@ -2809,7 +2809,7 @@ async fn scoped_receipt_window_prepares_only_its_selected_profiles() {
         client,
         SessionInfo {
             homeserver: "http://example.invalid".into(),
-            user_id: matrix_sdk_test::ALICE.to_string(),
+            user_id: matrix_sdk_test::User::Alice.to_string(),
             device_id: "DEVICE".into(),
             authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
         },
@@ -2887,7 +2887,7 @@ async fn compact_receipt_profile_lookup_is_bounded_for_1500_readers() {
     use koushi_state::{AppState, SessionAuthenticationMethod, SessionState, reduce};
     use matrix_sdk::ruma::room_id;
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
-    use matrix_sdk_test::ALICE;
+    use matrix_sdk_test::User;
 
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
@@ -2897,7 +2897,7 @@ async fn compact_receipt_profile_lookup_is_bounded_for_1500_readers() {
         client,
         SessionInfo {
             homeserver: "http://example.invalid".to_owned(),
-            user_id: ALICE.to_string(),
+            user_id: User::Alice.to_string(),
             device_id: "DEVICE".to_owned(),
             authentication_method: SessionAuthenticationMethod::Unknown,
         },
@@ -2915,7 +2915,7 @@ async fn compact_receipt_profile_lookup_is_bounded_for_1500_readers() {
             })
             .collect(),
     }];
-    let key = TimelineKey::room(AccountKey(ALICE.to_string()), room_id.to_string());
+    let key = TimelineKey::room(AccountKey(User::Alice.to_string()), room_id.to_string());
     let generations = Arc::new(TimelineActorGenerationGate::default());
     let actor_generation = generations.activate_after_quiescence(&key).await.generation;
     let (action_tx, mut action_rx) = mpsc::channel(1);
@@ -2962,7 +2962,7 @@ async fn production_receipt_diff_delivery_sends_receipts_when_local_lookup_fails
     use koushi_state::SessionAuthenticationMethod;
     use matrix_sdk::ruma::event_id;
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
-    use matrix_sdk_test::ALICE;
+    use matrix_sdk_test::User;
 
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
@@ -2970,7 +2970,7 @@ async fn production_receipt_diff_delivery_sends_receipts_when_local_lookup_fails
         client,
         SessionInfo {
             homeserver: "http://example.invalid".to_owned(),
-            user_id: ALICE.to_string(),
+            user_id: User::Alice.to_string(),
             device_id: "DEVICE".to_owned(),
             authentication_method: SessionAuthenticationMethod::Unknown,
         },
@@ -2986,7 +2986,7 @@ async fn production_receipt_diff_delivery_sends_receipts_when_local_lookup_fails
         }],
     }];
     let key = TimelineKey::room(
-        AccountKey(ALICE.to_string()),
+        AccountKey(User::Alice.to_string()),
         "!receipt-failure:example.test",
     );
     let generations = Arc::new(TimelineActorGenerationGate::default());
@@ -3031,7 +3031,7 @@ async fn stale_production_receipt_diff_result_is_discarded_after_generation_repl
     use koushi_state::SessionAuthenticationMethod;
     use matrix_sdk::ruma::event_id;
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
-    use matrix_sdk_test::ALICE;
+    use matrix_sdk_test::User;
 
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
@@ -3039,7 +3039,7 @@ async fn stale_production_receipt_diff_result_is_discarded_after_generation_repl
         client,
         SessionInfo {
             homeserver: "http://example.invalid".to_owned(),
-            user_id: ALICE.to_string(),
+            user_id: User::Alice.to_string(),
             device_id: "DEVICE".to_owned(),
             authentication_method: SessionAuthenticationMethod::Unknown,
         },
@@ -3054,7 +3054,10 @@ async fn stale_production_receipt_diff_result_is_discarded_after_generation_repl
             timestamp_ms: Some(4),
         }],
     }];
-    let key = TimelineKey::room(AccountKey(ALICE.to_string()), "!receipt-stale:example.test");
+    let key = TimelineKey::room(
+        AccountKey(User::Alice.to_string()),
+        "!receipt-stale:example.test",
+    );
     let generations = Arc::new(TimelineActorGenerationGate::default());
     let stale_generation = generations.activate_after_quiescence(&key).await.generation;
     let (action_tx, mut action_rx) = mpsc::channel(1);

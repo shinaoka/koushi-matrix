@@ -250,10 +250,6 @@ async fn remote_replacement_latest_keeps_original_identity_and_order() {
     let sender = user_id!("@sender:example.invalid");
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
 
     let original_factory = EventFactory::new().room(room_id).sender(sender);
     let replacement_factory = EventFactory::new().room(room_id).sender(sender);
@@ -279,6 +275,7 @@ async fn remote_replacement_latest_keeps_original_identity_and_order() {
     let mut latest_events = client
         .latest_events()
         .await
+        .expect("latest events")
         .listen_and_subscribe_to_room(room_id)
         .await
         .expect("latest event subscription")
@@ -301,6 +298,7 @@ async fn remote_replacement_latest_keeps_original_identity_and_order() {
     assert_eq!(latest.relation_type, None);
     assert_eq!(latest.relation_event_id, None);
     assert_eq!(latest.preview.as_deref(), Some("after"));
+    assert!(!latest.has_reactions);
     assert_eq!(activity.map(|activity| activity.timestamp_ms), Some(42));
 }
 
@@ -318,10 +316,6 @@ async fn thread_reply_latest_event_carries_its_thread_root() {
     let sender = user_id!("@sender:example.invalid");
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
 
     let root = EventFactory::new()
         .room(room_id)
@@ -348,6 +342,7 @@ async fn thread_reply_latest_event_carries_its_thread_root() {
     let mut latest_events = client
         .latest_events()
         .await
+        .expect("latest events")
         .listen_and_subscribe_to_room(room_id)
         .await
         .expect("latest event subscription")
@@ -804,10 +799,6 @@ async fn stale_server_counts_still_lose_to_a_matching_read_marker() {
     let sender = user_id!("@sender:example.invalid");
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
-    client
-        .event_cache()
-        .subscribe()
-        .expect("event cache subscription");
     let room = server
         .sync_room(
             &client,

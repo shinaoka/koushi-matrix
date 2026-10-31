@@ -3130,10 +3130,6 @@ async fn matrix_room_latest_remote_event_projection(
     let has_thread_summary = facts_content
         .as_ref()
         .is_some_and(|content| content.thread_summary().is_some());
-    let has_reactions = facts_content
-        .as_ref()
-        .and_then(|content| content.reactions())
-        .is_some_and(|reactions| !reactions.is_empty());
     let (sender_label, sender_avatar_mxc_uri) = match sender.as_ref() {
         Some(sender) => matrix_room_member_display(room, sender).await,
         None => (None, None),
@@ -3185,7 +3181,8 @@ async fn matrix_room_latest_remote_event_projection(
         is_threaded,
         is_reply,
         has_thread_summary,
-        has_reactions,
+        // Content-only conversion has never aggregated timeline reactions.
+        has_reactions: false,
         is_redacted,
     };
     (
@@ -3198,7 +3195,12 @@ async fn matrix_room_event_in_memory_by_id(
     room: &matrix_sdk::Room,
     event_id: &str,
 ) -> Option<matrix_sdk::deserialized_responses::TimelineEvent> {
-    let (event_cache, _drop_handles) = room.event_cache().await.ok()?;
+    let (event_cache, _drop_handles) = room
+        .client()
+        .event_cache()?
+        .room(room.room_id())
+        .await
+        .ok()?;
     event_cache
         .rfind_map_event_in_memory_by(|event| {
             event
@@ -3298,8 +3300,7 @@ async fn matrix_room_latest_event_projection(
     Option<MatrixConversationActivity>,
 ) {
     let client = room.client();
-    if client.event_cache().has_subscribed() {
-        let latest_events = client.latest_events().await;
+    if let Some(latest_events) = client.latest_events().await {
         let _ = latest_events.listen_to_room(room.room_id()).await;
     }
     let cached_conversation_activity = matrix_room_cached_conversation_activity(room).await;
@@ -3357,7 +3358,12 @@ fn matrix_timeline_event_is_redacted(
 async fn matrix_room_cached_conversation_activity(
     room: &matrix_sdk::Room,
 ) -> Option<MatrixConversationActivity> {
-    let (event_cache, _drop_handles) = room.event_cache().await.ok()?;
+    let (event_cache, _drop_handles) = room
+        .client()
+        .event_cache()?
+        .room(room.room_id())
+        .await
+        .ok()?;
     event_cache
         .rfind_map_event_in_memory_by(matrix_conversation_activity_from_timeline_event)
         .await

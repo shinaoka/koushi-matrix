@@ -14,9 +14,9 @@ previous pin `a04792c7a` plus the retained Koushi customizations. The
 maintained for a while; local SDK patches should therefore stay as small topic
 commits with clear upstream intent instead of being squashed into an opaque
 vendor snapshot. The gitlink has moved since; see the 2026-10-09 and 2026-10-10
-(#1188) sections.
+(#1188) sections and the [2026-10-31 reconciliation](#2026-10-31-1677-upstream-main-reconciliation).
 
-The current Koushi-required SDK topic stack is:
+The Koushi-required SDK topic stack at that snapshot was:
 
 - `feat(event-cache): publish committed response fence`
 - `fix(event-cache): classify committed room membership`
@@ -1682,3 +1682,94 @@ join event still re-joins the room, because membership presence cannot tell it
 from a genuine rejoin; and forgetting the room drops the marker. Upstream
 intent: report it as the leave-side twin of matrix-org/matrix-rust-sdk#7385,
 where the ordering question (event identity or request generation) belongs.
+
+## 2026-10-31 (#1677): upstream main reconciliation
+
+The SDK update preserves both parents and their history:
+
+- Original integration base: `401be3df774170499be743de26bdd88c1cb58f56`.
+- Current Koushi main's fork pin: `292b89c4500cff6bdbcaac4770cff36a14714076`.
+- Upstream `matrix-org/matrix-rust-sdk` main: `d477953d60c7aaddfd5d10c181f9d47c661290cd`.
+- History-preserving upstream merge: `daeb92176671a2f14c090ce048a9997936abb867`.
+- New gitlink: `1c669ef107eba11b395efa275ed4f615a94c7c3b`, which also merges
+  the current fork's covering-thread-receipt correction. Its public/private
+  receipt, later-reply and pagination-only assertions are retained; only the
+  automatic-cache and test-user APIs needed mechanical adaptation. All 25 SDK
+  thread-cache integration tests pass on the combined revision. The unused
+  search dependency and its lockfile entry remain removed.
+- The merge brings 486 upstream-only commits into the fork, whose previous
+  head had 214 fork-only commits; 40 paths initially conflicted.
+
+The merge adopts upstream's automatic Client event-cache construction and
+session-activation redecryptor startup. Koushi's existing availability adapter
+checks for a cache rather than starting it. Required cache operations propagate
+existing failures; optional room-summary enrichment remains optional. Room,
+thread and event-focused cache creation and their subscriptions remain separate
+from Client startup. See the [SDK Event Cache Lifecycle contract](../architecture/overview.md#sdk-event-cache-lifecycle).
+
+Retained behavior includes committed-response/checkpoint ordering, restoring
+Sliding Sync positions with subscriptions, cancellation-safe room/focused-cache
+publication, late-decryption counters/reports and verification delivery,
+pending redactions, bundled replacements, receipt boundaries, membership
+provenance, stock outbound pre-share with secure-backup admission, bounded
+search opening/batching/literal cursors, and the encrypted-index format and
+passphrase behavior. Wrong-password opening remains non-destructive.
+
+Superseded deltas are removed rather than reintroduced as compatibility paths:
+manual Client-cache startup/subscription state, the local `left_locally` guard
+(upstream preserves known membership without explicit own-membership evidence),
+and duplicate constructor bookkeeping covered by upstream initialization. A
+disabled cache now makes cached-message hydration return an existing cache
+error, not `Ok(None)` that could silently discard a search candidate. No new
+public DTO, cache-startup shim or notification owner is introduced.
+
+SDK validation is scoped to the eight Koushi-used crates: `matrix-sdk`,
+`matrix-sdk-base`, `matrix-sdk-common`, `matrix-sdk-crypto`, `matrix-sdk-search`,
+`matrix-sdk-sqlite`, `matrix-sdk-store-encryption` and `matrix-sdk-ui`, with
+Koushi's encryption/search/SQLite/testing feature set. The initial combined
+lib/integration run passed 3,349 tests (4 ignored), and doctests passed 284
+(4 ignored); strict clippy, rustdoc warnings, scoped fmt and staged whitespace
+checks passed. Independent review found one disabled-cache hydration issue;
+its compiled regression failed before the fix, then the affected SDK suites
+passed 791 unit and 488 integration tests with strict clippy/rustdoc/fmt green.
+Unused FFI/labs/IndexedDB targets were not built or claimed as validated.
+The repository's dependency audit also found upstream's now-unused `once_cell`
+search dependency; removing it passed 50 search tests, 2 doctests, strict
+clippy/rustdoc and the dependency audit, without a dependency addition.
+
+First-party integration is not publishable yet. Cache availability/persistence
+(4 tests), session-bound password/OAuth reset authentication (2 tests), and Core
+cache admission/restore (2 tests) pass. Avatar owner tests (19) and mutation-lane
+tests (13) retain their existing assertions: fixtures now explicitly consume the
+cache-admission diagnostic and match their actual synthetic access token.
+SDK-only aggregate QA passes on both disposable Tuwunel and Synapse; each run
+creates one room and one Space, joins two rooms, and sends/receives two messages.
+Workspace/QA-bin strict lint, release and stack-budget lint, the three 512 KiB
+worker-stack tests, the leaf wasm build, and license/dependency audits pass.
+
+The earlier fresh-account admission failure is resolved by the existing
+missing-identity bootstrap exception, not a new admission policy. The existing
+authoritative identity request now returns identity classification separately
+from the unchanged SDK trust verdict. Successful genuine absence can enter
+mandatory bootstrap only after the current-generation restricted-sync fence;
+existing identity, query failure and stale results do not authorize bootstrap.
+The stale projection-acknowledgement correction also preserves a newer pending
+trust transition. No `Unknown`-to-`Unverified` shim, weakened admission assertion
+or upstream safety-logic rollback is included.
+
+After integrating Koushi main through `ce25e243`, the CI-excluded workspace
+tests, all documented strict clippy groups, stack-budget tests, formatting,
+desktop tests (2,362), typecheck, lint and secret scan passed with the intermediate
+SDK pin `b25e9df403aa76425703b3fa7806530eacaec2f0`. A fresh feature-unified
+workspace run passed 4,616 tests (16 ignored). Affected gates must finish again
+on the combined SDK revision before publication. Tuwunel aggregate and both SDK smoke lanes pass. Synapse Core
+aggregate still fails waiting for the room-people structured mention receiver:
+`undecryptable_seen=false sync=reconnecting session=ready`. Its server log has
+no `AssertionError`, so the earlier Synapse assertion is not an established
+cause of this attempt. Both-server Core QA is not green.
+
+SDK reconciliation now preserves both the receipt fix and the upstream merge
+as ancestors of the combined gitlink above. Publication remains blocked on
+Synapse Core QA, the final combined-state gates and integrated post-review;
+no final PR or merge is claimed. Cold-room retirement and child-task teardown
+remain parked; this merge does not claim to solve those ownership boundaries.
