@@ -25,6 +25,23 @@ minimal proven correction; no authorization relaxation. If comparison is
 inconclusive, save and stop. Never claim the supplied membership-timeout
 observation proves this separate PolicyNotVerified baseline comparison.
 
+Probe started in the new detached sibling worktree`../koushi-mainprobe` with
+its own target and exact main/SDK SHAs above. Bounded command-only worker:
+`sa_2fadb36f-4bd3-4aaa-b95d-ae003153a3cd` (`mainprobe_once`), maximum36min,
+including one build (1200s) and only on success one fresh scenario (900s).
+Private receipts: `/tmp/koushi-1677-mainprobe-build.{log,exit,json}` and
+`/tmp/koushi-1677-mainprobe-focused.{log,exit,json}`. Await only own exits,
+artifact paths and closed tokens; no parent bulk-log inspection. No probe
+result is claimed yet; no additional Cargo run while this worker builds.
+
+While it runs, main prepared **not launched** final post-review slices:
+`/tmp/koushi-1677-final-post-review/manifest.json`, five source packets and two
+worklog packets. Their source bytes cover all4,613 reviewed root diff lines
+exactly once, unchanged from1ae6e673 except checkpoint. Run bounded exact-GPT
+reviews only after the required gates pass; complete every assigned slice and
+split a tool-limited slice further rather than count an incomplete report.
+No production edit, gate rerun, or speculative design was added by preparation.
+
 ### Maintainer-supplied pB budget evidence (not rerun locally)
 
 Source: maintainer-shared pB experiment,2026-11-01; raw log path and SHA not supplied.
