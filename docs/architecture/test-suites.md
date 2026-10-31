@@ -92,7 +92,7 @@ Focused iteration remains allowed and is deliberately not an artifact-size
 baseline: `cargo test -p <crate> --profile ci --test <suite> <feature>::` compiles
 only the owning suite but may select another dependency feature graph. Do not
 normalize those graphs by enabling speculative production features. QA binaries
-(`qa-bin`), wasm, release stack budgets and platform jobs remain distinct gates:
+(`qa-bin`), release stack budgets and platform jobs remain distinct gates:
 they test genuinely different configurations. No wrapper or second config source
 is needed. Profile/feature/toolchain/flags changes legitimately produce new hashes.
 

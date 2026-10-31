@@ -86,7 +86,7 @@ const BANNED_PROTOCOL_DEPS = [
   "tauri-build",
 ];
 
-// State/key/protocol are sync, pure, and wasm-clean. Core confines Tokio to its
+// State/key/protocol are sync and pure. Core confines Tokio to its
 // executor/channel plumbing but may not directly regain an OS/platform crate.
 const DOMAIN_CRATES = [
   { name: "koushi-state", banned: BANNED_PLATFORM_DEPS },
@@ -182,7 +182,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       `check-domain-crate-platform-deps: FAILED — ${crate.name} has forbidden dependencies.`
     );
     console.error(
-      "Pure domain/protocol crates must remain wasm-clean; platform access stays behind a port."
+      "Pure domain/protocol crates stay platform-independent for headless testing; platform access stays behind a port."
     );
     console.error(
       "See REPOSITORY_RULES.md Architecture And Ownership and Platform Portability.\n"

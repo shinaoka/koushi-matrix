@@ -110,11 +110,16 @@ for merging into `main`:
 | `Frontend (typecheck / vitest / build / secret-scan)` | typecheck, vitest, build, secret scan, ESLint import boundaries, Tauri adapter boundary, domain-crate platform deps |
 | `Browser headless (Playwright DOM tier)` | `npx playwright test` — a red spec is a blocked merge |
 | `Rust lint (rustfmt / clippy)` | `cargo fmt --check`, then workspace, QA-binary, and release-configuration clippy with `-D warnings`, the release "Rust stack budget" clippy gate (`-D clippy::large_stack_frames -D clippy::large_futures`), and the 512 KiB worker-stack `stack_budget` test (see [Rust lint gate](#rust-lint-gate)) |
-| `Rust (workspace / src-tauri / wasm)` | submodule and diagnostic-isolation guards, the architecture guards (`check-protocol-qa-boundaries`, `check-domain-crate-platform-deps`, `check-leaf-crate-boundaries`, `check-headless-qa-lanes`, `check-rust-test-structure`, `check-command-snapshot-contract`, `check-retained-reachability`), one feature-unified workspace suite (including the `koushi-core-testkit` integration targets and the `koushi-desktop` DTO/IPC contract tests), wasm build, `cargo-deny`, `cargo-machete`, the CI-cache report, and workspace cargo metrics |
+| `Rust (workspace / src-tauri / wasm)` | submodule and diagnostic-isolation guards, the architecture guards (`check-protocol-qa-boundaries`, `check-domain-crate-platform-deps`, `check-leaf-crate-boundaries`, `check-headless-qa-lanes`, `check-rust-test-structure`, `check-command-snapshot-contract`, `check-retained-reachability`), one feature-unified workspace suite (including the `koushi-core-testkit` integration targets and the `koushi-desktop` DTO/IPC contract tests), `cargo-deny`, `cargo-machete`, the CI-cache report, and workspace cargo metrics |
 | `macOS Tauri cargo check` | `cargo check --profile ci -p koushi-desktop` plus `cargo clippy ... -- -D warnings` on macOS, including `#[cfg(target_os = "macos")]` paths excluded by Linux CI, and runs the native ImageIO decoder tests (`--test image_io_decoder`) |
 | `Core invitations (tuwunel)` / `Core invitations (synapse)` | disposable local homeserver `--core --scenario=invites_dm` per server |
 | `Core QA binary tests` | `cargo test -p koushi-qa --features qa-bin --bin headless-core-qa` |
 | `Windows overlay ACL IPC` | `cargo test -p koushi-windows-overlay-acl windows_overlay_ipc_is_authorized`, OIDC launch tests, updater lifecycle/artifact-transfer and Core-before-installer shutdown tests, desktop clippy with `-D warnings` for Windows-only cfg paths, plus the Windows "Rust stack budget" clippy gate and 512 KiB worker-stack test (#1554) |
+
+The historical `Rust (workspace / src-tauri / wasm)` check name is retained
+because branch protection requires it; it no longer installs or builds a wasm
+target. The browser-headless DOM tier still tests the desktop React frontend;
+it is not a browser-hosted Rust core build.
 
 Do not assume a green PR means a homeserver job passed — check the job
 explicitly, and confirm whether it is a required check before treating it as a
