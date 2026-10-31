@@ -292,6 +292,9 @@ Crate responsibilities:
   cleanup in the same effect/controller; product retry and session lifecycle
   remain Rust-owned.
 
+Rust integration suite layout, test ownership, shared-process constraints and
+canonical correctness-gate invocation are defined in [test suites](test-suites.md).
+
 Upstream SDK deltas are consumed exclusively from the checked-out
 `vendor/matrix-rust-sdk` submodule. Root workspace Matrix SDK dependencies are
 exact paths beneath that checkout, and the parent repository gitlink is the
@@ -1055,6 +1058,15 @@ identity, sender/body/timestamp fields, `in_reply_to_event_id`,
 root, projected by Core for the room-timeline chip: it is not derived from the
 bundled summary. The same per-root cache value is mirrored into Rust state as
 `RoomSummary.thread_unread_count`, which feeds the shared badge helper below.
+The SDK owns receipt coverage as well as counting: own unthreaded public/private
+receipts cover earlier events in every thread and the main timeline; a
+root-specific receipt covers only its thread. A fresh session, history load,
+or restart must not turn events at or before a known covering receipt into
+unread content. Scope ownership is independent of receipt coverage: a thread
+root belongs to the main timeline and must not also count as a thread reply.
+Unknown ordering stays unresolved; Core and renderers never zero or recount
+SDK values to hide a missing receipt. A duplicate successful read must not
+require a new server echo to recognize a covering receipt already in storage.
 
 Thread summaries describe aggregate presentation state, not complete per-thread
 unread state. Capability advertisement and room-badge changes do not prove

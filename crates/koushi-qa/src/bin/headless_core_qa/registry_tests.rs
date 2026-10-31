@@ -158,6 +158,10 @@ fn parses_all_scenarios_from_env_value_including_directory() {
         QaScenario::ThreadLateJoiner
     );
     assert_eq!(
+        QaScenario::from_env_value("thread_receipt_fresh_session").unwrap(),
+        QaScenario::ThreadReceiptFreshSession
+    );
+    assert_eq!(
         QaScenario::from_env_value("mcp_message_actions").unwrap(),
         QaScenario::McpMessageActions
     );
@@ -277,6 +281,31 @@ fn search_crawler_catchup_is_registered_with_private_safe_final_tokens() {
         ]
     );
     assert!(!QaScenario::All.should_run_stage(QaStage::SearchCrawlerCatchup));
+    let report = scenario_report("local", scenario);
+    assert!(!report.contains('@'));
+    assert!(!report.contains('!'));
+    assert!(!report.contains('$'));
+}
+
+#[test]
+fn thread_receipt_fresh_session_is_registered_with_private_safe_final_tokens() {
+    let scenario = QaScenario::ThreadReceiptFreshSession;
+    assert_eq!(
+        stages_for_scenario(scenario),
+        [QaStage::Safety, QaStage::ThreadReceiptFreshSession]
+    );
+    assert_eq!(
+        final_tokens_for_scenario(scenario),
+        [
+            "safety=ok",
+            "thread_receipt_fresh_unthreaded=ok",
+            "thread_receipt_fresh_clash=ok",
+            "thread_receipt_fresh_read=ok",
+            "thread_receipt_fresh_restart=ok",
+            "thread_receipt_fresh_session=ok"
+        ]
+    );
+    assert!(!QaScenario::All.should_run_stage(QaStage::ThreadReceiptFreshSession));
     let report = scenario_report("local", scenario);
     assert!(!report.contains('@'));
     assert!(!report.contains('!'));
