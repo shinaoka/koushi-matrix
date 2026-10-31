@@ -1,5 +1,26 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest publication/cutoff audit — existing draft#1712, cutoff04:42 JST
+
+The maintainer reports another pane already opened the ONE authorized PR.
+Parent verified GitHub:`shinaoka/koushi-matrix#1712`, OPEN/DRAFT, base`main`,
+head`chore/1677-sdk-upstream-main` at`6a52db0b` before this checkpoint.
+**Do not create any new PR.** GroupB is already running in the same retained
+worker; no duplicate command/scenario/source change. A source-resource
+revalidation beforeB confirmed only CHECKPOINT changed, SDK unchanged.
+
+New hard cutoff is **04:42 JST**, superseding04:45 below. Preserve time for
+saving/pushing. If ANY affected gate RED: record safe signature/ownexit in
+this checkpoint AND the existing#1712 body; retain DRAFT, do not merge or
+retry. If ALL gates and complete integrated post-review GREEN with enough
+time: update#1712 body to final head, independent A–C exits and review
+conclusion; then mark ready, enable normal auto-merge, monitor required CI to
+completion. No admin/force-push/new PR. If time/context insufficient, keep
+DRAFT and save the exact pending phase; no incomplete review counted.
+After verified merge/CI only: authorized own-worktree cleanup requires clean
+status0 first, delete only its unshared target, worktree remove/prune. Never
+shared targets/protected issues1707/1710/SDK forkPR34 or unrelated worktrees.
+
 ## Latest Step2 boundary — 2026-11-01 04:01 JST — groupA GREEN
 
 Own receipts confirm command1 fmt **exit0**, command2 workspace tests
