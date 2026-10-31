@@ -1,5 +1,81 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest bounded audit — 2026-11-01 01:13 JST — RED, STOP
+
+This section supersedes the old pending-readiness proposal and stop/resume
+instructions below. Scope was the maintainer's bounded QA-only audit: no new
+product/SDK/public API/server-version/policy change, no rebuild, maximum two
+aggregate invocations, and the second only after a GREEN first invocation.
+
+### Readiness permission and the one unsettled claim
+
+- Read the requested **Confirmed current diagnosis** and the subsequent
+  investigation/history. That diagnosis records the original pre-readiness
+  Synapse v1.157.0 assertion: 56 native-sync HTTP500 responses while the three
+  Sliding Sync migrations were pending. It is not the latest post-readiness
+  failure. The original observed count is **56**, not the draft design's58.
+- The completed exact `openai/gpt-6.1-sol` narrow pre-review is preserved in
+  `/tmp/koushi-1677-synapse-readiness-permission-review.md`. Its judgment is:
+  **“Permission PASS: enforcing the prerequisite fixes fixture readiness, not
+  server behavior/client expectations.”** It required canon first, the existing
+  helper/container, a read-only predicate, one deadline and fail-closed errors.
+- The approved implementation, matching QA canon, deterministic RED/GREEN tests
+  and integrated post-review are already in this branch. `waitForHomeserver`
+  requires the versions response plus the same three pending-job names that
+  the pinned dispatcher's own safety predicate checks; no fixed grace wait,
+  increased deadline, DB write, scenario relaxation or backend selection.
+  **No second implementation or production correction was made here.**
+- This permission judgment does not prove every aggregate failure is caused by
+  those migrations. Post-readiness failures remain separate unresolved facts.
+
+### Exactly one fresh aggregate, prepared binaries only
+
+- Source head before execution: `8a9a65fa`; SDK pin remains
+  `1c669ef107eba11b395efa275ed4f615a94c7c3b`. No protected issue/PR/pin touched.
+- Command: `npm --prefix apps/desktop run qa:headless-local --
+  --server=synapse --core --timeout-ms=600000 --cargo-profile=release`.
+- Execution: **2026-11-01 01:09:56–01:12:38 JST**, idle-selected CPU affinity
+  **`0-6,8`**, **jobs8 / tests8**, incremental off. Outer safety deadline1500s;
+  existing runner/startup/scenario deadlines unchanged.
+- The existing runner normally invokes `cargo run`. A private temporary PATH
+  executable accepted only its two exact release SDK/Core launch argv sequences
+  and directly exec'd the existing prepared executables. All other invocations
+  were refused (checked with exit64). It never delegates to Cargo/rustc. This
+  changed no tracked source, QA oracle, fixture lifecycle or success token.
+  Both binary hashes and mtimes were unchanged across execution: **no rebuild**.
+- Attempt counter: **1 of maximum2**; second attempt **not run**, because the
+  first is RED. No alternate scenario, extra reproduction or retry followed.
+- Actual aggregate **exit1 / RED**. Core failure signature, confirmed exactly:
+  **`Headless core QA failed: space_leave_children memberships: timed out`**.
+  This matches the already-recorded 19:31 failure, rather than establishing a
+  new cause. Last successes include `space_access=ok` and
+  `space_add_existing=ok`. No success claim is made for Space leave/aggregate.
+- This attempt's server log has **zero `AssertionError` and zero `Traceback`**.
+  Therefore the observed remaining failure cannot be reported as another
+  reproduction of the original migration assertion. The membership wait's
+  underlying product/SDK/server cause is **unresolved**, not classified as
+  infrastructure and not fixed by readiness. No assertions were weakened.
+- Private runner log: `/tmp/koushi-1677-bounded-synapse-aggregate.log`;
+  exit: `/tmp/koushi-1677-bounded-synapse-aggregate.exit`;
+  conditions/binary identities/counter: `/tmp/koushi-1677-bounded-resume.json`.
+- Retained disposable fixture:
+  `.local-secrets/headless-local-qa/2026-10-31T16-09-57-252Z-synapse-all-ISBTNk/`.
+  Exact child failure: `core-core-stderr.log`; progress: `core-core-stdout.log`;
+  server: `homeserver.log` inside that directory. Raw logs and fixture
+  credentials remain private/ignored; do not copy them to PRs/issues.
+
+### Stop boundary / next action needs a new instruction
+
+**No PR, no both-server follow-up, no CI/auto-merge, no new issue and no further
+attempt.** Existing workspace/release/static gates and the completed integrated
+source review remain scoped PASS; this does not waive the required RED QA.
+The runner returned through its existing server cleanup; retained evidence and
+this unmerged worktree are kept, no shared or local target directory deleted.
+Only this checkpoint is committed/pushed. Remaining work is resolving the
+existing Space-leave membership failure and completing required green QA before
+a finished PR. Do not start it autonomously under this bounded instruction.
+
+
 ## Final stop — 2026-11-01 01:00 JST, integrated source reviewed
 
 **Stop for the maintainer's context-budget limit. No PR: required Synapse Core
@@ -285,8 +361,12 @@ need refreshing before final review/publication.
 
 ## Confirmed current diagnosis: Synapse native Sliding Sync
 
-The current reproducible aggregate failure is **not** the earlier fresh-account
-admission stall or offline restore ACK bug.
+**Historical pre-readiness diagnosis, not the latest attempt.** This section
+records the original server assertion, independently of the fresh-account
+admission stall and offline restore ACK bug. The latest bounded post-readiness
+attempt is recorded at the top: Space-leave membership timeout, no server
+AssertionError/Traceback. Do not treat the pending proposal language farther
+below as current implementation/review status.
 
 1. Disposable Synapse is pinned to `matrixdotorg/synapse:v1.157.0` by
    `scripts/lib/local-homeserver-qa.mjs`, with pin tests in the same directory.
