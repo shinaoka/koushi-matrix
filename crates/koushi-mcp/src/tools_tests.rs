@@ -79,13 +79,13 @@ fn wait_for_events_publishes_its_coverage_and_cursor_contract() {
         schema["properties"]["coverage"]["enum"],
         json!(["sampled_room_changes"])
     );
-    // Typed outputs: read_recent_activity, wait_for_events, get_message,
-    // the five message actions (#1628), and draft_message (#1644).
+    // Typed outputs: read_recent_activity, read_room_messages, wait_for_events,
+    // get_message, the five message actions (#1628), and draft_message (#1644).
     let others_typed = definitions()
         .iter()
         .filter(|tool| tool.output_schema.is_some())
         .count();
-    assert_eq!(others_typed, 9);
+    assert_eq!(others_typed, 10);
 }
 
 #[test]

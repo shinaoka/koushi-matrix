@@ -98,6 +98,36 @@ fn id_or_null() -> Value {
     json!({ "type": ["string", "null"] })
 }
 
+/// The structured result of `read_room_messages` (#1707).
+fn read_room_messages_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "room_id": { "type": "string" },
+            "messages": {
+                "type": "array",
+                "description": "Message envelopes in server order, newest first, including messages this device cannot decrypt.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "event_id": { "type": "string" },
+                        "sender_id": { "type": "string" },
+                        "timestamp_ms": { "type": "integer" },
+                        "body": { "type": ["string", "null"] },
+                        "content_available": { "type": "boolean", "description": "True exactly when body is not null, as in get_message." },
+                        "kind": { "type": "string" },
+                        "is_encrypted": { "type": "boolean" },
+                        "is_redacted": { "type": "boolean" }
+                    },
+                    "required": ["event_id", "sender_id", "timestamp_ms", "body", "content_available", "kind", "is_encrypted", "is_redacted"]
+                }
+            },
+            "next": { "type": ["string", "null"], "description": "Opaque server token to pass as from for the next older page; null at the end of history." }
+        },
+        "required": ["room_id", "messages", "next"]
+    })
+}
+
 /// The structured result of `get_message` (#1628).
 fn get_message_output_schema() -> Value {
     json!({
@@ -214,7 +244,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "read_room_messages",
-            description: "Read a room's most recent messages, newest first, with sender, timestamp, and text. Works for a room nobody has opened and never changes the GUI. Pass next from a previous page as from to read older messages. Requires account_id and room_id.",
+            description: "Read a room's most recent messages, newest first, with sender, timestamp, and text. Works for a room nobody has opened and never changes the GUI. Messages this device cannot decrypt retain their envelope with content_available false and body null. Pass next from a previous page as from to read older messages. Requires account_id and room_id.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -227,7 +257,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 "additionalProperties": false
             }),
             read_only: true,
-            output_schema: None,
+            output_schema: Some(read_room_messages_output_schema()),
         },
         ToolDefinition {
             name: "get_attachment",

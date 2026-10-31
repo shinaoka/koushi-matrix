@@ -369,10 +369,14 @@ Two failures look similar and mean different things:
 
 ## Limitations
 
-- `read_room_messages` decrypts each page before returning it, so a message
-  this device cannot decrypt comes back with its sender and time but no text.
-  Only message-like events are returned; membership and other state events are
-  skipped.
+- `read_room_messages` decrypts each page before returning it. A message this
+  device cannot decrypt keeps its event ID, sender, and time, with
+  `content_available: false` and `body: null`, just like `get_message`.
+  `content_available` is true exactly when a body is returned; redacted messages
+  and other messages without readable text also report false. Unreadable messages
+  keep their place in the page; ordering and the `next` pagination token are
+  unchanged. Only message-like events are returned; membership and other state
+  events are skipped.
 - Search results cover what the local index has crawled; a very recent message
   may not be searchable yet. `read_room_messages` reads the room directly and
   does not depend on the crawl.

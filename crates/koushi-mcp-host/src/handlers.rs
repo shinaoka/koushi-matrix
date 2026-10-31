@@ -412,6 +412,7 @@ async fn read_room_messages(
                     "sender_id": message.sender_id,
                     "timestamp_ms": message.timestamp_ms,
                     "body": message.body,
+                    "content_available": message.content_available,
                     "kind": message.kind,
                     "is_encrypted": message.is_encrypted,
                     "is_redacted": message.is_redacted,
