@@ -2379,8 +2379,16 @@ stateDiagram-v2
   `RoomReadReceiptEventFilter` excludes thread replies (and edits/reactions that
   target a reply) and matches only `Unthreaded`/`Main` receipts, while the
   per-thread cache's `ThreadReadReceiptEventFilter` counts exactly one thread's
-  replies and matches only that thread's own receipt. The two scopes are therefore
-  complete and disjoint, so summing them double counts nothing:
+  replies, excluding its root (which belongs to the main timeline). Receipt
+  coverage is separate from event ownership: each scope uses the newest own
+  public or private receipt covering it. A root-specific receipt covers only
+  that thread; an unthreaded receipt covers earlier events across all threads
+  and the main timeline, including when its target is a thread reply. Coverage
+  follows proven event-cache ordering, never event timestamps; an unknown
+  target remains unresolved rather than clearing unrelated events. Incoming
+  receipts and receipts restored from storage obey the same rule, including
+  after pagination. The two counted scopes are therefore complete and disjoint,
+  so summing them double counts nothing:
   `unread_count + thread_unread_count`. The per-root values are mirrors of the
   SDK's own counters, so a mirror that has not been refreshed yet can only
   undercount a thread; it can never invent or duplicate a reply.
@@ -2415,8 +2423,11 @@ stateDiagram-v2
   the session. `RoomAttentionProjection.has_unread_content` and
   `has_unread_mention` include them, so a thread-only unread room renders its dot
   or mention affordance instead of looking read. A successful main-timeline read
-  clears only `unread_count`, `notification_count` and `highlight_count`: it
-  never moves a threaded receipt and must not clear the thread fields.
+  clears only `unread_count`, `notification_count` and `highlight_count` by
+  that main-view completion transition; it never moves a root-specific
+  receipt or blindly clears the thread fields. An unthreaded receipt written
+  by that operation separately advances any covered thread counters through
+  the SDK, without marking later unseen replies as read.
 
 ```mermaid
 stateDiagram-v2

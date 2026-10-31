@@ -134,6 +134,8 @@ mod scenario_search;
 mod scenario_search_catchup;
 #[path = "headless_core_qa/scenarios/thread_late_joiner.rs"]
 mod scenario_thread_late_joiner;
+#[path = "headless_core_qa/scenarios/thread_receipt_fresh_session.rs"]
+mod scenario_thread_receipt_fresh_session;
 #[path = "headless_core_qa/scenarios/timeline.rs"]
 mod scenario_timeline;
 #[path = "headless_core_qa/scenarios/user_verification.rs"]
