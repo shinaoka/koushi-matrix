@@ -1,5 +1,53 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest verified Step2 boundary — 2026-11-01 04:12 JST — A/B/C all GREEN
+
+**All nine affected mandatory commands completed, own exits independently
+checked; no retry/source edit/extra aggregate/build command.**
+
+| Group | Command/gate | Own exit | Safe result |
+| --- | --- | --- | --- |
+| A1 | cargo fmt --check | 0 | PASS |
+| A2 | CI-profile workspace tests, same two documented exclusions | 0 | 4,616 passed /0 failed /16 ignored |
+| B3 | dev workspace all-targets strict clippy | 0 | PASS |
+| B4 | QA-feature all-targets strict clippy | 0 | PASS |
+| B5 | release workspace strict clippy + stack/future lints | 0 | PASS |
+| C6 | release stack_budget | 0 | 3 passed /0 failed |
+| C7 | CI-profile headless-core-qa unit tests | 0 | 135 passed /0 failed |
+| C8 | wasm state/search/protocol leaf check | 0 | PASS |
+| C9a | Rust test structure Node guard | 0 | PASS |
+| C9b | git diff --check | 0 | PASS |
+
+Receipts/conditions/index:`/tmp/koushi-1677-step2-index.json`; each gate has
+independent`.exit/.log/.json` under`/tmp/koushi-1677-step2-`. C suffixes:
+`release-stack-test`, `qa-bin-test`, `wasm-leaf-check`, `rust-test-structure`,
+`git-diff-check`. GroupsA/B suffixes/results are recorded below. Commands
+were serialized by ONE retained worker, idle8/taskset/jobs8/tests8/kache;
+parent read own exits and safe counts only, not bulk logs. Mandatory both/all
+remains previously verified exit0 with Space-leave PASS on both servers,
+unchanged executables and no rerun. Focused main SAME_POLICY_RED remains an
+explicitly approved diagnostic exclusion, not an unreported required RED.
+
+**Night handoff/publication boundary:** no source work remains in this batch;
+final integrated post-review is **NOT COMPLETE**, and no new review is
+launched in the remaining context/time margin. Preserve the current verified
+state rather than claim incomplete review or rush ready/merge/cleanup.
+Existing `shinaoka/koushi-matrix#1712` must remain DRAFT: mirror final head,
+this A–C independent-exit matrix and review-PENDING status in its body, but
+no new PR, ready transition, auto-merge, CI approval claim or merge/cleanup.
+Earlier completed integrated review predates the correction; the incomplete
+corrective report is NOT counted. Current context was already reported high;
+04:42 JST cutoff has not been extended.
+
+**Next action:** resume same clean worktree/source, verify these saved receipts
+without rerunning successful gates, refresh only post-review packet header/
+worklog slices to the submitted head, then ONE complete exact-GPT integrated
+post-review round with bounded slices (manifest and continuation paths below).
+After complete acceptable review only, update#1712 final-head/review evidence,
+mark ready, normal auto-merge and required CI monitoring; no admin. Only after
+verified merge and clean status0 perform authorized unshared-target/worktree
+cleanup. SDK/protected items/external rejoin stay untouched. No cleanup now.
+
 ## Latest Step2 boundary — 2026-11-01 04:06 JST — groupB GREEN
 
 Independent own receipts checked: command3 dev-workspace clippy **exit0**,
