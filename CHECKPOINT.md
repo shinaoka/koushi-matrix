@@ -1,5 +1,18 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest Step2 boundary — 2026-11-01 04:06 JST — groupB GREEN
+
+Independent own receipts checked: command3 dev-workspace clippy **exit0**,
+command4 QA-feature clippy **exit0**, command5 release/stack clippy
+**exit0**. Artifacts:`/tmp/koushi-1677-step2-{dev-clippy,qa-clippy,
+release-stack-clippy}.{exit,log,json}`; index remains
+`/tmp/koushi-1677-step2-index.json`. No parent bulk logs/source edit/retry.
+A remained passed/not rerun; C commands6–9 still unrun. Save/push, then SAME
+retained worker receives C only. Repository revalidation again shows only
+CHECKPOINT changed since initial gate head98d152e, root clean. Draft#1712
+stays draft until all remaining gates AND complete post-review GREEN; no
+new PR. Hard cutoff04:42 JST/context90% still binding.
+
 ## Latest publication/cutoff audit — existing draft#1712, cutoff04:42 JST
 
 The maintainer reports another pane already opened the ONE authorized PR.
