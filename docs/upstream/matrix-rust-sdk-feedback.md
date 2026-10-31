@@ -1687,11 +1687,16 @@ where the ordering question (event identity or request generation) belongs.
 
 The SDK update preserves both parents and their history:
 
-- Previous Koushi/fork pin: `401be3df774170499be743de26bdd88c1cb58f56`.
+- Original integration base: `401be3df774170499be743de26bdd88c1cb58f56`.
+- Current Koushi main's fork pin: `292b89c4500cff6bdbcaac4770cff36a14714076`.
 - Upstream `matrix-org/matrix-rust-sdk` main: `d477953d60c7aaddfd5d10c181f9d47c661290cd`.
-- History-preserving merge: `daeb92176671a2f14c090ce048a9997936abb867`.
-- New gitlink: `b25e9df403aa76425703b3fa7806530eacaec2f0` (the merge plus removal
-  of an unused search dependency and its lockfile entry).
+- History-preserving upstream merge: `daeb92176671a2f14c090ce048a9997936abb867`.
+- New gitlink: `1c669ef107eba11b395efa275ed4f615a94c7c3b`, which also merges
+  the current fork's covering-thread-receipt correction. Its public/private
+  receipt, later-reply and pagination-only assertions are retained; only the
+  automatic-cache and test-user APIs needed mechanical adaptation. All 25 SDK
+  thread-cache integration tests pass on the combined revision. The unused
+  search dependency and its lockfile entry remain removed.
 - The merge brings 486 upstream-only commits into the fork, whose previous
   head had 214 fork-only commits; 40 paths initially conflicted.
 
@@ -1742,16 +1747,29 @@ creates one room and one Space, joins two rooms, and sends/receives two messages
 Workspace/QA-bin strict lint, release and stack-budget lint, the three 512 KiB
 worker-stack tests, the leaf wasm build, and license/dependency audits pass.
 
-Core aggregate QA is RED at fresh-account admission: upstream commit
-`68696fd72e7e540782cfe1d5fe3ef1f9c5c18046` deliberately keeps SDK verification
-`Unknown` until the own cross-signing identity is known. Koushi remains in
-`rechecking_trust` instead of reaching new-identity setup. Unit/integration
-checks exercising the same absent-identity assumption also remain RED: the last
-full workspace run passed 1,842 Core unit tests but failed eight, with three
-additional failures in `issue_1105_authentication_audit`. No
-`Unknown`-to-`Unverified` shim, weakening of the admission assertions, or
-upstream safety-logic rollback is included. Resolving this requires an explicit
-admission-contract decision. The full workspace gate remains RED; Core
-both-server QA and integrated independent review are not complete, and neither
-repository is published. Cold-room retirement and child-task teardown remain parked; this
-merge does not claim to solve those ownership boundaries.
+The earlier fresh-account admission failure is resolved by the existing
+missing-identity bootstrap exception, not a new admission policy. The existing
+authoritative identity request now returns identity classification separately
+from the unchanged SDK trust verdict. Successful genuine absence can enter
+mandatory bootstrap only after the current-generation restricted-sync fence;
+existing identity, query failure and stale results do not authorize bootstrap.
+The stale projection-acknowledgement correction also preserves a newer pending
+trust transition. No `Unknown`-to-`Unverified` shim, weakened admission assertion
+or upstream safety-logic rollback is included.
+
+After integrating Koushi main through `ce25e243`, the CI-excluded workspace
+tests, all documented strict clippy groups, stack-budget tests, formatting,
+desktop tests (2,362), typecheck, lint and secret scan passed with the intermediate
+SDK pin `b25e9df403aa76425703b3fa7806530eacaec2f0`. A fresh feature-unified
+workspace run passed 4,616 tests (16 ignored). Affected gates must finish again
+on the combined SDK revision before publication. Tuwunel aggregate and both SDK smoke lanes pass. Synapse Core
+aggregate still fails waiting for the room-people structured mention receiver:
+`undecryptable_seen=false sync=reconnecting session=ready`. Its server log has
+no `AssertionError`, so the earlier Synapse assertion is not an established
+cause of this attempt. Both-server Core QA is not green.
+
+SDK reconciliation now preserves both the receipt fix and the upstream merge
+as ancestors of the combined gitlink above. Publication remains blocked on
+Synapse Core QA, the final combined-state gates and integrated post-review;
+no final PR or merge is claimed. Cold-room retirement and child-task teardown
+remain parked; this merge does not claim to solve those ownership boundaries.

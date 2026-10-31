@@ -1,5 +1,48 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Resume audit — 2026-11-01, receipt reconciliation
+
+This resume supersedes the old session-only publication/QA restrictions below.
+The maintainer requested preservation pushes, final integrated gates and review,
+and the fork-to-Koushi PR chain only after green. No required gate is waived.
+
+- Koushi `4ea3aff0` was pushed first; tracking ahead count verified zero.
+- That merge explicitly retained an **intermediate** SDK pin. Current Koushi
+  main's `292b89c4500cff6bdbcaac4770cff36a14714076` receipt correction was not
+  its ancestor. Do not discard that fix or treat the intermediate as final.
+- SDK `1c669ef107eba11b395efa275ed4f615a94c7c3b` now merges that correction into
+  `b25e9df403aa76425703b3fa7806530eacaec2f0`, preserving both histories.
+  Its branch `chore/1677-sdk-upstream-main` is pushed. The only textual conflict
+  was the thread-root filter; preserve main's root exclusion. Automatic cache
+  Option and test-user API adaptations retain all receipt assertions. No new
+  API, schema, owner or concurrency design was introduced. The complete SDK
+  thread-cache integration group passed **25/25**, none failed/ignored.
+- Before that receipt merge, fresh final-state checks passed: feature-unified
+  workspace **4,616 tests, 16 ignored, zero failed**; fmt; strict dev all-targets,
+  QA all-targets and release with stack lints; 512 KiB stack tests; leaf wasm;
+  QA binary tests; structural tests/guards; privacy scanner. These checks are
+  not yet evidence for the new combined SDK revision; rerun affected gates.
+- The preceding session's phase2 artifacts also record workspace/lint/stack,
+  desktop typecheck/lint/vitest successes; **both-server Core aggregate exit1**.
+  Tuwunel aggregate and both SDK smoke lanes passed; Synapse Core failed at the
+  structured-mention receiver with `undecryptable_seen=false sync=reconnecting
+  session=ready`, without the old server `AssertionError`. This newer failure
+  does not erase the earlier Space-leave failure or establish a production cause.
+  Do not rerun the same aggregate blindly.
+- A separate still-live agent was discovered running phase2 gates and editing
+  the feedback document in this same worktree after the old session ended.
+  Its existing edits were preserved; exclusive handoff was requested before
+  further shared-target builds or edits. No unrelated process was terminated.
+- Whole first-party diff (all 4,227 lines including new tests), root lock diff,
+  and the current-main receipt import were self-reviewed. Completed earlier SDK
+  review remains scoped evidence, not the required integrated post-review.
+- Next: consume the other agent's handoff/review results, refresh feedback to
+  the new pin, run affected combined-state gates, complete the exact-model
+  integrated post-review and dedicated both-server migration scenarios, then
+  diagnose the recorded Synapse failure with a focused reproducer. No PR until
+  every required gate/review is green; new Tier-C decisions are parked alone.
+
+
 ## Latest handoff — scoped resume, 2026-10-31 19:44 JST
 
 This section supersedes the older stop/resume instructions below. The maintainer
