@@ -28,6 +28,14 @@ local_leave::space_local_leave_removes_space_immediately -- --exact
 Source worker environment, pick8 idle CPUs, kache explain, save own exits.
 No new QA fixture/rebuild/aggregate/PR has been started.
 
+First RED→GREEN boundary: production source `08b89c19`,
+`local_leave::space_local_leave_removes_space_immediately` **exit0,1 passed,
+zero failed** (previously its own exit101 assertion failure). Worker env,
+kache, CPUs`0-7`, jobs8/tests8. Own evidence:
+`/tmp/koushi-1677-spaceleave-green-immediate.{log,exit,env}`.
+Commit/push this result before running the second regression. Second test,
+self-review, post-review and post-correction integrated gates remain pending.
+
 **Known residual limitation (explicitly accepted out of scope):** conservative
 projection suppression is not released by list presence or absence, nor by an
 external rejoin on another device. In this session it remains until an admitted
