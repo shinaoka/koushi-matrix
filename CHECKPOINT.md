@@ -1,5 +1,46 @@
 # Issue #1677 — WIP recovery checkpoint
 
+## Latest canon-gap stop — 2026-11-01 — requested PARK, two REDs saved
+
+**Stopped before any production edit, per the maintainer's explicit canon-gap
+condition.** The two requested deterministic no-server tests are committed and
+pushed as `23e167cb`; both fail by assertion with their own exit101. This is a
+RED reproduction checkpoint, not a verified fix or PR-ready state.
+
+- The proposed simple retain inversion would release a local-leave marker when
+  an authoritative snapshot omits its ID. That inference is not justified:
+  `room/list_observer.rs:73-84` admits authority with an unknown room count and
+  explicitly allows later responses to reveal more rooms. Its joined/invited
+  projection at `:1523-1529` also omits several distinct memberships. Absence is
+  therefore **not proof of an ordered membership-left observation**.
+- `state-machine.md:1699-1721` instead requires left followed by joined/invited
+  before external evidence clears leave state; local admitted join may clear
+  immediately. No release-by-omission contract was found. A canon amendment or
+  a demonstrated existing ordered-evidence path is needed before choosing the
+  release rule. The guard/filter defects remain real but do not justify a
+  partial fix that silently changes rejoin semantics.
+- Exact-GPT pre-review identified this PARK finding (run
+  `sa_4a43ada3-3943-4e4b-a0d6-743be82d718f`, exit0). Persisted final report:
+  `/tmp/koushi-1677-spaceleave-pre-review-complete.md`; raw history alongside.
+  The persisted text reaches Summary, permission verdict, limits and delete
+  list; capture metadata flags truncation, so no broad complete-review or
+  publication approval is claimed. Main independently verified the cited
+  source/canon before parking; this is not an unsupported review allegation.
+- Two additional exploratory boundary tests were run privately: absence-release
+  RED and admitted-local-join GREEN. The unapproved absence/rejoin assumption
+  was **not** retained in tracked tests; both temporary additions were removed,
+  preserving exactly the two requested regressions. Private patch and raw
+  boundary log remain under `/tmp/koushi-1677-spaceleave-*` for provenance.
+- No production/SDK/pin/canon/policy/oracle change, QA release rebuild, new
+  server fixture, post-fix scenario or aggregate was performed. All old evidence
+  remains scoped as before; required aggregate RED remains blocking. No PR,
+  hosted CI, auto-merge, cleanup, or protected-item operation was performed.
+- **Human options:** (A) authorize a short canon design/approval for what ordered
+  evidence releases projection suppression, then implement only that agreed
+  correction and resume the gated sequence; or (B) authorize a bounded read-only
+  search for an already-existing canon-backed ordered-membership path, keeping
+  production and gates parked. Neither option is silently selected here.
+
 ## Active correction handoff — 2026-11-01 02:26 JST
 
 The maintainer now authorizes **only the small existing-canon app correction
@@ -26,12 +67,10 @@ Starting head `bc364a0d`, SDK `1c669ef10`, both clean/pushed; context audit81%.
   --test navigation_state <exact-test-name> -- --exact --test-threads=8`.
   CPU affinity`8-11,13,15-17`, jobs8/tests8, kache; doctor verified8,886 valid
   entries, zero corruption/missing/checksum failures. No target deletion.
-- A bounded exact-GPT pre-review checks the proposed guard plus combined
-  room/Space marker retention/filter correction against actual canon and
-  authoritative caller assumptions. Proposal:
-  `/tmp/koushi-1677-spaceleave-correction-plan.md`. No production edit until
-  this narrow permission question is resolved; a canon gap still means PARK.
-  Review is not claimed complete yet.
+- The bounded exact-GPT pre-review returned **PARK for absence-based marker
+  release**; main verified the source/canon gap described above. Proposal:
+  `/tmp/koushi-1677-spaceleave-correction-plan.md`. No production edit made.
+  This proposal is not an approved design or permission to continue.
 - Only after both RED, change the existing local-leave early return and
   local-left retention/filter interaction. No new mechanism/public API/wire
   type/dependency/oracle. Consult state-machine/engineering canon; a missing
@@ -53,7 +92,8 @@ Starting head `bc364a0d`, SDK `1c669ef10`, both clean/pushed; context audit81%.
   servers (8/8), all recorded static/workspace checks and integrated source
   review PASS; old aggregate RED is not erased. #5 actual remote memberships
   left while local Space/child0 remained; exact callback cause unproven.
-  No production correction, new RED unit, or new GREEN is claimed yet.
+  The two requested RED units are now verified and saved above. No production
+  correction or post-correction GREEN is claimed.
 
 
 ## Latest remaining-gate resume — 2026-11-01 02:16 JST — dedicated8/8 PASS, overall RED / STOP
