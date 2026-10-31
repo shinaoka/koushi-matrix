@@ -22,7 +22,11 @@ worker, while main reviews; no concurrent Cargo run. Worker environment,
 selected8 idle CPUs/taskset/jobs8/tests8, kache, unchanged source. Command:
 `cargo build -j8 --release --locked -p koushi-qa --features qa-bin
 --bin headless-core-qa`; own log/exit/conditions under
-`/tmp/koushi-1677-postfix-qa-build*`. Build status not yet claimed GREEN.
+`/tmp/koushi-1677-postfix-qa-build*`. Build **exit0**,03:06:19–03:10:17 JST, CPU affinity`0-7`, jobs8/tests8.
+Core QA executable changed from SHA256`58f190f986a4…` to`aef1db81b951…`;
+SDK smoke executable hash/mtime unchanged. Exact before/after identities and
+owned exit are retained in the build artifacts. Source is1ae6e673 (production
+08b89c19); the subsequent root commit changed only this checkpoint.
 Main runs one fresh Synapse room-management QA with the updated binary via
 existing prebuilt-only launcher and before/after hash evidence. Only whole
 scenario GREEN permits one final both-server aggregate; preserve existing
