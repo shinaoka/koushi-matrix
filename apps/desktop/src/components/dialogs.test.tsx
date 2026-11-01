@@ -1518,7 +1518,7 @@ describe("LeaveSpaceDialog", () => {
 });
 
 describe("upload staging failure affordances (#1147)", () => {
-  function renderFailedItem(overrides: { canUseOriginal?: boolean } = {}) {
+  function renderFailedItem(overrides: { canUseOriginal?: boolean; failureKind?: "empty" | "unsupported" | "decode" | "encode" | "missingPreparedBytes" } = {}) {
     const onRetryPreparation = vi.fn();
     const onUseOriginal = vi.fn();
     const onSendAttachments = vi.fn();
@@ -1529,7 +1529,7 @@ describe("upload staging failure affordances (#1147)", () => {
             "holiday",
             {
               kind: "failed",
-              failure_kind: "decode",
+              failure_kind: overrides.failureKind ?? "decode",
               can_use_original: overrides.canUseOriginal ?? true
             },
             "staged-failed",
@@ -1563,6 +1563,17 @@ describe("upload staging failure affordances (#1147)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Use original" }));
     expect(onRetryPreparation).toHaveBeenCalledWith("staged-failed");
     expect(onUseOriginal).toHaveBeenCalledWith("staged-failed");
+  });
+
+  it.each([
+    ["empty", "The attachment is empty"],
+    ["unsupported", "The attachment format is not supported"],
+    ["decode", "The image could not be decoded"],
+    ["encode", "The image could not be encoded"],
+    ["missingPreparedBytes", "The prepared attachment data is missing"]
+  ] as const)("shows the %s preparation failure", (failureKind, message) => {
+    renderFailedItem({ failureKind });
+    expect(screen.getByText(message)).toBeTruthy();
   });
 
   it("hides the original fallback when there are no retained source bytes", () => {

@@ -1544,6 +1544,7 @@ export function UploadStagingDialog({
                   ) : item.preparation.kind === "failed" ? (
                     <div className="upload-staging-failure">
                       <p className="upload-staging-status is-error">{t("upload.preparationFailed")}</p>
+                      <p className="upload-staging-status is-error">{t(`upload.preparationFailure.${item.preparation.failure_kind}`)}</p>
                       <div className="upload-staging-failure-actions">
                         <button className="dialog-button" type="button" onClick={() => void onRetryPreparation(item.staged_id)}>
                           {t("upload.retryPreparation")}

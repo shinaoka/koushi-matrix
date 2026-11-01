@@ -218,6 +218,11 @@ export type MessageId =
   | "upload.original"
   | "upload.preparing"
   | "upload.preparationFailed"
+  | "upload.preparationFailure.empty"
+  | "upload.preparationFailure.unsupported"
+  | "upload.preparationFailure.decode"
+  | "upload.preparationFailure.encode"
+  | "upload.preparationFailure.missingPreparedBytes"
   | "upload.retryPreparation"
   | "upload.useOriginal"
   | "upload.previewAlt"
@@ -2512,6 +2517,11 @@ const en: Catalog = {
   "upload.original": "Original",
   "upload.preparing": "Preparing attachment…",
   "upload.preparationFailed": "Attachment preparation failed",
+  "upload.preparationFailure.empty": "The attachment is empty",
+  "upload.preparationFailure.unsupported": "The attachment format is not supported",
+  "upload.preparationFailure.decode": "The image could not be decoded",
+  "upload.preparationFailure.encode": "The image could not be encoded",
+  "upload.preparationFailure.missingPreparedBytes": "The prepared attachment data is missing",
   "upload.retryPreparation": "Retry preparation",
   "upload.useOriginal": "Use original",
   "upload.previewAlt": "Prepared attachment preview",
@@ -4860,6 +4870,11 @@ const ja: Catalog = {
   "upload.original": "オリジナル",
   "upload.preparing": "添付を準備中…",
   "upload.preparationFailed": "添付の準備に失敗しました",
+  "upload.preparationFailure.empty": "添付ファイルが空です",
+  "upload.preparationFailure.unsupported": "添付ファイルの形式に対応していません",
+  "upload.preparationFailure.decode": "画像をデコードできませんでした",
+  "upload.preparationFailure.encode": "画像をエンコードできませんでした",
+  "upload.preparationFailure.missingPreparedBytes": "準備済みの添付データが見つかりません",
   "upload.retryPreparation": "準備を再試行",
   "upload.useOriginal": "オリジナルを使用",
   "upload.previewAlt": "準備済み添付のプレビュー",
