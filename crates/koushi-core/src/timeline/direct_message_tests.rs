@@ -195,6 +195,97 @@ async fn deleting_an_already_redacted_message_is_a_success() {
     assert_eq!(outcome.redaction_event_id, None);
 }
 
+/// #1731: a redacted message of an encrypted room keeps `m.room.encrypted` and
+/// loses its content, so an action must still recognise it as already deleted.
+fn redacted_encrypted(event_id: &str, sender: &str) -> TimelineEvent {
+    plain(json!({
+        "type": "m.room.encrypted",
+        "event_id": event_id,
+        "sender": sender,
+        "origin_server_ts": 1_700_000_600_000u64,
+        "content": {},
+        "unsigned": { "redacted_because": {} }
+    }))
+}
+
+/// Deleting an already redacted message of an encrypted room is a success that
+/// sends nothing (#1731).
+#[tokio::test]
+async fn deleting_an_already_redacted_encrypted_message_is_a_success() {
+    let (server, session, room_id) = joined_session().await;
+    let own = session.client().user_id().expect("user id").to_string();
+    server
+        .mock_room_event()
+        .ok(redacted_encrypted("$redacted-encrypted", &own))
+        .mock_once()
+        .mount()
+        .await;
+
+    // No redaction mock is mounted: sending one would fail instead of
+    // answering idempotently.
+    let outcome = delete_direct(session, &room_id, "$redacted-encrypted")
+        .await
+        .expect("an already redacted encrypted message is a success");
+    assert!(outcome.already_redacted);
+    assert_eq!(outcome.redaction_event_id, None);
+}
+
+/// Editing a redacted message of an encrypted room is the documented
+/// already-deleted failure, not "not a message" (#1731).
+#[tokio::test]
+async fn editing_a_redacted_encrypted_message_fails_as_redacted() {
+    let (server, session, room_id) = joined_session().await;
+    let own = session.client().user_id().expect("user id").to_string();
+    server
+        .mock_room_event()
+        .ok(redacted_encrypted("$redacted-encrypted", &own))
+        .mock_once()
+        .mount()
+        .await;
+    server
+        .mock_room_relations()
+        .ok(Default::default())
+        .mock_once()
+        .mount()
+        .await;
+
+    let failure = edit_direct(
+        session,
+        &room_id,
+        "$redacted-encrypted",
+        "changed",
+        koushi_state::ComposerFormattingOptions::default(),
+    )
+    .await
+    .expect_err("a deleted message cannot be edited");
+    assert_eq!(failure, DirectMessageFailure::Redacted);
+}
+
+/// Reacting to a redacted message of an encrypted room is the documented
+/// already-deleted failure, not "not a message" (#1731).
+#[tokio::test]
+async fn reacting_to_a_redacted_encrypted_message_fails_as_redacted() {
+    let (server, session, room_id) = joined_session().await;
+    let own = session.client().user_id().expect("user id").to_string();
+    server
+        .mock_room_event()
+        .ok(redacted_encrypted("$redacted-encrypted", &own))
+        .mock_once()
+        .mount()
+        .await;
+    server
+        .mock_room_relations()
+        .ok(Default::default())
+        .mock_once()
+        .mount()
+        .await;
+
+    let failure = react_direct(session, &room_id, "$redacted-encrypted", "👍")
+        .await
+        .expect_err("a deleted message cannot be reacted to");
+    assert_eq!(failure, DirectMessageFailure::Redacted);
+}
+
 /// A reaction whose set cannot be established from one bounded relations page
 /// fails instead of risking a duplicate (#1628).
 #[tokio::test]
@@ -372,6 +463,31 @@ async fn a_redacted_thread_root_is_refused() {
         "unsigned": { "redacted_because": { "type": "m.room.redaction" } }
     }));
     server.mock_room_event().ok(redacted).mount().await;
+
+    let failure = thread_reply_direct(
+        session,
+        &room_id,
+        "$root",
+        "answer",
+        koushi_state::ComposerFormattingOptions::default(),
+    )
+    .await
+    .expect_err("a deleted root cannot be answered");
+    assert_eq!(failure, DirectMessageFailure::Redacted);
+}
+
+/// The same refusal for a deleted root of an encrypted room, whose redaction
+/// leaves `m.room.encrypted` behind (#1731).
+#[tokio::test]
+async fn a_redacted_encrypted_thread_root_is_refused() {
+    let (server, session, room_id) = joined_session().await;
+    let own = session.client().user_id().expect("user id").to_string();
+    server
+        .mock_room_event()
+        .ok(redacted_encrypted("$root", &own))
+        .mock_once()
+        .mount()
+        .await;
 
     let failure = thread_reply_direct(
         session,
