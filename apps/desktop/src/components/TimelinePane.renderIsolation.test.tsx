@@ -404,16 +404,16 @@ describe("TimelinePane render isolation", () => {
     const timelineTransport = noopTimelineTransport();
     setAppStoreSnapshot(snapshot);
 
-    render(
+    const renderPane = (currentSnapshot: DesktopSnapshot) =>
       createElement(TimelinePane, {
         activeRoomName: "Alpha Room",
-        composerDocument: snapshot.state.ui.timeline.composer.document,
+        composerDocument: currentSnapshot.state.ui.timeline.composer.document,
         composerMode: { kind: "plain" },
         resolveComposerKeyAction: async (): Promise<"noop"> => "noop",
         searchQuery: "",
         searchResults: [],
         showSearchResults: false,
-        snapshot,
+        snapshot: currentSnapshot,
         timelineTransport,
         onCancelReply: noop,
         onCancelScheduledSend: noop,
@@ -438,13 +438,24 @@ describe("TimelinePane render isolation", () => {
         onOpenPeople: noop,
         onOpenThreads: noop,
         onToggleRoomInfo: noop
-      })
-    );
+      });
+    const { rerender } = render(renderPane(snapshot));
 
-    const threadsButton = screen.getByRole("button", { name: "Threads" });
+    const threadsButton = screen.getByRole("button", { name: "Threads · Thread unread · 3" });
     expect(threadsButton.getAttribute("data-count")).toBe("3");
     expect(threadsButton.hasAttribute("data-live-count")).toBe(false);
     expect(threadsButton.hasAttribute("data-mention-count")).toBe(false);
+
+    const read = structuredClone(snapshot);
+    read.state.domain.rooms[0].thread_unread_count = 0;
+    rerender(renderPane(read));
+    expect(screen.getByRole("button", { name: "Threads" }).hasAttribute("data-count")).toBe(false);
+
+    const switched = structuredClone(snapshot);
+    switched.state.domain.rooms.push({ ...switched.state.domain.rooms[0], room_id: "!other:example.invalid", thread_unread_count: 104 });
+    switched.state.ui.timeline.room_id = "!other:example.invalid";
+    rerender(renderPane(switched));
+    expect(screen.getByRole("button", { name: "Threads · Thread unread · 104" }).getAttribute("data-count")).toBe("99+");
   });
 });
 

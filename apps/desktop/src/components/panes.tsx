@@ -866,6 +866,7 @@ export function TimelinePane({
   const activeRoom = timelineRoomId
     ? snapshot.state.domain.rooms.find((room) => room.room_id === timelineRoomId) ?? null
     : null;
+  const threadUnreadCount = activeRoom?.thread_unread_count ?? 0;
   // #1166: the header shows the active room's own access condition, from the
   // same Rust projection the room list uses. #1327: a DM keeps its real rule, so
   // only the explanation is shortened, never the condition itself.
@@ -1179,8 +1180,10 @@ export function TimelinePane({
               <button
                 className="icon-button"
                 type="button"
-                data-count={activeRoom?.thread_unread_count || undefined}
-                aria-label={t("workspace.threads")}
+                data-count={threadUnreadCount > 0 ? (threadUnreadCount > 99 ? "99+" : uiNumberFormat().format(threadUnreadCount)) : undefined}
+                aria-label={threadUnreadCount > 0
+                  ? `${t("workspace.threads")} · ${t("timeline.threadNotificationCount", { count: uiNumberFormat().format(threadUnreadCount) })}`
+                  : t("workspace.threads")}
                 onClick={onOpenThreadsStable}
                 {...tooltipProps}
               >
