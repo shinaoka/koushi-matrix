@@ -873,7 +873,8 @@ test("timeline header Threads button opens the threads list and row opens a thre
               latest_sender_label: null,
               latest_body_preview: "Latest reply preview",
               latest_timestamp_ms: 1_800_000_000_100,
-              reply_count: 3
+              reply_count: 3,
+              unread_count: 2
             }
           ],
           is_paginating: false,
@@ -887,6 +888,15 @@ test("timeline header Threads button opens the threads list and row opens a thre
 
   const contextPanel = page.locator('aside[aria-label="Context panel"]');
   await expect(contextPanel.getByText(t("threads.title"), { exact: true })).toBeVisible();
+  const rowContent = contextPanel.locator(".threads-list-row-main");
+  const unreadBadge = contextPanel.getByLabel("Thread unread · 2");
+  await expect(unreadBadge).toHaveText("2");
+  const contentBox = await rowContent.boundingBox();
+  const badgeBox = await unreadBadge.boundingBox();
+  expect(contentBox).not.toBeNull();
+  expect(badgeBox).not.toBeNull();
+  expect(badgeBox!.x).toBeGreaterThanOrEqual(contentBox!.x + contentBox!.width);
+  expect(badgeBox!.y).toBeLessThan(contentBox!.y + contentBox!.height);
   await expect(contextPanel.getByText("Thread root preview")).toBeVisible();
 
   await page.getByRole("button", { name: /3 replies/ }).click({ force: true });
@@ -1082,7 +1092,7 @@ test("thread attention renders one Rust count in the root and header and clears 
     .locator(".channel-actions")
     .getByRole("button", { name: t("threads.title") });
   await expect(threadsButton).toHaveAttribute("data-count", "2");
-  await expect(page.getByRole("button", { name: /Thread unread · 2/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Thread unread · 2/ }).and(page.locator(".thread-summary-chip"))).toBeVisible();
 
   // A successful threaded read receipt is projected by Rust as the next
   // snapshot. React must not keep or repair either count locally.

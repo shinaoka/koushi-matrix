@@ -223,7 +223,8 @@ numbers add the eligible room and DM numbers; invitations use a separate green
 badge. A muted conversation keeps its red number on its own row but does not add
 to Home, Space, or section totals. Hover over a conversation number to see its
 main-timeline and thread parts. The room's **Threads** button shows the thread
-part, and each counted thread can be opened from the Threads list. The Space
+part, and each Threads list row shows its own unread reply count. Counts over 99
+appear as `99+`. Each counted thread can be opened from the list. The Space
 number appears at the upper right of its icon; its access symbol stays at the
 lower right. If thread metadata fails to load, already counted threads remain
 openable by their known root IDs.

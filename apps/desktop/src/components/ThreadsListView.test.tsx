@@ -194,8 +194,8 @@ describe("ThreadsListView", () => {
 
 // #1259: a row shows the same per-root unread count as the room timeline chip.
 describe("ThreadsListView unread thread replies", () => {
-  it("renders the SDK thread-cache unread count on the row", () => {
-    render(
+  it("updates each row from its projected unread count", () => {
+    const list = (firstUnread: number, secondUnread: number) => (
       <ThreadsListView
         scope={{ kind: "room", room_id: "!room:example.invalid" }}
         threadsList={{
@@ -216,7 +216,7 @@ describe("ThreadsListView unread thread replies", () => {
               latest_body_preview: "Reply",
               latest_timestamp_ms: 1_800_000_000_100,
               reply_count: 2,
-              unread_count: 2
+              unread_count: firstUnread
             },
             {
               room_id: "!room:example.invalid",
@@ -231,7 +231,7 @@ describe("ThreadsListView unread thread replies", () => {
               latest_body_preview: null,
               latest_timestamp_ms: null,
               reply_count: 1,
-              unread_count: 0
+              unread_count: secondUnread
             }
           ],
           is_paginating: false,
@@ -242,8 +242,15 @@ describe("ThreadsListView unread thread replies", () => {
         onPaginate={() => undefined}
       />
     );
+    const { rerender } = render(list(2, 0));
 
-    expect(screen.getByLabelText("Thread unread · 2")).toBeTruthy();
+    expect(screen.getByLabelText("Thread unread · 2").textContent).toBe("2");
     expect(document.querySelectorAll(".threads-list-row-unread")).toHaveLength(1);
+
+    rerender(list(2, 104));
+    expect(screen.getByLabelText("Thread unread · 2").textContent).toBe("2");
+    expect(screen.getByLabelText("Thread unread · 104").textContent).toBe("99+");
+    rerender(list(0, 0));
+    expect(document.querySelectorAll(".threads-list-row-unread")).toHaveLength(0);
   });
 });

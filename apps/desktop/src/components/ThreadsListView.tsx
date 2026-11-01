@@ -122,9 +122,9 @@ function ThreadsListRow({
         {item.unread_count > 0 ? (
           <span
             className="threads-list-row-unread"
-            aria-label={t("timeline.threadNotificationCount", { count: item.unread_count })}
+            aria-label={t("timeline.threadNotificationCount", { count: uiNumberFormat().format(item.unread_count) })}
           >
-            {item.unread_count}
+            {item.unread_count > 99 ? "99+" : uiNumberFormat().format(item.unread_count)}
           </span>
         ) : null}
       </button>
