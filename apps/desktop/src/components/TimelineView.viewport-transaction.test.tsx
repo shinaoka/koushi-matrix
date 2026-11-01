@@ -238,12 +238,13 @@ describe("TimelineView unified viewport transaction", () => {
       disconnect() {}
       unobserve() {}
     });
-    const fixture = setup(120, true);
+    const count = 24; // Enough rows above and below the viewport for the same anchor geometry.
+    const fixture = setup(count, true);
     fixture.drain();
     for (let observation = 0; observation < 9; observation++) {
       if (withInput) fixture.userScroll(-2);
       fixture.rects.$item5.height += 0.25;
-      for (let i = 6; i < 120; i++) fixture.rects[`$item${i}`].top += 0.25;
+      for (let i = 6; i < count; i++) fixture.rects[`$item${i}`].top += 0.25;
       act(() => resize());
       fixture.drain();
       const row = [...fixture.view.querySelectorAll<HTMLElement>("[data-item-id]")].find(node => node.dataset.itemId === fixture.anchor.id)!;
