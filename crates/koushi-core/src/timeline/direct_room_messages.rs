@@ -63,6 +63,16 @@ pub(crate) async fn read_room_messages(
     })
 }
 
+pub(super) fn is_redacted(event: &TimelineEvent) -> bool {
+    event
+        .raw()
+        .get_field::<serde_json::Value>("unsigned")
+        .ok()
+        .flatten()
+        .and_then(|unsigned| unsigned.get("redacted_because").cloned())
+        .is_some_and(|because| !because.is_null())
+}
+
 /// Projects one timeline event, or `None` when it is not a room message.
 fn item_for_event(event: &TimelineEvent) -> Option<RoomMessageItem> {
     let parsed: AnySyncTimelineEvent = event.raw().deserialize().ok()?;
@@ -80,7 +90,7 @@ fn item_for_event(event: &TimelineEvent) -> Option<RoomMessageItem> {
                 content_available: false,
                 kind: RoomMessageKind::Other,
                 is_encrypted: true,
-                is_redacted: false,
+                is_redacted: is_redacted(event),
             });
         }
         _ => return None,

@@ -22,6 +22,13 @@ fn encrypted_event(event_id: &str, timestamp: u64) -> serde_json::Value {
     })
 }
 
+fn redacted_encrypted_event(event_id: &str, timestamp: u64) -> serde_json::Value {
+    let mut event = encrypted_event(event_id, timestamp);
+    event["content"] = json!({});
+    event["unsigned"] = json!({ "redacted_because": {} });
+    event
+}
+
 fn text_event(event_id: &str, timestamp: u64) -> serde_json::Value {
     json!({
         "type": "m.room.message",
@@ -89,7 +96,7 @@ async fn undecryptable_messages_preserve_page_count_order_and_next() {
             Some("page-end"),
             vec![
                 encrypted_event("$older", 90),
-                encrypted_event("$oldest-encrypted", 80),
+                redacted_encrypted_event("$oldest-encrypted", 80),
             ],
         ),
         ("page-end", None, vec![]),
@@ -160,6 +167,9 @@ async fn undecryptable_messages_preserve_page_count_order_and_next() {
             item.body.is_some()
         );
     }
+    assert!(!older.messages[0].is_redacted);
+    assert!(older.messages[1].is_redacted);
+    assert!(!older.messages[1].content_available);
     assert_eq!(older.next.as_deref(), Some("page-end"));
 
     let end = read_room_messages(session, room_id.as_str(), 4, older.next)
