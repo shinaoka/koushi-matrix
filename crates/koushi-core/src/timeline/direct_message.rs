@@ -411,6 +411,40 @@ pub(crate) async fn read_direct_message(
     })
 }
 
+/// What an action needs to know about its authoritative target (#1731).
+///
+/// A redacted message of an encrypted room keeps `m.room.encrypted` and loses
+/// its content, so it has no `m.room.message` to act on; only the envelope says
+/// it is already gone. The read path classifies the same shape the same way.
+struct ActionTarget {
+    /// The sender named by the envelope, readable without decryption.
+    sender: matrix_sdk::ruma::OwnedUserId,
+    /// The target's own message; `None` for a redacted encrypted event.
+    message: Option<SyncMessageLikeEvent<RoomMessageEventContent>>,
+    /// Whether the target has already been redacted.
+    is_redacted: bool,
+}
+
+/// Classifies an authoritative target before requiring `m.room.message`.
+fn action_target(event: &TimelineEvent) -> Result<ActionTarget, DirectMessageFailure> {
+    let Ok(parsed): Result<AnySyncTimelineEvent, _> = event.raw().deserialize() else {
+        return Err(DirectMessageFailure::NotAMessage);
+    };
+    let message = message_of(event);
+    let is_redacted = match &message {
+        Some(message) => kind_and_redaction(message).1,
+        None => super::direct_room_messages::is_redacted(event),
+    };
+    if message.is_none() && !is_redacted {
+        return Err(DirectMessageFailure::NotAMessage);
+    }
+    Ok(ActionTarget {
+        sender: parsed.sender().to_owned(),
+        message,
+        is_redacted,
+    })
+}
+
 /// Reads a target and the relations page an action has to decide on.
 async fn target_and_relations(
     session: &MatrixClientSession,
@@ -420,8 +454,7 @@ async fn target_and_relations(
     (
         matrix_sdk::Room,
         matrix_sdk::ruma::OwnedEventId,
-        TimelineEvent,
-        SyncMessageLikeEvent<RoomMessageEventContent>,
+        ActionTarget,
         Vec<TimelineEvent>,
         bool,
     ),
@@ -430,9 +463,9 @@ async fn target_and_relations(
     let room = joined_room(session, room_id)?;
     let event_id = parse_event_id(event_id)?;
     let target = load_event_authoritative(&room, &event_id).await?;
-    let message = message_of(&target).ok_or(DirectMessageFailure::NotAMessage)?;
+    let target = action_target(&target)?;
     let (relations, truncated) = relation_page(&room, &event_id).await?;
-    Ok((room, event_id, target, message, relations, truncated))
+    Ok((room, event_id, target, relations, truncated))
 }
 
 fn own_user_id(
@@ -456,10 +489,9 @@ pub(crate) async fn react_direct(
     key: &str,
 ) -> Result<DirectReactionOutcome, DirectMessageFailure> {
     let own = own_user_id(&session)?;
-    let (room, target_id, _target, message, relations, truncated) =
+    let (room, target_id, target, relations, truncated) =
         target_and_relations(&session, room_id, event_id).await?;
-    let (_, is_redacted) = kind_and_redaction(&message);
-    if is_redacted {
+    if target.is_redacted {
         return Err(DirectMessageFailure::Redacted);
     }
     let (existing, unresolved) = own_reaction_event_ids(&relations, &own, key);
@@ -495,10 +527,9 @@ pub(crate) async fn unreact_direct(
     key: &str,
 ) -> Result<u32, DirectMessageFailure> {
     let own = own_user_id(&session)?;
-    let (room, _target_id, _target, message, relations, truncated) =
+    let (room, _target_id, target, relations, truncated) =
         target_and_relations(&session, room_id, event_id).await?;
-    let (_, is_redacted) = kind_and_redaction(&message);
-    if is_redacted {
+    if target.is_redacted {
         return Err(DirectMessageFailure::Redacted);
     }
     let (ids, unresolved) = own_reaction_event_ids(&relations, &own, key);
@@ -531,13 +562,12 @@ pub(crate) async fn edit_direct(
     formatting: koushi_state::ComposerFormattingOptions,
 ) -> Result<DirectEditOutcome, DirectMessageFailure> {
     let own = own_user_id(&session)?;
-    let (room, target_id, _target, message, _relations, _truncated) =
+    let (room, target_id, target, _relations, _truncated) =
         target_and_relations(&session, room_id, event_id).await?;
-    let sender = message.sender();
-    if sender != own {
+    if target.sender != own {
         return Err(DirectMessageFailure::NotAuthor);
     }
-    let SyncMessageLikeEvent::Original(original) = &message else {
+    let Some(SyncMessageLikeEvent::Original(original)) = &target.message else {
         return Err(DirectMessageFailure::Redacted);
     };
     if original
@@ -579,12 +609,11 @@ pub(crate) async fn delete_direct(
     let room = joined_room(&session, room_id)?;
     let target_id = parse_event_id(event_id)?;
     let target = load_event_authoritative(&room, &target_id).await?;
-    let message = message_of(&target).ok_or(DirectMessageFailure::NotAMessage)?;
-    if message.sender() != own {
+    let target = action_target(&target)?;
+    if target.sender != own {
         return Err(DirectMessageFailure::NotAuthor);
     }
-    let (_, is_redacted) = kind_and_redaction(&message);
-    if is_redacted {
+    if target.is_redacted {
         return Ok(DirectRedactOutcome {
             redaction_event_id: None,
             already_redacted: true,
@@ -623,12 +652,15 @@ pub(crate) async fn thread_reply_direct(
     let room = joined_room(&session, room_id)?;
     let root_id = parse_event_id(root_event_id)?;
     let root = load_event_authoritative(&room, &root_id).await?;
-    let message = message_of(&root).ok_or(DirectMessageFailure::NotAMessage)?;
-    let (_, is_redacted) = kind_and_redaction(&message);
-    if is_redacted {
+    let root = action_target(&root)?;
+    if root.is_redacted {
         return Err(DirectMessageFailure::Redacted);
     }
-    if relations_of(&message).0.is_some() {
+    // A redacted root already returned, so the root still carries a message.
+    let Some(message) = &root.message else {
+        return Err(DirectMessageFailure::NotAMessage);
+    };
+    if relations_of(message).0.is_some() {
         return Err(DirectMessageFailure::NotThreadRoot);
     }
 
