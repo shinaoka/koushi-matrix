@@ -73,6 +73,12 @@ the second restart cannot increase that operation generation. When the
 administrator's Core sync resumes, both distinct historical sessions decrypt.
 An explicit request also recovers the original 30-day-expired invitation room.
 
+The responder's encrypted rate ledger is seeded with 512 expired pairs, including
+one for the requesting room and user. Real requests must recover keys for that
+pair and for a new pair. With 512 unexpired pairs, an encrypted rate refusal
+must reach the requester without completing its attempt or exporting a reply.
+The ledger fixture is restored afterwards.
+
 Negative cases change the real server's history visibility and membership,
 and locally block an owner-signed requester device. Count-only Core
 observations prove the affected room's incoming request was refused before the

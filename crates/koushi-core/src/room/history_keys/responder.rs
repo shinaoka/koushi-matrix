@@ -4,17 +4,19 @@ use super::*;
 
 const CACHE_LIMIT: usize = 32 * 1024 * 1024;
 
+#[cfg(test)]
+#[path = "responder_tests.rs"]
+mod tests;
+
 impl Recovery {
     pub(super) async fn prune(&mut self) -> Result<(), Failure> {
         self.ledger
             .rooms
             .retain(|_, p| p.unresolved || p.expires > now());
         self.ledger.completed.retain(|_, c| c.expires > now());
-        self.ledger.responded.retain(|_, last| {
-            now()
-                .checked_sub(*last)
-                .is_none_or(|elapsed| elapsed < REQUEST_LIFETIME)
-        });
+        self.ledger
+            .responded
+            .retain(|_, last| now().checked_sub(*last).is_none_or(|elapsed| elapsed < 60));
         let deletions: Vec<_> = self
             .ledger
             .cached
@@ -95,7 +97,17 @@ impl Recovery {
         }
         self.prune().await?;
         if self.ledger.responded.len() >= 512 && !self.ledger.responded.contains_key(&rate_key) {
-            return Err(Failure::TooLarge);
+            let _ = self
+                .send(
+                    &[device],
+                    &Wire::Refused {
+                        room,
+                        nonce,
+                        reason: Failure::RateLimited,
+                    },
+                )
+                .await;
+            return Err(Failure::RateLimited);
         }
         self.ledger.responded.insert(rate_key, now());
         self.save().await?;

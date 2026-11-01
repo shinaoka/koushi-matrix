@@ -9,6 +9,8 @@ use koushi_state::{
 use matrix_sdk::ruma::RoomId;
 use matrix_sdk::ruma::events::room::join_rules::{JoinRule, RoomJoinRulesEventContent};
 
+#[path = "history_key_recovery_rate.rs"]
+mod rate;
 #[path = "history_key_recovery_security.rs"]
 mod security;
 
@@ -366,6 +368,7 @@ async fn flow(
         println!("history_recovery_after_window_expiry=ok");
         drop(client);
         drop(sender_client);
+        rate::run(sender, recipient, &mut a, &b).await?;
         security::run(config, sender, recipient, &mut a, &mut b).await?;
         Ok(())
     }
