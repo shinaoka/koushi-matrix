@@ -331,10 +331,12 @@ pub(crate) async fn read_direct_message(
         None if undecryptable => None,
         None => return Err(DirectMessageFailure::NotAMessage),
     };
-    let (kind, is_redacted) = message
-        .as_ref()
-        .map(kind_and_redaction)
-        .unwrap_or((RoomMessageKind::Other, false));
+    let (kind, is_redacted) = message.as_ref().map(kind_and_redaction).unwrap_or_else(|| {
+        (
+            RoomMessageKind::Other,
+            super::direct_room_messages::is_redacted(&target),
+        )
+    });
     let (thread_root_event_id, reply_to_event_id) =
         message.as_ref().map(relations_of).unwrap_or((None, None));
     let timestamp_ms = target

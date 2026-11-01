@@ -385,6 +385,39 @@ async fn a_redacted_thread_root_is_refused() {
     assert_eq!(failure, DirectMessageFailure::Redacted);
 }
 
+#[tokio::test]
+async fn a_redacted_encrypted_message_reads_as_redacted() {
+    let (server, session, room_id) = joined_session().await;
+    let encrypted = plain(json!({
+        "type": "m.room.encrypted",
+        "event_id": "$redacted-encrypted",
+        "sender": "@bob:example.invalid",
+        "origin_server_ts": 1_700_000_600_000u64,
+        "content": {},
+        "unsigned": { "redacted_because": {} }
+    }));
+    server
+        .mock_room_event()
+        .ok(encrypted)
+        .mock_once()
+        .mount()
+        .await;
+    server
+        .mock_room_relations()
+        .ok(Default::default())
+        .mock_once()
+        .mount()
+        .await;
+
+    let view = read_direct_message(session, &room_id, "$redacted-encrypted")
+        .await
+        .expect("redacted encrypted message");
+    assert_eq!(view.body, None);
+    assert!(!view.content_available);
+    assert!(view.is_encrypted);
+    assert!(view.is_redacted);
+}
+
 /// A message this device cannot decrypt is a successful read with no body, not
 /// "not a message".
 #[tokio::test]
