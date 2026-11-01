@@ -15,6 +15,9 @@ koushi-key = { path = "../koushi-key" }
 koushi-protocol = { path = "../koushi-protocol" }
 koushi-sdk = { path = "../koushi-sdk", features = ["test-hooks"] }
 koushi-state = { path = "../koushi-state" }
+koushi-store = { path = "../koushi-store" }
+matrix-sdk-store-encryption = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk-store-encryption" }
+rusqlite = { version = "0.40.2", default-features = false }
 futures-util = "0.3"
 image.workspace = true
 matrix-sdk = { workspace = true, features = ["testing"] }
