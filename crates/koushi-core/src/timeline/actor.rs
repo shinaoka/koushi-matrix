@@ -80,7 +80,7 @@ use super::outbound_send::{
 use super::read_state::{ReadActorApplyKind, run_typing_notifications};
 use super::relay::{
     RELAY_RESTART_BASE_DELAY, RELAY_RESTART_MAX_DELAY, RelayRestartBackoff, TimelineRelayBatch,
-    TimelineRelayControl, accepted_relay_batch, run_diff_relay,
+    TimelineRelayControl, accepted_relay_batch, koushi_timeline_subscribe, run_diff_relay,
 };
 use super::room_key_recovery::{
     DecryptRetryController, DecryptRetrySettledResult, KeyRequestUiState,
@@ -1535,7 +1535,8 @@ impl TimelineActor {
 
         // Subscribe to the SDK timeline to get initial items + diff stream.
         let subscribe_started = Some(startup_trace::now());
-        let (mut initial_sdk_items, mut diff_stream) = timeline.subscribe().await;
+        let (mut initial_sdk_items, mut diff_stream) =
+            koushi_timeline_subscribe(timeline.clone()).await;
         startup_trace::trace_phase_items(
             StartupPhase::TimelineSubscribe,
             subscribe_started,
@@ -1612,7 +1613,8 @@ impl TimelineActor {
                     break;
                 }
                 let resubscribe_started = Some(startup_trace::now());
-                let (hydrated_items, hydrated_stream) = timeline.subscribe().await;
+                let (hydrated_items, hydrated_stream) =
+                    koushi_timeline_subscribe(timeline.clone()).await;
                 startup_trace::trace_phase_items(
                     StartupPhase::TimelineSubscribe,
                     resubscribe_started,

@@ -17,6 +17,7 @@ jiff = "0.2"
 koushi-search = { path = "../koushi-search" }
 koushi-state = { path = "../koushi-state" }
 koushi-store = { path = "../koushi-store" }
+async-stream = "0.3"
 base64 = "0.22"
 eyeball = "0.8"
 eyeball-im = "0.9"
