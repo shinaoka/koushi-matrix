@@ -826,6 +826,8 @@ struct QaReadStateProxyControl {
     mode: QaReadStateProxyMode,
     observation: QaReadStateProxyObservation,
     inflight: usize,
+    attempts: [Vec<std::time::Instant>; 3],
+    attempt_error: bool,
 }
 
 impl Default for QaReadStateProxyControl {
@@ -834,6 +836,8 @@ impl Default for QaReadStateProxyControl {
             mode: QaReadStateProxyMode::Forward,
             observation: QaReadStateProxyObservation::default(),
             inflight: 0,
+            attempts: Default::default(),
+            attempt_error: false,
         }
     }
 }
@@ -1141,7 +1145,24 @@ impl QaTcpProxy {
     }
 
     pub(super) fn fail_read_state_writes(&self) {
-        self.set_read_state_proxy_mode(QaReadStateProxyMode::FailClosed);
+        if let Ok(mut state) = self.read_state_control.0.lock() {
+            state.attempts = Default::default();
+            state.attempt_error = false;
+            state.mode = QaReadStateProxyMode::FailClosed;
+            self.read_state_control.1.notify_all();
+        }
+    }
+
+    pub(super) fn read_state_attempts(&self) -> Result<[Vec<std::time::Instant>; 3], String> {
+        let state = self
+            .read_state_control
+            .0
+            .lock()
+            .map_err(|_| "read-state proxy state lock failed".to_owned())?;
+        if state.attempt_error {
+            return Err("read-state proxy could not classify a request".to_owned());
+        }
+        Ok(state.attempts.clone())
     }
 
     pub(super) fn release_read_state_writes(&self) {
@@ -1275,16 +1296,42 @@ fn proxy_single_http_request(
             }
         }
 
-        let content_length = http_content_length(&request_head)?;
+        let observe = qa_proxy_request_kind(&request_head)? == QaProxyRequestKind::ReadState
+            && read_state_control
+                .0
+                .lock()
+                .map_err(|_| io::Error::other("read-state proxy lock failed"))?
+                .mode
+                == QaReadStateProxyMode::FailClosed;
+        let content_length = http_content_length(&request_head);
+        if observe
+            && !content_length
+                .as_ref()
+                .is_ok_and(|length| valid_read_state_headers(&request_head, *length))
+        {
+            if let Ok(mut state) = read_state_control.0.lock() {
+                state.attempt_error = true;
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unclassifiable read-state headers",
+            ));
+        }
+        let content_length = content_length?;
         if content_length > 0 {
             let mut body = vec![0u8; content_length];
-            io::Read::read_exact(&mut reader, &mut body)?;
+            if let Err(error) = io::Read::read_exact(&mut reader, &mut body) {
+                if observe && let Ok(mut state) = read_state_control.0.lock() {
+                    state.attempt_error = true;
+                }
+                return Err(error);
+            }
             request_head.extend_from_slice(&body);
         }
     }
 
     let request_kind = qa_proxy_request_kind(&request_head)?;
-    let action = qa_read_state_proxy_action(&read_state_control, request_kind)?
+    let action = qa_read_state_proxy_action(&read_state_control, request_kind, &request_head)?
         .or(qa_messages_proxy_action(
             &messages_control,
             request_kind,
@@ -1347,6 +1394,7 @@ fn proxy_single_http_request(
 fn qa_read_state_proxy_action(
     control: &Arc<(Mutex<QaReadStateProxyControl>, Condvar)>,
     request_kind: QaProxyRequestKind,
+    request: &[u8],
 ) -> io::Result<Option<QaProxyRequestAction>> {
     if request_kind != QaProxyRequestKind::ReadState {
         return Ok(None);
@@ -1356,6 +1404,19 @@ fn qa_read_state_proxy_action(
         .lock()
         .map_err(|_| io::Error::other("QA read-state proxy state lock was poisoned"))?;
     state.observation.request_count = state.observation.request_count.saturating_add(1);
+    if state.mode == QaReadStateProxyMode::FailClosed {
+        match read_state_body_keys(request) {
+            Some(keys) => {
+                let now = std::time::Instant::now();
+                for (index, present) in keys.into_iter().enumerate() {
+                    if present {
+                        state.attempts[index].push(now);
+                    }
+                }
+            }
+            None => state.attempt_error = true,
+        }
+    }
     while state.mode == QaReadStateProxyMode::Hold {
         state.observation.held_request_count =
             state.observation.held_request_count.saturating_add(1);
@@ -1551,6 +1612,49 @@ fn write_qa_json_response(client: &mut TcpStream, body: &[u8]) -> io::Result<()>
     );
     io::Write::write_all(client, headers.as_bytes())?;
     io::Write::write_all(client, body)
+}
+
+fn valid_read_state_headers(request: &[u8], length: usize) -> bool {
+    const MAX_READ_STATE_BODY: usize = 64 * 1024;
+    let Ok(head) = std::str::from_utf8(request) else {
+        return false;
+    };
+    let mut lines = head.lines();
+    let Some(target) = lines
+        .next()
+        .and_then(|line| line.split_ascii_whitespace().nth(1))
+    else {
+        return false;
+    };
+    if !target
+        .split('?')
+        .next()
+        .is_some_and(|path| path.ends_with("/read_markers"))
+        || length == 0
+        || length > MAX_READ_STATE_BODY
+    {
+        return false;
+    }
+    let mut lengths = 0;
+    for line in lines {
+        if let Some((name, _)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("transfer-encoding") {
+                return false;
+            }
+            if name.trim().eq_ignore_ascii_case("content-length") {
+                lengths += 1;
+            }
+        }
+    }
+    lengths == 1
+}
+
+fn read_state_body_keys(request: &[u8]) -> Option<[bool; 3]> {
+    let body = &request[find_http_header_end(request)?..];
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let object = value.as_object()?;
+    let keys = ["m.read", "m.read.private", "m.fully_read"].map(|key| object.contains_key(key));
+    keys.iter().any(|present| *present).then_some(keys)
 }
 
 fn http_content_length(request_head: &[u8]) -> io::Result<usize> {

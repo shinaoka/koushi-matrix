@@ -316,19 +316,26 @@ async fn run_read_state_convergence_flow(
             && snapshot.read_state_sync.is_failed()
     })
     .await?;
-    let before_checkpoint_burst = proxy
-        .read_state_observation()
-        .map_err(|_| "read-state convergence proxy observation failed".to_owned())?
-        .request_count;
     for _ in 0..100 {
         observe_viewport(conn, &key, &failed_event_id).await?;
     }
-    let after_checkpoint_burst = proxy
-        .read_state_observation()
-        .map_err(|_| "read-state convergence proxy observation failed".to_owned())?
-        .request_count;
-    if after_checkpoint_burst != before_checkpoint_burst {
-        return Err("repeated viewport checkpoints bypassed the read-state backoff".to_owned());
+    let attempts = proxy.read_state_attempts()?;
+    for (name, times) in ["public", "private", "fully_read"]
+        .into_iter()
+        .zip(attempts)
+    {
+        if times.is_empty() {
+            return Err(format!(
+                "read-state convergence observed no failed {name} write"
+            ));
+        }
+        let elapsed: Vec<_> = times
+            .iter()
+            .map(|time| time.duration_since(times[0]))
+            .collect();
+        check_retry_intervals(&elapsed).map_err(|(index, gap, required)| {
+            format!("repeated viewport checkpoints bypassed the read-state backoff: kind={name} attempt={} elapsed_ms={} gap_ms={} required_ms={}", index + 1, elapsed[index].as_millis(), gap.as_millis(), required.as_millis())
+        })?;
     }
 
     stop_sync_for_qa(conn, "read-state convergence restart stop").await?;
@@ -336,6 +343,23 @@ async fn run_read_state_convergence_flow(
         key,
         event_id: failed_event_id,
     })
+}
+
+fn retry_delay(attempt: usize) -> std::time::Duration {
+    std::time::Duration::from_secs(1_u64 << attempt.min(6)).min(std::time::Duration::from_secs(60))
+}
+
+fn check_retry_intervals(
+    times: &[std::time::Duration],
+) -> Result<(), (usize, std::time::Duration, std::time::Duration)> {
+    for (index, pair) in times.windows(2).enumerate() {
+        let gap = pair[1].saturating_sub(pair[0]);
+        let required = retry_delay(index).saturating_sub(std::time::Duration::from_millis(50));
+        if gap < required {
+            return Err((index + 1, gap, required));
+        }
+    }
+    Ok(())
 }
 
 async fn wait_for_remote_event(
@@ -476,5 +500,31 @@ trait TimelineReadStateSyncExt {
 impl TimelineReadStateSyncExt for TimelineReadStateSync {
     fn is_failed(&self) -> bool {
         matches!(self, Self::Failed { .. })
+    }
+}
+
+#[cfg(test)]
+mod retry_interval_tests {
+    use super::{check_retry_intervals, retry_delay};
+    use std::time::Duration;
+
+    #[test]
+    fn retry_delays_cap_at_sixty_seconds() {
+        assert_eq!(
+            (0..8).map(|i| retry_delay(i).as_secs()).collect::<Vec<_>>(),
+            [1, 2, 4, 8, 16, 32, 60, 60]
+        );
+    }
+
+    #[test]
+    fn retry_intervals_allow_due_retry_and_reject_early_retry() {
+        let sec = Duration::from_secs;
+        assert!(
+            check_retry_intervals(&[sec(0), sec(1), sec(3), sec(7), sec(15), sec(31), sec(63)])
+                .is_ok()
+        );
+        assert!(check_retry_intervals(&[sec(0), sec(10), Duration::from_millis(10_100)]).is_err());
+        assert!(check_retry_intervals(&[sec(0), Duration::from_millis(949)]).is_err());
+        assert!(check_retry_intervals(&[sec(0), Duration::from_millis(950)]).is_ok());
     }
 }
