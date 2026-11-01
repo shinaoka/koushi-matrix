@@ -6,6 +6,91 @@ use super::{
 };
 
 #[test]
+fn read_state_observation_classifies_only_bounded_marker_bodies() {
+    let body = br#"{"m.read.private":"synthetic","m.fully_read":"synthetic"}"#;
+    let headers = format!(
+        "POST /_matrix/client/v3/rooms/synthetic/read_markers HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    assert!(super::valid_read_state_headers(
+        headers.as_bytes(),
+        body.len()
+    ));
+    let mut request = headers.into_bytes();
+    request.extend_from_slice(body);
+    assert_eq!(
+        super::read_state_body_keys(&request),
+        Some([false, true, true])
+    );
+    assert!(!super::valid_read_state_headers(
+        b"POST /read_markers HTTP/1.1\r\n\r\n",
+        4
+    ));
+    assert!(!super::valid_read_state_headers(
+        b"POST /read_markers HTTP/1.1\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n",
+        4
+    ));
+    assert!(!super::valid_read_state_headers(
+        b"POST /read_markers HTTP/1.1\r\nContent-Length: 65537\r\n\r\n",
+        65537
+    ));
+    assert!(!super::valid_read_state_headers(
+        b"POST /read_markers HTTP/1.1\r\nContent-Length: 4\r\nContent-Length: 4\r\n\r\n",
+        4
+    ));
+    assert!(!super::valid_read_state_headers(
+        b"POST /receipt/m.read/synthetic HTTP/1.1\r\nContent-Length: 4\r\n\r\n",
+        4
+    ));
+    assert_eq!(
+        super::read_state_body_keys(b"POST /read_markers HTTP/1.1\r\n\r\n{}"),
+        None
+    );
+    assert_eq!(
+        super::read_state_body_keys(
+            b"POST /read_markers HTTP/1.1\r\n\r\n{\"m.read\":\"synthetic\"}"
+        ),
+        Some([true, false, false])
+    );
+    assert_eq!(
+        super::read_state_body_keys(b"POST /read_markers HTTP/1.1\r\n\r\n{"),
+        None
+    );
+}
+
+#[test]
+fn failed_marker_attempts_are_recorded_by_body_key() {
+    use std::sync::{Arc, Condvar, Mutex};
+    let control = Arc::new((
+        Mutex::new(super::QaReadStateProxyControl::default()),
+        Condvar::new(),
+    ));
+    control.0.lock().unwrap().mode = super::QaReadStateProxyMode::FailClosed;
+    let request = b"POST /read_markers HTTP/1.1\r\n\r\n{\"m.read.private\":\"synthetic\",\"m.fully_read\":\"synthetic\"}";
+    let action =
+        super::qa_read_state_proxy_action(&control, super::QaProxyRequestKind::ReadState, request)
+            .unwrap();
+    assert!(matches!(
+        action,
+        Some(super::QaProxyRequestAction::FailClosed)
+    ));
+    let state = control.0.lock().unwrap();
+    assert_eq!(state.observation.request_count, 1);
+    assert_eq!(state.attempts[0].len(), 0);
+    assert_eq!(state.attempts[1].len(), 1);
+    assert_eq!(state.attempts[1], state.attempts[2]);
+    assert!(!state.attempt_error);
+    drop(state);
+    super::qa_read_state_proxy_action(
+        &control,
+        super::QaProxyRequestKind::ReadState,
+        b"POST /read_markers HTTP/1.1\r\n\r\n{}",
+    )
+    .unwrap();
+    assert!(control.0.lock().unwrap().attempt_error);
+}
+
+#[test]
 fn held_media_responses_detect_peer_close_and_release_without_holding_sync() {
     use std::{
         io::{Read, Write},
