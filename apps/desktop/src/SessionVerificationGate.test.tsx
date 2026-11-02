@@ -1182,6 +1182,13 @@ describe("SessionVerificationGate interactions", () => {
         action: "Check your connection, then retry."
       },
       {
+        label: "first sync not answered",
+        failure: "timeout",
+        detail: { stage: "firstSync", transport: "timeout", retryable: true },
+        explanation: "Koushi is still waiting for its first sync response. No Secure Backup request has been attempted.",
+        action: "Check your connection, then retry."
+      },
+      {
         label: "timeout",
         failure: "timeout",
         detail: { stage: "inspectionDeadline", transport: "timeout", retryable: true },

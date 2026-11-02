@@ -484,7 +484,8 @@ stateDiagram-v2
   connectivity-wait deadline (30 seconds from the first defer; repeated
   defers coalesce onto the armed deadline instead of extending it): expiry
   projects `BlockedFailed` with the structured deadline failure
-  (`stage: inspectionDeadline`, `transport: timeout`, `retryable: true`) and
+  (`stage: firstSync` before any accepted sync response in this session,
+  otherwise `inspectionDeadline`; `transport: timeout`, `retryable: true`) and
   no automatic monitor, even when no
   proven edge ever arrives, so `Checking` cannot wait forever. Proven
   connectivity before the expiry disarms the deadline and admits the
@@ -496,10 +497,25 @@ stateDiagram-v2
   neither a stale defer nor an early expiry strands `Checking` (#1361).
   Connectivity that stays unproven keeps the deadline and its retryable
   failure. The explicit typed
-  retry re-enters inspection admission and,
-  while connectivity is still unproven, also asks the sync owner to
-  re-project its current status, so a missed `Running` projection cannot make
-  retry a permanent no-op. Post-authority recoverable failures — as decided by
+  retry requires a live promoted session and re-enters inspection admission.
+  While connectivity is unproven it asks the sync owner to recover: `Starting`
+  replaces the stalled run through the existing cancel-and-await Stop/Start
+  barrier; `Running` only re-projects its status, preserving the missed-edge
+  recovery from #860. `Reconnecting` deliberately keeps the SDK's existing
+  offline/replacement recovery loop: this report did not establish a stalled
+  reconnect, so explicit first-sync recovery does not broaden that policy.
+  Repeated Retry while `Starting` serially replaces the run, never adding a
+  second live owner. The old observer is joined before the new `Starting`
+  projection, so its status messages precede the replacement; monotonic
+  `sync_generation` rejects old projections and `run_generation` rejects queued
+  controls from replaced runs. A late old HTTP response cannot prove new-run
+  connectivity. Sign-out/account replacement retires these owners; Retry with
+  no promoted session fails `SessionRequired` and arms no work.
+  Rust records `firstSync` only while no sync response has ever been accepted
+  in the session (hence no Secure Backup inspection has been attempted). React
+  renders catalog copy explaining that distinction; it does not infer it from
+  sync flags. An actual in-flight inspection timeout stays `inspectionDeadline`.
+  Post-authority recoverable failures — as decided by
   the structured `detail.retryable` (or the coarse retryable kinds when no
   detail exists) — use bounded
   exponential backoff with jitter (5 seconds through 5 minutes), preserving the
@@ -737,6 +753,7 @@ stateDiagram-v2
     Stopped --> Starting: accepted SyncStatusChanged(Starting)
     Starting --> Running: accepted SyncStatusChanged(Running) / connectivity proven
     Starting --> Reconnecting: accepted SyncStatusChanged(Reconnecting)
+    Starting --> Stopped: startup-gate Retry / cancel and await stalled run
     Running --> Reconnecting: accepted SyncStatusChanged(Reconnecting) / connectivity unproven
     Running --> Failed: accepted SyncStatusChanged(Failed) / connectivity unproven
     Failed --> Reconnecting: accepted SyncStatusChanged(Reconnecting)

@@ -185,6 +185,12 @@ export function secureBackupFailurePresentation(
   if (!detail) {
     return { explanation: secureBackupFailureLabel(kind), action: null };
   }
+  if (detail.stage === "firstSync") {
+    return {
+      explanation: t("gate.secureBackupDetailFirstSync"),
+      action: t("gate.secureBackupActionRetry")
+    };
+  }
   const status = typeof detail.httpStatus === "number" ? detail.httpStatus : null;
   switch (detail.transport) {
     case "httpResponse": {

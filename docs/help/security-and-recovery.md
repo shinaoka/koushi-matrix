@@ -48,6 +48,10 @@ key is not shown again after that confirmation. If the app closes before you
 confirm, the unsaved key cannot be recovered; choose **Create new recovery
 key** to replace it (the previous key stops working).
 
+If the gate says Koushi is waiting for its first sync response, no Secure
+Backup request has been attempted yet. Check your connection and choose
+**Retry secure backup** to restart the stalled initial sync attempt.
+
 If the gate keeps reporting a problem after **Retry secure backup**, choose
 **Open secure backup diagnostics** to read what actually failed. The dialog
 opens while the gate is still in the way and says whether Koushi got no response

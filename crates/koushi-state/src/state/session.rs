@@ -166,6 +166,8 @@ pub enum SecureBackupFailureStage {
     CrossSigningStatus,
     /// The inspection did not finish inside its bounded deadline.
     InspectionDeadline,
+    /// No first sync response yet; no Secure Backup inspection was attempted.
+    FirstSync,
     /// No structured stage could be attributed.
     Unknown,
 }

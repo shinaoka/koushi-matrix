@@ -1593,6 +1593,7 @@ export const ko: Catalog = {
   "gate.secureBackupFailureUnauthorized": "홈서버에서 보안 백업 로그인을 거부했습니다.",
   "gate.secureBackupDetailNoResponse": "홈서버에 연결할 수 없어 이 보안 백업 요청에 대한 응답을 받지 못했습니다.",
   "gate.secureBackupDetailTimeout": "홈서버가 이 보안 백업 요청에 제때 응답하지 않았습니다.",
+  "gate.secureBackupDetailFirstSync": "Koushi가 아직 첫 동기화 응답을 기다리고 있습니다. 보안 백업 요청은 아직 시도하지 않았습니다.",
   "gate.secureBackupDetailHttpStatus": "홈서버가 이 보안 백업 요청에 오류로 응답했습니다(HTTP {status}).",
   "gate.secureBackupDetailHttpResponse": "홈서버가 이 보안 백업 요청에 오류로 응답했습니다.",
   "gate.secureBackupDetailLocal": "이 기기에서 보안 백업을 준비하지 못했습니다.",
