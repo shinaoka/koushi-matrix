@@ -1139,16 +1139,18 @@ impl ReplacementRecoveryProof {
 /// - `SyncRunning`: `SyncService::State::Running` was published, i.e. the SDK
 ///   supervisor actually started this generation's sync loop. Before it, the
 ///   run has asked the homeserver for nothing.
-/// - `EncryptionSyncRequested`: the encryption connection began a sliding-sync
-///   request (the SDK readiness snapshot moved to `Pending` for a new
-///   generation). This is the only request-level evidence available and it is
-///   session-level: it proves the run is asking the homeserver, not that the
-///   `room-list` request specifically left the process.
+/// - `EncryptionSyncRequested`: the encryption sync stream for a new generation
+///   started (its readiness snapshot moved to `Pending`). `Pending` is set at the
+///   head of that stream, before the cross-process lock is acquired and the first
+///   request is polled (`matrix-sdk-ui/src/encryption_sync_service.rs`), so this
+///   is **not** proof that a request was sent: a lock wait holds here. It is still
+///   the only request-adjacent evidence available, and it is session-level, so it
+///   says nothing about the `room-list` connection.
 ///
-/// A reader therefore separates "asked nothing yet" (`sync_started`,
-/// `sync_running`) from "asked and got no answer"
-/// (`encryption_sync_requested`) from the phase alone, which is what the `issued`
-/// field of #1755 asked for.
+/// A reader therefore separates "nothing beyond starting" (`sync_started`,
+/// `sync_running`) from "the encryption sync generation began and still no
+/// committed answer" (`encryption_sync_requested`), which is the closest
+/// available stand-in for the `issued` split #1755 asked for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 enum FirstResponsePhase {
     SyncStarted,

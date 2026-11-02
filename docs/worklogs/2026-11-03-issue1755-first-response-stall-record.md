@@ -25,11 +25,19 @@ Shape, matching the existing `room_list_reconcile_wait` diagnostic in
 
 `phase` names the last step the actor can observe: `sync_started` (observer
 started), `sync_running` (`SyncService::State::Running` published) and
-`encryption_sync_requested` (the encryption connection began a request). A
+`encryption_sync_requested` (the encryption sync stream for a new generation
+started; its readiness `Pending` is set at the head of that stream, before the
+cross-process lock is acquired, so it is **not** proof that a request was sent). A
 request count (`attempt`) is **not** reported: the SDK exposes no per-request
 observable for the `room-list` connection, and the existing states only advance
-after a committed response. The phase vocabulary carries the "asked nothing
-yet" versus "asked and got no answer" split instead.
+after a committed response. The phase vocabulary is the closest available
+stand-in for the "asked nothing yet" versus "asked and got no answer" split.
+
+Known limit: the observer only consumes a committed response while no
+replacement reconciliation is pending (`sync.rs:1334` and the matching
+`can_consume_commit` in `sync/observer.rs:47`), so a commit that lands during a
+replacement recovery is not seen by the watchdog and can still produce a stall
+record before its clear.
 
 ## Verification
 
