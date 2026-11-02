@@ -6723,8 +6723,12 @@ mark {
   box-shadow: 0 24px 56px rgb(15 27 45 / 28%);
 }
 
+/* #1739: the definite row gives the image's `max-height: 100%` a height to
+   resolve against. With an implicit `auto` row the row is sized FROM the image,
+   so the percentage computes to `none` and only the width fits. */
 .media-viewer-stage {
   display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   place-items: center;
   min-height: 0;
   height: min(400px, 50dvh);
