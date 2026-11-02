@@ -29,7 +29,7 @@ tauri-plugin-notification = "2.3.3"
 tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "sync", "time"] }
 # Builds the Claude Desktop extension (#1536 follow-up); stored entries only.
-zip = { version = "4", default-features = false }
+zip = { version = "9", default-features = false }
 tauri-plugin-deep-link = "2"
 tauri-plugin-opener = "2"
 url = "2"
@@ -69,14 +69,14 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFBase", "CFCGTypes", "CFData", "CFDictionary", "CFNumber", "CFString"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage"] }
 objc2-image-io = { version = "0.3", default-features = false, features = ["std", "CGImageProperties", "CGImageSource", "objc2-core-graphics"] }
-tauri-plugin-updater = "2.11.0"
+tauri-plugin-updater = "2.14.1"
 
 [target.'cfg(windows)'.dependencies]
 reqwest = { version = "0.13.1", default-features = false, features = ["json", "query", "rustls"] }
 # Windows working-set and private-commit counters for the #1344 diagnostic
 # memory audit.
 windows-sys = { version = "0.61", features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }
-tauri-plugin-updater = "2.11.0"
+tauri-plugin-updater = "2.14.1"
 
 [dev-dependencies]
 koushi-core = { path = "../../../crates/koushi-core", features = ["test-hooks"] }

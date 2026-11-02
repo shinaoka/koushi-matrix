@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 use koushi_mcp_host::registration::{Platform, claude_desktop_manifest};
 use serde::Serialize;
-use zip::CompressionMethod;
 use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, System};
 
 pub(crate) const FILE_NAME: &str = "Koushi.mcpb";
 const ICON: &[u8] = include_bytes!("../../icons/icon.png");
@@ -51,7 +51,11 @@ pub(crate) fn build_bundle(
 
     let mut buffer = Cursor::new(Vec::new());
     let mut zip = zip::ZipWriter::new(&mut buffer);
-    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    let stored = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Stored)
+        // zip 9 stamps DOS attributes on a Windows host unless a system is
+        // named, which drops the launcher's 0o755 from the archive.
+        .system(System::Unix);
     let entries: [(&str, &[u8], u32); 3] = [
         ("manifest.json", &manifest_bytes, 0o644),
         ("icon.png", ICON, 0o644),
