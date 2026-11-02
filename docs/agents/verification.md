@@ -116,6 +116,12 @@ for merging into `main`:
 | `Core invitations (tuwunel)` / `Core invitations (synapse)` | disposable local homeserver `--core --scenario=invites_dm` per server |
 | `Core QA binary tests` | `cargo test -p koushi-qa --features qa-bin --bin headless-core-qa` |
 | `Windows overlay ACL IPC` | `cargo test -p koushi-windows-overlay-acl windows_overlay_ipc_is_authorized`, OIDC launch tests, updater lifecycle/artifact-transfer and Core-before-installer shutdown tests, desktop clippy with `-D warnings` for Windows-only cfg paths, plus the Windows "Rust stack budget" clippy gate and 512 KiB worker-stack test (#1554) |
+| `Desktop clean install (npm ci / Tauri versions / tauri build)` | from-scratch `npm ci` in `apps/desktop`, the `tauri` / `@tauri-apps/api` / `@tauri-apps/cli` minor-line agreement (`scripts/check-tauri-versions.mjs`), then `npx tauri build --no-bundle` (#1752) |
+
+The `Desktop clean install` job is the one exception to the required list: it is
+informational, because a cold hosted release build should not block unrelated
+merges. Treat its red result as a real defect anyway — a stale `@tauri-apps`
+minor line shipped to `main` in #1749 while every required job was green.
 
 The historical `Rust (workspace / src-tauri / wasm)` check name is retained
 because branch protection requires it; it no longer installs or builds a wasm
