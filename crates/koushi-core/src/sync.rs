@@ -65,6 +65,10 @@ macro_rules! trace_sync {
 
 pub enum SyncMessage {
     Command(SyncCommand),
+    /// Explicit startup-gate recovery; ordinary Start remains idempotent.
+    RetryFirstSync {
+        request_id: RequestId,
+    },
     #[cfg(any(test, feature = "test-hooks"))]
     SyncOnceForQa {
         request_id: RequestId,
@@ -358,6 +362,7 @@ impl SyncActor {
                             break;
                         }
                         Some(SyncMessage::Command(command)) => self.handle_command(command).await,
+                        Some(SyncMessage::RetryFirstSync { request_id }) => self.retry_first_sync(request_id).await,
                         #[cfg(any(test, feature = "test-hooks"))]
                         Some(SyncMessage::SyncOnceForQa { request_id }) => self.handle_sync_once(request_id).await,
                     },
@@ -371,6 +376,9 @@ impl SyncActor {
                 match self.command_rx.recv().await {
                     None | Some(SyncMessage::Shutdown) => break,
                     Some(SyncMessage::Command(command)) => self.handle_command(command).await,
+                    Some(SyncMessage::RetryFirstSync { request_id }) => {
+                        self.retry_first_sync(request_id).await
+                    }
                     #[cfg(any(test, feature = "test-hooks"))]
                     Some(SyncMessage::SyncOnceForQa { request_id }) => {
                         self.handle_sync_once(request_id).await
@@ -489,6 +497,15 @@ impl SyncActor {
                 self.handle_start(request_id).await;
             }
         }
+    }
+
+    async fn retry_first_sync(&mut self, request_id: RequestId) {
+        if self.lifecycle == SyncLifecycle::Starting {
+            // Joining the old observer fences its direct status projections;
+            // queued controls are rejected by the replacement run_generation.
+            self.do_stop(None).await;
+        }
+        self.handle_start(request_id).await;
     }
 
     async fn handle_start(&mut self, request_id: RequestId) {
