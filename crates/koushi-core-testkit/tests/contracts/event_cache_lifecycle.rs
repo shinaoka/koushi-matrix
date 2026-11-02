@@ -196,29 +196,110 @@ async fn verified_runtime(data: &std::path::Path, credentials: &std::path::Path)
     runtime
 }
 
+/// Progress-based watchdog: the contract is causal, so silence fails a phase and
+/// elapsed time alone never does. Any observed transition re-arms the window, so
+/// a slow machine keeps passing while a wedged Core goes silent and fails.
+const PROGRESS_WINDOW: Duration = Duration::from_secs(30);
+/// Backstop for a Core that keeps emitting unrelated progress without ever
+/// reaching the asserted state, and for a shutdown that hangs. It is not a speed
+/// budget; a healthy run never approaches it.
+const HANG_BACKSTOP: Duration = Duration::from_secs(180);
+
+struct Watchdog {
+    label: &'static str,
+    started: tokio::time::Instant,
+    silence_deadline: tokio::time::Instant,
+    backstop: tokio::time::Instant,
+}
+
+impl Watchdog {
+    fn start(label: &'static str) -> Self {
+        let now = tokio::time::Instant::now();
+        Self {
+            label,
+            started: now,
+            silence_deadline: now + PROGRESS_WINDOW,
+            backstop: now + HANG_BACKSTOP,
+        }
+    }
+
+    fn progress(&mut self) {
+        self.silence_deadline = tokio::time::Instant::now() + PROGRESS_WINDOW;
+    }
+
+    fn deadline(&self) -> tokio::time::Instant {
+        self.silence_deadline.min(self.backstop)
+    }
+
+    fn report(&self) -> String {
+        let now = tokio::time::Instant::now();
+        let cause = if now >= self.backstop {
+            "backstop"
+        } else {
+            "silence"
+        };
+        format!(
+            "{} {cause} after {:?} (window {PROGRESS_WINDOW:?}, backstop {HANG_BACKSTOP:?})",
+            self.label,
+            now.duration_since(self.started)
+        )
+    }
+}
+
 async fn wait_for_state(
     connection: &mut CoreConnection,
-    deadline: tokio::time::Instant,
+    watchdog: &mut Watchdog,
     predicate: impl Fn(&AppState) -> bool,
 ) -> AppState {
-    tokio::time::timeout_at(deadline, async {
-        loop {
-            if predicate(&connection.snapshot()) {
-                break;
-            }
-            if connection.next_versioned_snapshot().await.is_none() {
-                break;
-            }
+    loop {
+        let state = connection.snapshot();
+        if predicate(&state) {
+            return state;
         }
-    })
-    .await
-    .expect("cache lifecycle state deadline");
+        match tokio::time::timeout_at(watchdog.deadline(), connection.next_versioned_snapshot())
+            .await
+        {
+            Ok(Some(_)) => watchdog.progress(),
+            Ok(None) => break,
+            Err(_) => panic!(
+                "cache lifecycle state predicate never held: {}",
+                watchdog.report()
+            ),
+        }
+    }
     let final_state = connection.snapshot();
     assert!(
         predicate(&final_state),
         "cache lifecycle state did not converge"
     );
     final_state
+}
+
+/// Explicit negative signal for a stalled cached delivery.
+///
+/// A repeat selection travels the same room lane and settles on actor
+/// admission, so it measures "the lane still answers" instead of leaving that as
+/// a guess about the event the loop never saw. Re-selecting the room that is
+/// already active is a no-op even in a healthy Core, so this reports liveness
+/// only; the missing `InitialItems` is measured by the delivery loop itself.
+async fn lane_probe(connection: &mut CoreConnection) -> String {
+    let request_id = connection.next_request_id();
+    let admitted = tokio::time::timeout(
+        Duration::from_secs(10),
+        connection.command_with_admission(CoreCommand::Room(RoomCommand::SelectRoom {
+            request_id,
+            room_id: ROOM.to_owned(),
+        })),
+    )
+    .await;
+    match admitted {
+        Ok(Ok(admission)) => format!(
+            "lane_alive admitted(generation={})",
+            admission.admitted_generation
+        ),
+        Ok(Err(error)) => format!("lane_rejected({error})"),
+        Err(_) => "lane_wedged no admission within 10s".to_owned(),
+    }
 }
 
 fn has_latest(state: &AppState, event_id: &str) -> bool {
@@ -235,8 +316,9 @@ fn has_latest(state: &AppState, event_id: &str) -> bool {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_cache_is_rejected_before_diagnostics_without_killing_the_account_actor() {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    tokio::time::timeout_at(deadline, async {
+    // The assertions below are the returned admission results, not latency, so
+    // this bound only stops a hung process from parking the suite forever.
+    tokio::time::timeout(HANG_BACKSTOP, async {
         let server = MatrixMockServer::new().await;
         let session = |client: matrix_sdk::Client| {
             let info = koushi_state::SessionInfo {
@@ -276,13 +358,12 @@ async fn missing_cache_is_rejected_before_diagnostics_without_killing_the_accoun
         runtime.shutdown().await;
     })
     .await
-    .expect("disabled-cache admission deadline");
+    .expect("disabled-cache admission hang backstop");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn automatic_cache_delivers_first_sync_persisted_restore_and_new_updates() {
     let started = tokio::time::Instant::now();
-    let deadline = started + Duration::from_secs(30);
     let mut phases = vec![("start", started)];
     let server = MatrixMockServer::new().await;
     server
@@ -331,13 +412,15 @@ async fn automatic_cache_delivers_first_sync_persisted_restore_and_new_updates()
         .await
         .expect("submit login");
     phases.push(("first_sync_wait_start", tokio::time::Instant::now()));
-    let initial = wait_for_state(&mut connection, deadline, |state| {
+    let mut watchdog = Watchdog::start("first_sync");
+    let initial = wait_for_state(&mut connection, &mut watchdog, |state| {
         has_latest(state, FIRST_EVENT)
     })
     .await;
     phases.push(("first_sync_done", tokio::time::Instant::now()));
     drop(connection);
-    tokio::time::timeout_at(deadline, runtime.shutdown())
+    // Shutdown publishes no progress signal, so this is only a hang backstop.
+    tokio::time::timeout(HANG_BACKSTOP, runtime.shutdown())
         .await
         .expect("first runtime settles");
     phases.push(("ordered_shutdown_done", tokio::time::Instant::now()));
@@ -352,7 +435,8 @@ async fn automatic_cache_delivers_first_sync_persisted_restore_and_new_updates()
         }))
         .await
         .expect("submit restore");
-    let restored_state = wait_for_state(&mut connection, deadline, |state| {
+    let mut watchdog = Watchdog::start("restore");
+    let restored_state = wait_for_state(&mut connection, &mut watchdog, |state| {
         has_latest(state, FIRST_EVENT)
     })
     .await;
@@ -373,48 +457,62 @@ async fn automatic_cache_delivers_first_sync_persisted_restore_and_new_updates()
     phases.push(("cached_delivery_wait_start", tokio::time::Instant::now()));
     let mut initial_counts = Vec::new();
     let mut delivered_in_updates = false;
-    let result = tokio::time::timeout_at(deadline, async {
-        loop {
-            match connection.recv_event().await.expect("restored Core event") {
-                CoreEvent::Timeline(TimelineEvent::InitialItems { key, items, .. }) if key.room_id() == ROOM => {
-                    let found = items.iter().any(|item| matches!(&item.id, TimelineItemId::Event { event_id } if event_id == FIRST_EVENT));
-                    initial_counts.push((items.len(), found));
-                    if found { break; }
+    let mut watchdog = Watchdog::start("cached_delivery");
+    let failure = loop {
+        let event =
+            match tokio::time::timeout_at(watchdog.deadline(), connection.recv_event()).await {
+                Ok(Ok(event)) => event,
+                Ok(Err(lag)) => {
+                    break Some(format!(
+                        "event stream closed or lagged (skipped={})",
+                        lag.skipped
+                    ));
                 }
-                CoreEvent::Timeline(TimelineEvent::ItemsUpdated { key, diffs, .. }) if key.room_id() == ROOM => {
-                    delivered_in_updates |= diffs.iter().any(|diff| match diff {
-                        TimelineDiff::PushFront { item } | TimelineDiff::PushBack { item } | TimelineDiff::Insert { item, .. } | TimelineDiff::Set { item, .. } => matches!(&item.id, TimelineItemId::Event { event_id } if event_id == FIRST_EVENT),
-                        TimelineDiff::Reset { items } => items.iter().any(|item| matches!(&item.id, TimelineItemId::Event { event_id } if event_id == FIRST_EVENT)),
-                        _ => false,
-                    });
+                Err(_) => break Some(watchdog.report()),
+            };
+        // Any published event proves the Core is still working; only silence is
+        // evidence that the cached timeline is stuck.
+        watchdog.progress();
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems { key, items, .. })
+                if key.room_id() == ROOM =>
+            {
+                let found = items.iter().any(|item| matches!(&item.id, TimelineItemId::Event { event_id } if event_id == FIRST_EVENT));
+                initial_counts.push((items.len(), found));
+                if found {
+                    break None;
                 }
-                _ => {}
             }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated { key, diffs, .. })
+                if key.room_id() == ROOM =>
+            {
+                delivered_in_updates |= diffs.iter().any(|diff| match diff {
+                    TimelineDiff::PushFront { item } | TimelineDiff::PushBack { item } | TimelineDiff::Insert { item, .. } | TimelineDiff::Set { item, .. } => matches!(&item.id, TimelineItemId::Event { event_id } if event_id == FIRST_EVENT),
+                    TimelineDiff::Reset { items } => items.iter().any(|item| matches!(&item.id, TimelineItemId::Event { event_id } if event_id == FIRST_EVENT)),
+                    _ => false,
+                });
+            }
+            _ => {}
         }
-    }).await;
-    if result.is_err() {
+    };
+    if let Some(failure) = failure {
         let failed_at = tokio::time::Instant::now();
-        phases.push(("cached_delivery_timeout", failed_at));
+        phases.push(("cached_delivery_failed", failed_at));
         let timing: Vec<_> = phases
             .windows(2)
-            .map(|pair| {
-                (
-                    pair[1].0,
-                    pair[1].1.duration_since(pair[0].1),
-                    deadline.saturating_duration_since(pair[1].1),
-                )
-            })
+            .map(|pair| (pair[1].0, pair[1].1.duration_since(pair[0].1)))
             .collect();
         let observation_started = tokio::time::Instant::now();
+        let lane = lane_probe(&mut connection).await;
         let cache = persisted_event_after_timeout(data.path(), credentials.path());
+        let observation = observation_started.elapsed();
         panic!(
-            "restored timeline reads persisted cache without server replay: timeout; phases=(phase, elapsed, remaining) {timing:?}; logout=not reached; initial_items=(count, contains_event) {initial_counts:?}; delivered_in_updates={delivered_in_updates}; persisted_event_after_timeout={cache:?}; observation_started_after_timeout={:?}; observation_duration={:?}; store may have changed since timeout",
-            observation_started.duration_since(failed_at),
-            observation_started.elapsed()
+            "restored timeline reads persisted cache without server replay: {failure}; phases=(phase, elapsed) {timing:?}; logout=not reached; initial_items=(count, contains_event) {initial_counts:?}; delivered_in_updates={delivered_in_updates}; lane_probe={lane}; persisted_event_after_timeout={cache:?}; observation_duration={observation:?}; store may have changed since the failure",
         );
     }
     phase.store(2, Ordering::Release);
-    wait_for_state(&mut connection, deadline, |state| {
+    let mut watchdog = Watchdog::start("new_update");
+    wait_for_state(&mut connection, &mut watchdog, |state| {
         has_latest(state, RESTORED_EVENT)
     })
     .await;
@@ -424,12 +522,14 @@ async fn automatic_cache_delivers_first_sync_persisted_restore_and_new_updates()
         .command(CoreCommand::Account(AccountCommand::Logout { request_id }))
         .await
         .expect("submit logout");
-    wait_for_state(&mut connection, deadline, |state| {
+    let mut watchdog = Watchdog::start("logout");
+    wait_for_state(&mut connection, &mut watchdog, |state| {
         matches!(state.session, SessionState::SignedOut) && state.rooms.is_empty()
     })
     .await;
     drop(connection);
-    tokio::time::timeout_at(deadline, restored.shutdown())
+    // Shutdown publishes no progress signal, so this is only a hang backstop.
+    tokio::time::timeout(HANG_BACKSTOP, restored.shutdown())
         .await
         .expect("restored runtime settles");
 }
