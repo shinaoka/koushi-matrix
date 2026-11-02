@@ -5703,6 +5703,16 @@ mark {
   font-size: 12px;
 }
 
+/* #1748: the read-only reason sits beside the composer it explains. */
+.composer-read-only-notice {
+  margin: 0;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .composer-drop-overlay {
   position: absolute;
   z-index: 4;

@@ -211,6 +211,7 @@ function snapshotForPanelMode(
                 }
               : { kind: "recovering" },
         secure_backup_gate: { kind: "ready" },
+        conversation_access: { readable: true, listAuthoritative: true, sendAdmitted: true },
         current_session_status: { status: "idle" },
         device_cleanup: { kind: "idle" },
         auth: { kind: "unknown" },

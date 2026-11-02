@@ -1039,15 +1039,24 @@ stateDiagram-v2
   content never sends, never releases a queued send, never changes crawler
   admission, and never writes a receipt or fully-read marker from a provisional
   projection.
-- Two limits are accepted for the phase that introduced the #1737 read
-  exception. First, the SDK send queue is paused through its own session-wide and
+- One limit is accepted for the phase that introduced the #1737 read
+  exception. The SDK send queue is paused through its own session-wide and
   per-room enablement flags; a session-wide pause that lands between the
   room-level check and the room-level enable can still resume one room, and
   closing that gap needs the pause at the SDK's final network boundary (#1677).
-  Second, the projected `ConversationAccess` is Rust state only: the Tauri
-  snapshot DTO and its TypeScript mirror do not carry it yet, and the GUI phase
-  adds them together with the surfaces that render the provisional-cache warning
-  and the send-blocked reason.
+- The desktop shell renders `ConversationAccess` (#1748). It reaches React
+  through `FrontendDomainState.conversation_access` and an ordinary
+  `StateDeltaChangedSlices` slice published whenever the projected value
+  differs, so a renderer never re-derives admission and no renderer-local latch
+  decides whether the shell opens. `readable` replaces the previous
+  React-held "shell already exposed" latch, `list_authoritative` decides whether
+  the sidebar may present a room-list total and is what keeps a provisional
+  cache from looking confirmed, and `send_admitted` is the whole user-content
+  composer admission for main, thread, and upload surfaces — not only encrypted
+  rooms. The two notices are separate and both honest: the provisional-cache
+  warning states that saved conversations, and last-known unread counts, may be
+  missing or out of date, while the send-blocked reason names Secure Backup. A
+  delayed first response is never described as offline.
 - `RoomListUpdated` remains the compatibility path for already-authoritative
   room operations and tests; service bootstrap projection uses the guarded
   readiness actions above. Both entry and snapshot paths reject all non-Ready

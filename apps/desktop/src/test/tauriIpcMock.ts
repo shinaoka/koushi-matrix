@@ -318,6 +318,8 @@ export function defaultSnapshotResponse() {
       session: { kind: "signedOut" },
       session_lock_reason: null,
       secure_backup_gate: { kind: "inactive" },
+      // #1748: a signed-out default state is never readable.
+      conversation_access: { readable: false, listAuthoritative: false, sendAdmitted: false },
       current_session_status: { status: "idle" },
       device_cleanup: { kind: "idle" },
       auth: { kind: "unknown" },
@@ -564,7 +566,7 @@ export function defaultSnapshotResponse() {
       }
   };
   const DOMAIN_KEYS = new Set([
-    "session", "session_lock_reason", "secure_backup_gate", "current_session_status", "device_cleanup",
+    "session", "session_lock_reason", "secure_backup_gate", "conversation_access", "current_session_status", "device_cleanup",
     "auth", "account_management_url", "account_management", "account_management_capabilities",
     "account_notifications", "contact_security", "sender_device_advisories",
     "soft_logout_reauth", "qr_login", "settings", "link_preview_settings", "room_preferences",

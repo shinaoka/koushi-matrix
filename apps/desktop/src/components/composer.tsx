@@ -496,6 +496,11 @@ export const Composer = memo(function Composer({
   async function onAttachFileChange(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.currentTarget.files ?? []);
     event.currentTarget.value = "";
+    // #1748: the picker trigger is disabled in a read-only composer, but the
+    // handler closes the write path itself rather than relying on that.
+    if (!canEdit) {
+      return;
+    }
     try {
       await ingestAttachmentFiles(files, onAttachFiles);
     } catch {
@@ -590,7 +595,15 @@ export const Composer = memo(function Composer({
   async function submitSchedule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const sendAtMs = scheduledSendTimestampFromInput(scheduleValue);
-    if (sendAtMs === null || !localValue.trim() || hasStagedUploads || isSending) {
+    // #1748: a scheduled send is a send. Rust refuses it while send admission is
+    // closed, and the form does not offer it either.
+    if (
+      !canEdit ||
+      sendAtMs === null ||
+      !localValue.trim() ||
+      hasStagedUploads ||
+      isSending
+    ) {
       return;
     }
     await onScheduleSend?.(sendAtMs, localDocument);
@@ -1155,7 +1168,7 @@ export const Composer = memo(function Composer({
             <button
               className="dialog-button is-primary"
               type="submit"
-              disabled={scheduledSendTimestampFromInput(scheduleValue) === null}
+              disabled={!canEdit || scheduledSendTimestampFromInput(scheduleValue) === null}
             >
               {t("scheduled.schedule")}
             </button>

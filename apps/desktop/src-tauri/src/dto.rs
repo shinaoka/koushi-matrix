@@ -18,21 +18,21 @@ use koushi_protocol::{
 use koushi_state::{
     AccountManagementCapabilities, AccountManagementState, AccountManagementUrl, ActivityState,
     AppError, AppState, AuthDiscoveryState, BasicOperationState, CjkTextPolicyState, ComposerState,
-    CurrentSessionStatusState, DeviceCleanupState, DirectoryState, DisplayPlatform, E2eeTrustState,
-    FilesViewState, FocusedContextState, IgnoredUserUpdateState, InvitePreview,
-    InviteWorkflowState, LinkPreviewSettingsState, LiveEventReceiptSummary, LiveSignalsState,
-    LocalEncryptionState, LocalUserAliasUpdateState, LocaleDisplayProfile, MentionCandidatesState,
-    NativeAttentionCapabilities, NativeAttentionState, NavigationState, OwnProfile, PresenceKind,
-    ProfileState, ProfileUpdateState, ProvisionalPhase, QrLoginState, RoomInteractionState,
-    RoomListProjection, RoomLiveSignals, RoomManagementState, RoomNotificationSettings,
-    RoomPreferencesState, RoomSummary, ScheduledSendsListState, SearchCrawlerLastActive,
-    SearchCrawlerRoomState, SearchCrawlerState, SearchMatchField, SearchMatchKind, SearchResult,
-    SearchScope, SearchState, SecureBackupGateState, SessionLockReason, SessionState,
-    SettingsState, SidebarModel, SoftLogoutReauthState, SpaceChildrenState, SpaceMembersState,
-    SpaceSummary, StagedUploadItem, SyncState, ThreadAttentionState, ThreadPaneState,
-    ThreadsListState, TimelinePaneState, TypographyDisplayProfile, UserProfile,
-    VerificationGateRejectReason, VerificationGateState, VerificationMethod,
-    native_attention_capabilities_for_platform, resolve_locale_display_profile,
+    ConversationAccess, CurrentSessionStatusState, DeviceCleanupState, DirectoryState,
+    DisplayPlatform, E2eeTrustState, FilesViewState, FocusedContextState, IgnoredUserUpdateState,
+    InvitePreview, InviteWorkflowState, LinkPreviewSettingsState, LiveEventReceiptSummary,
+    LiveSignalsState, LocalEncryptionState, LocalUserAliasUpdateState, LocaleDisplayProfile,
+    MentionCandidatesState, NativeAttentionCapabilities, NativeAttentionState, NavigationState,
+    OwnProfile, PresenceKind, ProfileState, ProfileUpdateState, ProvisionalPhase, QrLoginState,
+    RoomInteractionState, RoomListProjection, RoomLiveSignals, RoomManagementState,
+    RoomNotificationSettings, RoomPreferencesState, RoomSummary, ScheduledSendsListState,
+    SearchCrawlerLastActive, SearchCrawlerRoomState, SearchCrawlerState, SearchMatchField,
+    SearchMatchKind, SearchResult, SearchScope, SearchState, SecureBackupGateState,
+    SessionLockReason, SessionState, SettingsState, SidebarModel, SoftLogoutReauthState,
+    SpaceChildrenState, SpaceMembersState, SpaceSummary, StagedUploadItem, SyncState,
+    ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
+    TypographyDisplayProfile, UserProfile, VerificationGateRejectReason, VerificationGateState,
+    VerificationMethod, native_attention_capabilities_for_platform, resolve_locale_display_profile,
     resolve_typography_display_profile,
 };
 use serde::{Deserialize, Serialize};
@@ -272,6 +272,9 @@ pub struct FrontendDomainStateChangedSlices {
     pub session_lock_reason: Option<Option<SessionLockReason>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secure_backup_gate: Option<SecureBackupGateState>,
+    /// #1748: the derived read/send admission the shell renders.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_access: Option<ConversationAccess>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_session_status: Option<CurrentSessionStatusState>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -404,6 +407,7 @@ impl FrontendDomainStateChangedSlices {
             && self.session_epoch.is_none()
             && self.session_lock_reason.is_none()
             && self.secure_backup_gate.is_none()
+            && self.conversation_access.is_none()
             && self.current_session_status.is_none()
             && self.device_cleanup.is_none()
             && self.auth.is_none()
@@ -523,6 +527,7 @@ impl From<StateDelta> for FrontendDesktopSnapshotDelta {
         domain.session_epoch = changed.session_disclosure_epoch;
         domain.session_lock_reason = changed.session_lock_reason;
         domain.secure_backup_gate = changed.secure_backup_gate;
+        domain.conversation_access = changed.conversation_access;
         domain.current_session_status = changed.current_session_status;
         domain.device_cleanup = changed.device_cleanup;
         domain.auth = changed.auth;
@@ -653,6 +658,9 @@ pub struct FrontendDomainState {
     pub session_epoch: u64,
     pub session_lock_reason: Option<SessionLockReason>,
     pub secure_backup_gate: SecureBackupGateState,
+    /// #1748: Rust-owned read/send admission for the shell. React renders it and
+    /// never projects it from the session, list readiness, or backup gate.
+    pub conversation_access: ConversationAccess,
     pub current_session_status: CurrentSessionStatusState,
     pub device_cleanup: DeviceCleanupState,
     pub auth: AuthDiscoveryState,
@@ -725,6 +733,7 @@ fn frontend_app_state_for_platform(state: AppState, platform: DisplayPlatform) -
     let locale_profile = resolve_locale_display_profile(&state.settings.values.locale, platform);
     let typography_profile =
         resolve_typography_display_profile(&state.settings.values.typography, platform);
+    let conversation_access = state.conversation_access();
     let mut native_attention = state.native_attention;
     if native_attention.summary.capabilities == NativeAttentionCapabilities::default() {
         native_attention.summary.capabilities =
@@ -738,6 +747,7 @@ fn frontend_app_state_for_platform(state: AppState, platform: DisplayPlatform) -
             session_epoch: state.session_disclosure_epoch,
             session_lock_reason: state.session_lock_reason,
             secure_backup_gate: state.secure_backup_gate,
+            conversation_access,
             current_session_status: state.current_session_status,
             device_cleanup: state.device_cleanup,
             auth: state.auth,
@@ -800,7 +810,9 @@ fn frontend_app_state_for_platform(state: AppState, platform: DisplayPlatform) -
 /// each sink holds a credential and how its last send ended. Version 11 adds the
 /// keyword-rule projection (`AccountNotificationsSnapshot.keywords`), which
 /// carries the account's own `content` rules and their server-owned enabled flag.
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 12;
+/// Version 13 adds `domain.conversation_access`, the Rust-owned read/send
+/// admission the shell renders (#1748).
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 13;
 
 pub(crate) fn frontend_display_platform() -> DisplayPlatform {
     #[cfg(target_os = "macos")]

@@ -1435,9 +1435,15 @@ export function UploadStagingDialog({
   recentEmojis = [],
   onMathModeChange = () => undefined,
   onRecentEmojisChange = () => undefined,
-  roomName = t("panel.thread")
+  roomName = t("panel.thread"),
+  canEdit = true
 }: {
   items: StagedUploadItem[];
+  /**
+   * #1748: Rust's send admission for this conversation. False keeps an
+   * already-staged batch visible and deletable but does not offer the send.
+   */
+  canEdit?: boolean;
   onClear: () => void | Promise<void>;
   onUpdateCaption: (stagedId: string, document: ComposerDocument) => void | Promise<void>;
   onSelectOutput: (
@@ -1473,10 +1479,11 @@ export function UploadStagingDialog({
     firstCaptionRef.current?.focus();
   }, []);
   const sendable = uploadStagingItemsAreSendable(items);
+  const canSendAttachments = canEdit && sendable;
   const sendButtonRef = useRef<HTMLButtonElement>(null);
   const pendingCaptionUpdatesRef = useRef(new Set<Promise<void>>());
   const sendAttachments = async () => {
-    if (!sendable) return;
+    if (!canSendAttachments) return;
     const pendingUpdates = [...pendingCaptionUpdatesRef.current];
     const results = await Promise.allSettled(pendingUpdates);
     if (results.some((result) => result.status === "rejected")) return;
@@ -1569,7 +1576,7 @@ export function UploadStagingDialog({
                       surface={surface}
                       composerMode={{ kind: "plain" }}
                       isSending={false}
-                      stagedUploadsReady={sendable}
+                      stagedUploadsReady={canSendAttachments}
                       mathModeEnabled={mathModeEnabled}
                       recentEmojis={recentEmojis}
                       onRecentEmojisChange={onRecentEmojisChange}
@@ -1599,9 +1606,9 @@ export function UploadStagingDialog({
                       onMathModeChange={onMathModeChange}
                       onMentionQueryChange={onMentionQueryChange}
                       onSend={sendAttachments}
-                      onSendStagedUploads={sendable ? sendAttachments : undefined}
+                      onSendStagedUploads={canSendAttachments ? sendAttachments : undefined}
                       onTabToSend={
-                        index === items.length - 1 && sendable
+                        index === items.length - 1 && canSendAttachments
                           ? () => sendButtonRef.current?.focus()
                           : undefined
                       }
@@ -1616,7 +1623,7 @@ export function UploadStagingDialog({
               ref={sendButtonRef}
               className="dialog-button primary upload-staging-send"
               type="button"
-              disabled={!sendable}
+              disabled={!canSendAttachments}
               onClick={sendAttachments}
             >
               {t("upload.sendAttachments")}

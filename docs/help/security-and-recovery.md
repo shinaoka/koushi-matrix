@@ -62,6 +62,31 @@ Do not give recovery keys, backup passphrases, or exported keys to an AI
 assistant or include them in an issue. These are credentials for encrypted
 history, not diagnostic information.
 
+## Read while secure backup is still being checked
+
+Once your session is verified, Koushi opens your saved conversations even while
+it is still checking Secure Backup, unless that check needs recovery or setup
+from you. In that state you are reading what this device saved the last time it
+synced.
+
+Two notices describe it, and each appears on its own:
+
+- **Saved conversations.** A notice at the top of the conversation list means
+  Koushi has not yet received this run's first sync response. Rooms or messages
+  that arrived since this device last synced may be missing or out of date, and
+  the unread marks and counts are the last values this device saved. The notice
+  goes away when that response arrives.
+- **Sending is unavailable until Secure Backup is ready.** A notice beside the
+  message box means every send is closed, in every room, encrypted or not: the
+  message box, the attachment button, thread replies, reactions, edits,
+  scheduled sends and resending a queued message. It goes away when Secure
+  Backup becomes ready, which can happen before or after the conversation list
+  is confirmed.
+
+Opening a saved conversation does not mark it read for you or for your other
+clients. Take the offered verification, recovery, or setup action to be able to
+send again.
+
 ## Recover missing encrypted history
 
 1. Check whether session verification or secure backup setup is still pending.

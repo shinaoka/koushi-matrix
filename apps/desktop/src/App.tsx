@@ -1179,30 +1179,17 @@ function AccountContent({
   openDiagnosticsActionRef.current = openDiagnostics;
   const appSettingsUpdateRef = useRef(updateSettings);
   appSettingsUpdateRef.current = updateSettings;
-  const secureBackupShellAccountRef = useRef<string | null>(null);
-  const secureBackupShellExposedRef = useRef(false);
   const diagnosticLogBufferRef = useRef<ReturnType<typeof createDiagnosticLogBuffer> | null>(null);
   const diagnosticLogBuffer =
     diagnosticLogBufferRef.current ?? (diagnosticLogBufferRef.current = createDiagnosticLogBuffer());
   snapshotRef.current = snapshot;
   const initialAccount = readyComposerDraftAccountOwner(snapshot);
-  const secureBackupShellAccount = initialAccount
-    ? composerDraftAccountOwnerKey(initialAccount)
-    : null;
-  if (secureBackupShellAccountRef.current !== secureBackupShellAccount) {
-    secureBackupShellAccountRef.current = secureBackupShellAccount;
-    secureBackupShellExposedRef.current = false;
-  }
-  const secureBackupGateIsOperational =
-    snapshot?.state.domain.secure_backup_gate.kind === "ready" ||
-    snapshot?.state.domain.secure_backup_gate.kind === "uploadingExistingKeys" ||
-    snapshot?.state.domain.secure_backup_gate.kind === "degradedRetrying";
-  if (secureBackupShellAccount !== null && secureBackupGateIsOperational) {
-    secureBackupShellExposedRef.current = true;
-  }
+  // #1748: reading cached conversations is Rust's admission, not a renderer
+  // latch. The startup gate below renders `conversation_access.readable`, so no
+  // timer, ref, shell history, or backup copy decides whether the shell opens.
   const accountScopedContentReady = Boolean(
     snapshot?.state.domain.session.kind === "ready" &&
-      (secureBackupGateIsOperational || secureBackupShellExposedRef.current)
+      snapshot.state.domain.conversation_access.readable
   );
   useEffect(() => {
     onAccountScopedContentReadyChange(accountScopedContentReady);
@@ -7215,18 +7202,25 @@ function AccountContent({
 
   const sessionKind = snapshot.state.domain.session.kind;
   const secureBackupGate = snapshot.state.domain.secure_backup_gate;
+  const conversationAccess = snapshot.state.domain.conversation_access;
   // Computed before the sign-in-gate early return: the diagnostics dialog must
   // be renderable while the gate is active (#1265), and its report needs this.
   const effectiveRightPanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
+  // #1748: reading and sending are separate admissions and Rust owns both. A
+  // trusted restored session reads its cached conversations while Secure Backup
+  // inspection is pending or failed inconclusively, so only the states Rust
+  // keeps closed reach the blocking screen; trust/recovery blocking is
+  // unchanged and keeps its recovery and diagnostics actions.
   const secureBackupStartupGateRequired =
-    sessionKind === "ready" &&
-    !secureBackupGateIsOperational &&
-    !secureBackupShellExposedRef.current;
+    sessionKind === "ready" && !conversationAccess.readable;
   const secureBackupRuntimeDegraded =
     sessionKind === "ready" &&
-    secureBackupGate.kind !== "ready" &&
-    secureBackupShellExposedRef.current;
+    conversationAccess.readable &&
+    secureBackupGate.kind !== "ready";
   const secureBackupRuntimeFailure = secureBackupGateFailure(secureBackupGate);
+  // A provisional cache is read-only: every user-content write is refused in
+  // Rust while send admission is closed, including plaintext rooms.
+  const composerReadOnly = !conversationAccess.sendAdmitted;
 
   if (sessionKind === "restoring" || sessionKind === "loggingOut") {
     return <div className="boot-screen">{t("app.title")}</div>;
@@ -7331,8 +7325,6 @@ function AccountContent({
   const activeRoom = snapshot.state.domain.rooms.find(
     (room) => room.room_id === snapshot.state.ui.navigation.active_room_id
   );
-  const encryptedComposerBlocked =
-    !secureBackupGateIsOperational && Boolean(activeRoom?.is_encrypted);
   const runtimeAlerts: RuntimeAlert[] = [];
   if (secureBackupRuntimeDegraded) {
     runtimeAlerts.push({
@@ -7744,7 +7736,10 @@ function AccountContent({
             }
             composerDraftKey={mainComposerDraftImeKey}
             composerMode={composerModeProp(snapshot.state.ui.timeline.composer.mode)}
-            canEdit={!encryptedComposerBlocked}
+            canEdit={!composerReadOnly}
+            readOnlyNotice={
+              composerReadOnly ? t("composer.sendBlockedSecureBackup") : null
+            }
             resolveComposerKeyAction={resolveComposerKeyAction}
             searchQuery={searchHighlightQuery}
             searchResults={searchResults}
@@ -7919,7 +7914,7 @@ function AccountContent({
           sendingAccount={sendingAccount}
           onSettingsScopeChange={requestSettingsScope}
           displayDensity={displayDensity}
-          encryptedComposerBlocked={encryptedComposerBlocked}
+          composerReadOnly={composerReadOnly}
           isRecoveryBusy={isBusy}
           mode={effectiveRightPanelMode}
           threadsListScope={openThreadsListScope}

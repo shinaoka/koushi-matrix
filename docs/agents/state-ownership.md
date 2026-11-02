@@ -108,6 +108,22 @@ state.
 Do not hand-write a TypeScript shape that is not proven by the Rust contract
 artifact.
 
+A **derived** projection needs one more step. `domain.conversation_access`
+(#1748) is not an `AppState` field: Rust computes it from the session, the
+room-list readiness, and the backup gate, so it travels as its own
+`StateDeltaChangedSlices` slice published whenever the computed value differs
+plus a full-snapshot field. A renderer that re-derives it from the three slices
+it already receives is a second admission owner; do not add one. Headless
+fixtures that inject a session or a backup gate restamp it through
+`apps/desktop/src/test/conversationAccessFixture.ts`, which mirrors the Rust
+projection so a spec cannot accidentally show a shell state Rust would never
+produce. That mirror is a fixture convenience, not evidence: it repeats whatever
+mistake the TypeScript type makes. The proof that it matches the wire is
+`apps/desktop/src/domain/conversationAccessWire.test.ts`, which compares the
+declared keys against the Rust-serialized `frontend_app_state.json` golden. A
+hand-written snake_case mirror type-checks, passes every fixture that repeats the
+mistake, and leaves the real shell permanently un-writable.
+
 Focused checks:
 
 ```bash

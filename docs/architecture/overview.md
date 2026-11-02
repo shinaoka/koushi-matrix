@@ -2764,7 +2764,11 @@ messages before the run's first committed response and while inspection is
 pending or has ended inconclusively with a retryable connectivity failure,
 while every user-content send stays closed until this gate is operational.
 Rust projects that split (`ConversationAccess`) and refuses send-family commands
-itself, so no renderer decides it. `AppState.secure_backup_gate` remains
+itself, so no renderer decides it. The desktop shell renders that projection
+(#1748): the readable states open the normal shell with a provisional-cache
+warning and a separate send-blocked reason, the states Rust keeps closed keep
+their blocking screen and its recovery/diagnostics actions, and no React timer,
+ref, or backup copy decides admission. `AppState.secure_backup_gate` remains
 blocking for sending until `koushi-sdk` has established that Recovery is
 complete and the existing
 trusted backup is enabled locally. Pending room-key upload is observed as

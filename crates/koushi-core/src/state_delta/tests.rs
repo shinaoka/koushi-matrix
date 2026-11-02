@@ -227,6 +227,37 @@ fn secure_backup_gate_is_an_incremental_slice() {
 }
 
 #[test]
+fn conversation_access_is_an_incremental_slice() {
+    use koushi_state::{SessionInfo, SessionState};
+
+    let previous = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://matrix.example.invalid".to_owned(),
+            user_id: "@user-a:example.invalid".to_owned(),
+            device_id: "DEVICE".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        secure_backup_gate: SecureBackupGateState::Checking,
+        ..AppState::default()
+    };
+    assert!(!previous.conversation_access().send_admitted);
+
+    let mut next = previous.clone();
+    next.secure_backup_gate = SecureBackupGateState::Ready;
+
+    let delta = build_state_delta(9, &previous, &next).expect("send admission changed");
+
+    assert_eq!(
+        delta.changed.conversation_access,
+        Some(next.conversation_access())
+    );
+    let mut without_access = delta.changed;
+    without_access.conversation_access = None;
+    without_access.secure_backup_gate = None;
+    assert!(without_access.is_empty());
+}
+
+#[test]
 fn state_delta_emits_only_the_changed_mention_candidates_slice() {
     let previous = AppState::default();
     let mut next = previous.clone();

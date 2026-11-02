@@ -345,6 +345,7 @@ export function TimelineItemRow({
   forwardDestinations = [],
   onRetrySend = ignoreSendQueueAction,
   onCancelSend = ignoreSendQueueAction,
+  canWrite = true,
   onOpenMatrixTarget,
   onOpenReplyQuote,
   onOpenSenderProfile,
@@ -423,6 +424,12 @@ export function TimelineItemRow({
   forwardDestinations?: readonly TimelineForwardDestination[];
   onRetrySend?: TimelineRowActionHandlers["onRetrySend"];
   onCancelSend?: TimelineRowActionHandlers["onCancelSend"];
+  /**
+   * #1748: Rust's send admission. False hides every message write affordance
+   * (reply, react, edit, redact, retry/cancel a persisted send) while the shell
+   * reads a provisional cache; Rust refuses the same commands either way.
+   */
+  canWrite?: boolean;
   onOpenMatrixTarget?: TimelineRowActionHandlers["onOpenMatrixTarget"];
   onOpenReplyQuote?: TimelineRowActionHandlers["onOpenReplyQuote"];
   onOpenSenderProfile?: TimelineRowActionHandlers["onOpenSenderProfile"];
@@ -750,12 +757,13 @@ export function TimelineItemRow({
   const canShowActionButtons = Boolean(eventId) && !isRedacted;
   // #1643: a thread-pane row offers Reply (a reply within the open thread), but
   // threads are not nested, so Reply in thread stays a room-timeline action.
-  const canShowReply = canShowActionButtons && item.actions?.can_reply === true;
+  const canShowReply =
+    canShowActionButtons && canWrite && item.actions?.can_reply === true;
   const canShowReplyInThread = canShowReply && presentationContext === "room";
   // #1704: Rust decides which events may be pinned; an already pinned event
   // (even a room notice) still offers Unpin.
   const canShowPinToggle =
-    canShowActionButtons && (isPinned || item.actions?.can_pin === true);
+    canShowActionButtons && canWrite && (isPinned || item.actions?.can_pin === true);
   const canCopyMessage = Boolean(eventId && item.actions?.can_copy && item.body !== null);
   const canCopyPermalink = Boolean(
     eventId && item.actions?.can_permalink && item.actions.permalink
@@ -1048,7 +1056,7 @@ export function TimelineItemRow({
           onForward: submitForward,
           canViewSource,
           onViewSource: loadMessageSource,
-          canRedact: Boolean(canShowActionButtons && item.can_redact),
+          canRedact: Boolean(canShowActionButtons && canWrite && item.can_redact),
           onRedact: submitRedaction
         }}
       />
@@ -1063,7 +1071,7 @@ export function TimelineItemRow({
     const items = contextMenuItems({
       kind: "message",
       canManage: currentUserId === item.sender,
-      canEdit: item.can_edit,
+      canEdit: canWrite && item.can_edit,
       canReply: canShowReply,
       hasThread: item.thread_summary != null && presentationContext !== "thread",
       senderUserId: item.sender ?? "",
@@ -1249,7 +1257,7 @@ export function TimelineItemRow({
             })}
           </div>
         ) : null}
-        {transactionId && sendStateKind === "notSent" ? (
+        {transactionId && sendStateKind === "notSent" && canWrite ? (
           <div className="message-send-actions">
             <button className="message-send-action" type="button" onClick={submitRetrySend}>
               <RefreshCw size={13} aria-hidden="true" />
@@ -1265,7 +1273,7 @@ export function TimelineItemRow({
             </button>
           </div>
         ) : null}
-        {transactionId && sendStateKind === "sending" ? (
+        {transactionId && sendStateKind === "sending" && canWrite ? (
           <div className="message-send-actions">
             <button className="message-send-action" type="button" onClick={submitCancelSend}>
               <XCircle size={13} aria-hidden="true" />
@@ -1443,7 +1451,7 @@ export function TimelineItemRow({
         ) : null}
       </div>
       <div className="message-actions message-actions-floating">
-        {!isEditing && canShowActionButtons && item.can_react ? (
+        {!isEditing && canShowActionButtons && canWrite && item.can_react ? (
           <div className="reaction-control">
             <Tooltip label={t("timeline.addReaction")} placement="below" align="end">
               {(tooltipProps) => (
@@ -1514,7 +1522,7 @@ export function TimelineItemRow({
             )}
           </Tooltip>
         ) : null}
-        {!isEditing && canShowActionButtons && item.can_edit ? (
+        {!isEditing && canShowActionButtons && canWrite && item.can_edit ? (
           <Tooltip label={t("timeline.editMessage")} placement="below" align="end">
             {(tooltipProps) => (
               <button
@@ -1690,7 +1698,7 @@ export function TimelineItemRow({
             ) : null}
           </div>
         ) : null}
-        {!isEditing && canShowActionButtons && item.can_redact ? (
+        {!isEditing && canShowActionButtons && canWrite && item.can_redact ? (
           <Tooltip label={t("timeline.redactMessage")} placement="below" align="end">
             {(tooltipProps) => (
               <button

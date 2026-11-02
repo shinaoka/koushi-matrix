@@ -811,7 +811,10 @@ export function Sidebar({
 }) {
   const sections = snapshot.sidebar.sections;
   const roomListReadiness = snapshot.state.ui.room_list.readiness;
-  const roomListReady = roomListReadiness.kind === "ready";
+  // #1748: whether these rooms and counts are server-confirmed is Rust's
+  // answer, not the SDK loading state. A provisional projection may omit or
+  // misorder entries, so it is read-only and its counts are last known.
+  const listAuthoritative = snapshot.state.domain.conversation_access.listAuthoritative;
   const hasProvisionalRoomList =
     snapshot.sidebar.space_rooms.length > 0 ||
     snapshot.sidebar.global_dms.length > 0 ||
@@ -983,12 +986,21 @@ export function Sidebar({
             text={activeSpaceTopic}
           />
         ) : null}
-        {!roomListReady ? (
+        {!listAuthoritative ? (
           <div className="room-list-status" role="status">
-            {roomListReadiness.kind === "failed" ? t("roomList.failed") : t("roomList.loading")}
+            {hasProvisionalRoomList
+              ? [
+                  t("roomList.provisionalCached"),
+                  roomListReadiness.kind === "failed" ? t("roomList.failed") : null
+                ]
+                  .filter((part): part is string => part !== null)
+                  .join(" ")
+              : roomListReadiness.kind === "failed"
+                ? t("roomList.failed")
+                : t("roomList.loading")}
           </div>
         ) : null}
-        {roomListReady || hasProvisionalRoomList ? (
+        {listAuthoritative || hasProvisionalRoomList ? (
           <RoomListControls
             filter={roomFilter}
             filterPlaceholder={t("roomList.filterConversationsPlaceholder")}
@@ -1004,6 +1016,7 @@ export function Sidebar({
           presence={presence}
           roomById={roomById}
           rooms={visibleRooms}
+          countsAuthoritative={listAuthoritative}
           unreadCount={snapshot.sidebar.space_unread_count}
           emptyMessage={roomFilter ? t("roomList.noMatchingConversations") : undefined}
           showWhenEmpty={true}
@@ -1035,6 +1048,7 @@ export function Sidebar({
           presence={presence}
           roomById={roomById}
           rooms={visibleDms}
+          countsAuthoritative={listAuthoritative}
           unreadCount={snapshot.sidebar.dm_unread_count}
           emptyMessage={roomFilter ? t("roomList.noMatchingConversations") : undefined}
           showWhenEmpty={true}
@@ -1177,6 +1191,7 @@ function RoomSection({
   emptyMessage,
   showHeader = true,
   showWhenEmpty = false,
+  countsAuthoritative = true,
   unreadCount,
   onCreate,
   onAddExisting,
@@ -1208,6 +1223,8 @@ function RoomSection({
   sectionLabel?: string;
   showHeader?: boolean;
   showWhenEmpty?: boolean;
+  /** #1748: false while the room list is provisional; renders no numeric meta. */
+  countsAuthoritative?: boolean;
   /**
    * Rust-owned unread total for this section's whole scope. When present it
    * replaces the conversation-count meta with the red unread badge; it is not
@@ -1292,6 +1309,7 @@ function RoomSection({
         <SectionTitle
           collapsed={collapsed}
           count={rooms.length}
+          countsAuthoritative={countsAuthoritative}
           unreadCount={unreadCount}
           label={label}
           onCreate={onCreate}
@@ -1471,6 +1489,7 @@ function sectionMenuBoundaryElement(anchor: Element): Element | null {
 function SectionTitle({
   collapsed,
   count,
+  countsAuthoritative = true,
   createLabel,
   foldControl,
   label,
@@ -1485,6 +1504,12 @@ function SectionTitle({
 }: {
   collapsed: boolean;
   count: number;
+  /**
+   * #1748: whether a number may be shown as this section's count. A provisional
+   * cache must not present an authoritative unread total, and its own row count
+   * would read as "no rooms" when the cache happens to be empty.
+   */
+  countsAuthoritative?: boolean;
   createLabel?: string;
   /** #1387: present only while Rust reports the section bounded and expanded. */
   foldControl?: SidebarSectionBound | null;
@@ -1606,7 +1631,7 @@ function SectionTitle({
         ) : null}
       </div>
       <span className="section-title-meta">
-        {unreadCount === undefined ? (
+        {!countsAuthoritative ? null : unreadCount === undefined ? (
           <span className="section-count">{count}</span>
         ) : unreadCount > 0 ? (
           <span

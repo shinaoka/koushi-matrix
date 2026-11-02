@@ -88,6 +88,36 @@ async function acquireLease(
   });
 }
 
+/**
+ * Lease the composer with a renderer generation this test began.
+ *
+ * The App runs its own composer renderer-generation cycle whenever a snapshot
+ * changes its account or open timelines, and a generation it begins between our
+ * begin and our acquire invalidates the one we picked. Retrying the pair keeps
+ * the assertion - a renderer generation begun here can lease this composer -
+ * without pinning the test to App boot and render order. The rejected
+ * generation and account cases are asserted separately and are unaffected.
+ */
+async function leaseCurrentComposer(
+  page: Page,
+  target: MainTarget = MAIN_TARGET,
+  account = ACCOUNT
+): Promise<Lease> {
+  let leased: Lease | null = null;
+  await expect
+    .poll(async () => {
+      const rendererGeneration = await beginLease(page);
+      try {
+        leased = await acquireLease(page, rendererGeneration, target, account);
+        return true;
+      } catch {
+        return false;
+      }
+    })
+    .toBe(true);
+  return leased!;
+}
+
 async function releaseLease(page: Page, lease: Lease): Promise<void> {
   await invoke(page, "release_composer_draft_lease", {
     leaseId: lease.leaseId,
@@ -134,10 +164,9 @@ async function replaceReadyAccountRetainingStagedProjection(page: Page): Promise
 
 test("composer transport uses canonical numeric tokens", async ({ page }) => {
   await gotoReadyShell(page);
-  const rendererGeneration = await beginLease(page);
-  const lease = await acquireLease(page, rendererGeneration);
+  const lease = await leaseCurrentComposer(page);
 
-  expect(rendererGeneration).toMatch(/^[1-9][0-9]*$/);
+  expect(lease.rendererGeneration).toMatch(/^[1-9][0-9]*$/);
   expect(lease.leaseId).toMatch(/^[1-9][0-9]*$/);
 });
 
@@ -183,62 +212,58 @@ test("replacing the Ready account releases stale staged projections", async ({ p
 
 test("target retirement rejects release and acquire for the old lease", async ({ page }) => {
   await gotoReadyShell(page);
-  const rendererGeneration = await beginLease(page);
-  const lease = await acquireLease(page, rendererGeneration);
+  const lease = await leaseCurrentComposer(page);
 
   await replaceActiveMainRoom(page, "!retired-target-room:example.invalid");
 
   await expectRejected(page, "release_composer_draft_lease", {
     leaseId: lease.leaseId,
-    rendererGeneration
+    rendererGeneration: lease.rendererGeneration
   });
   await expectRejected(page, "acquire_composer_draft_lease", {
     ...ACCOUNT,
     target: MAIN_TARGET,
-    rendererGeneration
+    rendererGeneration: lease.rendererGeneration
   });
 });
 
 test("logout retires the session lease and rejects release and acquire", async ({ page }) => {
   await gotoReadyShell(page);
-  const rendererGeneration = await beginLease(page);
-  const lease = await acquireLease(page, rendererGeneration);
+  const lease = await leaseCurrentComposer(page);
 
   await invoke(page, "logout");
 
   await expectRejected(page, "release_composer_draft_lease", {
     leaseId: lease.leaseId,
-    rendererGeneration
+    rendererGeneration: lease.rendererGeneration
   });
   await expectRejected(page, "acquire_composer_draft_lease", {
     ...ACCOUNT,
     target: MAIN_TARGET,
-    rendererGeneration
+    rendererGeneration: lease.rendererGeneration
   });
 });
 
 test("account retirement rejects the old lease while the new account can acquire", async ({ page }) => {
   await gotoReadyShell(page);
-  const rendererGeneration = await beginLease(page);
-  const lease = await acquireLease(page, rendererGeneration);
+  const lease = await leaseCurrentComposer(page);
 
   await replaceReadyAccountRetainingStagedProjection(page);
 
   await expectRejected(page, "release_composer_draft_lease", {
     leaseId: lease.leaseId,
-    rendererGeneration
+    rendererGeneration: lease.rendererGeneration
   });
   await expectRejected(page, "acquire_composer_draft_lease", {
     ...ACCOUNT,
     target: MAIN_TARGET,
-    rendererGeneration
+    rendererGeneration: lease.rendererGeneration
   });
 
   // Account retirement invalidates all prior renderer leases. Begin a fresh
   // renderer generation for the replacement account instead of racing whatever
   // generation was current before the snapshot transition.
-  const replacementRendererGeneration = await beginLease(page);
-  const newLease = await acquireLease(page, replacementRendererGeneration, MAIN_TARGET, {
+  const newLease = await leaseCurrentComposer(page, MAIN_TARGET, {
     accountHomeserver: "https://other-account.example.invalid",
     accountUserId: "@other-account:example.invalid",
     accountDeviceId: "OTHERDEVICE"
@@ -248,13 +273,12 @@ test("account retirement rejects the old lease while the new account can acquire
 
 test("an unchanged lease releases once and rejects a second release", async ({ page }) => {
   await gotoReadyShell(page);
-  const rendererGeneration = await beginLease(page);
-  const lease = await acquireLease(page, rendererGeneration);
+  const lease = await leaseCurrentComposer(page);
 
   await releaseLease(page, lease);
   await expectRejected(page, "release_composer_draft_lease", {
     leaseId: lease.leaseId,
-    rendererGeneration
+    rendererGeneration: lease.rendererGeneration
   });
 });
 
