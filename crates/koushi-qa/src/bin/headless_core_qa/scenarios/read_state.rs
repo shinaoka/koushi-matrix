@@ -149,12 +149,16 @@ pub(super) async fn run_read_state_convergence_scenario(config: &QaConfig) -> Re
         .map_err(|_| "read-state convergence restart observation failed".to_owned())?
         .request_count;
     proxy.release_read_state_writes();
-    let result = wait_for_navigation(&mut restarted_conn, &checkpoint.key, |snapshot| {
-        snapshot.local_viewed_event_id.as_deref() == Some(checkpoint.event_id.as_str())
-            && snapshot.server_confirmed_read_event_id.as_deref()
-                == Some(checkpoint.event_id.as_str())
-            && snapshot.read_state_sync == TimelineReadStateSync::Synced
-    })
+    let result = wait_for_navigation(
+        &mut restarted_conn,
+        &checkpoint.key,
+        NavigationWait {
+            label: "restart_synced",
+            local_viewed: checkpoint.event_id.as_str(),
+            server_confirmed: Some(checkpoint.event_id.as_str()),
+            sync: NavigationSyncWait::Exact(TimelineReadStateSync::Synced),
+        },
+    )
     .await
     .and_then(|_| {
         let after_release = proxy
@@ -270,11 +274,16 @@ async fn run_read_state_convergence_flow(
 
     proxy.hold_read_state_writes();
     observe_viewport(conn, &key, &viewed_event_id).await?;
-    let pending = wait_for_navigation(conn, &key, |snapshot| {
-        snapshot.local_viewed_event_id.as_deref() == Some(viewed_event_id.as_str())
-            && snapshot.server_confirmed_read_event_id.as_deref() == Some(seed_event_id.as_str())
-            && snapshot.read_state_sync == TimelineReadStateSync::Pending
-    })
+    let pending = wait_for_navigation(
+        conn,
+        &key,
+        NavigationWait {
+            label: "held_pending",
+            local_viewed: viewed_event_id.as_str(),
+            server_confirmed: Some(seed_event_id.as_str()),
+            sync: NavigationSyncWait::Exact(TimelineReadStateSync::Pending),
+        },
+    )
     .await?;
     if pending.read_marker_event_id.as_deref() != Some(seed_event_id.as_str()) {
         return Err(
@@ -292,11 +301,16 @@ async fn run_read_state_convergence_flow(
     }
 
     proxy.release_read_state_writes();
-    wait_for_navigation(conn, &key, |snapshot| {
-        snapshot.local_viewed_event_id.as_deref() == Some(viewed_event_id.as_str())
-            && snapshot.server_confirmed_read_event_id.as_deref() == Some(viewed_event_id.as_str())
-            && snapshot.read_state_sync == TimelineReadStateSync::Synced
-    })
+    wait_for_navigation(
+        conn,
+        &key,
+        NavigationWait {
+            label: "released_synced",
+            local_viewed: viewed_event_id.as_str(),
+            server_confirmed: Some(viewed_event_id.as_str()),
+            sync: NavigationSyncWait::Exact(TimelineReadStateSync::Synced),
+        },
+    )
     .await?;
 
     let failed_body = "Synthetic read-state failure";
@@ -311,10 +325,16 @@ async fn run_read_state_convergence_flow(
     wait_for_remote_event(conn, &key, failed_body, &failed_event_id).await?;
     proxy.fail_read_state_writes();
     observe_viewport(conn, &key, &failed_event_id).await?;
-    wait_for_navigation(conn, &key, |snapshot| {
-        snapshot.local_viewed_event_id.as_deref() == Some(failed_event_id.as_str())
-            && snapshot.read_state_sync.is_failed()
-    })
+    wait_for_navigation(
+        conn,
+        &key,
+        NavigationWait {
+            label: "failed_sync",
+            local_viewed: failed_event_id.as_str(),
+            server_confirmed: None,
+            sync: NavigationSyncWait::Failed,
+        },
+    )
     .await?;
     for _ in 0..100 {
         observe_viewport(conn, &key, &failed_event_id).await?;
@@ -471,24 +491,101 @@ pub(super) async fn observe_viewport(
     .map_err(|_| "viewport submission failed".to_owned())
 }
 
+/// One navigation convergence wait. `label` names the checkpoint in the
+/// timeout diagnostic so a nightly log identifies the stage that stalled
+/// without exposing any event, room, or user identifier.
+struct NavigationWait<'a> {
+    label: &'static str,
+    local_viewed: &'a str,
+    /// `None` when the wait does not constrain the confirmed boundary.
+    server_confirmed: Option<&'a str>,
+    sync: NavigationSyncWait,
+}
+
+enum NavigationSyncWait {
+    Exact(TimelineReadStateSync),
+    Failed,
+}
+
+impl NavigationWait<'_> {
+    fn matches(&self, snapshot: &koushi_protocol::event::TimelineNavigationSnapshot) -> bool {
+        snapshot.local_viewed_event_id.as_deref() == Some(self.local_viewed)
+            && self.server_confirmed.is_none_or(|expected| {
+                snapshot.server_confirmed_read_event_id.as_deref() == Some(expected)
+            })
+            && match self.sync {
+                NavigationSyncWait::Exact(expected) => snapshot.read_state_sync == expected,
+                NavigationSyncWait::Failed => snapshot.read_state_sync.is_failed(),
+            }
+    }
+
+    fn timeout_error(
+        &self,
+        last: Option<&koushi_protocol::event::TimelineNavigationSnapshot>,
+    ) -> String {
+        let Some(last) = last else {
+            return format!(
+                "read-state convergence navigation timeout: wait={} local_viewed_matches=false server_confirmed_matches=n/a sync=unobserved",
+                self.label
+            );
+        };
+        let server_confirmed_matches = match self.server_confirmed {
+            Some(expected) => {
+                if last.server_confirmed_read_event_id.as_deref() == Some(expected) {
+                    "true"
+                } else {
+                    "false"
+                }
+            }
+            // This wait does not constrain the confirmed boundary.
+            None => "n/a",
+        };
+        let local_viewed_matches =
+            if last.local_viewed_event_id.as_deref() == Some(self.local_viewed) {
+                "true"
+            } else {
+                "false"
+            };
+        format!(
+            "read-state convergence navigation timeout: wait={} local_viewed_matches={} server_confirmed_matches={} sync={}",
+            self.label,
+            local_viewed_matches,
+            server_confirmed_matches,
+            read_state_sync_token(last.read_state_sync),
+        )
+    }
+}
+
+fn read_state_sync_token(sync: TimelineReadStateSync) -> &'static str {
+    match sync {
+        TimelineReadStateSync::NotRequested => "not_requested",
+        TimelineReadStateSync::Pending => "pending",
+        TimelineReadStateSync::Failed { .. } => "failed",
+        TimelineReadStateSync::Synced => "synced",
+    }
+}
+
 async fn wait_for_navigation(
     conn: &mut CoreConnection,
     key: &TimelineKey,
-    predicate: impl Fn(&koushi_protocol::event::TimelineNavigationSnapshot) -> bool,
+    wait: NavigationWait<'_>,
 ) -> Result<koushi_protocol::event::TimelineNavigationSnapshot, String> {
     let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    let mut last = None;
     loop {
         if let CoreEvent::Timeline(TimelineEvent::NavigationUpdated {
             key: event_key,
             snapshot,
         }) = tokio::time::timeout_at(deadline, conn.recv_event())
             .await
-            .map_err(|_| "read-state convergence navigation timeout".to_owned())?
+            .map_err(|_| wait.timeout_error(last.as_ref()))?
             .map_err(|_| "read-state convergence event stream closed".to_owned())?
             && event_key == *key
-            && predicate(&snapshot)
         {
-            return Ok(*snapshot);
+            if wait.matches(&snapshot) {
+                return Ok(*snapshot);
+            }
+            last = Some(*snapshot);
         }
     }
 }
