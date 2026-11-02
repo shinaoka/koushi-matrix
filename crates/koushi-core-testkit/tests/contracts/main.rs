@@ -22,4 +22,5 @@ mod request_outcome_a2c;
 mod room_address;
 mod room_subscription_residency;
 mod send_queue_fast;
+mod state_wait_watchdog;
 mod thread_bundled_reply_timestamp;

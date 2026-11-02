@@ -12,6 +12,7 @@ use std::time::Duration;
 use koushi_core::executor;
 use koushi_core::runtime::{CommandSubmitError, CoreConnection, CoreRuntime};
 use koushi_core::{CoreCommand, CoreCommandPolicy};
+use koushi_core_testkit::StateWaitWatchdog;
 use koushi_protocol::ids::{RequestId, RuntimeConnectionId};
 use koushi_state::{
     ActivityRow, AppAction, AppearanceSettings, CurrentDeviceTrustState, RoomSummary, RoomTags,
@@ -157,9 +158,13 @@ where
 
 /// Event-driven state fence for tests that must not rely on polling sleeps.
 ///
-/// The timeout is only a deadlock guard. Progress is driven by the runtime's
-/// event stream, so the predicate is rechecked only after an observable actor
-/// transition.
+/// Progress is driven by the runtime's event stream, so the predicate is
+/// rechecked only after an observable actor transition (#1759). The wait fails
+/// on *silence*, never on elapsed time: a loaded machine that keeps publishing
+/// states keeps waiting out a slow Core, while a wedged Core stops publishing
+/// and fails with the state the wait was stuck on. `StateWaitWatchdog` owns the
+/// budget, including the backstop that still ends a wait on a Core that
+/// publishes unrelated progress forever.
 pub async fn wait_for_state_event<F>(
     connection: &mut CoreConnection,
     predicate: F,
@@ -167,20 +172,95 @@ pub async fn wait_for_state_event<F>(
 where
     F: Fn(&koushi_state::AppState) -> bool,
 {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let snapshot = connection.snapshot();
-            if predicate(&snapshot) {
-                return snapshot;
-            }
-            connection
-                .next_versioned_snapshot()
-                .await
-                .expect("runtime snapshot stream must remain open");
+    wait_for_state_event_within(connection, StateWaitWatchdog::start(), predicate).await
+}
+
+/// The same fence with an injected budget, so a harness test can exercise the
+/// silent-Core failure path without waiting out the shipped window.
+pub async fn wait_for_state_event_within<F>(
+    connection: &mut CoreConnection,
+    mut watchdog: StateWaitWatchdog,
+    predicate: F,
+) -> koushi_state::AppState
+where
+    F: Fn(&koushi_state::AppState) -> bool,
+{
+    loop {
+        let snapshot = connection.snapshot();
+        if predicate(&snapshot) {
+            return snapshot;
         }
-    })
-    .await
-    .expect("state predicate was not satisfied before the event deadline")
+        let Some(remaining) = watchdog.remaining() else {
+            break;
+        };
+        match tokio::time::timeout(remaining, connection.next_versioned_snapshot()).await {
+            Ok(Some(_)) => watchdog.progress(),
+            Ok(None) => panic!(
+                "runtime snapshot stream closed after {} state events while the state predicate \
+                 never held; last observed {}",
+                watchdog.events(),
+                observed_state(connection),
+            ),
+            // Expired: the next iteration reads the authoritative snapshot once
+            // more, so a state published at the deadline still counts.
+            Err(_) => {}
+        }
+    }
+    panic!(
+        "state predicate was not satisfied: {}; last observed {}",
+        watchdog.report(),
+        observed_state(connection),
+    )
+}
+
+/// Summary of the state a stalled wait is stuck on: kinds, counts and booleans
+/// only, because a timeout diagnostic must stay private-data-free (engineering
+/// rules "Async and Runtime" item 1).
+fn observed_state(connection: &CoreConnection) -> String {
+    let state = connection.snapshot();
+    format!(
+        "generation {}, session {}, sync {}, room selected {}, rooms {}, invites {}",
+        connection.state_generation(),
+        session_kind(&state.session),
+        sync_kind(&state.sync),
+        state.timeline.room_id.is_some(),
+        state.rooms.len(),
+        state.invites.len(),
+    )
+}
+
+/// Session and sync kinds are spelled out here rather than derived `Debug`,
+/// which carries session identities, room and event IDs, and free-form sync
+/// failure reasons. Consolidating this with the QA diagnostics mapping into
+/// `koushi_state` is a separate change.
+fn session_kind(state: &koushi_state::SessionState) -> &'static str {
+    use koushi_state::SessionState;
+    match state {
+        SessionState::SignedOut => "signed_out",
+        SessionState::Restoring => "restoring",
+        SessionState::SwitchingAccount { .. } => "switching_account",
+        SessionState::Authenticating { .. } => "authenticating",
+        SessionState::Provisional { .. } => "provisional",
+        SessionState::AwaitingVerification { .. } => "awaiting_verification",
+        SessionState::Verifying { .. } => "verifying",
+        SessionState::AwaitingBootstrapConfirmation { .. } => "awaiting_bootstrap_confirmation",
+        SessionState::Rejecting { .. } => "rejecting",
+        SessionState::Ready(_) => "ready",
+        SessionState::Locked(_) => "locked",
+        SessionState::CapabilityBlocked { .. } => "capability_blocked",
+        SessionState::LoggingOut => "logging_out",
+    }
+}
+
+fn sync_kind(state: &koushi_state::SyncState) -> &'static str {
+    use koushi_state::SyncState;
+    match state {
+        SyncState::Stopped => "stopped",
+        SyncState::Starting => "starting",
+        SyncState::Running => "running",
+        SyncState::Failed { .. } => "failed",
+        SyncState::Reconnecting { .. } => "reconnecting",
+    }
 }
 
 pub async fn submit_composer_command(
