@@ -27,34 +27,11 @@ ignore = [
     # still pulls gtk3-macros, which pulls this compile-time macro helper. No
     # runtime code path depends on it directly.
     "RUSTSEC-2024-0370",
-    # RUSTSEC-2025-0075/0080/0081/0098/0100: rust-unic crates are
-    # unmaintained. They enter through Tauri's urlpattern dependency, which is
-    # upstream-owned.
-    "RUSTSEC-2025-0075",
-    "RUSTSEC-2025-0080",
-    "RUSTSEC-2025-0081",
-    "RUSTSEC-2025-0098",
-    "RUSTSEC-2025-0100",
     # RUSTSEC-2026-0319: anymap2 is unmaintained. It enters through the
     # vendored Matrix SDK's event-handler context map
     # (crates/matrix-sdk/src/event_handler/mod.rs), which is upstream-owned,
     # and there is no available fix.
     "RUSTSEC-2026-0319",
-    # RUSTSEC-2026-0367/0368/0369: zip < 9 extraction can keep SUID/SGID bits
-    # and follow symlinks outside the destination. RUSTSEC-2026-0429 is the same
-    # crate and the same ZipArchive::extract path: a symlink entry with a large
-    # declared uncompressed size aborts the process on allocation failure.
-    # zip 4 enters only through tauri-plugin-updater (2.14.1 still pins zip ^4
-    # for its extraction path, and 2.14.1 needs tauri ^2.12 while we are on
-    # 2.11.x), which extracts on Windows only, and only an update archive that
-    # already passed the minisign verify_signature check against our pinned
-    # public key. Our own zip usage (apps/desktop/src-tauri/src/mcp/extension.rs)
-    # is ZipWriter plus ZipArchive::new entry reads; it never calls extract().
-    # Drop these once the updater moves to zip >= 9.
-    "RUSTSEC-2026-0367",
-    "RUSTSEC-2026-0368",
-    "RUSTSEC-2026-0369",
-    "RUSTSEC-2026-0429",
     # RUSTSEC-2026-0370/0371/0372: zvariant, zbus_names, and zvariant_derive
     # are INFO Unmaintained after consolidation into zbus 6, not vulnerability
     # advisories. Tauri's opener/single-instance/notification plugins and our
