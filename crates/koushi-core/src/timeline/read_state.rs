@@ -1755,10 +1755,18 @@ impl TimelineManagerActor {
 
         let mut admission_failure = None;
         let session_generation = self.read_workers.state.session_generation();
-        let required = required_keys
-            .iter()
-            .map(|(read_key, read_target)| (read_key.clone(), read_target.clone()))
-            .collect::<Vec<_>>();
+        // #1737: a boundary observed on a provisional cache projection is a
+        // local reading position, not evidence for a server read-state write.
+        // Keep the local projection (the UI's own read display) and admit
+        // nothing until this run has committed a room-list response.
+        let required = if self.read_state_authority {
+            required_keys
+                .iter()
+                .map(|(read_key, read_target)| (read_key.clone(), read_target.clone()))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         for (read_key, read_target) in &required {
             let admission = self.read_workers.state.admit_background(
                 session_generation,

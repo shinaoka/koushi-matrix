@@ -123,9 +123,91 @@ fn secure_backup_admission_opens_sending_and_its_absence_keeps_it_closed() {
             failure: None,
         }),
     );
-    assert!(state.conversation_access().readable);
     assert!(
         !state.conversation_access().send_admitted,
         "a positive recovery requirement closes sending again"
     );
+    assert!(
+        !state.conversation_access().readable,
+        "a positive recovery requirement opens no cached-read exception"
+    );
+}
+
+#[test]
+fn only_a_pending_or_inconclusive_inspection_leaves_cached_reading_open() {
+    // #1737: the read exception is narrow. Pending inspection and a retryable
+    // inconclusive failure leave it open; an affirmative requirement, a mismatch,
+    // incomplete storage, an unsupported setup state, or a non-retryable failure
+    // keep the existing blocking screen.
+    let open = [
+        SecureBackupGateState::Inactive,
+        SecureBackupGateState::Checking,
+        SecureBackupGateState::Ready,
+        SecureBackupGateState::UploadingExistingKeys {
+            pending: koushi_state::PendingKeyCountBucket::One,
+        },
+        SecureBackupGateState::DegradedRetrying {
+            failure: koushi_state::SecureBackupGateFailureKind::Network,
+            detail: None,
+        },
+        SecureBackupGateState::BlockedFailed {
+            failure: koushi_state::SecureBackupGateFailureKind::Timeout,
+            detail: None,
+        },
+        SecureBackupGateState::BlockedFailed {
+            failure: koushi_state::SecureBackupGateFailureKind::Sdk,
+            detail: Some(koushi_state::SecureBackupFailureDetail {
+                stage: koushi_state::SecureBackupFailureStage::InspectServerTrust,
+                transport: koushi_state::SecureBackupFailureTransport::Timeout,
+                http_status: None,
+                matrix_error_kind: None,
+                retryable: true,
+            }),
+        },
+    ];
+    for gate in open {
+        let state = AppState {
+            session: SessionState::Ready(session_info()),
+            secure_backup_gate: gate.clone(),
+            ..AppState::default()
+        };
+        assert!(
+            state.conversation_access().readable,
+            "this gate leaves the cached-read exception open: {gate:?}"
+        );
+    }
+
+    let closed = [
+        SecureBackupGateState::ExistingBackupNeedsRecovery { failure: None },
+        SecureBackupGateState::SecureStorageIncomplete,
+        SecureBackupGateState::SetupRequired,
+        SecureBackupGateState::ExplicitlyDisabledRequiresSetup,
+        SecureBackupGateState::CreatingBackup,
+        SecureBackupGateState::RecoveryKeyDeliveryRequired,
+        SecureBackupGateState::BlockedFailed {
+            failure: koushi_state::SecureBackupGateFailureKind::Forbidden,
+            detail: Some(koushi_state::SecureBackupFailureDetail {
+                stage: koushi_state::SecureBackupFailureStage::InspectServerTrust,
+                transport: koushi_state::SecureBackupFailureTransport::HttpResponse,
+                http_status: Some(403),
+                matrix_error_kind: None,
+                retryable: false,
+            }),
+        },
+    ];
+    for gate in closed {
+        let state = AppState {
+            session: SessionState::Ready(session_info()),
+            secure_backup_gate: gate.clone(),
+            ..AppState::default()
+        };
+        assert!(
+            !state.conversation_access().readable,
+            "this gate opens no cached-read exception: {gate:?}"
+        );
+        assert!(
+            !state.conversation_access().send_admitted,
+            "this gate never admits sending: {gate:?}"
+        );
+    }
 }

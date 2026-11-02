@@ -780,6 +780,8 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "cached_read_send_blocked=ok",
             "cached_read_network_blocked=ok",
             "cached_read_promoted=ok",
+            "cached_read_read_state_admitted=ok",
+            "cached_read_post_admission_send=ok",
             "cached_read_before_first_sync=ok",
         ],
         QaStage::HiddenStateAcl => &["hidden_state_acl=ok"],

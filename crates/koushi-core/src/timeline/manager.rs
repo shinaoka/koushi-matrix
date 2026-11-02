@@ -622,6 +622,11 @@ pub struct TimelineManagerActor {
     pub(super) subscription_room_ordinals: BTreeMap<OwnedRoomId, u64>,
     pub(super) next_subscription_room_ordinal: u64,
     pub(super) global_response_commit: Option<GlobalResponseCommit>,
+    /// #1737: whether this sync run has committed a room-list response, so the
+    /// visible timeline may be treated as server-confirmed. Automatic read-state
+    /// writes are held until it is set; a provisional cache projection must not
+    /// mark anything read.
+    pub(super) read_state_authority: bool,
     pub(super) timelines: HashMap<TimelineKey, TimelineActorHandle>,
     pub(super) accepted_submissions: SubmissionAdmissionLedger,
     pub(super) send_completion: SharedSendCompletionCoordinator,
@@ -721,6 +726,7 @@ impl TimelineManagerActor {
             subscription_room_ordinals: BTreeMap::new(),
             next_subscription_room_ordinal: 0,
             global_response_commit: None,
+            read_state_authority: false,
             timelines: HashMap::new(),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             send_completion: SharedSendCompletionCoordinator::default(),
@@ -821,6 +827,7 @@ impl TimelineManagerActor {
             subscription_room_ordinals: BTreeMap::new(),
             next_subscription_room_ordinal: 0,
             global_response_commit: None,
+            read_state_authority: false,
             timelines: HashMap::new(),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             send_completion,

@@ -295,12 +295,54 @@ impl SecureBackupSetupIntent {
     }
 }
 
+/// Whether retrying an inspection that produced this failure could succeed.
+/// The structured detail is authoritative; the coarse kind is the fallback for
+/// failures that carry no structured cause.
+pub fn secure_backup_failure_is_retryable(
+    kind: SecureBackupGateFailureKind,
+    detail: Option<SecureBackupFailureDetail>,
+) -> bool {
+    detail.is_some_and(|detail| detail.retryable)
+        || matches!(
+            kind,
+            SecureBackupGateFailureKind::Network
+                | SecureBackupGateFailureKind::RateLimited
+                | SecureBackupGateFailureKind::Timeout
+        )
+}
+
 impl SecureBackupGateState {
     pub fn backup_is_ready(&self) -> bool {
         matches!(
             self,
             Self::Ready | Self::UploadingExistingKeys { .. } | Self::DegradedRetrying { .. }
         )
+    }
+
+    /// Whether this gate leaves the narrow #1737 cached-read exception open.
+    ///
+    /// Reading is separate from sending: a trusted restored session may read
+    /// locally held content while inspection is pending or has failed
+    /// inconclusively with a retryable connectivity failure. An affirmative
+    /// recovery/setup requirement, a key or backup mismatch, incomplete storage,
+    /// or a non-retryable/auth failure keeps the existing blocking screen and
+    /// opens nothing.
+    pub fn admits_cached_reading(&self) -> bool {
+        match self {
+            Self::Inactive | Self::Checking | Self::Ready | Self::UploadingExistingKeys { .. } => {
+                true
+            }
+            Self::DegradedRetrying { .. } => true,
+            Self::BlockedFailed { failure, detail } => {
+                secure_backup_failure_is_retryable(*failure, *detail)
+            }
+            Self::ExistingBackupNeedsRecovery { .. }
+            | Self::SecureStorageIncomplete
+            | Self::SetupRequired
+            | Self::ExplicitlyDisabledRequiresSetup
+            | Self::CreatingBackup
+            | Self::RecoveryKeyDeliveryRequired => false,
+        }
     }
 
     /// The gate's blocking/degraded failure kind and its optional structured

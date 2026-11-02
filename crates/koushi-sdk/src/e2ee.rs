@@ -2718,12 +2718,17 @@ impl MatrixClientSession {
                 .map(map_sdk_recovery_state),
         )
     }
-    /// Update the SDK send-queue admission latch for encrypted events. The
-    /// durability fence remains enabled independently for the whole session.
-    pub fn set_secure_backup_send_admitted(&self, admitted: bool) {
-        self.client()
-            .send_queue()
-            .set_secure_backup_send_admitted(admitted);
+    /// Apply the session's send admission to the SDK send queue.
+    ///
+    /// The queue itself is paused while admission is closed: a restored session
+    /// with a persisted unsent request must not release it just because a room
+    /// timeline was opened (#1737), and a paused queue keeps the request in the
+    /// store instead of dropping it. Opening admission resumes the normal
+    /// queue, including its own respawn of rooms with unsent requests.
+    pub async fn set_secure_backup_send_admitted(&self, admitted: bool) {
+        let queue = self.client().send_queue();
+        queue.set_secure_backup_send_admitted(admitted);
+        queue.set_enabled(admitted).await;
     }
     pub fn observe_secure_backup_state(&self) -> MatrixSecureBackupStateObservation {
         let encryption = self.client().encryption();

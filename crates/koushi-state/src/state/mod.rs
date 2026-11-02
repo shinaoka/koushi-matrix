@@ -106,7 +106,7 @@ pub use session::{
     SecureBackupSetupAdmission, SecureBackupSetupIntent, SessionAuthenticationMethod, SessionInfo,
     SessionLockReason, SessionState, SoftLogoutReauthState, VerificationAccountKind,
     VerificationGateFailureKind, VerificationGateRejectReason, VerificationGateState,
-    VerificationMethod, VerificationMethodCapability,
+    VerificationMethod, VerificationMethodCapability, secure_backup_failure_is_retryable,
 };
 pub use session_status::{
     ArmedSessionStatusCheck, CurrentSessionBackupState, CurrentSessionStatusDetails,
@@ -627,7 +627,8 @@ impl AppState {
     /// state. Nothing here is stored, so it can never disagree with the
     /// session, room-list readiness, or Secure Backup gate it reads.
     pub fn conversation_access(&self) -> ConversationAccess {
-        let readable = crate::reducer::is_session_ready(self);
+        let readable = crate::reducer::is_session_ready(self)
+            && self.secure_backup_gate.admits_cached_reading();
         ConversationAccess {
             readable,
             list_authoritative: readable

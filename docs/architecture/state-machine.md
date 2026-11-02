@@ -458,9 +458,21 @@ stateDiagram-v2
   marker is refused for a separate reason: it is a read-state write derived from
   the visible timeline, so it needs a server-confirmed list rather than backup
   admission, and a provisional cache projection may omit or misorder the newest
-  events. Affirmative recovery/setup requirements, key or backup mismatch,
-  incomplete storage, and non-retryable or authentication failures open no
-  exception at all: they keep the existing blocking gate. Opening read access
+  events. Automatic read-state writes follow the same list-authority fence: a
+  boundary observed on a provisional projection stays a local reading position
+  and writes no receipt or fully-read marker until this sync run owns a
+  committed response. Nothing in the exception writes to the server: the SDK
+  send queue stays paused while send admission is closed, so a persisted unsent
+  request is not released by opening a cached timeline, and a provisional
+  projection never relays the `m.space.child` repair that a partial cache could
+  wrongly trigger. Affirmative recovery/setup requirements, key or backup
+  mismatch, incomplete storage, and non-retryable or authentication failures
+  open no exception at all: they keep the existing blocking gate. The read
+  exception is open for `Checking`, an operational gate, and a
+  `BlockedFailed` inspection whose detail is retryable, and closed for
+  `ExistingBackupNeedsRecovery`, `SecureStorageIncomplete`, `SetupRequired`,
+  `ExplicitlyDisabledRequiresSetup`, `CreatingBackup`, and
+  `RecoveryKeyDeliveryRequired`. Opening read access
   does not restart inspection, erase a `BlockedFailed`, or change its bounded
   deadline and retry semantics, and the read surface must present the
   provisional-cache warning and the separate send-blocked reason without
@@ -1018,9 +1030,12 @@ stateDiagram-v2
   existing typed Rust selection, so an available cached room or Space can be
   read before the first response without a second selection state machine;
   drafts and per-Space memory are preserved, and an authoritative removal is
-  what clears or retargets them. No send, queue release, crawler admission,
-  automatic read receipt, or fully-read mutation follows from opening cached
-  content.
+  what clears or retargets them. Cached invites are retained the same way: a
+  provisional observation refreshes known invites and keeps the ones it did not
+  observe, and only an authoritative snapshot retracts one. Opening cached
+  content never sends, never releases a queued send, never changes crawler
+  admission, and never writes a receipt or fully-read marker from a provisional
+  projection.
 - `RoomListUpdated` remains the compatibility path for already-authoritative
   room operations and tests; service bootstrap projection uses the guarded
   readiness actions above. Both entry and snapshot paths reject all non-Ready

@@ -175,6 +175,7 @@ pub(super) fn live_tail_test_manager(
         subscription_room_ordinals: BTreeMap::new(),
         next_subscription_room_ordinal: 0,
         global_response_commit: None,
+        read_state_authority: true,
         timelines,
         accepted_submissions: SubmissionAdmissionLedger::default(),
         send_completion: SharedSendCompletionCoordinator::default(),

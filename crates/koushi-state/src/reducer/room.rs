@@ -606,7 +606,21 @@ pub(crate) fn handle_room_list_snapshot_provisional(
     {
         return Vec::new();
     }
-    state.invites = invites;
+    // #1737: a provisional projection may omit an invite simply because the
+    // cache does not hold it, so it refreshes known invites and retains the ones
+    // it did not observe. Only an authoritative snapshot may retract one.
+    let mut merged_invites = state.invites.clone();
+    for invite in invites {
+        if let Some(existing) = merged_invites
+            .iter_mut()
+            .find(|existing| existing.room_id == invite.room_id)
+        {
+            *existing = invite;
+        } else {
+            merged_invites.push(invite);
+        }
+    }
+    state.invites = merged_invites;
     let mut merged_spaces = state.spaces.clone();
     for space in spaces {
         if let Some(existing) = merged_spaces

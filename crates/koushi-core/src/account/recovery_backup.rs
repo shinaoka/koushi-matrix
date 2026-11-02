@@ -11,6 +11,7 @@ use koushi_sdk::MatrixClientSession;
 use koushi_state::{
     AppAction, AuthFailureKind, CrossSigningStatus, IdentityResetAuthType, IdentityResetState,
     RecoveryRequest, SecureBackupSetupIntent, TrustOperationFailureKind,
+    secure_backup_failure_is_retryable,
 };
 
 use crate::executor;
@@ -322,23 +323,6 @@ pub(super) fn recovery_verification_event(stage: &'static str, flow_id: u64) -> 
 
 pub(super) fn record_recovery_verification_event(event: DiagnosticEvent) {
     koushi_diagnostics::record_and_stderr(event);
-}
-
-/// Whether retrying an inspection that produced this failure could succeed.
-/// The structured detail is authoritative; the coarse kind is the fallback for
-/// failures that carry no structured cause.
-fn secure_backup_failure_is_retryable(
-    kind: koushi_state::SecureBackupGateFailureKind,
-    detail: Option<koushi_state::SecureBackupFailureDetail>,
-) -> bool {
-    use koushi_state::SecureBackupGateFailureKind;
-    detail.is_some_and(|detail| detail.retryable)
-        || matches!(
-            kind,
-            SecureBackupGateFailureKind::Network
-                | SecureBackupGateFailureKind::RateLimited
-                | SecureBackupGateFailureKind::Timeout
-        )
 }
 
 /// An in-flight inspection exceeded its bounded deadline.
@@ -1238,7 +1222,7 @@ impl AccountActor {
                 // The gate stays blocking in `RecoveryKeyDeliveryRequired`
                 // until the explicit saved confirmation; copying or saving
                 // alone never advances it.
-                self.set_secure_backup_send_admitted(false);
+                self.set_secure_backup_send_admitted(false).await;
                 let actions = hold_created_setup_recovery_key(
                     &mut self.revealed_recovery_key,
                     &mut self.recovery_key_delivery_pending,
@@ -2119,7 +2103,7 @@ impl AccountActor {
         }
         if let AppAction::SecureBackupGateChanged(gate) = &action {
             let admitted = gate.backup_is_ready();
-            self.set_secure_backup_send_admitted(admitted);
+            self.set_secure_backup_send_admitted(admitted).await;
             let retrying = matches!(
                 gate,
                 koushi_state::SecureBackupGateState::DegradedRetrying { .. }
@@ -2359,7 +2343,8 @@ impl AccountActor {
             return;
         };
         if let AppAction::SecureBackupGateChanged(gate) = &action {
-            self.set_secure_backup_send_admitted(gate.backup_is_ready());
+            self.set_secure_backup_send_admitted(gate.backup_is_ready())
+                .await;
             record(
                 DiagnosticEvent::new(
                     DiagnosticLevel::Info,
@@ -2432,7 +2417,7 @@ impl AccountActor {
             return;
         }
         if backup_state_change_requires_gate_check(state) {
-            self.set_secure_backup_send_admitted(false);
+            self.set_secure_backup_send_admitted(false).await;
             self.send_actions(vec![AppAction::SecureBackupGateChanged(
                 koushi_state::SecureBackupGateState::Checking,
             )])

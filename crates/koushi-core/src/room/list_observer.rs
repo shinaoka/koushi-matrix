@@ -1669,7 +1669,13 @@ async fn normalize_and_project_entries(
                 identity.display_name_collision_entry_count as u64,
             )),
     );
-    Box::pin(relay_missing_space_child_links(&snapshot, room_tx)).await;
+    // #1737: a provisional cache projection may hold one side of a Space
+    // relation while the other side is simply not cached, so it must never
+    // trigger the server write that repairs a missing `m.space.child`. Only an
+    // authoritative snapshot may relay links.
+    if authoritative.load(Ordering::Acquire) {
+        Box::pin(relay_missing_space_child_links(&snapshot, room_tx)).await;
+    }
     Box::pin(project_room_list_snapshot(
         &snapshot,
         known_room_ids,

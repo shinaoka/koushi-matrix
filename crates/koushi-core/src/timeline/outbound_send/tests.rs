@@ -839,6 +839,7 @@ async fn duplicate_submission_routes_one_manager_enqueue_worker() {
         subscription_room_ordinals: BTreeMap::new(),
         next_subscription_room_ordinal: 0,
         global_response_commit: None,
+        read_state_authority: true,
         timelines: HashMap::from([(
             key.clone(),
             synthetic_send_timeline_actor_handle(enqueue_tx),
@@ -1311,6 +1312,7 @@ async fn shutdown_cleans_captured_room_keys_before_acknowledging() {
         subscription_room_ordinals: BTreeMap::new(),
         next_subscription_room_ordinal: 0,
         global_response_commit: None,
+        read_state_authority: true,
         timelines: HashMap::from([(
             key.clone(),
             TimelineActorHandle {
@@ -1414,6 +1416,7 @@ async fn manager_enqueue_worker_waits_for_reducer_acceptance_delivery() {
         subscription_room_ordinals: BTreeMap::new(),
         next_subscription_room_ordinal: 0,
         global_response_commit: None,
+        read_state_authority: true,
         timelines: HashMap::from([(
             key.clone(),
             synthetic_send_timeline_actor_handle_with_projection_probe(
