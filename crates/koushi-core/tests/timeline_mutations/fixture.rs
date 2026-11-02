@@ -45,6 +45,9 @@ pub(super) struct Fixture {
     control: mpsc::Sender<TimelineManagerControl>,
     task: Option<executor::JoinHandle<()>>,
     drain: Option<executor::JoinHandle<()>>,
+    /// Detached abort handle for the actor task, so a test can stop the
+    /// presentation actor from polling without owning its `JoinHandle`.
+    actor_abort: tokio::task::AbortHandle,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -192,6 +195,11 @@ impl Fixture {
             sent_event_txns,
         };
         let actor = handle.tx.clone();
+        let actor_abort = handle
+            .task
+            .as_ref()
+            .expect("actor task is spawned")
+            .abort_handle();
         manager.timelines.insert(key.clone(), handle);
         let coordinator = manager.send_completion.clone();
         let terminal_ingress = manager.terminal_ingress.clone();
@@ -214,6 +222,7 @@ impl Fixture {
             control,
             task: Some(task),
             drain: Some(drain),
+            actor_abort,
         };
         this.wait_for(|event| {
             if let CoreEvent::Timeline(TimelineEvent::InitialItems { items, .. }) = event {
@@ -242,6 +251,10 @@ impl Fixture {
             .send(TimelineMessage::Command(command))
             .await
             .unwrap();
+    }
+    /// Stop the presentation actor from polling, so its mailbox never accepts.
+    pub fn stop_actor(&self) {
+        self.actor_abort.abort();
     }
     pub async fn publish(&self, projections: Vec<PendingSendProjection>) -> bool {
         let (acknowledged, accepted) = oneshot::channel();
