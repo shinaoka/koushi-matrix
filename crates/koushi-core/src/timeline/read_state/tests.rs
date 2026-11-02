@@ -137,6 +137,76 @@ fn restored_public_read_snapshot(room_id: &str, event_id: &str) -> ReadPersisten
 }
 
 #[tokio::test]
+async fn a_desired_write_is_held_until_the_run_owns_a_committed_response() {
+    // #1737: before this sync run commits a room-list response, a boundary
+    // observed on a provisional projection may not be written. The write is
+    // held, not dropped: the committed response admits it.
+    let (network_tx, mut network_rx) = mpsc::unbounded_channel();
+    let mut supervisor = ReadWorkerSupervisor::synthetic(network_tx, Duration::from_secs(30));
+    supervisor.set_authority_admitted(false);
+    let key = ReadStateKey::PublicUnthreaded {
+        room_id: "!provisional:example.invalid".to_owned(),
+    };
+    supervisor.state.admit_background(
+        1,
+        key.clone(),
+        ReadTarget::new("$provisional:example.invalid".to_owned()),
+    );
+    supervisor.enqueue_key(key.clone());
+    supervisor.dispatch_ready_reads();
+
+    assert!(
+        network_rx.try_recv().is_err(),
+        "no write may reach the network before the run owns a committed response"
+    );
+    assert_eq!(supervisor.state.active_operation_count(), 0);
+
+    supervisor.set_authority_admitted(true);
+    supervisor.enqueue_key(key.clone());
+    supervisor.dispatch_ready_reads();
+
+    let request = next_synthetic_request(&mut supervisor, &mut network_rx).await;
+    assert_eq!(
+        request.operation.target().event_id(),
+        "$provisional:example.invalid"
+    );
+}
+
+#[tokio::test]
+async fn an_explicit_mark_read_is_not_held_by_the_provisional_fence() {
+    // #1737: an explicit user mark-read owns a waiter and is an admitted
+    // correlated read operation, so it does not wait for the committed response.
+    let (network_tx, mut network_rx) = mpsc::unbounded_channel();
+    let mut supervisor = ReadWorkerSupervisor::synthetic(network_tx, Duration::from_secs(30));
+    supervisor.set_authority_admitted(false);
+    let key = ReadStateKey::PublicUnthreaded {
+        room_id: "!explicit:example.invalid".to_owned(),
+    };
+    let waiter = supervisor.allocate_waiter().expect("waiter");
+    let timeline_key = TimelineKey::room(
+        AccountKey("@reader:example.invalid".to_owned()),
+        "!explicit:example.invalid",
+    );
+    supervisor
+        .waiters
+        .insert(waiter, super::ReadCommandWaiter::for_test(timeline_key));
+    supervisor.state.admit(
+        1,
+        key.clone(),
+        ReadTarget::new("$explicit:example.invalid".to_owned()),
+        waiter,
+    );
+    supervisor.enqueue_key(key.clone());
+    supervisor.dispatch_ready_reads();
+
+    let request = next_synthetic_request(&mut supervisor, &mut network_rx).await;
+    assert_eq!(
+        request.operation.target().event_id(),
+        "$explicit:example.invalid"
+    );
+}
+
+#[tokio::test]
 async fn twenty_read_keys_never_exceed_four_concurrent_writes() {
     let (network_tx, mut network_rx) = mpsc::unbounded_channel();
     let mut supervisor = ReadWorkerSupervisor::synthetic(network_tx, Duration::from_secs(30));

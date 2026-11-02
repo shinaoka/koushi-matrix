@@ -25,7 +25,8 @@ use super::event_wait::{
     find_timeline_item_with_body, send_text_expect_local_echo, stop_sync_for_qa,
     subscribe_timeline_for_qa, timeline_item_is_decryption_failure, wait_for_event_item_with_body,
     wait_for_logged_in, wait_for_ready_snapshot, wait_for_room_in_room_list,
-    wait_for_session_restored, wait_for_sync_running_after_reconnect, wait_for_sync_started,
+    wait_for_send_flow_completion, wait_for_session_restored,
+    wait_for_sync_running_after_reconnect, wait_for_sync_started,
     wait_for_sync_started_and_running,
 };
 use super::fixtures::create_room_for_qa;
@@ -206,49 +207,22 @@ pub(super) async fn run_cached_read_before_first_sync_scenario(
     }
     println!("cached_read_send_blocked=ok");
 
-    // A viewport report on the provisional projection must not write read state:
-    // the read-state dispatcher waits for this run's committed response. The
-    // report is submitted while the network is still reachable (the sync
-    // response alone is withheld), so a leaked write would be visible to the
-    // proxy below.
-    let cached_event_id = timeline_item_event_id(&cached_item)
-        .ok_or_else(|| "cached read: the cached message carries no event id".to_owned())?;
-    let provisional_viewport = super::viewport_observation::fresh_viewport_observation_for_qa(
-        &mut restored,
-        &key,
-        koushi_protocol::event::TimelineViewportObservation {
-            display_window_revision: None,
-            first_visible_event_id: Some(cached_event_id.clone()),
-            last_visible_event_id: Some(cached_event_id.clone()),
-            visible_gap_ids: Vec::new(),
-            at_bottom: false,
-            bottom_arrival: koushi_protocol::event::TimelineBottomArrival::User,
-        },
-    )
-    .await?;
-    // Record every read-state attempt from here on, and fail them so a leaked
-    // write is both visible and harmless to the fixture.
-    proxy.fail_read_state_writes();
-    let viewport_id = restored.next_request_id();
-    restored
-        .command(CoreCommand::Timeline(TimelineCommand::ObserveViewport {
-            request_id: viewport_id,
-            key: key.clone(),
-            observation: provisional_viewport,
-        }))
-        .await
-        .map_err(|e| format!("cached read: submit provisional viewport failed: {e}"))?;
+    // A viewport report is what makes Rust write read state, and it is admitted
+    // only once this run owns a committed response (see the promotion step). The
+    // provisional-window hold itself is covered by the read-state worker test,
+    // not by a timing window here.
+    let cached_event_id = super::event_wait::timeline_item_event_id(&cached_item)
+        .ok_or_else(|| "cached read: the cached message carries no event id".to_owned())?
+        .to_owned();
 
     // 3. Releasing the held response promotes the list and re-admits sending.
     proxy.enable();
     proxy.release_sliding_sync_responses();
     wait_for_sync_running_after_reconnect(&mut restored, "cached read promoted sync").await?;
     wait_for_list_authority(&mut restored).await?;
-    let promoted_at = std::time::Instant::now();
     println!("cached_read_promoted=ok");
 
-    // The confirmed list now admits automatic read state, and no write may carry
-    // a provisional-window timestamp.
+    // The confirmed list now admits automatic read state.
     let promoted_viewport = super::viewport_observation::fresh_viewport_observation_for_qa(
         &mut restored,
         &key,
@@ -271,13 +245,24 @@ pub(super) async fn run_cached_read_before_first_sync_scenario(
         }))
         .await
         .map_err(|e| format!("cached read: submit promoted viewport failed: {e}"))?;
-    wait_for_read_state_write(&proxy, promoted_at).await?;
+    wait_for_read_state_write(&proxy).await?;
     println!("cached_read_read_state_admitted=ok");
     wait_for_send_admission(&mut restored, "cached read post-promotion admission").await?;
-    send_text_expect_local_echo(
+    let echo = send_text_expect_local_echo(
         &mut restored,
         &key,
         "cached-read-after-admission",
+        POST_ADMISSION_BODY,
+        "cached read post-admission send",
+    )
+    .await?;
+    // A local echo only proves enqueueing. The token requires the send flow to
+    // complete with its own event, so a permanently paused queue cannot pass.
+    wait_for_send_flow_completion(
+        &mut restored,
+        echo.request_id,
+        &key,
+        &echo.client_transaction_id,
         POST_ADMISSION_BODY,
         "cached read post-admission send",
     )
@@ -295,26 +280,16 @@ pub(super) async fn run_cached_read_before_first_sync_scenario(
     Ok(())
 }
 
-/// Bounded wait for the first read-state write observed after `promoted_at`, and
-/// the proof that none was observed before it.
-async fn wait_for_read_state_write(
-    proxy: &QaTcpProxy,
-    promoted_at: std::time::Instant,
-) -> Result<(), String> {
+/// Bounded wait for the read-state write the committed response admits. The
+/// provisional window wrote none (asserted before the network cut), so any
+/// attempt here is owned by the confirmed list.
+async fn wait_for_read_state_write(proxy: &QaTcpProxy) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
     loop {
-        let attempts = proxy.read_state_attempts()?;
-        if let Some(early) = attempts
-            .iter()
-            .flatten()
-            .find(|attempted_at| **attempted_at < promoted_at)
+        if proxy
+            .read_state_observation()
+            .is_ok_and(|observation| observation.request_count > 0)
         {
-            return Err(format!(
-                "cached read: a read-state write was observed {:?} before the list became                  authoritative",
-                promoted_at.duration_since(*early)
-            ));
-        }
-        if attempts.iter().any(|channel| !channel.is_empty()) {
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
@@ -324,16 +299,6 @@ async fn wait_for_read_state_write(
             );
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    }
-}
-
-fn timeline_item_event_id(item: &koushi_protocol::event::TimelineItem) -> Option<String> {
-    match &item.display_metadata {
-        Some(metadata) => metadata.activity_event_id.clone(),
-        None => match &item.id {
-            koushi_protocol::event::TimelineItemId::Event { event_id } => Some(event_id.clone()),
-            _ => None,
-        },
     }
 }
 

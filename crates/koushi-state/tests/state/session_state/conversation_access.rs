@@ -82,9 +82,7 @@ fn only_a_current_generation_authoritative_snapshot_confirms_the_list() {
             invites: Vec::new(),
         },
     );
-    assert!(
-        !state.conversation_access().readable || !state.conversation_access().list_authoritative
-    );
+    assert!(!state.conversation_access().list_authoritative);
 
     reduce(
         &mut state,

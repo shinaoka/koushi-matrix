@@ -560,7 +560,6 @@ async fn subscribe_replay_path_records_subscribed_done_stage() {
         subscription_room_ordinals: BTreeMap::new(),
         next_subscription_room_ordinal: 0,
         global_response_commit: None,
-        read_state_authority: true,
         timelines: HashMap::from([(
             key.clone(),
             TimelineActorHandle {
@@ -779,7 +778,6 @@ async fn diagnostics_producer_paths_run_without_trace_environment() {
         subscription_room_ordinals: BTreeMap::new(),
         next_subscription_room_ordinal: 0,
         global_response_commit: None,
-        read_state_authority: true,
         timelines: HashMap::from([(
             key.clone(),
             TimelineActorHandle {

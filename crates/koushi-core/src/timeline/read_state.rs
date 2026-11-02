@@ -137,6 +137,9 @@ pub(super) enum ReadCommandKind {
 pub(super) enum ReadRetrySource {
     Backoff,
     Reconnect,
+    /// This sync run committed a room-list response, so held read-state writes
+    /// are admitted again (#1737).
+    ResponseCommitted,
     Checkpoint,
     AuthoritativeReceipt,
     SyncReconciliation,
@@ -147,6 +150,7 @@ impl ReadRetrySource {
         match self {
             Self::Backoff => "backoff",
             Self::Reconnect => "reconnect",
+            Self::ResponseCommitted => "response_committed",
             Self::Checkpoint => "checkpoint",
             Self::AuthoritativeReceipt => "authoritative_receipt",
             Self::SyncReconciliation => "sync_reconciliation",
@@ -159,6 +163,21 @@ pub(super) struct ReadCommandWaiter {
     key: TimelineKey,
     event_id: String,
     kind: ReadCommandKind,
+}
+
+#[cfg(test)]
+impl ReadCommandWaiter {
+    pub(super) fn for_test(key: TimelineKey) -> Self {
+        Self {
+            request_id: RequestId {
+                connection_id: koushi_protocol::RuntimeConnectionId(1),
+                sequence: 1,
+            },
+            key,
+            event_id: "$event:example.invalid".to_owned(),
+            kind: ReadCommandKind::Receipt,
+        }
+    }
 }
 
 struct LocalReadCorrelation {
@@ -243,6 +262,11 @@ pub(super) struct ReadWorkerSupervisor {
     dispatch_failures: Vec<(ReadStateKey, crate::read_state::ReadCompletionResult)>,
     local_read_correlations: HashMap<TimelineKey, LocalReadCorrelation>,
     send_read_receipts: bool,
+    /// #1737: whether this sync run owns a committed room-list response. Until it
+    /// does, a write derived from the visible timeline would claim a server fact
+    /// the local cache cannot support, so dispatch holds it (an explicit user
+    /// mark-read, which owns a waiter, is unaffected).
+    authority_admitted: bool,
     reconciliation_pending: HashSet<ReadStateKey>,
     persistence: Option<ReadPersistenceIngress>,
     save_generation: u64,
@@ -274,6 +298,7 @@ impl ReadWorkerSupervisor {
             dispatch_failures: Vec::new(),
             local_read_correlations: HashMap::new(),
             send_read_receipts: true,
+            authority_admitted: false,
             reconciliation_pending: HashSet::new(),
             persistence: None,
             save_generation: 0,
@@ -319,6 +344,7 @@ impl ReadWorkerSupervisor {
             dispatch_failures: Vec::new(),
             local_read_correlations: HashMap::new(),
             send_read_receipts,
+            authority_admitted: false,
             reconciliation_pending,
             persistence: Some(persistence),
             save_generation: 0,
@@ -337,7 +363,11 @@ impl ReadWorkerSupervisor {
         requests: mpsc::UnboundedSender<SyntheticReadNetworkRequest>,
         timeout: Duration,
     ) -> Self {
-        Self::new(1, Some(ReadNetworkContext::Synthetic { requests }), timeout)
+        let mut supervisor =
+            Self::new(1, Some(ReadNetworkContext::Synthetic { requests }), timeout);
+        // Test fixtures model the steady state: this run already owns a response.
+        supervisor.authority_admitted = true;
+        supervisor
     }
 
     #[cfg(test)]
@@ -347,8 +377,7 @@ impl ReadWorkerSupervisor {
         retry_base_delay: Duration,
         retry_max_delay: Duration,
     ) -> Self {
-        let mut supervisor =
-            Self::new(1, Some(ReadNetworkContext::Synthetic { requests }), timeout);
+        let mut supervisor = Self::synthetic(requests, timeout);
         supervisor.retry_base_delay = retry_base_delay;
         supervisor.retry_max_delay = retry_max_delay;
         supervisor
@@ -386,6 +415,7 @@ impl ReadWorkerSupervisor {
             dispatch_failures: Vec::new(),
             local_read_correlations: HashMap::new(),
             send_read_receipts: true,
+            authority_admitted: true,
             reconciliation_pending,
             persistence: Some(persistence),
             save_generation: 0,
@@ -487,6 +517,11 @@ impl ReadWorkerSupervisor {
                 break;
             };
             self.queued.remove(&key);
+            // #1737: hold the write, do not drop it; the committed response
+            // re-wakes every desired key.
+            if !self.authority_admitted && !self.has_waiter_for(&key) {
+                continue;
+            }
             if self.reconciliation_pending.contains(&key)
                 || self.scheduled_retries.contains_key(&key)
                 || self.state.active_operation(&key).is_some()
@@ -715,6 +750,20 @@ impl ReadWorkerSupervisor {
         }
         self.publish_persistence();
         self.dispatch_ready_reads();
+    }
+
+    pub(super) fn set_authority_admitted(&mut self, admitted: bool) {
+        if self.authority_admitted == admitted {
+            return;
+        }
+        self.authority_admitted = admitted;
+    }
+
+    /// Whether an explicit read command owns a settlement waiter for this key.
+    fn has_waiter_for(&self, key: &ReadStateKey) -> bool {
+        self.waiters
+            .values()
+            .any(|waiter| &read_state_key_for_command(&waiter.key, waiter.kind) == key)
     }
 
     pub(super) fn send_read_receipts_enabled(&self) -> bool {
@@ -1755,18 +1804,10 @@ impl TimelineManagerActor {
 
         let mut admission_failure = None;
         let session_generation = self.read_workers.state.session_generation();
-        // #1737: a boundary observed on a provisional cache projection is a
-        // local reading position, not evidence for a server read-state write.
-        // Keep the local projection (the UI's own read display) and admit
-        // nothing until this run has committed a room-list response.
-        let required = if self.read_state_authority {
-            required_keys
-                .iter()
-                .map(|(read_key, read_target)| (read_key.clone(), read_target.clone()))
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
+        let required = required_keys
+            .iter()
+            .map(|(read_key, read_target)| (read_key.clone(), read_target.clone()))
+            .collect::<Vec<_>>();
         for (read_key, read_target) in &required {
             let admission = self.read_workers.state.admit_background(
                 session_generation,

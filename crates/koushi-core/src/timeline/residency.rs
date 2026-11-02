@@ -374,7 +374,6 @@ impl TimelineManagerActor {
             subscription_room_ordinals: BTreeMap::new(),
             next_subscription_room_ordinal: 0,
             global_response_commit: None,
-            read_state_authority: false,
             timelines: HashMap::new(),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             send_completion: SharedSendCompletionCoordinator::default(),
@@ -636,8 +635,9 @@ impl TimelineManagerActor {
         self.room_list_service = Some(room_list_service.clone());
         self.current_core_generation = Some(core_generation);
         self.global_response_commit = Some(GlobalResponseCommit::new(core_generation, 0));
-        // #1737: a new sync run owns no committed response yet.
-        self.read_state_authority = false;
+        // #1737: a new sync run owns no committed response yet, so read-state
+        // writes are held until it does.
+        self.read_workers.set_authority_admitted(false);
         let replacement_starts = self
             .invalidate_live_tail_epoch_for_existing_rooms(service_epoch)
             .await;

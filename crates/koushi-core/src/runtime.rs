@@ -3029,6 +3029,19 @@ impl AppActor {
             return false;
         }
         if is_ready_session_for_commands(&self.state.session) {
+            // #1737: these direct mutations bypass the timeline send queue, so
+            // they honour the same send admission themselves. Reading a message
+            // source stays available.
+            if !matches!(
+                request,
+                crate::direct_operations::DirectMessageRequest::Read { .. }
+            ) && !self.state.conversation_access().send_admitted
+            {
+                let _ = response.send(Err(
+                    crate::direct_operations::DirectMessageFailure::SendNotAdmitted,
+                ));
+                return false;
+            }
             let _ = self
                 .account_actor
                 .send(AccountMessage::DirectMessageAction { request, response })

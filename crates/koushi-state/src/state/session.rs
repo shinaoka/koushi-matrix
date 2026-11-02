@@ -302,13 +302,17 @@ pub fn secure_backup_failure_is_retryable(
     kind: SecureBackupGateFailureKind,
     detail: Option<SecureBackupFailureDetail>,
 ) -> bool {
-    detail.is_some_and(|detail| detail.retryable)
-        || matches!(
+    match detail {
+        // The structured detail is authoritative: a received 401/403 answer is
+        // not retryable just because its transport was a network exchange.
+        Some(detail) => detail.retryable,
+        None => matches!(
             kind,
             SecureBackupGateFailureKind::Network
                 | SecureBackupGateFailureKind::RateLimited
                 | SecureBackupGateFailureKind::Timeout
-        )
+        ),
+    }
 }
 
 impl SecureBackupGateState {

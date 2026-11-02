@@ -185,9 +185,13 @@ impl TimelineManagerActor {
             return;
         }
         self.global_response_commit = Some(commit);
-        // #1737: this run now owns a committed response, so automatic read-state
-        // writes may reflect the visible timeline again.
-        self.read_state_authority = true;
+        // #1737: this run now owns a committed response, so read-state writes may
+        // reflect the visible timeline again. Whatever was held while the
+        // projection was provisional settles now instead of waiting for the next
+        // viewport report.
+        self.read_workers.set_authority_admitted(true);
+        self.wake_all_desired_reads(ReadRetrySource::ResponseCommitted)
+            .await;
 
         // The SDK publishes room-subscription checkpoints before the global
         // response commit. Replay the retained values through the manager
