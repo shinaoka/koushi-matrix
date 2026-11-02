@@ -1418,6 +1418,7 @@ function makeSnapshot(): DesktopSnapshot {
         session: { kind: "ready", homeserver: "https://example.invalid", user_id: "@user:example.invalid", device_id: "DEVICE" },
         session_lock_reason: null,
         secure_backup_gate: { kind: "ready" },
+        conversation_access: { readable: true, list_authoritative: true, send_admitted: true },
         current_session_status: { status: "idle" },
         device_cleanup: { kind: "idle" },
         auth: { kind: "unknown" },

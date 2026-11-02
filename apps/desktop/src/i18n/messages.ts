@@ -197,6 +197,7 @@ export type MessageId =
   | "composer.mentionSuggestions"
   | "composer.mentionUsers"
   | "composer.messageComposer"
+  | "composer.sendBlockedSecureBackup"
   | "composer.imageCompressionCompressed"
   | "composer.imageCompressionOriginal"
   | "composer.imageCompressionPreviewAlt"
@@ -816,6 +817,7 @@ export type MessageId =
   | "roomList.sectionUnreadAccessible"
   | "roomList.loading"
   | "roomList.failed"
+  | "roomList.provisionalCached"
   | "room.markAsRead"
   | "room.markAsUnread"
   | "room.manuallyMarkedUnread"
@@ -2497,6 +2499,7 @@ const en: Catalog = {
   "composer.mentionSuggestions": "Mention suggestions",
   "composer.mentionUsers": "Users",
   "composer.messageComposer": "Message composer",
+  "composer.sendBlockedSecureBackup": "Sending is unavailable until Secure Backup is ready.",
   "composer.imageCompressionCompressed": "Compressed",
   "composer.imageCompressionOriginal": "Original",
   "composer.imageCompressionPreviewAlt": "Compressed image preview",
@@ -3129,6 +3132,7 @@ const en: Catalog = {
   "roomList.sectionUnreadAccessible": "{section} unread: {count}",
   "roomList.loading": "Loading rooms…",
   "roomList.failed": "Rooms could not be loaded",
+  "roomList.provisionalCached": "Showing saved conversations. Rooms and messages may be missing or out of date, and unread counts are the last values saved on this device.",
   "room.markAsRead": "Mark room timeline as read",
   "room.markAsUnread": "Mark as unread",
   "room.manuallyMarkedUnread": "Manually marked unread",
@@ -4851,6 +4855,7 @@ const ja: Catalog = {
   "composer.mentionSuggestions": "メンション候補",
   "composer.mentionUsers": "ユーザー",
   "composer.messageComposer": "メッセージ入力欄",
+  "composer.sendBlockedSecureBackup": "安全なバックアップの準備ができるまで送信できません。",
   "composer.placeholder": "{roomName}にメッセージ",
   "composer.assistantDraftMarker": "{client} が作成した下書きです。送信前に確認してください。",
   "composer.assistantDraftDismiss": "アシスタント表示を消す",
@@ -5483,6 +5488,7 @@ const ja: Catalog = {
   "roomList.sectionUnreadAccessible": "{section}の未読 {count} 件",
   "roomList.loading": "ルームを読み込み中…",
   "roomList.failed": "ルームを読み込めませんでした",
+  "roomList.provisionalCached": "保存済みの会話を表示しています。同期が完了していないため、ルームやメッセージが欠けていたり古い可能性があります。未読数は端末に保存されている最後の値です。",
   "room.markAsRead": "ルーム本文を既読にする",
   "room.markAsUnread": "未読にする",
   "room.manuallyMarkedUnread": "手動で未読に設定",

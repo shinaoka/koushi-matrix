@@ -112,7 +112,7 @@ export function ContextualRightPanel({
   sendingAccount = null,
   onSettingsScopeChange = () => undefined,
   displayDensity = "comfortable",
-  encryptedComposerBlocked = false,
+  composerReadOnly = false,
   isRecoveryBusy,
   mode,
   threadsListScope = { kind: "home" },
@@ -270,7 +270,8 @@ export function ContextualRightPanel({
   activeSpace: DesktopSnapshot["state"]["domain"]["spaces"][number] | null;
   activeSpaceName: string;
   displayDensity?: DisplayDensity;
-  encryptedComposerBlocked?: boolean;
+  /** #1748: Rust-projected send admission; the thread composer is read-only. */
+  composerReadOnly?: boolean;
   isRecoveryBusy: boolean;
   mode: RightPanelMode;
   threadsListScope?: ThreadsListScope;
@@ -1402,6 +1403,11 @@ export function ContextualRightPanel({
           roomName={t("panel.thread")}
         />
       ) : null}
+      {composerReadOnly ? (
+        <div className="composer-read-only-notice" role="status">
+          {t("composer.sendBlockedSecureBackup")}
+        </div>
+      ) : null}
       <ThreadComposer
         sendingAccount={sendingAccount}
         composerMode={threadComposerMode}
@@ -1429,7 +1435,7 @@ export function ContextualRightPanel({
         mentionCandidatesLoading={threadMentionCandidatesLoading}
         resolveComposerKeyAction={threadResolveComposerKeyActionStable}
         canEdit={
-          !encryptedComposerBlocked &&
+          !composerReadOnly &&
           threadState.kind === "open" &&
           Boolean(threadRoomId && rootEventId && threadComposer)
         }

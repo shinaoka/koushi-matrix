@@ -166,7 +166,7 @@ test("secure backup gate actions retain the selected account API receiver", asyn
         ...snapshot.state,
         domain: {
           ...snapshot.state.domain,
-          secure_backup_gate: { kind: "blockedFailed", failure: "network" }
+          secure_backup_gate: { kind: "blockedFailed", failure: "unauthorized" }
         }
       }
     });
@@ -220,7 +220,7 @@ test("secure backup gate explains a server response and opens diagnostics", asyn
               transport: "httpResponse",
               httpStatus: 503,
               matrixErrorKind: "unknown",
-              retryable: true
+              retryable: false
             }
           }
         }
@@ -235,7 +235,9 @@ test("secure backup gate explains a server response and opens diagnostics", asyn
   await expect(page.getByRole("alert")).toHaveText(
     "The homeserver answered this secure backup request with an error (HTTP 503)."
   );
-  await expect(page.getByText("Try again in a few minutes.")).toBeVisible();
+  await expect(
+    page.getByText("Ask your homeserver administrator to check secure backup.")
+  ).toBeVisible();
   await expect(page.locator("body")).not.toContainText("inspectServerTrust");
   await expect(page.locator("body")).not.toContainText("matrixErrorKind");
 
@@ -258,7 +260,7 @@ test("secure backup diagnostics opens even when the snapshot fetch fails", async
         ...snapshot.state,
         domain: {
           ...snapshot.state.domain,
-          secure_backup_gate: { kind: "blockedFailed", failure: "network" }
+          secure_backup_gate: { kind: "blockedFailed", failure: "unauthorized" }
         }
       }
     });

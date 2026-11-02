@@ -3,17 +3,17 @@
 use koushi_state::{
     AccountManagementCapabilities, AccountManagementState, AccountManagementUrl, ActivityRow,
     ActivityState, AppError, AuthDiscoveryState, BasicOperationState, CjkTextPolicyState,
-    CurrentSessionStatusState, DeviceCleanupState, DirectoryState, E2eeTrustState, FilesViewState,
-    FocusedContextState, IgnoredUserUpdateState, InvitePreview, InviteWorkflowState,
-    LinkPreviewSettingsState, LiveEventReceiptSummary, LiveSignalsState, LiveTypingUser,
-    LocalEncryptionState, LocalUserAliasUpdateState, MentionCandidatesState, NativeAttentionState,
-    NavigationState, OwnProfile, PresenceKind, ProfileState, ProfileUpdateState, QrLoginState,
-    RoomInteractionState, RoomListProjection, RoomLiveSignals, RoomManagementState,
-    RoomNotificationSettings, RoomPreferencesState, RoomSummary, ScheduledSendsListState,
-    SearchCrawlerLastActive, SearchCrawlerRoomState, SearchCrawlerState, SearchState,
-    SecureBackupGateState, SessionState, SettingsState, SidebarModel, SoftLogoutReauthState,
-    SpaceChildrenState, SpaceMembersState, SpaceSummary, SyncState, ThreadAttentionState,
-    ThreadPaneState, ThreadsListState, TimelinePaneState, UserProfile,
+    ConversationAccess, CurrentSessionStatusState, DeviceCleanupState, DirectoryState,
+    E2eeTrustState, FilesViewState, FocusedContextState, IgnoredUserUpdateState, InvitePreview,
+    InviteWorkflowState, LinkPreviewSettingsState, LiveEventReceiptSummary, LiveSignalsState,
+    LiveTypingUser, LocalEncryptionState, LocalUserAliasUpdateState, MentionCandidatesState,
+    NativeAttentionState, NavigationState, OwnProfile, PresenceKind, ProfileState,
+    ProfileUpdateState, QrLoginState, RoomInteractionState, RoomListProjection, RoomLiveSignals,
+    RoomManagementState, RoomNotificationSettings, RoomPreferencesState, RoomSummary,
+    ScheduledSendsListState, SearchCrawlerLastActive, SearchCrawlerRoomState, SearchCrawlerState,
+    SearchState, SecureBackupGateState, SessionState, SettingsState, SidebarModel,
+    SoftLogoutReauthState, SpaceChildrenState, SpaceMembersState, SpaceSummary, SyncState,
+    ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState, UserProfile,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -66,6 +66,10 @@ pub struct StateDeltaChangedSlices {
     pub session_disclosure_epoch: Option<u64>,
     pub session_lock_reason: Option<Option<koushi_state::SessionLockReason>>,
     pub secure_backup_gate: Option<SecureBackupGateState>,
+    /// #1748: the derived read/send admission. Published whenever it differs, so
+    /// no renderer has to project it from the session, list readiness, and
+    /// backup gate slices it already receives.
+    pub conversation_access: Option<ConversationAccess>,
     pub device_cleanup: Option<DeviceCleanupState>,
     pub current_session_status: Option<CurrentSessionStatusState>,
     pub auth: Option<AuthDiscoveryState>,

@@ -26,6 +26,12 @@ pub fn build_state_delta(
     changed_slice!(session_disclosure_epoch);
     changed_slice!(session_lock_reason);
     changed_slice!(secure_backup_gate);
+    // #1748: derived from the session, the room-list readiness, and the backup
+    // gate, so it is published on its own rather than re-derived in a renderer.
+    let conversation_access = next.conversation_access();
+    if previous.conversation_access() != conversation_access {
+        changed.conversation_access = Some(conversation_access);
+    }
     changed_slice!(device_cleanup);
     changed_slice!(current_session_status);
     changed_slice!(auth);

@@ -306,14 +306,19 @@ test("security settings drive Rust-owned room-key transfer and secure backup sta
   // truth (the gate) and no setup is offered.
   await expect(page.getByTestId("secure-backup-state")).toHaveText("Enabled");
   await expect(page.getByRole("form", { name: "Secure backup", exact: true })).toHaveCount(0);
-  // The setup form is offered only where Core admits `initialSetup`.
+  // #1748: `setupRequired` now replaces the shell with the blocking gate (Rust
+  // opens no read exception for it), so the in-settings setup form is driven
+  // through an in-flight setup request instead.
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
-    snapshot.state.domain.secure_backup_gate = { kind: "setupRequired" };
+    snapshot.state.domain.e2ee_trust.key_management.secure_backup_setup = {
+      kind: "settingUp",
+      request_id: 9_201
+    };
     window.__harness.setSnapshot(snapshot);
     window.__harness.pushStateUpdate();
   });
-  await expect(page.getByTestId("secure-backup-state")).toHaveText("Not set up");
+  await expect(page.getByTestId("secure-backup-state")).toHaveText("Setting up");
   await page.evaluate(() => {
     window.__harness.setCommandResponse("plugin:dialog|save", "/tmp/koushi-export.txt");
     window.__harness.setCommandResponse(

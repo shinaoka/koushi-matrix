@@ -738,6 +738,7 @@ export function TimelinePane({
   activeRoomName,
   sendingAccount = null,
   canEdit = true,
+  readOnlyNotice = null,
   composerDocument,
   composerNotice = null,
   composerDraftKey,
@@ -793,6 +794,8 @@ export function TimelinePane({
   activeRoomName: string;
   sendingAccount?: ComposerSendingAccount | null;
   canEdit?: boolean;
+  /** #1748: the Rust-owned reason sending is closed, shown beside the composer. */
+  readOnlyNotice?: string | null;
   composerDocument: ComposerDocument;
   composerDraftKey?: string;
   /** #1644: removes the assistant marker of the open room's draft. */
@@ -1348,6 +1351,11 @@ export function TimelinePane({
           onRecentEmojisChange={onRecentEmojisChangeStable}
           roomName={activeRoomName}
         />
+      ) : null}
+      {readOnlyNotice ? (
+        <div className="composer-read-only-notice" role="status">
+          {readOnlyNotice}
+        </div>
       ) : null}
       <Composer
         sendingAccount={sendingAccount}

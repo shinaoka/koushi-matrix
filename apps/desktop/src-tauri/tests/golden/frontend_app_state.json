@@ -480,6 +480,11 @@
         "user_id": "@contact:example.invalid",
         "verification_busy": true
       },
+      "conversation_access": {
+        "listAuthoritative": true,
+        "readable": true,
+        "sendAdmitted": false
+      },
       "current_session_status": {
         "details": {
           "authentication_method": "oauth",
@@ -1430,7 +1435,7 @@
         "platform": "linux"
       }
     },
-    "schema_version": 12,
+    "schema_version": 13,
     "ui": {
       "basic_operation": {
         "kind": "creatingRoom",

@@ -67,6 +67,7 @@ import {
   type StagedUploadCompressionChoice
 } from "../domain/types";
 import { TauriIpcMock, type IpcInvocation } from "./tauriIpcMock";
+import { conversationAccessFixture } from "./conversationAccessFixture";
 import { withSectionBounds } from "./withSectionBounds";
 import {
   notificationConsentForCurrent,
@@ -290,6 +291,7 @@ function readySnapshot(
           session: { kind: "ready", homeserver: HOMESERVER, user_id: USER_ID, device_id: DEVICE_ID },
           session_lock_reason: null,
           secure_backup_gate: { kind: "ready" },
+          conversation_access: { readable: true, list_authoritative: true, send_admitted: true },
           current_session_status: { status: "idle" },
           device_cleanup: { kind: "idle" },
           auth: { kind: "unknown" },
@@ -1273,7 +1275,14 @@ function setCurrentSnapshot(next: DesktopSnapshot): DesktopSnapshot {
         ...next.state.domain,
         rooms,
         spaces,
-        invites
+        invites,
+        // #1748: keep the injected admission consistent with the session, gate
+        // and readiness this snapshot carries, exactly as Rust projects it.
+        conversation_access: conversationAccessFixture(
+          next.state.domain.session,
+          next.state.domain.secure_backup_gate,
+          roomList
+        )
       },
       ui: {
         ...next.state.ui,

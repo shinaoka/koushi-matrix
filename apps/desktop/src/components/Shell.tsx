@@ -811,7 +811,10 @@ export function Sidebar({
 }) {
   const sections = snapshot.sidebar.sections;
   const roomListReadiness = snapshot.state.ui.room_list.readiness;
-  const roomListReady = roomListReadiness.kind === "ready";
+  // #1748: whether these rooms and counts are server-confirmed is Rust's
+  // answer, not the SDK loading state. A provisional projection may omit or
+  // misorder entries, so it is read-only and its counts are last known.
+  const listAuthoritative = snapshot.state.domain.conversation_access.list_authoritative;
   const hasProvisionalRoomList =
     snapshot.sidebar.space_rooms.length > 0 ||
     snapshot.sidebar.global_dms.length > 0 ||
@@ -983,12 +986,16 @@ export function Sidebar({
             text={activeSpaceTopic}
           />
         ) : null}
-        {!roomListReady ? (
+        {!listAuthoritative ? (
           <div className="room-list-status" role="status">
-            {roomListReadiness.kind === "failed" ? t("roomList.failed") : t("roomList.loading")}
+            {roomListReadiness.kind === "failed"
+              ? t("roomList.failed")
+              : hasProvisionalRoomList
+                ? t("roomList.provisionalCached")
+                : t("roomList.loading")}
           </div>
         ) : null}
-        {roomListReady || hasProvisionalRoomList ? (
+        {listAuthoritative || hasProvisionalRoomList ? (
           <RoomListControls
             filter={roomFilter}
             filterPlaceholder={t("roomList.filterConversationsPlaceholder")}
@@ -1004,7 +1011,7 @@ export function Sidebar({
           presence={presence}
           roomById={roomById}
           rooms={visibleRooms}
-          unreadCount={snapshot.sidebar.space_unread_count}
+          unreadCount={listAuthoritative ? snapshot.sidebar.space_unread_count : undefined}
           emptyMessage={roomFilter ? t("roomList.noMatchingConversations") : undefined}
           showWhenEmpty={true}
           onCreate={onCreateRoom}
@@ -1035,7 +1042,7 @@ export function Sidebar({
           presence={presence}
           roomById={roomById}
           rooms={visibleDms}
-          unreadCount={snapshot.sidebar.dm_unread_count}
+          unreadCount={listAuthoritative ? snapshot.sidebar.dm_unread_count : undefined}
           emptyMessage={roomFilter ? t("roomList.noMatchingConversations") : undefined}
           showWhenEmpty={true}
           onCreate={onNewDm}

@@ -496,6 +496,11 @@ export const Composer = memo(function Composer({
   async function onAttachFileChange(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.currentTarget.files ?? []);
     event.currentTarget.value = "";
+    // #1748: the picker trigger is disabled in a read-only composer, but the
+    // handler closes the write path itself rather than relying on that.
+    if (!canEdit) {
+      return;
+    }
     try {
       await ingestAttachmentFiles(files, onAttachFiles);
     } catch {

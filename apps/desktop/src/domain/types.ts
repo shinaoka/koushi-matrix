@@ -102,8 +102,10 @@ export type ComposerDraftAccountOwner = SavedSessionInfo;
  * Version 11 adds the keyword-rule projection
  * (`AccountNotificationsSnapshot.keywords`), the account's own `content` rules
  * in server order with their server-owned enabled flag (#1427).
+ * Version 13 adds `domain.conversation_access`, the Rust-owned read/send
+ * admission the shell renders (#1748).
  */
-export const SNAPSHOT_SCHEMA_VERSION = 12;
+export const SNAPSHOT_SCHEMA_VERSION = 13;
 
 /**
  * Snapshot state. #87 Phase 4 sectioned this into domain (Matrix/product, Rust-owned,
@@ -122,6 +124,11 @@ export interface AppDomainState {
   session_epoch?: number;
   session_lock_reason: SessionLockReason | null;
   secure_backup_gate: SecureBackupGateState;
+  /**
+   * #1748: Rust-owned read/send admission. React renders it and never projects
+   * it from the session, list readiness, or backup gate.
+   */
+  conversation_access: ConversationAccess;
   current_session_status: CurrentSessionStatusState;
   device_cleanup: DeviceCleanupState;
   auth: AuthDiscoveryState;
@@ -1243,6 +1250,18 @@ type SessionAccountState<K extends string> = ExactSessionState<
 >;
 
 export type SessionLockReason = { kind: "unknownToken"; soft_logout: boolean };
+
+/**
+ * #1748: Rust-owned admission for reading cached conversations and for writing
+ * to the server. `readable` gates the shell, `list_authoritative` gates
+ * authoritative counts and read-state writes, and `send_admitted` gates every
+ * user-content write.
+ */
+export interface ConversationAccess {
+  readable: boolean;
+  list_authoritative: boolean;
+  send_admitted: boolean;
+}
 
 export type SessionState =
   | ExactSessionState<"signedOut">

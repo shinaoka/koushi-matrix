@@ -108,6 +108,17 @@ state.
 Do not hand-write a TypeScript shape that is not proven by the Rust contract
 artifact.
 
+A **derived** projection needs one more step. `domain.conversation_access`
+(#1748) is not an `AppState` field: Rust computes it from the session, the
+room-list readiness, and the backup gate, so it travels as its own
+`StateDeltaChangedSlices` slice published whenever the computed value differs
+plus a full-snapshot field. A renderer that re-derives it from the three slices
+it already receives is a second admission owner; do not add one. Headless
+fixtures that inject a session or a backup gate restamp it through
+`apps/desktop/src/test/conversationAccessFixture.ts`, which mirrors the Rust
+projection so a spec cannot accidentally show a shell state Rust would never
+produce.
+
 Focused checks:
 
 ```bash

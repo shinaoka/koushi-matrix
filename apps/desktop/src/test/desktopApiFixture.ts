@@ -3,6 +3,20 @@ import type { DesktopApi } from "../backend/desktopApi";
 import type { DesktopSnapshot } from "../domain/types";
 import { TauriIpcMock, defaultSnapshotResponse } from "./tauriIpcMock";
 import { sidebarSectionBoundsForFake } from "./sidebarSectionBoundsFixture";
+import { conversationAccessFixture } from "./conversationAccessFixture";
+
+/**
+ * #1748: stamp the Rust-projected admission a real snapshot would carry after a
+ * fixture replaced the session or the backup gate.
+ */
+function settleConversationAccess(snapshot: DesktopSnapshot): DesktopSnapshot {
+  snapshot.state.domain.conversation_access = conversationAccessFixture(
+    snapshot.state.domain.session,
+    snapshot.state.domain.secure_backup_gate,
+    snapshot.state.ui.room_list
+  );
+  return snapshot;
+}
 
 export interface DesktopApiFixture extends DesktopApi {
   readonly ipc: TauriIpcMock;
@@ -182,7 +196,7 @@ export function readyDesktopSnapshotFixture(): DesktopSnapshot {
       activeRoomId: "!room-alpha:example.invalid"
     })
   };
-  return snapshot;
+  return settleConversationAccess(snapshot);
 }
 
 export function awaitingVerificationSnapshotFixture(): DesktopSnapshot {
@@ -198,7 +212,7 @@ export function awaitingVerificationSnapshotFixture(): DesktopSnapshot {
     }
   };
   snapshot.state.domain.secure_backup_gate = { kind: "inactive" };
-  return snapshot;
+  return settleConversationAccess(snapshot);
 }
 
 export function createDesktopApiFixture(

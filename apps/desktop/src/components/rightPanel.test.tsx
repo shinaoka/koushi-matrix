@@ -740,7 +740,7 @@ describe("ContextualRightPanel secure-backup degradation", () => {
     renderPanel({
       mode: "thread",
       snapshot: threadSnapshot(""),
-      encryptedComposerBlocked: true
+      composerReadOnly: true
     });
 
     expect(
