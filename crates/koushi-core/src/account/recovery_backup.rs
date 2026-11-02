@@ -2416,6 +2416,10 @@ impl AccountActor {
         if generation != self.trust_generation || !self.session_promoted {
             return;
         }
+        #[cfg(any(test, feature = "test-hooks"))]
+        if self.secure_backup_admission_pinned {
+            return;
+        }
         if backup_state_change_requires_gate_check(state) {
             self.set_secure_backup_send_admitted(false).await;
             self.send_actions(vec![AppAction::SecureBackupGateChanged(

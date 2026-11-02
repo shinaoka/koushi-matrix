@@ -577,6 +577,13 @@ pub(crate) enum AccountMessage {
     ConfigureTrustObservation {
         observation: koushi_sdk::CurrentDeviceTrustObservation,
     },
+    /// Test hook: project a Secure Backup gate verdict without a server
+    /// inspection, through the same path the real settlement uses (SDK send
+    /// admission first, then the reducer action).
+    #[cfg(any(test, feature = "test-hooks"))]
+    ProjectSecureBackupGateForTesting {
+        gate: koushi_state::SecureBackupGateState,
+    },
     #[cfg(test)]
     InspectSessionRuntime {
         response: oneshot::Sender<(bool, bool, bool, bool)>,
@@ -1196,6 +1203,10 @@ pub struct AccountActor {
     pub(super) current_session_status_request: Option<u64>,
     pub(super) session_check: super::session_check::SessionCheckCoordinator,
     pub(super) secure_backup_ready: bool,
+    /// Test hook: the fixture models an account whose Secure Backup admission is
+    /// already established, so gate re-checks cannot close it again (#1737).
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(super) secure_backup_admission_pinned: bool,
     pub(super) recovery_key_delivery_pending: bool,
     /// The recovery key currently revealed on screen (#927), held only until
     /// the explicit saved confirmation, session teardown, or account switch.
@@ -1565,6 +1576,8 @@ impl AccountActor {
             current_session_status_request: None,
             session_check: super::session_check::SessionCheckCoordinator::default(),
             secure_backup_ready: false,
+            #[cfg(any(test, feature = "test-hooks"))]
+            secure_backup_admission_pinned: false,
             recovery_key_delivery_pending: false,
             revealed_recovery_key: None,
             secure_backup_inspection_task: None,
@@ -2782,6 +2795,14 @@ impl AccountActor {
                     self.lifecycle_probe = Some(probe_tx);
                 }
                 #[cfg(any(test, feature = "test-hooks"))]
+                AccountMessage::ProjectSecureBackupGateForTesting { gate } => {
+                    self.secure_backup_admission_pinned = true;
+                    self.set_secure_backup_send_admitted(gate.backup_is_ready())
+                        .await;
+                    self.send_actions(vec![AppAction::SecureBackupGateChanged(gate)])
+                        .await;
+                }
+                #[cfg(any(test, feature = "test-hooks"))]
                 AccountMessage::ConfigureTrustObservation { observation } => {
                     *self
                         .trust_observation_override
@@ -3856,6 +3877,23 @@ impl AccountActor {
     }
 
     pub(super) async fn send_actions(&self, actions: Vec<AppAction>) -> bool {
+        // A pinned fixture models an established Secure Backup verdict, so a
+        // gate check the fixture cannot satisfy must not retract the projection
+        // its send-queue contract depends on (#1737).
+        #[cfg(any(test, feature = "test-hooks"))]
+        let actions = if self.secure_backup_admission_pinned {
+            actions
+                .into_iter()
+                .map(|action| match action {
+                    AppAction::SecureBackupGateChanged(_) => AppAction::SecureBackupGateChanged(
+                        koushi_state::SecureBackupGateState::Ready,
+                    ),
+                    other => other,
+                })
+                .collect()
+        } else {
+            actions
+        };
         self.action_tx.send(actions).await.is_ok()
     }
 }

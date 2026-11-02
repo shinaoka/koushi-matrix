@@ -1181,6 +1181,19 @@ impl CoreRuntime {
             .await
     }
 
+    /// Test hook: project a Secure Backup gate verdict without a server
+    /// inspection, through the AccountActor path that applies send admission and
+    /// publishes the gate. Not part of the public production API.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub async fn project_secure_backup_gate_for_testing(
+        &self,
+        gate: koushi_state::SecureBackupGateState,
+    ) -> bool {
+        self.account_actor_test_handle
+            .send(AccountMessage::ProjectSecureBackupGateForTesting { gate })
+            .await
+    }
+
     /// Test hook: install an SDK session (for example one bound to a mock
     /// homeserver) into this runtime's AccountActor and RoomActor, without a
     /// login or restore flow. Not part of the public production API.

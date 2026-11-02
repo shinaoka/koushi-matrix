@@ -429,6 +429,7 @@ async fn reset_local_data_clears_current_account_persistence_and_signs_out_local
         current_session_status_request: None,
         session_check: crate::account::session_check::SessionCheckCoordinator::default(),
         secure_backup_ready: false,
+        secure_backup_admission_pinned: false,
         recovery_key_delivery_pending: false,
         revealed_recovery_key: None,
         secure_backup_inspection_task: None,

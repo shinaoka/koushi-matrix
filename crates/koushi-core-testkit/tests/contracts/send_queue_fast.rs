@@ -1010,6 +1010,29 @@ async fn fast_send_queue_phase<T>(
         .map_err(|_| format!("{label}: timed out"))
 }
 
+/// #1737: sending is admitted only once the session's Secure Backup gate is.
+async fn open_fast_send_queue_admission(
+    runtime: &CoreRuntime,
+    conn: &mut CoreConnection,
+) -> Result<(), String> {
+    if !runtime
+        .project_secure_backup_gate_for_testing(koushi_state::SecureBackupGateState::Ready)
+        .await
+    {
+        return Err("fast_send_queue secure backup projection rejected".to_owned());
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if conn.snapshot().conversation_access().send_admitted {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("fast_send_queue send admission timed out".to_owned());
+        }
+        let _ = tokio::time::timeout(Duration::from_millis(10), conn.recv_event()).await;
+    }
+}
+
 async fn configure_fast_send_queue_trust(runtime: &CoreRuntime) -> Result<(), String> {
     let configured = runtime
         .configure_trust_observation_for_testing(koushi_sdk::CurrentDeviceTrustObservation {
@@ -1733,6 +1756,17 @@ async fn run_fast_send_queue_feedback() {
     .await
     .expect("fast_send_queue ready phase")
     .expect("fast_send_queue ready projection");
+    // #1737: sending is admitted only through the Secure Backup gate. This fast
+    // fixture models no backup endpoints or recovery material, so it projects an
+    // established verdict once through the AccountActor's own admission path and
+    // pins it for the rest of the fixture.
+    fast_send_queue_phase(
+        "fast_send_queue send admission",
+        open_fast_send_queue_admission(&runtime, &mut conn),
+    )
+    .await
+    .expect("fast_send_queue send admission phase")
+    .expect("fast_send_queue send admission");
     fast_send_queue_phase(
         "fast_send_queue room-list snapshot",
         wait_for_room_in_room_list(&mut conn, room_id.as_str(), "fast_send_queue room list"),
@@ -2414,6 +2448,17 @@ async fn run_fast_send_queue_feedback() {
     .await
     .expect("fast_send_queue restored success fixture phase");
     proxy.enable();
+    // #1737: a restored runtime is admitted only through the Secure Backup gate.
+    // The fixture models an established verdict and admits its queue here, so the
+    // persisted unsent request is released against the enabled proxy and the
+    // mounted success fixture instead of failing first.
+    fast_send_queue_phase(
+        "fast_send_queue restored admission",
+        open_fast_send_queue_admission(&runtime, &mut conn),
+    )
+    .await
+    .expect("fast_send_queue restored admission phase")
+    .expect("fast_send_queue restored admission");
     let restart_retry_id = if matches!(
         &restored_send_state,
         TimelineSendState::NotSent {
@@ -2435,9 +2480,6 @@ async fn run_fast_send_queue_feedback() {
             .expect("fast_send_queue restored retry command"),
         )
     } else {
-        let paused_time = FastSendQueuePausedTime::start();
-        tokio::time::advance(Duration::from_millis(1_500)).await;
-        drop(paused_time);
         None
     };
     let restart_event_id = wait_for_fast_send_queue_authoritative_completion(
