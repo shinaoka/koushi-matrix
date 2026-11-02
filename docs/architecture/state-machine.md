@@ -1039,6 +1039,15 @@ stateDiagram-v2
   content never sends, never releases a queued send, never changes crawler
   admission, and never writes a receipt or fully-read marker from a provisional
   projection.
+- Two limits are accepted for the phase that introduced the #1737 read
+  exception. First, the SDK send queue is paused through its own session-wide and
+  per-room enablement flags; a session-wide pause that lands between the
+  room-level check and the room-level enable can still resume one room, and
+  closing that gap needs the pause at the SDK's final network boundary (#1677).
+  Second, the projected `ConversationAccess` is Rust state only: the Tauri
+  snapshot DTO and its TypeScript mirror do not carry it yet, and the GUI phase
+  adds them together with the surfaces that render the provisional-cache warning
+  and the send-blocked reason.
 - `RoomListUpdated` remains the compatibility path for already-authoritative
   room operations and tests; service bootstrap projection uses the guarded
   readiness actions above. Both entry and snapshot paths reject all non-Ready
