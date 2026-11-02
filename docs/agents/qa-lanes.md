@@ -159,6 +159,21 @@ of exhaustive backup-wide restore. `KeyBackupRestoreSummary.scope` must remain
 `JoinedRooms` unless docs/policies and upstream SDK feedback record a broader
 public API or a reviewed vendored patch decision.
 
+### First-response stall records
+
+A run generation that gets no committed Simplified Sliding Sync response records
+`core.sync first_response_stalled` at `Warn` after a 30 s window, and repeats it
+with a doubling window capped at 5 min, so a stalled export names how far the
+run got without flooding the detail ring. The record carries only `phase`
+(`sync_started`, `sync_running`, `encryption_sync_requested` — the last step
+this generation completed), `elapsed_ms` since the generation started, and
+`generation`. `core.sync first_response_stalled_cleared` at `Debug` closes a
+reported episode when the response finally commits; a healthy start records
+neither. The record is diagnostic only: the first-response wait, retry policy
+and projected sync status do not change. It cannot report how many requests the
+`room-list` connection issued, because the SDK exposes no per-request
+observable for that connection.
+
 Room-list space classification can lag behind room/space create or join on local
 homeservers. Headless core QA should perform a bounded `SyncOnce` after A
 creates/invites and after B joins before asserting `rooms` vs `spaces`;

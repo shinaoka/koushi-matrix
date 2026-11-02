@@ -9,7 +9,10 @@ use std::{
     time::Duration,
 };
 
-use koushi_core::{SyncEvent, runtime::CoreRuntime};
+use koushi_core::{
+    SyncEvent,
+    runtime::{CoreConnection, CoreRuntime},
+};
 use koushi_protocol::command::{AccountCommand, AppCommand, CoreCommand};
 use koushi_state::{AppAction, AuthSecret, LoginRequest, RoomListFilter, SessionState, SyncState};
 use matrix_sdk::test_utils::mocks::MatrixMockServer;
@@ -493,4 +496,261 @@ async fn mark_as_read_and_unread_success_actions_update_room_list_projection() {
             .unread_count,
         0
     );
+}
+
+// #1755: a first response that never commits is recorded once per bounded
+// window with the last completed phase, and cleared once when it commits.
+const FIRST_RESPONSE_STALL_STAGE: &str = "first_response_stalled";
+const FIRST_RESPONSE_CLEARED_STAGE: &str = "first_response_stalled_cleared";
+
+struct FirstResponseWatchdogHarness {
+    _server: MatrixMockServer,
+    _data_dir: tempfile::TempDir,
+    _credential_dir: tempfile::TempDir,
+    runtime: CoreRuntime,
+    connection: Option<CoreConnection>,
+    room_list_request_rx: tokio::sync::mpsc::UnboundedReceiver<usize>,
+    first_response_release: Arc<Barrier>,
+    complete_range_release: Arc<Barrier>,
+}
+
+/// Log in a normal account runtime whose first room-list response stays held
+/// until the test releases `first_response_release`.
+async fn first_response_watchdog_harness() -> FirstResponseWatchdogHarness {
+    let server = MatrixMockServer::new().await;
+    server
+        .mock_versions()
+        .with_feature("org.matrix.simplified_msc3575", true)
+        .ok()
+        .mount()
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/_matrix/client/v3/login"))
+        .respond_with(EchoRequestedLoginDevice)
+        .expect(1)
+        .mount(server.server())
+        .await;
+
+    let (room_list_request_tx, room_list_request_rx) = tokio::sync::mpsc::unbounded_channel();
+    let first_response_release = Arc::new(Barrier::new(2));
+    let complete_range_release = Arc::new(Barrier::new(2));
+    Mock::given(method("POST"))
+        .and(path(SLIDING_SYNC_PATH))
+        .respond_with(RuntimeSlidingSyncResponder {
+            room_list_requests: Arc::new(AtomicUsize::new(0)),
+            encryption_requests: Arc::new(AtomicUsize::new(0)),
+            request_bodies: Arc::new(Mutex::new(Vec::new())),
+            room_list_request_tx,
+            first_response_release: first_response_release.clone(),
+            complete_range_release: complete_range_release.clone(),
+        })
+        .mount(server.server())
+        .await;
+
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let credential_dir = tempfile::tempdir().expect("runtime credential directory");
+    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    assert!(
+        runtime
+            .configure_trust_observation_for_testing(koushi_sdk::CurrentDeviceTrustObservation {
+                current: koushi_state::CurrentDeviceTrustState::Verified,
+                updates: Box::pin(futures_util::stream::pending()),
+            })
+            .await
+    );
+    let connection = runtime.attach();
+    let login_request_id = connection.next_request_id();
+    connection
+        .command(CoreCommand::Account(AccountCommand::LoginPassword {
+            request_id: login_request_id,
+            request: LoginRequest {
+                homeserver: server.uri(),
+                username: "first-response-watchdog".to_owned(),
+                password: AuthSecret::new("synthetic-password"),
+                device_display_name: None,
+            },
+            platform: koushi_state::DisplayPlatform::Linux,
+        }))
+        .await
+        .expect("submit runtime login");
+
+    FirstResponseWatchdogHarness {
+        _server: server,
+        _data_dir: data_dir,
+        _credential_dir: credential_dir,
+        runtime,
+        connection: Some(connection),
+        room_list_request_rx,
+        first_response_release,
+        complete_range_release,
+    }
+}
+
+fn first_response_records(
+    cursor: koushi_diagnostics::test_support::DetailCursor,
+    stage: &str,
+) -> Vec<koushi_diagnostics::DiagnosticRecord> {
+    koushi_diagnostics::test_support::detail_records_since(cursor)
+        .into_iter()
+        .filter(|record| record.event.source == "core.sync" && record.event.stage == stage)
+        .collect()
+}
+
+async fn wait_for_first_response_records(
+    cursor: koushi_diagnostics::test_support::DetailCursor,
+    stage: &'static str,
+    deadline: Duration,
+) -> Vec<koushi_diagnostics::DiagnosticRecord> {
+    tokio::time::timeout(deadline, async {
+        loop {
+            let records = first_response_records(cursor, stage);
+            if !records.is_empty() {
+                return records;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{stage} must be recorded within {deadline:?}"))
+}
+
+fn diagnostic_value(
+    record: &koushi_diagnostics::DiagnosticRecord,
+    key: &str,
+) -> koushi_diagnostics::DiagnosticValue {
+    record
+        .event
+        .fields
+        .iter()
+        .find(|field| field.key == key)
+        .unwrap_or_else(|| panic!("{key} field"))
+        .value
+        .clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn held_first_response_records_one_bounded_stall_then_one_clear() {
+    use koushi_diagnostics::{DiagnosticLevel, DiagnosticValue};
+
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
+    let mut harness = first_response_watchdog_harness().await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), harness.room_list_request_rx.recv())
+            .await
+            .expect("first room-list request deadline"),
+        Some(0),
+        "the held response belongs to the run's first room-list request"
+    );
+
+    // A slow start inside the first window is not a stall.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert!(
+        first_response_records(diagnostic_start, FIRST_RESPONSE_STALL_STAGE).is_empty(),
+        "the watchdog stays silent inside its first window"
+    );
+
+    let stalled = wait_for_first_response_records(
+        diagnostic_start,
+        FIRST_RESPONSE_STALL_STAGE,
+        Duration::from_secs(45),
+    )
+    .await;
+    assert_eq!(stalled.len(), 1, "exactly one record per bounded window");
+    assert_eq!(stalled[0].event.level, DiagnosticLevel::Warn);
+    assert_eq!(
+        diagnostic_value(&stalled[0], "phase"),
+        DiagnosticValue::Token("encryption_sync_requested"),
+        "the record names the last completed phase"
+    );
+    let DiagnosticValue::Milliseconds(elapsed_ms) = diagnostic_value(&stalled[0], "elapsed_ms")
+    else {
+        panic!("elapsed_ms must be milliseconds")
+    };
+    assert!(
+        elapsed_ms >= 30_000,
+        "the record reports the run generation's elapsed wait, got {elapsed_ms}ms"
+    );
+    let DiagnosticValue::Count(generation) = diagnostic_value(&stalled[0], "generation") else {
+        panic!("generation must be a count")
+    };
+    assert!(generation >= 1, "the record names its run generation");
+    assert_eq!(
+        stalled[0].event.fields.len(),
+        3,
+        "phase, elapsed_ms and generation are the whole privacy-safe record"
+    );
+
+    // The repeated window doubles, so the same stall cannot repeat at once.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(
+        first_response_records(diagnostic_start, FIRST_RESPONSE_STALL_STAGE).len(),
+        1,
+        "a repeated window must back off instead of repeating immediately"
+    );
+
+    // Releasing the held response clears the reported episode exactly once.
+    harness.first_response_release.wait();
+    let cleared = wait_for_first_response_records(
+        diagnostic_start,
+        FIRST_RESPONSE_CLEARED_STAGE,
+        Duration::from_secs(15),
+    )
+    .await;
+    assert_eq!(cleared.len(), 1, "one clear per reported stall");
+    assert_eq!(cleared[0].event.level, DiagnosticLevel::Debug);
+    assert_eq!(
+        diagnostic_value(&cleared[0], "phase"),
+        DiagnosticValue::Token("encryption_sync_requested")
+    );
+
+    drop(harness.connection.take());
+    harness.complete_range_release.wait();
+    tokio::time::timeout(Duration::from_secs(15), harness.runtime.shutdown())
+        .await
+        .expect("ordered runtime shutdown must stop and join all actor owners");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn committed_first_response_records_no_stall() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
+    let mut harness = first_response_watchdog_harness().await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), harness.room_list_request_rx.recv())
+            .await
+            .expect("first room-list request deadline"),
+        Some(0)
+    );
+
+    harness.first_response_release.wait();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), harness.room_list_request_rx.recv())
+            .await
+            .expect("complete-range room-list request deadline"),
+        Some(1)
+    );
+    harness.complete_range_release.wait();
+    let connection = harness.connection.as_mut().expect("runtime connection");
+    wait_for_state_event(connection, |state| {
+        matches!(state.sync, SyncState::Running) && state.rooms.len() == EXPECTED_JOINED_ROOMS
+    })
+    .await;
+
+    assert!(
+        first_response_records(diagnostic_start, FIRST_RESPONSE_STALL_STAGE).is_empty(),
+        "a start whose first response commits reports no stall"
+    );
+    assert!(
+        first_response_records(diagnostic_start, FIRST_RESPONSE_CLEARED_STAGE).is_empty(),
+        "nothing was reported, so nothing is cleared"
+    );
+
+    drop(harness.connection.take());
+    tokio::time::timeout(Duration::from_secs(15), harness.runtime.shutdown())
+        .await
+        .expect("ordered runtime shutdown must stop and join all actor owners");
 }
