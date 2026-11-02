@@ -27,8 +27,8 @@ export function conversationAccessFixture(
   return {
     readable,
     // A snapshot that carries no readiness at all cannot claim authority.
-    list_authoritative: readable && roomList?.readiness?.kind === "ready",
-    send_admitted: session.kind === "ready" && backupIsReady(secureBackupGate)
+    listAuthoritative: readable && roomList?.readiness?.kind === "ready",
+    sendAdmitted: session.kind === "ready" && backupIsReady(secureBackupGate)
   };
 }
 

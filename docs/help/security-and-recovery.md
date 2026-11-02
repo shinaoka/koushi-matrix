@@ -64,21 +64,28 @@ history, not diagnostic information.
 
 ## Read while secure backup is still being checked
 
-Koushi opens the conversation list as soon as your session is verified, even
-while it is still checking Secure Backup. Until that check finishes you are
-reading what this device saved last time.
+Once your session is verified, Koushi opens your saved conversations even while
+it is still checking Secure Backup, unless that check needs recovery or setup
+from you. In that state you are reading what this device saved the last time it
+synced.
 
-- A notice at the top of the conversation list says so. Rooms or messages that
-  arrived since this device last synced may be missing, and the unread counts
-  are the last values this device saved.
-- A second notice beside the message box says sending is unavailable until
-  Secure Backup is ready. The message box, attachment button, thread replies and
-  scheduled sends stay read-only until then, in every room.
-- Opening a conversation does not mark it read for your other clients.
+Two notices describe it, and each appears on its own:
 
-The normal conversation list replaces the notice once Koushi's first sync
-response arrives. Take the offered verification, recovery, or setup action to
-be able to send again.
+- **Saved conversations.** A notice at the top of the conversation list means
+  Koushi has not yet received this run's first sync response. Rooms or messages
+  that arrived since this device last synced may be missing or out of date, and
+  the unread marks and counts are the last values this device saved. The notice
+  goes away when that response arrives.
+- **Sending is unavailable until Secure Backup is ready.** A notice beside the
+  message box means every send is closed, in every room, encrypted or not: the
+  message box, the attachment button, thread replies, reactions, edits,
+  scheduled sends and resending a queued message. It goes away when Secure
+  Backup becomes ready, which can happen before or after the conversation list
+  is confirmed.
+
+Opening a saved conversation does not mark it read for you or for your other
+clients. Take the offered verification, recovery, or setup action to be able to
+send again.
 
 ## Recover missing encrypted history
 

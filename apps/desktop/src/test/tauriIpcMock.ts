@@ -319,7 +319,7 @@ export function defaultSnapshotResponse() {
       session_lock_reason: null,
       secure_backup_gate: { kind: "inactive" },
       // #1748: a signed-out default state is never readable.
-      conversation_access: { readable: false, list_authoritative: false, send_admitted: false },
+      conversation_access: { readable: false, listAuthoritative: false, sendAdmitted: false },
       current_session_status: { status: "idle" },
       device_cleanup: { kind: "idle" },
       auth: { kind: "unknown" },

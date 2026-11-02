@@ -7220,7 +7220,7 @@ function AccountContent({
   const secureBackupRuntimeFailure = secureBackupGateFailure(secureBackupGate);
   // A provisional cache is read-only: every user-content write is refused in
   // Rust while send admission is closed, including plaintext rooms.
-  const composerReadOnly = !conversationAccess.send_admitted;
+  const composerReadOnly = !conversationAccess.sendAdmitted;
 
   if (sessionKind === "restoring" || sessionKind === "loggingOut") {
     return <div className="boot-screen">{t("app.title")}</div>;

@@ -117,7 +117,12 @@ it already receives is a second admission owner; do not add one. Headless
 fixtures that inject a session or a backup gate restamp it through
 `apps/desktop/src/test/conversationAccessFixture.ts`, which mirrors the Rust
 projection so a spec cannot accidentally show a shell state Rust would never
-produce.
+produce. That mirror is a fixture convenience, not evidence: it repeats whatever
+mistake the TypeScript type makes. The proof that it matches the wire is
+`apps/desktop/src/domain/conversationAccessWire.test.ts`, which compares the
+declared keys against the Rust-serialized `frontend_app_state.json` golden. A
+hand-written snake_case mirror type-checks, passes every fixture that repeats the
+mistake, and leaves the real shell permanently un-writable.
 
 Focused checks:
 

@@ -1253,14 +1253,15 @@ export type SessionLockReason = { kind: "unknownToken"; soft_logout: boolean };
 
 /**
  * #1748: Rust-owned admission for reading cached conversations and for writing
- * to the server. `readable` gates the shell, `list_authoritative` gates
- * authoritative counts and read-state writes, and `send_admitted` gates every
- * user-content write.
+ * to the server. `readable` gates the shell, `listAuthoritative` gates
+ * authoritative counts and read-state writes, and `sendAdmitted` gates every
+ * user-content write. The Rust struct is `#[serde(rename_all = "camelCase")]`,
+ * so these key names are the wire names (`frontend_app_state.json`).
  */
 export interface ConversationAccess {
   readable: boolean;
-  list_authoritative: boolean;
-  send_admitted: boolean;
+  listAuthoritative: boolean;
+  sendAdmitted: boolean;
 }
 
 export type SessionState =

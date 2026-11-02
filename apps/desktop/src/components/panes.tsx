@@ -1238,6 +1238,7 @@ export function TimelinePane({
                   ? `anchored:${timelineRoomId}:${mainTimelineAnchorEventId}`
                   : timelineRoomId
               }
+              canWrite={canEdit}
               roomId={timelineRoomId}
               onRequestHistoryKeys={onRequestHistoryKeys}
               historyKeyRecovery={snapshot.state.domain.room_management.history_keys?.[timelineRoomId]}
@@ -1341,6 +1342,7 @@ export function TimelinePane({
           onUseOriginal={onUseOriginalStagedUploadStable}
           loadPreview={onLoadStagedUploadPreviewStable}
           surface="main"
+          canEdit={canEdit}
           resolveComposerKeyAction={resolveComposerKeyActionStable}
           mentionCandidates={mentionCandidates}
           mentionCandidatesLoading={mentionCandidatesLoading}

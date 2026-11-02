@@ -1143,6 +1143,7 @@ export function ContextualRightPanel({
               </div>
             ) : null}
             <TimelineView
+              canWrite={!composerReadOnly}
               roomId={focusedRoomId}
               onRequestHistoryKeys={onRequestHistoryKeys}
               historyKeyRecovery={snapshot.state.domain.room_management.history_keys?.[focusedRoomId]}
@@ -1275,6 +1276,7 @@ export function ContextualRightPanel({
         {threadTimelineKeyValue && threadRoomId && timelineTransport ? (
           <TimelineView
             key={`${threadRoomId}:${rootEventId}`}
+            canWrite={!composerReadOnly}
             accountTabId={selectedAccountTabId ?? undefined}
             presentationContext="thread"
             roomId={threadRoomId}
@@ -1384,6 +1386,7 @@ export function ContextualRightPanel({
           }
           loadPreview={threadPreviewLoader}
           surface="thread"
+          canEdit={!composerReadOnly}
           resolveComposerKeyAction={onResolveComposerKeyAction}
           mentionCandidates={threadMentionCandidates}
           mentionCandidatesLoading={threadMentionCandidatesLoading}

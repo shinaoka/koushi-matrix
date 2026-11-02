@@ -398,6 +398,7 @@ export const TimelineView = memo(function TimelineView({
   onRecentEmojisChange,
   mathModeEnabled = true,
   onMathModeChange,
+  canWrite = true,
   searchHighlightsByEventId = {},
   mediaDownloads = {},
   continuity = { kind: "unknown" },
@@ -465,6 +466,8 @@ export const TimelineView = memo(function TimelineView({
    */
   mathModeEnabled?: boolean;
   onMathModeChange?: (enabled: boolean) => void | Promise<void>;
+  /** #1748: Rust's send admission; false hides message write affordances. */
+  canWrite?: boolean;
   searchHighlightsByEventId?: Record<string, { snippet: string; ranges: TextRange[] }>;
   mediaDownloads?: Record<string, TimelineMediaDownloadState>;
   continuity?: TimelineContinuityState;
@@ -3887,6 +3890,7 @@ export const TimelineView = memo(function TimelineView({
               ) : (
                 <TimelineItemRow
                 accountTabId={accountTabId}
+                canWrite={canWrite}
                 item={item}
                 onEditFormOpenChange={onEditFormOpenChange}
                 rowId={row.row_id}

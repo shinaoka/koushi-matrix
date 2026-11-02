@@ -161,10 +161,24 @@ test("the provisional cache keeps the composer, thread and upload surfaces read-
     mimeType: "text/plain",
     buffer: Buffer.from("synthetic")
   });
-  await page.waitForTimeout(50);
-  expect(
-    await page.evaluate(() => window.__harness.invocationsOf("stage_upload_bytes").length)
-  ).toBe(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__harness.invocationsOf("stage_upload_bytes").length)
+    )
+    .toBe(0);
+
+  // Message write affordances are hidden too: reply, reaction, edit, redaction
+  // and the pin toggle all dispatch send-family commands Rust refuses here.
+  for (const name of [
+    "Reply to message",
+    "Add reaction",
+    "Edit message",
+    "Redact message"
+  ]) {
+    await expect(page.getByRole("button", { name: new RegExp(`^${name}`) })).toHaveCount(0);
+  }
+  // Reading is still open: the thread summary pill that opens a thread stays.
+  await expect(page.getByRole("button", { name: /^Open thread/ })).toHaveCount(1);
 
   // Thread composer follows the same Rust admission. Open the thread through
   // its ordinary pill so the real right-panel path renders it.
@@ -198,6 +212,7 @@ test("the provisional cache keeps the composer, thread and upload surfaces read-
   await expect(
     panel.getByRole("button", { name: "Attach file", exact: true })
   ).toBeDisabled();
+  await expect(panel.getByRole("button", { name: "Reply to message" })).toHaveCount(0);
 
   // Opening cached content never writes a receipt or a fully-read marker.
   expect(await page.evaluate(() => window.__harness.invocationsOf("send_read_receipt").length)).toBe(0);
@@ -311,11 +326,30 @@ test("states Rust keeps closed keep the blocking screen and its recovery actions
   await expect(page.getByRole("button", { name: "Open secure backup diagnostics" })).toBeVisible();
 });
 
-test("Secure Backup setup required still blocks the shell", async ({ page }) => {
+test("Secure Backup setup required still blocks the shell and owns the setup", async ({
+  page
+}) => {
   await gotoReadyShell(page);
   await pushAdmission(page, { gate: { kind: "setupRequired" } });
   await expect(page.locator("main.session-verification-gate")).toBeVisible();
   await expect(page.getByRole("main", { name: "Conversation timeline" })).toHaveCount(0);
+
+  // Setup moved to the gate, so the gate must offer it and dispatch it.
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await page.getByLabel("Backup passphrase").fill("synthetic-gate-passphrase");
+  await page.getByRole("button", { name: "Set up secure backup" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__harness.invocationsOf("bootstrap_secure_backup").length)
+    )
+    .toBe(1);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("bootstrap_secure_backup")[0]?.args
+      )
+    )
+    .toEqual({ passphrase: "[REDACTED]", intent: { kind: "initialSetup" } });
 });
 
 test("the status copy follows the active catalog while it stays visible", async ({ page }) => {
@@ -356,6 +390,11 @@ test("the status copy follows the active catalog while it stays visible", async 
 
     // The notice is not stale copy captured before the switch.
     await expect(sidebarStatus(page)).toHaveText(expected);
+    // Container geometry survives the switch: the warning stays inside the
+    // sidebar and never overlaps the room rows it qualifies.
+    const statusBox = await sidebarStatus(page).boundingBox();
+    const firstRoomBox = await page.locator(".room-item").first().boundingBox();
+    expect(statusBox!.y + statusBox!.height).toBeLessThanOrEqual(firstRoomBox!.y + 1);
     await expect(page.locator("html")).toHaveAttribute("lang", catalogLocale);
     // The separate send-blocked reason is translated too, not left in English.
     await expect(composerNotice(page)).not.toHaveText(SEND_BLOCKED_COPY);
@@ -368,5 +407,48 @@ test("the status copy follows the active catalog while it stays visible", async 
             ? "安全备份就绪前无法发送。"
             : "安全備份就緒前無法傳送。"
     );
+  }
+
+  // The Rust-resolved pseudo profiles are presentation modes over the active
+  // catalog, so the notices must survive accented expansion and bidi layout.
+  for (const { pseudo, dir } of [
+    { pseudo: "accented", dir: "ltr" },
+    { pseudo: "bidi", dir: "rtl" }
+  ] as const) {
+    await page.evaluate(
+      ({ nextPseudo }) => {
+        const snapshot = window.__harness.currentSnapshot();
+        window.__harness.setSnapshot({
+          ...snapshot,
+          state: {
+            ...snapshot.state,
+            domain: {
+              ...snapshot.state.domain,
+              locale_profile: {
+                ...snapshot.state.domain.locale_profile,
+                lang: nextPseudo === "bidi" ? "ar" : "en",
+                dir: nextPseudo === "bidi" ? "rtl" : "ltr",
+                catalog_locale: "pseudo",
+                pseudo_locale: nextPseudo
+              }
+            }
+          }
+        });
+        window.__harness.pushStateUpdate();
+      },
+      { nextPseudo: pseudo }
+    );
+    await expect(page.locator("html")).toHaveAttribute("dir", dir);
+    // Pseudo-localization expands the English template rather than replacing
+    // it, and neither notice is dropped by the expansion.
+    // Accented pseudo mode accents every letter; bidi mode wraps RTL marks.
+    await expect(sidebarStatus(page)).not.toHaveText(PROVISIONAL_COPY);
+    await expect(composerNotice(page)).not.toHaveText(SEND_BLOCKED_COPY);
+    // The accented mode brackets and accents the whole message.
+    await expect(sidebarStatus(page)).toContainText(
+      pseudo === "accented" ? "[!! " : ""
+    );
+    const statusBox = await sidebarStatus(page).boundingBox();
+    expect(statusBox?.height ?? 0).toBeGreaterThan(0);
   }
 });

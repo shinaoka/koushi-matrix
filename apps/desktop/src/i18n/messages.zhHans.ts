@@ -1608,7 +1608,7 @@ export const zhHans: Catalog = {
   "gate.secureBackupRetry": "重试安全备份",
   "gate.secureBackupDiagnostics": "打开安全备份诊断信息",
   "gate.secureBackupCommandFailed": "安全备份操作失败。请重试。",
-  "gate.secureBackupRuntimeDegraded": "安全备份暂时处于降级状态。在 Koushi 重试期间，发送、草稿、接收和本地解密仍可使用。",
+  "gate.secureBackupRuntimeDegraded": "安全备份暂时处于降级状态。在 Koushi 重试期间，草稿、接收和本地解密仍可使用；是否能发送请看消息输入框旁的提示。",
   "slidingSync.blockedTitle": "需要 Simplified Sliding Sync",
   "slidingSync.unsupported": "此主服务器不支持 Simplified Sliding Sync。",
   "slidingSync.unreachable": "Koushi 无法连接到此主服务器以验证其是否支持 Simplified Sliding Sync。",

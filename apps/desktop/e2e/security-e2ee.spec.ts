@@ -306,96 +306,11 @@ test("security settings drive Rust-owned room-key transfer and secure backup sta
   // truth (the gate) and no setup is offered.
   await expect(page.getByTestId("secure-backup-state")).toHaveText("Enabled");
   await expect(page.getByRole("form", { name: "Secure backup", exact: true })).toHaveCount(0);
-  // #1748: `setupRequired` now replaces the shell with the blocking gate (Rust
-  // opens no read exception for it), so the in-settings setup form is driven
-  // through an in-flight setup request instead.
-  await page.evaluate(() => {
-    const snapshot = window.__harness.currentSnapshot();
-    snapshot.state.domain.e2ee_trust.key_management.secure_backup_setup = {
-      kind: "settingUp",
-      request_id: 9_201
-    };
-    window.__harness.setSnapshot(snapshot);
-    window.__harness.pushStateUpdate();
-  });
-  await expect(page.getByTestId("secure-backup-state")).toHaveText("Setting up");
-  await page.evaluate(() => {
-    window.__harness.setCommandResponse("plugin:dialog|save", "/tmp/koushi-export.txt");
-    window.__harness.setCommandResponse(
-      "plugin:dialog|open",
-      "/tmp/element-compatible-keys.txt"
-    );
-  });
-
-  const exportForm = page.getByRole("form", { name: "Room key export", exact: true });
-  await exportForm.getByRole("button", { name: "Export room keys" }).click();
-  const exportDialog = page.getByRole("dialog", { name: "Room key passphrase" });
-  await exportDialog.getByLabel("Room key passphrase").fill("synthetic-export-passphrase");
-  await exportDialog.getByRole("button", { name: "Export room keys" }).click();
-  await expect.poll(() => invocationCount(page, "export_room_keys")).toBe(1);
-  await expect(page.getByTestId("room-key-export-state")).toHaveText("Exported");
-  await expect
-    .poll(async () =>
-      page.evaluate(() => window.__harness.invocationsOf("export_room_keys")[0]?.args)
-    )
-    .toEqual({
-      destinationPath: "[REDACTED]",
-      passphrase: "[REDACTED]"
-    });
-
-  const importForm = page.getByRole("form", { name: "Room key import", exact: true });
-  await importForm.getByRole("button", { name: "Import room keys" }).click();
-  const importDialog = page.getByRole("dialog", { name: "Room key passphrase" });
-  await importDialog.getByLabel("Room key passphrase").fill("synthetic-import-passphrase");
-  await importDialog.getByRole("button", { name: "Import room keys" }).click();
-  await expect.poll(() => invocationCount(page, "import_room_keys")).toBe(1);
-  await expect(page.getByTestId("room-key-import-state")).toHaveText("1 of 1 imported");
-  await expect
-    .poll(async () =>
-      page.evaluate(() => window.__harness.invocationsOf("import_room_keys")[0]?.args)
-    )
-    .toEqual({
-      sourcePath: "[REDACTED]",
-      passphrase: "[REDACTED]"
-    });
-
-  const secureBackupForm = page.getByRole("form", { name: "Secure backup", exact: true });
-  await secureBackupForm
-    .getByLabel("Secure backup passphrase", { exact: true })
-    .fill("synthetic-secure-backup-passphrase");
-  // #927: setup needs no destination; the key is revealed on screen.
-  await secureBackupForm.getByRole("button", { name: "Set up secure backup" }).click();
-  await expect.poll(() => invocationCount(page, "bootstrap_secure_backup")).toBe(1);
-  await expect
-    .poll(async () =>
-      page.evaluate(() => window.__harness.invocationsOf("bootstrap_secure_backup")[0]?.args)
-    )
-    .toEqual({
-      passphrase: "[REDACTED]",
-      intent: { kind: "initialSetup" }
-    });
-  const setupReveal = page.getByRole("region", { name: "Your recovery key" });
-  await expect(setupReveal.getByText("synthetic-harness-recovery-key")).toBeVisible();
-  await page.evaluate(() =>
-    window.__harness.setCommandResponse("plugin:dialog|save", "/tmp/recovery-key.txt")
-  );
-  await setupReveal.getByRole("button", { name: "Save to file…" }).click();
-  await expect.poll(() => invocationCount(page, "save_secure_backup_recovery_key")).toBe(1);
-  await expect(page.getByTestId("secure-backup-state")).toHaveText("Recovery key saved");
-  await expect
-    .poll(async () =>
-      page.evaluate(
-        () => window.__harness.invocationsOf("save_secure_backup_recovery_key")[0]?.args
-      )
-    )
-    .toEqual({ revealRequestId: 9_202, recoveryKeyDestinationPath: "[REDACTED]" });
-  // Saving never dismisses the reveal; only the explicit confirmation does.
-  await expect(setupReveal.getByText("synthetic-harness-recovery-key")).toBeVisible();
-  await setupReveal.getByRole("button", { name: "I saved the recovery key" }).click();
-  await expect
-    .poll(() => invocationCount(page, "confirm_secure_backup_recovery_key_saved"))
-    .toBe(1);
-  await expect(page.getByTestId("secure-backup-state")).toHaveText("Enabled");
+  // #1748: `setupRequired` now replaces the shell with its blocking gate, which
+  // owns secure-backup setup, so the in-settings setup form is no longer a
+  // reachable product path. The gate's own form and the `initialSetup` command
+  // shape are covered in `SessionVerificationGate.test.tsx`; this test keeps the
+  // key-management flows the shell still owns.
 
   const passphraseChangeForm = page.getByRole("form", {
     name: "Change secure backup passphrase",
@@ -427,7 +342,7 @@ test("security settings drive Rust-owned room-key transfer and secure backup sta
   await changeReveal.getByRole("button", { name: "I saved the recovery key" }).click();
   await expect
     .poll(() => invocationCount(page, "confirm_secure_backup_recovery_key_saved"))
-    .toBe(2);
+    .toBe(1);
   await expect(page.getByTestId("secure-backup-passphrase-change-state")).toHaveText(
     "No passphrase change"
   );

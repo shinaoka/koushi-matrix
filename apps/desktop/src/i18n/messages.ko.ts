@@ -1608,7 +1608,7 @@ export const ko: Catalog = {
   "gate.secureBackupRetry": "보안 백업 다시 시도",
   "gate.secureBackupDiagnostics": "보안 백업 진단 정보 열기",
   "gate.secureBackupCommandFailed": "보안 백업 작업에 실패했습니다. 다시 시도하세요.",
-  "gate.secureBackupRuntimeDegraded": "보안 백업이 일시적으로 제대로 작동하지 않습니다. Koushi가 다시 시도하는 동안에도 전송, 임시 저장, 수신, 로컬 복호화는 계속 사용할 수 있습니다.",
+  "gate.secureBackupRuntimeDegraded": "보안 백업이 일시적으로 제대로 작동하지 않습니다. Koushi가 다시 시도하는 동안에도 임시 저장, 수신, 로컬 복호화는 계속 사용할 수 있습니다. 전송 가능 여부는 메시지 입력창 옆의 안내에 표시됩니다.",
   "slidingSync.blockedTitle": "Simplified Sliding Sync가 필요합니다",
   "slidingSync.unsupported": "이 홈서버는 Simplified Sliding Sync를 지원하지 않습니다.",
   "slidingSync.unreachable": "Koushi에서 이 홈서버에 연결할 수 없어 Simplified Sliding Sync 지원 여부를 확인하지 못했습니다.",
