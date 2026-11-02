@@ -53,6 +53,10 @@ pub fn restore_ready_actions() -> Vec<AppAction> {
         AppAction::RestoreSessionRequested,
         AppAction::RestoreSessionSucceeded(session_info()),
         AppAction::CurrentDeviceTrustChanged(CurrentDeviceTrustState::Verified),
+        // #1737: a Ready session sends only once Secure Backup admission is
+        // established, so the shared fixture models a session whose backup gate
+        // is operational.
+        AppAction::SecureBackupGateChanged(koushi_state::SecureBackupGateState::Ready),
     ]
 }
 

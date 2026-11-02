@@ -56,6 +56,18 @@ export const HEADLESS_LOCAL_QA_SCENARIO_TOKENS = Object.freeze({
     "thread_summary_convergence=ok"
   ]),
   read_state_convergence: Object.freeze(["read_state_convergence=ok"]),
+  cached_read_before_first_sync: Object.freeze([
+    "cached_read_seed=ok",
+    "cached_read_first_response_withheld=ok",
+    "cached_read_list=ok",
+    "cached_read_timeline=ok",
+    "cached_read_send_blocked=ok",
+    "cached_read_network_blocked=ok",
+    "cached_read_promoted=ok",
+    "cached_read_read_state_admitted=ok",
+    "cached_read_post_admission_send=ok",
+    "cached_read_before_first_sync=ok"
+  ]),
   hidden_state_acl: Object.freeze(["hidden_state_acl=ok"]),
   search_crawler_catchup: Object.freeze([
     "crawl_catchup_live=ok",

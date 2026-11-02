@@ -105,6 +105,128 @@ fn composer_scope_and_timeline_account_fence_are_core_policy() {
     );
 }
 
+#[test]
+fn send_admission_covers_every_composer_surface() {
+    // #1737: a restored session may read cached conversations before Secure
+    // Backup admission; these are the commands that would write to the server
+    // from that surface. Plaintext sends are included, because the read-only
+    // shell exposes rooms the startup screen used to hide.
+    let id = request(3);
+    let account = koushi_protocol::AccountKey("@user:example.invalid".to_owned());
+    let key = koushi_protocol::TimelineKey::room(account, "!room:example.invalid");
+    let expected_account = koushi_protocol::SessionKeyId {
+        homeserver: "https://example.invalid".to_owned(),
+        user_id: "@user:example.invalid".to_owned(),
+        device_id: "DEVICE".to_owned(),
+    };
+    for command in [
+        CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id: id,
+            key: key.clone(),
+            transaction_id: "transaction".to_owned(),
+            document: koushi_state::ComposerDocument::default(),
+        }),
+        CoreCommand::Timeline(TimelineCommand::SendReply {
+            request_id: id,
+            key: key.clone(),
+            transaction_id: "transaction".to_owned(),
+            document: koushi_state::ComposerDocument::default(),
+            in_reply_to_event_id: "$reply:example.invalid".to_owned(),
+        }),
+        CoreCommand::Timeline(TimelineCommand::SubmitText {
+            request_id: id,
+            expected_account: expected_account.clone(),
+            submission_id: koushi_state::SubmissionId::new("submission"),
+            key: key.clone(),
+            transaction_id: "transaction".to_owned(),
+            document: koushi_state::ComposerDocument::default(),
+            draft_revision: 1.into(),
+        }),
+        CoreCommand::Timeline(TimelineCommand::RetrySend {
+            request_id: id,
+            key: key.clone(),
+            transaction_id: "transaction".to_owned(),
+        }),
+        CoreCommand::Timeline(TimelineCommand::EditText {
+            request_id: id,
+            key: key.clone(),
+            event_id: "$event:example.invalid".to_owned(),
+            document: koushi_state::ComposerDocument::default(),
+        }),
+        CoreCommand::Timeline(TimelineCommand::Redact {
+            request_id: id,
+            key: key.clone(),
+            event_id: "$event:example.invalid".to_owned(),
+        }),
+        CoreCommand::Timeline(TimelineCommand::SendReaction {
+            request_id: id,
+            key: key.clone(),
+            event_id: "$event:example.invalid".to_owned(),
+            reaction_key: "👍".to_owned(),
+        }),
+        CoreCommand::App(AppCommand::ScheduleSend {
+            request_id: id,
+            expected_account,
+            room_id: "!room:example.invalid".to_owned(),
+            thread_root_event_id: None,
+            body: "synthetic".to_owned(),
+            send_at_ms: 1,
+            draft_revision: 1.into(),
+        }),
+    ] {
+        assert!(
+            command.requires_send_admission(),
+            "a restored read-only session must refuse this write: {command:?}"
+        );
+    }
+
+    for command in [
+        CoreCommand::Timeline(TimelineCommand::EnsureSubscribed {
+            request_id: id,
+            key: key.clone(),
+            replay_existing: false,
+        }),
+        CoreCommand::Timeline(TimelineCommand::SetTyping {
+            request_id: id,
+            key: key.clone(),
+            is_typing: false,
+        }),
+        // An explicit mark-as-read is an admitted correlated read operation,
+        // and a fully-read marker is gated by list authority rather than by
+        // send admission.
+        CoreCommand::Timeline(TimelineCommand::SetFullyRead {
+            request_id: id,
+            key: key.clone(),
+            event_id: "$event:example.invalid".to_owned(),
+        }),
+        CoreCommand::Timeline(TimelineCommand::SendReadReceipt {
+            request_id: id,
+            key: key.clone(),
+            event_id: "$event:example.invalid".to_owned(),
+        }),
+        CoreCommand::App(AppCommand::ClearUploadStaging {
+            request_id: id,
+            target: koushi_state::ComposerTarget::Main {
+                room_id: "!room:example.invalid".to_owned(),
+            },
+        }),
+    ] {
+        assert!(
+            !command.requires_send_admission(),
+            "reading, local staging, and correlated read commands stay admitted: {command:?}"
+        );
+    }
+
+    // A fully-read marker needs a server-confirmed list, not send admission.
+    let fully_read = CoreCommand::Timeline(TimelineCommand::SetFullyRead {
+        request_id: id,
+        key,
+        event_id: "$event:example.invalid".to_owned(),
+    });
+    assert!(!fully_read.requires_send_admission());
+    assert!(fully_read.requires_authoritative_read_state());
+}
+
 fn synthetic_room(room_id: &str) -> koushi_state::RoomSummary {
     koushi_state::RoomSummary {
         display_name_placeholder: None,

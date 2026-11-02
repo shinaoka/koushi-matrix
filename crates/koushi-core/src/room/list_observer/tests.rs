@@ -1002,6 +1002,37 @@ async fn partial_projection_acknowledges_connectivity_without_authority() {
 }
 
 #[tokio::test]
+async fn warm_cached_projection_is_not_authoritative_before_the_first_committed_response() {
+    // #1737: observation starts before the first response so restored cached
+    // rooms can be read. A warm cache can report a cached maximum count and a
+    // fully loaded range, which must still stay provisional until this run owns
+    // a committed response.
+    let mut reconciliation = LiveRoomListReconciliation::default();
+    reconciliation.report_maximum(Some(2));
+    reconciliation.report_range_fully_loaded(true);
+
+    assert!(!reconciliation.is_complete(2));
+    assert!(!reconciliation.is_authoritative(2));
+    assert!(reconciliation.finish_if_complete(2).is_none());
+    assert!(reconciliation.take_projection_ack().is_none());
+}
+
+#[tokio::test]
+async fn empty_projection_is_not_authoritative_before_the_first_committed_response() {
+    // #409: a provisional empty vector must never become an authoritative empty
+    // account. The count-less path was the reachable authority here, because a
+    // missing count already read as complete.
+    let mut reconciliation = LiveRoomListReconciliation::default();
+    reconciliation.report_maximum(None);
+    reconciliation.report_range_fully_loaded(false);
+
+    assert!(room_list_range_is_complete(None, 0));
+    assert!(!reconciliation.is_complete(0));
+    assert!(!reconciliation.is_authoritative(0));
+    assert!(reconciliation.finish_if_complete(0).is_none());
+}
+
+#[tokio::test]
 async fn committed_response_becomes_authoritative_only_after_matching_full_range() {
     let mut reconciliation = LiveRoomListReconciliation::default();
     reconciliation.report_maximum(Some(2));

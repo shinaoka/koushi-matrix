@@ -137,6 +137,9 @@ pub(super) enum ReadCommandKind {
 pub(super) enum ReadRetrySource {
     Backoff,
     Reconnect,
+    /// This sync run committed a room-list response, so held read-state writes
+    /// are admitted again (#1737).
+    ResponseCommitted,
     Checkpoint,
     AuthoritativeReceipt,
     SyncReconciliation,
@@ -147,6 +150,7 @@ impl ReadRetrySource {
         match self {
             Self::Backoff => "backoff",
             Self::Reconnect => "reconnect",
+            Self::ResponseCommitted => "response_committed",
             Self::Checkpoint => "checkpoint",
             Self::AuthoritativeReceipt => "authoritative_receipt",
             Self::SyncReconciliation => "sync_reconciliation",
@@ -159,6 +163,21 @@ pub(super) struct ReadCommandWaiter {
     key: TimelineKey,
     event_id: String,
     kind: ReadCommandKind,
+}
+
+#[cfg(test)]
+impl ReadCommandWaiter {
+    pub(super) fn for_test_at(key: TimelineKey, event_id: &str) -> Self {
+        Self {
+            request_id: RequestId {
+                connection_id: koushi_protocol::RuntimeConnectionId(1),
+                sequence: 1,
+            },
+            key,
+            event_id: event_id.to_owned(),
+            kind: ReadCommandKind::Receipt,
+        }
+    }
 }
 
 struct LocalReadCorrelation {
@@ -243,6 +262,11 @@ pub(super) struct ReadWorkerSupervisor {
     dispatch_failures: Vec<(ReadStateKey, crate::read_state::ReadCompletionResult)>,
     local_read_correlations: HashMap<TimelineKey, LocalReadCorrelation>,
     send_read_receipts: bool,
+    /// #1737: whether this sync run owns a committed room-list response. Until it
+    /// does, a write derived from the visible timeline would claim a server fact
+    /// the local cache cannot support, so dispatch holds it (an explicit user
+    /// mark-read, which owns a waiter, is unaffected).
+    authority_admitted: bool,
     reconciliation_pending: HashSet<ReadStateKey>,
     persistence: Option<ReadPersistenceIngress>,
     save_generation: u64,
@@ -274,6 +298,7 @@ impl ReadWorkerSupervisor {
             dispatch_failures: Vec::new(),
             local_read_correlations: HashMap::new(),
             send_read_receipts: true,
+            authority_admitted: false,
             reconciliation_pending: HashSet::new(),
             persistence: None,
             save_generation: 0,
@@ -319,6 +344,7 @@ impl ReadWorkerSupervisor {
             dispatch_failures: Vec::new(),
             local_read_correlations: HashMap::new(),
             send_read_receipts,
+            authority_admitted: false,
             reconciliation_pending,
             persistence: Some(persistence),
             save_generation: 0,
@@ -337,7 +363,11 @@ impl ReadWorkerSupervisor {
         requests: mpsc::UnboundedSender<SyntheticReadNetworkRequest>,
         timeout: Duration,
     ) -> Self {
-        Self::new(1, Some(ReadNetworkContext::Synthetic { requests }), timeout)
+        let mut supervisor =
+            Self::new(1, Some(ReadNetworkContext::Synthetic { requests }), timeout);
+        // Test fixtures model the steady state: this run already owns a response.
+        supervisor.authority_admitted = true;
+        supervisor
     }
 
     #[cfg(test)]
@@ -347,8 +377,7 @@ impl ReadWorkerSupervisor {
         retry_base_delay: Duration,
         retry_max_delay: Duration,
     ) -> Self {
-        let mut supervisor =
-            Self::new(1, Some(ReadNetworkContext::Synthetic { requests }), timeout);
+        let mut supervisor = Self::synthetic(requests, timeout);
         supervisor.retry_base_delay = retry_base_delay;
         supervisor.retry_max_delay = retry_max_delay;
         supervisor
@@ -386,6 +415,7 @@ impl ReadWorkerSupervisor {
             dispatch_failures: Vec::new(),
             local_read_correlations: HashMap::new(),
             send_read_receipts: true,
+            authority_admitted: true,
             reconciliation_pending,
             persistence: Some(persistence),
             save_generation: 0,
@@ -487,6 +517,11 @@ impl ReadWorkerSupervisor {
                 break;
             };
             self.queued.remove(&key);
+            // #1737: hold the write, do not drop it; the committed response
+            // re-wakes every desired key.
+            if !self.authority_admitted && !self.explicitly_authorized(&key) {
+                continue;
+            }
             if self.reconciliation_pending.contains(&key)
                 || self.scheduled_retries.contains_key(&key)
                 || self.state.active_operation(&key).is_some()
@@ -715,6 +750,23 @@ impl ReadWorkerSupervisor {
         }
         self.publish_persistence();
         self.dispatch_ready_reads();
+    }
+
+    /// Admit or hold automatic read-state writes; returns whether it changed.
+    pub(super) fn set_authority_admitted(&mut self, admitted: bool) -> bool {
+        let changed = self.authority_admitted != admitted;
+        self.authority_admitted = admitted;
+        changed
+    }
+
+    /// Whether an explicit read command authorized exactly the write that is
+    /// about to be dispatched. A waiter for a different event in the same read
+    /// key does not authorize it: the engine keeps the newer desired target.
+    fn explicitly_authorized(&self, key: &ReadStateKey) -> bool {
+        self.waiters.values().any(|waiter| {
+            &read_state_key_for_command(&waiter.key, waiter.kind) == key
+                && self.state.has_candidate(key, &waiter.event_id)
+        })
     }
 
     pub(super) fn send_read_receipts_enabled(&self) -> bool {

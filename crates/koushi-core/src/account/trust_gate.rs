@@ -558,10 +558,12 @@ pub(super) fn verification_gate_failure_kind(
 }
 
 impl AccountActor {
-    pub(super) fn set_secure_backup_send_admitted(&mut self, admitted: bool) {
+    pub(super) async fn set_secure_backup_send_admitted(&mut self, admitted: bool) {
+        #[cfg(any(test, feature = "test-hooks"))]
+        let admitted = admitted || self.secure_backup_admission_pinned;
         self.secure_backup_ready = admitted;
         if let Some(session) = self.session.as_ref() {
-            session.set_secure_backup_send_admitted(admitted);
+            session.set_secure_backup_send_admitted(admitted).await;
         }
     }
 

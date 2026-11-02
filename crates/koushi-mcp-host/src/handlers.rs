@@ -437,6 +437,11 @@ fn direct_message_failure(failure: koushi_core::DirectMessageFailure) -> WireErr
         Failure::AccountInactive => {
             WireError::new(ErrorCode::AccountUnavailable, "account is not signed in")
         }
+        Failure::SendNotAdmitted => WireError::with_reason(
+            ErrorCode::NotPermitted,
+            "send_not_admitted",
+            "sending is unavailable until Secure Backup is ready",
+        ),
         Failure::RoomNotFound => WireError::new(ErrorCode::RoomNotFound, "the room is not joined"),
         Failure::EventNotFound => {
             WireError::new(ErrorCode::EventNotFound, "the event is not in this room")

@@ -1140,6 +1140,34 @@ pub(super) async fn wait_for_sync_running_after_reconnect(
 }
 
 /// Wait for a versioned snapshot where `SessionState::Ready`.
+/// #1737: user-content sending is admitted only through the Secure Backup gate.
+/// Sending stages wait for that projection before they submit a send.
+pub(super) async fn wait_for_send_admission(
+    conn: &mut CoreConnection,
+    label: &str,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
+    loop {
+        if conn.snapshot().conversation_access().send_admitted {
+            return Ok(());
+        }
+        let event = tokio::time::timeout_at(deadline, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for Secure Backup send admission"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        if matches!(
+            event,
+            CoreEvent::Sync(SyncEvent::Failed)
+                | CoreEvent::OperationFailed {
+                    failure: CoreFailure::SyncFailed { .. },
+                    ..
+                }
+        ) {
+            return Err(format!("{label}: the session failed before send admission"));
+        }
+    }
+}
+
 pub(super) async fn wait_for_ready_snapshot(
     conn: &mut CoreConnection,
     label: &str,

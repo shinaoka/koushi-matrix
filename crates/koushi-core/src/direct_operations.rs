@@ -282,6 +282,9 @@ impl std::fmt::Debug for DirectMessageResponse {
 pub enum DirectMessageFailure {
     /// The account has no ready session.
     AccountInactive,
+    /// Secure Backup admission is closed, so this session may read but not
+    /// write (#1737). No request was sent.
+    SendNotAdmitted,
     /// The room is unknown to this account or not joined.
     RoomNotFound,
     /// The event is unknown to the room.

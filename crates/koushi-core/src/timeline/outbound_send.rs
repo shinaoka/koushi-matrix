@@ -1992,7 +1992,15 @@ impl TimelineActor {
             self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
             return;
         };
-        room.send_queue().set_enabled(true);
+        // #1737: never resume one room past a paused session-wide queue, or a
+        // persisted request would escape the send admission.
+        // shortcut: the check and the per-room enable are not atomic with the
+        // session-wide pause, so a pause landing between them could resume this
+        // one room; move the pause to the SDK's final network boundary (fork
+        // change) when a plaintext send must be impossible rather than unlikely.
+        if room.client().send_queue().is_enabled() {
+            room.send_queue().set_enabled(true);
+        }
 
         match handle.unwedge().await {
             Ok(()) => {
@@ -2057,7 +2065,12 @@ impl TimelineActor {
                     .insert(sdk_transaction_id.clone(), TimelineSendState::Cancelled);
                 self.send_handles.remove(&sdk_transaction_id);
                 if let Some(room) = self.sdk_room_for_key() {
-                    room.send_queue().set_enabled(true);
+                    // #1737: never resume one room past a paused session-wide
+                    // queue, or a persisted request would escape the send
+                    // admission (see the retry-path note on the non-atomic pair).
+                    if room.client().send_queue().is_enabled() {
+                        room.send_queue().set_enabled(true);
+                    }
                 }
                 apply_send_completion_observation_and_handoff(
                     &self.send_completion,
@@ -2309,7 +2322,10 @@ pub(super) async fn run_global_send_completion_observer(
                 {
                     // SDK keeps recoverable requests in its durable queue but
                     // disables this room after exhausting its own HTTP retries.
-                    room.send_queue().set_enabled(true);
+                    // #1737: the session-wide pause still wins.
+                    if room.client().send_queue().is_enabled() {
+                        room.send_queue().set_enabled(true);
+                    }
                 }
             }
             continue;

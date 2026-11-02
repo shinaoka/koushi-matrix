@@ -83,6 +83,13 @@ impl super::AppActor {
         if !matches!(self.state.session, SessionState::Ready(_)) {
             return None;
         }
+        // #1737: an outbox write is a send, so a read-only session arms no
+        // dispatch timer at all (a due item that cannot dispatch would otherwise
+        // re-arm a zero delay and spin). The main loop re-observes this on the
+        // next state change, which is also when admission can open.
+        if !self.state.conversation_access().send_admitted {
+            return None;
+        }
         let next_send_at_ms = self.state.scheduled_sends.next_local_send_at_ms()?;
         let now_ms = crate::time::current_epoch_ms();
         Some(Duration::from_millis(
@@ -92,6 +99,12 @@ impl super::AppActor {
 
     pub(super) async fn dispatch_due_scheduled_send(&mut self) -> bool {
         if !matches!(self.state.session, SessionState::Ready(_)) {
+            return false;
+        }
+        // #1737: a due scheduled send is an ordinary room send, so it waits for
+        // the same Secure Backup admission as the composer. Nothing is released
+        // from the outbox while the restored session is read-only.
+        if !self.state.conversation_access().send_admitted {
             return false;
         }
         let Some(item) = self

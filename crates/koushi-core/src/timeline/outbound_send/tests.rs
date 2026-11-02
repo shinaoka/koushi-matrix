@@ -1604,6 +1604,9 @@ async fn send_without_authoritative_account_session_fails_closed() {
                 authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
             }),
             AppAction::CurrentDeviceTrustChanged(koushi_state::CurrentDeviceTrustState::Verified),
+            // #1737: this test covers the *later* authoritative-account-session
+            // refusal, so the earlier read-only admission must already be open.
+            AppAction::SecureBackupGateChanged(koushi_state::SecureBackupGateState::Ready),
         ])
         .await;
     loop {
@@ -1635,6 +1638,102 @@ async fn send_without_authoritative_account_session_fails_closed() {
                 return;
             }
             _ => continue,
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_ready_session_reads_but_refuses_sends_before_secure_backup_admission() {
+    // #1737: the restored session is Ready and may read its cached conversations,
+    // but Secure Backup inspection has not settled, so nothing is written. The
+    // refusal is Core-owned: it precedes the timeline/account routing, so a room
+    // that was never even subscribed cannot produce a different failure.
+    let (runtime, _stores) = CoreRuntime::start_isolated();
+    let mut conn = runtime.attach();
+
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionRequested,
+            AppAction::RestoreSessionSucceeded(SessionInfo {
+                homeserver: "https://test.test".to_owned(),
+                user_id: "@a:test".to_owned(),
+                device_id: "DEV".to_owned(),
+                authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+            }),
+            AppAction::CurrentDeviceTrustChanged(koushi_state::CurrentDeviceTrustState::Verified),
+            AppAction::SecureBackupGateChanged(koushi_state::SecureBackupGateState::Checking),
+        ])
+        .await;
+    loop {
+        if matches!(conn.snapshot().session, SessionState::Ready(_)) {
+            break;
+        }
+        crate::executor::sleep(Duration::from_millis(5)).await;
+    }
+    let access = conn.snapshot().conversation_access();
+    assert!(access.readable, "a Ready session may read cached content");
+    assert!(!access.send_admitted, "Secure Backup is not admitted yet");
+
+    let rid = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        request_id: rid,
+        key: room_key(),
+        transaction_id: "txn-read-only".to_owned(),
+        document: koushi_state::ComposerDocument::from_plain_text("hello".to_owned()),
+    }))
+    .await
+    .expect("submit");
+
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(5), conn.recv_event())
+            .await
+            .expect("no timeout")
+            .expect("no lag");
+        if let CoreEvent::OperationFailed {
+            request_id,
+            failure,
+        } = event
+            && request_id == rid
+        {
+            assert_eq!(
+                failure,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::SecureBackupRequired,
+                }
+            );
+            break;
+        }
+    }
+
+    // A fully-read marker is refused for a different reason: the room list is
+    // still a provisional cache projection. It is a read-state write, not a
+    // content send, so it must not wait for Secure Backup admission.
+    let marker_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::SetFullyRead {
+        request_id: marker_id,
+        key: room_key(),
+        event_id: "$event:example.invalid".to_owned(),
+    }))
+    .await
+    .expect("submit");
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(5), conn.recv_event())
+            .await
+            .expect("no timeout")
+            .expect("no lag");
+        if let CoreEvent::OperationFailed {
+            request_id,
+            failure,
+        } = event
+            && request_id == marker_id
+        {
+            assert_eq!(
+                failure,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Forbidden,
+                }
+            );
+            return;
         }
     }
 }

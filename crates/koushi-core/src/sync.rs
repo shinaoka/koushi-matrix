@@ -1144,7 +1144,6 @@ async fn observe_sync_service(
     diagnostics: SlidingSyncDiagnostics,
 ) -> SyncTaskOutcome {
     let mut connected = false;
-    let mut room_observation_started = false;
     let mut reconnecting = false;
     let mut replacement_recovery: Option<ReplacementRecoveryProof> = None;
     let mut last_committed_sequence = 0;
@@ -1154,6 +1153,24 @@ async fn observe_sync_service(
     let mut last_encryption_started_generation = 0;
     let mut last_encryption_response_generation = 0;
     let mut pending_reconciliation: Option<PendingRoomReconciliation> = None;
+
+    // #1737: bind the TimelineManager before the room observer (the existing
+    // order), then start both immediately instead of waiting for the first
+    // committed response. The SDK store already holds the restored cache, so a
+    // trusted session can read it while this run's first response is pending;
+    // the reconciliation fence keeps that projection provisional until the run
+    // actually commits a response.
+    start_timeline_observation(&timeline_tx, room_list_service.clone(), run_generation).await;
+    if !start_room_observation(
+        session.clone(),
+        room_tx.clone(),
+        room_list_service.clone(),
+        run_generation,
+    )
+    .await
+    {
+        return internal_observer_failure_at("room_observation_start_failed", connected);
+    }
 
     loop {
         if observer_stop.is_requested() {
@@ -1207,35 +1224,13 @@ async fn observe_sync_service(
                     committed.rooms_from_response_count(),
                     committed.pos_present()
                 );
-                if room_observation_started && committed.rooms_from_response_count() > 0 {
+                if committed.rooms_from_response_count() > 0 {
                     let _ = room_tx
                         .send(RoomMessage::RefreshCommittedProjection {
                             source: RoomListSource::Live,
                             backend_generation: run_generation,
                         })
                         .await;
-                }
-                if !room_observation_started {
-                    start_timeline_observation(
-                        &timeline_tx,
-                        room_list_service.clone(),
-                        run_generation,
-                    )
-                    .await;
-                    if !start_room_observation(
-                        session.clone(),
-                        room_tx.clone(),
-                        room_list_service.clone(),
-                        run_generation,
-                    )
-                    .await
-                    {
-                        return internal_observer_failure_at(
-                            "room_observation_start_failed",
-                            connected,
-                        );
-                    }
-                    room_observation_started = true;
                 }
                 if !forward_latest_timeline_response_commit(
                     &timeline_tx,

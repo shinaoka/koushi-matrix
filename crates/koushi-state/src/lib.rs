@@ -81,7 +81,7 @@ pub use state::{
     ComposerSubmissionRegistry, ContactDeviceCounts, ContactDeviceSignature, ContactDevicesStatus,
     ContactIdentityVerification, ContactSecurityFailureKind, ContactSecurityLoadState,
     ContactSecurityState, ContactSecuritySummary, ContactVerificationDirectChat,
-    ContactVerificationOffer, ConversationActivity, ConversationActivitySource,
+    ContactVerificationOffer, ConversationAccess, ConversationActivity, ConversationActivitySource,
     CreateRoomAccessPreview, CreateRoomAccessPreviewInput, CreateRoomAccessRejection,
     CreateRoomAccessSeed, CrossSigningStatus, CurrentDeviceTrustState, CurrentSessionBackupState,
     CurrentSessionStatusDetails, CurrentSessionStatusFailureKind, CurrentSessionStatusState,
@@ -202,10 +202,10 @@ pub use state::{
     refresh_room_summary_display_projection, resolve_live_receipt_profile,
     resolve_optional_user_display_name, resolve_people_label, resolve_user_display_name,
     room_activity_unread_count, room_attention_kind, room_attention_projection,
-    room_attention_summary, search_query_too_short, session_status_failure_backoff_ms,
-    sidebar_scope_key, sort_threads_list_items, staged_upload_item_with_completed_output,
-    staged_upload_send_consumes_composer_draft, staged_uploads_are_sendable,
-    unverified_own_sessions_alert,
+    room_attention_summary, search_query_too_short, secure_backup_failure_is_retryable,
+    session_status_failure_backoff_ms, sidebar_scope_key, sort_threads_list_items,
+    staged_upload_item_with_completed_output, staged_upload_send_consumes_composer_draft,
+    staged_uploads_are_sendable, unverified_own_sessions_alert,
 };
 
 pub fn encrypted_messaging_is_admitted(state: &AppState) -> bool {

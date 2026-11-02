@@ -96,7 +96,7 @@ pub use auth_failure::{
 // ── Re-exports: session ─────────────────────────────────────────────────────
 pub use session::{
     AccountManagementCapabilities, AccountManagementOperation, AccountManagementState,
-    AccountManagementUrl, AuthDiscoveryState, AuthFailureKind, CapabilityState,
+    AccountManagementUrl, AuthDiscoveryState, AuthFailureKind, CapabilityState, ConversationAccess,
     CurrentDeviceTrustState, DelegatedAuthLinks, DeviceCleanupAuthMode, DeviceCleanupFailureKind,
     DeviceCleanupLocalMode, DeviceCleanupOfferReason, DeviceCleanupRemoteOutcome,
     DeviceCleanupState, LoginAttemptId, LoginFlow, LoginFlowKind, PendingKeyCountBucket,
@@ -106,7 +106,7 @@ pub use session::{
     SecureBackupSetupAdmission, SecureBackupSetupIntent, SessionAuthenticationMethod, SessionInfo,
     SessionLockReason, SessionState, SoftLogoutReauthState, VerificationAccountKind,
     VerificationGateFailureKind, VerificationGateRejectReason, VerificationGateState,
-    VerificationMethod, VerificationMethodCapability,
+    VerificationMethod, VerificationMethodCapability, secure_backup_failure_is_retryable,
 };
 pub use session_status::{
     ArmedSessionStatusCheck, CurrentSessionBackupState, CurrentSessionStatusDetails,
@@ -618,6 +618,22 @@ impl Default for AppState {
             native_attention_context: NativeAttentionContext::default(),
             cjk_text_policy: CjkTextPolicyState::default(),
             errors: Vec::new(),
+        }
+    }
+}
+
+impl AppState {
+    /// #1737: project the restored session's read and send admission from owned
+    /// state. Nothing here is stored, so it can never disagree with the
+    /// session, room-list readiness, or Secure Backup gate it reads.
+    pub fn conversation_access(&self) -> ConversationAccess {
+        let readable = crate::reducer::is_session_ready(self)
+            && self.secure_backup_gate.admits_cached_reading();
+        ConversationAccess {
+            readable,
+            list_authoritative: readable
+                && matches!(self.room_list.readiness, RoomListReadiness::Ready { .. }),
+            send_admitted: crate::encrypted_messaging_is_admitted(self),
         }
     }
 }

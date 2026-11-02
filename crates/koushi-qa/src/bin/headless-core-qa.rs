@@ -110,6 +110,8 @@ mod scenario_account_notifications;
 mod scenario_anchored_history;
 #[path = "headless_core_qa/scenarios/avatars.rs"]
 mod scenario_avatars;
+#[path = "headless_core_qa/scenarios/cached_read_before_first_sync.rs"]
+mod scenario_cached_read_before_first_sync;
 #[path = "headless_core_qa/scenarios/hidden_state_acl.rs"]
 mod scenario_hidden_state_acl;
 #[path = "headless_core_qa/scenarios/history_export.rs"]

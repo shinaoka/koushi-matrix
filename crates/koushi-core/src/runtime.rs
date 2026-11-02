@@ -1181,6 +1181,19 @@ impl CoreRuntime {
             .await
     }
 
+    /// Test hook: project a Secure Backup gate verdict without a server
+    /// inspection, through the AccountActor path that applies send admission and
+    /// publishes the gate. Not part of the public production API.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub async fn project_secure_backup_gate_for_testing(
+        &self,
+        gate: koushi_state::SecureBackupGateState,
+    ) -> bool {
+        self.account_actor_test_handle
+            .send(AccountMessage::ProjectSecureBackupGateForTesting { gate })
+            .await
+    }
+
     /// Test hook: install an SDK session (for example one bound to a mock
     /// homeserver) into this runtime's AccountActor and RoomActor, without a
     /// login or restore flow. Not part of the public production API.
@@ -3012,9 +3025,9 @@ impl AppActor {
     /// timeline and scroll position cannot change.
     /// Route one direct (non-GUI) message read or action to the account (#1628).
     ///
-    /// The runtime only decides session readiness; the account actor owns the
-    /// bounded execution, the reaction lane, and the reply. No app action is
-    /// reduced and no timeline actor is mounted.
+    /// The runtime decides session readiness and the session's send admission
+    /// (#1737); the account actor owns the bounded execution, the reaction lane,
+    /// and the reply. No app action is reduced and no timeline actor is mounted.
     async fn handle_direct_message_action(
         &mut self,
         request: crate::direct_operations::DirectMessageRequest,
@@ -3029,6 +3042,19 @@ impl AppActor {
             return false;
         }
         if is_ready_session_for_commands(&self.state.session) {
+            // #1737: these direct mutations bypass the timeline send queue, so
+            // they honour the same send admission themselves. Reading a message
+            // source stays available.
+            if !matches!(
+                request,
+                crate::direct_operations::DirectMessageRequest::Read { .. }
+            ) && !self.state.conversation_access().send_admitted
+            {
+                let _ = response.send(Err(
+                    crate::direct_operations::DirectMessageFailure::SendNotAdmitted,
+                ));
+                return false;
+            }
             let _ = self
                 .account_actor
                 .send(AccountMessage::DirectMessageAction { request, response })
@@ -3219,6 +3245,61 @@ impl AppActor {
             self.emit(CoreEvent::OperationFailed {
                 request_id: command_request_id,
                 failure: CoreFailure::SessionRequired,
+            });
+            if let Some((request_id, kind)) = native_artifact_for_command(&command) {
+                self.account_actor
+                    .unregister_native_artifact(request_id, kind);
+            }
+            return false;
+        }
+        let readiness_refusal = if command.requires_authoritative_read_state()
+            && !self.state.conversation_access().list_authoritative
+        {
+            // #1737: a provisional cache projection may omit or misorder the
+            // newest events, so writing a fully-read marker from it would claim
+            // more than this device knows.
+            Some((
+                "read_state_not_authoritative",
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Forbidden,
+                },
+            ))
+        } else if command.requires_send_admission()
+            && !self.state.conversation_access().send_admitted
+        {
+            // #1737: a restored session may read its cached conversations before
+            // Secure Backup admission, but nothing is written to the server from
+            // that read-only surface. The projected Secure Backup gate is the
+            // reason; this refusal covers every room kind, including plaintext
+            // rooms the startup screen used to hide entirely.
+            Some((
+                "secure_backup_required",
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::SecureBackupRequired,
+                },
+            ))
+        } else {
+            None
+        };
+        if let Some((reason, failure)) = readiness_refusal {
+            trace_runtime_sync!(
+                "command_rejected",
+                [
+                    DiagnosticField::request_id(
+                        "request_id",
+                        command.request_id().connection_id.0,
+                        command.request_id().sequence
+                    ),
+                    DiagnosticField::token("reason", reason),
+                    DiagnosticField::token("action", "emit_operation_failed"),
+                ],
+                "request_id={} reason={} action=emit_operation_failed",
+                runtime_request_id_trace_label(command.request_id()),
+                reason
+            );
+            self.emit(CoreEvent::OperationFailed {
+                request_id: command_request_id,
+                failure,
             });
             if let Some((request_id, kind)) = native_artifact_for_command(&command) {
                 self.account_actor

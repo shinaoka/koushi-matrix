@@ -164,6 +164,13 @@ struct LiveRoomListReconciliation {
     maximum_number_of_rooms: Option<u32>,
     range_fully_loaded: bool,
     authoritative: bool,
+    /// Whether a committed response of the current sync run has been handed to
+    /// this observer (#1737). Observation starts before the first response so a
+    /// restored cache can be read; until that response is owned, no entry
+    /// vector — empty, warm, or count-less — may claim authority. `Loaded`, the
+    /// cached range flags, elapsed time, and a missing `count` are not
+    /// response evidence.
+    committed_response_owned: bool,
     pending: Option<(u64, u64, Option<oneshot::Sender<RoomListReconcileAck>>)>,
 }
 
@@ -189,11 +196,18 @@ impl LiveRoomListReconciliation {
         ready_tx: oneshot::Sender<RoomListReconcileAck>,
     ) {
         self.authoritative = false;
+        // Only the SyncActor's committed-response reconciliation reaches here,
+        // so this is the current run's ownership of the projection.
+        self.committed_response_owned = true;
         self.pending = Some((backend_generation, response_sequence, Some(ready_tx)));
     }
 
     fn is_complete(&self, current_entries: usize) -> bool {
-        (self.range_fully_loaded || self.maximum_number_of_rooms.is_none())
+        // A response without `count` is still a complete response *for that
+        // response*; it is not a complete projection before this run has owned
+        // any response at all.
+        self.committed_response_owned
+            && (self.range_fully_loaded || self.maximum_number_of_rooms.is_none())
             && room_list_range_is_complete(self.maximum_number_of_rooms, current_entries)
     }
 
@@ -1655,7 +1669,13 @@ async fn normalize_and_project_entries(
                 identity.display_name_collision_entry_count as u64,
             )),
     );
-    Box::pin(relay_missing_space_child_links(&snapshot, room_tx)).await;
+    // #1737: a provisional cache projection may hold one side of a Space
+    // relation while the other side is simply not cached, so it must never
+    // trigger the server write that repairs a missing `m.space.child`. Only an
+    // authoritative snapshot may relay links.
+    if authoritative.load(Ordering::Acquire) {
+        Box::pin(relay_missing_space_child_links(&snapshot, room_tx)).await;
+    }
     Box::pin(project_room_list_snapshot(
         &snapshot,
         known_room_ids,

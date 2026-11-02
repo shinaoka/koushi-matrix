@@ -990,6 +990,12 @@ impl RoomActor {
                     self.reject_residency_ack(request_id);
                     return;
                 }
+                // #1737: record the local decision so a provisional snapshot that
+                // still holds the invite cannot bring it back.
+                self.reduce_reliable(vec![AppAction::RoomLeftLocally {
+                    room_id: declined_room_id.clone(),
+                }])
+                .await;
                 self.refresh_room_list();
                 self.emit(CoreEvent::Room(RoomEvent::InviteDeclined {
                     request_id,

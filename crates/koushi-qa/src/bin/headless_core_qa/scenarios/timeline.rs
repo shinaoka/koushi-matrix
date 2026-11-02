@@ -14,9 +14,9 @@ use super::event_wait::{
     wait_for_item_with_body_or_decryption_failure, wait_for_link_preview_item_projection,
     wait_for_logged_in, wait_for_logged_out, wait_for_media_download_completed,
     wait_for_media_item, wait_for_media_send_flow_completion, wait_for_ready_snapshot,
-    wait_for_room_in_room_list, wait_for_send_completed, wait_for_send_flow_completion,
-    wait_for_session_restored, wait_for_settings_persisted, wait_for_space_child_projection,
-    wait_for_space_in_space_list, wait_for_sync_reconnecting,
+    wait_for_room_in_room_list, wait_for_send_admission, wait_for_send_completed,
+    wait_for_send_flow_completion, wait_for_session_restored, wait_for_settings_persisted,
+    wait_for_space_child_projection, wait_for_space_in_space_list, wait_for_sync_reconnecting,
     wait_for_sync_running_after_reconnect, wait_for_sync_started,
     wait_for_sync_started_and_running, wait_for_sync_stopped, wait_for_timeline_send_state,
 };
@@ -1221,6 +1221,9 @@ pub(super) async fn run_send_queue_stage(
     )
     .await?;
 
+    // #1737: an offline send is admitted only once Secure Backup inspection has
+    // established its verdict, which needs one proven sync edge.
+    wait_for_send_admission(&mut conn, "send_queue send admission").await?;
     let room_id = create_room_for_qa(
         &mut conn,
         "QA Send Queue Room",

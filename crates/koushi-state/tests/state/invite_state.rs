@@ -415,3 +415,103 @@ fn invite_list_update_always_emits_room_list_changed_effect() {
         "non-empty invite update must emit RoomListChanged"
     );
 }
+
+#[test]
+fn provisional_snapshot_retains_an_invite_it_did_not_observe() {
+    // #1737: a restored cache projection can omit a cached invite because the
+    // current observation only covers what the cache holds. It refreshes known
+    // invites and keeps the unobserved ones; only an authoritative snapshot may
+    // retract an invite.
+    let mut state = ready_state();
+    state.room_list.readiness = koushi_state::RoomListReadiness::Loading {
+        source: koushi_state::RoomListSource::Live,
+        generation: 4,
+    };
+    state.invites = vec![
+        invite_preview("!kept:localhost", false),
+        invite_preview("!refreshed:localhost", true),
+    ];
+
+    reduce(
+        &mut state,
+        AppAction::RoomListSnapshotProvisional {
+            generation: 4,
+            source: koushi_state::RoomListSource::Live,
+            spaces: Vec::new(),
+            rooms: Vec::new(),
+            invites: vec![InvitePreview {
+                display_name: "Invite preview updated".to_owned(),
+                ..invite_preview("!refreshed:localhost", true)
+            }],
+        },
+    );
+
+    assert_eq!(state.invites.len(), 2);
+    assert!(
+        state
+            .invites
+            .iter()
+            .any(|invite| invite.room_id == "!kept:localhost")
+    );
+    assert!(
+        state
+            .invites
+            .iter()
+            .any(|invite| invite.room_id == "!refreshed:localhost"
+                && invite.display_name == "Invite preview updated")
+    );
+
+    reduce(
+        &mut state,
+        AppAction::RoomListSnapshotAuthoritative {
+            generation: 4,
+            source: koushi_state::RoomListSource::Live,
+            spaces: Vec::new(),
+            rooms: Vec::new(),
+            invites: Vec::new(),
+        },
+    );
+    assert!(
+        state.invites.is_empty(),
+        "an authoritative snapshot retracts every invite it did not observe"
+    );
+}
+
+#[test]
+fn a_locally_declined_invite_is_not_restored_by_a_provisional_snapshot() {
+    // #1737: the provisional merge retains invites it did not observe, so the
+    // local decline has to be recorded or the invite would come back on the next
+    // cache projection.
+    let mut state = ready_state();
+    state.room_list.readiness = koushi_state::RoomListReadiness::Loading {
+        source: koushi_state::RoomListSource::Live,
+        generation: 5,
+    };
+    state.invites = vec![invite_preview("!declined:localhost", false)];
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomLeftLocally {
+            room_id: "!declined:localhost".to_owned(),
+        },
+    );
+    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomListChanged)));
+    assert!(state.invites.is_empty());
+
+    reduce(
+        &mut state,
+        AppAction::RoomListSnapshotProvisional {
+            generation: 5,
+            source: koushi_state::RoomListSource::Live,
+            spaces: Vec::new(),
+            rooms: Vec::new(),
+            invites: vec![
+                invite_preview("!declined:localhost", false),
+                invite_preview("!other:localhost", false),
+            ],
+        },
+    );
+
+    assert_eq!(state.invites.len(), 1);
+    assert_eq!(state.invites[0].room_id, "!other:localhost");
+}

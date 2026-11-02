@@ -1782,7 +1782,7 @@ impl AccountActor {
         self.pending_sliding_sync_retry = None;
         self.stored_sliding_sync_admission = None;
         self.sliding_sync_revalidation_pending = None;
-        self.set_secure_backup_send_admitted(false);
+        self.set_secure_backup_send_admitted(false).await;
 
         // Fail closed: run the acknowledged RoomActor teardown BEFORE taking
         // the session, so a failure leaves the complete previous runtime
@@ -1948,7 +1948,7 @@ impl AccountActor {
     ) {
         debug_assert!(self.pending_session_teardown.is_none());
         if self.session.is_some() {
-            self.set_secure_backup_send_admitted(false);
+            self.set_secure_backup_send_admitted(false).await;
         }
         if let Some(previous_session) = self.session.take() {
             let previous_key_id = self.session_key_id.take();
@@ -1988,7 +1988,7 @@ impl AccountActor {
         self.pending_notification_email = None;
         self.pending_device_cleanup = None;
         self.session = Some(session.clone());
-        self.set_secure_backup_send_admitted(false);
+        self.set_secure_backup_send_admitted(false).await;
         self.session_key_id = Some(key_id);
         self.sliding_sync_positive_evidence = persistable.sliding_sync_positive_evidence();
         self.provisional_persistable = Some(persistable);

@@ -2758,14 +2758,21 @@ repair mechanisms are removed.
 
 Device verification and Secure Backup readiness are independent Rust-owned
 admission facts. Verification starts the normal sync owner so receiving and
-local decryption can continue. `AppState.secure_backup_gate` remains blocking
-until `koushi-sdk` has established that Recovery is complete and the existing
+local decryption can continue. Reading and writing are separate admissions
+(#1737): a currently-ready restored session may read its cached rooms and
+messages before the run's first committed response and while inspection is
+pending or has ended inconclusively with a retryable connectivity failure,
+while every user-content send stays closed until this gate is operational.
+Rust projects that split (`ConversationAccess`) and refuses send-family commands
+itself, so no renderer decides it. `AppState.secure_backup_gate` remains
+blocking for sending until `koushi-sdk` has established that Recovery is
+complete and the existing
 trusted backup is enabled locally. Pending room-key upload is observed as
 health/progress after that authority is established; it does not keep the
 normal shell hidden or close ordinary encrypted sending. A transient failure
-before initial authority is established remains blocking and exposes explicit
-retry/diagnostics instead of entering an automatic retry loop. React never
-infers readiness from a click or from backup existence alone.
+before initial authority is established remains blocking for sending and
+exposes explicit retry/diagnostics instead of entering an automatic retry loop.
+React never infers readiness from a click or from backup existence alone.
 
 An existing backup without its local decryption key is recovered in place.
 Automatic setup is permitted only when the authoritative probe reports no

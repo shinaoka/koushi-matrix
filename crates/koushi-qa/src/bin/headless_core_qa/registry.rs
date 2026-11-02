@@ -135,6 +135,7 @@ pub(super) enum QaScenario {
     IdleSyncGapInspection,
     NotificationDelivery,
     McpMessageActions,
+    CachedReadBeforeFirstSync,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -184,6 +185,7 @@ pub(super) enum QaStage {
     IdleSyncGapInspection,
     NotificationDelivery,
     McpMessageActions,
+    CachedReadBeforeFirstSync,
 }
 
 /// Refuse to run against the OS keychain. Debug and qa-bin release builds both
@@ -269,6 +271,7 @@ impl QaScenario {
             "idle_sync_gap_inspection" => Ok(Self::IdleSyncGapInspection),
             "notification_delivery" => Ok(Self::NotificationDelivery),
             "mcp_message_actions" => Ok(Self::McpMessageActions),
+            "cached_read_before_first_sync" => Ok(Self::CachedReadBeforeFirstSync),
             "avatar_demand" => Ok(Self::AvatarDemand),
             "account_notifications" => Ok(Self::AccountNotifications),
             "user_verification" => Ok(Self::UserVerification),
@@ -297,6 +300,7 @@ impl QaScenario {
                     | QaStage::IdleSyncGapInspection
                     | QaStage::NotificationDelivery
                     | QaStage::McpMessageActions
+                    | QaStage::CachedReadBeforeFirstSync
             ),
             Self::Safety => matches!(stage, QaStage::Safety),
             Self::UserVerification => matches!(
@@ -499,6 +503,9 @@ impl QaScenario {
             Self::AvatarDemand => matches!(stage, QaStage::Safety | QaStage::AvatarDemand),
             Self::ReadStateConvergence => {
                 matches!(stage, QaStage::Safety | QaStage::ReadStateConvergence)
+            }
+            Self::CachedReadBeforeFirstSync => {
+                matches!(stage, QaStage::Safety | QaStage::CachedReadBeforeFirstSync)
             }
             Self::HiddenStateAcl => matches!(stage, QaStage::Safety | QaStage::HiddenStateAcl),
             Self::HistoryKeyRecoveryWindow => {
@@ -765,6 +772,18 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "link_preview_hide=ok",
         ],
         QaStage::ReadStateConvergence => &["read_state_convergence=ok"],
+        QaStage::CachedReadBeforeFirstSync => &[
+            "cached_read_seed=ok",
+            "cached_read_first_response_withheld=ok",
+            "cached_read_list=ok",
+            "cached_read_timeline=ok",
+            "cached_read_send_blocked=ok",
+            "cached_read_network_blocked=ok",
+            "cached_read_promoted=ok",
+            "cached_read_read_state_admitted=ok",
+            "cached_read_post_admission_send=ok",
+            "cached_read_before_first_sync=ok",
+        ],
         QaStage::HiddenStateAcl => &["hidden_state_acl=ok"],
         QaStage::HistoryKeyRecoveryWindow => &[
             "history_window_deferred=ok",
@@ -1170,6 +1189,9 @@ pub(super) fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
         QaScenario::ReadStateConvergence => {
             vec![QaStage::Safety, QaStage::ReadStateConvergence]
         }
+        QaScenario::CachedReadBeforeFirstSync => {
+            vec![QaStage::Safety, QaStage::CachedReadBeforeFirstSync]
+        }
         QaScenario::HiddenStateAcl => vec![QaStage::Safety, QaStage::HiddenStateAcl],
         QaScenario::IdleSyncGapInspection => vec![QaStage::Safety, QaStage::IdleSyncGapInspection],
         QaScenario::NotificationDelivery => {
@@ -1280,7 +1302,8 @@ pub(super) fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static st
         | QaScenario::HistoryKeyRecoveryWindow
         | QaScenario::IdleSyncGapInspection
         | QaScenario::NotificationDelivery
-        | QaScenario::McpMessageActions => stages_for_scenario(scenario)
+        | QaScenario::McpMessageActions
+        | QaScenario::CachedReadBeforeFirstSync => stages_for_scenario(scenario)
             .into_iter()
             .flat_map(|stage| tokens_for_stage(stage).iter().copied())
             .collect(),
