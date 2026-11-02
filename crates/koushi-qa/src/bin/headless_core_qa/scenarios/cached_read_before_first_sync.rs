@@ -207,10 +207,9 @@ pub(super) async fn run_cached_read_before_first_sync_scenario(
     }
     println!("cached_read_send_blocked=ok");
 
-    // A viewport report is what makes Rust write read state, and it is admitted
-    // only once this run owns a committed response (see the promotion step). The
-    // provisional-window hold itself is covered by the read-state worker test,
-    // not by a timing window here.
+    // A viewport report is what makes Rust write read state, and the run admits
+    // it only once it owns a committed response. The held-write behaviour itself
+    // is covered by the read-state worker tests.
     let cached_event_id = super::event_wait::timeline_item_event_id(&cached_item)
         .ok_or_else(|| "cached read: the cached message carries no event id".to_owned())?
         .to_owned();
@@ -248,21 +247,25 @@ pub(super) async fn run_cached_read_before_first_sync_scenario(
     wait_for_read_state_write(&proxy).await?;
     println!("cached_read_read_state_admitted=ok");
     wait_for_send_admission(&mut restored, "cached read post-promotion admission").await?;
-    let echo = send_text_expect_local_echo(
-        &mut restored,
-        &key,
-        "cached-read-after-admission",
-        POST_ADMISSION_BODY,
-        "cached read post-admission send",
-    )
-    .await?;
-    // A local echo only proves enqueueing. The token requires the send flow to
-    // complete with its own event, so a permanently paused queue cannot pass.
+    // The token requires the whole send flow, not a local echo: a permanently
+    // paused queue would never produce the server event.
+    let send_id = restored.next_request_id();
+    restored
+        .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id: send_id,
+            key: key.clone(),
+            transaction_id: "cached-read-after-admission".to_owned(),
+            document: koushi_state::ComposerDocument::from_plain_text(
+                POST_ADMISSION_BODY.to_owned(),
+            ),
+        }))
+        .await
+        .map_err(|e| format!("cached read: submit post-admission send failed: {e}"))?;
     wait_for_send_flow_completion(
         &mut restored,
-        echo.request_id,
+        send_id,
         &key,
-        &echo.client_transaction_id,
+        "cached-read-after-admission",
         POST_ADMISSION_BODY,
         "cached read post-admission send",
     )

@@ -167,14 +167,14 @@ pub(super) struct ReadCommandWaiter {
 
 #[cfg(test)]
 impl ReadCommandWaiter {
-    pub(super) fn for_test(key: TimelineKey) -> Self {
+    pub(super) fn for_test_at(key: TimelineKey, event_id: &str) -> Self {
         Self {
             request_id: RequestId {
                 connection_id: koushi_protocol::RuntimeConnectionId(1),
                 sequence: 1,
             },
             key,
-            event_id: "$event:example.invalid".to_owned(),
+            event_id: event_id.to_owned(),
             kind: ReadCommandKind::Receipt,
         }
     }
@@ -519,7 +519,7 @@ impl ReadWorkerSupervisor {
             self.queued.remove(&key);
             // #1737: hold the write, do not drop it; the committed response
             // re-wakes every desired key.
-            if !self.authority_admitted && !self.has_waiter_for(&key) {
+            if !self.authority_admitted && !self.explicitly_authorized(&key) {
                 continue;
             }
             if self.reconciliation_pending.contains(&key)
@@ -752,18 +752,21 @@ impl ReadWorkerSupervisor {
         self.dispatch_ready_reads();
     }
 
-    pub(super) fn set_authority_admitted(&mut self, admitted: bool) {
-        if self.authority_admitted == admitted {
-            return;
-        }
+    /// Admit or hold automatic read-state writes; returns whether it changed.
+    pub(super) fn set_authority_admitted(&mut self, admitted: bool) -> bool {
+        let changed = self.authority_admitted != admitted;
         self.authority_admitted = admitted;
+        changed
     }
 
-    /// Whether an explicit read command owns a settlement waiter for this key.
-    fn has_waiter_for(&self, key: &ReadStateKey) -> bool {
-        self.waiters
-            .values()
-            .any(|waiter| &read_state_key_for_command(&waiter.key, waiter.kind) == key)
+    /// Whether an explicit read command authorized exactly the write that is
+    /// about to be dispatched. A waiter for a different event in the same read
+    /// key does not authorize it: the engine keeps the newer desired target.
+    fn explicitly_authorized(&self, key: &ReadStateKey) -> bool {
+        self.waiters.values().any(|waiter| {
+            &read_state_key_for_command(&waiter.key, waiter.kind) == key
+                && self.state.has_candidate(key, &waiter.event_id)
+        })
     }
 
     pub(super) fn send_read_receipts_enabled(&self) -> bool {

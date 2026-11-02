@@ -187,9 +187,10 @@ async fn an_explicit_mark_read_is_not_held_by_the_provisional_fence() {
         AccountKey("@reader:example.invalid".to_owned()),
         "!explicit:example.invalid",
     );
-    supervisor
-        .waiters
-        .insert(waiter, super::ReadCommandWaiter::for_test(timeline_key));
+    supervisor.waiters.insert(
+        waiter,
+        super::ReadCommandWaiter::for_test_at(timeline_key, "$explicit:example.invalid"),
+    );
     supervisor.state.admit(
         1,
         key.clone(),
@@ -203,6 +204,48 @@ async fn an_explicit_mark_read_is_not_held_by_the_provisional_fence() {
     assert_eq!(
         request.operation.target().event_id(),
         "$explicit:example.invalid"
+    );
+}
+
+#[tokio::test]
+async fn a_waiter_for_another_event_does_not_authorize_a_newer_held_target() {
+    // #1737: the engine keeps the newer desired target. An explicit mark-read of
+    // an older event must not authorize writing the newer one before the run owns
+    // a committed response.
+    let (network_tx, mut network_rx) = mpsc::unbounded_channel();
+    let mut supervisor = ReadWorkerSupervisor::synthetic(network_tx, Duration::from_secs(30));
+    supervisor.set_authority_admitted(false);
+    let key = ReadStateKey::PublicUnthreaded {
+        room_id: "!mixed:example.invalid".to_owned(),
+    };
+    // A background observation of the newer event, then an explicit mark-read of
+    // the older one.
+    supervisor.state.admit_background(
+        1,
+        key.clone(),
+        ReadTarget::new("$newer:example.invalid".to_owned()),
+    );
+    let waiter = supervisor.allocate_waiter().expect("waiter");
+    let timeline_key = TimelineKey::room(
+        AccountKey("@reader:example.invalid".to_owned()),
+        "!mixed:example.invalid",
+    );
+    supervisor.waiters.insert(
+        waiter,
+        super::ReadCommandWaiter::for_test_at(timeline_key, "$older:example.invalid"),
+    );
+    supervisor.state.admit(
+        1,
+        key.clone(),
+        ReadTarget::new("$older:example.invalid".to_owned()),
+        waiter,
+    );
+    supervisor.enqueue_key(key.clone());
+    supervisor.dispatch_ready_reads();
+
+    assert!(
+        network_rx.try_recv().is_err(),
+        "the newer background target is not authorized by the older explicit mark-read"
     );
 }
 

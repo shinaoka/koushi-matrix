@@ -459,13 +459,16 @@ stateDiagram-v2
   the visible timeline, so it needs a server-confirmed list rather than backup
   admission, and a provisional cache projection may omit or misorder the newest
   events. Automatic read-state writes follow the same list-authority fence: a
-  boundary observed on a provisional projection stays a local reading position
-  and writes no receipt or fully-read marker until this sync run owns a
-  committed response. Nothing in the exception writes to the server: the SDK
-  send queue stays paused while send admission is closed, so a persisted unsent
-  request is not released by opening a cached timeline, and a provisional
-  projection never relays the `m.space.child` repair that a partial cache could
-  wrongly trigger. Affirmative recovery/setup requirements, key or backup
+  boundary observed on a provisional projection is held (not discarded) by the
+  read-state worker and settles only when this sync run owns a committed
+  response; an explicit user mark-read never waits for it. Nothing in the
+  exception writes to the server: the SDK send queue stays paused while send
+  admission is closed — including room-level retry/cancel re-enabling — so a
+  persisted unsent request is not released by opening a cached timeline; direct
+  message mutations (reactions, edits, redactions, thread replies from the CLI
+  or MCP surface) refuse with the same admission; and a provisional projection
+  never relays the `m.space.child` repair that a partial cache could wrongly
+  trigger. Affirmative recovery/setup requirements, key or backup
   mismatch, incomplete storage, and non-retryable or authentication failures
   open no exception at all: they keep the existing blocking gate. The read
   exception is open for `Checking`, an operational gate, and a

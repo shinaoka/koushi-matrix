@@ -3012,9 +3012,9 @@ impl AppActor {
     /// timeline and scroll position cannot change.
     /// Route one direct (non-GUI) message read or action to the account (#1628).
     ///
-    /// The runtime only decides session readiness; the account actor owns the
-    /// bounded execution, the reaction lane, and the reply. No app action is
-    /// reduced and no timeline actor is mounted.
+    /// The runtime decides session readiness and the session's send admission
+    /// (#1737); the account actor owns the bounded execution, the reaction lane,
+    /// and the reply. No app action is reduced and no timeline actor is mounted.
     async fn handle_direct_message_action(
         &mut self,
         request: crate::direct_operations::DirectMessageRequest,

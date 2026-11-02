@@ -1994,6 +1994,10 @@ impl TimelineActor {
         };
         // #1737: never resume one room past a paused session-wide queue, or a
         // persisted request would escape the send admission.
+        // shortcut: the check and the per-room enable are not atomic with the
+        // session-wide pause, so a pause landing between them could resume this
+        // one room; move the pause to the SDK's final network boundary (fork
+        // change) when a plaintext send must be impossible rather than unlikely.
         if room.client().send_queue().is_enabled() {
             room.send_queue().set_enabled(true);
         }
@@ -2063,7 +2067,7 @@ impl TimelineActor {
                 if let Some(room) = self.sdk_room_for_key() {
                     // #1737: never resume one room past a paused session-wide
                     // queue, or a persisted request would escape the send
-                    // admission.
+                    // admission (see the retry-path note on the non-atomic pair).
                     if room.client().send_queue().is_enabled() {
                         room.send_queue().set_enabled(true);
                     }

@@ -624,6 +624,9 @@ impl TimelineManagerActor {
         room_list_service: Arc<matrix_sdk_ui::room_list_service::RoomListService>,
         core_generation: u64,
     ) {
+        // #1737: close the read-state fence before the wake, so a write left
+        // pending by the previous run cannot be dispatched by it.
+        self.read_workers.set_authority_admitted(false);
         self.wake_all_desired_reads(ReadRetrySource::Reconnect)
             .await;
         self.room_subscription_service_epoch =
@@ -635,9 +638,6 @@ impl TimelineManagerActor {
         self.room_list_service = Some(room_list_service.clone());
         self.current_core_generation = Some(core_generation);
         self.global_response_commit = Some(GlobalResponseCommit::new(core_generation, 0));
-        // #1737: a new sync run owns no committed response yet, so read-state
-        // writes are held until it does.
-        self.read_workers.set_authority_admitted(false);
         let replacement_starts = self
             .invalidate_live_tail_epoch_for_existing_rooms(service_epoch)
             .await;
