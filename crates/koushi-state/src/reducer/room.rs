@@ -270,8 +270,13 @@ pub(crate) fn handle_room_list_updated(
 /// Provisional snapshots deliberately merge with the previous list, so they
 /// cannot be used to remove a room that has just been left.
 pub(crate) fn handle_room_left_locally(state: &mut AppState, room_id: String) -> Vec<AppEffect> {
+    // #1737: a declined invite is the same local decision as a leave. The
+    // provisional merge retains invites it did not observe, so the decision has
+    // to be recorded here or the invite would come back.
+    let declined_invite = state.invites.iter().any(|invite| invite.room_id == room_id);
     if !is_session_ready(state)
-        || (!state.rooms.iter().any(|room| room.room_id == room_id)
+        || (!declined_invite
+            && !state.rooms.iter().any(|room| room.room_id == room_id)
             && !state.spaces.iter().any(|space| space.space_id == room_id))
     {
         return Vec::new();
@@ -280,6 +285,12 @@ pub(crate) fn handle_room_left_locally(state: &mut AppState, room_id: String) ->
         .room_list
         .locally_left_room_ids
         .insert(room_id.clone());
+    let effects = if declined_invite {
+        state.invites.retain(|invite| invite.room_id != room_id);
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    } else {
+        Vec::new()
+    };
     // #1166: the room left the list, so its projected access condition goes with it.
     state.room_access.remove(&room_id);
     state.room_access_observed.remove(&room_id);
@@ -291,8 +302,14 @@ pub(crate) fn handle_room_left_locally(state: &mut AppState, room_id: String) ->
         .map(|room| room.joined_members);
     let mut rooms = state.rooms.clone();
     rooms.retain(|room| room.room_id != room_id);
-    let mut effects =
-        handle_room_list_updated_with_crawler(state, state.spaces.clone(), rooms, false, false);
+    let mut effects = effects;
+    effects.extend(handle_room_list_updated_with_crawler(
+        state,
+        state.spaces.clone(),
+        rooms,
+        false,
+        false,
+    ));
     // After the room-list update, so a Space deselected by this leave asks for
     // nothing.
     effects.extend(super::space_children::handle_room_left(
@@ -609,8 +626,13 @@ pub(crate) fn handle_room_list_snapshot_provisional(
     // #1737: a provisional projection may omit an invite simply because the
     // cache does not hold it, so it refreshes known invites and retains the ones
     // it did not observe. Only an authoritative snapshot may retract one.
+    let locally_left = &state.room_list.locally_left_room_ids;
     let mut merged_invites = state.invites.clone();
+    merged_invites.retain(|invite| !locally_left.contains(&invite.room_id));
     for invite in invites {
+        if locally_left.contains(&invite.room_id) {
+            continue;
+        }
         if let Some(existing) = merged_invites
             .iter_mut()
             .find(|existing| existing.room_id == invite.room_id)

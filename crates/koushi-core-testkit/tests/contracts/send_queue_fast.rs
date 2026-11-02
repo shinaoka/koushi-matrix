@@ -964,21 +964,6 @@ const FAST_SEND_QUEUE_PHASE_TIMEOUT: Duration = Duration::from_secs(5);
 // its own label, so a healthy run never approaches this bound.
 const FAST_SEND_QUEUE_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
 
-struct FastSendQueuePausedTime;
-
-impl FastSendQueuePausedTime {
-    fn start() -> Self {
-        tokio::time::pause();
-        Self
-    }
-}
-
-impl Drop for FastSendQueuePausedTime {
-    fn drop(&mut self) {
-        tokio::time::resume();
-    }
-}
-
 fn fast_send_queue_rejected_connection_delta(baseline: usize, observed: usize) -> usize {
     observed.saturating_sub(baseline)
 }
