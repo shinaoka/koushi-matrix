@@ -1198,8 +1198,13 @@ code without a matching command-success correlation.
   work: it refreshes the active room's pinned events and hydrates the active
   Space's members, ignores demand for another session, and replays the current
   demand when a session is established or sync (the room-list observer) starts.
-  An unknown room schedules nothing. A late actor echo of a selection has no
-  request owner left and is dropped, so it cannot restore an older room.
+  An unknown room schedules nothing. Restoring persisted navigation at launch
+  reduces `NavigationLoaded` instead of a selection, so the launch path admits
+  the same demand when the restored active room or Space differs from the
+  current one; the retained-demand replay then schedules the restored room's
+  pinned events and the restored Space's members (#1738). A late actor echo of
+  a selection has no request owner left and is dropped, so it cannot restore an
+  older room.
 
 Event navigation is a Rust-owned outer operation. Its lifecycle is normative:
 

@@ -939,8 +939,18 @@ impl AppActor {
                 NavigationState::default()
             }
         };
+        let previous_room_id = self.state.navigation.active_room_id.clone();
+        let previous_space_id = self.state.navigation.active_space_id.clone();
         let effects = reduce(&mut self.state, AppAction::NavigationLoaded { navigation });
         self.navigation_loaded_for = Some(key_id);
+        // #1738: a restored session commits no selection, so the launch path
+        // admits the enrichment demand here; nothing else schedules the
+        // restored room's pinned refresh.
+        if self.state.navigation.active_room_id != previous_room_id
+            || self.state.navigation.active_space_id != previous_space_id
+        {
+            self.admit_navigation_enrichment(None);
+        }
         self.handle_ui_event_effects(&effects).await;
     }
 
