@@ -401,7 +401,8 @@ button:disabled {
 .settings-toggle-row:focus-visible,
 .composer-math-toggle:focus-visible,
 .room-status-badge[tabindex]:focus-visible,
-.space-description-toggle:focus-visible {
+.space-description-toggle:focus-visible,
+.media-viewer-stage:focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
@@ -5635,6 +5636,20 @@ button:disabled {
   object-fit: contain;
   border-radius: 6px;
   transition: transform 160ms ease;
+}
+
+/* #1746: dragging a zoomed-in image must not lag the pointer by the zoom
+   transition. */
+.media-viewer-stage.is-panning .media-viewer-image {
+  transition: none;
+}
+
+.media-viewer-stage.is-pannable {
+  cursor: grab;
+}
+
+.media-viewer-stage.is-panning {
+  cursor: grabbing;
 }
 
 mark {

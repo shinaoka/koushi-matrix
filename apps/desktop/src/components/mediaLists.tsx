@@ -1,4 +1,12 @@
-import { type FormEvent, type ReactNode, useState } from "react";
+import {
+  type FormEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState
+} from "react";
 import { NativeModal } from "./ModalDialog";
 import {
   ChevronLeft,
@@ -121,6 +129,28 @@ function RoomMediaGallery({
   );
 }
 
+type ViewerPan = { x: number; y: number };
+const VIEWER_PAN_KEY_STEP = 24;
+/** Arrow keys scroll the way a scroll container would: the pressed edge comes in. */
+const VIEWER_PAN_KEYS: Record<string, ViewerPan> = {
+  ArrowLeft: { x: 1, y: 0 },
+  ArrowRight: { x: -1, y: 0 },
+  ArrowUp: { x: 0, y: 1 },
+  ArrowDown: { x: 0, y: -1 }
+};
+
+/** How far the scaled image overflows the stage on each axis, if at all. */
+function panLimits(
+  image: HTMLElement,
+  stage: HTMLElement,
+  zoomValue: number
+): ViewerPan | "fit" {
+  // offsetWidth/offsetHeight are the fitted layout box; transforms leave them alone.
+  const x = (image.offsetWidth * zoomValue - stage.clientWidth) / 2;
+  const y = (image.offsetHeight * zoomValue - stage.clientHeight) / 2;
+  return x > 0 || y > 0 ? { x: Math.max(0, x), y: Math.max(0, y) } : "fit";
+}
+
 function MediaViewer({
   index,
   items,
@@ -135,6 +165,13 @@ function MediaViewer({
   onSelectIndex: (index: number) => void;
 }) {
   const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState<ViewerPan>({ x: 0, y: 0 });
+  const [isPanning, setPanning] = useState(false);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const dragRef = useRef<{ pointerId: number; x: number; y: number; pan: ViewerPan } | null>(
+    null
+  );
   // #163: a viewer opened from a single timeline image hides prev/next.
   const showNavigation = items.length > 1;
   const item = items[index];
@@ -149,6 +186,70 @@ function MediaViewer({
           download.mime_type ?? item.media.mimetype
         )
       : null;
+
+  /** Keeps the zoomed image inside the stage: it may only move by its overflow. */
+  const clampPan = useCallback((next: ViewerPan, zoomValue: number): ViewerPan => {
+    const stage = stageRef.current;
+    const image = imageRef.current;
+    const limits = stage && image ? panLimits(image, stage, zoomValue) : "fit";
+    if (limits === "fit") {
+      return { x: 0, y: 0 };
+    }
+    return {
+      x: Math.min(limits.x, Math.max(-limits.x, next.x)),
+      y: Math.min(limits.y, Math.max(-limits.y, next.y))
+    };
+  }, []);
+
+  // A fitted image cannot pan, so zooming back in from a fitted view starts at
+  // the centre again instead of keeping a stale offset.
+  const changeZoom = (delta: number) => {
+    const next = Math.min(3, Math.max(0.5, zoom + delta));
+    setZoom(next);
+    setPan((current) => clampPan(current, next));
+  };
+
+  const resetView = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  };
+
+  const endPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.pointerId !== event.pointerId) {
+      return;
+    }
+    dragRef.current = null;
+    setPanning(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  // React registers wheel listeners as passive, so the pan owns its own
+  // non-passive one; scrolling stays the dialog's while the image fits.
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) {
+      return;
+    }
+    const handleWheel = (event: WheelEvent) => {
+      const image = imageRef.current;
+      if (!image || (event.deltaX === 0 && event.deltaY === 0)) {
+        return;
+      }
+      if (panLimits(image, stage, zoom) === "fit") {
+        return;
+      }
+      event.preventDefault();
+      setPan((current) =>
+        clampPan({ x: current.x - event.deltaX, y: current.y - event.deltaY }, zoom)
+      );
+    };
+    stage.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      stage.removeEventListener("wheel", handleWheel);
+    };
+  }, [clampPan, zoom]);
 
   return (
     <NativeModal onDismiss={onClose}
@@ -181,13 +282,68 @@ function MediaViewer({
             )}
           </Tooltip>
         </header>
-        <div className="media-viewer-stage">
+        <div
+          ref={stageRef}
+          className={`media-viewer-stage${zoom > 1 ? " is-pannable" : ""}${isPanning ? " is-panning" : ""}`}
+          tabIndex={0}
+          onPointerDown={(event) => {
+            if (event.button !== 0 || !sourceUrl) {
+              return;
+            }
+            dragRef.current = {
+              pointerId: event.pointerId,
+              x: event.clientX,
+              y: event.clientY,
+              pan
+            };
+            event.currentTarget.setPointerCapture(event.pointerId);
+            setPanning(true);
+          }}
+          onPointerMove={(event) => {
+            const drag = dragRef.current;
+            if (!drag || drag.pointerId !== event.pointerId) {
+              return;
+            }
+            setPan(
+              clampPan(
+                {
+                  x: drag.pan.x + (event.clientX - drag.x),
+                  y: drag.pan.y + (event.clientY - drag.y)
+                },
+                zoom
+              )
+            );
+          }}
+          onPointerUp={endPan}
+          onPointerCancel={endPan}
+          onKeyDown={(event) => {
+            const direction = VIEWER_PAN_KEYS[event.key];
+            if (!direction || event.altKey || event.ctrlKey || event.metaKey) {
+              return;
+            }
+            const step = VIEWER_PAN_KEY_STEP * (event.shiftKey ? 4 : 1);
+            const next = clampPan(
+              { x: pan.x + direction.x * step, y: pan.y + direction.y * step },
+              zoom
+            );
+            // A fitted image has nothing to reveal, so the key keeps its default.
+            if (next.x === pan.x && next.y === pan.y) {
+              return;
+            }
+            event.preventDefault();
+            setPan(next);
+          }}
+        >
           {sourceUrl ? (
             <img
+              ref={imageRef}
               className="media-viewer-image"
               src={sourceUrl}
               alt={label}
-              style={{ transform: `scale(${zoom})` }}
+              draggable={false}
+              style={{
+                transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`
+              }}
             />
           ) : item.media.kind === "Image" ? (
             <div className="media-viewer-image-placeholder" style={{ transform: `scale(${zoom})` }}>
@@ -208,7 +364,7 @@ function MediaViewer({
                   type="button"
                   aria-label={t("mediaGallery.previous")}
                   onClick={() => {
-                    setZoom(1);
+                    resetView();
                     onSelectIndex(previousIndex);
                   }}
                   {...tooltipProps}
@@ -224,7 +380,7 @@ function MediaViewer({
                 className="icon-button"
                 type="button"
                 aria-label={t("mediaGallery.zoomOut")}
-                onClick={() => setZoom((value) => Math.max(0.5, value - 0.25))}
+                onClick={() => changeZoom(-0.25)}
                 {...tooltipProps}
               >
                 <ZoomOut size={ICON_SIZE.control} />
@@ -237,7 +393,7 @@ function MediaViewer({
                 className="icon-button"
                 type="button"
                 aria-label={t("mediaGallery.zoomIn")}
-                onClick={() => setZoom((value) => Math.min(3, value + 0.25))}
+                onClick={() => changeZoom(0.25)}
                 {...tooltipProps}
               >
                 <ZoomIn size={ICON_SIZE.control} />
