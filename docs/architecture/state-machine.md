@@ -443,6 +443,33 @@ stateDiagram-v2
   visible but does not close ordinary encrypted sending. Recovery/setup,
   mismatch, incomplete storage, and an inconclusive initial inspection remain
   blocking.
+- **Canon amendment (#1737).** Reading and sending are separate admissions. A
+  restored session that is currently `Ready` may read the SDK store's cached
+  rooms and messages before this sync run's first committed response, and while
+  initial Secure Backup inspection is `Checking` or has ended inconclusively
+  with a retryable connectivity failure. That read exception never opens
+  outside `Ready`: unknown or unverified trust, a rejected or locked session,
+  auth invalidation, and sign-out keep their existing gates and expose no
+  cached content. The exception also never admits a write. Every user-content
+  send stays closed until the existing Secure Backup admission above opens it —
+  including plaintext rooms that the previous all-or-nothing startup screen made
+  unreachable — together with replies, threads, attachments, reactions, edits,
+  redactions, retries, and scheduled-send creation and release. A fully-read
+  marker is refused for a separate reason: it is a read-state write derived from
+  the visible timeline, so it needs a server-confirmed list rather than backup
+  admission, and a provisional cache projection may omit or misorder the newest
+  events. Affirmative recovery/setup requirements, key or backup mismatch,
+  incomplete storage, and non-retryable or authentication failures open no
+  exception at all: they keep the existing blocking gate. Opening read access
+  does not restart inspection, erase a `BlockedFailed`, or change its bounded
+  deadline and retry semantics, and the read surface must present the
+  provisional-cache warning and the separate send-blocked reason without
+  calling a delayed response "offline". Rust owns the admission: `AppState`
+  projects `ConversationAccess { readable, list_authoritative, send_admitted }`
+  from the session state, room-list readiness, and backup gate, and command
+  admission refuses send-family commands while `send_admitted` is false.
+  Renderers display this projection and do not infer admission from timers,
+  refs, shell history, or backup text.
 - `SecureBackupGateState` distinguishes an existing backup needing recovery,
   incomplete secure storage, setup required, explicitly disabled setup,
   creation, on-screen Recovery Key reveal, upload settlement, retrying,
@@ -471,6 +498,8 @@ stateDiagram-v2
   or incomplete storage closes encrypted admission immediately but does not
   clear composer drafts or stop sync. Upload progress and transient runtime
   degradation retain normal use; an inconclusive initial inspection does not.
+  The #1737 read exception above covers reading only; it never keeps or reopens
+  sending.
   A periodic server probe failure and an `Unknown` local backup observation
   preserve an already operational gate and schedule retry. A positive local
   disablement or incomplete recovery still closes admission immediately.
@@ -953,6 +982,21 @@ stateDiagram-v2
 - `RoomListReadiness` carries `Uninitialized`, `Loading`, `Ready`, or `Failed`,
   plus a coarse `RoomListSource` (`Cache` or `Live`) and a monotonically
   increasing service generation. It contains no Matrix IDs or raw SDK errors.
+- **Canon amendment (#1737).** The one SyncService-owned `RoomListService` is
+  observed from the accepted sync run's start, not from its first committed
+  response: the restored SDK store already holds rooms, and a trusted session
+  may read them while the first response is pending. The existing
+  `TimelineManager`-before-room-observer binding order, the single service, and
+  the actor cancellation/join ownership are unchanged.
+- Observation before the first response is never authority. A projection claims
+  authority only when this sync run owns a committed room-list response and
+  that response's reconciliation is complete with distinct entry identities.
+  The SDK's `Loaded` loading state, elapsed time, a warm cached count, a cached
+  `range_fully_loaded`, and a response that omits `count` are not evidence of a
+  response: a count-less response stays a complete response *only after* the run
+  has owned a committed response. Until then every observation is provisional,
+  including an empty vector, so a provisional empty can never become an
+  authoritative zero-room account (#409).
 - Bootstrap start changes readiness to `Loading` and retains the last usable
   room/space/invite snapshot. A current-generation provisional observation
   merges observed Spaces and rooms by stable ID, refreshing or appending them
@@ -966,6 +1010,17 @@ stateDiagram-v2
 - Provisional, authoritative, and failure actions from an older generation are
   ignored. This fences a retired SyncService observer when the runtime starts a
   replacement service generation.
+- While the list is provisional, Rust keeps the projected unread/count values
+  last-known and provisional (zero means no locally known unread, not
+  server-confirmed all-read), keeps cached joined rooms, Spaces, child edges,
+  positive DM/Space associations, and invites, and never evicts or
+  reclassifies them from a partial observation. Navigation settles through the
+  existing typed Rust selection, so an available cached room or Space can be
+  read before the first response without a second selection state machine;
+  drafts and per-Space memory are preserved, and an authoritative removal is
+  what clears or retargets them. No send, queue release, crawler admission,
+  automatic read receipt, or fully-read mutation follows from opening cached
+  content.
 - `RoomListUpdated` remains the compatibility path for already-authoritative
   room operations and tests; service bootstrap projection uses the guarded
   readiness actions above. Both entry and snapshot paths reject all non-Ready

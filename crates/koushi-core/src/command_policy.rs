@@ -203,6 +203,17 @@ pub(crate) fn native_artifact_for_account_command(
 pub trait CoreCommandPolicy {
     fn composer_draft_scope(&self) -> Option<ComposerDraftScope>;
     fn requires_ready_session(&self) -> bool;
+    /// Whether this command sends user content, or creates/releases a queued
+    /// send, so it needs the session's Secure Backup send admission (#1737). A
+    /// restored session that may read cached conversations still cannot send
+    /// from any composer surface, thread, upload, reaction, edit, retry, or
+    /// scheduled-send entry point before that admission.
+    fn requires_send_admission(&self) -> bool;
+    /// Whether this command writes read state derived from the visible
+    /// timeline, so it needs a server-confirmed room list (#1737). A provisional
+    /// cache projection may omit or misorder the newest events, so marking it
+    /// read would write a claim this device cannot support.
+    fn requires_authoritative_read_state(&self) -> bool;
 }
 
 impl CoreCommandPolicy for CoreCommand {
@@ -325,6 +336,38 @@ impl CoreCommandPolicy for CoreCommand {
                         | AppCommand::TimelineScrollAnchorUpdated { .. }
                 )
             )
+    }
+
+    fn requires_send_admission(&self) -> bool {
+        match self {
+            Self::Timeline(command) => matches!(
+                command,
+                TimelineCommand::SendText { .. }
+                    | TimelineCommand::SubmitText { .. }
+                    | TimelineCommand::SendReply { .. }
+                    | TimelineCommand::SubmitReply { .. }
+                    | TimelineCommand::ForwardMessage { .. }
+                    | TimelineCommand::RetrySend { .. }
+                    | TimelineCommand::UploadAndSendMedia { .. }
+                    | TimelineCommand::EditText { .. }
+                    | TimelineCommand::Redact { .. }
+                    | TimelineCommand::SendReaction { .. }
+                    | TimelineCommand::RedactReaction { .. }
+            ),
+            Self::App(
+                AppCommand::ScheduleSend { .. } | AppCommand::RescheduleScheduledSend { .. },
+            ) => true,
+            Self::App(_) | Self::Account(_) | Self::Sync(_) | Self::Room(_) | Self::Search(_) => {
+                false
+            }
+        }
+    }
+
+    fn requires_authoritative_read_state(&self) -> bool {
+        // An explicit mark-as-read is an admitted correlated read operation; it
+        // is the fully-read mutation that a provisional projection must not
+        // write.
+        matches!(self, Self::Timeline(TimelineCommand::SetFullyRead { .. }))
     }
 }
 

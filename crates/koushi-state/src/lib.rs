@@ -81,7 +81,7 @@ pub use state::{
     ComposerSubmissionRegistry, ContactDeviceCounts, ContactDeviceSignature, ContactDevicesStatus,
     ContactIdentityVerification, ContactSecurityFailureKind, ContactSecurityLoadState,
     ContactSecurityState, ContactSecuritySummary, ContactVerificationDirectChat,
-    ContactVerificationOffer, ConversationActivity, ConversationActivitySource,
+    ContactVerificationOffer, ConversationAccess, ConversationActivity, ConversationActivitySource,
     CreateRoomAccessPreview, CreateRoomAccessPreviewInput, CreateRoomAccessRejection,
     CreateRoomAccessSeed, CrossSigningStatus, CurrentDeviceTrustState, CurrentSessionBackupState,
     CurrentSessionStatusDetails, CurrentSessionStatusFailureKind, CurrentSessionStatusState,

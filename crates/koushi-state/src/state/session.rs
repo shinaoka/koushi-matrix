@@ -666,3 +666,27 @@ pub enum SoftLogoutReauthState {
         kind: AuthFailureKind,
     },
 }
+
+/// #1737: Rust-owned admission for reading locally held conversations and for
+/// writing to the server from a restored session.
+///
+/// A session that passed the existing current-device trust and session
+/// admission may read the SDK store's cached rooms and messages before this
+/// sync run's first committed response, and while initial Secure Backup
+/// inspection is still pending or failed inconclusively. Sending stays closed
+/// until the existing Secure Backup admission opens it, for every room kind and
+/// every composer surface. Each field is derived from owned state by
+/// [`AppState::conversation_access`]; this type owns no transition of its own.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationAccess {
+    /// A trusted restored session may show locally held rooms and messages.
+    pub readable: bool,
+    /// This sync run has owned a complete room-list response, so counts,
+    /// badges, and read-state writes may claim authority. A provisional cache
+    /// observation never sets this, however complete it looks.
+    pub list_authoritative: bool,
+    /// User-content sending is admitted. The reason it is closed is the
+    /// projected `AppState.secure_backup_gate`.
+    pub send_admitted: bool,
+}

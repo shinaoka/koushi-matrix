@@ -1,5 +1,7 @@
 #[path = "session_state/authentication.rs"]
 mod authentication;
+#[path = "session_state/conversation_access.rs"]
+mod conversation_access;
 #[path = "session_state/device_cleanup.rs"]
 mod device_cleanup;
 #[path = "session_state/lifecycle.rs"]

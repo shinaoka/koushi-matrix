@@ -3226,6 +3226,61 @@ impl AppActor {
             }
             return false;
         }
+        let readiness_refusal = if command.requires_authoritative_read_state()
+            && !self.state.conversation_access().list_authoritative
+        {
+            // #1737: a provisional cache projection may omit or misorder the
+            // newest events, so writing a fully-read marker from it would claim
+            // more than this device knows.
+            Some((
+                "read_state_not_authoritative",
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Forbidden,
+                },
+            ))
+        } else if command.requires_send_admission()
+            && !self.state.conversation_access().send_admitted
+        {
+            // #1737: a restored session may read its cached conversations before
+            // Secure Backup admission, but nothing is written to the server from
+            // that read-only surface. The projected Secure Backup gate is the
+            // reason; this refusal covers every room kind, including plaintext
+            // rooms the startup screen used to hide entirely.
+            Some((
+                "secure_backup_required",
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::SecureBackupRequired,
+                },
+            ))
+        } else {
+            None
+        };
+        if let Some((reason, failure)) = readiness_refusal {
+            trace_runtime_sync!(
+                "command_rejected",
+                [
+                    DiagnosticField::request_id(
+                        "request_id",
+                        command.request_id().connection_id.0,
+                        command.request_id().sequence
+                    ),
+                    DiagnosticField::token("reason", reason),
+                    DiagnosticField::token("action", "emit_operation_failed"),
+                ],
+                "request_id={} reason={} action=emit_operation_failed",
+                runtime_request_id_trace_label(command.request_id()),
+                reason
+            );
+            self.emit(CoreEvent::OperationFailed {
+                request_id: command_request_id,
+                failure,
+            });
+            if let Some((request_id, kind)) = native_artifact_for_command(&command) {
+                self.account_actor
+                    .unregister_native_artifact(request_id, kind);
+            }
+            return false;
+        }
         if command_supersedes_event_navigation(&command) {
             self.cancel_event_navigation_owner().await;
         }
