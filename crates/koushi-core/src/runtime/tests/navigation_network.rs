@@ -1373,3 +1373,50 @@ async fn navigation_network_rebuild_keeps_a_held_paused_notification() {
     assert_eq!(delivered, ["rebuild".to_owned(), paused_label]);
     harness.actor_task.abort();
 }
+
+/// #1738: a launched session restores its room through `NavigationLoaded`
+/// instead of a committed `SelectRoom`, so the launch path itself must admit
+/// the retained enrichment demand a committed selection would. Nothing else
+/// schedules the restored room's pinned-event refresh, and a restored
+/// sliding-sync session never resends unchanged pinned-event state.
+#[tokio::test]
+async fn navigation_network_restored_room_admits_enrichment() {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let cred_dir = tempfile::tempdir().expect("credential directory");
+    let mut state = navigation_state();
+    state.navigation = NavigationState::default();
+    let (mut actor, ..) = app_actor_fixture_with_account_capacity(data_dir.path(), state, 8);
+    actor.composer_draft_store_actor =
+        crate::store::test_support::file_store_actor(&data_dir, &cred_dir);
+    actor.navigation_loaded_for = None;
+    let key =
+        crate::runtime::navigation::navigation_session_key(&actor.state).expect("session key");
+    actor
+        .composer_draft_store_actor
+        .save_navigation(
+            &key,
+            &NavigationState {
+                active_room_id: Some(ROOM_B.to_owned()),
+                ..NavigationState::default()
+            },
+        )
+        .expect("persist navigation");
+
+    actor.load_navigation_for_current_session().await;
+
+    assert_eq!(
+        actor.state.navigation.active_room_id.as_deref(),
+        Some(ROOM_B),
+        "launch restores the persisted room"
+    );
+    let demand = actor.account_actor.latest_navigation_enrichment();
+    assert_eq!(
+        demand.as_ref().map(|demand| demand.active_room_id.clone()),
+        Some(Some(ROOM_B.to_owned())),
+        "restored room never reaches RoomActor's pinned refresh"
+    );
+    // The admission carries the selection-shaped Space flag, so a restore that
+    // lands in a Space also requests its members; this fixture restores Home,
+    // so only the flag itself is observable here.
+    assert!(demand.is_some_and(|demand| demand.space_selected));
+}
