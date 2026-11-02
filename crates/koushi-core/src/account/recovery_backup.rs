@@ -341,8 +341,7 @@ fn secure_backup_failure_is_retryable(
         )
 }
 
-/// The bounded deadline for a deferred or in-flight inspection expired before
-/// the server answered.
+/// An in-flight inspection exceeded its bounded deadline.
 pub(super) fn secure_backup_inspection_deadline_failure()
 -> koushi_state::SecureBackupInspectionFailure {
     use koushi_state::{
@@ -474,6 +473,7 @@ fn secure_backup_failure_stage_token(
         SecureBackupFailureStage::RecoveryKeyDelivery => "recovery_key_delivery",
         SecureBackupFailureStage::CrossSigningStatus => "cross_signing_status",
         SecureBackupFailureStage::InspectionDeadline => "inspection_deadline",
+        SecureBackupFailureStage::FirstSync => "first_sync",
         SecureBackupFailureStage::Unknown => "unknown",
     }
 }
@@ -1982,6 +1982,32 @@ impl AccountActor {
         }
     }
 
+    pub(super) async fn retry_secure_backup_inspection(&mut self, request_id: RequestId) {
+        if self.session.is_none() || !self.session_promoted {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
+        if !self.sync_connectivity_proven {
+            if let Some(sync) = &self.sync_actor {
+                if !sync
+                    .send(crate::sync::SyncMessage::RetryFirstSync { request_id })
+                    .await
+                {
+                    self.emit_failure(request_id, CoreFailure::SessionRequired);
+                    return;
+                }
+            } else {
+                Box::pin(
+                    self.route_sync_command(koushi_protocol::command::SyncCommand::Start {
+                        request_id,
+                    }),
+                )
+                .await;
+            }
+        }
+        self.start_secure_backup_inspection();
+    }
+
     pub(super) fn start_secure_backup_inspection(&mut self) {
         match secure_backup_inspection_admission(
             self.sync_connectivity_proven,
@@ -2161,6 +2187,7 @@ impl AccountActor {
             return;
         }
         self.sync_connectivity_proven = proven;
+        self.sync_connectivity_ever_proven |= proven;
         record(
             DiagnosticEvent::new(
                 DiagnosticLevel::Info,
@@ -2317,12 +2344,17 @@ impl AccountActor {
             return;
         }
         self.secure_backup_inspection_pending = false;
+        let mut failure = secure_backup_inspection_deadline_failure();
+        if !self.sync_connectivity_ever_proven {
+            failure.detail.as_mut().expect("deadline detail").stage =
+                koushi_state::SecureBackupFailureStage::FirstSync;
+        }
         let Some(action) = secure_backup_inspection_completion_action(
             self.trust_generation,
             self.session_promoted,
             false,
             generation,
-            Err(secure_backup_inspection_deadline_failure()),
+            Err(failure),
         ) else {
             return;
         };
@@ -2422,5 +2454,7 @@ impl AccountActor {
     }
 }
 
+#[cfg(test)]
+mod stalled_first_sync_tests;
 #[cfg(test)]
 mod tests;

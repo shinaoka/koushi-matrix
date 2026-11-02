@@ -439,6 +439,7 @@ async fn reset_local_data_clears_current_account_persistence_and_signs_out_local
         secure_backup_monitor_serial: 0,
         secure_backup_inspection_pending: false,
         sync_connectivity_proven: false,
+        sync_connectivity_ever_proven: false,
         secure_backup_retry_attempt: 0,
         secure_backup_recovery_epoch: false,
         secure_backup_recovery_reset_consumed: false,
