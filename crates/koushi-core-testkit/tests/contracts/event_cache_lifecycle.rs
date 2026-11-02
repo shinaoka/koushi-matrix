@@ -503,8 +503,10 @@ async fn automatic_cache_delivers_first_sync_persisted_restore_and_new_updates()
             .map(|pair| (pair[1].0, pair[1].1.duration_since(pair[0].1)))
             .collect();
         let observation_started = tokio::time::Instant::now();
-        let lane = lane_probe(&mut connection).await;
+        // Read the store first: the lane probe mutates state and can hold the store
+        // busy, which would weaken the evidence that the event was on disk.
         let cache = persisted_event_after_timeout(data.path(), credentials.path());
+        let lane = lane_probe(&mut connection).await;
         let observation = observation_started.elapsed();
         panic!(
             "restored timeline reads persisted cache without server replay: {failure}; phases=(phase, elapsed) {timing:?}; logout=not reached; initial_items=(count, contains_event) {initial_counts:?}; delivered_in_updates={delivered_in_updates}; lane_probe={lane}; persisted_event_after_timeout={cache:?}; observation_duration={observation:?}; store may have changed since the failure",
