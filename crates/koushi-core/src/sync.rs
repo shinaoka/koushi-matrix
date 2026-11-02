@@ -54,6 +54,13 @@ const SYNC_SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 /// re-deliver unchanged account data, so the drain is still attempted there.
 const IGNORED_USER_LIST_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 const ROOM_OBSERVATION_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+/// First bounded window of the #1755 first-response watchdog. A cold start
+/// legitimately takes seconds, so the first record waits longer than the
+/// room-list reconcile ack above.
+const FIRST_RESPONSE_STALL_FIRST_WINDOW: Duration = Duration::from_secs(30);
+/// A stalled run repeats its record with a doubling window capped here, so an
+/// idle stall cannot flood the detail ring.
+const FIRST_RESPONSE_STALL_MAX_WINDOW: Duration = Duration::from_secs(5 * 60);
 
 macro_rules! trace_sync {
     ($stage:expr, [$($field:expr),* $(,)?], $($arg:tt)*) => {{
@@ -556,6 +563,9 @@ impl SyncActor {
         ));
         self.run_generation = self.run_generation.wrapping_add(1).max(1);
         let run_generation = self.run_generation;
+        // #1755: the run generation's observation epoch, shared with the
+        // watchdog so `elapsed_ms` spans the whole generation.
+        let run_started_at = Instant::now();
 
         let service = match matrix_sdk_ui::sync_service::SyncService::builder(client.clone())
             .with_offline_mode()
@@ -594,6 +604,7 @@ impl SyncActor {
             room_list_service,
             self.control_tx.clone(),
             run_generation,
+            run_started_at,
             self.diagnostics.clone(),
         ));
 
@@ -1112,6 +1123,144 @@ impl ReplacementRecoveryProof {
     }
 }
 
+/// #1755: the last first-response step one run generation completed.
+///
+/// The phases name only what the actor can observe. The list stops at
+/// `EncryptionSyncRequested` because the SDK exposes no per-request observable
+/// for the `room-list` connection: `SyncService`/`RoomListService` states only
+/// advance after a committed response, so a request count (`attempt`) or a
+/// `request_issued` phase cannot be reported without guessing.
+///
+/// Transitions, each advanced once and never moved back:
+///
+/// - `SyncStarted`: this generation's observer starts, i.e. the actor admitted
+///   the generation, built the SDK service and bound the room/timeline
+///   observers; `SyncService::start` follows immediately.
+/// - `SyncRunning`: `SyncService::State::Running` was published, i.e. the SDK
+///   supervisor actually started this generation's sync loop. Before it, the
+///   run has asked the homeserver for nothing.
+/// - `EncryptionSyncRequested`: the encryption connection began a sliding-sync
+///   request (the SDK readiness snapshot moved to `Pending` for a new
+///   generation). This is the only request-level evidence available and it is
+///   session-level: it proves the run is asking the homeserver, not that the
+///   `room-list` request specifically left the process.
+///
+/// A reader therefore separates "asked nothing yet" (`sync_started`,
+/// `sync_running`) from "asked and got no answer"
+/// (`encryption_sync_requested`) from the phase alone, which is what the `issued`
+/// field of #1755 asked for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum FirstResponsePhase {
+    SyncStarted,
+    SyncRunning,
+    EncryptionSyncRequested,
+}
+
+impl FirstResponsePhase {
+    fn token(self) -> &'static str {
+        match self {
+            Self::SyncStarted => "sync_started",
+            Self::SyncRunning => "sync_running",
+            Self::EncryptionSyncRequested => "encryption_sync_requested",
+        }
+    }
+}
+
+/// #1755: exactly one first-response watchdog per run generation.
+///
+/// It is instrumentation only: waiting for the first committed response keeps
+/// its behaviour, no retry policy changes, and the record never reaches the
+/// user as a failure.
+struct FirstResponseWatchdog {
+    started_at: Instant,
+    phase: FirstResponsePhase,
+    window: Duration,
+    deadline: Option<Instant>,
+    stalled: bool,
+    committed: bool,
+}
+
+impl FirstResponseWatchdog {
+    fn new(started_at: Instant) -> Self {
+        Self {
+            started_at,
+            phase: FirstResponsePhase::SyncStarted,
+            window: FIRST_RESPONSE_STALL_FIRST_WINDOW,
+            deadline: Some(started_at + FIRST_RESPONSE_STALL_FIRST_WINDOW),
+            stalled: false,
+            committed: false,
+        }
+    }
+
+    fn advance(&mut self, phase: FirstResponsePhase) {
+        self.phase = self.phase.max(phase);
+    }
+
+    /// `None` once a committed response arrived: nothing left to watch.
+    fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    /// One bounded record per window, then the next window doubles.
+    fn window_elapsed(&mut self, run_generation: u64) {
+        if self.committed {
+            return;
+        }
+        self.stalled = true;
+        record(first_response_diagnostic_event(
+            "first_response_stalled",
+            DiagnosticLevel::Warn,
+            self.phase,
+            self.started_at.elapsed(),
+            run_generation,
+        ));
+        self.window = next_first_response_stall_window(self.window);
+        self.deadline = Some(Instant::now() + self.window);
+    }
+
+    /// A committed response closes a reported stall exactly once. A run that
+    /// ends without one keeps its last stall record and pairs it with the
+    /// existing lifecycle records instead of a clear.
+    fn response_committed(&mut self, run_generation: u64) {
+        if self.committed {
+            return;
+        }
+        self.committed = true;
+        self.deadline = None;
+        if self.stalled {
+            record(first_response_diagnostic_event(
+                "first_response_stalled_cleared",
+                DiagnosticLevel::Debug,
+                self.phase,
+                self.started_at.elapsed(),
+                run_generation,
+            ));
+        }
+    }
+}
+
+/// Doubling backoff for the repeated stall record, capped so an idle stall
+/// cannot flood the detail ring.
+fn next_first_response_stall_window(window: Duration) -> Duration {
+    (window * 2).min(FIRST_RESPONSE_STALL_MAX_WINDOW)
+}
+
+fn first_response_diagnostic_event(
+    stage: &'static str,
+    level: DiagnosticLevel,
+    phase: FirstResponsePhase,
+    elapsed: Duration,
+    run_generation: u64,
+) -> DiagnosticEvent {
+    DiagnosticEvent::new(level, "core.sync", stage)
+        .field(DiagnosticField::token("phase", phase.token()))
+        .field(DiagnosticField::milliseconds(
+            "elapsed_ms",
+            elapsed.as_millis(),
+        ))
+        .field(DiagnosticField::count("generation", run_generation))
+}
+
 mod observer;
 use observer::retire_room_recovery;
 use observer::{
@@ -1141,8 +1290,10 @@ async fn observe_sync_service(
     room_list_service: Arc<matrix_sdk_ui::room_list_service::RoomListService>,
     control_tx: mpsc::Sender<SyncActorControl>,
     run_generation: u64,
+    run_started_at: Instant,
     diagnostics: SlidingSyncDiagnostics,
 ) -> SyncTaskOutcome {
+    let mut first_response = FirstResponseWatchdog::new(run_started_at);
     let mut connected = false;
     let mut reconnecting = false;
     let mut replacement_recovery: Option<ReplacementRecoveryProof> = None;
@@ -1177,22 +1328,36 @@ async fn observe_sync_service(
             return SyncTaskOutcome::Stopped;
         }
         let signal = if let Some(state) = pending_state.take() {
-            Signal::State(state)
+            Some(Signal::State(state))
         } else if pending_reconciliation.is_none()
             && let Some(committed) = pending_commit.take()
         {
-            Signal::Committed(committed)
+            Some(Signal::Committed(committed))
         } else if let Some(encryption) = pending_encryption.take() {
-            Signal::Encryption(encryption)
+            Some(Signal::Encryption(encryption))
         } else {
-            next_sync_observer_signal(
+            let waiting = next_sync_observer_signal(
                 &observer_stop,
                 &mut state_sub,
                 &mut committed_all_rooms_response,
                 &mut encryption_readiness,
                 &mut pending_reconciliation,
-            )
-            .await
+            );
+            // #1755: a stalled first response produces no SDK signal at all, so
+            // the watchdog's deadline has to race the observer's own wait.
+            match first_response.deadline() {
+                Some(deadline) => tokio::select! {
+                    signal = waiting => Some(signal),
+                    () = executor::sleep(deadline.saturating_duration_since(Instant::now())) => {
+                        None
+                    }
+                },
+                None => Some(waiting.await),
+            }
+        };
+        let Some(signal) = signal else {
+            first_response.window_elapsed(run_generation);
+            continue;
         };
 
         match signal {
@@ -1204,6 +1369,7 @@ async fn observe_sync_service(
                 ) =>
             {
                 last_committed_sequence = committed.sequence();
+                first_response.response_committed(run_generation);
                 trace_sync!(
                     "committed_response",
                     [
@@ -1349,6 +1515,7 @@ async fn observe_sync_service(
                     && snapshot.generation != last_encryption_started_generation
                 {
                     last_encryption_started_generation = snapshot.generation;
+                    first_response.advance(FirstResponsePhase::EncryptionSyncRequested);
                     koushi_sdk::record_encryption_sync_lifecycle(
                         koushi_sdk::EncryptionSyncLifecycleOwner::Steady,
                         snapshot,
@@ -1415,6 +1582,9 @@ async fn observe_sync_service(
                 }
             }
             Signal::State(state) => {
+                if matches!(state, matrix_sdk_ui::sync_service::State::Running) {
+                    first_response.advance(FirstResponsePhase::SyncRunning);
+                }
                 if matches!(
                     state,
                     matrix_sdk_ui::sync_service::State::Offline(_)
