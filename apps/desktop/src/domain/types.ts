@@ -1107,6 +1107,7 @@ export type SecureBackupFailureStage =
   | "recoveryKeyDelivery"
   | "crossSigningStatus"
   | "inspectionDeadline"
+  | "firstSync"
   | "unknown";
 
 /** Mirror of the Rust `SecureBackupFailureTransport` vocabulary. */

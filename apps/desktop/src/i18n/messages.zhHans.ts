@@ -1593,6 +1593,7 @@ export const zhHans: Catalog = {
   "gate.secureBackupFailureUnauthorized": "主服务器拒绝了安全备份的登录。",
   "gate.secureBackupDetailNoResponse": "无法连接到主服务器，因此此安全备份请求未收到任何响应。",
   "gate.secureBackupDetailTimeout": "主服务器未能及时响应此安全备份请求。",
+  "gate.secureBackupDetailFirstSync": "Koushi 仍在等待首次同步响应。尚未尝试发送安全备份请求。",
   "gate.secureBackupDetailHttpStatus": "主服务器以错误响应了此安全备份请求（HTTP {status}）。",
   "gate.secureBackupDetailHttpResponse": "主服务器以错误响应了此安全备份请求。",
   "gate.secureBackupDetailLocal": "无法在此设备上准备安全备份。",

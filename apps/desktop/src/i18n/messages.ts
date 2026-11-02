@@ -1583,6 +1583,7 @@ export type MessageId =
   | "gate.secureBackupFailureUnauthorized"
   | "gate.secureBackupDetailNoResponse"
   | "gate.secureBackupDetailTimeout"
+  | "gate.secureBackupDetailFirstSync"
   | "gate.secureBackupDetailHttpStatus"
   | "gate.secureBackupDetailHttpResponse"
   | "gate.secureBackupDetailLocal"
@@ -4041,6 +4042,7 @@ const en: Catalog = {
   "gate.secureBackupFailureUnauthorized": "The homeserver rejected the sign-in for secure backup.",
   "gate.secureBackupDetailNoResponse": "The homeserver could not be reached, so this secure backup request never received a response.",
   "gate.secureBackupDetailTimeout": "The homeserver did not answer this secure backup request in time.",
+  "gate.secureBackupDetailFirstSync": "Koushi is still waiting for its first sync response. No Secure Backup request has been attempted.",
   "gate.secureBackupDetailHttpStatus": "The homeserver answered this secure backup request with an error (HTTP {status}).",
   "gate.secureBackupDetailHttpResponse": "The homeserver answered this secure backup request with an error.",
   "gate.secureBackupDetailLocal": "Secure backup could not be prepared on this device.",
@@ -6383,6 +6385,7 @@ const ja: Catalog = {
   "gate.secureBackupFailureUnauthorized": "ホームサーバーが安全なバックアップのサインインを拒否しました。",
   "gate.secureBackupDetailNoResponse": "ホームサーバーに到達できなかったため、この安全なバックアップの要求は応答を受け取りませんでした。",
   "gate.secureBackupDetailTimeout": "ホームサーバーがこの安全なバックアップの要求に時間内に応答しませんでした。",
+  "gate.secureBackupDetailFirstSync": "Koushi は最初の同期応答を待っています。安全なバックアップの要求はまだ送信していません。",
   "gate.secureBackupDetailHttpStatus": "ホームサーバーがこの安全なバックアップの要求にエラーで応答しました（HTTP {status}）。",
   "gate.secureBackupDetailHttpResponse": "ホームサーバーがこの安全なバックアップの要求にエラーで応答しました。",
   "gate.secureBackupDetailLocal": "この端末で安全なバックアップを準備できませんでした。",

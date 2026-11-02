@@ -181,6 +181,7 @@ impl AccountActor {
     }
 
     pub(super) async fn stop_current_session_runtime(&mut self) -> bool {
+        self.sync_connectivity_ever_proven = false;
         self.set_secure_backup_send_admitted(false);
         self.recovery_key_delivery_pending = false;
         // Zeroize any revealed recovery key before the session is replaced.

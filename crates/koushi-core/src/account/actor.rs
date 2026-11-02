@@ -1212,6 +1212,7 @@ pub struct AccountActor {
     pub(super) secure_backup_monitor_serial: u64,
     pub(super) secure_backup_inspection_pending: bool,
     pub(super) sync_connectivity_proven: bool,
+    pub(super) sync_connectivity_ever_proven: bool,
     pub(super) secure_backup_retry_attempt: u32,
     pub(super) secure_backup_recovery_epoch: bool,
     pub(super) secure_backup_recovery_reset_consumed: bool,
@@ -1574,6 +1575,7 @@ impl AccountActor {
             secure_backup_monitor_serial: 0,
             secure_backup_inspection_pending: false,
             sync_connectivity_proven: false,
+            sync_connectivity_ever_proven: false,
             secure_backup_retry_attempt: 0,
             secure_backup_recovery_epoch: false,
             secure_backup_recovery_reset_consumed: false,
@@ -3567,14 +3569,7 @@ impl AccountActor {
                 Box::pin(self.handle_recover_secure_backup(request_id, request)).await;
             }
             AccountCommand::RetrySecureBackupInspection { request_id } => {
-                if self.session_promoted && !self.sync_connectivity_proven {
-                    // The deferred wait may have missed the proven edge (#860):
-                    // ask the sync owner to re-project its current status so a
-                    // healthy Running sync can still admit the inspection.
-                    // Start re-projects without restarting a Running sync.
-                    Box::pin(self.route_sync_command(SyncCommand::Start { request_id })).await;
-                }
-                self.start_secure_backup_inspection();
+                Box::pin(self.retry_secure_backup_inspection(request_id)).await;
             }
             AccountCommand::ChangeSecureBackupPassphrase {
                 request_id,
