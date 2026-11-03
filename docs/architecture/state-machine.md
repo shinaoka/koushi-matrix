@@ -3271,8 +3271,12 @@ stateDiagram-v2
 - `DownloadMedia` resolves the actor-private media source by event id and emits
   `MediaDownloadCompleted` with `byte_count` and an opaque app-owned
   `source_ref` naming the managed cache entry, plus safe media metadata (mime
-  type and dimensions). A ref is `download/<room-hash>/<event-hash>`; it never
-  contains a filesystem path. The Tauri adapter resolves a ref to a render URL
+  type and dimensions). A ref is `download/<room-hash>/<event-hash>` for the
+  original and `download/<room-hash>/<event-hash>/<width>x<height>` for a
+  thumbnail, so the two selections of one event never share a cache entry; a
+  ref never contains a filesystem path, and every component is validated as a
+  short decimal hash or that size pair, so no ref can name a file outside the
+  managed cache root. The Tauri adapter resolves a ref to a render URL
   or to the cache file for save/open, so local paths and bytes never enter Core
   state, events, commands, or the webview.
 - Phase B GUI wiring is a transport client only: picker, paste, and full-surface

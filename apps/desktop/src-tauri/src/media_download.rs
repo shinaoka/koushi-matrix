@@ -1,10 +1,11 @@
 //! Platform-side resolution of opaque timeline media download refs (#1619).
 //!
 //! Core keeps the managed cache file and hands React only
-//! `download/<room-hash>/<event-hash>`. This adapter maps that ref to the
-//! cache file for saving and serves image bytes through the `koushi-media`
-//! protocol. Local paths never cross into Core state, events, commands, or the
-//! webview.
+//! `download/<room-hash>/<event-hash>` (the original) or
+//! `download/<room-hash>/<event-hash>/<width>x<height>` (a thumbnail, #1770).
+//! This adapter maps such a ref to the cache file for saving and serves image
+//! bytes through the `koushi-media` protocol. Local paths never cross into Core
+//! state, events, commands, or the webview.
 
 use std::path::{Path, PathBuf};
 
@@ -174,6 +175,34 @@ mod tests {
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
             assert!(response.body().is_empty());
         }
+        drop(temp);
+    }
+
+    /// #1770: a thumbnail ref is its own managed entry, and the save flow
+    /// resolves it through the same rule the writer used.
+    #[test]
+    fn resolves_a_thumbnail_ref_to_its_own_cache_file() {
+        let (temp, root) = cache_with_file("6543210987654321.bin", b"original");
+        let thumbnail = root
+            .join("1234567890123456")
+            .join("6543210987654321-800x800.bin");
+        std::fs::write(&thumbnail, b"thumbnail").expect("thumbnail file");
+
+        assert_eq!(
+            cache_path_for_tab(&root, "download/1234567890123456/6543210987654321/800x800"),
+            Some(thumbnail)
+        );
+        assert_eq!(
+            cache_path_for_tab(&root, "download/1234567890123456/6543210987654321"),
+            Some(root.join("1234567890123456").join("6543210987654321.bin"))
+        );
+        // The `koushi-media` protocol still serves only the original: no GUI
+        // path requests a thumbnail download (#1769 owns that surface).
+        let response = protocol_response(
+            &request("/download/png/1234567890123456/6543210987654321/800x800"),
+            std::slice::from_ref(&root),
+        );
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
         drop(temp);
     }
 
