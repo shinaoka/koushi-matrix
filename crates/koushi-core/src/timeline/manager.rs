@@ -2645,14 +2645,13 @@ impl TimelineManagerActor {
                 };
                 let root_event_id = matrix_sdk::ruma::EventId::parse(root_event_id)
                     .map_err(|_| TimelineFailureKind::Sdk)?;
-                if !self
-                    .await_driving_manager_workers(hydrate_initial_thread(
-                        &timeline,
-                        &client,
-                        &room_id,
-                        &root_event_id,
-                    ))
-                    .await?
+                if !Box::pin(self.await_driving_manager_workers(hydrate_initial_thread(
+                    &timeline,
+                    &client,
+                    &room_id,
+                    &root_event_id,
+                )))
+                .await?
                 {
                     return Err(TimelineFailureKind::Sdk);
                 }
