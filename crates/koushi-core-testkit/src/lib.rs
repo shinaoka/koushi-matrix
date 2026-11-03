@@ -33,6 +33,20 @@ impl StateWaitWatchdog {
         Self::start_at(Instant::now(), PROGRESS_WINDOW, HANG_BACKSTOP)
     }
 
+    /// A watchdog for a restart-convergence wait (#1765): the restarted Core
+    /// publishes the persisted state within a couple of milliseconds on an idle
+    /// machine, so 2 s without an observed state change means it did not
+    /// converge. The bound is silence rather than elapsed time, and the failure
+    /// is the fence's own, naming the window, the backstop and the last observed
+    /// state, which an outer `timeout` around the wait discarded.
+    pub fn restart_convergence() -> Self {
+        Self::start_at(
+            Instant::now(),
+            Duration::from_secs(2),
+            Duration::from_secs(20),
+        )
+    }
+
     /// A watchdog that started at `now`, so a caller or a test can age it
     /// without sleeping.
     pub fn start_at(now: Instant, window: Duration, backstop: Duration) -> Self {
