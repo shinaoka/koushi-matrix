@@ -611,3 +611,106 @@ fn held_sliding_sync_responses_include_a_long_poll_forwarded_before_the_hold() {
     assert_eq!(proxy.sliding_sync_responses_held_count(), 0);
     serving.join().unwrap();
 }
+
+fn sync_snapshot(
+    records: Vec<(&'static str, Vec<koushi_diagnostics::DiagnosticField>)>,
+) -> koushi_diagnostics::DiagnosticSnapshot {
+    koushi_diagnostics::DiagnosticSnapshot {
+        records: records
+            .into_iter()
+            .enumerate()
+            .map(
+                |(index, (stage, fields))| koushi_diagnostics::DiagnosticRecord {
+                    timestamp_ms: index as u64,
+                    event: fields.into_iter().fold(
+                        koushi_diagnostics::DiagnosticEvent::new(
+                            koushi_diagnostics::DiagnosticLevel::Debug,
+                            "core.sync",
+                            stage,
+                        ),
+                        koushi_diagnostics::DiagnosticEvent::field,
+                    ),
+                },
+            )
+            .collect(),
+        dropped_records: 0,
+        navigation: Default::default(),
+    }
+}
+
+#[test]
+fn sync_diagnostic_summary_names_the_first_response_handoff_step() {
+    use koushi_diagnostics::DiagnosticField;
+
+    let snapshot = sync_snapshot(vec![
+        (
+            "status_projected",
+            vec![
+                DiagnosticField::count("generation", 4),
+                DiagnosticField::token("lifecycle", "starting"),
+            ],
+        ),
+        (
+            "committed_response",
+            vec![
+                DiagnosticField::count("sequence", 226),
+                DiagnosticField::boolean("pos_present", true),
+                DiagnosticField::count("rooms_from_response", 11),
+            ],
+        ),
+        (
+            "room_list_reconcile_wait",
+            vec![
+                DiagnosticField::token("outcome", "timeout"),
+                DiagnosticField::milliseconds("elapsed_ms", 10_000),
+            ],
+        ),
+        (
+            "first_response_stalled",
+            vec![DiagnosticField::token("phase", "sync_running")],
+        ),
+    ]);
+
+    let summary = super::sync_diagnostic_summary(&snapshot);
+
+    for expected in [
+        "sync_diag_status_projected=1",
+        "sync_diag_last_lifecycle=starting",
+        "sync_diag_last_status_generation=4",
+        "sync_diag_last_committed_sequence=226",
+        "sync_diag_last_committed_pos_present=true",
+        "sync_diag_last_rooms_from_response=11",
+        "sync_diag_reconcile_wait=1",
+        "sync_diag_last_reconcile_outcome=timeout",
+        "sync_diag_last_reconcile_elapsed_ms=10000",
+        "sync_diag_first_response_stalled=1",
+        "sync_diag_last_stall_phase=sync_running",
+    ] {
+        assert!(
+            summary.contains(expected),
+            "expected `{expected}` in `{summary}`"
+        );
+    }
+}
+
+#[test]
+fn sync_diagnostic_summary_uses_fixed_placeholders_without_sync_records() {
+    let summary = super::sync_diagnostic_summary(&sync_snapshot(vec![]));
+
+    for expected in [
+        "sync_diag_status_projected=0",
+        "sync_diag_last_status_generation=0",
+        "sync_diag_last_committed_sequence=0",
+        "sync_diag_last_committed_pos_present=false",
+        "sync_diag_reconcile_wait=0",
+        "sync_diag_last_reconcile_outcome=none",
+        "sync_diag_last_reconcile_elapsed_ms=0",
+        "sync_diag_first_response_stalled=0",
+        "sync_diag_last_stall_phase=none",
+    ] {
+        assert!(
+            summary.contains(expected),
+            "expected `{expected}` in `{summary}`"
+        );
+    }
+}

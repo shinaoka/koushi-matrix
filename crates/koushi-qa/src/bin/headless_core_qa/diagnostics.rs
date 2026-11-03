@@ -431,6 +431,18 @@ pub(super) fn sync_diagnostic_summary(snapshot: &koushi_diagnostics::DiagnosticS
     let mut last_lifecycle = "unknown";
     let mut last_rooms_from_response = 0_u64;
     let mut last_observer_exit_reason = "unknown";
+    // #1634: these records already exist but were unreadable from a failed
+    // waiter, so a stalled first-response handoff could not name the step that
+    // held it. Counts and fixed tokens only.
+    let mut status_projected = 0_u64;
+    let mut last_status_generation = 0_u64;
+    let mut last_committed_sequence = 0_u64;
+    let mut last_committed_pos_present = false;
+    let mut reconcile_wait = 0_u64;
+    let mut last_reconcile_outcome = "none";
+    let mut last_reconcile_elapsed_ms = 0_u64;
+    let mut first_response_stalled = 0_u64;
+    let mut last_stall_phase = "none";
     for record in &snapshot.records {
         let event = &record.event;
         if event.source != "core.sync" {
@@ -452,6 +464,9 @@ pub(super) fn sync_diagnostic_summary(snapshot: &koushi_diagnostics::DiagnosticS
                 committed_response = committed_response.saturating_add(1);
                 last_rooms_from_response =
                     diagnostic_count_field(event, "rooms_from_response").unwrap_or(0);
+                last_committed_sequence = diagnostic_count_field(event, "sequence").unwrap_or(0);
+                last_committed_pos_present =
+                    diagnostic_boolean_field(event, "pos_present").unwrap_or(false);
             }
             "task_ended" => {
                 task_ended = task_ended.saturating_add(1);
@@ -461,11 +476,22 @@ pub(super) fn sync_diagnostic_summary(snapshot: &koushi_diagnostics::DiagnosticS
                 last_state = diagnostic_token_field(event, "state").unwrap_or("unknown");
             }
             "status_projected" => {
+                status_projected = status_projected.saturating_add(1);
                 last_lifecycle = diagnostic_token_field(event, "lifecycle").unwrap_or("unknown");
+                last_status_generation = diagnostic_count_field(event, "generation").unwrap_or(0);
             }
             "observer_exit" => {
                 last_observer_exit_reason =
                     diagnostic_token_field(event, "reason").unwrap_or("unknown");
+            }
+            "room_list_reconcile_wait" => {
+                reconcile_wait = reconcile_wait.saturating_add(1);
+                last_reconcile_outcome = diagnostic_token_field(event, "outcome").unwrap_or("none");
+                last_reconcile_elapsed_ms = diagnostic_u64_field(event, "elapsed_ms").unwrap_or(0);
+            }
+            "first_response_stalled" => {
+                first_response_stalled = first_response_stalled.saturating_add(1);
+                last_stall_phase = diagnostic_token_field(event, "phase").unwrap_or("none");
             }
             _ => {}
         }
@@ -476,7 +502,11 @@ pub(super) fn sync_diagnostic_summary(snapshot: &koushi_diagnostics::DiagnosticS
          sync_diag_command_restart={} sync_diag_last_task_kind={} \
          sync_diag_last_command_lifecycle={} sync_diag_last_state={} \
          sync_diag_last_lifecycle={} sync_diag_last_rooms_from_response={} \
-         sync_diag_last_observer_exit_reason={}",
+         sync_diag_last_observer_exit_reason={} sync_diag_status_projected={} \
+         sync_diag_last_status_generation={} sync_diag_last_committed_sequence={} \
+         sync_diag_last_committed_pos_present={} sync_diag_reconcile_wait={} \
+         sync_diag_last_reconcile_outcome={} sync_diag_last_reconcile_elapsed_ms={} \
+         sync_diag_first_response_stalled={} sync_diag_last_stall_phase={}",
         service_build_failed,
         committed_response,
         task_ended,
@@ -489,6 +519,15 @@ pub(super) fn sync_diagnostic_summary(snapshot: &koushi_diagnostics::DiagnosticS
         last_lifecycle,
         last_rooms_from_response,
         last_observer_exit_reason,
+        status_projected,
+        last_status_generation,
+        last_committed_sequence,
+        last_committed_pos_present,
+        reconcile_wait,
+        last_reconcile_outcome,
+        last_reconcile_elapsed_ms,
+        first_response_stalled,
+        last_stall_phase,
     )
 }
 
