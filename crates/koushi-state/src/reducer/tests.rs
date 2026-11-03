@@ -1870,11 +1870,10 @@ fn a_cleared_reply_quote_thumbnail_removes_its_state() {
     );
 
     assert!(
-        state
+        !state
             .timeline
             .reply_quote_thumbnails
-            .get("$picture:example.invalid")
-            .is_none()
+            .contains_key("$picture:example.invalid")
     );
 }
 
