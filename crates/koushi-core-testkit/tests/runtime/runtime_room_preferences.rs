@@ -1,8 +1,7 @@
 //! Runtime room preference persistence integration tests.
 
-use std::time::Duration;
-
-use koushi_core::{CoreRuntime, executor};
+use koushi_core::CoreRuntime;
+use koushi_core_testkit::StateWaitWatchdog;
 use koushi_protocol::command::{AppCommand, CoreCommand};
 use koushi_state::{AppAction, RoomNotificationMode, RoomNotificationModeOperation, SessionState};
 
@@ -73,21 +72,18 @@ async fn room_url_preview_override_persists_when_runtime_restarts() {
         },])
         .await;
 
-    // #1761 audit: this restart-convergence wait keeps a wall-clock bound, so
-    // expiry stays a labelled assertion instead of only the fence's own hang
-    // backstop.
-    let snapshot = executor::timeout(Duration::from_secs(1), async {
-        wait_for_state(&mut connection, |state| {
+    let snapshot = wait_for_state_within(
+        &mut connection,
+        StateWaitWatchdog::restart_convergence(),
+        |state| {
             state
                 .link_preview_settings
                 .room_overrides
                 .get("!room:example.test")
                 == Some(&false)
-        })
-        .await
-    })
-    .await
-    .expect("persisted room preference should be restored after room list reload");
+        },
+    )
+    .await;
 
     assert_eq!(
         snapshot
@@ -164,11 +160,10 @@ async fn room_notification_mode_persists_when_runtime_restarts() {
         },])
         .await;
 
-    // #1761 audit: this restart-convergence wait keeps a wall-clock bound, so
-    // expiry stays a labelled assertion instead of only the fence's own hang
-    // backstop.
-    let snapshot = executor::timeout(Duration::from_secs(1), async {
-        wait_for_state(&mut connection, |state| {
+    let snapshot = wait_for_state_within(
+        &mut connection,
+        StateWaitWatchdog::restart_convergence(),
+        |state| {
             state
                 .room_notification_settings
                 .get("!room:example.test")
@@ -176,11 +171,9 @@ async fn room_notification_mode_persists_when_runtime_restarts() {
                     settings.mode == RoomNotificationMode::Mute
                         && settings.operation == RoomNotificationModeOperation::Idle
                 })
-        })
-        .await
-    })
-    .await
-    .expect("persisted room notification preference should be restored after restart");
+        },
+    )
+    .await;
 
     assert_eq!(
         snapshot

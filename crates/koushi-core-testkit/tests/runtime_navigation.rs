@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use koushi_core::{CoreCommand, CoreRuntime, executor};
+use koushi_core_testkit::StateWaitWatchdog;
 use koushi_protocol::command::AppCommand;
 use koushi_state::{
     AppAction, HomeSelection, NavigationPreferenceUpdate, RoomSummary, SessionState,
@@ -95,19 +96,16 @@ async fn navigation_selection_persists_when_runtime_restarts() {
         },])
         .await;
 
-    // #1761 audit: this restart-convergence wait keeps a wall-clock bound, so
-    // expiry stays a labelled assertion ("persisted navigation should be
-    // restored") instead of only the fence's own hang backstop.
-    let snapshot = executor::timeout(Duration::from_secs(1), async {
-        wait_for_state(&mut connection, |state| {
+    let snapshot = wait_for_state_within(
+        &mut connection,
+        StateWaitWatchdog::restart_convergence(),
+        |state| {
             matches!(state.session, SessionState::Ready(_))
                 && state.navigation.active_space_id.as_deref() == Some("!space-a:example.test")
                 && state.navigation.active_room_id.as_deref() == Some("!room-a:example.test")
-        })
-        .await
-    })
-    .await
-    .expect("persisted navigation should be restored after room list reload");
+        },
+    )
+    .await;
 
     assert_eq!(
         snapshot
