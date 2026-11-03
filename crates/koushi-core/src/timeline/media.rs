@@ -16,6 +16,9 @@ use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk_ui::timeline::TimelineItem as SdkTimelineItem;
 
 use crate::executor;
+use crate::media_download_ref::{
+    media_download_cache_path, media_download_ref, media_download_thumbnail_ref,
+};
 use koushi_protocol::command::MediaDownloadSelection;
 use koushi_protocol::event::{
     CoreEvent, TimelineEvent, TimelineItem, TimelineItemId, TimelineMediaKind, TimelineMediaSource,
@@ -375,6 +378,7 @@ impl TimelineActor {
                 room_id,
                 event_id_for_task.clone(),
                 entry,
+                &selection,
                 request,
             )
             .await;
@@ -394,6 +398,7 @@ impl TimelineActor {
         room_id: String,
         event_id: String,
         entry: PrivateMediaEntry,
+        selection: &MediaDownloadSelection,
         request: MediaRequestParameters,
     ) -> MediaDownloadOutcome {
         let Some(data_dir) = data_dir else {
@@ -415,9 +420,16 @@ impl TimelineActor {
         let event_hash = sanitize_matrix_id_for_path(&event_id);
         // The ref names the managed entry but carries no path: only the hashed
         // components are visible to React and the platform adapter (#1619).
-        let source_ref = crate::media_download_ref::media_download_ref(&room_hash, &event_hash);
+        let Some((source_ref, path)) =
+            managed_media_download_entry(&data_dir, &room_hash, &event_hash, selection)
+        else {
+            return MediaDownloadOutcome::Failed(TimelineFailureKind::Sdk);
+        };
         let dir = data_dir.join("media-downloads").join(&room_hash);
-        let path = dir.join(format!("{event_hash}.bin"));
+        // A hit means this selection was requested before, so a thumbnail no
+        // longer answers a `File` request (#1770). The `File` name is unchanged,
+        // so existing caches keep hitting — including one a pre-fix thumbnail
+        // already overwrote, which keeps serving that JPEG until it is cleared.
         if let Ok(metadata) = tokio::fs::metadata(&path).await
             && metadata.is_file()
             && metadata.len() > 0
@@ -716,6 +728,29 @@ pub(super) fn release_removed_media_source(
     }
 }
 
+/// The managed cache entry for one download selection: its opaque ref plus the
+/// file the platform adapter resolves that same ref to (#1770).
+///
+/// `None` when the requested size cannot be named in the ref grammar; only a
+/// caller bug reaches it, and it fails closed like an unsupported request.
+fn managed_media_download_entry(
+    data_dir: &Path,
+    room_hash: &str,
+    event_hash: &str,
+    selection: &MediaDownloadSelection,
+) -> Option<(String, PathBuf)> {
+    let source_ref = match selection {
+        MediaDownloadSelection::File => media_download_ref(room_hash, event_hash),
+        MediaDownloadSelection::Thumbnail { width, height } => {
+            media_download_thumbnail_ref(room_hash, event_hash, *width, *height)?
+        }
+    };
+    // One rule names the file: the resolver the adapter uses, so a written entry
+    // is always one an adapter can find again.
+    let path = media_download_cache_path(&data_dir.join("media-downloads"), &source_ref)?;
+    Some((source_ref, path))
+}
+
 /// Download one media event into the account's managed cache, without a
 /// resident timeline (#1524). Returns the cache path of the written file.
 pub(super) async fn download_media_to_cache(
@@ -736,6 +771,7 @@ pub(super) async fn download_media_to_cache(
         room_id,
         event_id,
         entry,
+        selection,
         request,
     )
     .await;

@@ -246,3 +246,96 @@ fn attachment_info_for_image_upload_uses_selected_variant_metadata() {
         other => panic!("expected image info, got {other:?}"),
     }
 }
+
+/// Download one event's media exactly as the actor does, for the cache-key test.
+async fn download_cached(
+    session: &std::sync::Arc<koushi_sdk::MatrixClientSession>,
+    data_dir: &std::path::Path,
+    selection: &koushi_protocol::command::MediaDownloadSelection,
+) -> super::MediaDownloadReady {
+    let entry = media_entry();
+    let request = super::media_request_for_download(&entry, selection).expect("supported request");
+    match super::TimelineActor::download_media_for(
+        session.clone(),
+        Some(data_dir.to_path_buf()),
+        "!room:example.invalid".to_owned(),
+        "$media:example.invalid".to_owned(),
+        entry,
+        selection,
+        request,
+    )
+    .await
+    {
+        super::MediaDownloadOutcome::Ready(ready) => ready,
+        super::MediaDownloadOutcome::Failed(kind) => panic!("download failed: {kind:?}"),
+    }
+}
+
+/// #1770: the managed entry must name what was downloaded, not only the event.
+/// A thumbnail request and a `File` request for one event are different bytes,
+/// so whichever ran first must never answer the other.
+#[tokio::test]
+async fn a_thumbnail_download_and_a_file_download_of_one_event_stay_separate() {
+    use koushi_protocol::command::MediaDownloadSelection;
+    use matrix_sdk::ruma::api::client::media::get_content_thumbnail::v3::Method;
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    server.mock_authed_media_download().ok_image().mount().await;
+    server
+        .mock_authed_media_thumbnail(Method::Scale, 800, 800, false)
+        .ok()
+        .mount()
+        .await;
+    let session = std::sync::Arc::new(koushi_sdk::MatrixClientSession::from_client_for_testing(
+        client.clone(),
+        koushi_state::SessionInfo {
+            homeserver: server.server().uri(),
+            user_id: client.user_id().expect("user id").to_string(),
+            device_id: client.device_id().expect("device id").to_string(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        },
+    ));
+    let thumbnail = MediaDownloadSelection::Thumbnail {
+        width: 800,
+        height: 800,
+    };
+    let file = MediaDownloadSelection::File;
+
+    // Either order: the second download must not be answered from the first.
+    for thumbnail_first in [true, false] {
+        let data_dir = tempfile::tempdir().expect("data dir");
+        let (first, second) = if thumbnail_first {
+            (&thumbnail, &file)
+        } else {
+            (&file, &thumbnail)
+        };
+        let first_ready = download_cached(&session, data_dir.path(), first).await;
+        let second_ready = download_cached(&session, data_dir.path(), second).await;
+        let (file_ready, thumbnail_ready) = if thumbnail_first {
+            (second_ready, first_ready)
+        } else {
+            (first_ready, second_ready)
+        };
+
+        assert_ne!(
+            file_ready.source_ref, thumbnail_ready.source_ref,
+            "thumbnail_first={thumbnail_first}: both selections must name distinct cache entries"
+        );
+        assert_ne!(
+            file_ready.path, thumbnail_ready.path,
+            "thumbnail_first={thumbnail_first}: both selections must write distinct files"
+        );
+        assert_eq!(
+            std::fs::read(&file_ready.path).expect("file bytes"),
+            b"binaryjpegfullimagedata",
+            "thumbnail_first={thumbnail_first}: the File entry must hold the original bytes"
+        );
+        assert_eq!(
+            std::fs::read(&thumbnail_ready.path).expect("thumbnail bytes"),
+            b"binaryjpegthumbnaildata",
+            "thumbnail_first={thumbnail_first}: the thumbnail entry must hold the thumbnail"
+        );
+    }
+}
