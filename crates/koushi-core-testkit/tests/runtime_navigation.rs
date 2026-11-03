@@ -95,6 +95,9 @@ async fn navigation_selection_persists_when_runtime_restarts() {
         },])
         .await;
 
+    // #1761 audit: this restart-convergence wait keeps a wall-clock bound, so
+    // expiry stays a labelled assertion ("persisted navigation should be
+    // restored") instead of only the fence's own hang backstop.
     let snapshot = executor::timeout(Duration::from_secs(1), async {
         wait_for_state(&mut connection, |state| {
             matches!(state.session, SessionState::Ready(_))

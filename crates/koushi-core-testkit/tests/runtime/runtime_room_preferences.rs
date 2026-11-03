@@ -73,6 +73,9 @@ async fn room_url_preview_override_persists_when_runtime_restarts() {
         },])
         .await;
 
+    // #1761 audit: this restart-convergence wait keeps a wall-clock bound, so
+    // expiry stays a labelled assertion instead of only the fence's own hang
+    // backstop.
     let snapshot = executor::timeout(Duration::from_secs(1), async {
         wait_for_state(&mut connection, |state| {
             state
@@ -161,6 +164,9 @@ async fn room_notification_mode_persists_when_runtime_restarts() {
         },])
         .await;
 
+    // #1761 audit: this restart-convergence wait keeps a wall-clock bound, so
+    // expiry stays a labelled assertion instead of only the fence's own hang
+    // backstop.
     let snapshot = executor::timeout(Duration::from_secs(1), async {
         wait_for_state(&mut connection, |state| {
             state

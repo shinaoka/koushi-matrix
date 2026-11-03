@@ -139,6 +139,16 @@ pub fn activity_row(room_id: &str, event_id: &str, timestamp_ms: u64) -> Activit
     )
 }
 
+/// Poll-based state fence for tests that read the published snapshot instead of
+/// consuming the event stream (#1761).
+///
+/// "Progress" here is **a poll that differed from the previous poll**: this
+/// helper re-reads `connection.snapshot()` every [`POLL_INTERVAL`], so it has no
+/// events to count, while [`wait_for_state_event`] counts published state events.
+/// The failure condition is the same one — *silence*, never elapsed time — so a
+/// loaded machine that keeps changing state keeps waiting, a Core that stops
+/// changing fails with the state the wait was stuck on, and the shared backstop
+/// still ends a wait whose Core keeps changing unrelated state.
 pub async fn wait_for_state<F>(
     connection: &mut CoreConnection,
     predicate: F,
@@ -146,14 +156,44 @@ pub async fn wait_for_state<F>(
 where
     F: Fn(&koushi_state::AppState) -> bool,
 {
-    for _ in 0..200 {
+    wait_for_state_within(connection, StateWaitWatchdog::start(), predicate).await
+}
+
+/// The poll interval of [`wait_for_state`]. Short enough that a settled Core is
+/// observed immediately; the watchdog, not this interval, bounds the wait.
+const POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// The same poll fence with an injected budget, so a harness test can exercise
+/// the quiet-Core failure path without waiting out the shipped window.
+pub async fn wait_for_state_within<F>(
+    connection: &mut CoreConnection,
+    mut watchdog: StateWaitWatchdog,
+    predicate: F,
+) -> koushi_state::AppState
+where
+    F: Fn(&koushi_state::AppState) -> bool,
+{
+    let mut previous = connection.snapshot();
+    loop {
         let snapshot = connection.snapshot();
         if predicate(&snapshot) {
             return snapshot;
         }
-        executor::sleep(Duration::from_millis(5)).await;
+        // A poll that differs from the previous one is this helper's progress;
+        // the first poll only establishes the baseline.
+        if previous != snapshot {
+            watchdog.progress();
+            previous = snapshot;
+        }
+        let Some(remaining) = watchdog.remaining() else {
+            panic!(
+                "state predicate was not satisfied: {}; last observed {}",
+                watchdog.report("changed polls"),
+                observed_state(connection),
+            );
+        };
+        executor::sleep(POLL_INTERVAL.min(remaining)).await;
     }
-    panic!("state predicate was not satisfied");
 }
 
 /// Event-driven state fence for tests that must not rely on polling sleeps.
@@ -208,7 +248,7 @@ where
     }
     panic!(
         "state predicate was not satisfied: {}; last observed {}",
-        watchdog.report(),
+        watchdog.report("state events"),
         observed_state(connection),
     )
 }

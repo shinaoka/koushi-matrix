@@ -48,6 +48,7 @@ export const testkitTargets = [
   "runtime_timeline.rs",
   "send_queue_fast.rs",
   "stack_budget.rs",
+  "state_poll_watchdog.rs",
   "state_wait_watchdog.rs",
   "thread_bundled_reply_timestamp.rs"
 ].map((file) => {

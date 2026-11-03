@@ -13,9 +13,11 @@
 //!   - H-B: navigation-restore overwrites the click within the action batch.
 //!   - H-storm: a background `RoomListUpdated` storm starves/reverts the click.
 //!
-//! Harness note: `support::wait_for_state` PANICS after ~1s if its predicate is
-//! never satisfied, so wrapping it in `executor::timeout` does NOT prevent the
-//! inner panic — the panic fires first and fails the test. Therefore:
+//! Harness note: `support::wait_for_state` PANICS when its predicate is never
+//! satisfied and the observed state stops changing (the silence budget from
+//! #1761), so it cannot express a scenario that EXPECTS non-satisfaction: an
+//! outer `executor::timeout` would only decide which of the two failures
+//! surfaces first. Therefore:
 //!   - success-expected scenarios call `wait_for_state` DIRECTLY (a panic is a
 //!     legitimate reproduction of the #116 timeout at the runtime layer);
 //!   - non-satisfaction scenarios use the local non-panicking `poll_for_state`.
