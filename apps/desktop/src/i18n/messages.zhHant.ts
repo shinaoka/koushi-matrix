@@ -1143,7 +1143,7 @@ export const zhHant: Catalog = {
   "settings.notificationDeliveryIntervalDescription": "後續通知會等待這段時間，避免熱鬧的聊天室塞滿您的信箱。",
   "settings.notificationDeliveryOnlyUnfocused": "僅在 Koushi 非使用中時",
   "settings.notificationDeliveryWatched": "關注的聊天室與空間",
-  "settings.notificationDeliveryWatchedDescription": "即使上方對應的類別已關閉，仍會傳送關注聊天室的通知，但您已讀、已靜音或正在開啟的聊天室仍會略過。關注空間會涵蓋其中的所有聊天室，包括之後新增的聊天室。",
+  "settings.notificationDeliveryWatchedDescription": "即使上方對應的類別已關閉，仍會傳送關注聊天室的通知，但您已讀、已靜音或正在前景檢視的聊天室仍會略過。關注空間會涵蓋其中的所有聊天室，包括之後新增的聊天室。",
   "settings.notificationDeliveryWatchedAdd": "新增聊天室或空間",
   "settings.notificationDeliveryWatchedEmpty": "未選擇任何聊天室或空間",
   "settings.notificationDeliveryWatchedLimit": "關注清單最多可包含 {count} 個聊天室與空間。請移除一個後再新增。",
