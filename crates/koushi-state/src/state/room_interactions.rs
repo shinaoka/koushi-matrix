@@ -83,6 +83,10 @@ pub struct ReplyQuote {
     /// marks its anchors as the pills its own row would.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mentioned_user_ids: Vec<String>,
+    /// #1769: public media metadata for a quoted media original. React renders
+    /// the thumbnail slot from this; private sources stay in the actor ledger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<ReplyQuoteMedia>,
     /// The canonical `matrix.to` link Rust projects for the quoted event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permalink: Option<String>,
@@ -92,6 +96,30 @@ pub struct ReplyQuote {
     #[serde(default)]
     pub can_open: bool,
     pub state: ReplyQuoteState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReplyQuoteMediaKind {
+    Image,
+    Sticker,
+    Video,
+    File,
+    Audio,
+}
+
+/// Public metadata only: no MXC URI, no encryption keys, no cache ref.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReplyQuoteMedia {
+    pub kind: ReplyQuoteMediaKind,
+    #[serde(default)]
+    pub animated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u64>,
+    #[serde(default)]
+    pub has_thumbnail_source: bool,
 }
 
 impl fmt::Debug for ReplyQuote {
@@ -116,6 +144,7 @@ impl fmt::Debug for ReplyQuote {
                     .map(|_| "ReplyQuoteFormattedBody(..)"),
             )
             .field("mentioned_user_ids", &self.mentioned_user_ids.len())
+            .field("media", &self.media.as_ref().map(|media| media.kind))
             .field(
                 "permalink",
                 &self.permalink.as_ref().map(|_| "Permalink(..)"),

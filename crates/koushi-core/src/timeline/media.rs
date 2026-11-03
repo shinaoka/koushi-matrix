@@ -44,6 +44,29 @@ pub(super) struct PrivateMediaEntry {
     pub(super) size: u64,
     pub(super) width: Option<u64>,
     pub(super) height: Option<u64>,
+    pub(super) thumbnail_mimetype: Option<String>,
+    pub(super) thumbnail_width: Option<u64>,
+    pub(super) thumbnail_height: Option<u64>,
+}
+
+impl std::fmt::Debug for PrivateMediaEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PrivateMediaEntry")
+            .field("source", &"MediaSource(..)")
+            .field(
+                "thumbnail_source",
+                &self.thumbnail_source.as_ref().map(|_| "MediaSource(..)"),
+            )
+            .field("mimetype", &self.mimetype)
+            .field("size", &self.size)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("thumbnail_mimetype", &self.thumbnail_mimetype)
+            .field("thumbnail_width", &self.thumbnail_width)
+            .field("thumbnail_height", &self.thumbnail_height)
+            .finish()
+    }
 }
 
 pub(super) struct MediaDownloadReady {
@@ -300,6 +323,104 @@ fn io_error_kind_token(kind: std::io::ErrorKind) -> &'static str {
     }
 }
 
+fn reply_quote_thumbnail_fetch_is_pending(
+    tasks: &HashMap<String, executor::JoinHandle<()>>,
+    quoted_event_id: &str,
+) -> bool {
+    tasks.contains_key(quoted_event_id)
+}
+
+/// Resolve a quoted original's private source: resident rows use
+/// `media_sources`, an off-window original uses the hydration ledger.
+pub(super) fn reply_quote_media_source(
+    media_sources: &HashMap<String, PrivateMediaEntry>,
+    hydration: &super::reply_quote_hydration::ReplyQuoteHydration,
+    quoted_event_id: &str,
+) -> Option<PrivateMediaEntry> {
+    media_sources
+        .get(quoted_event_id)
+        .cloned()
+        .or_else(|| hydration.settled_media_source(quoted_event_id).cloned())
+}
+
+impl PrivateMediaEntry {
+    /// Whether two entries name the same bytes, for stale-worker guards.
+    pub(super) fn has_same_source(&self, other: &Self) -> bool {
+        fn identity(source: &MediaSource) -> (&str, bool) {
+            match source {
+                MediaSource::Plain(uri) => (uri.as_str(), false),
+                MediaSource::Encrypted(file) => (file.url.as_str(), true),
+            }
+        }
+        identity(&self.source) == identity(&other.source)
+    }
+}
+
+/// The safe metadata a selection's bytes carry. A thumbnail with an explicit
+/// source uses the thumbnail's own type and dimensions; a server-generated
+/// thumbnail has no reliable dimensions, so they stay unknown (#1769).
+fn media_download_selection_metadata(
+    entry: &PrivateMediaEntry,
+    selection: &MediaDownloadSelection,
+) -> (Option<String>, Option<u64>, Option<u64>) {
+    match selection {
+        MediaDownloadSelection::File => (entry.mimetype.clone(), entry.width, entry.height),
+        MediaDownloadSelection::Thumbnail { .. } => (
+            entry.thumbnail_mimetype.clone(),
+            entry.thumbnail_width,
+            entry.thumbnail_height,
+        ),
+    }
+}
+
+/// A full file already cached for this event is a usable quote thumbnail.
+async fn reply_quote_thumbnail_from_cached_file(
+    entry: &PrivateMediaEntry,
+    data_dir: &Path,
+    room_id: &str,
+    quoted_event_id: &str,
+) -> Option<MediaDownloadReady> {
+    let room_hash = sanitize_matrix_id_for_path(room_id);
+    let event_hash = sanitize_matrix_id_for_path(quoted_event_id);
+    let (source_ref, path) = managed_media_download_entry(
+        data_dir,
+        &room_hash,
+        &event_hash,
+        &MediaDownloadSelection::File,
+    )?;
+    let metadata = tokio::fs::metadata(&path).await.ok()?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return None;
+    }
+    let byte_count = metadata.len();
+    let mimetype = match entry.mimetype.clone() {
+        Some(mimetype) => Some(mimetype),
+        None => sniff_image_mime(&path).await,
+    };
+    // A cached video or audio original is not a renderable quote thumbnail;
+    // only an image file may stand in for the 40 px slot.
+    if !mimetype
+        .as_deref()
+        .is_some_and(|mimetype| mimetype.starts_with("image/"))
+    {
+        return None;
+    }
+    Some(MediaDownloadReady {
+        download_state: TimelineMediaDownloadState::Ready {
+            source_ref: source_ref.clone(),
+            width: entry.width,
+            height: entry.height,
+            mime_type: mimetype.clone(),
+        },
+        source_ref,
+        path,
+        byte_count,
+        mimetype,
+        width: entry.width,
+        height: entry.height,
+    })
+}
+
 impl TimelineActor {
     pub(super) fn sdk_room_for_key(&self) -> Option<matrix_sdk::Room> {
         let room_id_str = match &self.key.kind {
@@ -336,7 +457,10 @@ impl TimelineActor {
             return;
         }
 
-        let Some(entry) = self.media_sources.get(&event_id).cloned() else {
+        // An off-window quoted original is not in `media_sources`; the
+        // hydration ledger keeps its private source so the viewer can open it
+        // (#1769).
+        let Some(entry) = self.reply_quote_media_source(&event_id) else {
             trace_media_download_request(
                 "request_rejected",
                 request_id,
@@ -435,7 +559,9 @@ impl TimelineActor {
             && metadata.len() > 0
         {
             let byte_count = metadata.len();
-            let mimetype = match entry.mimetype.clone() {
+            let (declared_mimetype, width, height) =
+                media_download_selection_metadata(&entry, selection);
+            let mimetype = match declared_mimetype {
                 Some(mimetype) => Some(mimetype),
                 None => sniff_image_mime(&path).await,
             };
@@ -443,16 +569,16 @@ impl TimelineActor {
             return MediaDownloadOutcome::Ready(MediaDownloadReady {
                 download_state: TimelineMediaDownloadState::Ready {
                     source_ref: source_ref.clone(),
-                    width: entry.width,
-                    height: entry.height,
+                    width,
+                    height,
                     mime_type: mimetype.clone(),
                 },
                 source_ref,
                 path,
                 byte_count,
                 mimetype,
-                width: entry.width,
-                height: entry.height,
+                width,
+                height,
             });
         }
 
@@ -513,7 +639,9 @@ impl TimelineActor {
             return MediaDownloadOutcome::Failed(TimelineFailureKind::Sdk);
         }
 
-        let mimetype = match entry.mimetype.clone() {
+        let (declared_mimetype, width, height) =
+            media_download_selection_metadata(&entry, selection);
+        let mimetype = match declared_mimetype {
             Some(mimetype) => Some(mimetype),
             None => koushi_media::image_kind(&bytes).map(|kind| kind.mime_type.to_owned()),
         };
@@ -521,18 +649,257 @@ impl TimelineActor {
         MediaDownloadOutcome::Ready(MediaDownloadReady {
             download_state: TimelineMediaDownloadState::Ready {
                 source_ref: source_ref.clone(),
-                width: entry.width,
-                height: entry.height,
+                width,
+                height,
                 mime_type: mimetype.clone(),
             },
             source_ref,
             path,
             byte_count,
             mimetype,
-            width: entry.width,
-            height: entry.height,
+            width,
+            height,
         })
     }
+    /// #1769: the private source for a quoted original. A resident original
+    /// uses `media_sources`; an off-window one uses the hydration ledger.
+    fn reply_quote_media_source(&self, quoted_event_id: &str) -> Option<PrivateMediaEntry> {
+        reply_quote_media_source(
+            &self.media_sources,
+            &self.reply_quote_hydration,
+            quoted_event_id,
+        )
+    }
+
+    pub(super) async fn handle_request_reply_quote_thumbnail(
+        &mut self,
+        request_id: RequestId,
+        quoted_event_id: String,
+    ) {
+        if reply_quote_thumbnail_fetch_is_pending(
+            &self.reply_quote_thumbnail_tasks,
+            &quoted_event_id,
+        ) {
+            self.emit_reply_quote_thumbnail_current_state(request_id, &quoted_event_id)
+                .await;
+            return;
+        }
+
+        let Some(entry) = self.reply_quote_media_source(&quoted_event_id) else {
+            self.emit_reply_quote_thumbnail_failed(
+                request_id,
+                &quoted_event_id,
+                TimelineFailureKind::Sdk,
+            )
+            .await;
+            return;
+        };
+
+        // A full file already for this event is a usable 40 px thumbnail and
+        // must not cost another fetch.
+        if let Some(data_dir) = self.data_dir.clone()
+            && let Some(ready) = reply_quote_thumbnail_from_cached_file(
+                &entry,
+                &data_dir,
+                self.key.room_id(),
+                &quoted_event_id,
+            )
+            .await
+        {
+            self.emit_reply_quote_thumbnail_ready(request_id, &quoted_event_id, ready)
+                .await;
+            return;
+        }
+
+        let selection = MediaDownloadSelection::Thumbnail {
+            width: 96,
+            height: 96,
+        };
+        let Some(request) = media_request_for_download(&entry, &selection) else {
+            self.emit_reply_quote_thumbnail_failed(
+                request_id,
+                &quoted_event_id,
+                TimelineFailureKind::Sdk,
+            )
+            .await;
+            return;
+        };
+
+        self.emit_reply_quote_thumbnail_current_state(request_id, &quoted_event_id)
+            .await;
+
+        let session = self.session.clone();
+        let room_id = self.key.room_id().to_owned();
+        let data_dir = self.data_dir.clone();
+        let actor_tx = self.msg_tx.clone();
+        let quoted_event_id_for_task = quoted_event_id.clone();
+        let source = entry.clone();
+        let task = executor::spawn(async move {
+            let outcome = Self::download_media_for(
+                session,
+                data_dir,
+                room_id,
+                quoted_event_id_for_task.clone(),
+                entry,
+                &selection,
+                request,
+            )
+            .await;
+            let _ = actor_tx
+                .send(TimelineActorMessage::ReplyQuoteThumbnailFinished {
+                    request_id,
+                    quoted_event_id: quoted_event_id_for_task,
+                    source,
+                    outcome,
+                })
+                .await;
+        });
+        self.reply_quote_thumbnail_tasks
+            .insert(quoted_event_id, task);
+    }
+
+    /// #1769: an edit that replaces the quoted media must not leave an old
+    /// cached file or published thumbnail answering the new source.
+    pub(super) async fn invalidate_reply_quote_thumbnail(&mut self, quoted_event_id: &str) {
+        if let Some(task) = self.reply_quote_thumbnail_tasks.remove(quoted_event_id) {
+            task.abort();
+        }
+        self.emit_reply_quote_thumbnail_cleared(quoted_event_id)
+            .await;
+        if let Some(data_dir) = self.data_dir.clone() {
+            let room_hash = sanitize_matrix_id_for_path(self.key.room_id());
+            let event_hash = sanitize_matrix_id_for_path(quoted_event_id);
+            for selection in [
+                MediaDownloadSelection::File,
+                MediaDownloadSelection::Thumbnail {
+                    width: 96,
+                    height: 96,
+                },
+            ] {
+                if let Some((_, path)) =
+                    managed_media_download_entry(&data_dir, &room_hash, &event_hash, &selection)
+                {
+                    let _ = tokio::fs::remove_file(path).await;
+                }
+            }
+        }
+    }
+
+    async fn emit_reply_quote_thumbnail_current_state(
+        &self,
+        request_id: RequestId,
+        quoted_event_id: &str,
+    ) {
+        let total = self
+            .reply_quote_media_source(quoted_event_id)
+            .map(|entry| entry.size)
+            .unwrap_or(0);
+        let progress = MediaTransferProgress { current: 0, total };
+        self.emit(CoreEvent::Timeline(TimelineEvent::MediaDownloadProgress {
+            request_id,
+            key: self.key.clone(),
+            event_id: quoted_event_id.to_owned(),
+            progress,
+        }));
+        self.emit_action_reliable(AppAction::ReplyQuoteThumbnailUpdated {
+            room_id: self.key.room_id().to_owned(),
+            quoted_event_id: quoted_event_id.to_owned(),
+            state: TimelineMediaDownloadState::Pending {
+                progress: Some(progress),
+            },
+        })
+        .await;
+    }
+
+    pub(super) async fn handle_reply_quote_thumbnail_finished(
+        &mut self,
+        request_id: RequestId,
+        quoted_event_id: String,
+        source: PrivateMediaEntry,
+        outcome: MediaDownloadOutcome,
+    ) {
+        self.reply_quote_thumbnail_tasks.remove(&quoted_event_id);
+        let still_current = self
+            .reply_quote_media_source(&quoted_event_id)
+            .is_some_and(|current| current.has_same_source(&source));
+        if !still_current {
+            self.emit_reply_quote_thumbnail_cleared(&quoted_event_id)
+                .await;
+            return;
+        }
+        match outcome {
+            MediaDownloadOutcome::Ready(ready) => {
+                self.emit_reply_quote_thumbnail_ready(request_id, &quoted_event_id, ready)
+                    .await;
+            }
+            MediaDownloadOutcome::Failed(kind) => {
+                self.emit_reply_quote_thumbnail_failed(request_id, &quoted_event_id, kind)
+                    .await;
+            }
+        }
+    }
+
+    async fn emit_reply_quote_thumbnail_cleared(&self, quoted_event_id: &str) {
+        self.emit_action_reliable(AppAction::ReplyQuoteThumbnailUpdated {
+            room_id: self.key.room_id().to_owned(),
+            quoted_event_id: quoted_event_id.to_owned(),
+            state: TimelineMediaDownloadState::NotRequested,
+        })
+        .await;
+    }
+
+    async fn emit_reply_quote_thumbnail_ready(
+        &self,
+        request_id: RequestId,
+        quoted_event_id: &str,
+        ready: MediaDownloadReady,
+    ) {
+        self.emit(CoreEvent::Timeline(TimelineEvent::MediaDownloadCompleted {
+            request_id,
+            key: self.key.clone(),
+            event_id: quoted_event_id.to_owned(),
+            source_ref: ready.source_ref,
+            byte_count: ready.byte_count,
+            mimetype: ready.mimetype,
+            width: ready.width,
+            height: ready.height,
+        }));
+        self.emit_action_reliable(AppAction::ReplyQuoteThumbnailUpdated {
+            room_id: self.key.room_id().to_owned(),
+            quoted_event_id: quoted_event_id.to_owned(),
+            state: ready.download_state,
+        })
+        .await;
+    }
+
+    async fn emit_reply_quote_thumbnail_failed(
+        &self,
+        request_id: RequestId,
+        quoted_event_id: &str,
+        kind: TimelineFailureKind,
+    ) {
+        self.emit(CoreEvent::Timeline(TimelineEvent::MediaDownloadFailed {
+            request_id,
+            key: self.key.clone(),
+            event_id: quoted_event_id.to_owned(),
+            kind,
+        }));
+        self.emit_action_reliable(AppAction::ReplyQuoteThumbnailUpdated {
+            room_id: self.key.room_id().to_owned(),
+            quoted_event_id: quoted_event_id.to_owned(),
+            state: TimelineMediaDownloadState::Failed {
+                failure_kind: match kind {
+                    TimelineFailureKind::Network => OperationFailureKind::Network,
+                    TimelineFailureKind::Sdk => OperationFailureKind::Sdk,
+                    TimelineFailureKind::Forbidden => OperationFailureKind::Forbidden,
+                    TimelineFailureKind::Timeout => OperationFailureKind::Timeout,
+                    _ => OperationFailureKind::Sdk,
+                },
+            },
+        })
+        .await;
+    }
+
     pub(super) async fn handle_media_download_finished(
         &mut self,
         request_id: RequestId,
@@ -571,8 +938,7 @@ impl TimelineActor {
     }
     async fn emit_media_download_current_state(&self, request_id: RequestId, event_id: &str) {
         let total = self
-            .media_sources
-            .get(event_id)
+            .reply_quote_media_source(event_id)
             .map(|entry| entry.size)
             .unwrap_or(0);
         let progress = MediaTransferProgress { current: 0, total };
@@ -676,6 +1042,86 @@ impl TimelineActor {
                 // batch; see `retain_resident_media_sources`.
             }
         }
+    }
+}
+
+/// Collect the quote media a batch names in one traversal: each event's own
+/// private source and public descriptor, plus any media embedded in a reply to
+/// it (#1769). `Some(None)` records that the event was observed without media.
+pub(super) fn apply_sdk_reply_quote_media_diff(
+    sources: &mut HashMap<String, Option<PrivateMediaEntry>>,
+    descriptors: &mut HashMap<String, Option<koushi_state::ReplyQuoteMedia>>,
+    diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>,
+) {
+    use eyeball_im::VectorDiff;
+
+    fn observe(
+        sources: &mut HashMap<String, Option<PrivateMediaEntry>>,
+        descriptors: &mut HashMap<String, Option<koushi_state::ReplyQuoteMedia>>,
+        event_id: String,
+        content: &matrix_sdk_ui::timeline::TimelineItemContent,
+    ) {
+        sources.insert(
+            event_id.clone(),
+            super::item_projection::private_media_entry_from_content(content),
+        );
+        descriptors.insert(
+            event_id,
+            super::item_projection::reply_quote_media_from_content(content),
+        );
+    }
+
+    fn observe_item(
+        sources: &mut HashMap<String, Option<PrivateMediaEntry>>,
+        descriptors: &mut HashMap<String, Option<koushi_state::ReplyQuoteMedia>>,
+        item: &Arc<SdkTimelineItem>,
+    ) {
+        let Some(event_item) = item.as_event() else {
+            return;
+        };
+        let content = event_item.content();
+        if let Some(event_id) = event_item.event_id() {
+            observe(sources, descriptors, event_id.to_string(), content);
+        }
+        let Some(details) = content.in_reply_to() else {
+            return;
+        };
+        let matrix_sdk_ui::timeline::TimelineDetails::Ready(embedded) = &details.event else {
+            return;
+        };
+        observe(
+            sources,
+            descriptors,
+            details.event_id.to_string(),
+            &embedded.content,
+        );
+    }
+
+    match diff {
+        VectorDiff::PushFront { value }
+        | VectorDiff::PushBack { value }
+        | VectorDiff::Insert { value, .. }
+        | VectorDiff::Set { value, .. } => observe_item(sources, descriptors, value),
+        VectorDiff::Append { values } => {
+            for item in values {
+                observe_item(sources, descriptors, item);
+            }
+        }
+        VectorDiff::Reset { values } => {
+            sources.clear();
+            descriptors.clear();
+            for item in values {
+                observe_item(sources, descriptors, item);
+            }
+        }
+        VectorDiff::Clear => {
+            sources.clear();
+            descriptors.clear();
+        }
+        VectorDiff::Remove { .. }
+        | VectorDiff::Truncate { .. }
+        | VectorDiff::PopFront
+        | VectorDiff::PopBack => {}
     }
 }
 

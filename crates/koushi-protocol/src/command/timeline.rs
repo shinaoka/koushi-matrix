@@ -345,6 +345,13 @@ pub enum TimelineCommand {
         event_id: String,
         selection: MediaDownloadSelection,
     },
+    /// #1769: fetch the small thumbnail for a quoted original. Keyed by the
+    /// quoted event, so several replies to one picture coalesce.
+    RequestReplyQuoteThumbnail {
+        request_id: RequestId,
+        key: TimelineKey,
+        quoted_event_id: String,
+    },
     EditText {
         request_id: RequestId,
         key: TimelineKey,
@@ -600,6 +607,14 @@ impl fmt::Debug for TimelineCommand {
                 .field("key", key)
                 .field("event_id", &"EventId(..)")
                 .field("selection", selection)
+                .finish(),
+            Self::RequestReplyQuoteThumbnail {
+                request_id, key, ..
+            } => formatter
+                .debug_struct("RequestReplyQuoteThumbnail")
+                .field("request_id", request_id)
+                .field("key", key)
+                .field("quoted_event_id", &"EventId(..)")
                 .finish(),
             Self::EditText {
                 request_id,

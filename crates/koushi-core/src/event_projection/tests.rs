@@ -207,6 +207,7 @@ fn timeline_item_serializes_reply_quote_without_debugging_body() {
             sender_label: None,
             body_preview: Some("quoted body".to_owned()),
             mentioned_user_ids: Vec::new(),
+            media: None,
             permalink: Some("https://matrix.to/#/!room:test/$root:test".to_owned()),
             can_open: true,
             formatted: Some(koushi_state::ReplyQuoteFormattedBody {

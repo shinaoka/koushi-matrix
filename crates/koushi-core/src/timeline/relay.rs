@@ -453,8 +453,21 @@ impl TimelineActor {
                 &self.ignored_user_ids,
             );
         }
-        let batch = self.overlay_reply_quotes_on_batch(&mut core_diffs);
-        self.apply_reply_quote_refreshes(batch.refreshes);
+        let mut batch_media_sources = std::collections::HashMap::new();
+        let mut batch_media_descriptors = std::collections::HashMap::new();
+        for diff in &sdk_diffs {
+            super::media::apply_sdk_reply_quote_media_diff(
+                &mut batch_media_sources,
+                &mut batch_media_descriptors,
+                diff,
+            );
+        }
+        let batch = self.overlay_reply_quotes_on_batch(
+            &mut core_diffs,
+            &batch_media_sources,
+            &batch_media_descriptors,
+        );
+        self.apply_reply_quote_refreshes(batch.refreshes).await;
         let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
         for diff in &mut core_diffs {
             match diff {

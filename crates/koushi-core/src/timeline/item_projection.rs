@@ -11,7 +11,7 @@ use koushi_state::{
     AppAction, AttachmentKind, AvatarImage, AvatarThumbnailState, ComposerDocument,
     ComposerFormattingOptions, ComposerInline, LiveEventReceiptSummaryUpdate, LiveEventReceipts,
     LiveReadReceipt, MentionIntent, MentionTarget, ReceiptScope, ReplyQuote, ReplyQuoteCodeBlock,
-    ReplyQuoteFormattedBody, ReplyQuoteState,
+    ReplyQuoteFormattedBody, ReplyQuoteMedia, ReplyQuoteMediaKind, ReplyQuoteState,
 };
 
 use matrix_sdk::attachment::{AttachmentInfo, BaseFileInfo, BaseImageInfo, Thumbnail};
@@ -2403,11 +2403,28 @@ fn reply_quote_from_details(room_id: &str, details: &InReplyToDetails) -> ReplyQ
 /// Project a reply quote from an original this actor already holds as a
 /// `TimelineItem`. Returns `None` while the original cannot be rendered yet
 /// (undecryptable), so the caller keeps the quote unresolved.
+#[cfg(test)]
 pub(super) fn reply_quote_from_timeline_item(
     room_id: &str,
     event_id: &str,
     item: &TimelineItem,
 ) -> Option<ReplyQuote> {
+    reply_quote_from_timeline_item_with_media(room_id, event_id, item, None)
+}
+
+/// #1769: a lookup can know the original's media kind (a sticker) that the
+/// public `TimelineItem` does not carry, so the hydration ledger supplies it.
+pub(super) fn reply_quote_from_timeline_item_with_media(
+    room_id: &str,
+    event_id: &str,
+    item: &TimelineItem,
+    media: Option<ReplyQuoteMedia>,
+) -> Option<ReplyQuote> {
+    let media = media.or_else(|| {
+        item.media
+            .as_ref()
+            .map(reply_quote_media_from_timeline_media)
+    });
     let sender = item.sender.clone();
     if item.is_redacted {
         let (permalink, can_open) =
@@ -2419,6 +2436,7 @@ pub(super) fn reply_quote_from_timeline_item(
             body_preview: None,
             formatted: None,
             mentioned_user_ids: Vec::new(),
+            media: None,
             permalink,
             can_open,
             state: ReplyQuoteState::Redacted,
@@ -2430,10 +2448,19 @@ pub(super) fn reply_quote_from_timeline_item(
     let (body_preview, formatted) = if item.notice_i18n.is_some() {
         (None, None)
     } else {
-        let source = item
-            .body
-            .as_deref()
-            .or_else(|| item.media.as_ref().map(|media| media.filename.as_str()));
+        let source = match media.as_ref().map(|media| media.kind) {
+            // A captionless image or video keeps no preview; React renders the
+            // localized kind label from the descriptor (#1769).
+            Some(
+                ReplyQuoteMediaKind::Image
+                | ReplyQuoteMediaKind::Sticker
+                | ReplyQuoteMediaKind::Video,
+            ) => item.body.as_deref(),
+            _ => item
+                .body
+                .as_deref()
+                .or_else(|| item.media.as_ref().map(|media| media.filename.as_str())),
+        };
         (
             source.and_then(|source| collapsed_preview(source, REPLY_QUOTE_PREVIEW_MAX_CHARS)),
             item.formatted
@@ -2441,7 +2468,7 @@ pub(super) fn reply_quote_from_timeline_item(
                 .map(reply_quote_formatted_body_from_timeline),
         )
     };
-    let state = if body_preview.is_some() || formatted.is_some() {
+    let state = if media.is_some() || body_preview.is_some() || formatted.is_some() {
         ReplyQuoteState::Ready
     } else {
         ReplyQuoteState::Unsupported
@@ -2454,6 +2481,7 @@ pub(super) fn reply_quote_from_timeline_item(
         body_preview,
         formatted,
         mentioned_user_ids: item.mentioned_user_ids.clone(),
+        media,
         permalink,
         can_open,
         state,
@@ -2477,16 +2505,22 @@ fn reply_quote_from_embedded_event(
             body_preview: None,
             formatted: None,
             mentioned_user_ids: Vec::new(),
+            media: None,
             permalink,
             can_open,
             state: ReplyQuoteState::Redacted,
         };
     }
 
-    let projection = event
-        .content
-        .as_message()
-        .map(|msg| message_projection_from_msgtype(msg.msgtype(), msg.body()));
+    let projection = if let Some(sticker) = event.content.as_sticker() {
+        Some(sticker_projection_from_body(&sticker.content().body))
+    } else {
+        event
+            .content
+            .as_message()
+            .map(|msg| message_projection_from_msgtype(msg.msgtype(), msg.body()))
+    };
+    let media = reply_quote_media_from_content(&event.content);
     // #1328: the SDK already resolved the quoted message's `m.mentions`; the
     // quote preview needs them to mark the same anchors the quoted row pills.
     let mentioned_user_ids = event
@@ -2501,13 +2535,23 @@ fn reply_quote_from_embedded_event(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    reply_quote_from_message_projection(
-        room_id,
-        details.event_id.as_ref(),
-        sender,
-        projection,
-        mentioned_user_ids,
-    )
+    match media {
+        Some(media) => reply_quote_from_message_projection_with_media(
+            room_id,
+            details.event_id.as_ref(),
+            sender,
+            projection,
+            mentioned_user_ids,
+            Some(media),
+        ),
+        None => reply_quote_from_message_projection(
+            room_id,
+            details.event_id.as_ref(),
+            sender,
+            projection,
+            mentioned_user_ids,
+        ),
+    }
 }
 
 fn reply_quote_from_message_projection(
@@ -2517,14 +2561,36 @@ fn reply_quote_from_message_projection(
     projection: Option<MessageProjection>,
     mentioned_user_ids: Vec<String>,
 ) -> ReplyQuote {
-    let body_preview = projection
+    let media = projection
         .as_ref()
-        .and_then(reply_quote_preview_from_message_projection);
+        .and_then(|projection| projection.media.as_ref())
+        .map(reply_quote_media_from_timeline_media);
+    reply_quote_from_message_projection_with_media(
+        room_id,
+        event_id,
+        sender,
+        projection,
+        mentioned_user_ids,
+        media,
+    )
+}
+
+fn reply_quote_from_message_projection_with_media(
+    room_id: &str,
+    event_id: &str,
+    sender: Option<String>,
+    projection: Option<MessageProjection>,
+    mentioned_user_ids: Vec<String>,
+    media: Option<ReplyQuoteMedia>,
+) -> ReplyQuote {
+    let body_preview = projection.as_ref().and_then(|projection| {
+        reply_quote_preview_from_message_projection(projection, media.as_ref())
+    });
     let formatted = projection
         .as_ref()
         .and_then(|projection| projection.formatted.as_ref())
         .map(reply_quote_formatted_body_from_timeline);
-    let state = if body_preview.is_some() || formatted.is_some() {
+    let state = if media.is_some() || body_preview.is_some() || formatted.is_some() {
         ReplyQuoteState::Ready
     } else {
         ReplyQuoteState::Unsupported
@@ -2538,10 +2604,50 @@ fn reply_quote_from_message_projection(
         body_preview,
         formatted,
         mentioned_user_ids,
+        media,
         permalink,
         can_open,
         state,
     }
+}
+
+fn reply_quote_media_from_timeline_media(media: &TimelineMedia) -> ReplyQuoteMedia {
+    let kind = match media.kind {
+        TimelineMediaKind::Image => ReplyQuoteMediaKind::Image,
+        TimelineMediaKind::Video => ReplyQuoteMediaKind::Video,
+        TimelineMediaKind::File => ReplyQuoteMediaKind::File,
+        TimelineMediaKind::Audio => ReplyQuoteMediaKind::Audio,
+    };
+    ReplyQuoteMedia {
+        kind,
+        animated: is_animated_media(media.mimetype.as_deref(), &media.filename),
+        width: media.width,
+        height: media.height,
+        has_thumbnail_source: media.thumbnail.is_some(),
+    }
+}
+
+fn reply_quote_media_from_sticker(
+    info: &matrix_sdk::ruma::events::room::ImageInfo,
+    body: &str,
+) -> ReplyQuoteMedia {
+    ReplyQuoteMedia {
+        kind: ReplyQuoteMediaKind::Sticker,
+        animated: is_animated_media(info.mimetype.as_deref(), body),
+        width: uint_to_u64(info.width.as_ref()),
+        height: uint_to_u64(info.height.as_ref()),
+        has_thumbnail_source: info.thumbnail_source.is_some(),
+    }
+}
+
+/// GIF and WebP are the animated image types Element renders as a static
+/// thumbnail in a quote (#1769); the renderer must not inspect the filename.
+fn is_animated_media(mimetype: Option<&str>, filename: &str) -> bool {
+    if matches!(mimetype, Some("image/gif" | "image/webp")) {
+        return true;
+    }
+    let filename = filename.to_ascii_lowercase();
+    filename.ends_with(".gif") || filename.ends_with(".webp")
 }
 
 fn reply_quote_formatted_body_from_timeline(
@@ -2561,13 +2667,21 @@ fn reply_quote_formatted_body_from_timeline(
     }
 }
 
-fn reply_quote_preview_from_message_projection(projection: &MessageProjection) -> Option<String> {
-    let source = projection.body.as_deref().or_else(|| {
-        projection
-            .media
-            .as_ref()
-            .map(|media| media.filename.as_str())
-    })?;
+fn reply_quote_preview_from_message_projection(
+    projection: &MessageProjection,
+    media: Option<&ReplyQuoteMedia>,
+) -> Option<String> {
+    let source = match media.map(|media| media.kind) {
+        Some(
+            ReplyQuoteMediaKind::Image | ReplyQuoteMediaKind::Sticker | ReplyQuoteMediaKind::Video,
+        ) => projection.body.as_deref(),
+        _ => projection.body.as_deref().or_else(|| {
+            projection
+                .media
+                .as_ref()
+                .map(|media| media.filename.as_str())
+        }),
+    }?;
     collapsed_preview(source, REPLY_QUOTE_PREVIEW_MAX_CHARS)
 }
 
@@ -3439,6 +3553,15 @@ pub(super) fn private_media_entry_from_msgtype(msgtype: &MessageType) -> Option<
                     .unwrap_or(0),
                 width: info.and_then(|info| uint_to_u64(info.width.as_ref())),
                 height: info.and_then(|info| uint_to_u64(info.height.as_ref())),
+                thumbnail_mimetype: info
+                    .and_then(|info| info.thumbnail_info.as_deref())
+                    .and_then(|info| info.mimetype.clone()),
+                thumbnail_width: info
+                    .and_then(|info| info.thumbnail_info.as_deref())
+                    .and_then(|info| uint_to_u64(info.width.as_ref())),
+                thumbnail_height: info
+                    .and_then(|info| info.thumbnail_info.as_deref())
+                    .and_then(|info| uint_to_u64(info.height.as_ref())),
             })
         }
         MessageType::File(content) => {
@@ -3452,6 +3575,15 @@ pub(super) fn private_media_entry_from_msgtype(msgtype: &MessageType) -> Option<
                     .unwrap_or(0),
                 width: None,
                 height: None,
+                thumbnail_mimetype: info
+                    .and_then(|info| info.thumbnail_info.as_deref())
+                    .and_then(|info| info.mimetype.clone()),
+                thumbnail_width: info
+                    .and_then(|info| info.thumbnail_info.as_deref())
+                    .and_then(|info| uint_to_u64(info.width.as_ref())),
+                thumbnail_height: info
+                    .and_then(|info| info.thumbnail_info.as_deref())
+                    .and_then(|info| uint_to_u64(info.height.as_ref())),
             })
         }
         MessageType::Audio(content) => {
@@ -3465,6 +3597,9 @@ pub(super) fn private_media_entry_from_msgtype(msgtype: &MessageType) -> Option<
                     .unwrap_or(0),
                 width: None,
                 height: None,
+                thumbnail_mimetype: None,
+                thumbnail_width: None,
+                thumbnail_height: None,
             })
         }
         MessageType::Video(content) => {
@@ -3478,10 +3613,113 @@ pub(super) fn private_media_entry_from_msgtype(msgtype: &MessageType) -> Option<
                     .unwrap_or(0),
                 width: info.and_then(|info| uint_to_u64(info.width.as_ref())),
                 height: info.and_then(|info| uint_to_u64(info.height.as_ref())),
+                thumbnail_mimetype: info
+                    .and_then(|info| info.thumbnail_info.as_deref())
+                    .and_then(|info| info.mimetype.clone()),
+                thumbnail_width: info
+                    .and_then(|info| info.thumbnail_info.as_deref())
+                    .and_then(|info| uint_to_u64(info.width.as_ref())),
+                thumbnail_height: info
+                    .and_then(|info| info.thumbnail_info.as_deref())
+                    .and_then(|info| uint_to_u64(info.height.as_ref())),
             })
         }
         _ => None,
     }
+}
+
+pub(super) fn private_media_entry_from_sticker_content(
+    content: &matrix_sdk::ruma::events::sticker::StickerEventContent,
+) -> PrivateMediaEntry {
+    use matrix_sdk::ruma::events::sticker::StickerMediaSource;
+
+    let info = &content.info;
+    let source = match &content.source {
+        StickerMediaSource::Plain(uri) => MediaSource::Plain(uri.clone()),
+        StickerMediaSource::Encrypted(file) => MediaSource::Encrypted(file.clone()),
+        _ => MediaSource::Plain(matrix_sdk::ruma::OwnedMxcUri::from("")),
+    };
+    PrivateMediaEntry {
+        source,
+        thumbnail_source: info.thumbnail_source.clone(),
+        mimetype: info.mimetype.clone(),
+        size: uint_to_u64(info.size.as_ref()).unwrap_or(0),
+        width: uint_to_u64(info.width.as_ref()),
+        height: uint_to_u64(info.height.as_ref()),
+        thumbnail_mimetype: info
+            .thumbnail_info
+            .as_deref()
+            .and_then(|info| info.mimetype.clone()),
+        thumbnail_width: info
+            .thumbnail_info
+            .as_deref()
+            .and_then(|info| uint_to_u64(info.width.as_ref())),
+        thumbnail_height: info
+            .thumbnail_info
+            .as_deref()
+            .and_then(|info| uint_to_u64(info.height.as_ref())),
+    }
+}
+
+/// #1769: the hydration lookup sees the original as raw event JSON, which is
+/// also the only place a sticker's private source and public kind are both
+/// available.
+pub(super) fn raw_event_reply_quote_media(
+    raw: &serde_json::Value,
+) -> Option<(PrivateMediaEntry, ReplyQuoteMedia)> {
+    let event_type = raw.get("type").and_then(serde_json::Value::as_str)?;
+    let content = raw.get("content")?.clone();
+    match event_type {
+        "m.room.message" => {
+            let message = serde_json::from_value::<
+                matrix_sdk::ruma::events::room::message::RoomMessageEventContent,
+            >(content)
+            .ok()?;
+            let entry = private_media_entry_from_msgtype(&message.msgtype)?;
+            let media = message_projection_from_msgtype(&message.msgtype, message.body())
+                .media
+                .as_ref()
+                .map(reply_quote_media_from_timeline_media)?;
+            Some((entry, media))
+        }
+        "m.sticker" => {
+            let sticker = serde_json::from_value::<
+                matrix_sdk::ruma::events::sticker::StickerEventContent,
+            >(content)
+            .ok()?;
+            let entry = private_media_entry_from_sticker_content(&sticker);
+            let media = reply_quote_media_from_sticker(&sticker.info, &sticker.body);
+            Some((entry, media))
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn reply_quote_media_from_content(
+    content: &TimelineItemContent,
+) -> Option<ReplyQuoteMedia> {
+    if let Some(sticker) = content.as_sticker() {
+        return Some(reply_quote_media_from_sticker(
+            &sticker.content().info,
+            &sticker.content().body,
+        ));
+    }
+    let message = content.as_message()?;
+    message_projection_from_msgtype(message.msgtype(), message.body())
+        .media
+        .as_ref()
+        .map(reply_quote_media_from_timeline_media)
+}
+
+pub(super) fn private_media_entry_from_content(
+    content: &TimelineItemContent,
+) -> Option<PrivateMediaEntry> {
+    if let Some(sticker) = content.as_sticker() {
+        return Some(private_media_entry_from_sticker_content(sticker.content()));
+    }
+    content
+        .as_message()
+        .and_then(|message| private_media_entry_from_msgtype(message.msgtype()))
 }
 
 pub(super) fn cache_sdk_item_media_source(
@@ -3498,10 +3736,7 @@ pub(super) fn cache_sdk_item_media_source(
     };
     // A `Set` diff can carry an edited event that no longer has media, so an
     // absent media entry must clear any metadata cached for the same event.
-    let entry = event_item
-        .content()
-        .as_message()
-        .and_then(|message| private_media_entry_from_msgtype(message.msgtype()));
+    let entry = private_media_entry_from_content(event_item.content());
 
     match entry {
         Some(entry) => {

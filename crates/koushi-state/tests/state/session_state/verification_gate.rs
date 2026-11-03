@@ -1285,6 +1285,7 @@ fn ready_session_ignores_recovery_availability_as_an_admission_signal() {
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
             media_downloads: Default::default(),
+            reply_quote_thumbnails: Default::default(),
             continuity: Default::default(),
         },
         ..AppState::default()

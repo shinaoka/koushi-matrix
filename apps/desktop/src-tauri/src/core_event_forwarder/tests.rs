@@ -520,6 +520,13 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
             sender_label: None,
             body_preview: Some("quoted preview".to_owned()),
             mentioned_user_ids: vec!["@quoted:example.test".to_owned()],
+            media: Some(koushi_state::ReplyQuoteMedia {
+                kind: koushi_state::ReplyQuoteMediaKind::Image,
+                animated: false,
+                width: Some(640),
+                height: Some(480),
+                has_thumbnail_source: false,
+            }),
             permalink: None,
             can_open: false,
             formatted: Some(ReplyQuoteFormattedBody {
@@ -874,6 +881,13 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
                 "mentioned_user_ids": [
                     "@quoted:example.test"
                 ],
+                "media": {
+                    "kind": "image",
+                    "animated": false,
+                    "width": 640,
+                    "height": 480,
+                    "has_thumbnail_source": false
+                },
                 "can_open": false,
                 "formatted": {
                     "html": "<p>quoted <strong>preview</strong></p><pre><code class=\"language-rust\">fn main() {}</code></pre>",

@@ -1723,6 +1723,21 @@ impl TimelineManagerActor {
                 ))
                 .await;
             }
+            TimelineCommand::RequestReplyQuoteThumbnail {
+                request_id,
+                key,
+                quoted_event_id,
+            } => {
+                Box::pin(self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::RequestReplyQuoteThumbnail {
+                        request_id,
+                        quoted_event_id,
+                    },
+                ))
+                .await;
+            }
             TimelineCommand::EditText {
                 request_id,
                 key,

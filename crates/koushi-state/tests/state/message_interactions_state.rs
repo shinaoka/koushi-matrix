@@ -708,6 +708,7 @@ fn reply_quote_debug_redacts_event_body_and_permalink() {
         sender_label: Some("Ada".to_owned()),
         body_preview: Some("quoted body".to_owned()),
         mentioned_user_ids: vec!["@bob:example.invalid".to_owned()],
+        media: None,
         permalink: Some(
             "https://matrix.to/#/!room:example.invalid/$root:example.invalid".to_owned(),
         ),

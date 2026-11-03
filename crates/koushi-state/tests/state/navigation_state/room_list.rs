@@ -730,6 +730,7 @@ fn room_list_update_clears_missing_active_space_and_room() {
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
             media_downloads: Default::default(),
+            reply_quote_thumbnails: Default::default(),
             continuity: Default::default(),
         },
         thread: ThreadPaneState::Open {
@@ -879,6 +880,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
             media_downloads: Default::default(),
+            reply_quote_thumbnails: Default::default(),
             continuity: Default::default(),
         },
         thread: ThreadPaneState::Open {
@@ -1042,6 +1044,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
             media_downloads: Default::default(),
+            reply_quote_thumbnails: Default::default(),
             continuity: Default::default(),
         },
         ..AppState::default()
@@ -1138,6 +1141,7 @@ fn room_list_update_keeps_active_dm_global_with_selected_space() {
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
             media_downloads: Default::default(),
+            reply_quote_thumbnails: Default::default(),
             continuity: Default::default(),
         },
         ..AppState::default()

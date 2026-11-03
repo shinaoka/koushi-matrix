@@ -1773,6 +1773,112 @@ fn media_download_failed_does_not_replace_ready_media_for_active_room() {
 }
 
 #[test]
+fn reply_quote_thumbnail_updates_are_keyed_by_the_quoted_event() {
+    let mut state = ready_state();
+    state.timeline.room_id = Some("!r:example.invalid".to_owned());
+
+    let effects = reduce(
+        &mut state,
+        AppAction::ReplyQuoteThumbnailUpdated {
+            room_id: "!r:example.invalid".to_owned(),
+            quoted_event_id: "$picture:example.invalid".to_owned(),
+            state: TimelineMediaDownloadState::Ready {
+                source_ref: "download/1234567890123456/6543210987654321/96x96".to_owned(),
+                width: Some(96),
+                height: Some(96),
+                mime_type: Some("image/jpeg".to_owned()),
+            },
+        },
+    );
+
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+            room_id: "!r:example.invalid".to_owned(),
+        })]
+    );
+    assert!(state.timeline.media_downloads.is_empty());
+    assert_eq!(
+        state
+            .timeline
+            .reply_quote_thumbnails
+            .get("$picture:example.invalid"),
+        Some(&TimelineMediaDownloadState::Ready {
+            source_ref: "download/1234567890123456/6543210987654321/96x96".to_owned(),
+            width: Some(96),
+            height: Some(96),
+            mime_type: Some("image/jpeg".to_owned()),
+        })
+    );
+}
+
+#[test]
+fn a_failed_reply_quote_thumbnail_never_replaces_a_ready_one() {
+    let mut state = ready_state();
+    state.timeline.room_id = Some("!r:example.invalid".to_owned());
+    state.timeline.reply_quote_thumbnails.insert(
+        "$picture:example.invalid".to_owned(),
+        TimelineMediaDownloadState::Ready {
+            source_ref: "download/1234567890123456/6543210987654321/96x96".to_owned(),
+            width: Some(96),
+            height: Some(96),
+            mime_type: Some("image/jpeg".to_owned()),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ReplyQuoteThumbnailUpdated {
+            room_id: "!r:example.invalid".to_owned(),
+            quoted_event_id: "$picture:example.invalid".to_owned(),
+            state: TimelineMediaDownloadState::Failed {
+                failure_kind: OperationFailureKind::Network,
+            },
+        },
+    );
+
+    assert!(matches!(
+        state
+            .timeline
+            .reply_quote_thumbnails
+            .get("$picture:example.invalid"),
+        Some(TimelineMediaDownloadState::Ready { .. })
+    ));
+}
+
+#[test]
+fn a_cleared_reply_quote_thumbnail_removes_its_state() {
+    let mut state = ready_state();
+    state.timeline.room_id = Some("!r:example.invalid".to_owned());
+    state.timeline.reply_quote_thumbnails.insert(
+        "$picture:example.invalid".to_owned(),
+        TimelineMediaDownloadState::Ready {
+            source_ref: "download/1234567890123456/6543210987654321/96x96".to_owned(),
+            width: Some(96),
+            height: Some(96),
+            mime_type: Some("image/jpeg".to_owned()),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ReplyQuoteThumbnailUpdated {
+            room_id: "!r:example.invalid".to_owned(),
+            quoted_event_id: "$picture:example.invalid".to_owned(),
+            state: TimelineMediaDownloadState::NotRequested,
+        },
+    );
+
+    assert!(
+        state
+            .timeline
+            .reply_quote_thumbnails
+            .get("$picture:example.invalid")
+            .is_none()
+    );
+}
+
+#[test]
 fn media_download_updated_ignored_for_inactive_room() {
     let mut state = ready_state();
     state.timeline.room_id = Some("!r:example.invalid".to_owned());

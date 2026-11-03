@@ -343,9 +343,19 @@ pub(super) enum TimelineActorMessage {
         event_id: String,
         selection: MediaDownloadSelection,
     },
+    RequestReplyQuoteThumbnail {
+        request_id: RequestId,
+        quoted_event_id: String,
+    },
     MediaDownloadFinished {
         request_id: RequestId,
         event_id: String,
+        outcome: MediaDownloadOutcome,
+    },
+    ReplyQuoteThumbnailFinished {
+        request_id: RequestId,
+        quoted_event_id: String,
+        source: PrivateMediaEntry,
         outcome: MediaDownloadOutcome,
     },
     ApplyReadSuccess {
@@ -880,6 +890,9 @@ pub(super) struct TimelineActor {
     pub(super) media_downloads_in_progress: HashSet<String>,
     /// In-flight media download workers keyed by event id; aborted on actor drop.
     pub(super) media_download_tasks: HashMap<String, executor::JoinHandle<()>>,
+    /// In-flight reply-quote thumbnail workers, keyed by quoted event; the
+    /// map is also the coalescing gate and is aborted on actor drop.
+    pub(super) reply_quote_thumbnail_tasks: HashMap<String, executor::JoinHandle<()>>,
     /// Reliable Files metadata mutation sender; absent before a search session.
     pub(super) search_index_tx: Option<mpsc::Sender<crate::search::SearchIndexMessage>>,
     /// Rust-owned pane-level thread attention read-state tracker. Only thread
@@ -1025,6 +1038,9 @@ impl Drop for TimelineActor {
             task.abort();
         }
         for task in self.media_download_tasks.values() {
+            task.abort();
+        }
+        for task in self.reply_quote_thumbnail_tasks.values() {
             task.abort();
         }
         if let Some(active) = self.pagination_task.take() {
@@ -1649,8 +1665,17 @@ impl TimelineActor {
         let room_id = key.room_id().to_owned();
 
         let mut media_sources = HashMap::new();
+        let mut initial_reply_quote_sources = HashMap::new();
+        let mut initial_reply_quote_descriptors = HashMap::new();
         for item in &initial_sdk_items {
             cache_sdk_item_media_source(&mut media_sources, item);
+            super::media::apply_sdk_reply_quote_media_diff(
+                &mut initial_reply_quote_sources,
+                &mut initial_reply_quote_descriptors,
+                &eyeball_im::VectorDiff::PushBack {
+                    value: Arc::clone(item),
+                },
+            );
         }
 
         let mut initial_items = projected_initial_items;
@@ -2009,6 +2034,18 @@ impl TimelineActor {
         let mut reply_quote_hydration =
             super::reply_quote_hydration::ReplyQuoteHydration::default();
         reply_quote_hydration.set_room_id(key.room_id());
+        // #1769: an initially ready quote can point at an off-window original,
+        // so seed the same quote/source learning the batch path uses.
+        let mut initial_reply_quote_refreshes =
+            super::reply_quote_hydration::ReplyQuoteRefreshes::default();
+        super::reply_quote_hydration::learn_projected_originals(
+            &mut reply_quote_hydration,
+            navigation_items.iter(),
+            &mut initial_reply_quote_refreshes,
+            &initial_reply_quote_sources,
+            &media_sources,
+            &initial_reply_quote_descriptors,
+        );
         if let TimelineKind::Thread { root_event_id, .. } = &key.kind {
             // A Thread actor's root is never evicted: replies to it must always
             // resolve even after the ledger fills up.
@@ -2052,6 +2089,7 @@ impl TimelineActor {
             media_sources,
             media_downloads_in_progress: HashSet::new(),
             media_download_tasks: HashMap::new(),
+            reply_quote_thumbnail_tasks: HashMap::new(),
             search_index_tx,
             thread_attention,
             thread_delivery_diagnosed: false,
@@ -2830,12 +2868,33 @@ impl TimelineActor {
             } => {
                 Box::pin(self.handle_download_media(request_id, event_id, selection)).await;
             }
+            TimelineActorMessage::RequestReplyQuoteThumbnail {
+                request_id,
+                quoted_event_id,
+            } => {
+                Box::pin(self.handle_request_reply_quote_thumbnail(request_id, quoted_event_id))
+                    .await;
+            }
             TimelineActorMessage::MediaDownloadFinished {
                 request_id,
                 event_id,
                 outcome,
             } => {
                 Box::pin(self.handle_media_download_finished(request_id, event_id, outcome)).await;
+            }
+            TimelineActorMessage::ReplyQuoteThumbnailFinished {
+                request_id,
+                quoted_event_id,
+                source,
+                outcome,
+            } => {
+                Box::pin(self.handle_reply_quote_thumbnail_finished(
+                    request_id,
+                    quoted_event_id,
+                    source,
+                    outcome,
+                ))
+                .await;
             }
             TimelineActorMessage::ApplyReadSuccess {
                 kind,

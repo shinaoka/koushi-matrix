@@ -556,7 +556,8 @@ fn spawn_thread_root_projection_fetch(
     executor::spawn(async move {
         let result =
             load_thread_root_projection_item(&session, &key, own_user_id.as_deref(), &activity)
-                .await;
+                .await
+                .map(|(item, _)| item);
         let _ = manager_tx
             .send(TimelineMessage::ThreadRootProjectionFetchFinished {
                 key,
@@ -607,7 +608,8 @@ async fn resolve_aggregate_refresh(
     let item = if refresh.hydrate_root {
         Some(
             load_thread_root_projection_item_from_room(&room, key, own_user_id, &refresh.activity)
-                .await?,
+                .await?
+                .0,
         )
     } else {
         None
@@ -949,6 +951,25 @@ pub(super) async fn load_exact_timeline_event_projection(
     key: &TimelineKey,
     event_id: &str,
 ) -> Result<TimelineItem, OperationFailureKind> {
+    load_exact_timeline_event_projection_with_media(session, key, event_id)
+        .await
+        .map(|(item, _)| item)
+}
+
+pub(super) async fn load_exact_timeline_event_projection_with_media(
+    session: &MatrixClientSession,
+    key: &TimelineKey,
+    event_id: &str,
+) -> Result<
+    (
+        TimelineItem,
+        Option<(
+            super::media::PrivateMediaEntry,
+            koushi_state::ReplyQuoteMedia,
+        )>,
+    ),
+    OperationFailureKind,
+> {
     let activity = ThreadRootProjectionActivity {
         room_id: key.room_id().to_owned(),
         root_event_id: event_id.to_owned(),
@@ -960,11 +981,12 @@ pub(super) async fn load_exact_timeline_event_projection(
     };
     let client = session.client();
     let own_user_id = client.user_id();
-    let mut item = load_thread_root_projection_item(session, key, own_user_id, &activity).await?;
+    let (mut item, media) =
+        load_thread_root_projection_item(session, key, own_user_id, &activity).await?;
     if let TimelineKind::Thread { root_event_id, .. } = &key.kind {
         item.thread_root = Some(root_event_id.clone());
     }
-    Ok(item)
+    Ok((item, media))
 }
 
 async fn load_thread_root_projection_item(
@@ -972,7 +994,16 @@ async fn load_thread_root_projection_item(
     key: &TimelineKey,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
     activity: &ThreadRootProjectionActivity,
-) -> Result<TimelineItem, OperationFailureKind> {
+) -> Result<
+    (
+        TimelineItem,
+        Option<(
+            super::media::PrivateMediaEntry,
+            koushi_state::ReplyQuoteMedia,
+        )>,
+    ),
+    OperationFailureKind,
+> {
     let room_id = matrix_sdk::ruma::RoomId::parse(activity.room_id.as_str())
         .map_err(|_| OperationFailureKind::Invalid)?;
     let room = session
@@ -987,7 +1018,16 @@ async fn load_thread_root_projection_item_from_room(
     key: &TimelineKey,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
     activity: &ThreadRootProjectionActivity,
-) -> Result<TimelineItem, OperationFailureKind> {
+) -> Result<
+    (
+        TimelineItem,
+        Option<(
+            super::media::PrivateMediaEntry,
+            koushi_state::ReplyQuoteMedia,
+        )>,
+    ),
+    OperationFailureKind,
+> {
     let root_event_id = matrix_sdk::ruma::EventId::parse(activity.root_event_id.as_str())
         .map_err(|_| OperationFailureKind::Invalid)?;
     let loaded = room
@@ -1000,6 +1040,7 @@ async fn load_thread_root_projection_item_from_room(
         .get("sender")
         .and_then(serde_json::Value::as_str)
         .and_then(|sender| matrix_sdk::ruma::UserId::parse(sender).ok());
+    let reply_quote_media = super::item_projection::raw_event_reply_quote_media(&raw);
     let sender_profile = match sender_id {
         Some(sender_id) => room
             .get_member_no_sync(sender_id.as_ref())
@@ -1044,8 +1085,10 @@ async fn load_thread_root_projection_item_from_room(
             own_user_id,
         ),
     };
-    thread_root_projection_item_from_raw_with_context(key, own_user_id, activity, raw, context)
-        .ok_or(OperationFailureKind::Sdk)
+    let item =
+        thread_root_projection_item_from_raw_with_context(key, own_user_id, activity, raw, context)
+            .ok_or(OperationFailureKind::Sdk)?;
+    Ok((item, reply_quote_media))
 }
 
 fn thread_root_projection_activity_from_item(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::timeline::item_projection::reply_quote_from_timeline_item;
 use koushi_protocol::event::{
     TimelineItemId, TimelineUnableToDecrypt, TimelineUnableToDecryptReason,
 };
@@ -81,7 +82,14 @@ fn known_original_resolves_pending_reply_immediately() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let originals = known_originals("!room:example.invalid", &targets, &[], &canonical);
+    let originals = known_originals(
+        "!room:example.invalid",
+        &targets,
+        &[],
+        &canonical,
+        &ReplyQuoteHydration::default(),
+        &HashMap::new(),
+    );
     let changed = overlay_reply_quotes(
         pending.iter_mut(),
         |event_id| originals.get(event_id).cloned(),
@@ -139,7 +147,10 @@ fn settled_ledger_entry_resolves_reply_without_canonical_original() {
     let steps = hydration.complete(
         ORIGINAL,
         1,
-        OriginalLookupOutcome::Loaded(Box::new(original_item(ORIGINAL, "root body"))),
+        OriginalLookupOutcome::Loaded(LoadedOriginal::from_item(Box::new(original_item(
+            ORIGINAL,
+            "root body",
+        )))),
     );
     assert!(steps.is_empty());
     let mut items = [reply_item("txn", ORIGINAL)];
@@ -195,7 +206,9 @@ fn undecryptable_originals_back_off_slowly_then_settle_failed() {
         let steps = hydration.complete(
             ORIGINAL,
             in_flight,
-            OriginalLookupOutcome::Loaded(Box::new(undecryptable_item(ORIGINAL))),
+            OriginalLookupOutcome::Loaded(LoadedOriginal::from_item(Box::new(undecryptable_item(
+                ORIGINAL,
+            )))),
         );
         assert_eq!(
             steps,
@@ -213,7 +226,9 @@ fn undecryptable_originals_back_off_slowly_then_settle_failed() {
             .complete(
                 ORIGINAL,
                 in_flight,
-                OriginalLookupOutcome::Loaded(Box::new(undecryptable_item(ORIGINAL))),
+                OriginalLookupOutcome::Loaded(LoadedOriginal::from_item(Box::new(
+                    undecryptable_item(ORIGINAL)
+                ))),
             )
             .is_empty()
     );
@@ -232,7 +247,9 @@ fn mixed_undecryptable_and_transient_failures_keep_their_own_delays() {
         hydration.complete(
             ORIGINAL,
             1,
-            OriginalLookupOutcome::Loaded(Box::new(undecryptable_item(ORIGINAL))),
+            OriginalLookupOutcome::Loaded(LoadedOriginal::from_item(Box::new(undecryptable_item(
+                ORIGINAL
+            )))),
         ),
         vec![retry(ORIGINAL, 2, Duration::from_secs(15))]
     );
@@ -257,7 +274,9 @@ fn mixed_undecryptable_and_transient_failures_keep_their_own_delays() {
         hydration.complete(
             ORIGINAL,
             7,
-            OriginalLookupOutcome::Loaded(Box::new(undecryptable_item(ORIGINAL))),
+            OriginalLookupOutcome::Loaded(LoadedOriginal::from_item(Box::new(undecryptable_item(
+                ORIGINAL
+            )))),
         ),
         vec![retry(ORIGINAL, 8, Duration::from_secs(60))]
     );
@@ -331,7 +350,13 @@ fn pending_overlay_prefers_the_batch_original_over_the_committed_one() {
     let mut hydration = ReplyQuoteHydration::default();
     hydration.learn(placeholder_quote(ORIGINAL, ReplyQuoteState::Redacted));
     let mut refreshes = ReplyQuoteRefreshes::default();
-    learn_derived_originals(&mut hydration, &mut refreshes, &merged);
+    learn_derived_originals(
+        &mut hydration,
+        &mut refreshes,
+        &merged,
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     assert_eq!(
         hydration.settled_quote(ORIGINAL).map(|quote| quote.state),
         Some(ReplyQuoteState::Redacted)
@@ -347,7 +372,13 @@ fn pending_overlay_still_learns_an_original_only_the_canonical_items_hold() {
     let merged = merge_originals_for(&[ORIGINAL.to_owned()], &HashMap::new(), committed);
     let mut hydration = ReplyQuoteHydration::default();
     let mut refreshes = ReplyQuoteRefreshes::default();
-    learn_derived_originals(&mut hydration, &mut refreshes, &merged);
+    learn_derived_originals(
+        &mut hydration,
+        &mut refreshes,
+        &merged,
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     assert_eq!(
         hydration
             .settled_quote(ORIGINAL)
@@ -566,5 +597,159 @@ fn learning_an_edit_supersedes_an_in_flight_lookup() {
     assert_eq!(
         hydration.settled_quote(ORIGINAL).map(|quote| quote.state),
         Some(ReplyQuoteState::Ready)
+    );
+}
+
+fn ledger_media_entry(mxc: &str) -> PrivateMediaEntry {
+    PrivateMediaEntry {
+        source: matrix_sdk::ruma::events::room::MediaSource::Plain(
+            matrix_sdk::ruma::OwnedMxcUri::from(mxc),
+        ),
+        thumbnail_source: None,
+        mimetype: Some("image/png".to_owned()),
+        size: 120,
+        width: Some(640),
+        height: Some(480),
+        thumbnail_mimetype: None,
+        thumbnail_width: None,
+        thumbnail_height: None,
+    }
+}
+
+fn image_quote(event_id: &str, body: Option<&str>) -> ReplyQuote {
+    let mut quote = placeholder_quote(event_id, ReplyQuoteState::Ready);
+    quote.body_preview = body.map(str::to_owned);
+    quote.media = Some(koushi_state::ReplyQuoteMedia {
+        kind: koushi_state::ReplyQuoteMediaKind::Image,
+        animated: false,
+        width: Some(640),
+        height: Some(480),
+        has_thumbnail_source: false,
+    });
+    quote
+}
+
+#[test]
+fn off_window_original_keeps_its_private_media_source() {
+    let mut hydration = ReplyQuoteHydration::default();
+    hydration.learn_with_media(
+        image_quote(ORIGINAL, None),
+        Some(ledger_media_entry("mxc://example.invalid/off-window")),
+    );
+
+    assert_eq!(
+        hydration
+            .settled_quote(ORIGINAL)
+            .and_then(|quote| quote.media)
+            .map(|media| media.kind),
+        Some(koushi_state::ReplyQuoteMediaKind::Image)
+    );
+    let matrix_sdk::ruma::events::room::MediaSource::Plain(uri) = hydration
+        .settled_media_source(ORIGINAL)
+        .expect("private source")
+        .source
+        .clone()
+    else {
+        panic!("expected a plain media source");
+    };
+    assert_eq!(uri.as_str(), "mxc://example.invalid/off-window");
+}
+
+#[test]
+fn an_edit_swapping_the_image_refreshes_the_descriptor_and_source() {
+    let mut hydration = ReplyQuoteHydration::default();
+    hydration.learn_with_media(
+        image_quote(ORIGINAL, None),
+        Some(ledger_media_entry("mxc://example.invalid/first")),
+    );
+
+    let outcome = hydration.learn_with_media(
+        image_quote(ORIGINAL, Some("replacement caption")),
+        Some(ledger_media_entry("mxc://example.invalid/second")),
+    );
+
+    assert!(outcome.updated);
+    assert!(outcome.media_changed);
+    assert_eq!(
+        hydration
+            .settled_quote(ORIGINAL)
+            .and_then(|quote| quote.body_preview.as_deref()),
+        Some("replacement caption")
+    );
+    let matrix_sdk::ruma::events::room::MediaSource::Plain(uri) = hydration
+        .settled_media_source(ORIGINAL)
+        .expect("refreshed private source")
+        .source
+        .clone()
+    else {
+        panic!("expected a plain media source");
+    };
+    assert_eq!(uri.as_str(), "mxc://example.invalid/second");
+}
+
+#[test]
+fn a_redaction_clears_the_media_descriptor_and_private_source() {
+    let mut hydration = ReplyQuoteHydration::default();
+    hydration.learn_with_media(
+        image_quote(ORIGINAL, None),
+        Some(ledger_media_entry("mxc://example.invalid/gone")),
+    );
+
+    let outcome = hydration.learn(placeholder_quote(ORIGINAL, ReplyQuoteState::Redacted));
+
+    assert!(outcome.updated);
+    assert!(outcome.media_changed);
+    let quote = hydration.settled_quote(ORIGINAL).expect("redacted quote");
+    assert_eq!(quote.state, ReplyQuoteState::Redacted);
+    assert!(quote.media.is_none());
+    assert!(hydration.settled_media_source(ORIGINAL).is_none());
+}
+
+#[test]
+fn eviction_releases_the_media_descriptor_and_private_source() {
+    let mut hydration = ReplyQuoteHydration::default();
+    let first = "$evict-first:example.invalid";
+    hydration.learn_with_media(
+        image_quote(first, None),
+        Some(ledger_media_entry("mxc://example.invalid/evicted")),
+    );
+    for index in 1..REPLY_QUOTE_LEDGER_MAX_ENTRIES {
+        let event_id = format!("$evict-{index}:example.invalid");
+        hydration.learn(image_quote(&event_id, Some("body")));
+    }
+    assert!(hydration.tracks(first));
+
+    hydration.learn(image_quote("$evict-new:example.invalid", Some("body")));
+
+    assert!(!hydration.tracks(first));
+    assert!(hydration.settled_media_source(first).is_none());
+}
+
+#[test]
+fn a_loaded_lookup_keeps_the_media_source_it_resolved() {
+    let mut hydration = ReplyQuoteHydration::default();
+    let steps = hydration.request([ORIGINAL]);
+    assert_eq!(steps, vec![start(ORIGINAL, 1)]);
+
+    let loaded = Box::new(LoadedOriginal {
+        item: Box::new(original_item(ORIGINAL, "image body")),
+        media: Some(ledger_media_entry("mxc://example.invalid/loaded")),
+        descriptor: Some(koushi_state::ReplyQuoteMedia {
+            kind: koushi_state::ReplyQuoteMediaKind::Image,
+            animated: false,
+            width: Some(640),
+            height: Some(480),
+            has_thumbnail_source: false,
+        }),
+    });
+    hydration.complete(ORIGINAL, 1, OriginalLookupOutcome::Loaded(loaded));
+
+    assert!(hydration.settled_media_source(ORIGINAL).is_some());
+    assert_eq!(
+        hydration
+            .settled_quote(ORIGINAL)
+            .and_then(|quote| quote.media)
+            .map(|media| media.kind),
+        Some(koushi_state::ReplyQuoteMediaKind::Image)
     );
 }

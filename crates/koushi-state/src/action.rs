@@ -1470,6 +1470,11 @@ pub enum AppAction {
         event_id: String,
         state: TimelineMediaDownloadState,
     },
+    ReplyQuoteThumbnailUpdated {
+        room_id: String,
+        quoted_event_id: String,
+        state: TimelineMediaDownloadState,
+    },
     ComposerDraftsLoaded {
         drafts: crate::state::ComposerDraftStore,
     },

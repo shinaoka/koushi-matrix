@@ -2507,6 +2507,7 @@ fn timeline_and_thread_actions_are_ignored_without_ready_session() {
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
             media_downloads: Default::default(),
+            reply_quote_thumbnails: Default::default(),
             continuity: Default::default(),
         },
         thread: ThreadPaneState::Opening {
