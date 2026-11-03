@@ -3501,7 +3501,7 @@ const en: Catalog = {
   "settings.notificationDeliveryWatched":
     "Watched rooms and spaces",
   "settings.notificationDeliveryWatchedDescription":
-    "A watched room is sent even when its category is off above, but a room you have read, muted, or have open is still skipped. Watching a space covers every room in it, including rooms added later.",
+    "A watched room is sent even when its category is off above, but a room you have read, muted, or are looking at with Koushi in the foreground is still skipped. Watching a space covers every room in it, including rooms added later.",
   "settings.notificationDeliveryWatchedAdd": "Add a room or space",
   "settings.notificationDeliveryWatchedEmpty": "No rooms or spaces chosen",
   // The watch list is capped in Rust; the form says so instead of letting a choice
@@ -5856,7 +5856,7 @@ const ja: Catalog = {
   "settings.notificationDeliveryWatched":
     "見守るルーム・スペース",
   "settings.notificationDeliveryWatchedDescription":
-    "見守るルームは、上の種類がオフでも送信します。ただし、既読・ミュート・表示中のルームは送信しません。スペースを選ぶと、その中のすべてのルーム（後から追加されたルームも）が対象になります。",
+    "見守るルームは、上の種類がオフでも送信します。ただし、既読・ミュート・Koushiが前面にある状態で開いているルームは送信しません。スペースを選ぶと、その中のすべてのルーム（後から追加されたルームも）が対象になります。",
   "settings.notificationDeliveryWatchedAdd": "ルーム・スペースを追加",
   "settings.notificationDeliveryWatchedEmpty": "選択されたルーム・スペースはありません",
   "settings.notificationDeliveryWatchedLimit":

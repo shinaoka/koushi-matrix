@@ -301,7 +301,8 @@ against a local stub.
 A plain group message matches none of them. **Watched rooms and spaces** names
 rooms and spaces that are always sent: choose **Add a room or space** and pick
 from your room list, or **Remove** an entry. A watched room is sent even when its
-category is off, but a room you have read, muted, or have open is still skipped.
+category is off, but a room you have read, muted, or are looking at with Koushi in
+the foreground is still skipped.
 A watched space covers every room in it, including rooms added later. The list
 holds up to 64 rooms and spaces.
 

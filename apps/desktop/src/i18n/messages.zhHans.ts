@@ -1143,7 +1143,7 @@ export const zhHans: Catalog = {
   "settings.notificationDeliveryIntervalDescription": "后续通知会等待这段时间，避免热闹的房间塞满你的邮箱。",
   "settings.notificationDeliveryOnlyUnfocused": "仅在 Koushi 处于非活动状态时",
   "settings.notificationDeliveryWatched": "关注的房间和空间",
-  "settings.notificationDeliveryWatchedDescription": "即使上方对应的类别已关闭，关注的房间仍会被发送；但你已读、已静音或正在打开的房间仍会被跳过。关注一个空间即覆盖其中的所有房间，包括之后添加的房间。",
+  "settings.notificationDeliveryWatchedDescription": "即使上方对应的类别已关闭，关注的房间仍会被发送；但你已读、已静音或正在前台查看的房间仍会被跳过。关注一个空间即覆盖其中的所有房间，包括之后添加的房间。",
   "settings.notificationDeliveryWatchedAdd": "添加房间或空间",
   "settings.notificationDeliveryWatchedEmpty": "未选择房间或空间",
   "settings.notificationDeliveryWatchedLimit": "关注列表最多可包含 {count} 个房间和空间。请先移除一个再添加。",

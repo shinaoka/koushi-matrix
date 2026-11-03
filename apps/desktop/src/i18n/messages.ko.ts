@@ -1143,7 +1143,7 @@ export const ko: Catalog = {
   "settings.notificationDeliveryIntervalDescription": "이후 알림은 이 시간만큼 기다리므로, 활발한 방 때문에 메일함이 가득 차지 않습니다.",
   "settings.notificationDeliveryOnlyUnfocused": "Koushi가 비활성 상태일 때만",
   "settings.notificationDeliveryWatched": "관심 방 및 스페이스",
-  "settings.notificationDeliveryWatchedDescription": "관심 방은 위에서 해당 카테고리가 꺼져 있어도 전송되지만, 읽었거나 음소거했거나 열어 둔 방은 여전히 제외됩니다. 스페이스를 관심 항목으로 지정하면 나중에 추가된 방을 포함해 스페이스 안의 모든 방이 대상이 됩니다.",
+  "settings.notificationDeliveryWatchedDescription": "관심 방은 위에서 해당 카테고리가 꺼져 있어도 전송되지만, 읽었거나 음소거했거나 Koushi가 앞에 있는 상태에서 보고 있는 방은 여전히 제외됩니다. 스페이스를 관심 항목으로 지정하면 나중에 추가된 방을 포함해 스페이스 안의 모든 방이 대상이 됩니다.",
   "settings.notificationDeliveryWatchedAdd": "방 또는 스페이스 추가",
   "settings.notificationDeliveryWatchedEmpty": "선택한 방 또는 스페이스 없음",
   "settings.notificationDeliveryWatchedLimit": "관심 목록에는 방과 스페이스를 최대 {count}개까지 추가할 수 있습니다. 다른 항목을 추가하려면 하나를 제거하세요.",
