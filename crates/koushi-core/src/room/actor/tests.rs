@@ -478,3 +478,110 @@ async fn stale_stop_generation_does_not_stop_replacement_observation() {
     assert!(handle.send(RoomMessage::Shutdown).await);
     handle.join().await;
 }
+
+/// #1634: a reconcile request whose generation is no longer current must be
+/// answered, not dropped. The waiter can then distinguish a stale generation
+/// from a closed channel, and the ring names both generations.
+#[test]
+fn stale_reconcile_request_is_answered_and_recorded() {
+    use super::{RoomListReconcileAck, stale_reconcile_ack};
+
+    assert_eq!(
+        stale_reconcile_ack(
+            RoomListSource::Live,
+            4_242,
+            Some(RoomListSource::Live),
+            Some(4_242),
+            true
+        ),
+        None,
+        "the current generation keeps forwarding to the observation"
+    );
+    assert!(
+        koushi_diagnostics::snapshot().records.iter().all(|record| {
+            !(record.event.stage == "reconcile_ack_stale"
+                && koushi_diagnostics::DiagnosticField::count("backend_generation", 4_242)
+                    == record.event.fields[0])
+        }),
+        "the happy path must not record a stale acknowledgement"
+    );
+
+    let ack = stale_reconcile_ack(
+        RoomListSource::Live,
+        4_242,
+        Some(RoomListSource::Live),
+        Some(4_243),
+        true,
+    )
+    .expect("a superseded generation is answered");
+    match ack {
+        RoomListReconcileAck::StaleGeneration {
+            backend_generation,
+            observed_generation,
+        } => {
+            assert_eq!(backend_generation, 4_242);
+            assert_eq!(observed_generation, Some(4_243));
+        }
+        _ => panic!("expected an explicit stale-generation acknowledgement"),
+    }
+
+    let snapshot = koushi_diagnostics::snapshot();
+    let stale = snapshot
+        .records
+        .iter()
+        .find(|record| {
+            record.event.stage == "reconcile_ack_stale"
+                && record.event.fields.iter().any(|field| {
+                    field.key == "backend_generation"
+                        && field.value == koushi_diagnostics::DiagnosticValue::Count(4_242)
+                })
+        })
+        .expect("the stale acknowledgement is recorded");
+    assert!(
+        stale.event.fields.iter().any(|field| {
+            field.key == "observed_generation"
+                && field.value == koushi_diagnostics::DiagnosticValue::Count(4_243)
+        }),
+        "the record names the generation that replaced the request"
+    );
+    assert!(
+        stale.event.fields.iter().any(|field| {
+            field.key == "cause"
+                && field.value == koushi_diagnostics::DiagnosticValue::Token("stale_generation")
+        }),
+        "the record names why the request was not forwarded"
+    );
+}
+
+/// A request can also arrive before any observation exists, or for a source the
+/// actor no longer observes. Both are answered with the same explicit ack so the
+/// waiter never blocks on a request the actor has already abandoned.
+#[test]
+fn reconcile_request_without_a_current_observation_is_answered() {
+    use super::{RoomListReconcileAck, stale_reconcile_ack};
+
+    for (actor_source, actor_generation, observation_current, expected) in [
+        (Some(RoomListSource::Live), Some(4_244), false, Some(4_244)),
+        (Some(RoomListSource::Live), None, false, None),
+        (None, None, false, None),
+    ] {
+        let ack = stale_reconcile_ack(
+            RoomListSource::Live,
+            4_244,
+            actor_source,
+            actor_generation,
+            observation_current,
+        )
+        .expect("an unanswered request is always answered");
+        match ack {
+            RoomListReconcileAck::StaleGeneration {
+                backend_generation,
+                observed_generation,
+            } => {
+                assert_eq!(backend_generation, 4_244);
+                assert_eq!(observed_generation, expected);
+            }
+            _ => panic!("expected an explicit stale-generation acknowledgement"),
+        }
+    }
+}

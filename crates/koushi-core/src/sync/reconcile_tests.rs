@@ -66,3 +66,48 @@ async fn closed_or_invalid_ack_still_fails_after_delay() {
         );
     }
 }
+
+/// #1634: a stale-generation acknowledgement is a named failure, not an
+/// anonymous closed channel. The waiter's outcome stays `Failed` (unchanged),
+/// but the ring records `outcome=stale_generation` with both generations so the
+/// next failure string names the cause.
+#[test]
+fn stale_generation_ack_fails_with_a_named_diagnostic() {
+    assert_eq!(
+        classify_room_list_reconcile_ack(
+            7,
+            226,
+            RoomListReconcileAck::StaleGeneration {
+                backend_generation: 7,
+                observed_generation: Some(8),
+            },
+        ),
+        RoomListReconcileResult::Failed,
+        "a superseded request keeps the waiter's existing failure outcome"
+    );
+
+    record_room_list_reconcile_diagnostic(
+        RoomListReconcileDiagnosticOutcome::StaleGeneration,
+        Duration::from_millis(3),
+        4_246,
+        4_247,
+    );
+    let record = koushi_diagnostics::snapshot()
+        .records
+        .into_iter()
+        .find(|record| {
+            record.event.stage == "room_list_reconcile_wait"
+                && record.event.fields.iter().any(|field| {
+                    field.key == "backend_generation"
+                        && field.value == koushi_diagnostics::DiagnosticValue::Count(4_246)
+                })
+        })
+        .expect("the stale acknowledgement is recorded");
+    assert!(
+        record.event.fields.iter().any(|field| {
+            field.key == "outcome"
+                && field.value == koushi_diagnostics::DiagnosticValue::Token("stale_generation")
+        }),
+        "the outcome token names the cause"
+    );
+}
