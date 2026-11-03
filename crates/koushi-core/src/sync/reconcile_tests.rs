@@ -73,6 +73,7 @@ async fn closed_or_invalid_ack_still_fails_after_delay() {
 /// next failure string names the cause.
 #[test]
 fn stale_generation_ack_fails_with_a_named_diagnostic() {
+    let _guard = koushi_diagnostics::test_support::lock();
     assert_eq!(
         classify_room_list_reconcile_ack(
             7,

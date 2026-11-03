@@ -484,6 +484,7 @@ async fn stale_stop_generation_does_not_stop_replacement_observation() {
 /// from a closed channel, and the ring names both generations.
 #[test]
 fn stale_reconcile_request_is_answered_and_recorded() {
+    let _guard = koushi_diagnostics::test_support::lock();
     use super::{RoomListReconcileAck, stale_reconcile_ack};
 
     assert_eq!(
