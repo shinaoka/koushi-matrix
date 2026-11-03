@@ -905,9 +905,14 @@ async fn reconcile_committed_room_list(
     };
     match ack {
         Ok(ack) => {
+            // #1634: a stale-generation answer is a named cause, not an
+            // anonymous invalid ack; its outcome for the waiter stays `Failed`.
+            let stale_generation = matches!(ack, RoomListReconcileAck::StaleGeneration { .. });
             let result = classify_room_list_reconcile_ack(run_generation, response_sequence, ack);
             record_room_list_reconcile_diagnostic(
-                if result == RoomListReconcileResult::Failed {
+                if stale_generation {
+                    RoomListReconcileDiagnosticOutcome::StaleGeneration
+                } else if result == RoomListReconcileResult::Failed {
                     RoomListReconcileDiagnosticOutcome::InvalidAck
                 } else {
                     RoomListReconcileDiagnosticOutcome::Received
@@ -937,6 +942,7 @@ enum RoomListReconcileDiagnosticOutcome {
     Timeout,
     AckClosed,
     InvalidAck,
+    StaleGeneration,
 }
 
 fn room_list_reconcile_diagnostic_outcome_token(
@@ -948,6 +954,7 @@ fn room_list_reconcile_diagnostic_outcome_token(
         RoomListReconcileDiagnosticOutcome::Timeout => "timeout",
         RoomListReconcileDiagnosticOutcome::AckClosed => "ack_closed",
         RoomListReconcileDiagnosticOutcome::InvalidAck => "invalid_ack",
+        RoomListReconcileDiagnosticOutcome::StaleGeneration => "stale_generation",
     }
 }
 
@@ -1029,6 +1036,9 @@ fn classify_room_list_reconcile_ack(
                 response_sequence: acknowledged_sequence,
             }
         }
+        // #1634: the actor no longer owns this request; the waiter keeps its
+        // existing `Failed` outcome and the record names the cause.
+        RoomListReconcileAck::StaleGeneration { .. } => RoomListReconcileResult::Failed,
         _ => RoomListReconcileResult::Failed,
     }
 }

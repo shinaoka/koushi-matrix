@@ -407,6 +407,7 @@ impl RoomActorHandle {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RoomListReconcileAck {
     Projected {
         backend_generation: u64,
@@ -423,6 +424,58 @@ pub enum RoomListReconcileAck {
         room_generation: u64,
         response_sequence: u64,
     },
+    /// #1634: the request asked about a source or generation this actor no
+    /// longer owns. The waiter cannot act on the stale request, but it must see
+    /// an answer instead of a silently dropped channel.
+    StaleGeneration {
+        backend_generation: u64,
+        observed_generation: Option<u64>,
+    },
+}
+
+/// Answer a reconcile request the actor will not forward (#1634).
+///
+/// The generation race's winner is unchanged: only the current
+/// `source`/`generation` pair with a current observation is forwarded. What
+/// changes is that a lost request is answered and recorded, so the waiting
+/// observer sees `RoomListReconcileAck::StaleGeneration` with both generations
+/// instead of a closed channel, and the ring names the cause.
+fn stale_reconcile_ack(
+    source: RoomListSource,
+    requested_generation: u64,
+    actor_source: Option<RoomListSource>,
+    actor_generation: Option<u64>,
+    observation_current: bool,
+) -> Option<RoomListReconcileAck> {
+    if observation_current
+        && actor_source == Some(source)
+        && actor_generation == Some(requested_generation)
+    {
+        return None;
+    }
+    koushi_diagnostics::record(
+        koushi_diagnostics::DiagnosticEvent::new(
+            koushi_diagnostics::DiagnosticLevel::Warn,
+            "core.room",
+            "reconcile_ack_stale",
+        )
+        .field(koushi_diagnostics::DiagnosticField::token(
+            "cause",
+            "stale_generation",
+        ))
+        .field(koushi_diagnostics::DiagnosticField::count(
+            "backend_generation",
+            requested_generation,
+        ))
+        .field(koushi_diagnostics::DiagnosticField::count(
+            "observed_generation",
+            actor_generation.unwrap_or(0),
+        )),
+    );
+    Some(RoomListReconcileAck::StaleGeneration {
+        backend_generation: requested_generation,
+        observed_generation: actor_generation,
+    })
 }
 
 pub struct RoomActor {
@@ -704,12 +757,20 @@ impl RoomActor {
                     response_sequence,
                     ack,
                 } => {
-                    if self.room_list_source == Some(source)
-                        && self.room_list_backend_generation == Some(backend_generation)
-                        && let Some(observation) = &self.observation
-                        && observation.source == source
-                        && observation.generation == self.room_list_generation
-                    {
+                    let observation_current =
+                        self.observation.as_ref().is_some_and(|observation| {
+                            observation.source == source
+                                && observation.generation == self.room_list_generation
+                        });
+                    if let Some(stale) = stale_reconcile_ack(
+                        source,
+                        backend_generation,
+                        self.room_list_source,
+                        self.room_list_backend_generation,
+                        observation_current,
+                    ) {
+                        let _ = ack.send(stale);
+                    } else if let Some(observation) = &self.observation {
                         let _ = observation
                             .command_tx
                             .send(RoomListObservationCommand::Reconcile {
