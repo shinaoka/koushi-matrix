@@ -339,7 +339,7 @@ async fn local_fallback_scheduled_send_is_retained_when_delivery_cannot_start() 
     .expect("schedule send");
 
     wait_for_state(&mut conn, |state| state.timeline.scheduled_sends.len() == 1).await;
-    let snapshot = wait_for_state_for(&mut conn, Duration::from_secs(3), |state| {
+    let snapshot = wait_for_state(&mut conn, |state| {
         state
             .scheduled_sends
             .items
@@ -581,7 +581,7 @@ async fn due_local_fallback_scheduled_send_is_retained_for_retry_after_restart()
     })
     .await;
 
-    let snapshot = wait_for_state_for(&mut conn, Duration::from_secs(3), |state| {
+    let snapshot = wait_for_state(&mut conn, |state| {
         state
             .scheduled_sends
             .items
@@ -675,25 +675,6 @@ async fn inject_ready_local_fallback_room(runtime: &CoreRuntime, room_id: &str) 
             },
         ])
         .await;
-}
-
-async fn wait_for_state_for<F>(
-    connection: &mut koushi_core::runtime::CoreConnection,
-    timeout: Duration,
-    predicate: F,
-) -> koushi_state::AppState
-where
-    F: Fn(&koushi_state::AppState) -> bool,
-{
-    let attempts = (timeout.as_millis() / 5).max(1) as usize;
-    for _ in 0..attempts {
-        let snapshot = connection.snapshot();
-        if predicate(&snapshot) {
-            return snapshot;
-        }
-        executor::sleep(Duration::from_millis(5)).await;
-    }
-    panic!("state predicate was not satisfied within {timeout:?}");
 }
 
 #[tokio::test]

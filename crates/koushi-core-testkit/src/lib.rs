@@ -14,8 +14,10 @@ pub const PROGRESS_WINDOW: Duration = Duration::from_secs(30);
 /// a healthy wait settles in milliseconds and never approaches it.
 pub const HANG_BACKSTOP: Duration = Duration::from_secs(180);
 
-/// Budget for one state wait: a silence window re-armed by every observed state
-/// event, plus a monotonic absolute backstop that bounds the whole wait.
+/// Budget for one state wait: a silence window re-armed by every progress
+/// observation, plus a monotonic absolute backstop that bounds the whole wait.
+/// Each caller defines what one observation is: a published state event for the
+/// event fence, a poll that differed from the previous poll for the polling one.
 #[derive(Debug)]
 pub struct StateWaitWatchdog {
     window: Duration,
@@ -43,13 +45,14 @@ impl StateWaitWatchdog {
         }
     }
 
-    /// An observed state event: it counts as progress and re-arms the window.
+    /// One progress observation in the caller's sense: it counts as progress and
+    /// re-arms the window.
     pub fn progress(&mut self) {
         self.events += 1;
         self.last_progress = Instant::now();
     }
 
-    /// Observed state events so far, whether related to the predicate or not.
+    /// Progress observations so far, whether related to the predicate or not.
     pub fn events(&self) -> u64 {
         self.events
     }
@@ -71,8 +74,10 @@ impl StateWaitWatchdog {
     }
 
     /// Failure diagnostic: which budget expired, how long the wait had been
-    /// silent, and whether any state event arrived at all.
-    pub fn report(&self) -> String {
+    /// silent, and how many progress observations arrived. `progress` names what
+    /// counts as one for the caller's wait, because an event-driven fence counts
+    /// published state events while a polling one counts differing polls.
+    pub fn report(&self, progress: &str) -> String {
         let now = Instant::now();
         let silence = now.duration_since(self.last_progress);
         let elapsed = now.duration_since(self.started);
@@ -84,7 +89,7 @@ impl StateWaitWatchdog {
             "silence"
         };
         format!(
-            "{cause} for {silence:?} after {} state events in {elapsed:?} (window {:?}, backstop {:?})",
+            "{cause} for {silence:?} after {} {progress} in {elapsed:?} (window {:?}, backstop {:?})",
             self.events, self.window, self.backstop,
         )
     }
@@ -107,7 +112,7 @@ mod tests {
             Duration::from_secs(60),
         );
         assert_eq!(watchdog.remaining(), None);
-        let report = watchdog.report();
+        let report = watchdog.report("state events");
         assert!(report.starts_with("silence for"), "{report}");
         assert!(report.contains("after 0 state events"), "{report}");
     }
@@ -138,7 +143,7 @@ mod tests {
         );
         watchdog.progress();
         assert_eq!(watchdog.remaining(), None);
-        let report = watchdog.report();
+        let report = watchdog.report("state events");
         assert!(report.starts_with("backstop for"), "{report}");
         assert!(report.contains("after 1 state events"), "{report}");
     }
@@ -153,6 +158,6 @@ mod tests {
         // Elapsed time already exceeds the backstop, but silence expired 8 s
         // before it, so silence is what ended the wait.
         assert_eq!(watchdog.remaining(), None);
-        assert!(watchdog.report().starts_with("silence for"));
+        assert!(watchdog.report("state events").starts_with("silence for"));
     }
 }
