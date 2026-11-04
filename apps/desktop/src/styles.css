@@ -4602,6 +4602,79 @@ button:disabled {
   background: var(--surface-hover);
 }
 
+.reply-quote.has-thumbnail {
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 8px;
+}
+
+.reply-quote-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* #1769: a fixed slot keeps the quote height and width stable while the
+   thumbnail is pending or after it fails. */
+.reply-quote-thumbnail {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 40px;
+  block-size: 40px;
+  padding: 0;
+  overflow: hidden;
+  color: var(--text-faint);
+  background: color-mix(in srgb, var(--text-faint) 10%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.reply-quote-thumbnail.is-composer {
+  inline-size: 32px;
+  block-size: 32px;
+}
+
+button.reply-quote-thumbnail {
+  cursor: pointer;
+}
+
+button.reply-quote-thumbnail:hover {
+  border-color: var(--brand);
+}
+
+button.reply-quote-thumbnail:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.reply-quote-thumbnail-image {
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+}
+
+.reply-quote-thumbnail.is-sticker {
+  background: transparent;
+}
+
+.reply-quote-thumbnail.is-sticker .reply-quote-thumbnail-image {
+  object-fit: contain;
+}
+
+.reply-quote-thumbnail-play {
+  position: absolute;
+  display: inline-grid;
+  place-items: center;
+  inline-size: 20px;
+  block-size: 20px;
+  color: #fff;
+  background: rgb(0 0 0 / 55%);
+  border-radius: 50%;
+}
+
+.reply-quote-thumbnail {
+  position: relative;
+}
+
 /* #1592: only a Rust-openable quote gets pointer, hover, and focus
    affordances; loading and terminal quotes stay inert. */
 .reply-quote.is-openable {
@@ -5606,7 +5679,8 @@ button:disabled {
   padding: 18px;
 }
 
-.timeline-media-viewer-image {
+.timeline-media-viewer-image,
+.timeline-media-viewer-video {
   display: block;
   max-inline-size: 100%;
   max-block-size: 100%;
@@ -6280,8 +6354,8 @@ mark {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
-  height: 32px;
-  padding: 0 8px 0 12px;
+  min-height: 32px;
+  padding: 4px 8px 4px 12px;
   border-bottom: 1px solid var(--line);
   color: var(--text-faint);
   background: var(--surface-hover);
@@ -6293,6 +6367,42 @@ mark {
   font-size: 13px;
   font-weight: 600;
   color: var(--brand);
+}
+
+.composer-reply-quote {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.composer-reply-quote-copy {
+  display: grid;
+  flex: 1;
+  gap: 1px;
+  min-width: 0;
+}
+
+.composer-reply-quote .reply-quote-thumbnail {
+  flex-shrink: 0;
+}
+
+.composer-reply-quote-sender {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-reply-quote-body {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* #1644: names the assistant that staged the draft. */

@@ -727,7 +727,7 @@ function makeSnapshot(): DesktopSnapshot {
           scheduled_sends: [],
           staged_uploads: [],
           media_gallery: [],
-          media_downloads: {},
+          media_downloads: {}, reply_quote_thumbnails: {},
           continuity: { kind: "unknown" }
         },
         thread: {

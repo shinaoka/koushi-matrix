@@ -1847,11 +1847,17 @@ export type MessageId =
   | "timeline.pinnedEventUnableToDecrypt"
   | "timeline.pinnedEventUnavailable"
   | "timeline.replyQuoteFailed"
+  | "timeline.replyQuoteKindAudio"
+  | "timeline.replyQuoteKindFile"
+  | "timeline.replyQuoteKindImage"
+  | "timeline.replyQuoteKindSticker"
+  | "timeline.replyQuoteKindVideo"
   | "timeline.replyQuoteLoading"
   | "timeline.replyQuoteMissing"
   | "timeline.replyQuoteUnavailable"
   | "timeline.replyQuoteUnknownSender"
   | "timeline.replyQuoteUnsupported"
+  | "timeline.replyQuoteThumbnailOpen"
   | "timeline.openOriginalMessage"
   | "timeline.replyToMessage"
   | "timeline.replyInThread"
@@ -4309,11 +4315,17 @@ const en: Catalog = {
   "timeline.pinnedEventUnableToDecrypt": "Unable to decrypt this message",
   "timeline.pinnedEventUnavailable": "Pinned message unavailable",
   "timeline.replyQuoteFailed": "Couldn't load the original message",
+  "timeline.replyQuoteKindAudio": "Audio",
+  "timeline.replyQuoteKindFile": "File",
+  "timeline.replyQuoteKindImage": "Image",
+  "timeline.replyQuoteKindSticker": "Sticker",
+  "timeline.replyQuoteKindVideo": "Video",
   "timeline.replyQuoteLoading": "Loading original message…",
   "timeline.replyQuoteMissing": "Original message unavailable",
   "timeline.replyQuoteUnavailable": "Original message unavailable",
   "timeline.replyQuoteUnknownSender": "Unknown sender",
   "timeline.replyQuoteUnsupported": "Unsupported message",
+  "timeline.replyQuoteThumbnailOpen": "Open image from {sender}",
   "timeline.openOriginalMessage": "Open original message",
   "timeline.replyToMessage": "Reply to message",
   "timeline.replyInThread": "Reply in thread",
@@ -6654,11 +6666,17 @@ const ja: Catalog = {
   "timeline.pinnedEventUnableToDecrypt": "このメッセージを復号できません",
   "timeline.pinnedEventUnavailable": "ピン留めメッセージを利用できません",
   "timeline.replyQuoteFailed": "元のメッセージを読み込めませんでした",
+  "timeline.replyQuoteKindAudio": "音声",
+  "timeline.replyQuoteKindFile": "ファイル",
+  "timeline.replyQuoteKindImage": "画像",
+  "timeline.replyQuoteKindSticker": "スタンプ",
+  "timeline.replyQuoteKindVideo": "動画",
   "timeline.replyQuoteLoading": "元のメッセージを読み込み中…",
   "timeline.replyQuoteMissing": "元のメッセージを利用できません",
   "timeline.replyQuoteUnavailable": "元のメッセージを利用できません",
   "timeline.replyQuoteUnknownSender": "不明な送信者",
   "timeline.replyQuoteUnsupported": "未対応のメッセージ",
+  "timeline.replyQuoteThumbnailOpen": "{sender} の画像を開く",
   "timeline.openOriginalMessage": "元のメッセージを開く",
   "timeline.replyToMessage": "メッセージに返信",
   "timeline.replyInThread": "スレッドで返信",

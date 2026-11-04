@@ -1737,6 +1737,15 @@
           }
         },
         "media_gallery": [],
+        "reply_quote_thumbnails": {
+          "$quoted-picture:example.invalid": {
+            "height": 96,
+            "kind": "ready",
+            "mime_type": "image/jpeg",
+            "source_ref": "download/1234567890123456/6543210987654321/96x96",
+            "width": 96
+          }
+        },
         "room_id": "!room:example.invalid",
         "scheduled_send_capability": "unknown",
         "scheduled_sends": [],

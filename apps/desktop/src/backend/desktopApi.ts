@@ -605,6 +605,7 @@ export interface DesktopApi {
     scope: InviteScopeSelection
   ): Promise<CommandSettlement>;
   setComposerReplyTarget(roomId: string, eventId: string): Promise<CommandAdmission>;
+  requestReplyQuoteThumbnail(roomId: string, quotedEventId: string): Promise<void>;
   cancelComposerReply(): Promise<CommandAdmission>;
   setThreadComposerReplyTarget(
     roomId: string,

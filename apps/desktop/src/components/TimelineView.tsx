@@ -139,6 +139,7 @@ import type {
 MediaTransferProgress,
 CoreEventPayload,
 TimelineBottomArrival,
+ReplyQuote,
 TimelineItem,
 TimelineKey,
 TimelineMessageSource,
@@ -230,6 +231,11 @@ TimelineMediaViewer,
 type TimelineMediaViewerItem
 } from "./timeline/TimelineMedia";
 import { useTimelineStoreContext } from "./timelineStoreContext";
+import {
+  replyQuoteHasThumbnail,
+  replyQuoteMediaLabel
+} from "./timeline/ReplyQuoteThumbnail";
+import { mediaSourceUrl } from "../backend/linkMediaRuntime";
 import {
   timelineAvatarDiagnostics,
   timelineRenderedAvatarDiagnostics,
@@ -401,6 +407,7 @@ export const TimelineView = memo(function TimelineView({
   canWrite = true,
   searchHighlightsByEventId = {},
   mediaDownloads = {},
+  replyQuoteThumbnails = {},
   continuity = { kind: "unknown" },
   roomScrollAnchor: _persistedRoomScrollAnchor = null,
   density = "default",
@@ -470,6 +477,7 @@ export const TimelineView = memo(function TimelineView({
   canWrite?: boolean;
   searchHighlightsByEventId?: Record<string, { snippet: string; ranges: TextRange[] }>;
   mediaDownloads?: Record<string, TimelineMediaDownloadState>;
+  replyQuoteThumbnails?: Record<string, TimelineMediaDownloadState>;
   continuity?: TimelineContinuityState;
   roomScrollAnchor?: TimelineScrollAnchor | null;
   density?: DisplayDensity;
@@ -548,6 +556,7 @@ export const TimelineView = memo(function TimelineView({
   const isAppLevelStore = timelineStore !== undefined || timelineStoreContext !== null;
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
   const [mediaViewerItem, setMediaViewerItem] = useState<TimelineMediaViewerItem | null>(null);
+  const [pendingQuotedMediaViewer, setPendingQuotedMediaViewer] = useState<ReplyQuote | null>(null);
   const mediaViewerReturnFocusRef = useRef<HTMLElement | null>(null);
   const [viewportAtBottom, setViewportAtBottom] = useState(false);
   const [aliasTarget, setAliasTarget] = useState<TimelineAliasTarget | null>(null);
@@ -626,6 +635,65 @@ export const TimelineView = memo(function TimelineView({
     mediaViewerReturnFocusRef.current = null;
     window.setTimeout(() => returnFocusTarget?.focus(), 0);
   }, []);
+  const quotedMediaViewerItem = useCallback(
+    (quote: ReplyQuote, state: TimelineMediaDownloadState): TimelineMediaViewerItem | null => {
+      if (state.kind !== "ready") {
+        return null;
+      }
+      return {
+        sourceUrl: mediaSourceUrl(state.source_ref, state.mime_type),
+        downloadSourceRef: state.source_ref,
+        filename: quote.body_preview ?? replyQuoteMediaLabel(quote.media) ?? "image",
+        size: null,
+        mimeType: state.mime_type,
+        width: state.width,
+        height: state.height,
+        encrypted: false,
+        actions: {
+          canForward: false,
+          forwardDestinations: [],
+          onForward: () => undefined,
+          canViewSource: false,
+          onViewSource: () => undefined,
+          canRedact: false,
+          onRedact: () => undefined
+        },
+        saveName: null,
+        saveMediaFile: transport.saveMediaFile
+      };
+    },
+    [transport.saveMediaFile]
+  );
+  const openQuotedMedia = useCallback(
+    (quote: ReplyQuote) => {
+      const item = quotedMediaViewerItem(
+        quote,
+        mediaDownloads[quote.event_id] ?? { kind: "notRequested" }
+      );
+      if (item) {
+        openMediaViewer(item);
+        return;
+      }
+      setPendingQuotedMediaViewer(quote);
+      void transport.downloadMedia(roomId, quote.event_id, timelineKey).catch(() => {
+        setPendingQuotedMediaViewer(null);
+      });
+    },
+    [mediaDownloads, openMediaViewer, quotedMediaViewerItem, roomId, timelineKey, transport]
+  );
+  useEffect(() => {
+    if (!pendingQuotedMediaViewer) {
+      return;
+    }
+    const item = quotedMediaViewerItem(
+      pendingQuotedMediaViewer,
+      mediaDownloads[pendingQuotedMediaViewer.event_id] ?? { kind: "notRequested" }
+    );
+    if (item) {
+      setPendingQuotedMediaViewer(null);
+      openMediaViewer(item);
+    }
+  }, [mediaDownloads, openMediaViewer, pendingQuotedMediaViewer, quotedMediaViewerItem]);
   /** True while the live-room scroll anchor is being restored. */
   const roomScrollAnchorRestorePendingRef = useRef(false);
   /**
@@ -699,6 +767,8 @@ export const TimelineView = memo(function TimelineView({
   const autoReturnToLiveKeyRef = useRef<string | null>(null);
   const downloadedEventIdsRef = useRef<Set<string>>(new Set());
   const requestedImagePreviewEventIdsRef = useRef<Set<string>>(new Set());
+  const requestedReplyQuoteThumbnailIdsRef = useRef<Set<string>>(new Set());
+  const seenReplyQuoteThumbnailIdsRef = useRef<Set<string>>(new Set());
   const initialItemsSeenForTimelineKeyRef = useRef<string | null>(null);
   const lastDiagnosticsEmissionRef = useRef<{
     callback: (diagnostics: TimelineDiagnostics) => void;
@@ -1820,6 +1890,8 @@ export const TimelineView = memo(function TimelineView({
     lastViewportObservationRef.current = null;
     downloadedEventIdsRef.current = new Set();
     requestedImagePreviewEventIdsRef.current = new Set();
+    requestedReplyQuoteThumbnailIdsRef.current = new Set();
+    seenReplyQuoteThumbnailIdsRef.current = new Set();
     initialItemsSeenForTimelineKeyRef.current = null;
     lastDiagnosticsEmissionRef.current = null;
     initialLiveEdgeScrollAppliedRef.current = null;
@@ -2254,6 +2326,40 @@ export const TimelineView = memo(function TimelineView({
       });
     }
   }, [mediaDownloads, roomId, sideEffectItems, transport]);
+  useEffect(() => {
+    // Quote thumbnails are demand-driven from the measured viewport, not the
+    // larger render window.
+    for (const row of visibleRows) {
+      const quote = row.item.reply_quote;
+      if (!quote || !replyQuoteHasThumbnail(quote)) {
+        continue;
+      }
+      const quotedEventId = quote.event_id;
+      const thumbnailState = replyQuoteThumbnails[quotedEventId];
+      if (
+        thumbnailState?.kind === "ready" ||
+        thumbnailState?.kind === "pending" ||
+        thumbnailState?.kind === "failed"
+      ) {
+        seenReplyQuoteThumbnailIdsRef.current.add(quotedEventId);
+        continue;
+      }
+      // Rust clears the key when the source is invalidated (for example an
+      // edited image). Release the latch so the new source is requested.
+      if (seenReplyQuoteThumbnailIdsRef.current.delete(quotedEventId)) {
+        requestedReplyQuoteThumbnailIdsRef.current.delete(quotedEventId);
+      }
+      if (requestedReplyQuoteThumbnailIdsRef.current.has(quotedEventId)) {
+        continue;
+      }
+      requestedReplyQuoteThumbnailIdsRef.current.add(quotedEventId);
+      void transport
+        .requestReplyQuoteThumbnail?.(roomId, quotedEventId, timelineKey)
+        .catch(() => {
+          requestedReplyQuoteThumbnailIdsRef.current.delete(quotedEventId);
+        });
+    }
+  }, [replyQuoteThumbnails, roomId, timelineKey, transport, visibleRows]);
   const roomSignals = liveSignals?.rooms[roomId] ?? null;
   // Issue #1255: each timeline reads receipts from its own scope. The timeline
   // key is authoritative, so a focused permalink on a thread reply reads its
@@ -3963,6 +4069,10 @@ export const TimelineView = memo(function TimelineView({
                 onMentionQueryChange={onMentionQueryChange}
                 showThreadSummary={presentationContext !== "thread"}
                 mediaDownload={contentEventId ? mediaDownloads[contentEventId] : undefined}
+                replyQuoteThumbnail={
+                  item.reply_quote ? replyQuoteThumbnails[item.reply_quote.event_id] : undefined
+                }
+                onOpenQuotedMedia={openQuotedMedia}
                 receipts={
                   contentEventId
                     ? scopedReceiptsByEvent?.[contentEventId]?.readers ?? []

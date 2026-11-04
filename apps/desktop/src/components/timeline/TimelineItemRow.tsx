@@ -50,6 +50,7 @@ import type {
   MediaTransferProgress,
   ReceiptSourceRef,
   ReactionSender,
+  ReplyQuote,
   TimelineItem
 } from "../../domain/coreEvents";
 import { timelineItemDomId } from "../../domain/coreEvents";
@@ -57,6 +58,10 @@ import {
   openExternalHttpUrl,
   renderableThumbnailSourceUrl
 } from "../../backend/linkMediaRuntime";
+import {
+  ReplyQuoteThumbnail,
+  replyQuoteBody
+} from "./ReplyQuoteThumbnail";
 import { resolvedAvatar } from "../../domain/avatarThumbnails";
 import { toExternalHttpUrl } from "../../domain/externalLinks";
 import type { TimelineForwardDestination } from "../../domain/projectionTypes";
@@ -348,6 +353,7 @@ export function TimelineItemRow({
   canWrite = true,
   onOpenMatrixTarget,
   onOpenReplyQuote,
+  onOpenQuotedMedia,
   onOpenSenderProfile,
   onStartDirectMessage,
   senderHasUnconfirmedDevices = false,
@@ -370,6 +376,7 @@ export function TimelineItemRow({
   ignoredUserIds = [],
   onOpenContextMenu,
   mediaDownload,
+  replyQuoteThumbnail,
   keyRequestPending = false
 }: {
   item: TimelineItem;
@@ -432,6 +439,7 @@ export function TimelineItemRow({
   canWrite?: boolean;
   onOpenMatrixTarget?: TimelineRowActionHandlers["onOpenMatrixTarget"];
   onOpenReplyQuote?: TimelineRowActionHandlers["onOpenReplyQuote"];
+  onOpenQuotedMedia?: (quote: ReplyQuote) => void;
   onOpenSenderProfile?: TimelineRowActionHandlers["onOpenSenderProfile"];
   onStartDirectMessage?: (userId: string, displayLabel: string) => void;
   /** #1494: Rust lists this row's sender in `sender_device_advisories`. */
@@ -461,6 +469,7 @@ export function TimelineItemRow({
    * row's own inline-edit action. */
   onOpenContextMenu?: OpenContextMenu;
   mediaDownload?: TimelineMediaDownloadState;
+  replyQuoteThumbnail?: TimelineMediaDownloadState;
 }) {
 
   useCalendarPresentation();
@@ -877,7 +886,7 @@ export function TimelineItemRow({
   };
   const replyQuoteContent = replyQuote ? (
     <div
-      className={`reply-quote${replyQuoteOpenable ? " is-openable" : ""}`}
+      className={`reply-quote${replyQuoteOpenable ? " is-openable" : ""}${replyQuote.media && replyQuote.state === "ready" ? " has-thumbnail" : ""}`}
       data-reply-state={replyQuote.state}
       onClick={
         replyQuoteOpenable
@@ -898,6 +907,7 @@ export function TimelineItemRow({
           : undefined
       }
     >
+      <div className="reply-quote-copy">
       {replyQuoteShowsSender(replyQuote) ? (
         replyQuoteOpenable ? (
           <a
@@ -966,6 +976,12 @@ export function TimelineItemRow({
             )
           : replyQuoteBody(replyQuote)}
       </div>
+      </div>
+      <ReplyQuoteThumbnail
+        quote={replyQuote}
+        state={replyQuoteThumbnail}
+        onOpen={onOpenQuotedMedia}
+      />
     </div>
   ) : null;
   const bodyContent = isRedacted ? (
@@ -1810,28 +1826,6 @@ function thumbnailSourceUrl(thumbnail: AvatarThumbnailState | null | undefined):
 // An unresolved original has no sender yet; avoid presenting it as an unknown user.
 function replyQuoteShowsSender(quote: NonNullable<TimelineItem["reply_quote"]>): boolean {
   return Boolean(quote.sender_label) || (quote.state !== "loading" && quote.state !== "failed");
-}
-
-function replyQuoteBody(quote: NonNullable<TimelineItem["reply_quote"]>): string {
-  if (quote.body_preview) {
-    return quote.body_preview;
-  }
-  if (quote.state === "loading") {
-    return t("timeline.replyQuoteLoading");
-  }
-  if (quote.state === "failed") {
-    return t("timeline.replyQuoteFailed");
-  }
-  if (quote.state === "redacted") {
-    return t("timeline.redactedMessage");
-  }
-  if (quote.state === "missing") {
-    return t("timeline.replyQuoteMissing");
-  }
-  if (quote.state === "unsupported") {
-    return t("timeline.replyQuoteUnsupported");
-  }
-  return t("timeline.replyQuoteUnavailable");
 }
 
 function localizedTimelineItemBody(item: TimelineItem): string {

@@ -27,6 +27,9 @@ fn media_entry() -> super::PrivateMediaEntry {
         size: 0,
         width: None,
         height: None,
+        thumbnail_mimetype: None,
+        thumbnail_width: None,
+        thumbnail_height: None,
     }
 }
 
@@ -338,4 +341,302 @@ async fn a_thumbnail_download_and_a_file_download_of_one_event_stay_separate() {
             "thumbnail_first={thumbnail_first}: the thumbnail entry must hold the thumbnail"
         );
     }
+}
+
+fn quote_media_entry(mxc: &str) -> super::PrivateMediaEntry {
+    super::PrivateMediaEntry {
+        source: matrix_sdk::ruma::events::room::MediaSource::Plain(
+            matrix_sdk::ruma::OwnedMxcUri::from(mxc),
+        ),
+        thumbnail_source: None,
+        mimetype: Some("image/png".to_owned()),
+        size: 42,
+        width: Some(640),
+        height: Some(480),
+        thumbnail_mimetype: None,
+        thumbnail_width: None,
+        thumbnail_height: None,
+    }
+}
+
+#[tokio::test]
+async fn one_reply_quote_thumbnail_fetch_is_shared_by_every_reply_to_the_picture() {
+    let mut tasks = std::collections::HashMap::new();
+    let picture = "$picture:example.invalid";
+
+    assert!(!super::reply_quote_thumbnail_fetch_is_pending(
+        &tasks, picture
+    ));
+    // The first reply starts the fetch; the second reply to the same picture
+    // sees the worker in the task map and coalesces into it.
+    tasks.insert(picture.to_owned(), super::executor::spawn(async {}));
+    assert!(super::reply_quote_thumbnail_fetch_is_pending(
+        &tasks, picture
+    ));
+
+    tasks.remove(picture);
+    assert!(!super::reply_quote_thumbnail_fetch_is_pending(
+        &tasks, picture
+    ));
+}
+
+#[test]
+fn a_resident_or_off_window_original_resolves_to_its_private_source() {
+    use koushi_state::{ReplyQuote, ReplyQuoteState};
+
+    let resident = "$resident:example.invalid";
+    let off_window = "$off-window:example.invalid";
+    let mut media_sources = std::collections::HashMap::new();
+    media_sources.insert(
+        resident.to_owned(),
+        quote_media_entry("mxc://test/resident"),
+    );
+
+    let mut hydration = super::super::reply_quote_hydration::ReplyQuoteHydration::default();
+    let quote = ReplyQuote {
+        event_id: off_window.to_owned(),
+        sender: Some("@alice:example.invalid".to_owned()),
+        sender_label: None,
+        body_preview: None,
+        formatted: None,
+        mentioned_user_ids: Vec::new(),
+        media: Some(koushi_state::ReplyQuoteMedia {
+            kind: koushi_state::ReplyQuoteMediaKind::Image,
+            animated: false,
+            width: Some(640),
+            height: Some(480),
+            has_thumbnail_source: false,
+        }),
+        permalink: None,
+        can_open: false,
+        state: ReplyQuoteState::Ready,
+    };
+    hydration.learn_with_media(quote, Some(quote_media_entry("mxc://test/off-window")));
+
+    for (event_id, expected) in [
+        (resident, "mxc://test/resident"),
+        (off_window, "mxc://test/off-window"),
+    ] {
+        let entry = super::reply_quote_media_source(&media_sources, &hydration, event_id)
+            .expect("private source");
+        let matrix_sdk::ruma::events::room::MediaSource::Plain(uri) = entry.source else {
+            panic!("expected a plain media source");
+        };
+        assert_eq!(uri.as_str(), expected);
+    }
+    assert!(
+        super::reply_quote_media_source(&media_sources, &hydration, "$missing:example.invalid")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn an_already_cached_full_file_answers_the_quote_thumbnail_without_a_fetch() {
+    use koushi_protocol::command::MediaDownloadSelection;
+
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let entry = quote_media_entry("mxc://test/cached");
+    let room_id = "!room:example.invalid";
+    let event_id = "$cached:example.invalid";
+    let room_hash = super::sanitize_matrix_id_for_path(room_id);
+    let event_hash = super::sanitize_matrix_id_for_path(event_id);
+    let (source_ref, path) = super::managed_media_download_entry(
+        data_dir.path(),
+        &room_hash,
+        &event_hash,
+        &MediaDownloadSelection::File,
+    )
+    .expect("cache entry");
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("cache dir");
+    std::fs::write(&path, b"binaryjpegfullimagedata").expect("cache file");
+
+    let ready =
+        super::reply_quote_thumbnail_from_cached_file(&entry, data_dir.path(), room_id, event_id)
+            .await
+            .expect("cached full file");
+
+    assert_eq!(ready.source_ref, source_ref);
+    assert!(!ready.source_ref.contains("96x96"));
+    assert_eq!(ready.byte_count, b"binaryjpegfullimagedata".len() as u64);
+    assert_eq!(ready.width, Some(640));
+    assert_eq!(ready.height, Some(480));
+}
+
+#[tokio::test]
+async fn a_reply_quote_thumbnail_downloads_at_96_by_96() {
+    use koushi_protocol::command::MediaDownloadSelection;
+    use matrix_sdk::ruma::api::client::media::get_content_thumbnail::v3::Method;
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    server
+        .mock_authed_media_thumbnail(Method::Scale, 96, 96, false)
+        .ok()
+        .mount()
+        .await;
+    let session = std::sync::Arc::new(koushi_sdk::MatrixClientSession::from_client_for_testing(
+        client.clone(),
+        koushi_state::SessionInfo {
+            homeserver: server.server().uri(),
+            user_id: client.user_id().expect("user id").to_string(),
+            device_id: client.device_id().expect("device id").to_string(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        },
+    ));
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let selection = MediaDownloadSelection::Thumbnail {
+        width: 96,
+        height: 96,
+    };
+
+    let ready = download_cached(&session, data_dir.path(), &selection).await;
+
+    assert_eq!(
+        ready.source_ref,
+        super::media_download_thumbnail_ref(
+            &super::sanitize_matrix_id_for_path("!room:example.invalid"),
+            &super::sanitize_matrix_id_for_path("$media:example.invalid"),
+            96,
+            96,
+        )
+        .expect("thumbnail ref")
+    );
+    assert_eq!(
+        std::fs::read(&ready.path).expect("thumbnail bytes"),
+        b"binaryjpegthumbnaildata"
+    );
+}
+
+#[test]
+fn an_encrypted_thumbnail_request_keeps_the_encrypted_source_for_the_decrypt_path() {
+    use koushi_protocol::command::MediaDownloadSelection;
+    use matrix_sdk::ruma::events::room::{EncryptedFile, MediaSource};
+
+    let file: EncryptedFile = serde_json::from_value(serde_json::json!({
+        "url": "mxc://test/encrypted",
+        "key": {
+            "kty": "oct",
+            "key_ops": ["encrypt", "decrypt"],
+            "alg": "A256CTR",
+            "k": "b50ACIv6LMn9AfMCFD1POJI_UAFWIclxAN1kWrEO2X8",
+            "ext": true
+        },
+        "iv": "AK1wyzigZtQAAAABAAAAKK",
+        "hashes": { "sha256": "/NogKqW5bz/m8xHgFiH5haFGjCNVmUIPLzfvOhHdrxY" },
+        "v": "v2"
+    }))
+    .expect("encrypted file");
+    let entry = super::PrivateMediaEntry {
+        source: MediaSource::Encrypted(Box::new(file)),
+        thumbnail_source: None,
+        mimetype: Some("image/png".to_owned()),
+        size: 42,
+        width: None,
+        height: None,
+        thumbnail_mimetype: None,
+        thumbnail_width: None,
+        thumbnail_height: None,
+    };
+    let request = super::media_request_for_download(
+        &entry,
+        &MediaDownloadSelection::Thumbnail {
+            width: 96,
+            height: 96,
+        },
+    )
+    .expect("supported request");
+
+    assert!(matches!(request.source, MediaSource::Encrypted(_)));
+    assert!(matches!(
+        request.format,
+        matrix_sdk::media::MediaFormat::Thumbnail(_)
+    ));
+}
+
+#[test]
+fn a_thumbnail_selection_reports_the_thumbnail_metadata_not_the_video_file_metadata() {
+    use koushi_protocol::command::MediaDownloadSelection;
+
+    let mut entry = quote_media_entry("mxc://test/video");
+    entry.mimetype = Some("video/mp4".to_owned());
+    entry.width = Some(1280);
+    entry.height = Some(720);
+    entry.thumbnail_source = Some(matrix_sdk::ruma::events::room::MediaSource::Plain(
+        matrix_sdk::ruma::OwnedMxcUri::from("mxc://test/thumb"),
+    ));
+    entry.thumbnail_mimetype = Some("image/jpeg".to_owned());
+    entry.thumbnail_width = Some(320);
+    entry.thumbnail_height = Some(180);
+
+    assert_eq!(
+        super::media_download_selection_metadata(
+            &entry,
+            &MediaDownloadSelection::Thumbnail {
+                width: 96,
+                height: 96,
+            },
+        ),
+        (Some("image/jpeg".to_owned()), Some(320), Some(180))
+    );
+    assert_eq!(
+        super::media_download_selection_metadata(&entry, &MediaDownloadSelection::File),
+        (Some("video/mp4".to_owned()), Some(1280), Some(720))
+    );
+}
+
+#[tokio::test]
+async fn a_cached_video_original_is_not_reused_as_a_quote_thumbnail() {
+    use koushi_protocol::command::MediaDownloadSelection;
+
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let mut entry = quote_media_entry("mxc://test/video-cached");
+    entry.mimetype = Some("video/mp4".to_owned());
+    let room_id = "!room:example.invalid";
+    let event_id = "$video-cached:example.invalid";
+    let room_hash = super::sanitize_matrix_id_for_path(room_id);
+    let event_hash = super::sanitize_matrix_id_for_path(event_id);
+    let (_, path) = super::managed_media_download_entry(
+        data_dir.path(),
+        &room_hash,
+        &event_hash,
+        &MediaDownloadSelection::File,
+    )
+    .expect("cache entry");
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("cache dir");
+    std::fs::write(&path, b"mp4bytes").expect("cache file");
+
+    assert!(
+        super::reply_quote_thumbnail_from_cached_file(&entry, data_dir.path(), room_id, event_id,)
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_cached_animated_image_is_not_reused_as_a_static_quote_thumbnail() {
+    use koushi_protocol::command::MediaDownloadSelection;
+
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let mut entry = quote_media_entry("mxc://test/animated-cached");
+    entry.mimetype = Some("image/gif".to_owned());
+    let room_id = "!room:example.invalid";
+    let event_id = "$animated-cached:example.invalid";
+    let room_hash = super::sanitize_matrix_id_for_path(room_id);
+    let event_hash = super::sanitize_matrix_id_for_path(event_id);
+    let (_, path) = super::managed_media_download_entry(
+        data_dir.path(),
+        &room_hash,
+        &event_hash,
+        &MediaDownloadSelection::File,
+    )
+    .expect("cache entry");
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("cache dir");
+    std::fs::write(&path, b"GIF89a").expect("cache file");
+
+    assert!(
+        super::reply_quote_thumbnail_from_cached_file(&entry, data_dir.path(), room_id, event_id,)
+            .await
+            .is_none()
+    );
 }

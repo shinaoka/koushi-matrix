@@ -3090,6 +3090,26 @@ settles.
   retains the changed-original refresh set until it runs, so that set can hold
   one entry per changed original for the duration of a restore; the ledger's
   256-entry cap does not bound it.
+- **Quoted media (#1769).** `ReplyQuote.media` is public metadata only: the
+  media kind, an animated hint, width/height hints, and whether the event names
+  an explicit thumbnail source. It carries no MXC URI, encryption key, or cache
+  ref, and React renders its kind label and thumbnail slot from this DTO. Each
+  settled ledger entry also keeps the original's actor-private
+  `PrivateMediaEntry`; learning a `Ready` original stores it, an edit that
+  swaps the media replaces it, a redaction clears it, and eviction releases it.
+  A resident original continues to use `media_sources`, while `DownloadMedia`
+  for an off-window quoted original resolves through the ledger before it
+  reports `missing_media_source`. `TimelinePaneState.reply_quote_thumbnails` is
+  keyed by the quoted event id so several replies share one fetch state.
+  `TimelineCommand::RequestReplyQuoteThumbnail` coalesces while a fetch for that
+  quoted event is in flight, reuses an already-cached image `File` entry, and
+  otherwise downloads `Thumbnail { 96, 96 }` through the same
+  `download_media_for` path (decryption, timeout, managed cache, and the
+  selection-keyed ref grammar above). React requests it for visible rows only,
+  renders the 40 px slot from `ReplyQuote.media` plus the thumbnail state, and
+  opens the full file in the existing media viewer; the composer reply strip uses
+  the same quote projection and a 32 px slot. Text, redacted, loading, failed,
+  missing, and unsupported quotes render no slot.
 
 `AppState.room_interactions[room_id]` carries the room's pinned-event
 projection plus the current pin/unpin operation state:

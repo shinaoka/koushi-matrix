@@ -70,6 +70,7 @@ fn account_switch_request_enters_switching_state_and_clears_views() {
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
             media_downloads: Default::default(),
+            reply_quote_thumbnails: Default::default(),
             continuity: Default::default(),
         },
         thread: ThreadPaneState::Open {
@@ -207,6 +208,7 @@ fn logout_clears_session_views_and_notifies_ui() {
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
             media_downloads: Default::default(),
+            reply_quote_thumbnails: Default::default(),
             continuity: Default::default(),
         },
         thread: ThreadPaneState::Open {

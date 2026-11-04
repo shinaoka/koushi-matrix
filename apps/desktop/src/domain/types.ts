@@ -1996,9 +1996,20 @@ export interface ReplyQuote {
   sender_label?: string | null;
   body_preview: string | null;
   formatted?: ReplyQuoteFormattedBody | null;
+  media?: ReplyQuoteMedia | null;
   permalink?: string | null;
   can_open?: boolean;
   state: ReplyQuoteState;
+}
+
+export type ReplyQuoteMediaKind = "image" | "sticker" | "video" | "file" | "audio";
+
+export interface ReplyQuoteMedia {
+  kind: ReplyQuoteMediaKind;
+  animated?: boolean;
+  width?: number | null;
+  height?: number | null;
+  has_thumbnail_source?: boolean;
 }
 
 export interface ReplyQuoteCodeBlock {
@@ -2458,6 +2469,7 @@ export interface TimelinePaneState {
   staged_uploads: StagedUploadItem[];
   media_gallery: TimelineMediaGalleryItem[];
   media_downloads: Record<string, TimelineMediaDownloadState>;
+  reply_quote_thumbnails: Record<string, TimelineMediaDownloadState>;
   continuity: TimelineContinuityState;
 }
 

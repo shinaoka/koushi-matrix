@@ -108,6 +108,7 @@ fn tauri_command_routes_blank_message_bodies_return_no_command() {
             AccountKey("@alice:example.org".to_owned()),
             "!room:example.org".to_owned(),
             "\n\t ".to_owned(),
+            None,
         )
         .is_none()
     );

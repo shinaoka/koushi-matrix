@@ -2158,6 +2158,19 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
             );
             m
         },
+        reply_quote_thumbnails: {
+            let mut m = BTreeMap::new();
+            m.insert(
+                "$quoted-picture:example.invalid".to_owned(),
+                TimelineMediaDownloadState::Ready {
+                    source_ref: "download/1234567890123456/6543210987654321/96x96".to_owned(),
+                    width: Some(96),
+                    height: Some(96),
+                    mime_type: Some("image/jpeg".to_owned()),
+                },
+            );
+            m
+        },
         continuity: koushi_state::TimelineContinuityState::FailedIncomplete {
             generation: 7,
             gap_count: 2,

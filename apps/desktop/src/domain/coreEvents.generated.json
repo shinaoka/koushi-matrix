@@ -2088,6 +2088,13 @@
                 "html": "<p>quoted <strong>preview</strong></p><pre><code class=\"language-rust\">fn main() {}</code></pre>",
                 "plain_text": "quoted previewfn main() {}"
               },
+              "media": {
+                "animated": false,
+                "has_thumbnail_source": false,
+                "height": 480,
+                "kind": "image",
+                "width": 640
+              },
               "mentioned_user_ids": [
                 "@quoted:example.test"
               ],

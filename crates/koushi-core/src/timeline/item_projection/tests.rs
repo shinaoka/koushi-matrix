@@ -7,7 +7,9 @@ use koushi_state::{
 
 use matrix_sdk::room::edit::EditedContent;
 
-use matrix_sdk::ruma::events::room::message::{MessageType, TextMessageEventContent};
+use matrix_sdk::ruma::events::room::message::{
+    ImageMessageEventContent, MessageType, TextMessageEventContent,
+};
 
 use matrix_sdk::ruma::events::{
     Mentions, StateEventContentChange, room::name::RoomNameEventContent,
@@ -42,9 +44,9 @@ fn live_receipt_summary_compacts_large_reader_input_with_exact_total() {
     assert_eq!(summaries[0].total_count, 1_500);
 }
 use koushi_protocol::event::{
-    LinkPreview, LinkPreviewState, TimelineFormattedBody, TimelineItemId, TimelineMessageKind,
-    TimelineNoticeI18n, TimelineNoticeI18nKey, TimelineSendFailureReason, TimelineSendState,
-    TimelineSpoilerSpan,
+    LinkPreview, LinkPreviewState, TimelineFormattedBody, TimelineItemId, TimelineMediaKind,
+    TimelineMessageKind, TimelineNoticeI18n, TimelineNoticeI18nKey, TimelineSendFailureReason,
+    TimelineSendState, TimelineSpoilerSpan,
 };
 
 use koushi_protocol::failure::TimelineFailureKind;
@@ -66,11 +68,12 @@ use super::{
     mention_marked_message_preview, mentioned_user_ids_from_event_json,
     mentions_room_from_event_json, message_edit_target_token, message_projection_from_msgtype,
     msgtype_carries_editable_caption, project_local_megolm_rotation_reason,
-    reaction_groups_from_sdk, reply_quote_from_message_projection,
-    reset_loading_link_previews_to_pending, room_name_notice_projection, state_event_notice_body,
-    state_event_notice_projection, timeline_item_can_edit, timeline_item_can_react,
-    timeline_item_can_redact, timeline_item_should_be_hidden, validate_cancel_send,
-    validate_redact_reaction, validate_retry_send, validate_send_reaction,
+    raw_event_reply_quote_media, reaction_groups_from_sdk, reply_quote_from_message_projection,
+    reply_quote_from_timeline_item, reset_loading_link_previews_to_pending,
+    room_name_notice_projection, state_event_notice_body, state_event_notice_projection,
+    timeline_item_can_edit, timeline_item_can_react, timeline_item_can_redact,
+    timeline_item_should_be_hidden, validate_cancel_send, validate_redact_reaction,
+    validate_retry_send, validate_send_reaction,
 };
 
 use super::super::test_support::{fake_rid, room_key, timeline_item};
@@ -834,15 +837,22 @@ fn reply_quote_carries_the_rust_owned_permalink_and_openability() {
 }
 
 #[test]
-fn captionless_media_projections_can_reply_and_keep_filename_reply_quotes() {
+fn captionless_media_projections_can_reply_and_carry_a_media_descriptor() {
+    use koushi_state::ReplyQuoteMediaKind;
+
     for msgtype in media_msgtype_fixtures() {
         let projection = message_projection_from_msgtype(&msgtype, "ignored fallback body");
-        let filename = projection
+        let media = projection
             .media
             .as_ref()
-            .expect("media fixture projects media")
-            .filename
-            .clone();
+            .expect("media fixture projects media");
+        let filename = media.filename.clone();
+        let expected_kind = match media.kind {
+            TimelineMediaKind::Audio => ReplyQuoteMediaKind::Audio,
+            TimelineMediaKind::File => ReplyQuoteMediaKind::File,
+            TimelineMediaKind::Image => ReplyQuoteMediaKind::Image,
+            TimelineMediaKind::Video => ReplyQuoteMediaKind::Video,
+        };
 
         assert!(
             projection.body.is_none(),
@@ -868,8 +878,150 @@ fn captionless_media_projections_can_reply_and_keep_filename_reply_quotes() {
             Some(projection),
             Vec::new(),
         );
-        assert_eq!(quote.body_preview.as_deref(), Some(filename.as_str()));
+        assert_eq!(quote.state, ReplyQuoteState::Ready);
+        let quote_media = quote.media.expect("media descriptor");
+        assert_eq!(quote_media.kind, expected_kind);
+        match expected_kind {
+            ReplyQuoteMediaKind::Image | ReplyQuoteMediaKind::Video => {
+                assert_eq!(
+                    quote.body_preview, None,
+                    "a captionless image or video renders the kind label, not the filename"
+                );
+            }
+            ReplyQuoteMediaKind::File | ReplyQuoteMediaKind::Audio => {
+                assert_eq!(quote.body_preview.as_deref(), Some(filename.as_str()));
+            }
+            ReplyQuoteMediaKind::Sticker => unreachable!("no sticker fixture here"),
+        }
     }
+}
+
+#[test]
+fn reply_quote_media_keeps_the_caption_and_the_image_hints() {
+    use koushi_state::ReplyQuoteMediaKind;
+
+    let msgtype = MessageType::Image(
+        ImageMessageEventContent::new(
+            "the plot goes to zero".to_owned(),
+            matrix_sdk::ruma::events::room::MediaSource::Plain(matrix_sdk::ruma::owned_mxc_uri!(
+                "mxc://fixture.invalid/captioned"
+            )),
+        )
+        .info(Box::new(
+            serde_json::from_value(serde_json::json!({
+                "w": 640,
+                "h": 480,
+                "mimetype": "image/gif"
+            }))
+            .expect("image info"),
+        )),
+    );
+    let mut msgtype = msgtype;
+    if let MessageType::Image(image) = &mut msgtype {
+        image.filename = Some("plot.png".to_owned());
+    }
+
+    let projection = message_projection_from_msgtype(&msgtype, "ignored");
+    let quote = reply_quote_from_message_projection(
+        "!room:example.invalid",
+        "$captioned:test",
+        None,
+        Some(projection),
+        Vec::new(),
+    );
+
+    assert_eq!(quote.body_preview.as_deref(), Some("the plot goes to zero"));
+    let media = quote.media.expect("media descriptor");
+    assert_eq!(media.kind, ReplyQuoteMediaKind::Image);
+    assert_eq!(media.width, Some(640));
+    assert_eq!(media.height, Some(480));
+    assert!(media.animated);
+    assert!(!media.has_thumbnail_source);
+}
+
+#[test]
+fn reply_quote_video_reports_an_explicit_thumbnail_source() {
+    use koushi_state::ReplyQuoteMediaKind;
+
+    let msgtype: MessageType = serde_json::from_value(serde_json::json!({
+        "msgtype": "m.video",
+        "body": "clip.mp4",
+        "url": "mxc://fixture.invalid/video",
+        "info": {
+            "mimetype": "video/mp4",
+            "w": 1280,
+            "h": 720,
+            "thumbnail_url": "mxc://fixture.invalid/thumb",
+            "thumbnail_info": { "mimetype": "image/jpeg", "w": 320, "h": 180 }
+        }
+    }))
+    .expect("video message");
+    let projection = message_projection_from_msgtype(&msgtype, "ignored");
+    let quote = reply_quote_from_message_projection(
+        "!room:example.invalid",
+        "$video:test",
+        None,
+        Some(projection),
+        Vec::new(),
+    );
+
+    assert_eq!(quote.body_preview, None);
+    let media = quote.media.expect("media descriptor");
+    assert_eq!(media.kind, ReplyQuoteMediaKind::Video);
+    assert_eq!(media.width, Some(1280));
+    assert_eq!(media.height, Some(720));
+    assert!(media.has_thumbnail_source);
+}
+
+#[test]
+fn reply_quote_sticker_media_comes_from_the_raw_event() {
+    use koushi_state::ReplyQuoteMediaKind;
+
+    let raw = serde_json::json!({
+        "type": "m.sticker",
+        "content": {
+            "body": "party",
+            "url": "mxc://fixture.invalid/sticker",
+            "info": {
+                "mimetype": "image/png",
+                "w": 128,
+                "h": 128,
+                "thumbnail_url": "mxc://fixture.invalid/sticker-thumb",
+                "thumbnail_info": { "mimetype": "image/png", "w": 64, "h": 64 }
+            }
+        }
+    });
+    let (_, media) = raw_event_reply_quote_media(&raw).expect("sticker media");
+
+    assert_eq!(media.kind, ReplyQuoteMediaKind::Sticker);
+    assert_eq!(media.width, Some(128));
+    assert_eq!(media.height, Some(128));
+    assert!(media.has_thumbnail_source);
+    assert!(!media.animated);
+}
+
+#[test]
+fn reply_quote_text_and_redacted_originals_have_no_media_descriptor() {
+    let projection = message_projection_from_msgtype(
+        &MessageType::Text(TextMessageEventContent::plain("quoted body")),
+        "quoted body",
+    );
+    let text = reply_quote_from_message_projection(
+        "!room:example.invalid",
+        "$text:test",
+        None,
+        Some(projection),
+        Vec::new(),
+    );
+    assert!(text.media.is_none());
+
+    let mut redacted = timeline_item("$redacted:test", Some("gone"), "@alice:test", false);
+    redacted.is_redacted = true;
+    let quote =
+        reply_quote_from_timeline_item("!room:example.invalid", "$redacted:test", &redacted)
+            .expect("redacted quote");
+    assert_eq!(quote.state, ReplyQuoteState::Redacted);
+    assert!(quote.media.is_none());
 }
 
 #[test]

@@ -228,6 +228,7 @@ impl CoreCommand {
                 | TimelineCommand::CancelSend { request_id, .. }
                 | TimelineCommand::UploadAndSendMedia { request_id, .. }
                 | TimelineCommand::DownloadMedia { request_id, .. }
+                | TimelineCommand::RequestReplyQuoteThumbnail { request_id, .. }
                 | TimelineCommand::EditText { request_id, .. }
                 | TimelineCommand::Redact { request_id, .. }
                 | TimelineCommand::SendReaction { request_id, .. }

@@ -1723,6 +1723,21 @@ impl TimelineManagerActor {
                 ))
                 .await;
             }
+            TimelineCommand::RequestReplyQuoteThumbnail {
+                request_id,
+                key,
+                quoted_event_id,
+            } => {
+                Box::pin(self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::RequestReplyQuoteThumbnail {
+                        request_id,
+                        quoted_event_id,
+                    },
+                ))
+                .await;
+            }
             TimelineCommand::EditText {
                 request_id,
                 key,
@@ -2630,14 +2645,13 @@ impl TimelineManagerActor {
                 };
                 let root_event_id = matrix_sdk::ruma::EventId::parse(root_event_id)
                     .map_err(|_| TimelineFailureKind::Sdk)?;
-                if !self
-                    .await_driving_manager_workers(hydrate_initial_thread(
-                        &timeline,
-                        &client,
-                        &room_id,
-                        &root_event_id,
-                    ))
-                    .await?
+                if !Box::pin(self.await_driving_manager_workers(hydrate_initial_thread(
+                    &timeline,
+                    &client,
+                    &room_id,
+                    &root_event_id,
+                )))
+                .await?
                 {
                     return Err(TimelineFailureKind::Sdk);
                 }

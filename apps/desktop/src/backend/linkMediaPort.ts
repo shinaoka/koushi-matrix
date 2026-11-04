@@ -8,7 +8,8 @@ export type MediaSaveNameFacts = {
   timestampMs: number | null;
 };
 
-const DOWNLOAD_SOURCE_REF = /^download\/(\d{1,16})\/(\d{1,16})$/;
+const DOWNLOAD_SOURCE_REF =
+  /^download\/(\d{1,16})\/(\d{1,16})(?:\/(\d{1,16}x\d{1,16}))?$/;
 
 /** The protocol maps a fixed token to a response Content-Type, never a path. */
 const MEDIA_DOWNLOAD_MIME_TOKENS: Readonly<Record<string, string>> = {
@@ -17,7 +18,9 @@ const MEDIA_DOWNLOAD_MIME_TOKENS: Readonly<Record<string, string>> = {
   "image/jpg": "jpg",
   "image/gif": "gif",
   "image/webp": "webp",
-  "image/avif": "avif"
+  "image/avif": "avif",
+  "video/mp4": "mp4",
+  "video/webm": "webm"
 };
 
 /**
@@ -41,7 +44,8 @@ export function renderableMediaDownloadSourceUrl(
   if (!token) {
     return null;
   }
-  return `${protocolBase}download/${token}/${match[1]}/${match[2]}`;
+  const size = match[3] ? `/${match[3]}` : "";
+  return `${protocolBase}download/${token}/${match[1]}/${match[2]}${size}`;
 }
 
 export interface LinkMediaPort {

@@ -607,6 +607,45 @@ pub(crate) fn handle_media_download_updated(
     vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
 }
 
+pub(crate) fn handle_reply_quote_thumbnail_updated(
+    state: &mut AppState,
+    room_id: String,
+    quoted_event_id: String,
+    download_state: crate::state::TimelineMediaDownloadState,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    if state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
+        return Vec::new();
+    }
+    let preserve_ready = matches!(
+        state.timeline.reply_quote_thumbnails.get(&quoted_event_id),
+        Some(crate::state::TimelineMediaDownloadState::Ready { .. })
+    ) && matches!(
+        download_state,
+        crate::state::TimelineMediaDownloadState::Failed { .. }
+    );
+    if preserve_ready {
+        return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
+    }
+    if matches!(
+        download_state,
+        crate::state::TimelineMediaDownloadState::NotRequested
+    ) {
+        state
+            .timeline
+            .reply_quote_thumbnails
+            .remove(&quoted_event_id);
+    } else {
+        state
+            .timeline
+            .reply_quote_thumbnails
+            .insert(quoted_event_id, download_state);
+    }
+    vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+}
+
 pub(crate) fn handle_composer_drafts_loaded(
     state: &mut AppState,
     drafts: crate::state::ComposerDraftStore,

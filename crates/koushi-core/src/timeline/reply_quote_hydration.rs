@@ -12,10 +12,11 @@ use std::time::Duration;
 
 use koushi_protocol::event::{TimelineDiff, TimelineItem};
 use koushi_protocol::ids::{TimelineBatchId, TimelineKind};
-use koushi_state::{OperationFailureKind, ReplyQuote, ReplyQuoteState};
+use koushi_state::{OperationFailureKind, ReplyQuote, ReplyQuoteMedia, ReplyQuoteState};
 
 use super::actor::{TimelineActor, TimelineActorMessage};
-use super::item_projection::{item_index_for_event_id, reply_quote_from_timeline_item};
+use super::item_projection::{item_index_for_event_id, reply_quote_from_timeline_item_with_media};
+use super::media::PrivateMediaEntry;
 use crate::executor;
 
 pub(super) const REPLY_QUOTE_LEDGER_MAX_ENTRIES: usize = 256;
@@ -33,10 +34,30 @@ const REPLY_QUOTE_UNDECRYPTABLE_RETRY_DELAYS: [Duration; 4] = [
     Duration::from_secs(300),
 ];
 
+/// An exact-event lookup that projected an original, with the private source
+/// and public descriptor the raw event carries (#1769).
+#[derive(Clone, Debug)]
+pub(super) struct LoadedOriginal {
+    pub(super) item: Box<TimelineItem>,
+    pub(super) media: Option<PrivateMediaEntry>,
+    pub(super) descriptor: Option<ReplyQuoteMedia>,
+}
+
+impl LoadedOriginal {
+    #[cfg(test)]
+    pub(super) fn from_item(item: Box<TimelineItem>) -> Box<Self> {
+        Box::new(Self {
+            item,
+            media: None,
+            descriptor: None,
+        })
+    }
+}
+
 /// Classified result of one exact-event lookup.
 #[derive(Clone, Debug)]
 pub(super) enum OriginalLookupOutcome {
-    Loaded(Box<TimelineItem>),
+    Loaded(Box<LoadedOriginal>),
     Failed(OperationFailureKind),
     TimedOut,
 }
@@ -83,6 +104,9 @@ pub(super) struct LearnOutcome {
     pub(super) updated: bool,
     /// An in-flight lookup or retry wait was superseded and must be aborted.
     pub(super) superseded_task: bool,
+    /// The event's private media source changed, so cached selections and any
+    /// published quote thumbnail are stale (#1769).
+    pub(super) media_changed: bool,
 }
 
 /// Originals whose authoritative content changed while overlaying one batch.
@@ -93,6 +117,9 @@ pub(super) struct ReplyQuoteRefreshes {
     pub(super) changed: HashSet<String>,
     /// Lookups a change superseded: their actor tasks must be aborted.
     pub(super) superseded: HashSet<String>,
+    /// Originals whose private media source changed: invalidate cached files
+    /// and any published quote thumbnail (#1769).
+    pub(super) media_changed: HashSet<String>,
 }
 
 pub(super) fn record_learn(
@@ -104,7 +131,10 @@ pub(super) fn record_learn(
         refreshes.changed.insert(event_id.clone());
     }
     if outcome.superseded_task {
-        refreshes.superseded.insert(event_id);
+        refreshes.superseded.insert(event_id.clone());
+    }
+    if outcome.media_changed {
+        refreshes.media_changed.insert(event_id);
     }
 }
 
@@ -114,14 +144,33 @@ fn learn_derived_originals(
     hydration: &mut ReplyQuoteHydration,
     refreshes: &mut ReplyQuoteRefreshes,
     originals: &HashMap<String, ReplyQuote>,
+    media_sources: &HashMap<String, Option<PrivateMediaEntry>>,
+    resident_sources: &HashMap<String, PrivateMediaEntry>,
 ) {
     for (target, quote) in originals {
-        let outcome = hydration.learn(quote.clone());
+        let outcome = hydration.learn_with_media(
+            quote.clone(),
+            media_source_for(target, media_sources, resident_sources),
+        );
         record_learn(refreshes, target.clone(), outcome);
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Resolve a private source for one event. A batch's map records absence too:
+/// an edit that removes media must clear the ledger entry instead of falling
+/// back to the stale resident source.
+fn media_source_for(
+    target: &str,
+    batch_sources: &HashMap<String, Option<PrivateMediaEntry>>,
+    resident_sources: &HashMap<String, PrivateMediaEntry>,
+) -> Option<PrivateMediaEntry> {
+    match batch_sources.get(target) {
+        Some(source) => source.clone(),
+        None => resident_sources.get(target).cloned(),
+    }
+}
+
+#[derive(Clone, Debug)]
 enum EntryState {
     InFlight {
         attempts: Attempts,
@@ -132,10 +181,13 @@ enum EntryState {
         token: HydrationToken,
     },
     /// Waiting for an in-flight slot.
-    Queued {
-        attempts: Attempts,
+    Queued { attempts: Attempts },
+    Settled {
+        quote: Box<ReplyQuote>,
+        /// #1769: the quoted original's private source, kept only beside a
+        /// settled quote and released by the ledger's existing eviction rules.
+        media: Option<Box<PrivateMediaEntry>>,
     },
-    Settled(Box<ReplyQuote>),
 }
 
 #[derive(Debug, Default)]
@@ -165,7 +217,17 @@ impl ReplyQuoteHydration {
     /// The settled quote for `original_event_id`, if the ledger has one.
     pub(super) fn settled_quote(&self, original_event_id: &str) -> Option<&ReplyQuote> {
         match self.entries.get(original_event_id)? {
-            EntryState::Settled(quote) => Some(quote.as_ref()),
+            EntryState::Settled { quote, .. } => Some(quote.as_ref()),
+            _ => None,
+        }
+    }
+
+    pub(super) fn settled_media_source(
+        &self,
+        original_event_id: &str,
+    ) -> Option<&PrivateMediaEntry> {
+        match self.entries.get(original_event_id)? {
+            EntryState::Settled { media, .. } => media.as_deref(),
             _ => None,
         }
     }
@@ -185,23 +247,50 @@ impl ReplyQuoteHydration {
     /// The observation supersedes any lookup or retry wait for the original;
     /// a changed settled value is reported as `updated`, so newer edits and
     /// redactions of an observed original reach every dependent quote.
+    #[cfg(test)]
     pub(super) fn learn(&mut self, quote: ReplyQuote) -> LearnOutcome {
+        self.learn_with_media(quote, None)
+    }
+
+    pub(super) fn learn_with_media(
+        &mut self,
+        quote: ReplyQuote,
+        media: Option<PrivateMediaEntry>,
+    ) -> LearnOutcome {
         if !matches!(
             quote.state,
             ReplyQuoteState::Ready | ReplyQuoteState::Redacted | ReplyQuoteState::Unsupported
         ) {
             return LearnOutcome::default();
         }
+        let media = (quote.state == ReplyQuoteState::Ready)
+            .then_some(media)
+            .flatten()
+            .map(Box::new);
         let event_id = quote.event_id.clone();
         match self.entries.get_mut(&event_id) {
-            Some(EntryState::Settled(existing)) => {
+            Some(EntryState::Settled {
+                quote: existing,
+                media: existing_media,
+            }) => {
+                let media_changed = match (existing_media.as_deref(), media.as_deref()) {
+                    (Some(previous), Some(next)) => !previous.has_same_source(next),
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                };
                 if **existing == quote {
-                    return LearnOutcome::default();
+                    *existing_media = media;
+                    return LearnOutcome {
+                        media_changed,
+                        ..LearnOutcome::default()
+                    };
                 }
                 **existing = quote;
+                *existing_media = media;
                 LearnOutcome {
                     updated: true,
                     superseded_task: false,
+                    media_changed,
                 }
             }
             Some(state) => {
@@ -209,17 +298,26 @@ impl ReplyQuoteHydration {
                     state,
                     EntryState::InFlight { .. } | EntryState::RetryWait { .. }
                 );
-                *state = EntryState::Settled(Box::new(quote));
+                *state = EntryState::Settled {
+                    quote: Box::new(quote),
+                    media,
+                };
                 LearnOutcome {
                     updated: false,
                     superseded_task,
+                    media_changed: false,
                 }
             }
             None => {
                 if self.make_room() {
                     self.order.push_back(event_id.clone());
-                    self.entries
-                        .insert(event_id, EntryState::Settled(Box::new(quote)));
+                    self.entries.insert(
+                        event_id,
+                        EntryState::Settled {
+                            quote: Box::new(quote),
+                            media,
+                        },
+                    );
                 }
                 LearnOutcome::default()
             }
@@ -255,6 +353,7 @@ impl ReplyQuoteHydration {
         token: HydrationToken,
         outcome: OriginalLookupOutcome,
     ) -> Vec<HydrationStep> {
+        let mut learned_media = None;
         let Some(EntryState::InFlight {
             attempts,
             token: current,
@@ -268,8 +367,14 @@ impl ReplyQuoteHydration {
         let mut attempts = attempts;
         let mut retry_kind = RetryKind::Transient;
         let settled = match outcome {
-            OriginalLookupOutcome::Loaded(item) => {
-                match reply_quote_from_timeline_item(self.room_id(), event_id, &item) {
+            OriginalLookupOutcome::Loaded(loaded) => {
+                learned_media = loaded.media.clone();
+                match reply_quote_from_timeline_item_with_media(
+                    self.room_id(),
+                    event_id,
+                    &loaded.item,
+                    loaded.descriptor,
+                ) {
                     Some(quote) => Some(quote),
                     None => {
                         attempts.undecryptable += 1;
@@ -300,8 +405,17 @@ impl ReplyQuoteHydration {
         let mut steps = Vec::new();
         match settled {
             Some(quote) => {
-                self.entries
-                    .insert(event_id.to_owned(), EntryState::Settled(Box::new(quote)));
+                let media = (quote.state == ReplyQuoteState::Ready)
+                    .then_some(learned_media)
+                    .flatten()
+                    .map(Box::new);
+                self.entries.insert(
+                    event_id.to_owned(),
+                    EntryState::Settled {
+                        quote: Box::new(quote),
+                        media,
+                    },
+                );
             }
             None => {
                 let delay = retry_delay(retry_kind, attempts);
@@ -397,7 +511,7 @@ impl ReplyQuoteHydration {
         }
         let Some(position) = self.order.iter().position(|event_id| {
             self.retained.as_deref() != Some(event_id.as_str())
-                && matches!(self.entries.get(event_id), Some(EntryState::Settled(_)))
+                && matches!(self.entries.get(event_id), Some(EntryState::Settled { .. }))
         }) else {
             return false;
         };
@@ -433,6 +547,7 @@ pub(super) fn placeholder_quote(event_id: &str, state: ReplyQuoteState) -> Reply
         body_preview: None,
         formatted: None,
         mentioned_user_ids: Vec::new(),
+        media: None,
         permalink: None,
         can_open: false,
         state,
@@ -503,6 +618,23 @@ pub(super) fn quote_targets<'a>(items: impl IntoIterator<Item = &'a TimelineItem
         .collect()
 }
 
+/// Resolve a quote descriptor for one event. A batch records absence too, so
+/// an edit that removes media clears its descriptor instead of reusing the
+/// settled one; an event outside the batch keeps the settled descriptor (a
+/// resident sticker has no public media in `TimelineItem`).
+fn quote_media_for(
+    event_id: &str,
+    batch_descriptors: &HashMap<String, Option<ReplyQuoteMedia>>,
+    hydration: &ReplyQuoteHydration,
+) -> Option<ReplyQuoteMedia> {
+    match batch_descriptors.get(event_id) {
+        Some(media) => *media,
+        None => hydration
+            .settled_quote(event_id)
+            .and_then(|quote| quote.media),
+    }
+}
+
 /// Learn every authoritative original the items project: a `Ready`/`Redacted`
 /// quote a rejoinder carries, and the original itself when a quote already
 /// tracks it, so an edit or redaction refreshes the stored content. A target
@@ -512,6 +644,9 @@ pub(super) fn learn_projected_originals<'a>(
     hydration: &mut ReplyQuoteHydration,
     items: impl IntoIterator<Item = &'a TimelineItem>,
     refreshes: &mut ReplyQuoteRefreshes,
+    batch_sources: &HashMap<String, Option<PrivateMediaEntry>>,
+    resident_sources: &HashMap<String, PrivateMediaEntry>,
+    batch_descriptors: &HashMap<String, Option<ReplyQuoteMedia>>,
 ) {
     for item in items {
         if let Some(quote) = item.reply_quote.as_ref()
@@ -520,7 +655,10 @@ pub(super) fn learn_projected_originals<'a>(
                 ReplyQuoteState::Ready | ReplyQuoteState::Redacted
             )
         {
-            let outcome = hydration.learn(quote.clone());
+            let outcome = hydration.learn_with_media(
+                quote.clone(),
+                media_source_for(&quote.event_id, batch_sources, resident_sources),
+            );
             record_learn(refreshes, quote.event_id.clone(), outcome);
         }
         let Some(event_id) = super::item_projection::timeline_item_event_id(item) else {
@@ -529,8 +667,16 @@ pub(super) fn learn_projected_originals<'a>(
         if !hydration.tracks(event_id) {
             continue;
         }
-        if let Some(quote) = reply_quote_from_timeline_item(hydration.room_id(), event_id, item) {
-            let outcome = hydration.learn(quote);
+        if let Some(quote) = reply_quote_from_timeline_item_with_media(
+            hydration.room_id(),
+            event_id,
+            item,
+            quote_media_for(event_id, batch_descriptors, hydration),
+        ) {
+            let outcome = hydration.learn_with_media(
+                quote,
+                media_source_for(event_id, batch_sources, resident_sources),
+            );
             record_learn(refreshes, event_id.to_owned(), outcome);
         }
     }
@@ -554,6 +700,8 @@ fn known_originals(
     targets: &[String],
     batch: &[&TimelineItem],
     canonical: &[TimelineItem],
+    hydration: &ReplyQuoteHydration,
+    batch_descriptors: &HashMap<String, Option<ReplyQuoteMedia>>,
 ) -> HashMap<String, ReplyQuote> {
     let wanted: HashSet<&str> = targets.iter().map(String::as_str).collect();
     if wanted.is_empty() {
@@ -568,7 +716,12 @@ fn known_originals(
         if !wanted.contains(event_id) || !seen.insert(event_id.to_owned()) {
             continue;
         }
-        if let Some(quote) = reply_quote_from_timeline_item(room_id, event_id, item) {
+        if let Some(quote) = reply_quote_from_timeline_item_with_media(
+            room_id,
+            event_id,
+            item,
+            quote_media_for(event_id, batch_descriptors, hydration),
+        ) {
             originals.insert(event_id.to_owned(), quote);
         }
     }
@@ -650,6 +803,8 @@ impl TimelineActor {
     pub(super) fn overlay_reply_quotes_on_batch(
         &mut self,
         diffs: &mut [TimelineDiff],
+        batch_sources: &HashMap<String, Option<PrivateMediaEntry>>,
+        batch_descriptors: &HashMap<String, Option<ReplyQuoteMedia>>,
     ) -> BatchReplyQuotes {
         let mut refreshes = ReplyQuoteRefreshes::default();
         let targets = {
@@ -661,6 +816,9 @@ impl TimelineActor {
                 &mut self.reply_quote_hydration,
                 items.iter().copied(),
                 &mut refreshes,
+                batch_sources,
+                &self.media_sources,
+                batch_descriptors,
             );
             batch_original_targets(
                 &items,
@@ -685,10 +843,15 @@ impl TimelineActor {
                 &targets,
                 &items,
                 &self.navigation_items,
+                &self.reply_quote_hydration,
+                batch_descriptors,
             )
         };
         for (target, quote) in &originals {
-            let outcome = self.reply_quote_hydration.learn(quote.clone());
+            let outcome = self.reply_quote_hydration.learn_with_media(
+                quote.clone(),
+                media_source_for(target, batch_sources, &self.media_sources),
+            );
             record_learn(&mut refreshes, target.clone(), outcome);
         }
         overlay_reply_quotes(
@@ -728,10 +891,18 @@ impl TimelineActor {
             &targets,
             &[],
             &self.navigation_items,
+            &self.reply_quote_hydration,
+            &HashMap::new(),
         );
         let originals = merge_originals_for(&targets, batch_originals, canonical);
         let mut refreshes = ReplyQuoteRefreshes::default();
-        learn_derived_originals(&mut self.reply_quote_hydration, &mut refreshes, &originals);
+        learn_derived_originals(
+            &mut self.reply_quote_hydration,
+            &mut refreshes,
+            &originals,
+            &HashMap::new(),
+            &self.media_sources,
+        );
         for event_id in refreshes.superseded {
             self.abort_reply_quote_task(&event_id);
         }
@@ -761,6 +932,8 @@ impl TimelineActor {
                 &targets,
                 &[],
                 &self.navigation_items,
+                &self.reply_quote_hydration,
+                &HashMap::new(),
             );
             let mut core_diffs = Vec::new();
             for (index, item) in self.navigation_items.iter_mut().enumerate() {
@@ -791,6 +964,8 @@ impl TimelineActor {
                 &pending_targets,
                 &[],
                 &self.navigation_items,
+                &self.reply_quote_hydration,
+                &HashMap::new(),
             )
         };
         let hydration = &self.reply_quote_hydration;
@@ -901,9 +1076,12 @@ impl TimelineActor {
     /// Retain the originals a batch changed and abort the lookups it
     /// superseded, so a settled edit or redaction refreshes dependents and a
     /// stale lookup result can never overwrite it.
-    pub(super) fn apply_reply_quote_refreshes(&mut self, refreshes: ReplyQuoteRefreshes) {
+    pub(super) async fn apply_reply_quote_refreshes(&mut self, refreshes: ReplyQuoteRefreshes) {
         for event_id in refreshes.superseded {
             self.abort_reply_quote_task(&event_id);
+        }
+        for event_id in refreshes.media_changed {
+            self.invalidate_reply_quote_thumbnail(&event_id).await;
         }
         self.reply_quote_refresh.extend(refreshes.changed);
     }
@@ -919,7 +1097,7 @@ impl TimelineActor {
                     let task = executor::spawn(async move {
                         let outcome = match Box::pin(executor::timeout(
                             REPLY_QUOTE_ATTEMPT_TIMEOUT,
-                            super::thread_projection::load_exact_timeline_event_projection(
+                            super::thread_projection::load_exact_timeline_event_projection_with_media(
                                 &session,
                                 &key,
                                 &lookup_event_id,
@@ -927,7 +1105,17 @@ impl TimelineActor {
                         ))
                         .await
                         {
-                            Ok(Ok(item)) => OriginalLookupOutcome::Loaded(Box::new(item)),
+                            Ok(Ok((item, media))) => {
+                                let (media, descriptor) = match media {
+                                    Some((media, descriptor)) => (Some(media), Some(descriptor)),
+                                    None => (None, None),
+                                };
+                                OriginalLookupOutcome::Loaded(Box::new(LoadedOriginal {
+                                    item: Box::new(item),
+                                    media,
+                                    descriptor,
+                                }))
+                            }
                             Ok(Err(kind)) => OriginalLookupOutcome::Failed(kind),
                             Err(executor::TimeoutElapsed) => OriginalLookupOutcome::TimedOut,
                         };

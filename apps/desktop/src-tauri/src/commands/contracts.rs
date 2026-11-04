@@ -623,6 +623,7 @@ fn tauri_command_routes_build_expected_core_commands() {
         active_account_key.clone(),
         room_id.clone(),
         "$media-event".to_owned(),
+        None,
     )
     .expect("download_media should build a command")
     {
@@ -1940,6 +1941,7 @@ fn tauri_command_routes_redact_secret_bearing_values_from_debug() {
         AccountKey("@alice:example.org".to_owned()),
         "!room:example.org".to_owned(),
         "$secret-media-event".to_owned(),
+        None,
     )
     .expect("download_media should build a command");
     let search = build_submit_search_command(

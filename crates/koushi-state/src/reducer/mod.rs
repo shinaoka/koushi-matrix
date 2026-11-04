@@ -1635,6 +1635,16 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             event_id,
             state: download_state,
         } => timeline::handle_media_download_updated(state, room_id, event_id, download_state),
+        AppAction::ReplyQuoteThumbnailUpdated {
+            room_id,
+            quoted_event_id,
+            state: download_state,
+        } => timeline::handle_reply_quote_thumbnail_updated(
+            state,
+            room_id,
+            quoted_event_id,
+            download_state,
+        ),
         AppAction::ComposerDraftsLoaded { drafts } => {
             timeline::handle_composer_drafts_loaded(state, drafts)
         }
@@ -2729,6 +2739,7 @@ pub(crate) fn select_active_room_after_room_list_update(
         staged_uploads: state.upload_staging.items_for_room(&room_id),
         media_gallery: state.media_gallery.items_for_room(&room_id),
         media_downloads: Default::default(),
+        reply_quote_thumbnails: Default::default(),
         continuity: Default::default(),
     };
     state.thread = ThreadPaneState::Closed;
@@ -2764,6 +2775,7 @@ pub(crate) fn select_active_room_for_navigation(
         staged_uploads: state.upload_staging.items_for_room(&room_id),
         media_gallery: state.media_gallery.items_for_room(&room_id),
         media_downloads: Default::default(),
+        reply_quote_thumbnails: Default::default(),
         continuity: Default::default(),
     };
     state.thread = ThreadPaneState::Closed;

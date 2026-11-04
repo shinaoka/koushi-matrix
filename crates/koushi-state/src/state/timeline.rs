@@ -28,6 +28,10 @@ pub struct TimelinePaneState {
     pub media_gallery: Vec<TimelineMediaGalleryItem>,
     #[serde(default)]
     pub media_downloads: std::collections::BTreeMap<String, TimelineMediaDownloadState>,
+    /// #1769: thumbnails for quoted originals, keyed by the quoted event so
+    /// several replies to one picture share one fetch and one state.
+    #[serde(default)]
+    pub reply_quote_thumbnails: std::collections::BTreeMap<String, TimelineMediaDownloadState>,
     #[serde(default)]
     pub continuity: TimelineContinuityState,
 }

@@ -240,6 +240,9 @@ const transport: TimelineTransport = {
   downloadMedia(roomId, eventId) {
     return ipc.invoke("download_media", { roomId, eventId });
   },
+  requestReplyQuoteThumbnail(roomId, quotedEventId) {
+    return ipc.invoke("request_reply_quote_thumbnail", { roomId, quotedEventId });
+  },
   loadMessageSource(roomId, eventId) {
     return ipc.invoke("load_message_source", { roomId, eventId });
   },

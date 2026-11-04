@@ -33,8 +33,14 @@ import type {
   AssistantDraftMarker,
   ComposerDocument,
   ComposerSurface,
-  ResolveComposerKeyAction
+  ResolveComposerKeyAction,
+  TimelineMediaDownloadState
 } from "../domain/types";
+import type { ReplyQuote } from "../domain/coreEvents";
+import {
+  ReplyQuoteThumbnail,
+  replyQuoteBody
+} from "./timeline/ReplyQuoteThumbnail";
 import type { DiagnosticLogEntry } from "../domain/diagnostics";
 import {
   IS_MAC_PLATFORM,
@@ -117,6 +123,8 @@ export const Composer = memo(function Composer({
   roomName,
   onCancel,
   onCancelReply,
+  replyQuote = null,
+  replyQuoteThumbnail,
   onAttachFiles = async () => undefined,
   onDocumentChange,
   onMathModeChange = () => undefined,
@@ -155,6 +163,8 @@ export const Composer = memo(function Composer({
   roomName: string;
   onCancel?: () => void;
   onCancelReply: () => void;
+  replyQuote?: ReplyQuote | null;
+  replyQuoteThumbnail?: TimelineMediaDownloadState;
   onAttachFiles?: (files: File[]) => void | Promise<void>;
   onDocumentChange: (document: ComposerDocument) => void;
   onMathModeChange?: (enabled: boolean) => void | Promise<void>;
@@ -958,7 +968,25 @@ export const Composer = memo(function Composer({
       ) : null}
       {!editorOnly && composerMode.kind === "reply" ? (
         <div className="composer-reply-banner">
-          <span className="composer-reply-label">{t("composer.replying")}</span>
+          {replyQuote ? (
+            <div className="composer-reply-quote">
+              <div className="composer-reply-quote-copy">
+                <span className="composer-reply-quote-sender" dir="auto">
+                  {peopleFacingLabel(replyQuote.sender_label)}
+                </span>
+                <span className="composer-reply-quote-body" dir="auto">
+                  {replyQuoteBody(replyQuote)}
+                </span>
+              </div>
+              <ReplyQuoteThumbnail
+                quote={replyQuote}
+                state={replyQuoteThumbnail}
+                surface="composer"
+              />
+            </div>
+          ) : (
+            <span className="composer-reply-label">{t("composer.replying")}</span>
+          )}
           <Tooltip label={t("composer.cancelReply")} placement="below">
             {(tooltipProps) => (
               <button
@@ -1330,6 +1358,8 @@ const ThreadComposer = memo(function ThreadComposer({
   resolveComposerKeyAction,
   onAttachFiles,
   onCancelReply = ignoreCancelReply,
+  replyQuote = null,
+  replyQuoteThumbnail,
   onDocumentChange,
   onMathModeChange,
   onRecentEmojisChange,
@@ -1361,6 +1391,8 @@ const ThreadComposer = memo(function ThreadComposer({
   resolveComposerKeyAction: ResolveComposerKeyAction;
   onAttachFiles?: (files: File[]) => void | Promise<void>;
   onCancelReply?: () => void;
+  replyQuote?: ReplyQuote | null;
+  replyQuoteThumbnail?: TimelineMediaDownloadState;
   onDocumentChange: (document: ComposerDocument) => void;
   onMathModeChange?: (enabled: boolean) => void | Promise<void>;
   onRecentEmojisChange?: (emojis: string[]) => void | Promise<void>;
@@ -1400,6 +1432,8 @@ const ThreadComposer = memo(function ThreadComposer({
       roomName={roomName}
       onAttachFiles={onAttachFiles}
       onCancelReply={onCancelReply}
+      replyQuote={replyQuote}
+      replyQuoteThumbnail={replyQuoteThumbnail}
       onDocumentChange={onDocumentChange}
       onMentionQueryChange={onMentionQueryChange}
       onScheduleSend={onScheduleSend}
