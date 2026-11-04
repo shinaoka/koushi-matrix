@@ -968,6 +968,11 @@ export function UserSettingsPanel({
               onRebuildSearchIndex={onRebuildSearchIndex}
               onStartCrawlRoom={onStartCrawlRoom}
               onStopCrawlRoom={onStopCrawlRoom}
+              onOpenAccountSettings={
+                onSettingsScopeChange
+                  ? () => onSettingsScopeChange("account")
+                  : undefined
+              }
             />
           </section>
         </div>
@@ -1003,11 +1008,14 @@ export function AppSettingsDialog({
   snapshot,
   onUpdateSettings,
   accountTabs = [],
+  onSettingsScopeChange,
   onClose
 }: {
   snapshot: DesktopSnapshot;
   onUpdateSettings: (patch: SettingsPatch) => void;
   accountTabs?: readonly AccountTabSummary[];
+  /** Same scope transition the account menu uses. */
+  onSettingsScopeChange?: (scope: "account" | "app") => void;
   onClose: () => void;
 }) {
   const domain = snapshot.state.domain;
@@ -1021,6 +1029,7 @@ export function AppSettingsDialog({
       <UserSettingsPanel
         initialCategory="appearance"
         settingsScope="app"
+        onSettingsScopeChange={onSettingsScopeChange}
         currentSession={null}
         currentSessionStatus={domain.current_session_status}
         displayDensity={domain.settings.values.appearance.density}

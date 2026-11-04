@@ -26,7 +26,8 @@ export function SearchHistorySection({
   onUpdateSettings,
   onRebuildSearchIndex,
   onStartCrawlRoom,
-  onStopCrawlRoom
+  onStopCrawlRoom,
+  onOpenAccountSettings
 }: {
   crawlerSettings: SearchCrawlerSettings;
   crawlerState: SearchCrawlerState;
@@ -37,6 +38,9 @@ export function SearchHistorySection({
   onRebuildSearchIndex?: () => void;
   onStartCrawlRoom?: (roomId: string) => void;
   onStopCrawlRoom?: (roomId: string) => void;
+  /** App Settings shows the crawl status read-only; this switches to the scope
+   * that owns the room-level controls. */
+  onOpenAccountSettings?: () => void;
 }) {
   // Minute granularity: half a minute keeps "N minutes ago" within one step.
   const nowMs = useNowMs(30_000);
@@ -108,6 +112,26 @@ export function SearchHistorySection({
             </button>
           </div>
           <p className="settings-notice">{t("settings.searchHistoryBudgetDescription")}</p>
+          <p className="settings-muted-note crawler-activity-summary">
+            {t("settings.searchHistoryActivitySummary", crawlerSummary)}
+          </p>
+          {lastActiveEntry ? (
+            <p className="settings-muted-note">
+              {t("settings.searchHistoryActivityLastIndexed", {
+                room: lastActiveEntry.displayLabel,
+                age: crawlerActivityAgeLabel(lastActiveEntry.updatedAtMs, nowMs)
+              })}
+            </p>
+          ) : null}
+          {onOpenAccountSettings ? (
+            <button
+              className="dialog-button secondary"
+              type="button"
+              onClick={onOpenAccountSettings}
+            >
+              {t("settings.accountSettings")}
+            </button>
+          ) : null}
         </div>
       ) : null}
       {settingsScope !== "app" ? (
@@ -399,7 +423,7 @@ function CrawlerRoomRow({
   const visibleLabel = displayLabel ?? t("settings.searchHistoryRoomUnknown");
 
   return (
-    <div className="settings-detail-row">
+    <div className="settings-detail-row crawler-room-status-row">
       <span dir="auto">{visibleLabel}</span>
       <small data-crawler-room-kind={roomState.kind}>{statusLabel}</small>
       {showActions && isRunning && onStop ? (
