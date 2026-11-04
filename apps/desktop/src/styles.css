@@ -8765,6 +8765,29 @@ dialog.timeline-media-viewer-overlay::backdrop { background: transparent; }
   overflow: auto;
 }
 
+/* Stacked rows pushed 30 rooms into three lines each. In this list only, the
+   name, the status and the action share one line; every other
+   `.settings-detail-row` consumer keeps the stacked layout. */
+.settings-detail-list.crawler-room-status-list .crawler-room-status-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding-block: 6px;
+}
+
+/* Without this the name column refuses to shrink and never ellipsizes. */
+.settings-detail-list.crawler-room-status-list .crawler-room-status-row > span {
+  min-width: 0;
+}
+
+/* Smaller action chip for the one-line row, still a 24px tap target. */
+.crawler-room-status-list .profile-settings-action {
+  min-height: 24px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
 .settings-detail-list {
   overflow: hidden;
   border: 1px solid var(--line);

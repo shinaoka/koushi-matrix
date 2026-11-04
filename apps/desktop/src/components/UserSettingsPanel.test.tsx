@@ -5,7 +5,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { UserSettingsPanel } from "./UserSettingsPanel";
+import { UserSettingsPanel, AppSettingsDialog } from "./UserSettingsPanel";
+import { readyDesktopSnapshotFixture } from "../test/desktopApiFixture";
 import type {
   E2eeTrustState,
   NotificationDeliverySettings,
@@ -1969,5 +1970,62 @@ describe("UserSettingsPanel", () => {
     } finally {
       setActiveLocaleProfile("en", "none");
     }
+  });
+
+  // App Settings shows the search crawl status read-only, so its shortcut must
+  // take the same transition as the settings scope switch in the nav.
+  test("opens account settings from the app-settings search history summary", () => {
+    const onSettingsScopeChange = vi.fn();
+    render(
+      <UserSettingsPanel
+        initialCategory="search"
+        settingsScope="app"
+        onSettingsScopeChange={onSettingsScopeChange}
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+      />
+    );
+
+    const section = document.getElementById("settings-search-history") as HTMLElement;
+    fireEvent.click(
+      within(section).getByRole("button", { name: t("settings.accountSettings") })
+    );
+
+    expect(onSettingsScopeChange).toHaveBeenCalledTimes(1);
+    expect(onSettingsScopeChange).toHaveBeenCalledWith("account");
+  });
+
+  // App Settings is the AppSettingsDialog, a different entry point from the
+  // account surface, so the shortcut must be wired there as well.
+  test("App Settings dialog switches to the account scope from the search history summary", () => {
+    const onSettingsScopeChange = vi.fn();
+    render(
+      <AppSettingsDialog
+        snapshot={readyDesktopSnapshotFixture()}
+        onUpdateSettings={vi.fn()}
+        onClose={vi.fn()}
+        onSettingsScopeChange={onSettingsScopeChange}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: t("settings.searchHistory") }));
+    const section = document.getElementById("settings-search-history") as HTMLElement;
+    fireEvent.click(
+      within(section).getByRole("button", { name: t("settings.accountSettings") })
+    );
+
+    expect(onSettingsScopeChange).toHaveBeenCalledWith("account");
   });
 });
