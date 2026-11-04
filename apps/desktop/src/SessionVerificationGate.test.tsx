@@ -220,7 +220,18 @@ describe("SessionVerificationGate interactions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Verify with another device" }));
     expect(startOwnUserSas).not.toHaveBeenCalled();
     const dialog = screen.getByRole("region", { name: "Try device verification?" });
-    expect(within(dialog).getByText(/can be unreliable/)).toBeTruthy();
+    // #1780: the actionable preparation step is readable before the warning and
+    // before the control that sends the request.
+    const prepare = within(dialog).getByText(/First open another app or session/);
+    const warning = within(dialog).getByText(/can be unreliable/);
+    expect(
+      prepare.compareDocumentPosition(warning) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(
+      prepare.compareDocumentPosition(
+        within(dialog).getByRole("button", { name: "Try device verification anyway" })
+      ) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
     expect(within(dialog).getByRole("button", { name: "Use recovery key" })).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("region", { name: "Try device verification?" })).toBeNull();
@@ -231,6 +242,41 @@ describe("SessionVerificationGate interactions", () => {
       screen.getByRole("button", { name: "Try device verification anyway" })
     );
     await vi.waitFor(() => expect(startOwnUserSas).toHaveBeenCalledTimes(1));
+  });
+
+  test("keeps the peer-acceptance step visible while the request is unaccepted", async () => {
+    const snapshot = sessionSnapshot("needsRecovery");
+    snapshot.state.domain.session = {
+      kind: "verifying",
+      user_id: "@u:example.invalid",
+      homeserver: "https://example.invalid",
+      device_id: "D",
+      method: "existingDeviceSas",
+      flow_id: 371,
+      gate: {
+        methods: ["existingDeviceSas"],
+        account_kind: "existingIdentity",
+        failureKind: null
+      },
+      sas_emojis: []
+    };
+    render(
+      <SessionVerificationGate
+        snapshot={snapshot}
+        onReceipt={async () => undefined}
+        onSignOut={() => undefined}
+        operations={{
+          startOwnUserSas: async () => commandReceipt,
+          submitRecovery: async () => commandReceipt
+        }}
+      />
+    );
+
+    expect(screen.getByRole("heading", { level: 1, name: "Verifying this session…" })).toBeTruthy();
+    expect(
+      screen.getByText(/Keep the already verified app or session open and accept the request there/)
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
   });
 
   test("production renders the Rust-owned seven-emoji SAS comparison", async () => {
@@ -265,6 +311,8 @@ describe("SessionVerificationGate interactions", () => {
     );
 
     expect(document.querySelectorAll(".session-verification-emojis span")).toHaveLength(7);
+    // The waiting hint is replaced by the emoji comparison, not stacked on it.
+    expect(screen.queryByText(/accept the request there/)).toBeNull();
     expect(screen.getByRole("button", { name: "They match" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "They do not match" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();

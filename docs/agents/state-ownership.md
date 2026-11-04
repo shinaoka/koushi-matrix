@@ -1646,15 +1646,21 @@ normal QA-title mode and cannot change product title semantics.
   session verification. When it contains `existingDeviceSas`, the end-user UI
   offers device-to-device SAS verification; do not add a second frontend or
   build-time availability gate.
-- Starting SAS always requires the existing confirmation dialog. It warns that
-  the flow can be unreliable when the other device is offline, slow to sync, or
-  missing keys; recommends recovery-key verification when available; and does not
-  dispatch `start_own_user_sas` until the user explicitly continues.
+- Starting SAS always requires the existing confirmation dialog. It first tells
+  the user to open another already verified app or session of this account and
+  keep it open, because the request appears there rather than as a guaranteed
+  notification. It warns that the flow can be unreliable when the other device is
+  offline, slow to sync, or missing keys; recommends recovery-key verification
+  when available; and does not dispatch `start_own_user_sas` until the user
+  explicitly continues.
 - A SAS-only gate remains actionable. Render `gate.noRecoveryKey*` guidance only
   when recovery, bootstrap, and `existingDeviceSas` are all unavailable.
 - The seven emoji and match, mismatch, and cancel actions render only from the
   Rust-owned verifying snapshot and use its `flow_id`; React must not infer SAS
-  progress or settlement locally.
+  progress or settlement locally. Until the emoji arrive, the own-device SAS flow
+  also renders `gate.deviceVerificationWaiting` to name the peer acceptance step;
+  that hint is copy only and carries no timer or progress meaning (the app-owned
+  120-second wait is unchanged).
 - The explicit `Cancel sign-in and remove this device…` path is Rust-owned
   `AppState.device_cleanup`. It is always remote-first: legacy sessions use
   password UIAA, OAuth/MAS sessions revoke through OAuth logout, and
