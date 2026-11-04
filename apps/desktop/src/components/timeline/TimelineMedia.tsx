@@ -21,7 +21,7 @@ import {
   Trash2,
   XCircle
 } from "lucide-react";
-import { type CSSProperties, type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, Fragment, type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 import { t } from "../../i18n/messages";
 import { Tooltip } from "../Tooltip";
@@ -464,7 +464,7 @@ export function TimelineMediaAttachment({
               ? null
               : t("timeline.mediaUploadProgress", { percent: uploadProgressPercentValue })
           ];
-  const statusText = statusParts.filter((value): value is string => Boolean(value)).join(" · ");
+  const statusText = statusParts.filter((value): value is string => Boolean(value));
   const cardAction: (() => void) | null = !canDownload
     ? null
     : downloadState?.kind === "pending"
@@ -547,9 +547,12 @@ export function TimelineMediaAttachment({
           {media.filename}
         </div>
         <div className="message-media-meta">
-          {statusText ? (
-            <span className={failed ? "message-media-error" : undefined}>{statusText}</span>
-          ) : null}
+          {statusText.map((part, index) => (
+            <Fragment key={part}>
+              {index > 0 ? " · " : null}
+              <span className={failed ? "message-media-error" : undefined}>{part}</span>
+            </Fragment>
+          ))}
         </div>
       </div>
       {canDownload ? (
