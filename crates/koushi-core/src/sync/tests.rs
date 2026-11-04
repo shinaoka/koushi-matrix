@@ -267,8 +267,20 @@ fn room_list_reconcile_wait_diagnostic_distinguishes_terminal_outcomes() {
 async fn action_channel_accepts_projected_sync_statuses_with_generations() {
     let (tx, mut rx) = mpsc::channel(4);
     let generation = AtomicU64::new(0);
-    send_sync_status(&tx, &generation, SyncLifecycleStatus::Starting).await;
-    send_sync_status(&tx, &generation, SyncLifecycleStatus::Running).await;
+    send_sync_status(
+        &tx,
+        &generation,
+        crate::SlidingSyncDiagnostics::default().owner(),
+        SyncLifecycleStatus::Starting,
+    )
+    .await;
+    send_sync_status(
+        &tx,
+        &generation,
+        crate::SlidingSyncDiagnostics::default().owner(),
+        SyncLifecycleStatus::Running,
+    )
+    .await;
     assert!(matches!(
         rx.recv().await,
         Some(actions) if matches!(

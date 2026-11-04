@@ -106,7 +106,7 @@ pub use sliding_sync_diagnostics::{
     SlidingSyncFailureOrigin, SlidingSyncFailureRetryability, SlidingSyncFailureStage,
     SlidingSyncHttpErrorSource, SlidingSyncHttpStatus, SlidingSyncHttpStatusClass,
     SlidingSyncLifecycle, SlidingSyncMatrixErrorKind, SlidingSyncProvisionalHandoffBucket,
-    SlidingSyncRequestSchema, SlidingSyncSdkVersion,
+    SlidingSyncRequestSchema, SlidingSyncSdkVersion, SyncDiagnosticsOwner,
 };
 pub use state_delta::build_state_delta;
 

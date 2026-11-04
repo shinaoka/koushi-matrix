@@ -3,8 +3,15 @@ use super::*;
 #[tokio::test(start_paused = true)]
 async fn slow_room_reconciliation_keeps_sync_alive_until_matching_ack() {
     let (room_tx, mut room_rx) = mpsc::channel(1);
-    let reconciliation =
-        tokio::spawn(async move { reconcile_committed_room_list(&room_tx, 7, 226).await });
+    let reconciliation = tokio::spawn(async move {
+        reconcile_committed_room_list(
+            &room_tx,
+            crate::SlidingSyncDiagnostics::default().owner(),
+            7,
+            226,
+        )
+        .await
+    });
     let RoomMessage::ReconcileCommittedRange { ack, .. } = room_rx.recv().await.unwrap() else {
         panic!("expected reconciliation request");
     };
@@ -50,8 +57,15 @@ async fn closed_or_invalid_ack_still_fails_after_delay() {
         }),
     ] {
         let (room_tx, mut room_rx) = mpsc::channel(1);
-        let reconciliation =
-            tokio::spawn(async move { reconcile_committed_room_list(&room_tx, 7, 226).await });
+        let reconciliation = tokio::spawn(async move {
+            reconcile_committed_room_list(
+                &room_tx,
+                crate::SlidingSyncDiagnostics::default().owner(),
+                7,
+                226,
+            )
+            .await
+        });
         let RoomMessage::ReconcileCommittedRange { ack, .. } = room_rx.recv().await.unwrap() else {
             panic!("expected reconciliation request");
         };
@@ -74,6 +88,7 @@ async fn closed_or_invalid_ack_still_fails_after_delay() {
 #[test]
 fn stale_generation_ack_fails_with_a_named_diagnostic() {
     let _guard = koushi_diagnostics::test_support::lock();
+    let owner = crate::SlidingSyncDiagnostics::default().owner();
     assert_eq!(
         classify_room_list_reconcile_ack(
             7,
@@ -88,6 +103,7 @@ fn stale_generation_ack_fails_with_a_named_diagnostic() {
     );
 
     record_room_list_reconcile_diagnostic(
+        owner,
         RoomListReconcileDiagnosticOutcome::StaleGeneration,
         Duration::from_millis(3),
         4_246,
@@ -110,5 +126,12 @@ fn stale_generation_ack_fails_with_a_named_diagnostic() {
                 && field.value == koushi_diagnostics::DiagnosticValue::Token("stale_generation")
         }),
         "the outcome token names the cause"
+    );
+    assert!(
+        record.event.fields.iter().any(|field| {
+            field.key == "sync_owner"
+                && field.value == koushi_diagnostics::DiagnosticValue::Count(owner.get())
+        }),
+        "the record names the runtime that produced it"
     );
 }

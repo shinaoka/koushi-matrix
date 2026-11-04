@@ -488,11 +488,11 @@ impl AccountActor {
             return;
         };
         #[cfg(any(test, feature = "test-hooks"))]
-        record(DiagnosticEvent::new(
-            DiagnosticLevel::Debug,
-            "core.account",
-            "sync_actor_stop",
-        ));
+        record(
+            DiagnosticEvent::new(DiagnosticLevel::Debug, "core.account", "sync_actor_stop").field(
+                DiagnosticField::count("sync_owner", self.sliding_sync_diagnostics.owner().get()),
+            ),
+        );
         let _ = handle.shutdown().await;
     }
 

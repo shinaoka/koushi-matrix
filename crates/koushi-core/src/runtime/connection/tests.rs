@@ -115,6 +115,7 @@ pub(super) fn scripted_connection(
             ))),
             event_rx: Some(event_rx),
             snapshot_rx,
+            sliding_sync_diagnostics: crate::SlidingSyncDiagnostics::default(),
             next_sequence: AtomicU64::new(1),
         },
         command_rx,
@@ -923,6 +924,7 @@ async fn timeline_sender_label_and_reaction_sender_preview_follow_people_facing_
         ))),
         event_rx: Some(event_rx),
         snapshot_rx,
+        sliding_sync_diagnostics: crate::SlidingSyncDiagnostics::default(),
         next_sequence: AtomicU64::new(1),
     };
     let key = TimelineKey {
@@ -1084,4 +1086,24 @@ async fn timeline_sender_label_and_reaction_sender_preview_follow_people_facing_
         }
         other => panic!("expected projected timeline diff event, got {other:?}"),
     }
+}
+
+/// #1634: a failure string is scoped to the runtime the caller is talking to, so
+/// every connection of one runtime must report the same owner and two runtimes
+/// in one process must not collide.
+#[tokio::test]
+async fn attached_connections_report_their_runtime_diagnostics_owner() {
+    let (runtime, _stores) = CoreRuntime::start_isolated();
+    let first = runtime.attach();
+    let second = runtime.attach();
+    assert_eq!(
+        first.sync_diagnostics_owner(),
+        second.sync_diagnostics_owner()
+    );
+
+    let (other, _other_stores) = CoreRuntime::start_isolated();
+    assert_ne!(
+        first.sync_diagnostics_owner(),
+        other.attach().sync_diagnostics_owner()
+    );
 }

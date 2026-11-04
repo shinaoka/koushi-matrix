@@ -507,6 +507,7 @@ fn verification_admission_diagnostic_is_mirrored_to_privacy_safe_stderr() {
 fn verification_admission_diagnostic_child() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
     record_verification_admission_event(
+        crate::SlidingSyncDiagnostics::default().owner(),
         DiagnosticEvent::new(
             DiagnosticLevel::Info,
             "core.verification_admission",
@@ -741,11 +742,21 @@ async fn network_trust_recheck_settlement_records_generation_without_authenticat
 
     let expected =
         "stage=trust_recheck_finished_failed generation=2 transition_id=0 failure_kind=network";
+    // #1634: the record also names the account runtime that produced it, so the
+    // ring can be scoped when several runtimes share one process. That owner is
+    // the only field allowed after the pinned prefix.
     assert!(
         koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
             .iter()
-            .any(|record| koushi_diagnostics::format_event(&record.event) == expected),
-        "missing exact trust-recheck settlement diagnostic: {expected}"
+            .any(|record| {
+                koushi_diagnostics::format_event(&record.event)
+                    .strip_prefix(expected)
+                    .and_then(|rest| rest.strip_prefix(" sync_owner="))
+                    .is_some_and(|owner| {
+                        !owner.is_empty() && owner.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+            }),
+        "missing exact trust-recheck settlement diagnostic: {expected} sync_owner=<owner>"
     );
     while let Ok(actions) = action_rx.try_recv() {
         assert!(

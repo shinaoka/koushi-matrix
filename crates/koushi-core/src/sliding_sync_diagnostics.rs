@@ -6,7 +6,10 @@
 //! raw SDK errors cannot enter the copied report.
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -421,12 +424,49 @@ struct SlidingSyncDiagnosticsState {
     provisional_stopped_at: Option<Instant>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SlidingSyncDiagnostics {
     inner: Arc<Mutex<SlidingSyncDiagnosticsState>>,
+    owner: SyncDiagnosticsOwner,
+}
+
+/// Process-unique identity of the account runtime that owns one sliding-sync
+/// diagnostics lane.
+///
+/// `run_generation` already names *which run* of a sync owner is in flight, but
+/// it restarts at 1 for every account runtime, so it cannot separate the runs
+/// of several runtimes that share one process (the headless aggregate lane runs
+/// one `CoreRuntime` per participant). Records therefore carry both: this owner
+/// says which runtime produced them, `backend_generation` says which run of it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct SyncDiagnosticsOwner(u64);
+
+impl SyncDiagnosticsOwner {
+    fn allocate() -> Self {
+        static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT_OWNER.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl Default for SlidingSyncDiagnostics {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(SlidingSyncDiagnosticsState::default())),
+            owner: SyncDiagnosticsOwner::allocate(),
+        }
+    }
 }
 
 impl SlidingSyncDiagnostics {
+    /// The process-unique owner stamped on this runtime's diagnostic records.
+    pub fn owner(&self) -> SyncDiagnosticsOwner {
+        self.owner
+    }
+
     pub fn snapshot(&self) -> SlidingSyncDiagnosticsSnapshot {
         let state = self
             .inner

@@ -532,6 +532,7 @@ impl AccountActor {
                 DiagnosticField::token("reason", "unknown_token"),
                 DiagnosticField::boolean("soft_logout", soft_logout),
                 DiagnosticField::token("action", "lock"),
+                DiagnosticField::count("sync_owner", self.sliding_sync_diagnostics.owner().get()),
             ],
             "reason=unknown_token soft_logout={} action=lock",
             bool_trace_label(soft_logout)
@@ -2022,6 +2023,7 @@ impl AccountActor {
             self.trust_observation_is_synthetic = synthetic_trust_observation;
         }
         record_verification_admission_event(
+            self.sliding_sync_diagnostics.owner(),
             verification_admission_event("trust_read_finished", generation, 0)
                 .field(DiagnosticField::token(
                     "trust",

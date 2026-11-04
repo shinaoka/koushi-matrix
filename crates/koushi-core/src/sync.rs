@@ -35,7 +35,7 @@ use crate::{
     SlidingSyncDiagnostics, SlidingSyncFailureDiagnostic, SlidingSyncFailureKind,
     SlidingSyncFailureOrigin, SlidingSyncFailureRetryability, SlidingSyncFailureStage,
     SlidingSyncHttpErrorSource, SlidingSyncHttpStatus, SlidingSyncMatrixErrorKind,
-    SlidingSyncSdkVersion,
+    SlidingSyncSdkVersion, SyncDiagnosticsOwner,
 };
 use koushi_protocol::command::SyncCommand;
 use koushi_protocol::event::{CoreEvent, SyncEvent};
@@ -62,9 +62,17 @@ const FIRST_RESPONSE_STALL_FIRST_WINDOW: Duration = Duration::from_secs(30);
 /// idle stall cannot flood the detail ring.
 const FIRST_RESPONSE_STALL_MAX_WINDOW: Duration = Duration::from_secs(5 * 60);
 
+/// Emit one `core.sync` record for `owner`.
+///
+/// Every record names its account runtime, because the diagnostic ring is
+/// process-wide while one process may run several runtimes (the headless
+/// aggregate lane runs one `CoreRuntime` per participant). Without the owner a
+/// reader cannot tell whose stall a record describes; see
+/// `SyncDiagnosticsOwner`.
 macro_rules! trace_sync {
-    ($stage:expr, [$($field:expr),* $(,)?], $($arg:tt)*) => {{
+    ($owner:expr, $stage:expr, [$($field:expr),* $(,)?], $($arg:tt)*) => {{
         let event = DiagnosticEvent::new(DiagnosticLevel::Debug, "core.sync", $stage)
+            .field(DiagnosticField::count("sync_owner", $owner.get()))
             $(.field($field))*;
         record(event);
     }};
@@ -173,8 +181,13 @@ fn internal_observer_failure(ever_connected: bool) -> SyncTaskOutcome {
     }
 }
 
-fn internal_observer_failure_at(reason: &'static str, ever_connected: bool) -> SyncTaskOutcome {
+fn internal_observer_failure_at(
+    owner: SyncDiagnosticsOwner,
+    reason: &'static str,
+    ever_connected: bool,
+) -> SyncTaskOutcome {
     trace_sync!(
+        owner,
         "observer_exit",
         [
             DiagnosticField::token("reason", reason),
@@ -221,11 +234,13 @@ fn sync_status_trace_label(status: &SyncLifecycleStatus) -> &'static str {
 async fn send_sync_status(
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     generation: &AtomicU64,
+    owner: SyncDiagnosticsOwner,
     status: SyncLifecycleStatus,
 ) {
     let label = sync_status_trace_label(&status);
     let generation = generation.fetch_add(1, Ordering::Relaxed) + 1;
     trace_sync!(
+        owner,
         "status_projected",
         [
             DiagnosticField::count("generation", generation),
@@ -238,6 +253,37 @@ async fn send_sync_status(
     let _ = action_tx
         .send(vec![AppAction::SyncStatusChanged { generation, status }])
         .await;
+}
+
+/// One `handoff_step` record for an await on the first-response handoff path.
+///
+/// `entered` without a matching `completed` for the same run names the await a
+/// stalled observer is sitting in, which is the question #1634 could not answer
+/// from the ring: a stall there leaves the sync lifecycle at `Starting` while
+/// the service keeps committing. Only the open handoff window records these
+/// (`!connected || reconnecting`), so a proven run does not flood the ring.
+fn record_handoff_step(
+    owner: SyncDiagnosticsOwner,
+    run_generation: u64,
+    step: &'static str,
+    phase: &'static str,
+    sequence: u64,
+) {
+    trace_sync!(
+        owner,
+        "handoff_step",
+        [
+            DiagnosticField::token("step", step),
+            DiagnosticField::token("phase", phase),
+            DiagnosticField::count("sequence", sequence),
+            DiagnosticField::count("backend_generation", run_generation),
+        ],
+        "step={} phase={} sequence={} backend_generation={}",
+        step,
+        phase,
+        sequence,
+        run_generation
+    );
 }
 
 fn sync_command_trace_parts(command: &SyncCommand) -> (&'static str, RequestId) {
@@ -454,6 +500,7 @@ impl SyncActor {
                 ever_connected,
             } => {
                 trace_sync!(
+                    self.diagnostics.owner(),
                     "task_ended",
                     [
                         DiagnosticField::token("outcome", "failed"),
@@ -482,6 +529,7 @@ impl SyncActor {
     async fn handle_command(&mut self, command: SyncCommand) {
         let (kind, request_id) = sync_command_trace_parts(&command);
         trace_sync!(
+            self.diagnostics.owner(),
             "command",
             [
                 DiagnosticField::token("kind", kind),
@@ -695,7 +743,13 @@ impl SyncActor {
     }
 
     async fn project_sync_status(&self, status: SyncLifecycleStatus) {
-        send_sync_status(&self.action_tx, &self.sync_generation, status).await;
+        send_sync_status(
+            &self.action_tx,
+            &self.sync_generation,
+            self.diagnostics.owner(),
+            status,
+        )
+        .await;
     }
 }
 
@@ -865,6 +919,7 @@ async fn forward_latest_timeline_response_commit(
 
 async fn reconcile_committed_room_list(
     room_tx: &mpsc::Sender<RoomMessage>,
+    owner: SyncDiagnosticsOwner,
     run_generation: u64,
     response_sequence: u64,
 ) -> RoomListReconcileResult {
@@ -881,6 +936,7 @@ async fn reconcile_committed_room_list(
         .is_err()
     {
         record_room_list_reconcile_diagnostic(
+            owner,
             RoomListReconcileDiagnosticOutcome::SendClosed,
             started_at.elapsed(),
             run_generation,
@@ -895,6 +951,7 @@ async fn reconcile_committed_room_list(
         Ok(result) => result,
         Err(_) => {
             record_room_list_reconcile_diagnostic(
+                owner,
                 RoomListReconcileDiagnosticOutcome::Timeout,
                 started_at.elapsed(),
                 run_generation,
@@ -910,6 +967,7 @@ async fn reconcile_committed_room_list(
             let stale_generation = matches!(ack, RoomListReconcileAck::StaleGeneration { .. });
             let result = classify_room_list_reconcile_ack(run_generation, response_sequence, ack);
             record_room_list_reconcile_diagnostic(
+                owner,
                 if stale_generation {
                     RoomListReconcileDiagnosticOutcome::StaleGeneration
                 } else if result == RoomListReconcileResult::Failed {
@@ -925,6 +983,7 @@ async fn reconcile_committed_room_list(
         }
         Err(_) => {
             record_room_list_reconcile_diagnostic(
+                owner,
                 RoomListReconcileDiagnosticOutcome::AckClosed,
                 started_at.elapsed(),
                 run_generation,
@@ -979,6 +1038,7 @@ fn room_list_reconcile_diagnostic_event(
 }
 
 fn record_room_list_reconcile_diagnostic(
+    owner: SyncDiagnosticsOwner,
     outcome: RoomListReconcileDiagnosticOutcome,
     elapsed: Duration,
     run_generation: u64,
@@ -986,6 +1046,7 @@ fn record_room_list_reconcile_diagnostic(
 ) {
     record(
         room_list_reconcile_diagnostic_event(outcome, elapsed.as_millis())
+            .field(DiagnosticField::count("sync_owner", owner.get()))
             .field(DiagnosticField::count("backend_generation", run_generation))
             .field(DiagnosticField::count(
                 "response_sequence",
@@ -1332,7 +1393,11 @@ async fn observe_sync_service(
     )
     .await
     {
-        return internal_observer_failure_at("room_observation_start_failed", connected);
+        return internal_observer_failure_at(
+            diagnostics.owner(),
+            "room_observation_start_failed",
+            connected,
+        );
     }
 
     loop {
@@ -1383,6 +1448,7 @@ async fn observe_sync_service(
                 last_committed_sequence = committed.sequence();
                 first_response.response_committed(run_generation);
                 trace_sync!(
+                    diagnostics.owner(),
                     "committed_response",
                     [
                         DiagnosticField::count("sequence", committed.sequence()),
@@ -1395,20 +1461,44 @@ async fn observe_sync_service(
                             committed.rooms_from_response_count() as u64,
                         ),
                         DiagnosticField::boolean("pos_present", committed.pos_present()),
+                        DiagnosticField::count("backend_generation", run_generation),
                     ],
-                    "sequence={} range_fully_loaded={} rooms_from_response={} pos_present={}",
+                    "sequence={} range_fully_loaded={} rooms_from_response={} pos_present={} \
+                     backend_generation={}",
                     committed.sequence(),
                     committed.range_fully_loaded(),
                     committed.rooms_from_response_count(),
-                    committed.pos_present()
+                    committed.pos_present(),
+                    run_generation
                 );
+                // The first-response handoff is the only window whose awaits
+                // can leave the sync lifecycle at `Starting` while the service
+                // commits, so it is the only window that records them.
+                let handoff_open = !connected || reconnecting;
+                let owner = diagnostics.owner();
+                let sequence = committed.sequence();
                 if committed.rooms_from_response_count() > 0 {
+                    if handoff_open {
+                        record_handoff_step(owner, run_generation, "refresh", "entered", sequence);
+                    }
                     let _ = room_tx
                         .send(RoomMessage::RefreshCommittedProjection {
                             source: RoomListSource::Live,
                             backend_generation: run_generation,
                         })
                         .await;
+                    if handoff_open {
+                        record_handoff_step(
+                            owner,
+                            run_generation,
+                            "refresh",
+                            "completed",
+                            sequence,
+                        );
+                    }
+                }
+                if handoff_open {
+                    record_handoff_step(owner, run_generation, "timeline", "entered", sequence);
                 }
                 if !forward_latest_timeline_response_commit(
                     &timeline_tx,
@@ -1418,6 +1508,7 @@ async fn observe_sync_service(
                 .await
                 {
                     trace_sync!(
+                        owner,
                         "timeline_commit_forward_unavailable",
                         [
                             DiagnosticField::count("sequence", committed.sequence()),
@@ -1428,13 +1519,20 @@ async fn observe_sync_service(
                         connected
                     );
                 }
-                if !connected || reconnecting {
+                if handoff_open {
+                    record_handoff_step(owner, run_generation, "timeline", "completed", sequence);
+                    record_handoff_step(owner, run_generation, "reconcile", "entered", sequence);
                     let room_tx = room_tx.clone();
-                    let sequence = committed.sequence();
                     pending_reconciliation = Some(Box::pin(async move {
                         (
                             sequence,
-                            reconcile_committed_room_list(&room_tx, run_generation, sequence).await,
+                            reconcile_committed_room_list(
+                                &room_tx,
+                                owner,
+                                run_generation,
+                                sequence,
+                            )
+                            .await,
                         )
                     }));
                 } else {
@@ -1444,6 +1542,13 @@ async fn observe_sync_service(
             Signal::Committed(_) => {}
             Signal::Reconciled(requested_sequence, result) => {
                 pending_reconciliation = None;
+                record_handoff_step(
+                    diagnostics.owner(),
+                    run_generation,
+                    "reconcile",
+                    "completed",
+                    requested_sequence,
+                );
                 match result {
                     RoomListReconcileResult::Projected { response_sequence }
                     | RoomListReconcileResult::Reconciled { response_sequence } => {
@@ -1456,6 +1561,7 @@ async fn observe_sync_service(
                     }
                     RoomListReconcileResult::Failed => {
                         return internal_observer_failure_at(
+                            diagnostics.owner(),
                             if connected {
                                 "reconnect_room_reconcile_failed"
                             } else {
@@ -1483,19 +1589,42 @@ async fn observe_sync_service(
                     }
                     reconnecting = false;
                     replacement_recovery = None;
+                    let owner = diagnostics.owner();
+                    record_handoff_step(
+                        owner,
+                        run_generation,
+                        "handoff",
+                        "entered",
+                        requested_sequence,
+                    );
                     if connected {
                         let _ = control_tx
                             .send(SyncActorControl::Recovered { run_generation })
                             .await;
+                        record_handoff_step(
+                            owner,
+                            run_generation,
+                            "handoff",
+                            "completed",
+                            requested_sequence,
+                        );
                     } else {
                         connected = true;
                         let _ = control_tx
                             .send(SyncActorControl::FirstResponseCommitted { run_generation })
                             .await;
+                        record_handoff_step(
+                            owner,
+                            run_generation,
+                            "handoff",
+                            "completed",
+                            requested_sequence,
+                        );
                         let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
                         send_sync_status(
                             &action_tx,
                             &sync_generation,
+                            owner,
                             SyncLifecycleStatus::Running,
                         )
                         .await;
@@ -1504,7 +1633,9 @@ async fn observe_sync_service(
                 diagnostics.response_committed(run_generation, true);
             }
             Signal::Stopped => return SyncTaskOutcome::Stopped,
-            Signal::Closed(reason) => return internal_observer_failure_at(reason, connected),
+            Signal::Closed(reason) => {
+                return internal_observer_failure_at(diagnostics.owner(), reason, connected);
+            }
             Signal::Encryption(snapshot) => {
                 if replacement_recovery.as_ref().is_some_and(|proof| {
                     proof
@@ -1573,19 +1704,42 @@ async fn observe_sync_service(
                             koushi_sdk::EncryptionSyncLifecycleStage::Handoff,
                             elapsed,
                         );
+                        let owner = diagnostics.owner();
+                        record_handoff_step(
+                            owner,
+                            run_generation,
+                            "handoff",
+                            "entered",
+                            last_committed_sequence,
+                        );
                         if connected {
                             let _ = control_tx
                                 .send(SyncActorControl::Recovered { run_generation })
                                 .await;
+                            record_handoff_step(
+                                owner,
+                                run_generation,
+                                "handoff",
+                                "completed",
+                                last_committed_sequence,
+                            );
                         } else {
                             connected = true;
                             let _ = control_tx
                                 .send(SyncActorControl::FirstResponseCommitted { run_generation })
                                 .await;
+                            record_handoff_step(
+                                owner,
+                                run_generation,
+                                "handoff",
+                                "completed",
+                                last_committed_sequence,
+                            );
                             let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
                             send_sync_status(
                                 &action_tx,
                                 &sync_generation,
+                                owner,
                                 SyncLifecycleStatus::Running,
                             )
                             .await;
@@ -1613,6 +1767,7 @@ async fn observe_sync_service(
                 }
                 let state_label = sync_service_state_trace_label(&state);
                 trace_sync!(
+                    diagnostics.owner(),
                     "sync_service_state",
                     [
                         DiagnosticField::token("state", state_label),

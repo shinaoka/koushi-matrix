@@ -2390,7 +2390,10 @@ impl AccountActor {
                             current_device_trust_recheck_failure_token(error),
                         ));
                     }
-                    record_verification_admission_event(settlement_event);
+                    record_verification_admission_event(
+                        self.sliding_sync_diagnostics.owner(),
+                        settlement_event,
+                    );
                     self.trust_recheck_task = None;
                     let replay_after_settlement = self.trust_recheck_pending;
                     self.trust_recheck_pending = false;

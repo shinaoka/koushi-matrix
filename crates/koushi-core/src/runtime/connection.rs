@@ -283,6 +283,9 @@ pub struct CoreConnection {
     pub(super) media_staging: Arc<MediaStagingService>,
     pub(super) event_rx: Option<broadcast::Receiver<CoreEvent>>,
     pub(super) snapshot_rx: watch::Receiver<VersionedAppStateSnapshot>,
+    /// This runtime's diagnostics lane, so a caller can scope the
+    /// process-wide diagnostic ring to the runtime it is talking to.
+    sliding_sync_diagnostics: crate::SlidingSyncDiagnostics,
     next_sequence: AtomicU64,
 }
 
@@ -346,6 +349,7 @@ impl CoreRuntime {
             media_staging: Arc::clone(&self.media_staging),
             event_rx,
             snapshot_rx: self.snapshot_rx.clone(),
+            sliding_sync_diagnostics: self.sliding_sync_diagnostics.clone(),
             next_sequence: AtomicU64::new(1),
         }
     }
@@ -649,6 +653,16 @@ impl CoreConnectionTestControl {
 }
 
 impl CoreConnection {
+    /// The process-unique owner of this runtime's `core.sync` / `core.runtime`
+    /// diagnostic records.
+    ///
+    /// The diagnostic ring is process-wide, so a caller that reports a failure
+    /// must name the runtime it was talking to before it can attribute records;
+    /// `backend_generation` then separates that runtime's sync runs.
+    pub fn sync_diagnostics_owner(&self) -> crate::SyncDiagnosticsOwner {
+        self.sliding_sync_diagnostics.owner()
+    }
+
     pub(crate) fn view_consumer(
         &self,
     ) -> Result<crate::view_scope_lifecycle::ViewConsumer, crate::view_scope_lifecycle::ScopeError>
@@ -986,6 +1000,7 @@ impl CoreConnection {
                 ))),
                 event_rx: Some(event_rx),
                 snapshot_rx,
+                sliding_sync_diagnostics: crate::SlidingSyncDiagnostics::default(),
                 next_sequence: AtomicU64::new(1),
             },
             CoreConnectionTestControl {
