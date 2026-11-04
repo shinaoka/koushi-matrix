@@ -48,6 +48,8 @@
 
 mod attachment_admission;
 #[cfg(test)]
+mod crawl_invalidation;
+#[cfg(test)]
 mod crawl_scheduling;
 #[cfg(test)]
 mod history_scale;
@@ -806,6 +808,10 @@ pub(crate) struct SearchActor {
     /// Manual probes are allowed outside this set; auto crawls are pruned
     /// against it whenever room membership changes.
     available_crawl_rooms: HashSet<String>,
+    /// Rooms whose stored events changed after their scan began, so the page or
+    /// continuation that read them may have passed the change. One follow-up
+    /// full reread is owed per room, served when that scan ends (#1781).
+    pending_reread: HashSet<String>,
     /// Active one-page crawl task.
     active_crawl_page: Option<executor::JoinHandle<HistoryCrawlPageResult>>,
     /// Checkpoint currently owned by `active_crawl_page`. Kept separately so a
@@ -836,6 +842,11 @@ pub(crate) struct SearchActor {
     search_progress_index_instance: String,
     /// Where to write the record. Absent for sessions without a store.
     search_progress_writer: Option<(crate::store::StoreActor, koushi_protocol::SessionKeyId)>,
+    /// True while the durable record holds changes whose write failed.
+    ///
+    /// A reopen that never reached disk must be retried, or a restart would
+    /// trust the older settled record and skip the room (#1781).
+    search_progress_unsaved: bool,
     /// Identity the running index and content policy produce; resolved on the
     /// first settings the actor sees, because the policy arrives with the room
     /// list rather than at spawn.
@@ -922,6 +933,7 @@ impl SearchActor {
             crawl_queue: VecDeque::new(),
             queued_crawl_rooms: HashSet::new(),
             available_crawl_rooms: HashSet::new(),
+            pending_reread: HashSet::new(),
             active_crawl_page: None,
             active_crawl_checkpoint: None,
             completed_rooms: HashMap::new(),
@@ -931,6 +943,7 @@ impl SearchActor {
             files_rebuild_pending: HashMap::new(),
             search_progress_index_instance: String::new(),
             search_progress_writer: None,
+            search_progress_unsaved: false,
             search_progress_identity: None,
             crawl_delay_elapsed: false,
             last_crawl_backlog_counts: None,
@@ -1176,14 +1189,25 @@ impl SearchActor {
             SearchActorMessage::LateDecryptionLagging => {
                 // Any room may have missed a resolution; there is no way to know
                 // which, so every joined room is re-read from its persisted
-                // chunks rather than left with a stale index.
+                // chunks rather than left with a stale index. The sweep coalesces
+                // into one obligation per room and one record write for all of
+                // them, so repeated reports over unchanged work publish nothing
+                // (#1781).
                 let rooms = self
                     .available_crawl_rooms
                     .iter()
                     .cloned()
                     .collect::<Vec<_>>();
+                let mut record_changed = false;
                 for room_id in rooms {
-                    self.mark_room_needs_reread(&room_id).await;
+                    record_changed |= self.note_reread_needed(&room_id);
+                    self.enqueue_reread(room_id).await;
+                }
+                if record_changed {
+                    self.persist_search_progress().await;
+                }
+                if !self.crawler_is_paused() {
+                    self.start_next_history_crawl_page();
                 }
                 true
             }
@@ -1952,10 +1976,16 @@ impl SearchActor {
                 }
                 // The permit covers page/index work, not Files cache admission.
                 drop(work_permit);
+                // A change that arrived while this scan ran is not covered by
+                // it, so the scan's end may not settle the room: one fresh scan
+                // serves the obligation instead (#1781). Only the scan's end
+                // consumes it, so a partial page keeps making progress and a
+                // stale completion never clears a newer obligation.
+                let owes_follow_up = self.pending_reread.contains(&checkpoint.room_id);
                 // The page's Tantivy commit is already acknowledged, so the
                 // record may advance. A crash between the commit and this write
                 // replays at most this page.
-                self.record_crawl_page_progress(&checkpoint, completed)
+                self.record_crawl_page_progress(&checkpoint, completed && !owes_follow_up)
                     .await;
                 self.queue_crawl_messages(messages);
                 let _ = self
@@ -1967,7 +1997,18 @@ impl SearchActor {
                         timestamp_ms: crate::time::current_epoch_ms(),
                     }])
                     .await;
-                if completed {
+                if completed && owes_follow_up {
+                    // The obligation is now served by a scan that starts after
+                    // the change. A paused crawler admits none: the durable
+                    // record keeps it and the resuming room list queues it.
+                    self.pending_reread.remove(&checkpoint.room_id);
+                    if !self.crawler_is_paused() {
+                        let follow_up = self
+                            .fresh_reread_checkpoint(checkpoint.room_id.clone(), checkpoint.manual);
+                        self.enqueue_history_crawl(follow_up, 0, CrawlEnqueueCause::Reopen)
+                            .await;
+                    }
+                } else if completed {
                     let crawl = CompletedHistoryCrawl {
                         latest_event_id: checkpoint.latest_event_id_at_start.clone(),
                         processed: checkpoint.processed,
@@ -2010,6 +2051,9 @@ impl SearchActor {
                 if !checkpoint.manual && !self.available_crawl_rooms.contains(&checkpoint.room_id) {
                     return;
                 }
+                // This page is gone, so nothing here serves the obligation: it
+                // stays set (and durable) until a scan that starts after the
+                // change completes.
                 let _ = self
                     .action_tx
                     .send(vec![AppAction::HistoryCrawlFailed {
@@ -2028,7 +2072,8 @@ impl SearchActor {
                 }
                 // No progress was made; retry this checkpoint next. The crawler's
                 // next acquire blocks behind the waiting timeline (waiting_timeline),
-                // so this does not livelock.
+                // so this does not livelock. The pending obligation stays set, so a
+                // later page cannot settle the room before a fresh scan runs (#1781).
                 self.queued_crawl_rooms.insert(checkpoint.room_id.clone());
                 self.crawl_queue.push_front(checkpoint);
             }
@@ -2045,51 +2090,115 @@ impl SearchActor {
     /// next launch. Only joined rooms are recorded, so an unknown room cannot
     /// grow the durable record.
     async fn mark_room_needs_reread(&mut self, room_id: &str) {
+        let record_changed = self.note_reread_needed(room_id);
+        if self.available_crawl_rooms.contains(room_id) {
+            self.enqueue_reread(room_id.to_owned()).await;
+            if !self.crawler_is_paused() {
+                self.start_next_history_crawl_page();
+            }
+        }
+        if record_changed {
+            self.persist_search_progress().await;
+        }
+    }
+
+    fn crawler_is_paused(&self) -> bool {
+        self.crawler_settings.speed == SearchCrawlerSpeed::Paused
+    }
+
+    /// Record one room's durable reread obligation without publishing it.
+    ///
+    /// Returns whether the persisted record has to be written again: a signal
+    /// over a room that already owes a reread changes nothing, so a burst of
+    /// them rewrites nothing (#1781).
+    fn note_reread_needed(&mut self, room_id: &str) -> bool {
         let known = self.available_crawl_rooms.contains(room_id)
             || self
                 .search_progress
                 .as_ref()
                 .is_some_and(|progress| progress.room(room_id).is_some());
         if !known {
-            return;
+            return false;
         }
         let recorded = self
             .search_progress
             .as_ref()
             .is_some_and(|progress| progress.room(room_id).is_some());
+        let mut newly_owed = false;
         if let Some(progress) = self.search_progress.as_mut() {
-            progress.room_mut(room_id).needs_reread = true;
-        }
-        if recorded {
-            self.persist_search_progress().await;
+            let room = progress.room_mut(room_id);
+            newly_owed = !room.needs_reread;
+            room.needs_reread = true;
         }
         self.completed_rooms.remove(room_id);
         // The re-read rebuilds the room's rows as it goes, so the on-demand
         // rebuild is no longer its owner.
         self.files_rebuild_pending.remove(room_id);
-        if !self.available_crawl_rooms.contains(room_id) {
-            // The room list does not know this room yet. Its reopen is durable,
-            // and the next notification queues the read.
+        // A record whose last write failed still owes that write: retrying it
+        // here is what keeps a reopen durable across a restart (#1781).
+        (newly_owed && recorded) || self.search_progress_unsaved
+    }
+
+    /// Queue what a reread obligation needs, or coalesce it into work that can
+    /// still cover the change (#1781).
+    async fn enqueue_reread(&mut self, room_id: String) {
+        // A page already reading this room started before the change and may
+        // have passed it, so it cannot settle the room: keep exactly one
+        // follow-up, served when that scan ends. This is recorded while paused
+        // too, so a page that outlives a pause cannot settle the room either.
+        if self
+            .active_crawl_checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint.room_id == room_id)
+        {
+            self.pending_reread.insert(room_id);
             return;
         }
-        // A crawl already reading this room started before the resolution, so it
-        // may have passed the changed event; restart it from the newest event
-        // rather than let its completion settle the room.
-        if self.history_crawl_room_is_known(room_id) {
-            self.remove_history_crawl_room(room_id).await;
+        // `queued_crawl_rooms` is the queue's own index: a room it does not
+        // name has no checkpoint to coalesce into, so a lag sweep over many
+        // rooms does not scan the queue once per room.
+        if self.queued_crawl_rooms.contains(&room_id) {
+            let Some(position) = self
+                .crawl_queue
+                .iter()
+                .position(|checkpoint| checkpoint.room_id == room_id)
+            else {
+                return;
+            };
+            // A queued full reread that has read nothing yet covers the change
+            // by itself. A continuation or a catch-up starts from a position it
+            // already reached, so it becomes a full scan instead of resuming
+            // behind what it walked past.
+            if !self.crawl_queue[position].starts_over() {
+                let manual = self.crawl_queue[position].manual;
+                let replacement = self.fresh_reread_checkpoint(room_id.clone(), manual);
+                self.crawl_queue[position] = replacement;
+            }
+            // Whatever is queued now starts over, so it serves the obligation.
+            self.pending_reread.remove(&room_id);
+            return;
         }
-        self.enqueue_history_crawl(
-            HistoryCrawlCheckpoint::new(
-                room_id.to_owned(),
-                self.crawler_settings.clone(),
-                self.crawl_settings_generation,
-                false,
-            ),
-            0,
-            CrawlEnqueueCause::Reopen,
+        // Nothing is queued to absorb it. A paused crawler admits no new work:
+        // the durable record keeps the obligation and the resuming room list
+        // queues it.
+        if self.crawler_is_paused() {
+            return;
+        }
+        self.pending_reread.remove(&room_id);
+        let checkpoint = self.fresh_reread_checkpoint(room_id, false);
+        self.enqueue_history_crawl(checkpoint, 0, CrawlEnqueueCause::Reopen)
+            .await;
+    }
+
+    /// A checkpoint that reads a room from its newest event, which is what a
+    /// reread obligation needs.
+    fn fresh_reread_checkpoint(&self, room_id: String, manual: bool) -> HistoryCrawlCheckpoint {
+        HistoryCrawlCheckpoint::new(
+            room_id,
+            self.crawler_settings.clone(),
+            self.crawl_settings_generation,
+            manual,
         )
-        .await;
-        self.start_next_history_crawl_page();
     }
 
     /// Apply a record a previous session loaded, without the store round trip.
@@ -2208,7 +2317,8 @@ impl SearchActor {
         };
         let saved =
             executor::spawn_blocking(move || store.save_search_progress(&key_id, &progress)).await;
-        if !matches!(saved, Ok(Ok(()))) {
+        self.search_progress_unsaved = !matches!(saved, Ok(Ok(())));
+        if self.search_progress_unsaved {
             // Losing the write costs a re-crawl of what it described, never a
             // skipped room, because the file only ever names committed rooms.
             record(
@@ -2260,6 +2370,10 @@ impl SearchActor {
             .iter()
             .map(|checkpoint| checkpoint.room_id.clone())
             .collect();
+        // A departed room owes nothing: its obligation is settled by the crawl
+        // set that dropped it (#1781).
+        self.pending_reread
+            .retain(|room_id| self.available_crawl_rooms.contains(room_id));
 
         // A departed room must not keep a completion, or the next session would
         // skip its backfill when it rejoins.
@@ -2316,6 +2430,7 @@ impl SearchActor {
         self.crawl_queue
             .retain(|checkpoint| checkpoint.room_id != room_id);
         self.queued_crawl_rooms.remove(room_id);
+        self.pending_reread.remove(room_id);
         self.completed_rooms.remove(room_id);
         let active_matches = self
             .active_crawl_checkpoint
@@ -2337,6 +2452,7 @@ impl SearchActor {
         }
         self.crawl_queue.clear();
         self.queued_crawl_rooms.clear();
+        self.pending_reread.clear();
         if let Some(handle) = self.active_crawl_page.take() {
             abort_and_await_task(handle).await;
         }
