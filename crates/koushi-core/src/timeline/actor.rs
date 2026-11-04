@@ -57,8 +57,9 @@ use super::item_projection::{
     ReceiptObservationTarget, apply_link_previews_to_item, apply_timeline_item_visibility,
     cache_sdk_item_media_source, emit_receipt_observation_actions,
     live_event_receipts_from_sdk_items, live_event_window_ids_from_sdk_items,
-    receipt_scope_for_timeline_kind, remember_local_echo, sdk_item_to_timeline_item,
-    thread_auto_requestable_event_id, timeline_room_id, withheld_update_should_publish,
+    receipt_scope_for_timeline_kind, receipts_by_row, remember_local_echo,
+    sdk_item_to_timeline_item, thread_auto_requestable_event_id, timeline_room_id,
+    withheld_update_should_publish,
 };
 use super::manager::TimelineMessage;
 use super::media::{
@@ -1974,7 +1975,7 @@ impl TimelineActor {
                     &key,
                     actor_generation,
                     &room_id,
-                    initial_receipts,
+                    receipts_by_row(&display_projection, &receipt_endpoints, initial_receipts),
                     ReceiptObservationTarget::Live {
                         scope: initial_receipt_scope,
                         scoped_event_ids: initial_window_event_ids,
@@ -3146,3 +3147,7 @@ mod tests;
 #[cfg(test)]
 #[path = "actor/issue_1692_tests.rs"]
 mod issue_1692_tests;
+
+#[cfg(test)]
+#[path = "actor/issue_1783_tests.rs"]
+mod issue_1783_tests;
