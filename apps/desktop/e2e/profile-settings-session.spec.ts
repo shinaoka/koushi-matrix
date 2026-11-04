@@ -627,7 +627,9 @@ test("pseudo RTL profile with CJK and combining samples does not overflow shell"
   }, longRoomName);
 
   await expect(page.locator("main.main-pane").getByText(longRoomName)).toBeVisible();
-  await expect(page.getByText("Seed message for reply target")).toBeVisible();
+  await expect(
+    page.getByTestId("timeline-view").getByText("Seed message for reply target")
+  ).toBeVisible();
 
   await page.evaluate(async ({ key, body, reactionKey }) => {
     const item = {
@@ -687,7 +689,7 @@ test("pseudo RTL profile with CJK and combining samples does not overflow shell"
   await expect(page.locator(".room-name").first()).toHaveAttribute("dir", "auto");
   await expect(page.locator(".sender").first()).toHaveAttribute("dir", "auto");
   await expect(page.locator(".message-body").first()).toHaveAttribute("dir", "auto");
-  await expect(page.getByText(sampleBody)).toBeVisible();
+  await expect(page.getByTestId("timeline-view").getByText(sampleBody)).toBeVisible();
   await expect(page.locator(".reaction-pill-key", { hasText: "日本語" })).toBeVisible();
   await expect(page.locator(".reaction-pill-key", { hasText: "日本語" })).toHaveAttribute(
     "dir",
