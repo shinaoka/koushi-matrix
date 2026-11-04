@@ -807,6 +807,12 @@ stateDiagram-v2
     Reconnecting --> Stopped: LogoutRequested
 ```
 
+A run's first committed response closes that run's own lifecycle: the observer
+projects `Running` from it and does not wait for the room-list reconciliation,
+which owns room-list authority instead (see "Room-list bootstrap readiness").
+A pending reconciliation therefore never withholds or delays the sync lifecycle;
+it only keeps the room list provisional.
+
 An unexpectedly terminated steady Simplified Sliding Sync child is recoverable
 owner loss, not an authoritative account failure. The retained SyncActor projects
 `Reconnecting`, starts one replacement SDK generation after bounded backoff, and
