@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  MediaViewer,
   MessageArticle,
   PinnedEventsList,
   PinnedMessagesEntry,
@@ -146,5 +147,44 @@ describe("scheduled message editing", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save scheduled send" }));
 
     expect(onReschedule).toHaveBeenCalledWith("scheduled-1", "Edited **body**", expect.any(Number));
+  });
+});
+
+describe("media gallery viewer header", () => {
+  // #1784: the header shows the size, never the raw MIME type or media kind.
+  it("omits the MIME type from the header", () => {
+    render(
+      <MediaViewer
+        index={0}
+        items={[
+          {
+            event_id: "$synthetic-file",
+            room_id: "!room:example.invalid",
+            sender: null,
+            timestamp_ms: 0,
+            media: {
+              kind: "File",
+              filename: "synthetic_report.xlsx",
+              source: {
+                mxc_uri: "mxc://example.invalid/synthetic",
+                encrypted: false,
+                encryption_version: null
+              },
+              mimetype: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              size: 9 * 1024,
+              width: null,
+              height: null,
+              thumbnail: null
+            }
+          }
+        ]}
+        mediaDownloads={{}}
+        onClose={vi.fn()}
+        onSelectIndex={vi.fn()}
+      />
+    );
+
+    const header = document.querySelector(".media-viewer-header p");
+    expect(header?.textContent).toBe("9 KB");
   });
 });

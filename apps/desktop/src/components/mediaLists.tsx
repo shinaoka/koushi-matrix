@@ -263,10 +263,8 @@ function MediaViewer({
         <header className="media-viewer-header">
           <div>
             <h2 dir="auto">{label}</h2>
-            <p>
-              {item.media.mimetype ?? item.media.kind}
-              {item.media.size !== null ? ` - ${formatUploadBytes(item.media.size)}` : ""}
-            </p>
+            {/* #1784: size only; the raw MIME type is not shown. */}
+            {item.media.size !== null ? <p>{formatUploadBytes(item.media.size)}</p> : null}
           </div>
           <Tooltip label={t("mediaGallery.close")} placement="below" align="end">
             {(tooltipProps) => (

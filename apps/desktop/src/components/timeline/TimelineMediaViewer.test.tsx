@@ -40,3 +40,13 @@ describe("TimelineMediaViewer native context menu", () => {
     expect(notCancelled).toBe(true);
   });
 });
+
+describe("TimelineMediaViewer header", () => {
+  // #1784: the header shows size and dimensions only, never the raw MIME type.
+  it("omits the MIME type from the metadata line", () => {
+    render(<TimelineMediaViewer item={item} onClose={vi.fn()} />);
+
+    const meta = document.querySelector(".timeline-media-viewer-meta");
+    expect(meta?.textContent).toBe("2 KB · 640x480");
+  });
+});

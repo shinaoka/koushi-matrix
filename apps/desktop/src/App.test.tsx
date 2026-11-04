@@ -629,12 +629,16 @@ describe("ContextualRightPanel", () => {
       />
     );
 
-    expect(markup).toContain('class="message-media"');
+    expect(markup).toContain('class="message-media message-media-file"');
     expect(markup).toContain("release-notes.pdf");
-    expect(markup).toContain("application/pdf");
+    // #1784: the file card shows a type tile, not the raw MIME type.
+    expect(markup).not.toContain("application/pdf");
+    expect(markup).toContain('data-file-type="pdf"');
     expect(markup).toContain("1 KB");
     expect(markup).toContain('aria-label="Download release-notes.pdf"');
-    expect(markup.indexOf('class="message-media"')).toBeLessThan(markup.indexOf("Project notes"));
+    expect(markup.indexOf('class="message-media message-media-file"')).toBeLessThan(
+      markup.indexOf("Project notes")
+    );
     expect(markup).not.toContain("mxc://example.invalid/private-file");
   });
 

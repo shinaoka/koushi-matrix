@@ -3,8 +3,15 @@ import { NativeModal } from "../ModalDialog";
 import { FloatingLayer, floatingPlacementStyle, useFloatingPlacement } from "../floatingLayer";
 import {
   Download,
+  File as FileGenericIcon,
+  FileArchive,
+  FileAudio,
   FileCode2,
+  FileImage,
+  FileSpreadsheet,
   FileText,
+  FileVideo,
+  Presentation,
   Forward,
   ImageIcon,
   Info,
@@ -14,7 +21,7 @@ import {
   Trash2,
   XCircle
 } from "lucide-react";
-import { type CSSProperties, type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, Fragment, type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 import { t } from "../../i18n/messages";
 import { Tooltip } from "../Tooltip";
@@ -26,6 +33,20 @@ import type { TimelineForwardDestination } from "../../domain/projectionTypes";
 import { mediaSourceUrl } from "../../backend/linkMediaRuntime";
 import type { MediaSaveNameFacts } from "../../backend/linkMediaPort";
 import type { TimelineTransport } from "./TimelineTransport";
+import { type FileTypeCategory, fileTypeCategory } from "./fileTypeCategory";
+
+const FILE_TYPE_ICONS: Record<FileTypeCategory, typeof FileText> = {
+  spreadsheet: FileSpreadsheet,
+  document: FileText,
+  slides: Presentation,
+  pdf: FileText,
+  archive: FileArchive,
+  image: FileImage,
+  audio: FileAudio,
+  video: FileVideo,
+  text: FileCode2,
+  other: FileGenericIcon
+};
 
 export type TimelineMediaViewerItem = {
   sourceUrl: string;
@@ -422,109 +443,163 @@ export function TimelineMediaAttachment({
     );
   }
 
+  // #1784: WeChat-style file card. The type tile carries the file type, so the
+  // card never prints the raw MIME type or a per-file encryption pill; the
+  // size line doubles as the transfer status line.
+  const fileType = fileTypeCategory(media.filename, media.mimetype, media.kind);
+  const FileTypeIcon = FILE_TYPE_ICONS[fileType];
+  const statusParts =
+    downloadState?.kind === "failed"
+      ? [t("timeline.mediaDownloadFailed")]
+      : downloadState?.kind === "pending"
+        ? [
+            t("timeline.mediaDownloadPending"),
+            downloadProgressPercent === null
+              ? null
+              : t("timeline.mediaUploadProgress", { percent: downloadProgressPercent })
+          ]
+        : [
+            formatBytes(media.size),
+            uploadProgressPercentValue === null
+              ? null
+              : t("timeline.mediaUploadProgress", { percent: uploadProgressPercentValue })
+          ];
+  const statusText = statusParts.filter((value): value is string => Boolean(value));
+  const cardAction: (() => void) | null = !canDownload
+    ? null
+    : downloadState?.kind === "pending"
+      ? null
+      : downloadState?.kind === "ready"
+        ? () => {
+            void saveMediaSource(
+              downloadState.source_ref,
+              mediaSourceUrl(downloadState.source_ref, downloadState.mime_type ?? media.mimetype),
+              media.filename,
+              saveName,
+              onSaveMediaFile
+            );
+          }
+        : requestDownload;
+  const failed = downloadState?.kind === "failed";
+  const tileLabel = failed
+    ? t("timeline.mediaDownloadRetry")
+    : t("timeline.downloadMedia", { filename: media.filename });
+  const tileContent = (
+    <>
+      {failed ? (
+        <RefreshCw className="message-media-type-icon" size={22} aria-hidden="true" />
+      ) : (
+        <FileTypeIcon
+          className="message-media-type-icon"
+          size={downloadState?.kind === "pending" ? 18 : 24}
+          aria-hidden="true"
+        />
+      )}
+      {canDownload && !failed && downloadState?.kind !== "pending" ? (
+        <span className="message-media-type-overlay" aria-hidden="true">
+          <Download size={20} />
+        </span>
+      ) : null}
+      {downloadState?.kind === "pending" ? (
+        <svg
+          className="message-media-type-ring"
+          data-indeterminate={downloadProgressPercent === null || undefined}
+          viewBox="0 0 52 52"
+          aria-hidden="true"
+        >
+          <circle className="message-media-type-ring-track" cx="26" cy="26" r="23" />
+          <circle
+            className="message-media-type-ring-value"
+            cx="26"
+            cy="26"
+            r="23"
+            pathLength={100}
+            strokeDasharray={`${downloadProgressPercent ?? 25} 100`}
+          />
+        </svg>
+      ) : null}
+    </>
+  );
+
   return (
     <div
-      className="message-media"
+      className="message-media message-media-file"
       data-media-kind={media.kind}
       data-media-encrypted={media.source.encrypted || undefined}
       data-download-state={downloadState?.kind ?? "notRequested"}
+      data-actionable={cardAction ? "true" : undefined}
+      onClick={
+        cardAction
+          ? (event) => {
+              const target = event.target;
+              // The tile is its own button; only the card background acts
+              // here, and never while the user is selecting the filename.
+              if (target instanceof Element && target.closest("button, a")) {
+                return;
+              }
+              const selection = window.getSelection();
+              if (selection && !selection.isCollapsed && event.currentTarget.contains(selection.anchorNode)) {
+                return;
+              }
+              cardAction();
+            }
+          : undefined
+      }
     >
-      <Icon className="message-media-icon" size={18} aria-hidden="true" />
       <div className="message-media-main">
-        <div className="message-media-title" dir="auto">
+        <div className="message-media-title" dir="auto" title={media.filename}>
           {media.filename}
         </div>
         <div className="message-media-meta">
-          {metadata.length > 0 ? <span>{metadata.join(" · ")}</span> : null}
-          {media.source.encrypted ? (
-            <span className="message-media-badge">{t("timeline.encryptedMedia")}</span>
-          ) : null}
-          {downloadState?.kind === "pending" ? (
-            <span>{t("timeline.mediaDownloadPending")}</span>
-          ) : null}
-          {downloadState?.kind === "failed" ? (
-            <span className="message-media-error">
-              {t("timeline.mediaDownloadFailed")}
-            </span>
-          ) : null}
-          {progressPercent !== null ? (
-            <span>{t("timeline.mediaUploadProgress", { percent: progressPercent })}</span>
-          ) : null}
+          {statusText.map((part, index) => (
+            <Fragment key={part}>
+              {index > 0 ? " · " : null}
+              <span className={failed ? "message-media-error" : undefined}>{part}</span>
+            </Fragment>
+          ))}
         </div>
-        {progressPercent !== null ? (
-          <div
-            className="message-media-progress"
-            role="progressbar"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={progressPercent}
-          >
-            <span style={{ width: `${progressPercent}%` }} />
-          </div>
-        ) : null}
       </div>
       {canDownload ? (
-        downloadState?.kind === "failed" ? (
-          <Tooltip label={t("timeline.mediaDownloadRetry")} placement="above">
-            {(tooltipProps) => (
-              <button
-                className="message-media-download message-media-retry"
-                type="button"
-                aria-label={t("timeline.mediaDownloadRetry")}
-                onClick={requestDownload}
-                {...tooltipProps}
-              >
-                <RefreshCw size={15} />
-              </button>
-            )}
-          </Tooltip>
-        ) : downloadState?.kind === "ready" ? (
-          <Tooltip
-            label={t("timeline.downloadMedia", { filename: media.filename })}
-            placement="above"
-          >
-            {(tooltipProps) => (
-              <button
-                className="message-media-download"
-                type="button"
-                aria-label={t("timeline.downloadMedia", { filename: media.filename })}
-                onClick={() => {
-                  void saveMediaSource(
-                    downloadState.source_ref,
-                    mediaSourceUrl(
-                      downloadState.source_ref,
-                      downloadState.mime_type ?? media.mimetype
-                    ),
-                    media.filename,
-                    saveName,
-                    onSaveMediaFile
-                  );
-                }}
-                {...tooltipProps}
-              >
-                <Download size={15} />
-              </button>
-            )}
-          </Tooltip>
-        ) : (
-          <Tooltip
-            label={t("timeline.downloadMedia", { filename: media.filename })}
-            placement="above"
-          >
-            {(tooltipProps) => (
-              <button
-                className="message-media-download"
-                type="button"
-                disabled={downloadState?.kind === "pending"}
-                aria-label={t("timeline.downloadMedia", { filename: media.filename })}
-                onClick={requestDownload}
-                {...tooltipProps}
-              >
-                <Download size={15} />
-              </button>
-            )}
-          </Tooltip>
-        )
+        <Tooltip label={tileLabel} placement="above">
+          {(tooltipProps) => (
+            <button
+              className={`message-media-type-tile message-media-download${failed ? " message-media-retry" : ""}`}
+              type="button"
+              data-file-type={fileType}
+              disabled={downloadState?.kind === "pending"}
+              aria-label={tileLabel}
+              onClick={cardAction ?? undefined}
+              {...tooltipProps}
+            >
+              {tileContent}
+            </button>
+          )}
+        </Tooltip>
+      ) : (
+        <div className="message-media-type-tile" data-file-type={fileType} aria-hidden="true">
+          {tileContent}
+        </div>
+      )}
+      {downloadState?.kind === "pending" && downloadProgressPercent !== null ? (
+        <span
+          className="sr-only"
+          role="progressbar"
+          aria-label={tileLabel}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={downloadProgressPercent}
+        />
+      ) : null}
+      {uploadProgressPercentValue !== null ? (
+        <div
+          className="message-media-progress"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={uploadProgressPercentValue}
+        >
+          <span style={{ width: `${uploadProgressPercentValue}%` }} />
+        </div>
       ) : null}
     </div>
   );
@@ -602,9 +677,9 @@ export function TimelineMediaViewer({
     };
   }, [closeActionMenu, isActionMenuOpen]);
 
+  // #1784: the raw MIME type stays out of the viewer header.
   const metadata = [
     formatBytes(item.size),
-    item.mimeType,
     formatDimensions(item.width, item.height)
   ].filter((value): value is string => Boolean(value));
   const canForward = item.actions.canForward && item.actions.forwardDestinations.length > 0;
