@@ -135,3 +135,17 @@ fn snapshot_serialization_has_no_channel_for_private_values() {
     assert!(serialized.contains("encryption_lock"));
     assert!(serialized.contains("sync_failed_store"));
 }
+
+/// #1634: the diagnostic ring is process-wide, so scoping a summary to one
+/// runtime needs an owner that is stable for that runtime's clones and distinct
+/// between runtimes sharing the process (the aggregate lane runs one
+/// `CoreRuntime` per participant).
+#[test]
+fn diagnostics_owner_is_stable_per_lane_and_unique_per_runtime() {
+    let first = SlidingSyncDiagnostics::default();
+    let second = SlidingSyncDiagnostics::default();
+
+    assert_eq!(first.owner(), first.clone().owner());
+    assert_ne!(first.owner(), second.owner());
+    assert_ne!(first.owner().get(), 0);
+}

@@ -1757,11 +1757,21 @@ async fn admitted_unknown_token_records_exact_lock_diagnostics_for_both_soft_log
         let expected = format!(
             "stage=session_invalidated reason=unknown_token soft_logout={soft_logout} action=lock"
         );
+        // #1634: the record also names the account runtime that produced it, so
+        // the ring can be scoped when several runtimes share one process. That
+        // owner is the only field allowed after the pinned prefix.
         assert!(
             koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
                 .iter()
-                .any(|record| koushi_diagnostics::format_event(&record.event) == expected),
-            "missing exact admission diagnostic: {expected}"
+                .any(|record| {
+                    koushi_diagnostics::format_event(&record.event)
+                        .strip_prefix(&expected)
+                        .and_then(|rest| rest.strip_prefix(" sync_owner="))
+                        .is_some_and(|owner| {
+                            !owner.is_empty() && owner.bytes().all(|byte| byte.is_ascii_digit())
+                        })
+                }),
+            "missing exact admission diagnostic: {expected} sync_owner=<owner>"
         );
         shutdown_and_ack(&handle).await;
     }

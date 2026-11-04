@@ -1300,6 +1300,7 @@ async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
     let (notification_delivery_outcome_tx, notification_delivery_outcome_rx) = mpsc::channel(1);
     let actor = AppActor {
         view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry::default(),
+        sliding_sync_diagnostics: crate::SlidingSyncDiagnostics::default(),
         command_tx: command_tx.downgrade(),
         command_rx,
         action_rx,
@@ -1735,6 +1736,7 @@ async fn same_batch_select_room_settles_only_final_selection() {
     let (notification_delivery_outcome_tx, notification_delivery_outcome_rx) = mpsc::channel(1);
     let actor = AppActor {
         view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry::default(),
+        sliding_sync_diagnostics: crate::SlidingSyncDiagnostics::default(),
         command_tx: command_tx.downgrade(),
         command_rx,
         action_rx,
@@ -3552,6 +3554,7 @@ fn app_actor_fixture_with_account_capacity(
     let (notification_delivery_outcome_tx, notification_delivery_outcome_rx) = mpsc::channel(1);
     let actor = AppActor {
         view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry::default(),
+        sliding_sync_diagnostics: crate::SlidingSyncDiagnostics::default(),
         command_tx: command_tx.downgrade(),
         command_rx,
         action_rx,

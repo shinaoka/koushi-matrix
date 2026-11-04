@@ -24,6 +24,15 @@ pub(super) trait QaEventSource {
 
 pub(super) trait QaSnapshotEventSource: QaEventSource {
     fn snapshot(&self) -> AppState;
+
+    /// Owner of this source's diagnostic records, when it has one.
+    ///
+    /// The ring is process-wide, so a failure string can only be attributed to
+    /// one runtime when the source names it. Scripted sources in tests have no
+    /// runtime, so they report `None` and the summary falls back to the ring.
+    fn sync_diagnostics_owner(&self) -> Option<koushi_core::SyncDiagnosticsOwner> {
+        None
+    }
 }
 
 impl QaEventSource for CoreConnection {
@@ -35,6 +44,10 @@ impl QaEventSource for CoreConnection {
 impl QaSnapshotEventSource for CoreConnection {
     fn snapshot(&self) -> AppState {
         CoreConnection::snapshot(self)
+    }
+
+    fn sync_diagnostics_owner(&self) -> Option<koushi_core::SyncDiagnosticsOwner> {
+        Some(CoreConnection::sync_diagnostics_owner(self))
     }
 }
 
@@ -715,7 +728,10 @@ pub(super) async fn wait_for_space_in_space_list(
                 let snapshot = conn.snapshot();
                 let observer_diagnostics =
                     invite_observer_diagnostic_summary(&koushi_diagnostics::snapshot());
-                let sync_diagnostics = sync_diagnostic_summary(&koushi_diagnostics::snapshot());
+                let sync_diagnostics = sync_diagnostic_summary(
+                    &koushi_diagnostics::snapshot(),
+                    conn.sync_diagnostics_owner(),
+                );
                 format!(
                     "{label}: timed out waiting for space list to include the expected space \
                      (have {} spaces; {observer_diagnostics}; {sync_diagnostics})",
@@ -894,8 +910,10 @@ pub(super) async fn wait_for_invite_in_snapshot(
                 let observer_diagnostics =
                     invite_observer_diagnostic_summary(&koushi_diagnostics::snapshot());
                 let diagnostics = koushi_diagnostics::snapshot();
-                let sync_diagnostics = sync_diagnostic_summary(&diagnostics);
-                let runtime_diagnostics = runtime_sync_diagnostic_summary(&diagnostics);
+                let sync_diagnostics =
+                    sync_diagnostic_summary(&diagnostics, conn.sync_diagnostics_owner());
+                let runtime_diagnostics =
+                    runtime_sync_diagnostic_summary(&diagnostics, conn.sync_diagnostics_owner());
                 let sync_state = sync_state_diagnostic_label(&snapshot.sync);
                 let session_state = session_state_diagnostic_label(&snapshot.session);
                 format!(
@@ -955,8 +973,8 @@ pub(super) async fn wait_for_sync_started_and_running(
                     "{label}: timed out waiting for Started/Running state; started={saw_started} sync={} session={} {} {}",
                     sync_state_diagnostic_label(&snapshot.sync),
                     session_state_diagnostic_label(&snapshot.session),
-                    sync_diagnostic_summary(&diagnostics),
-                    runtime_sync_diagnostic_summary(&diagnostics),
+                    sync_diagnostic_summary(&diagnostics, conn.sync_diagnostics_owner()),
+                    runtime_sync_diagnostic_summary(&diagnostics, conn.sync_diagnostics_owner()),
                 )
             })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -970,7 +988,10 @@ pub(super) async fn wait_for_sync_started_and_running(
             CoreEvent::Sync(SyncEvent::Failed) => {
                 return Err(format!(
                     "{label}: SyncEvent::Failed received before Running ({})",
-                    sync_diagnostic_summary(&koushi_diagnostics::snapshot())
+                    sync_diagnostic_summary(
+                        &koushi_diagnostics::snapshot(),
+                        conn.sync_diagnostics_owner()
+                    )
                 ));
             }
             CoreEvent::OperationFailed {
@@ -1223,8 +1244,10 @@ pub(super) async fn wait_for_logged_in<S: QaSnapshotEventSource + ?Sized>(
                 // "promotion never happened" from "promotion in flight" or
                 // "event correlated to another request". Without it the
                 // message was identical for every hypothesis (#375).
-                let trust_path =
-                    trust_admission_diagnostic_summary(&koushi_diagnostics::snapshot());
+                let trust_path = trust_admission_diagnostic_summary(
+                    &koushi_diagnostics::snapshot(),
+                    conn.sync_diagnostics_owner(),
+                );
                 return ready_account_key(conn).ok_or_else(|| {
                     format!(
                         "{label}: timed out waiting for LoggedIn event; phase={}; trust_path={trust_path}",

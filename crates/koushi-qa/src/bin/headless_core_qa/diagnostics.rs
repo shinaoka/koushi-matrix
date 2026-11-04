@@ -102,6 +102,7 @@ pub(super) fn gate_session_phase(session: &SessionState) -> &'static str {
 
 pub(super) fn trust_admission_diagnostic_summary(
     snapshot: &koushi_diagnostics::DiagnosticSnapshot,
+    owner: Option<koushi_core::SyncDiagnosticsOwner>,
 ) -> String {
     const ALLOWED_STAGES: &[&str] = &[
         "provisional_encryption_sync_started",
@@ -132,6 +133,9 @@ pub(super) fn trust_admission_diagnostic_summary(
         .filter(|record| {
             record.event.source == "core.verification_admission"
                 && ALLOWED_STAGES.contains(&record.event.stage)
+                && owner.is_none_or(|owner| {
+                    diagnostic_count_field(&record.event, "sync_owner") == Some(owner.get())
+                })
         })
         .take(12)
         .map(|record| record.event.stage)
@@ -418,7 +422,118 @@ pub(super) fn invite_observer_diagnostic_summary(
     )
 }
 
-pub(super) fn sync_diagnostic_summary(snapshot: &koushi_diagnostics::DiagnosticSnapshot) -> String {
+/// Which records describe the run a waiter is stuck on.
+///
+/// The detail ring is process-wide, and one process can run several account
+/// runtimes (the aggregate lane runs one `CoreRuntime` per participant), so a
+/// summary that counts every `core.sync` record describes no run in particular:
+/// the snapshot's `sync` is per connection while the counters were per process.
+/// Records name their runtime with `sync_owner` and their run inside it with
+/// `backend_generation`, so a failure string can report the stuck run instead.
+///
+/// `owner: None` means no record named this runtime at all (an old ring, or
+/// evicted records); the summary then falls back to the whole ring and says so
+/// with `scope=process` rather than pretending to be scoped.
+struct SyncDiagnosticScope {
+    owner: Option<u64>,
+    generation: u64,
+}
+
+impl SyncDiagnosticScope {
+    fn new(
+        snapshot: &koushi_diagnostics::DiagnosticSnapshot,
+        owner: koushi_core::SyncDiagnosticsOwner,
+    ) -> Self {
+        let owner_id = owner.get();
+        let mut named = false;
+        let mut generation = 0_u64;
+        for record in &snapshot.records {
+            let event = &record.event;
+            if event.source != "core.sync"
+                || diagnostic_count_field(event, "sync_owner") != Some(owner_id)
+            {
+                continue;
+            }
+            named = true;
+            generation =
+                generation.max(diagnostic_count_field(event, "backend_generation").unwrap_or(0));
+        }
+        if !named {
+            return Self {
+                owner: None,
+                generation: 0,
+            };
+        }
+        Self {
+            owner: Some(owner_id),
+            generation,
+        }
+    }
+
+    fn token(&self) -> &'static str {
+        if self.owner.is_some() {
+            "run"
+        } else {
+            "process"
+        }
+    }
+
+    /// A record of this runtime: commands, status projections, exits, service
+    /// state. These carry `sync_owner` only, because a `Start` command and the
+    /// `Starting` projection that answers it both precede the run generation.
+    fn is_owner(&self, event: &koushi_diagnostics::DiagnosticEvent) -> bool {
+        match self.owner {
+            None => true,
+            Some(owner) => diagnostic_count_field(event, "sync_owner") == Some(owner),
+        }
+    }
+
+    /// A record of this runtime's newest run: committed responses, reconciles
+    /// and handoff steps.
+    fn is_run(&self, event: &koushi_diagnostics::DiagnosticEvent) -> bool {
+        if self.owner.is_none() {
+            return true;
+        }
+        self.is_owner(event)
+            && diagnostic_count_field(event, "backend_generation") == Some(self.generation)
+    }
+}
+
+/// Entered/completed counts for one first-response handoff await.
+#[derive(Default)]
+struct HandoffAwaitCounts {
+    entered: u64,
+    completed: u64,
+}
+
+impl HandoffAwaitCounts {
+    fn record(&mut self, phase: &str) {
+        match phase {
+            "entered" => self.entered = self.entered.saturating_add(1),
+            "completed" => self.completed = self.completed.saturating_add(1),
+            _ => {}
+        }
+    }
+
+    /// `pending` is the answer this field exists for: the observer entered the
+    /// await and has not returned, so that await is where it is sitting. It is
+    /// the stall unless a terminal state record (`offline`/`error`/`terminated`)
+    /// or a `task_ended`/`observer_exit` record follows it, in which case the
+    /// round trip was retired rather than left hanging.
+    fn token(&self) -> &'static str {
+        match (self.entered, self.completed) {
+            (0, _) => "none",
+            (entered, completed) if entered == completed => "completed",
+            _ => "pending",
+        }
+    }
+}
+
+pub(super) fn sync_diagnostic_summary(
+    snapshot: &koushi_diagnostics::DiagnosticSnapshot,
+    owner: koushi_core::SyncDiagnosticsOwner,
+) -> String {
+    let scope = SyncDiagnosticScope::new(snapshot, owner);
     let mut service_build_failed = 0_u64;
     let mut committed_response = 0_u64;
     let mut task_ended = 0_u64;
@@ -443,9 +558,13 @@ pub(super) fn sync_diagnostic_summary(snapshot: &koushi_diagnostics::DiagnosticS
     let mut last_reconcile_elapsed_ms = 0_u64;
     let mut first_response_stalled = 0_u64;
     let mut last_stall_phase = "none";
+    let mut await_refresh = HandoffAwaitCounts::default();
+    let mut await_timeline = HandoffAwaitCounts::default();
+    let mut await_reconcile = HandoffAwaitCounts::default();
+    let mut await_handoff = HandoffAwaitCounts::default();
     for record in &snapshot.records {
         let event = &record.event;
-        if event.source != "core.sync" {
+        if event.source != "core.sync" || !scope.is_owner(event) {
             continue;
         }
         match event.stage {
@@ -460,7 +579,7 @@ pub(super) fn sync_diagnostic_summary(snapshot: &koushi_diagnostics::DiagnosticS
                 }
             }
             "service_build_failed" => service_build_failed = service_build_failed.saturating_add(1),
-            "committed_response" => {
+            "committed_response" if scope.is_run(event) => {
                 committed_response = committed_response.saturating_add(1);
                 last_rooms_from_response =
                     diagnostic_count_field(event, "rooms_from_response").unwrap_or(0);
@@ -484,10 +603,20 @@ pub(super) fn sync_diagnostic_summary(snapshot: &koushi_diagnostics::DiagnosticS
                 last_observer_exit_reason =
                     diagnostic_token_field(event, "reason").unwrap_or("unknown");
             }
-            "room_list_reconcile_wait" => {
+            "room_list_reconcile_wait" if scope.is_run(event) => {
                 reconcile_wait = reconcile_wait.saturating_add(1);
                 last_reconcile_outcome = diagnostic_token_field(event, "outcome").unwrap_or("none");
                 last_reconcile_elapsed_ms = diagnostic_u64_field(event, "elapsed_ms").unwrap_or(0);
+            }
+            "handoff_step" if scope.is_run(event) => {
+                let phase = diagnostic_token_field(event, "phase").unwrap_or("unknown");
+                match diagnostic_token_field(event, "step").unwrap_or("unknown") {
+                    "refresh" => await_refresh.record(phase),
+                    "timeline" => await_timeline.record(phase),
+                    "reconcile" => await_reconcile.record(phase),
+                    "handoff" => await_handoff.record(phase),
+                    _ => {}
+                }
             }
             "first_response_stalled" => {
                 first_response_stalled = first_response_stalled.saturating_add(1);
@@ -497,7 +626,8 @@ pub(super) fn sync_diagnostic_summary(snapshot: &koushi_diagnostics::DiagnosticS
         }
     }
     format!(
-        "sync_diag_service_build_failed={} sync_diag_committed_response={} \
+        "sync_diag_scope={} sync_diag_owner={} sync_diag_run_generation={} \
+         sync_diag_service_build_failed={} sync_diag_committed_response={} \
          sync_diag_task_ended={} sync_diag_command_start={} sync_diag_command_stop={} \
          sync_diag_command_restart={} sync_diag_last_task_kind={} \
          sync_diag_last_command_lifecycle={} sync_diag_last_state={} \
@@ -506,7 +636,12 @@ pub(super) fn sync_diagnostic_summary(snapshot: &koushi_diagnostics::DiagnosticS
          sync_diag_last_status_generation={} sync_diag_last_committed_sequence={} \
          sync_diag_last_committed_pos_present={} sync_diag_reconcile_wait={} \
          sync_diag_last_reconcile_outcome={} sync_diag_last_reconcile_elapsed_ms={} \
-         sync_diag_first_response_stalled={} sync_diag_last_stall_phase={}",
+         sync_diag_first_response_stalled={} sync_diag_last_stall_phase={} \
+         sync_diag_await_refresh={} sync_diag_await_timeline={} \
+         sync_diag_await_reconcile={} sync_diag_await_handoff={}",
+        scope.token(),
+        scope.owner.unwrap_or(0),
+        scope.generation,
         service_build_failed,
         committed_response,
         task_ended,
@@ -528,18 +663,39 @@ pub(super) fn sync_diagnostic_summary(snapshot: &koushi_diagnostics::DiagnosticS
         last_reconcile_elapsed_ms,
         first_response_stalled,
         last_stall_phase,
+        await_refresh.token(),
+        await_timeline.token(),
+        await_reconcile.token(),
+        await_handoff.token(),
     )
 }
 
 pub(super) fn runtime_sync_diagnostic_summary(
     snapshot: &koushi_diagnostics::DiagnosticSnapshot,
+    owner: koushi_core::SyncDiagnosticsOwner,
 ) -> String {
     let mut stop_command_effect = 0_u64;
     let mut stop_actor_projection = 0_u64;
     let mut account_sync_actor_stop = 0_u64;
     let mut session_invalidated = 0_u64;
+    let mut named = false;
     for record in &snapshot.records {
         let event = &record.event;
+        if matches!(
+            (event.source, event.stage),
+            ("core.runtime", "effect_stop_sync")
+                | ("core.account", "sync_actor_stop")
+                | ("core.account", "session_invalidated")
+        ) && diagnostic_count_field(event, "sync_owner") == Some(owner.get())
+        {
+            named = true;
+        }
+    }
+    for record in &snapshot.records {
+        let event = &record.event;
+        if named && diagnostic_count_field(event, "sync_owner") != Some(owner.get()) {
+            continue;
+        }
         match (event.source, event.stage) {
             ("core.runtime", "effect_stop_sync") => {
                 match diagnostic_token_field(event, "source").unwrap_or("unknown") {
@@ -559,12 +715,16 @@ pub(super) fn runtime_sync_diagnostic_summary(
             _ => {}
         }
     }
-    let trust_path = trust_admission_diagnostic_summary(snapshot);
+    let trust_path = trust_admission_diagnostic_summary(snapshot, named.then_some(owner));
     format!(
-        "runtime_diag_stop_command_effect={} runtime_diag_stop_actor_projection={} \
-         runtime_diag_account_sync_actor_stop={} runtime_diag_session_invalidated={} \
-         runtime_diag_trust_path={trust_path}",
-        stop_command_effect, stop_actor_projection, account_sync_actor_stop, session_invalidated,
+        "runtime_diag_scope={} runtime_diag_stop_command_effect={} \
+         runtime_diag_stop_actor_projection={} runtime_diag_account_sync_actor_stop={} \
+         runtime_diag_session_invalidated={} runtime_diag_trust_path={trust_path}",
+        if named { "run" } else { "process" },
+        stop_command_effect,
+        stop_actor_projection,
+        account_sync_actor_stop,
+        session_invalidated,
     )
 }
 

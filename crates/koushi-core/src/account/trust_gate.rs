@@ -69,8 +69,13 @@ fn current_session_status_failure(
     }
 }
 
-pub(super) fn record_verification_admission_event(event: DiagnosticEvent) {
-    koushi_diagnostics::record_and_stderr(event);
+pub(super) fn record_verification_admission_event(
+    owner: crate::SyncDiagnosticsOwner,
+    event: DiagnosticEvent,
+) {
+    koushi_diagnostics::record_and_stderr(
+        event.field(DiagnosticField::count("sync_owner", owner.get())),
+    );
 }
 
 pub(super) fn verification_admission_event(
@@ -699,11 +704,10 @@ impl AccountActor {
     }
 
     pub(super) fn request_authoritative_trust_recheck(&mut self) {
-        record_verification_admission_event(verification_admission_event(
-            "trust_recheck_requested",
-            self.trust_generation,
-            0,
-        ));
+        record_verification_admission_event(
+            self.sliding_sync_diagnostics.owner(),
+            verification_admission_event("trust_recheck_requested", self.trust_generation, 0),
+        );
         self.trust_recheck_pending = true;
         self.start_authoritative_trust_recheck_if_idle(false);
     }
@@ -743,11 +747,10 @@ impl AccountActor {
         crate::session_check_diagnostics::record_trust_recheck(
             crate::session_check_diagnostics::TrustRecheckOutcome::Started,
         );
-        record_verification_admission_event(verification_admission_event(
-            "trust_recheck_started",
-            generation,
-            0,
-        ));
+        record_verification_admission_event(
+            self.sliding_sync_diagnostics.owner(),
+            verification_admission_event("trust_recheck_started", generation, 0),
+        );
         let tx = self.self_tx.clone();
         self.trust_recheck_task = Some(executor::spawn(async move {
             let result = match executor::timeout(
@@ -980,11 +983,14 @@ impl AccountActor {
                     self.session_check.trust_failures = 0;
                 }
                 if trust == koushi_state::CurrentDeviceTrustState::Unknown {
-                    record_verification_admission_event(verification_admission_event(
-                        "trust_recheck_settled_by_inspection",
-                        generation,
-                        0,
-                    ));
+                    record_verification_admission_event(
+                        self.sliding_sync_diagnostics.owner(),
+                        verification_admission_event(
+                            "trust_recheck_settled_by_inspection",
+                            generation,
+                            0,
+                        ),
+                    );
                     self.handle_current_device_trust(generation, trust).await;
                 }
             }
@@ -1044,11 +1050,14 @@ impl AccountActor {
             return;
         }
         self.provisional_encryption_sync_ready = false;
-        record_verification_admission_event(verification_admission_event(
-            "provisional_encryption_sync_started",
-            generation,
-            transition_id,
-        ));
+        record_verification_admission_event(
+            self.sliding_sync_diagnostics.owner(),
+            verification_admission_event(
+                "provisional_encryption_sync_started",
+                generation,
+                transition_id,
+            ),
+        );
         self.sliding_sync_diagnostics
             .provisional_encryption_started();
         #[cfg(any(test, feature = "test-hooks"))]
@@ -1167,6 +1176,7 @@ impl AccountActor {
         }
         if should_defer_unknown_trust_observation(self.session_promoted, trust) {
             record_verification_admission_event(
+                self.sliding_sync_diagnostics.owner(),
                 verification_admission_event("trust_observation_deferred", generation, 0).field(
                     DiagnosticField::token("reason", "non_authoritative_unknown"),
                 ),
@@ -1270,6 +1280,7 @@ impl AccountActor {
             return;
         }
         record_verification_admission_event(
+            self.sliding_sync_diagnostics.owner(),
             verification_admission_event("trust_persisted", generation, 0).field(
                 DiagnosticField::token("trust", current_device_trust_token(trust)),
             ),
@@ -1283,20 +1294,22 @@ impl AccountActor {
         });
         let restricted_was_active = self.provisional_encryption_sync.is_some();
         self.stop_provisional_encryption_sync().await;
-        record_verification_admission_event(verification_admission_event(
-            if restricted_was_active {
-                "provisional_encryption_sync_stopped"
-            } else {
-                "provisional_encryption_sync_skipped"
-            },
-            generation,
-            transition_id,
-        ));
-        record_verification_admission_event(verification_admission_event(
-            "ready_projection_dispatched",
-            generation,
-            transition_id,
-        ));
+        record_verification_admission_event(
+            self.sliding_sync_diagnostics.owner(),
+            verification_admission_event(
+                if restricted_was_active {
+                    "provisional_encryption_sync_stopped"
+                } else {
+                    "provisional_encryption_sync_skipped"
+                },
+                generation,
+                transition_id,
+            ),
+        );
+        record_verification_admission_event(
+            self.sliding_sync_diagnostics.owner(),
+            verification_admission_event("ready_projection_dispatched", generation, transition_id),
+        );
         self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
             generation,
             transition_id,
@@ -1425,11 +1438,14 @@ impl AccountActor {
             return;
         }
         if !trust_projection_ack_matches(pending, generation, transition_id, ready, locked) {
-            record_verification_admission_event(verification_admission_event(
-                "trust_projection_ack_mismatch",
-                generation,
-                transition_id,
-            ));
+            record_verification_admission_event(
+                self.sliding_sync_diagnostics.owner(),
+                verification_admission_event(
+                    "trust_projection_ack_mismatch",
+                    generation,
+                    transition_id,
+                ),
+            );
             // An acknowledgement for this exact transition proves that its
             // projection did not settle the reducer. It is obsolete whether
             // the next explicit recheck demand arrived just before or just
@@ -1479,11 +1495,10 @@ impl AccountActor {
         self.start_incoming_verification_observer(session.clone())
             .await;
         self.spawn_sync_actor(session.clone()).await;
-        record_verification_admission_event(verification_admission_event(
-            "normal_sync_started",
-            generation,
-            transition_id,
-        ));
+        record_verification_admission_event(
+            self.sliding_sync_diagnostics.owner(),
+            verification_admission_event("normal_sync_started", generation, transition_id),
+        );
         self.spawn_account_hydration(session.clone());
         self.start_active_session_account_management_discovery(session.clone())
             .await;

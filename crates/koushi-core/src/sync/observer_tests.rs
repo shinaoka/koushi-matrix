@@ -35,7 +35,16 @@ impl Signals {
             encryption_sub,
             stop: SyncObserverStop::default(),
             pending: Some(Box::pin(async move {
-                (226, reconcile_committed_room_list(&room_tx, 7, 226).await)
+                (
+                    226,
+                    reconcile_committed_room_list(
+                        &room_tx,
+                        crate::SlidingSyncDiagnostics::default().owner(),
+                        7,
+                        226,
+                    )
+                    .await,
+                )
             })),
         }
     }

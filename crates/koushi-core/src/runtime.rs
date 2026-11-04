@@ -947,6 +947,7 @@ impl CoreRuntime {
             crate::notification_delivery::channel::NotificationDeliveryChannel::new();
         let actor = AppActor {
             view_scopes: view_scopes.clone(),
+            sliding_sync_diagnostics: sliding_sync_diagnostics.clone(),
             command_tx: command_tx.downgrade(),
             command_rx,
             action_rx,
@@ -1415,6 +1416,9 @@ impl ActiveSearchRequest {
 
 struct AppActor {
     view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry,
+    /// This runtime's diagnostics lane, so a runtime-level record names the
+    /// account runtime that produced it (the ring is process-wide).
+    sliding_sync_diagnostics: crate::SlidingSyncDiagnostics,
     command_tx: mpsc::WeakSender<CoreCommandEnvelope>,
     command_rx: mpsc::Receiver<CoreCommandEnvelope>,
     action_rx: mpsc::Receiver<Vec<AppAction>>,
@@ -5720,6 +5724,10 @@ impl AppActor {
                     trace_runtime_sync!(
                         "effect_stop_sync",
                         [
+                            DiagnosticField::count(
+                                "sync_owner",
+                                self.sliding_sync_diagnostics.owner().get()
+                            ),
                             DiagnosticField::token("source", "command_effect"),
                             DiagnosticField::request_id(
                                 "request_id",
@@ -6197,6 +6205,10 @@ impl AppActor {
                     trace_runtime_sync!(
                         "effect_stop_sync",
                         [
+                            DiagnosticField::count(
+                                "sync_owner",
+                                self.sliding_sync_diagnostics.owner().get()
+                            ),
                             DiagnosticField::token("source", "actor_projection"),
                             DiagnosticField::request_id(
                                 "request_id",
