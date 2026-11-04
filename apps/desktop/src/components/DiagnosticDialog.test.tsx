@@ -36,6 +36,19 @@ describe("DiagnosticDialog", () => {
     }
   );
 
+  it("puts the privacy statement above the report it vouches for", () => {
+    render(<DiagnosticDialog report="Koushi diagnostics" onClose={() => undefined} />);
+
+    const note = screen.getByText(t("diagnostics.privacyNote"));
+    const report = screen.getByText("Koushi diagnostics");
+
+    // The statement explains why the report is safe to share, so a reader who
+    // stops after the first glance must still see it: it precedes the report.
+    expect(note.compareDocumentPosition(report) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // ...and it renders as the callout, not as muted fine print.
+    expect(note.closest(".diagnostics-privacy-note")).not.toBeNull();
+  });
+
   it("saves the report to a file and reports the saved state", async () => {
     const onSaveReport = vi.fn(async () => true);
     render(
