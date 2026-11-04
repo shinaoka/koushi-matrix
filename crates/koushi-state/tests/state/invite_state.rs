@@ -515,3 +515,160 @@ fn a_locally_declined_invite_is_not_restored_by_a_provisional_snapshot() {
     assert_eq!(state.invites.len(), 1);
     assert_eq!(state.invites[0].room_id, "!other:localhost");
 }
+
+#[test]
+fn room_list_snapshots_keep_an_invite_avatar_thumbnail_only_for_the_same_face() {
+    // #1773: both snapshot handlers carry a normalized invite whose thumbnail is
+    // NotRequested. A previously downloaded Ready thumbnail must survive the
+    // snapshot, but only while the same room still shows the same MXC URI.
+    let avatar_mxc = "mxc://localhost/invite-avatar";
+    let changed_mxc = "mxc://localhost/invite-avatar-changed";
+    let expected_thumbnail = ready_avatar_thumbnail("invite");
+
+    for snapshot_kind in ["provisional", "authoritative"] {
+        let mut state = ready_state();
+        state.room_list.readiness = koushi_state::RoomListReadiness::Loading {
+            source: koushi_state::RoomListSource::Live,
+            generation: 7,
+        };
+        state.invites = vec![invite_preview_with_avatar(
+            "!invite:localhost",
+            false,
+            AvatarImage {
+                mxc_uri: avatar_mxc.to_owned(),
+                thumbnail: expected_thumbnail.clone(),
+            },
+        )];
+        let snapshot = |mxc_uri: &str| {
+            let invites = vec![invite_preview_with_avatar(
+                "!invite:localhost",
+                false,
+                AvatarImage {
+                    mxc_uri: mxc_uri.to_owned(),
+                    thumbnail: AvatarThumbnailState::NotRequested,
+                },
+            )];
+            if snapshot_kind == "provisional" {
+                AppAction::RoomListSnapshotProvisional {
+                    generation: 7,
+                    source: koushi_state::RoomListSource::Live,
+                    spaces: Vec::new(),
+                    rooms: Vec::new(),
+                    invites,
+                }
+            } else {
+                AppAction::RoomListSnapshotAuthoritative {
+                    generation: 7,
+                    source: koushi_state::RoomListSource::Live,
+                    spaces: Vec::new(),
+                    rooms: Vec::new(),
+                    invites,
+                }
+            }
+        };
+
+        reduce(&mut state, snapshot(avatar_mxc));
+        assert_eq!(
+            state.invites[0]
+                .avatar
+                .as_ref()
+                .map(|avatar| avatar.thumbnail.clone()),
+            Some(expected_thumbnail.clone()),
+            "{snapshot_kind}: the matching MXC URI keeps the complete Ready thumbnail"
+        );
+
+        reduce(&mut state, snapshot(changed_mxc));
+        assert_eq!(
+            state.invites[0]
+                .avatar
+                .as_ref()
+                .map(|avatar| &avatar.thumbnail),
+            Some(&AvatarThumbnailState::NotRequested),
+            "{snapshot_kind}: a changed MXC URI must not inherit the old face"
+        );
+    }
+}
+
+#[test]
+fn invite_snapshot_preserves_in_flight_state_only_for_the_same_room_and_face() {
+    let avatar_mxc = "mxc://localhost/shared-invite-avatar";
+    let loading = AvatarThumbnailState::Loading { request_id: 11 };
+
+    for snapshot_kind in ["provisional", "authoritative"] {
+        let snapshot = |room_id: &str| {
+            let invites = vec![invite_preview_with_avatar(
+                room_id,
+                false,
+                AvatarImage {
+                    mxc_uri: avatar_mxc.to_owned(),
+                    thumbnail: AvatarThumbnailState::NotRequested,
+                },
+            )];
+            if snapshot_kind == "provisional" {
+                AppAction::RoomListSnapshotProvisional {
+                    generation: 9,
+                    source: koushi_state::RoomListSource::Live,
+                    spaces: Vec::new(),
+                    rooms: Vec::new(),
+                    invites,
+                }
+            } else {
+                AppAction::RoomListSnapshotAuthoritative {
+                    generation: 9,
+                    source: koushi_state::RoomListSource::Live,
+                    spaces: Vec::new(),
+                    rooms: Vec::new(),
+                    invites,
+                }
+            }
+        };
+
+        let mut state = ready_state();
+        state.room_list.readiness = koushi_state::RoomListReadiness::Loading {
+            source: koushi_state::RoomListSource::Live,
+            generation: 9,
+        };
+        state.invites = vec![invite_preview_with_avatar(
+            "!invite:localhost",
+            false,
+            AvatarImage {
+                mxc_uri: avatar_mxc.to_owned(),
+                thumbnail: loading.clone(),
+            },
+        )];
+        reduce(&mut state, snapshot("!invite:localhost"));
+        assert_eq!(
+            state.invites[0]
+                .avatar
+                .as_ref()
+                .map(|avatar| avatar.thumbnail.clone()),
+            Some(loading.clone()),
+            "{snapshot_kind}: in-flight thumbnail survives the same face"
+        );
+
+        let mut state = ready_state();
+        state.room_list.readiness = koushi_state::RoomListReadiness::Loading {
+            source: koushi_state::RoomListSource::Live,
+            generation: 9,
+        };
+        state.invites = vec![invite_preview_with_avatar(
+            "!invite:localhost",
+            false,
+            AvatarImage {
+                mxc_uri: avatar_mxc.to_owned(),
+                thumbnail: ready_avatar_thumbnail("invite"),
+            },
+        )];
+        reduce(&mut state, snapshot("!other-invite:localhost"));
+        let other = state
+            .invites
+            .iter()
+            .find(|invite| invite.room_id == "!other-invite:localhost")
+            .expect("incoming invite");
+        assert_eq!(
+            other.avatar.as_ref().map(|avatar| &avatar.thumbnail),
+            Some(&AvatarThumbnailState::NotRequested),
+            "{snapshot_kind}: another room must not inherit the same MXC's thumbnail"
+        );
+    }
+}

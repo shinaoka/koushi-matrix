@@ -1668,6 +1668,11 @@ stateDiagram-v2
 - `InviteListUpdated { invites }` is accepted only when the session is Ready.
   It replaces the whole invite snapshot and emits `RoomListChanged`; duplicate
   or stale SDK deliveries must be folded into the next Rust-owned snapshot.
+  Provisional and authoritative room-list snapshots normalize invite avatars as
+  `NotRequested`, so the reducer carries an existing invite avatar thumbnail
+  (Ready, Loading, or Failed) forward only when both the invite room id and the
+  MXC URI still match. A changed or removed MXC starts `NotRequested`; the
+  normalizer never reads prior state.
 - `InvitePreview` carries room id for command correlation plus display name,
   `display_name_placeholder`, optional topic, optional inviter display name,
   and `is_dm`. GUI code must treat those fields as render data, not as a local

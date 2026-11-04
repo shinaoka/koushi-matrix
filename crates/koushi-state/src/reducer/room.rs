@@ -614,7 +614,7 @@ pub(crate) fn handle_room_list_snapshot_provisional(
     source: RoomListSource,
     spaces: Vec<crate::state::SpaceSummary>,
     rooms: Vec<crate::state::RoomSummary>,
-    invites: Vec<crate::state::InvitePreview>,
+    mut invites: Vec<crate::state::InvitePreview>,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
@@ -624,6 +624,7 @@ pub(crate) fn handle_room_list_snapshot_provisional(
     {
         return Vec::new();
     }
+    preserve_known_invite_avatar_thumbnails(state, &mut invites);
     // #1737: a provisional projection may omit an invite simply because the
     // cache does not hold it, so it refreshes known invites and retains the ones
     // it did not observe. Only an authoritative snapshot may retract one.
@@ -690,7 +691,7 @@ pub(crate) fn handle_room_list_snapshot_authoritative(
     source: RoomListSource,
     spaces: Vec<crate::state::SpaceSummary>,
     rooms: Vec<crate::state::RoomSummary>,
-    invites: Vec<crate::state::InvitePreview>,
+    mut invites: Vec<crate::state::InvitePreview>,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
@@ -698,6 +699,7 @@ pub(crate) fn handle_room_list_snapshot_authoritative(
     if !room_list_authoritative_matches_current(&state.room_list.readiness, generation, source) {
         return Vec::new();
     }
+    preserve_known_invite_avatar_thumbnails(state, &mut invites);
     state.room_list.readiness = RoomListReadiness::Ready { source, generation };
     state.invites = invites;
     let effects = handle_room_list_updated_with_crawler(state, spaces, rooms, true, true);
@@ -885,6 +887,34 @@ fn room_has_unread_metrics(room: &RoomSummary) -> bool {
         || room.notification_count > 0
         || room.highlight_count > 0
         || room.marked_unread
+}
+
+/// Preserve an invite avatar thumbnail only from the same room id and the same
+/// MXC URI. A changed face must stay unrequested rather than inherit the old
+/// thumbnail.
+fn preserve_known_invite_avatar_thumbnails(
+    state: &AppState,
+    invites: &mut [crate::state::InvitePreview],
+) {
+    let known_thumbnails = collect_known_avatar_thumbnails(state, true);
+
+    for invite in invites {
+        let Some(previous) = state
+            .invites
+            .iter()
+            .find(|existing| existing.room_id == invite.room_id)
+            .and_then(|existing| existing.avatar.as_ref())
+        else {
+            continue;
+        };
+        let Some(next) = invite.avatar.as_ref() else {
+            continue;
+        };
+        if previous.mxc_uri != next.mxc_uri {
+            continue;
+        }
+        preserve_avatar_thumbnail(&known_thumbnails, &mut invite.avatar);
+    }
 }
 
 fn preserve_known_avatar_thumbnails(
