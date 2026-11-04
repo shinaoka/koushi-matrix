@@ -14,7 +14,9 @@ use koushi_core::{
     runtime::{CoreConnection, CoreRuntime},
 };
 use koushi_protocol::command::{AccountCommand, AppCommand, CoreCommand};
-use koushi_state::{AppAction, AuthSecret, LoginRequest, RoomListFilter, SessionState, SyncState};
+use koushi_state::{
+    AppAction, AuthSecret, LoginRequest, RoomListFilter, RoomListReadiness, SessionState, SyncState,
+};
 use matrix_sdk::test_utils::mocks::MatrixMockServer;
 use serde_json::{Map, Value, json};
 use wiremock::{
@@ -210,77 +212,144 @@ fn response_with_request_transaction(request: &Value, mut response: Value) -> Re
     ResponseTemplate::new(200).set_body_json(response)
 }
 
+/// A synthetic homeserver that withholds the complete `all_rooms` range, plus
+/// the verified runtime logged into it.
+///
+/// Room-list request 0 answers with a partial range (19 of the 21 entries the
+/// `count` announces) and request 1, the complete range, is held on a barrier.
+/// The RoomActor's reconciliation of the partial commit therefore cannot finish
+/// until the test releases the barrier, which is the state both tests below
+/// inspect.
+struct HeldRoomListRange {
+    server: MatrixMockServer,
+    encryption_requests: Arc<AtomicUsize>,
+    request_bodies: Arc<Mutex<Vec<Value>>>,
+    room_list_request_rx: tokio::sync::mpsc::UnboundedReceiver<usize>,
+    first_response_release: Arc<Barrier>,
+    complete_range_release: Arc<Barrier>,
+    runtime: CoreRuntime,
+    connection: CoreConnection,
+    // The runtime's stores live as long as it does.
+    _data_dir: tempfile::TempDir,
+    _credential_dir: tempfile::TempDir,
+}
+
+impl HeldRoomListRange {
+    async fn start() -> Self {
+        let server = MatrixMockServer::new().await;
+        server
+            .mock_versions()
+            .with_feature("org.matrix.simplified_msc3575", true)
+            .ok()
+            .mount()
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/login"))
+            .respond_with(EchoRequestedLoginDevice)
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let room_list_requests = Arc::new(AtomicUsize::new(0));
+        let encryption_requests = Arc::new(AtomicUsize::new(0));
+        let request_bodies = Arc::new(Mutex::new(Vec::new()));
+        let (room_list_request_tx, room_list_request_rx) = tokio::sync::mpsc::unbounded_channel();
+        let first_response_release = Arc::new(Barrier::new(2));
+        let complete_range_release = Arc::new(Barrier::new(2));
+        Mock::given(method("POST"))
+            .and(path(SLIDING_SYNC_PATH))
+            .respond_with(RuntimeSlidingSyncResponder {
+                room_list_requests: room_list_requests.clone(),
+                encryption_requests: encryption_requests.clone(),
+                request_bodies: request_bodies.clone(),
+                room_list_request_tx,
+                first_response_release: first_response_release.clone(),
+                complete_range_release: complete_range_release.clone(),
+            })
+            .mount(server.server())
+            .await;
+
+        let data_dir = tempfile::tempdir().expect("runtime data directory");
+        let credential_dir = tempfile::tempdir().expect("runtime credential directory");
+        let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+            data_dir.path().to_path_buf(),
+            credential_dir.path().to_path_buf(),
+        );
+        assert!(
+            runtime
+                .configure_trust_observation_for_testing(
+                    koushi_sdk::CurrentDeviceTrustObservation {
+                        current: koushi_state::CurrentDeviceTrustState::Verified,
+                        updates: Box::pin(futures_util::stream::pending()),
+                    }
+                )
+                .await
+        );
+        let connection = runtime.attach();
+        let login_request_id = connection.next_request_id();
+        connection
+            .command(CoreCommand::Account(AccountCommand::LoginPassword {
+                request_id: login_request_id,
+                request: LoginRequest {
+                    homeserver: server.uri(),
+                    username: "runtime-room-list".to_owned(),
+                    password: AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+                platform: koushi_state::DisplayPlatform::Linux,
+            }))
+            .await
+            .expect("submit runtime login");
+
+        Self {
+            server,
+            encryption_requests,
+            request_bodies,
+            room_list_request_rx,
+            first_response_release,
+            complete_range_release,
+            runtime,
+            connection,
+            _data_dir: data_dir,
+            _credential_dir: credential_dir,
+        }
+    }
+}
+
+/// Wait for the next room-list request index, so a test observes the SDK at a
+/// named point instead of on a clock.
+async fn next_room_list_request(
+    requests: &mut tokio::sync::mpsc::UnboundedReceiver<usize>,
+    expected: usize,
+    label: &str,
+) {
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), requests.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{label} deadline")),
+        Some(expected),
+        "{label}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn normal_runtime_waits_for_full_all_rooms_reconciliation_and_reuses_one_sync_engine() {
-    let server = MatrixMockServer::new().await;
-    server
-        .mock_versions()
-        .with_feature("org.matrix.simplified_msc3575", true)
-        .ok()
-        .mount()
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/_matrix/client/v3/login"))
-        .respond_with(EchoRequestedLoginDevice)
-        .expect(1)
-        .mount(server.server())
-        .await;
+    let fixture = HeldRoomListRange::start().await;
+    let HeldRoomListRange {
+        server,
+        encryption_requests,
+        request_bodies,
+        mut room_list_request_rx,
+        first_response_release,
+        complete_range_release,
+        runtime,
+        mut connection,
+        // The runtime's stores live as long as it does, so bind them here.
+        _data_dir,
+        _credential_dir,
+    } = fixture;
 
-    let room_list_requests = Arc::new(AtomicUsize::new(0));
-    let encryption_requests = Arc::new(AtomicUsize::new(0));
-    let request_bodies = Arc::new(Mutex::new(Vec::new()));
-    let (room_list_request_tx, mut room_list_request_rx) = tokio::sync::mpsc::unbounded_channel();
-    let first_response_release = Arc::new(Barrier::new(2));
-    let complete_range_release = Arc::new(Barrier::new(2));
-    Mock::given(method("POST"))
-        .and(path(SLIDING_SYNC_PATH))
-        .respond_with(RuntimeSlidingSyncResponder {
-            room_list_requests: room_list_requests.clone(),
-            encryption_requests: encryption_requests.clone(),
-            request_bodies: request_bodies.clone(),
-            room_list_request_tx,
-            first_response_release: first_response_release.clone(),
-            complete_range_release: complete_range_release.clone(),
-        })
-        .mount(server.server())
-        .await;
-
-    let data_dir = tempfile::tempdir().expect("runtime data directory");
-    let credential_dir = tempfile::tempdir().expect("runtime credential directory");
-    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
-        data_dir.path().to_path_buf(),
-        credential_dir.path().to_path_buf(),
-    );
-    assert!(
-        runtime
-            .configure_trust_observation_for_testing(koushi_sdk::CurrentDeviceTrustObservation {
-                current: koushi_state::CurrentDeviceTrustState::Verified,
-                updates: Box::pin(futures_util::stream::pending()),
-            })
-            .await
-    );
-    let mut connection = runtime.attach();
-    let login_request_id = connection.next_request_id();
-    connection
-        .command(CoreCommand::Account(AccountCommand::LoginPassword {
-            request_id: login_request_id,
-            request: LoginRequest {
-                homeserver: server.uri(),
-                username: "runtime-room-list".to_owned(),
-                password: AuthSecret::new("synthetic-password"),
-                device_display_name: None,
-            },
-            platform: koushi_state::DisplayPlatform::Linux,
-        }))
-        .await
-        .expect("submit runtime login");
-
-    assert_eq!(
-        tokio::time::timeout(Duration::from_secs(5), room_list_request_rx.recv())
-            .await
-            .expect("first room-list request deadline"),
-        Some(0)
-    );
+    next_room_list_request(&mut room_list_request_rx, 0, "first room-list request").await;
     let state_before_first_response = connection.snapshot().sync;
     first_response_release.wait();
     assert_ne!(
@@ -295,7 +364,7 @@ async fn normal_runtime_waits_for_full_all_rooms_reconciliation_and_reuses_one_s
             .expect("complete-range room-list request deadline"),
         Some(1)
     );
-    let state_after_partial_commit = connection.snapshot().sync;
+    let state_after_partial_commit = connection.snapshot();
     complete_range_release.wait();
 
     let reconciled = wait_for_state_event(&mut connection, |state| {
@@ -381,11 +450,85 @@ async fn normal_runtime_waits_for_full_all_rooms_reconciliation_and_reuses_one_s
         .await
         .expect("ordered runtime shutdown must stop and join all actor owners");
 
-    assert_ne!(
-        state_after_partial_commit,
-        SyncState::Running,
-        "a committed partial all_rooms range must not project Running before RoomActor reconciles the complete loaded range"
+    // #1634: this used to read `state_after_partial_commit.sync != SyncState::Running`.
+    // `SyncState::Running` now means "this run committed a response" — the sync
+    // lifecycle's own evidence — and no longer doubles as "the room list is
+    // authoritative", so the intent is pinned on the signal that owns it.
+    assert!(
+        !matches!(
+            state_after_partial_commit.room_list.readiness,
+            RoomListReadiness::Ready { .. }
+        ),
+        "a committed partial all_rooms range must not present an authoritative room list \
+         before the RoomActor reconciles the complete loaded range"
     );
+}
+
+/// #1634, the inverse of the nightly failure: a run that commits a response
+/// while the room-list reconcile never answers must still reach `Running`.
+///
+/// The runtime's reconciliation round trip to the RoomActor is held open for the
+/// whole test, which is the shape the nightly lane produced (the observer sat in
+/// that round trip while the service kept committing). The sync lifecycle must
+/// not wait for it: a committed response is this run's own evidence that the
+/// service is running, and the room list keeps its separate readiness signal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn committed_response_projects_running_while_the_room_list_reconcile_is_pending() {
+    let HeldRoomListRange {
+        server: _server,
+        mut room_list_request_rx,
+        first_response_release,
+        complete_range_release,
+        runtime,
+        mut connection,
+        _data_dir,
+        _credential_dir,
+        ..
+    } = HeldRoomListRange::start().await;
+    // Hold the reconciliation before the run can reach it.
+    let release_reconcile = runtime.hold_live_room_list_reconcile_for_testing();
+
+    next_room_list_request(&mut room_list_request_rx, 0, "first room-list request").await;
+    first_response_release.wait();
+    // The commit has landed; request 1 is the next sync request the service
+    // issues after applying it.
+    next_room_list_request(
+        &mut room_list_request_rx,
+        1,
+        "complete-range room-list request",
+    )
+    .await;
+    // Release the withheld range here: from this point only the reconciliation
+    // round trip is pending, so a failed assertion cannot leave a responder
+    // blocked on a barrier.
+    complete_range_release.wait();
+
+    let running = tokio::time::timeout(
+        Duration::from_secs(10),
+        wait_for_state_event(&mut connection, |state| {
+            matches!(state.sync, SyncState::Running)
+        }),
+    )
+    .await
+    .expect("a committed response must project Running while the room-list reconcile is pending");
+    assert!(
+        !matches!(running.room_list.readiness, RoomListReadiness::Ready { .. }),
+        "the sync lifecycle must be closed without claiming an authoritative room list"
+    );
+
+    // Release the held round trip so the run settles before ordered shutdown.
+    let _ = release_reconcile.send(());
+    wait_for_state_event(&mut connection, |state| {
+        matches!(state.sync, SyncState::Running)
+            && state.rooms.len() == EXPECTED_JOINED_ROOMS
+            && matches!(state.room_list.readiness, RoomListReadiness::Ready { .. })
+    })
+    .await;
+
+    drop(connection);
+    tokio::time::timeout(Duration::from_secs(15), runtime.shutdown())
+        .await
+        .expect("ordered runtime shutdown must stop and join all actor owners");
 }
 
 #[tokio::test]
