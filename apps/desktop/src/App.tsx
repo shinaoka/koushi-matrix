@@ -1110,6 +1110,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           <AppSettingsDialog
             snapshot={selectedSnapshot}
             accountTabs={accountTabs?.tabs ?? []}
+            onSettingsScopeChange={(scope) => setSettingsScope(scope)}
             onUpdateSettings={(patch) => {
               void appSettingsUpdateRef.current(patch).catch(() => undefined);
             }}

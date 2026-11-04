@@ -6959,11 +6959,28 @@ dialog.timeline-media-viewer-overlay::backdrop { background: transparent; }
   width: min(680px, calc(100vw - 48px));
 }
 
+/* The privacy statement is the reason this report is safe to share, so it sits
+   above the report it vouches for, as a callout rather than a footnote. */
 .diagnostics-privacy-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   margin: 0;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.5;
+  padding: 10px 12px;
+  border: 1px solid var(--brand-weak);
+  border-inline-start: 3px solid var(--brand);
+  border-radius: 6px;
+  background: var(--brand-weak);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+
+.diagnostics-privacy-note svg {
+  flex: 0 0 auto;
+  margin-block-start: 1px;
+  color: var(--brand);
 }
 
 .diagnostics-status {
@@ -8763,6 +8780,29 @@ dialog.timeline-media-viewer-overlay::backdrop { background: transparent; }
 .settings-detail-list.crawler-room-status-list {
   max-block-size: 280px;
   overflow: auto;
+}
+
+/* Stacked rows pushed 30 rooms into three lines each. In this list only, the
+   name, the status and the action share one line; every other
+   `.settings-detail-row` consumer keeps the stacked layout. */
+.settings-detail-list.crawler-room-status-list .crawler-room-status-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding-block: 6px;
+}
+
+/* Without this the name column refuses to shrink and never ellipsizes. */
+.settings-detail-list.crawler-room-status-list .crawler-room-status-row > span {
+  min-width: 0;
+}
+
+/* Smaller action chip for the one-line row, still a 24px tap target. */
+.crawler-room-status-list .profile-settings-action {
+  min-height: 24px;
+  padding: 2px 8px;
+  white-space: nowrap;
 }
 
 .settings-detail-list {

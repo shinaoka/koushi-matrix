@@ -15,6 +15,7 @@ import {
   Download,
   FileText,
   Image as ImageIcon,
+  ShieldCheck,
   X
 } from "lucide-react";
 import { type MessageId, t, tCount } from "../i18n/messages";
@@ -1019,8 +1020,11 @@ export function DiagnosticDialog({
             )}
           </Tooltip>
         </div>
+        <p className="diagnostics-privacy-note">
+          <ShieldCheck size={ICON_SIZE.small} aria-hidden="true" />
+          <span>{t("diagnostics.privacyNote")}</span>
+        </p>
         <pre className="diagnostics-output">{diagnosticReportPreview(report)}</pre>
-        <p className="diagnostics-privacy-note">{t("diagnostics.privacyNote")}</p>
         {statusMessageId ? (
           <p className="diagnostics-status" role="status">
             {t(statusMessageId)}
