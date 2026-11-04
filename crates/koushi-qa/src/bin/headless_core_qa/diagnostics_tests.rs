@@ -310,7 +310,7 @@ fn trust_admission_timeout_summary_is_allowlisted_and_private_safe() {
         dropped_records: 0,
     };
 
-    let summary = trust_admission_diagnostic_summary(&snapshot);
+    let summary = trust_admission_diagnostic_summary(&snapshot, None);
     assert_eq!(
         summary,
         "trust_recheck_requested>trust_recheck_started>trust_recheck_finished_verified"
@@ -612,6 +612,16 @@ fn held_sliding_sync_responses_include_a_long_poll_forwarded_before_the_hold() {
     serving.join().unwrap();
 }
 
+/// A distinct, process-unique owner per call: two calls model two account
+/// runtimes in one process, which is the aggregate lane's shape.
+fn test_diagnostics_owner() -> koushi_core::SyncDiagnosticsOwner {
+    koushi_core::SlidingSyncDiagnostics::default().owner()
+}
+
+fn owner_field(owner: koushi_core::SyncDiagnosticsOwner) -> koushi_diagnostics::DiagnosticField {
+    koushi_diagnostics::DiagnosticField::count("sync_owner", owner.get())
+}
+
 fn sync_snapshot(
     records: Vec<(&'static str, Vec<koushi_diagnostics::DiagnosticField>)>,
 ) -> koushi_diagnostics::DiagnosticSnapshot {
@@ -671,9 +681,12 @@ fn sync_diagnostic_summary_names_the_first_response_handoff_step() {
         ),
     ]);
 
-    let summary = super::sync_diagnostic_summary(&snapshot);
+    // Records without `sync_owner` cannot be attributed to a runtime, so the
+    // summary falls back to the whole ring and says so.
+    let summary = super::sync_diagnostic_summary(&snapshot, test_diagnostics_owner());
 
     for expected in [
+        "sync_diag_scope=process",
         "sync_diag_status_projected=1",
         "sync_diag_last_lifecycle=starting",
         "sync_diag_last_status_generation=4",
@@ -695,9 +708,10 @@ fn sync_diagnostic_summary_names_the_first_response_handoff_step() {
 
 #[test]
 fn sync_diagnostic_summary_uses_fixed_placeholders_without_sync_records() {
-    let summary = super::sync_diagnostic_summary(&sync_snapshot(vec![]));
+    let summary = super::sync_diagnostic_summary(&sync_snapshot(vec![]), test_diagnostics_owner());
 
     for expected in [
+        "sync_diag_scope=process",
         "sync_diag_status_projected=0",
         "sync_diag_last_status_generation=0",
         "sync_diag_last_committed_sequence=0",
@@ -713,4 +727,172 @@ fn sync_diagnostic_summary_uses_fixed_placeholders_without_sync_records() {
             "expected `{expected}` in `{summary}`"
         );
     }
+}
+
+/// #1634 step 1: the aggregate lane runs one `CoreRuntime` per participant in a
+/// single process, so a summary built from the whole ring mixed the stuck run's
+/// records with every other run's. `sync_owner` names the runtime and
+/// `backend_generation` the run inside it; both runs below use generation 1,
+/// which is exactly why the owner is needed.
+#[test]
+fn sync_diagnostic_summary_reports_the_stuck_run_not_the_process() {
+    use koushi_diagnostics::DiagnosticField;
+
+    let stuck = test_diagnostics_owner();
+    let healthy = test_diagnostics_owner();
+    assert_ne!(stuck.get(), healthy.get());
+
+    let handoff =
+        |owner: koushi_core::SyncDiagnosticsOwner, step: &'static str, phase: &'static str| {
+            (
+                "handoff_step",
+                vec![
+                    owner_field(owner),
+                    DiagnosticField::token("step", step),
+                    DiagnosticField::token("phase", phase),
+                    DiagnosticField::count("backend_generation", 1),
+                ],
+            )
+        };
+
+    let snapshot = sync_snapshot(vec![
+        // A run that finished its handoff. It must not contribute a count.
+        (
+            "status_projected",
+            vec![
+                owner_field(healthy),
+                DiagnosticField::count("generation", 2),
+                DiagnosticField::token("lifecycle", "running"),
+            ],
+        ),
+        (
+            "committed_response",
+            vec![
+                owner_field(healthy),
+                DiagnosticField::count("sequence", 899),
+                DiagnosticField::count("backend_generation", 1),
+                DiagnosticField::boolean("pos_present", true),
+                DiagnosticField::count("rooms_from_response", 31),
+            ],
+        ),
+        handoff(healthy, "reconcile", "entered"),
+        handoff(healthy, "reconcile", "completed"),
+        handoff(healthy, "handoff", "entered"),
+        handoff(healthy, "handoff", "completed"),
+        // The run that stalled: one committed response, and its reconcile round
+        // trip was entered and never came back.
+        (
+            "status_projected",
+            vec![
+                owner_field(stuck),
+                DiagnosticField::count("generation", 1),
+                DiagnosticField::token("lifecycle", "starting"),
+            ],
+        ),
+        (
+            "committed_response",
+            vec![
+                owner_field(stuck),
+                DiagnosticField::count("sequence", 3),
+                DiagnosticField::count("backend_generation", 1),
+                DiagnosticField::boolean("pos_present", true),
+                DiagnosticField::count("rooms_from_response", 2),
+            ],
+        ),
+        handoff(stuck, "refresh", "entered"),
+        handoff(stuck, "refresh", "completed"),
+        handoff(stuck, "timeline", "entered"),
+        handoff(stuck, "timeline", "completed"),
+        handoff(stuck, "reconcile", "entered"),
+    ]);
+
+    let summary = super::sync_diagnostic_summary(&snapshot, stuck);
+
+    for expected in [
+        "sync_diag_scope=run",
+        "sync_diag_run_generation=1",
+        "sync_diag_status_projected=1",
+        "sync_diag_last_lifecycle=starting",
+        "sync_diag_committed_response=1",
+        "sync_diag_last_committed_sequence=3",
+        "sync_diag_last_rooms_from_response=2",
+        "sync_diag_await_refresh=completed",
+        "sync_diag_await_timeline=completed",
+        "sync_diag_await_reconcile=pending",
+        "sync_diag_await_handoff=none",
+    ] {
+        assert!(
+            summary.contains(expected),
+            "expected `{expected}` in `{summary}`"
+        );
+    }
+    for excluded in [
+        "sync_diag_last_committed_sequence=899",
+        "sync_diag_last_rooms_from_response=31",
+        "sync_diag_last_lifecycle=running",
+        "sync_diag_await_reconcile=completed",
+    ] {
+        assert!(
+            !summary.contains(excluded),
+            "did not expect `{excluded}` in `{summary}`"
+        );
+    }
+    assert!(summary.contains(&format!("sync_diag_owner={}", stuck.get())));
+}
+
+/// The stuck run is the newest run of its runtime, so an older run's counts must
+/// not leak into the summary through the shared owner.
+#[test]
+fn sync_diagnostic_summary_scopes_to_the_newest_run_of_the_owner() {
+    use koushi_diagnostics::DiagnosticField;
+
+    let owner = test_diagnostics_owner();
+    let snapshot = sync_snapshot(vec![
+        (
+            "committed_response",
+            vec![
+                owner_field(owner),
+                DiagnosticField::count("sequence", 412),
+                DiagnosticField::count("backend_generation", 1),
+                DiagnosticField::boolean("pos_present", true),
+                DiagnosticField::count("rooms_from_response", 31),
+            ],
+        ),
+        (
+            "handoff_step",
+            vec![
+                owner_field(owner),
+                DiagnosticField::token("step", "reconcile"),
+                DiagnosticField::token("phase", "completed"),
+                DiagnosticField::count("backend_generation", 1),
+            ],
+        ),
+        // A later start (the stuck one) with a single commit and no handoff step.
+        (
+            "committed_response",
+            vec![
+                owner_field(owner),
+                DiagnosticField::count("sequence", 1),
+                DiagnosticField::count("backend_generation", 2),
+                DiagnosticField::boolean("pos_present", true),
+                DiagnosticField::count("rooms_from_response", 0),
+            ],
+        ),
+    ]);
+
+    let summary = super::sync_diagnostic_summary(&snapshot, owner);
+
+    for expected in [
+        "sync_diag_scope=run",
+        "sync_diag_run_generation=2",
+        "sync_diag_committed_response=1",
+        "sync_diag_last_committed_sequence=1",
+        "sync_diag_await_reconcile=none",
+    ] {
+        assert!(
+            summary.contains(expected),
+            "expected `{expected}` in `{summary}`"
+        );
+    }
+    assert!(!summary.contains("sync_diag_last_committed_sequence=412"));
 }
