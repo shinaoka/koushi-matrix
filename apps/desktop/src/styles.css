@@ -5356,8 +5356,8 @@ button.message-media-type-tile:focus-visible .message-media-type-overlay {
 }
 
 .message-media-type-ring {
-  inline-size: 52px;
-  block-size: 52px;
+  inline-size: 38px;
+  block-size: 38px;
   pointer-events: none;
   transform: rotate(-90deg);
 }

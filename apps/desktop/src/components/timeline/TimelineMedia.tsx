@@ -489,7 +489,11 @@ export function TimelineMediaAttachment({
       {failed ? (
         <RefreshCw className="message-media-type-icon" size={22} aria-hidden="true" />
       ) : (
-        <FileTypeIcon className="message-media-type-icon" size={24} aria-hidden="true" />
+        <FileTypeIcon
+          className="message-media-type-icon"
+          size={downloadState?.kind === "pending" ? 18 : 24}
+          aria-hidden="true"
+        />
       )}
       {canDownload && !failed && downloadState?.kind !== "pending" ? (
         <span className="message-media-type-overlay" aria-hidden="true">
