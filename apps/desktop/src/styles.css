@@ -6959,11 +6959,28 @@ dialog.timeline-media-viewer-overlay::backdrop { background: transparent; }
   width: min(680px, calc(100vw - 48px));
 }
 
+/* The privacy statement is the reason this report is safe to share, so it sits
+   above the report it vouches for, as a callout rather than a footnote. */
 .diagnostics-privacy-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   margin: 0;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.5;
+  padding: 10px 12px;
+  border: 1px solid var(--brand-weak);
+  border-inline-start: 3px solid var(--brand);
+  border-radius: 6px;
+  background: var(--brand-weak);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+
+.diagnostics-privacy-note svg {
+  flex: 0 0 auto;
+  margin-block-start: 1px;
+  color: var(--brand);
 }
 
 .diagnostics-status {
