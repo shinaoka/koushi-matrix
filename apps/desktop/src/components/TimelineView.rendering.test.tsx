@@ -551,6 +551,206 @@ describe("TimelineView", () => {
     }
   );
 
+  it("renders a shared image thumbnail slot for every reply to one quoted picture", async () => {
+    const requestThumbnail = vi.fn(async () => undefined);
+    const quotedEventId = "$picture-root:example.invalid";
+    const quote = {
+      event_id: quotedEventId,
+      sender: "@alice:example.invalid",
+      sender_label: "Alice",
+      body_preview: null,
+      media: {
+        kind: "image" as const,
+        animated: false,
+        width: 640,
+        height: 480,
+        has_thumbnail_source: false
+      },
+      permalink:
+        "https://matrix.to/#/!room%3Aexample.invalid/%24picture-root%3Aexample.invalid",
+      can_open: true,
+      state: "ready" as const
+    };
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          {
+            ...message("$image-reply-a", "first reply"),
+            in_reply_to_event_id: quotedEventId,
+            reply_quote: quote
+          },
+          {
+            ...message("$image-reply-b", "second reply"),
+            in_reply_to_event_id: quotedEventId,
+            reply_quote: quote
+          }
+        ]
+      }
+    });
+
+    const view = (thumbnails: Record<string, import("../domain/types").TimelineMediaDownloadState>) => (
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={baseTransport({ requestReplyQuoteThumbnail: requestThumbnail })}
+          replyQuoteThumbnails={thumbnails}
+          onReply={vi.fn()}
+          onOpenThread={vi.fn()}
+        />
+      </TimelineStoreContext.Provider>
+    );
+    const { rerender } = render(view({}));
+    await waitFor(() =>
+      expect(requestThumbnail).toHaveBeenCalledTimes(1)
+    );
+    expect(requestThumbnail).toHaveBeenCalledWith(
+      "!room:example.invalid",
+      quotedEventId,
+      KEY
+    );
+
+    rerender(
+      view({
+        [quotedEventId]: {
+          kind: "ready",
+          source_ref: "download/1234567890123456/6543210987654321/96x96",
+          width: 96,
+          height: 96,
+          mime_type: "image/jpeg"
+        }
+      })
+    );
+    const slots = screen.getAllByRole("button", { name: "Open image from Alice" });
+    expect(slots).toHaveLength(2);
+    for (const slot of slots) {
+      expect(slot.getAttribute("data-thumbnail-state")).toBe("ready");
+      expect(slot.querySelector("img")?.getAttribute("src")).toBe(
+        "koushi-media://localhost/download/jpg/1234567890123456/6543210987654321/96x96"
+      );
+    }
+  });
+
+  it("keeps a neutral thumbnail placeholder pending and after failure", () => {
+    const quote = {
+      event_id: "$placeholder-root:example.invalid",
+      sender: "@alice:example.invalid",
+      sender_label: "Alice",
+      body_preview: "quoted caption",
+      media: {
+        kind: "image" as const,
+        animated: false,
+        width: 640,
+        height: 480,
+        has_thumbnail_source: false
+      },
+      permalink:
+        "https://matrix.to/#/!room%3Aexample.invalid/%24placeholder-root%3Aexample.invalid",
+      can_open: true,
+      state: "ready" as const
+    };
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          {
+            ...message("$placeholder-reply", "reply"),
+            in_reply_to_event_id: quote.event_id,
+            reply_quote: quote
+          }
+        ]
+      }
+    });
+    const view = (state: "pending" | "failed") => (
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={baseTransport({})}
+          replyQuoteThumbnails={{
+            [quote.event_id]:
+              state === "pending"
+                ? { kind: "pending", progress: null }
+                : { kind: "failed", failure_kind: "network" }
+          }}
+          onReply={vi.fn()}
+          onOpenThread={vi.fn()}
+        />
+      </TimelineStoreContext.Provider>
+    );
+    const { rerender } = render(view("pending"));
+    let slot = screen.getByRole("button", { name: "Open image from Alice" });
+    expect(slot.getAttribute("data-thumbnail-state")).toBe("pending");
+    expect(slot.querySelector("img")).toBeNull();
+    rerender(view("failed"));
+    slot = screen.getByRole("button", { name: "Open image from Alice" });
+    expect(slot.getAttribute("data-thumbnail-state")).toBe("failed");
+    expect(slot.querySelector("img")).toBeNull();
+    expect(slot.textContent).toBe("");
+  });
+
+  it("renders no thumbnail slot for a text or redacted quote", () => {
+    const textQuote = {
+      event_id: "$text-root:example.invalid",
+      sender: "@alice:example.invalid",
+      sender_label: "Alice",
+      body_preview: "plain quote",
+      state: "ready" as const
+    };
+    const redactedQuote = {
+      event_id: "$redacted-root:example.invalid",
+      sender: "@alice:example.invalid",
+      sender_label: "Alice",
+      body_preview: null,
+      media: {
+        kind: "image" as const,
+        animated: false,
+        width: 640,
+        height: 480,
+        has_thumbnail_source: false
+      },
+      state: "redacted" as const
+    };
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          {
+            ...message("$text-quote-reply", "reply"),
+            in_reply_to_event_id: textQuote.event_id,
+            reply_quote: textQuote
+          },
+          {
+            ...message("$redacted-quote-reply", "reply"),
+            in_reply_to_event_id: redactedQuote.event_id,
+            reply_quote: redactedQuote
+          }
+        ]
+      }
+    });
+
+    render(
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={baseTransport({})}
+          onReply={vi.fn()}
+          onOpenThread={vi.fn()}
+        />
+      </TimelineStoreContext.Provider>
+    );
+
+    expect(screen.queryByRole("button", { name: /Open image from/ })).toBeNull();
+  });
+
   it("ensures the timeline subscription after registering the CoreEvent listener", async () => {
     const calls: string[] = [];
     let listener: ((payload: CoreEventPayload) => void) | null = null;

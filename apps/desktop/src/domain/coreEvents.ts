@@ -811,6 +811,7 @@ export interface ReplyQuote {
   sender_label?: string | null;
   body_preview: string | null;
   formatted?: TimelineFormattedBody | null;
+  media?: ReplyQuoteMedia | null;
   // #1328: the quoted message's `m.mentions` facts, so the preview pills the
   // same anchors the quoted row does.
   mentioned_user_ids?: string[];
@@ -819,6 +820,16 @@ export interface ReplyQuote {
   /** Whether the quote's current Rust state may open the original. */
   can_open?: boolean;
   state: ReplyQuoteState;
+}
+
+export type ReplyQuoteMediaKind = "image" | "sticker" | "video" | "file" | "audio";
+
+export interface ReplyQuoteMedia {
+  kind: ReplyQuoteMediaKind;
+  animated?: boolean;
+  width?: number | null;
+  height?: number | null;
+  has_thumbnail_source?: boolean;
 }
 
 export type ReplyQuoteState =

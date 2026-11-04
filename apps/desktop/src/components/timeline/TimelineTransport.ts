@@ -55,7 +55,13 @@ export interface TimelineTransport {
   /** Unpin a timeline event in the room. */
   unpinEvent(roomId: string, eventId: string): Promise<void>;
   /** Download an event-backed media attachment. */
-  downloadMedia(roomId: string, eventId: string): Promise<void>;
+  downloadMedia(roomId: string, eventId: string, timelineKey?: TimelineKey): Promise<void>;
+  /** Request the 96×96 thumbnail for a quoted original. */
+  requestReplyQuoteThumbnail?(
+    roomId: string,
+    quotedEventId: string,
+    timelineKey?: TimelineKey
+  ): Promise<void>;
   /** Save an already downloaded media file through the host desktop shell. */
   saveMediaFile?(
     sourceRef: string,

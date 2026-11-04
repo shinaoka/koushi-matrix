@@ -129,8 +129,19 @@ export function createTauriTimelineTransport(accountTabId?: string): TimelineTra
     async unpinEvent(roomId: string, eventId: string) {
       await invokeAccount("unpin_event", { roomId, eventId });
     },
-    async downloadMedia(roomId: string, eventId: string) {
-      await invokeAccount("download_media", { roomId, eventId });
+    async downloadMedia(roomId: string, eventId: string, timelineKey?: TimelineKey) {
+      await invokeAccount("download_media", { roomId, eventId, timelineKey });
+    },
+    async requestReplyQuoteThumbnail(
+      roomId: string,
+      quotedEventId: string,
+      timelineKey?: TimelineKey
+    ) {
+      await invokeAccount("request_reply_quote_thumbnail", {
+        roomId,
+        quotedEventId,
+        timelineKey
+      });
     },
     async saveMediaFile(
       sourceRef: string,

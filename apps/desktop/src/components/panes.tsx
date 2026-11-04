@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -83,6 +84,9 @@ import { Composer, type ComposerSendingAccount } from "./composer";
 import { UploadStagingDialog, uploadStagingItemsAreSendable } from "./dialogs";
 import { ImeSafeForm, ImeTextField } from "./ImeTextControl";
 import { useStableEvent } from "./useStableEvent";
+import { useTimelineStoreContext } from "./timelineStoreContext";
+import { composerReplyQuote } from "../domain/composerReplyQuote";
+import { replyQuoteHasThumbnail } from "./timeline/ReplyQuoteThumbnail";
 import { uiDateTimeFormat, uiNumberFormat } from "../domain/intlFormatCache";
 
 const EMPTY_PINNED_EVENTS: DesktopSnapshot["state"]["domain"]["room_interactions"][string]["pinned_events"] = [];
@@ -929,6 +933,22 @@ export function TimelinePane({
       composerMode.kind === "reply" ? composerMode.in_reply_to_event_id : null
     ]
   );
+  const timelineStoreContext = useTimelineStoreContext();
+  const composerReplyQuoteValue = useMemo(
+    () =>
+      composerMode.kind === "reply"
+        ? composerReplyQuote(
+            timelineStoreContext?.store,
+            timelineKey,
+            composerMode.in_reply_to_event_id
+          )
+        : null,
+    [
+      composerMode,
+      timelineKey,
+      timelineStoreContext?.store
+    ]
+  );
   const pinnedEvents = timelineRoomId
     ? snapshot.state.domain.room_interactions[timelineRoomId]?.pinned_events ?? EMPTY_PINNED_EVENTS
     : EMPTY_PINNED_EVENTS;
@@ -1003,6 +1023,35 @@ export function TimelinePane({
   const onOpenContextMenuStable = useStableEvent(onOpenContextMenu);
   const onOpenThreadStable = useStableEvent(onOpenThread);
   const onRedactMessageStable = useStableEvent(onRedactMessage);
+  useEffect(() => {
+    const quote = composerReplyQuoteValue;
+    if (
+      !quote ||
+      !timelineTransport ||
+      !timelineRoomId ||
+      !replyQuoteHasThumbnail(quote)
+    ) {
+      return;
+    }
+    const state =
+      snapshot.state.ui.timeline.reply_quote_thumbnails?.[quote.event_id];
+    if (
+      state?.kind === "ready" ||
+      state?.kind === "pending" ||
+      state?.kind === "failed"
+    ) {
+      return;
+    }
+    void timelineTransport
+      .requestReplyQuoteThumbnail?.(timelineRoomId, quote.event_id, timelineKey ?? undefined)
+      .catch(() => undefined);
+  }, [
+    composerReplyQuoteValue,
+    snapshot.state.ui.timeline.reply_quote_thumbnails,
+    timelineKey,
+    timelineRoomId,
+    timelineTransport
+  ]);
   const onReplyStable = useStableEvent(onReply);
   const onOpenMatrixTargetStable = useStableEvent(
     // A pane without in-app navigation must leave matrix.to links external,
@@ -1283,6 +1332,9 @@ export function TimelinePane({
               onMathModeChange={onComposerMathModeChangeStable}
               searchHighlightsByEventId={searchHighlightsByEventId}
               mediaDownloads={mediaDownloads}
+              replyQuoteThumbnails={
+                snapshot.state.ui.timeline.reply_quote_thumbnails ?? {}
+              }
               editMentionCandidates={editMentionCandidates}
               editMentionCandidatesLoading={editMentionCandidatesLoading}
               onMentionQueryChange={onMentionQueryChangeStable}
@@ -1385,6 +1437,14 @@ export function TimelinePane({
         onDismissAssistantDraft={onDismissComposerAssistantDraftStable}
         roomName={activeRoomName}
         onCancelReply={onCancelReplyStable}
+        replyQuote={composerReplyQuoteValue}
+        replyQuoteThumbnail={
+          composerReplyQuoteValue
+            ? snapshot.state.ui.timeline.reply_quote_thumbnails?.[
+                composerReplyQuoteValue.event_id
+              ]
+            : undefined
+        }
         onAttachFiles={onAttachFilesStable}
         onDocumentChange={onComposerDocumentChangeStable}
         onMathModeChange={onComposerMathModeChangeStable}

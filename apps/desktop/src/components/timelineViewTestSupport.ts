@@ -123,6 +123,7 @@ export function baseTransport(
     pinEvent: async () => undefined,
     unpinEvent: async () => undefined,
     downloadMedia: async () => undefined,
+    requestReplyQuoteThumbnail: async () => undefined,
     downloadAvatarThumbnail: async () => undefined,
     loadMessageSource: async () => undefined,
     requestRoomKey: async () => undefined,

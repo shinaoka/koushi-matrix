@@ -217,7 +217,7 @@ const snapshot = {
       sender_device_advisories: { rooms: {} },
       space_members: spaceMembers
     },
-    ui: { timeline: { media_downloads: {} } }
+    ui: { timeline: { media_downloads: {}, reply_quote_thumbnails: {} } }
   }
 } as unknown as DesktopSnapshot;
 
@@ -1137,7 +1137,7 @@ describe("ContextualRightPanel thread reply mode (#1643)", () => {
       { onThreadComposerCancelReply }
     );
 
-    expect(screen.getByText(t("composer.replying"))).not.toBeNull();
+    expect(document.querySelector(".composer-reply-quote")).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: t("composer.cancelReply") }));
     expect(onThreadComposerCancelReply).toHaveBeenCalledWith(
       room.room_id,

@@ -786,14 +786,24 @@ export function TimelineMediaViewer({
           </div>
         </div>
         <div className="timeline-media-viewer-stage">
-          <img
-            className="timeline-media-viewer-image"
-            src={item.sourceUrl}
-            alt={item.filename}
-            title={item.filename}
-            width={item.width ?? undefined}
-            height={item.height ?? undefined}
-          />
+          {item.mimeType?.startsWith("video/") ? (
+            <video
+              className="timeline-media-viewer-video"
+              src={item.sourceUrl}
+              aria-label={item.filename}
+              controls
+              playsInline
+            />
+          ) : (
+            <img
+              className="timeline-media-viewer-image"
+              src={item.sourceUrl}
+              alt={item.filename}
+              title={item.filename}
+              width={item.width ?? undefined}
+              height={item.height ?? undefined}
+            />
+          )}
         </div>
       </section>
     </NativeModal>

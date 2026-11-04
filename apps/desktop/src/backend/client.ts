@@ -1569,6 +1569,16 @@ export class TauriDesktopApi implements DesktopApi {
     return this.invokeCommand<CommandAdmission>("set_composer_reply_target", { roomId, eventId });
   }
 
+  async requestReplyQuoteThumbnail(
+    roomId: string,
+    quotedEventId: string
+  ): Promise<void> {
+    return this.invokeCommand<void>("request_reply_quote_thumbnail", {
+      roomId,
+      quotedEventId
+    });
+  }
+
   async cancelComposerReply(): Promise<CommandAdmission> {
     return this.invokeCommand<CommandAdmission>("cancel_composer_reply");
   }

@@ -612,3 +612,31 @@ async fn a_cached_video_original_is_not_reused_as_a_quote_thumbnail() {
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn a_cached_animated_image_is_not_reused_as_a_static_quote_thumbnail() {
+    use koushi_protocol::command::MediaDownloadSelection;
+
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let mut entry = quote_media_entry("mxc://test/animated-cached");
+    entry.mimetype = Some("image/gif".to_owned());
+    let room_id = "!room:example.invalid";
+    let event_id = "$animated-cached:example.invalid";
+    let room_hash = super::sanitize_matrix_id_for_path(room_id);
+    let event_hash = super::sanitize_matrix_id_for_path(event_id);
+    let (_, path) = super::managed_media_download_entry(
+        data_dir.path(),
+        &room_hash,
+        &event_hash,
+        &MediaDownloadSelection::File,
+    )
+    .expect("cache entry");
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("cache dir");
+    std::fs::write(&path, b"GIF89a").expect("cache file");
+
+    assert!(
+        super::reply_quote_thumbnail_from_cached_file(&entry, data_dir.path(), room_id, event_id,)
+            .await
+            .is_none()
+    );
+}

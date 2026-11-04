@@ -3102,10 +3102,14 @@ settles.
   reports `missing_media_source`. `TimelinePaneState.reply_quote_thumbnails` is
   keyed by the quoted event id so several replies share one fetch state.
   `TimelineCommand::RequestReplyQuoteThumbnail` coalesces while a fetch for that
-  quoted event is in flight, reuses an already-cached `File` entry, and
+  quoted event is in flight, reuses an already-cached image `File` entry, and
   otherwise downloads `Thumbnail { 96, 96 }` through the same
   `download_media_for` path (decryption, timeout, managed cache, and the
-  selection-keyed ref grammar above).
+  selection-keyed ref grammar above). React requests it for visible rows only,
+  renders the 40 px slot from `ReplyQuote.media` plus the thumbnail state, and
+  opens the full file in the existing media viewer; the composer reply strip uses
+  the same quote projection and a 32 px slot. Text, redacted, loading, failed,
+  missing, and unsupported quotes render no slot.
 
 `AppState.room_interactions[room_id]` carries the room's pinned-event
 projection plus the current pin/unpin operation state:

@@ -114,6 +114,7 @@ describe("DesktopApi command contract", () => {
         "joinSuggestedSpaceRooms",
         "dismissSuggestedSpaceRooms",
         "setThreadComposerReplyTarget",
+        "requestReplyQuoteThumbnail",
         "cancelThreadComposerReply",
         "dismissAssistantDraftMarker"
       )

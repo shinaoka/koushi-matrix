@@ -339,16 +339,48 @@ pub(super) fn build_download_media_command(
     account_key: AccountKey,
     room_id: String,
     event_id: String,
+    timeline_key: Option<TimelineKey>,
 ) -> Option<CoreCommand> {
     if event_id.trim().is_empty() {
         return None;
     }
+    let key = timeline_key
+        .map(|timeline_key| TimelineKey {
+            account_key: account_key.clone(),
+            kind: timeline_key.kind,
+        })
+        .unwrap_or_else(|| build_timeline_key(account_key, room_id));
     Some(CoreCommand::Timeline(TimelineCommand::DownloadMedia {
         request_id,
-        key: build_timeline_key(account_key, room_id),
+        key,
         event_id,
         selection: MediaDownloadSelection::File,
     }))
+}
+
+pub(super) fn build_request_reply_quote_thumbnail_command(
+    request_id: koushi_protocol::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    quoted_event_id: String,
+    timeline_key: Option<TimelineKey>,
+) -> Option<CoreCommand> {
+    if quoted_event_id.trim().is_empty() {
+        return None;
+    }
+    let key = timeline_key
+        .map(|timeline_key| TimelineKey {
+            account_key: account_key.clone(),
+            kind: timeline_key.kind,
+        })
+        .unwrap_or_else(|| build_timeline_key(account_key, room_id));
+    Some(CoreCommand::Timeline(
+        TimelineCommand::RequestReplyQuoteThumbnail {
+            request_id,
+            key,
+            quoted_event_id,
+        },
+    ))
 }
 
 pub(super) fn build_load_message_source_command(
@@ -1394,6 +1426,7 @@ pub async fn download_media(
     account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
+    timeline_key: Option<TimelineKey>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<(), String> {
@@ -1403,9 +1436,39 @@ pub async fn download_media(
 
     let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
     let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
-    let Some(command) = build_download_media_command(request_id, account_key, room_id, event_id)
+    let Some(command) =
+        build_download_media_command(request_id, account_key, room_id, event_id, timeline_key)
     else {
         return Err("media event id must not be blank".to_owned());
+    };
+    submit_core_command(state.inner(), command).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn request_reply_quote_thumbnail(
+    account_tab_id: Option<String>,
+    room_id: String,
+    quoted_event_id: String,
+    timeline_key: Option<TimelineKey>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<(), String> {
+    if quoted_event_id.trim().is_empty() {
+        return Err("quoted event id must not be blank".to_owned());
+    }
+
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let Some(command) = build_request_reply_quote_thumbnail_command(
+        request_id,
+        account_key,
+        room_id,
+        quoted_event_id,
+        timeline_key,
+    ) else {
+        return Err("quoted event id must not be blank".to_owned());
     };
     submit_core_command(state.inner(), command).await?;
     update_qa_window_title_from_state(&app, state.inner()).await;

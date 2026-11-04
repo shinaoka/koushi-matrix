@@ -1888,6 +1888,7 @@ pub fn run() {
             commands::timeline::retry_send,
             commands::timeline::cancel_send,
             commands::timeline::download_media,
+            commands::timeline::request_reply_quote_thumbnail,
             commands::timeline::default_media_save_path,
             commands::timeline::save_downloaded_media,
             commands::timeline::load_message_source,

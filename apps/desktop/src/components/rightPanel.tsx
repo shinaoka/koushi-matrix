@@ -1,4 +1,4 @@
-import { type FormEvent, type RefObject, useMemo } from "react";
+import { type FormEvent, type RefObject, useEffect, useMemo } from "react";
 import { X } from "lucide-react";
 import { t } from "../i18n/messages";
 import type {
@@ -85,6 +85,9 @@ import { ThreadComposer, type ComposerSendingAccount } from "./composer";
 import { UploadStagingDialog, uploadStagingItemsAreSendable } from "./dialogs";
 import type { ComposerModeProp, OpenContextMenu } from "../app/uiShared";
 import { useStableEvent } from "./useStableEvent";
+import { useTimelineStoreContext } from "./timelineStoreContext";
+import { composerReplyQuote } from "../domain/composerReplyQuote";
+import { replyQuoteHasThumbnail } from "./timeline/ReplyQuoteThumbnail";
 import type { SettingsCategoryId } from "../domain/settingsNavigation";
 
 const noopSearchSpaceInviteTargets = async (): Promise<InviteTargetCandidate[]> => [];
@@ -509,6 +512,7 @@ export function ContextualRightPanel({
   const composerSettings =
     snapshot.state.domain.settings?.values.composer ?? DEFAULT_COMPOSER_SETTINGS;
   const mediaDownloads = snapshot.state.ui.timeline.media_downloads ?? NO_MEDIA_DOWNLOADS;
+  const timelineStoreContext = useTimelineStoreContext();
   const loadThreadPreview = useStableEvent(onThreadLoadStagedUploadPreview);
   const onRecentEmojisChange = useStableEvent((recent_emojis: string[]) =>
     onUpdateSettings?.({ composer: { ...composerSettings, recent_emojis } })
@@ -626,6 +630,50 @@ export function ContextualRightPanel({
         : null,
     [threadCurrentUserId, timelineTransport, threadPreviewRoomId, threadPreviewRootEventId]
   );
+  const threadComposerReplyQuote = useMemo(
+    () =>
+      threadReplyTargetEventId === null
+        ? null
+        : composerReplyQuote(
+            timelineStoreContext?.store,
+            threadTimelineKeyValue,
+            threadReplyTargetEventId
+          ),
+    [threadReplyTargetEventId, threadTimelineKeyValue, timelineStoreContext?.store]
+  );
+  useEffect(() => {
+    const quote = threadComposerReplyQuote;
+    if (
+      !quote ||
+      !timelineTransport ||
+      !threadPreviewRoomId ||
+      !replyQuoteHasThumbnail(quote)
+    ) {
+      return;
+    }
+    const state =
+      snapshot.state.ui.timeline.reply_quote_thumbnails?.[quote.event_id];
+    if (
+      state?.kind === "ready" ||
+      state?.kind === "pending" ||
+      state?.kind === "failed"
+    ) {
+      return;
+    }
+    void timelineTransport
+      .requestReplyQuoteThumbnail?.(
+        threadPreviewRoomId,
+        quote.event_id,
+        threadTimelineKeyValue ?? undefined
+      )
+      .catch(() => undefined);
+  }, [
+    snapshot.state.ui.timeline.reply_quote_thumbnails,
+    threadComposerReplyQuote,
+    threadPreviewRoomId,
+    threadTimelineKeyValue,
+    timelineTransport
+  ]);
   const threadPreviewLoader = useMemo(() => {
     return (stagedId: string, variantId: string) =>
       threadPreviewRoomId && threadPreviewRootEventId
@@ -1175,6 +1223,9 @@ export function ContextualRightPanel({
               onMathModeChange={threadMathModeChangeStable}
               searchHighlightsByEventId={searchHighlightsByEventId}
               mediaDownloads={mediaDownloads}
+              replyQuoteThumbnails={
+                snapshot.state.ui.timeline.reply_quote_thumbnails ?? {}
+              }
               editMentionCandidates={focusedEditMentionCandidates}
               editMentionCandidatesLoading={focusedEditMentionCandidatesLoading}
               onMentionQueryChange={onThreadMentionQueryChange}
@@ -1325,6 +1376,9 @@ export function ContextualRightPanel({
             onMathModeChange={threadMathModeChangeStable}
             searchHighlightsByEventId={searchHighlightsByEventId}
             mediaDownloads={mediaDownloads}
+            replyQuoteThumbnails={
+              snapshot.state.ui.timeline.reply_quote_thumbnails ?? {}
+            }
             editMentionCandidates={threadEditMentionCandidates}
             editMentionCandidatesLoading={threadEditMentionCandidatesLoading}
             onMentionQueryChange={threadEditMentionQueryChangeStable}
@@ -1414,6 +1468,14 @@ export function ContextualRightPanel({
       <ThreadComposer
         sendingAccount={sendingAccount}
         composerMode={threadComposerMode}
+        replyQuote={threadComposerReplyQuote}
+        replyQuoteThumbnail={
+          threadComposerReplyQuote
+            ? snapshot.state.ui.timeline.reply_quote_thumbnails?.[
+                threadComposerReplyQuote.event_id
+              ]
+            : undefined
+        }
         onCancelReply={threadCancelReplyStable}
         stagedUploadsReady={uploadStagingItemsAreSendable(threadStagedUploads)}
         onSendStagedUploads={threadSendStagedUploadsStable}

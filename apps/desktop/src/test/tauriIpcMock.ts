@@ -53,6 +53,7 @@ const VOID_COMMANDS = new Set([
   "download_avatar_thumbnail",
   "cancel_avatar_thumbnail",
   "download_media",
+  "request_reply_quote_thumbnail",
   "query_mention_candidates",
   "release_composer_draft_lease",
   "send_read_receipt",

@@ -19,6 +19,8 @@ const MIME_TOKENS: &[(&str, &str)] = &[
     ("gif", "image/gif"),
     ("webp", "image/webp"),
     ("avif", "image/avif"),
+    ("mp4", "video/mp4"),
+    ("webm", "video/webm"),
 ];
 
 /// A decoded preview cannot use more than this; refuse to buffer larger files
@@ -76,7 +78,9 @@ fn error_response(status: StatusCode) -> Response<Vec<u8>> {
         .expect("media download error response")
 }
 
-/// `/download/<token>/<room-hash>/<event-hash>` -> `(token, source_ref)`.
+/// `/download/<token>/<room-hash>/<event-hash>[/<width>x<height>]` ->
+/// `(token, source_ref)`. The optional size names the quote-thumbnail entry
+/// (#1769) through the same core ref grammar as the original (#1770).
 fn parse_protocol_path(path: &str) -> Option<(&str, String)> {
     let mut parts = path.trim_start_matches('/').split('/');
     if parts.next()? != "download" {
@@ -85,13 +89,21 @@ fn parse_protocol_path(path: &str) -> Option<(&str, String)> {
     let token = parts.next()?;
     let room_hash = parts.next()?;
     let event_hash = parts.next()?;
+    let source_ref = match parts.next() {
+        None => koushi_core::media_download_ref::media_download_ref(room_hash, event_hash),
+        Some(size) => {
+            let (width, height) = size.split_once('x')?;
+            let width = width.parse().ok()?;
+            let height = height.parse().ok()?;
+            koushi_core::media_download_ref::media_download_thumbnail_ref(
+                room_hash, event_hash, width, height,
+            )?
+        }
+    };
     if parts.next().is_some() {
         return None;
     }
-    Some((
-        token,
-        koushi_core::media_download_ref::media_download_ref(room_hash, event_hash),
-    ))
+    Some((token, source_ref))
 }
 
 /// Find the ref in one of the account cache roots, refusing symlinked escapes.
@@ -196,13 +208,12 @@ mod tests {
             cache_path_for_tab(&root, "download/1234567890123456/6543210987654321"),
             Some(root.join("1234567890123456").join("6543210987654321.bin"))
         );
-        // The `koushi-media` protocol still serves only the original: no GUI
-        // path requests a thumbnail download (#1769 owns that surface).
         let response = protocol_response(
             &request("/download/png/1234567890123456/6543210987654321/800x800"),
             std::slice::from_ref(&root),
         );
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.body(), b"thumbnail");
         drop(temp);
     }
 
