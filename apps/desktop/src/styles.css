@@ -11113,19 +11113,33 @@ kbd {
 .settings-assistant-identity strong { overflow-wrap: anywhere; }
 .profile-settings-action.is-danger { border-color: var(--danger); color: var(--danger); }
 .settings-assistant-grid { display: grid; margin-block-start: 10px; }
+/* Account plus the five permissions (#1786): one definition shared by the heading
+   row and every switch row, so a heading always sits above its own switch. Six
+   cells in a four-column grid used to wrap "Change messages" and "Write drafts". */
 .settings-assistant-row {
   display: grid;
-  grid-template-columns: minmax(120px, 1.4fr) repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: minmax(0, 1.35fr) repeat(5, minmax(0, 1fr));
+  gap: 6px;
   align-items: center;
   padding-block: 7px;
   border-block-start: 1px solid var(--line);
   font-size: 13px;
 }
+/* A label ellipsizes in its column instead of wrapping onto a second line; the
+   whole text stays in `title`. */
 .settings-assistant-row.is-heading { color: var(--text-muted); font-size: 12px; font-weight: 700; }
-.settings-assistant-row > [role="rowheader"] { overflow-wrap: anywhere; }
+.settings-assistant-row > [role="rowheader"],
+.settings-assistant-row > [role="columnheader"] {
+  min-inline-size: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .settings-assistant-unrequested { grid-column: 2 / -1; color: var(--text-muted); }
-.settings-assistant-permission { display: inline-flex; gap: 8px; align-items: center; }
+/* A permission cell never stacks: the switch keeps its track and the "Denied"
+   note ellipsizes beside it, so every switch in the table stays on one line. */
+.settings-assistant-permission { display: inline-flex; min-inline-size: 0; gap: 8px; align-items: center; }
+.settings-assistant-permission > .settings-switch-button { flex: none; }
 .settings-switch-button { padding: 0; border: 0; background: none; }
 .settings-switch-button .settings-switch-track { display: block; }
 .settings-switch-button[aria-checked="true"] .settings-switch-track {
@@ -11138,7 +11152,15 @@ kbd {
 }
 [dir="rtl"] .settings-switch-button[aria-checked="true"] .settings-switch-thumb { transform: translateX(-18px); }
 .settings-switch-button:disabled { opacity: 0.62; }
-.settings-assistant-denied { color: var(--danger); font-size: 12px; font-weight: 700; }
+.settings-assistant-denied {
+  min-inline-size: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 700;
+}
 .settings-assistants-tabs {
   display: flex;
   flex-wrap: wrap;
