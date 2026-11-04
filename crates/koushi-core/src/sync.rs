@@ -231,12 +231,19 @@ fn sync_status_trace_label(status: &SyncLifecycleStatus) -> &'static str {
     }
 }
 
+/// Project one sync status into the reducer.
+///
+/// Returns whether the projection reached the AppActor's action queue. The
+/// record is written before the send, so a projection that never arrives is
+/// still visible in the ring. The queue is `ACTION_QUEUE_CAPACITY` (16384)
+/// batches deep, so a send waits only while the AppActor is not reducing at
+/// all; callers that must retry a failed projection use the return value.
 async fn send_sync_status(
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     generation: &AtomicU64,
     owner: SyncDiagnosticsOwner,
     status: SyncLifecycleStatus,
-) {
+) -> bool {
     let label = sync_status_trace_label(&status);
     let generation = generation.fetch_add(1, Ordering::Relaxed) + 1;
     trace_sync!(
@@ -250,18 +257,23 @@ async fn send_sync_status(
         generation,
         label
     );
-    let _ = action_tx
+    action_tx
         .send(vec![AppAction::SyncStatusChanged { generation, status }])
-        .await;
+        .await
+        .is_ok()
 }
 
-/// One `handoff_step` record for an await on the first-response handoff path.
+/// One `handoff_step` record for a step on the first-response handoff path.
 ///
-/// `entered` without a matching `completed` for the same run names the await a
-/// stalled observer is sitting in, which is the question #1634 could not answer
-/// from the ring: a stall there leaves the sync lifecycle at `Starting` while
-/// the service keeps committing. Only the open handoff window records these
-/// (`!connected || reconnecting`), so a proven run does not flood the ring.
+/// The `handoff` pair brackets the block that closes a run's sync lifecycle:
+/// the status projection, then the control send that follows it. The `refresh`,
+/// `timeline` and `reconcile` pairs bracket the awaits that only keep the room
+/// list provisional. `entered` without a matching `completed` for the same run
+/// names the step a stalled observer is sitting in, which is the question #1634
+/// could not answer from the ring: a stall there used to leave the sync
+/// lifecycle at `Starting` while the service kept committing. The commit-path
+/// pairs are recorded only while the handoff is open (`!connected ||
+/// reconnecting`), so a proven run does not flood the ring.
 fn record_handoff_step(
     owner: SyncDiagnosticsOwner,
     run_generation: u64,
@@ -743,7 +755,7 @@ impl SyncActor {
     }
 
     async fn project_sync_status(&self, status: SyncLifecycleStatus) {
-        send_sync_status(
+        let _ = send_sync_status(
             &self.action_tx,
             &self.sync_generation,
             self.diagnostics.owner(),
@@ -923,6 +935,12 @@ async fn reconcile_committed_room_list(
     run_generation: u64,
     response_sequence: u64,
 ) -> RoomListReconcileResult {
+    // #1634 test hook: one account runtime can hold this round trip open, so a
+    // test can prove that a committed response alone closes the sync lifecycle
+    // instead of relying on the SDK race that produced the nightly stall.
+    #[cfg(any(test, feature = "test-hooks"))]
+    crate::sync_test_support::wait_for_held_live_room_list_reconcile(owner).await;
+
     let started_at = Instant::now();
     let (ack_tx, mut ack_rx) = oneshot::channel();
     if room_tx
@@ -1369,6 +1387,10 @@ async fn observe_sync_service(
     let mut first_response = FirstResponseWatchdog::new(run_started_at);
     let mut connected = false;
     let mut reconnecting = false;
+    // #1634: whether this run's sync lifecycle has been closed by its own
+    // evidence (a committed response). `connected` still tracks the room-list
+    // side of the run and is set later, by the reconcile handoff.
+    let mut running_projected = false;
     let mut replacement_recovery: Option<ReplacementRecoveryProof> = None;
     let mut last_committed_sequence = 0;
     let mut pending_state = Some(state_sub.get());
@@ -1471,12 +1493,42 @@ async fn observe_sync_service(
                     committed.pos_present(),
                     run_generation
                 );
-                // The first-response handoff is the only window whose awaits
-                // can leave the sync lifecycle at `Starting` while the service
-                // commits, so it is the only window that records them.
-                let handoff_open = !connected || reconnecting;
+                // #1634: the run's own evidence closes the sync lifecycle. A
+                // committed response for this run is proof that the sync service
+                // is running, so `Running` is projected here and not after the
+                // room-list reconcile: the reconcile is room-list authority, and
+                // no await on this path may precede the projection.
+                //
+                // Order matters. The ring push and the broadcast are not awaits.
+                // The status projection is the one send that must land first:
+                // it is the value `AppState.sync` is derived from. The control
+                // send follows it, because the sync actor's control loop may not
+                // be draining (that is the state this change exists to survive)
+                // and its channel holds four messages. `running_projected` is set
+                // only when the projection was delivered, so a failed one is
+                // retried on the next committed response instead of being lost.
                 let owner = diagnostics.owner();
                 let sequence = committed.sequence();
+                if !running_projected {
+                    record_handoff_step(owner, run_generation, "handoff", "entered", sequence);
+                    let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
+                    let projected = send_sync_status(
+                        &action_tx,
+                        &sync_generation,
+                        owner,
+                        SyncLifecycleStatus::Running,
+                    )
+                    .await;
+                    let _ = control_tx
+                        .send(SyncActorControl::FirstResponseCommitted { run_generation })
+                        .await;
+                    record_handoff_step(owner, run_generation, "handoff", "completed", sequence);
+                    running_projected = projected;
+                }
+                // The first-response handoff is the only window whose awaits
+                // can leave the room-list projection provisional while the
+                // service commits, so it is the only window that records them.
+                let handoff_open = !connected || reconnecting;
                 if committed.rooms_from_response_count() > 0 {
                     if handoff_open {
                         record_handoff_step(owner, run_generation, "refresh", "entered", sequence);
@@ -1609,10 +1661,10 @@ async fn observe_sync_service(
                             requested_sequence,
                         );
                     } else {
+                        // #1634: `Running` was projected by this run's first
+                        // committed response, so the room-list handoff only
+                        // records that the run is now room-list connected.
                         connected = true;
-                        let _ = control_tx
-                            .send(SyncActorControl::FirstResponseCommitted { run_generation })
-                            .await;
                         record_handoff_step(
                             owner,
                             run_generation,
@@ -1620,14 +1672,6 @@ async fn observe_sync_service(
                             "completed",
                             requested_sequence,
                         );
-                        let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
-                        send_sync_status(
-                            &action_tx,
-                            &sync_generation,
-                            owner,
-                            SyncLifecycleStatus::Running,
-                        )
-                        .await;
                     }
                 }
                 diagnostics.response_committed(run_generation, true);
@@ -1724,10 +1768,9 @@ async fn observe_sync_service(
                                 last_committed_sequence,
                             );
                         } else {
+                            // #1634: `Running` belongs to this run's committed
+                            // response, not to the encryption/room-list handoff.
                             connected = true;
-                            let _ = control_tx
-                                .send(SyncActorControl::FirstResponseCommitted { run_generation })
-                                .await;
                             record_handoff_step(
                                 owner,
                                 run_generation,
@@ -1735,14 +1778,6 @@ async fn observe_sync_service(
                                 "completed",
                                 last_committed_sequence,
                             );
-                            let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
-                            send_sync_status(
-                                &action_tx,
-                                &sync_generation,
-                                owner,
-                                SyncLifecycleStatus::Running,
-                            )
-                            .await;
                         }
                     }
                 }

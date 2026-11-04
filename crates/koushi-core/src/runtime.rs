@@ -1272,6 +1272,19 @@ impl CoreRuntime {
             .await
     }
 
+    /// Hold every room-list reconciliation of this runtime until the returned
+    /// sender is used or dropped (#1634).
+    ///
+    /// The sync lifecycle must not depend on that round trip: a run that has
+    /// committed a response is `Running` even while the RoomActor reconciliation
+    /// is still pending.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn hold_live_room_list_reconcile_for_testing(&self) -> tokio::sync::oneshot::Sender<()> {
+        crate::sync_test_support::hold_live_room_list_reconcile(
+            self.sliding_sync_diagnostics.owner(),
+        )
+    }
+
     #[cfg(any(test, feature = "test-hooks"))]
     pub async fn inspect_sync_owners_for_testing(&self) -> (bool, bool, bool) {
         let (response, receiver) = oneshot::channel();
