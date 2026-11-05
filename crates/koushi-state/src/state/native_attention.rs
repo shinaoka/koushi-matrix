@@ -24,6 +24,12 @@ use super::settings::RoomNotificationMode;
 pub struct NativeAttentionContext {
     pub window_focused: bool,
     pub window_focus_observation_generation: u64,
+    /// Process-local sequence that mints alert identities (#1802).
+    ///
+    /// Monotonic, never time-derived, and resumed above any identity that came back
+    /// with a restored summary: a value handed out once cannot come back for a later
+    /// alert, so the webview can dedupe on identity alone.
+    pub alert_sequence: u64,
 }
 
 impl Default for NativeAttentionContext {
@@ -31,6 +37,7 @@ impl Default for NativeAttentionContext {
         Self {
             window_focused: true,
             window_focus_observation_generation: 0,
+            alert_sequence: 0,
         }
     }
 }
@@ -83,6 +90,13 @@ pub struct NativeAttentionSummary {
     pub unread_count: u64,
     pub highlight_count: u64,
     pub badge_count: u64,
+    /// Identity of the alert this summary publishes (#1802).
+    ///
+    /// Minted in Rust where a candidate is raised, kept while the same alert is
+    /// relabelled, and cleared with the candidate. The webview dedupes on this
+    /// token alone instead of on the candidate's contents.
+    #[serde(default)]
+    pub alert_id: Option<u64>,
     pub candidate: Option<NativeAttentionCandidate>,
     pub capabilities: NativeAttentionCapabilities,
 }
@@ -402,6 +416,9 @@ pub(crate) fn native_attention_projection_from_rooms_with_live_room(
                 unread_count,
                 highlight_count,
                 badge_count,
+                // A stateless projection has no sequence to mint from; the reducer
+                // assigns the identity where it raises the candidate (#1802).
+                alert_id: None,
                 candidate,
                 capabilities: input.capabilities,
             },

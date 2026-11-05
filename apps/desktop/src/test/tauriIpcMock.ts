@@ -536,6 +536,7 @@ export function defaultSnapshotResponse() {
           unread_count: 0,
           highlight_count: 0,
           badge_count: 0,
+          alert_id: null,
           candidate: null,
           capabilities: {
             notifications: "unknown",

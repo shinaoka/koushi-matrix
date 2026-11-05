@@ -754,6 +754,7 @@
           "kind": "idle"
         },
         "summary": {
+          "alert_id": 1,
           "badge_count": 5,
           "candidate": {
             "highlight_count": 1,

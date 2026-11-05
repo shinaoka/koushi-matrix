@@ -1603,6 +1603,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
                 unread_count: 3,
                 highlight_count: 1,
                 badge_count: 3,
+                alert_id: None,
                 candidate: None,
                 capabilities: NativeAttentionCapabilities {
                     notifications: NativeAttentionCapability::Available,
