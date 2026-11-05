@@ -1,8 +1,10 @@
 //! #1465: a main-pane Search navigation keeps its completion owner while a
 //! renderer recovery/replay `Subscribe` for the same focused key arrives
-//! during the focused build. AppActor runs against a real (sessionless)
-//! TimelineManager whose focused builds are held at the SDK boundary. All
-//! identifiers are synthetic.
+//! during the focused build. #1796: a repeat navigation to the event an
+//! installed focused actor already shows settles from that actor's replay
+//! instead of waiting for the event-navigation deadline. AppActor runs against
+//! a real (sessionless) TimelineManager whose focused builds are held at the
+//! SDK boundary. All identifiers are synthetic.
 
 use super::*;
 use crate::timeline::{GatedFocusedBuildManager, TimelineMessage};
@@ -144,15 +146,26 @@ fn start() -> Harness {
 
 impl Harness {
     async fn navigate(&mut self, request_id: RequestId) {
+        self.navigate_from(EventNavigationSource::Search, request_id)
+            .await;
+    }
+
+    async fn navigate_from(&mut self, source: EventNavigationSource, request_id: RequestId) {
+        use koushi_protocol::command::EventNavigationMissingTargetPolicy as Policy;
+        let missing_target_policy = match source {
+            EventNavigationSource::Activity | EventNavigationSource::Search => Policy::LiveFallback,
+            EventNavigationSource::Pinned
+            | EventNavigationSource::Notification
+            | EventNavigationSource::ReplyQuote => Policy::Fail,
+        };
         self.command_tx
             .send(CoreCommandEnvelope::Public {
                 command: CoreCommand::App(AppCommand::NavigateToEvent {
                     request_id,
                     room_id: ROOM.to_owned(),
                     event_id: EVENT.to_owned(),
-                    source: EventNavigationSource::Search,
-                    missing_target_policy:
-                        koushi_protocol::command::EventNavigationMissingTargetPolicy::LiveFallback,
+                    source,
+                    missing_target_policy,
                 }),
                 composer_permit: None,
                 admission: None,
@@ -223,14 +236,18 @@ impl Harness {
     }
 
     async fn wait_anchored(&mut self) -> AppState {
+        self.wait_anchored_from(EventNavigationSource::Search).await
+    }
+
+    async fn wait_anchored_from(&mut self, source: EventNavigationSource) -> AppState {
         let state = self
             .wait_for_state("search navigation must anchor", |state| {
                 matches!(
                     state.navigation.event_navigation,
                     EventNavigationState::Anchored {
-                        source: EventNavigationSource::Search,
+                        source: anchored,
                         ..
-                    }
+                    } if anchored == source
                 )
             })
             .await;
@@ -254,6 +271,34 @@ impl Harness {
                 ..
             }
         )
+    }
+
+    /// The event navigation must leave `Opening` at a generation newer than
+    /// `superseded`; report the settled state with the (paused-clock) time it
+    /// took, so a settle that comes from the navigation deadline is visible.
+    async fn settle_newer_than(&mut self, superseded: u64) -> (EventNavigationState, Duration) {
+        let started = tokio::time::Instant::now();
+        let settled = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let state = self
+                    .snapshot_rx
+                    .borrow_and_update()
+                    .state
+                    .navigation
+                    .event_navigation;
+                if state.generation() > superseded
+                    && !matches!(state, EventNavigationState::Opening { .. })
+                {
+                    return state;
+                }
+                if self.snapshot_rx.changed().await.is_err() {
+                    future::pending::<()>().await;
+                }
+            }
+        })
+        .await
+        .expect("a repeat navigation must settle");
+        (settled, started.elapsed())
     }
 }
 
@@ -428,4 +473,154 @@ async fn blocked_focused_build_with_an_observer_settles_at_the_deadline() {
     })
     .await;
     assert!(failed.is_ok(), "a blocked build must settle navigation A");
+}
+
+/// #1796: the reported failure. A repeat navigation to the event the installed
+/// focused actor already shows takes the idempotent replay path instead of
+/// starting a build, so the replay must settle the repeat navigation: at once,
+/// and without the repeat waiting for the 15 s event-navigation deadline and
+/// failing. The pane already shows the target, so the anchor must not move.
+#[tokio::test(start_paused = true)]
+async fn repeat_search_navigation_to_an_anchored_event_settles_from_the_replay() {
+    let mut harness = start();
+    let key = focused_key();
+    harness.navigate(request(1)).await;
+    harness
+        .manager
+        .build_started()
+        .await
+        .send(Ok(()))
+        .expect("build is pending");
+    let first = harness.wait_anchored().await;
+    assert!(
+        harness.manager.installed(&key).await,
+        "the first navigation installed the focused actor"
+    );
+
+    harness.navigate(request(3)).await;
+    assert!(
+        harness.manager.no_build_started(),
+        "a repeat navigation reuses the installed actor"
+    );
+    let (settled, elapsed) = harness
+        .settle_newer_than(first.navigation.event_navigation.generation())
+        .await;
+    assert!(
+        matches!(
+            settled,
+            EventNavigationState::Anchored {
+                source: EventNavigationSource::Search,
+                ..
+            }
+        ),
+        "the repeat navigation must anchor again; settled {settled:?} after {elapsed:?}"
+    );
+    assert!(
+        elapsed < crate::runtime::navigation::EVENT_NAVIGATION_TIMEOUT,
+        "the repeat navigation must settle from the replay, not at the deadline: {elapsed:?}"
+    );
+    assert_eq!(
+        harness
+            .snapshot_rx
+            .borrow()
+            .state
+            .navigation
+            .main_timeline_anchor
+            .as_ref()
+            .map(|anchor| anchor.event_id.as_str()),
+        Some(EVENT),
+        "the repeat navigation leaves the displayed anchor in place"
+    );
+}
+
+/// A repeat click in the Pinned messages panel is the reported source. It
+/// shares the prepared/replay/commit steps with Search, so it must settle the
+/// same way.
+#[tokio::test(start_paused = true)]
+async fn repeat_pinned_navigation_to_an_anchored_event_settles_from_the_replay() {
+    let mut harness = start();
+    let key = focused_key();
+    harness
+        .navigate_from(EventNavigationSource::Pinned, request(1))
+        .await;
+    harness
+        .manager
+        .build_started()
+        .await
+        .send(Ok(()))
+        .expect("build is pending");
+    let first = harness
+        .wait_anchored_from(EventNavigationSource::Pinned)
+        .await;
+    assert!(harness.manager.installed(&key).await, "actor retained");
+
+    harness
+        .navigate_from(EventNavigationSource::Pinned, request(3))
+        .await;
+    assert!(harness.manager.no_build_started(), "the actor is reused");
+    let (settled, elapsed) = harness
+        .settle_newer_than(first.navigation.event_navigation.generation())
+        .await;
+    assert!(
+        matches!(
+            settled,
+            EventNavigationState::Anchored {
+                source: EventNavigationSource::Pinned,
+                ..
+            }
+        ),
+        "the repeat pinned navigation must anchor again; settled {settled:?} after {elapsed:?}"
+    );
+    assert!(
+        elapsed < crate::runtime::navigation::EVENT_NAVIGATION_TIMEOUT,
+        "the repeat pinned navigation must settle from the replay: {elapsed:?}"
+    );
+}
+
+/// The fix correlates a repeat navigation with its own replay; it must not
+/// accept any projection commit for the key. A commit carrying the superseded
+/// navigation's identity settles nothing. The paused clock makes the barrier
+/// deterministic: the delay completes only once no work is runnable, so a
+/// wrongly accepted stale commit is always observed before the assertion.
+#[tokio::test(start_paused = true)]
+async fn a_commit_for_the_superseded_navigation_does_not_settle_the_repeat() {
+    let mut harness = start();
+    let key = focused_key();
+    harness.navigate(request(1)).await;
+    let release = harness.manager.build_started().await;
+    harness.navigate(request(3)).await;
+    assert_eq!(
+        harness.manager.pending_owner(&key).await,
+        Some(request(3)),
+        "the repeat navigation owns the projection"
+    );
+
+    harness
+        .focused_projection_tx
+        .send(FocusedProjectionCommitted {
+            projection_request_id: request(1),
+            key: key.clone(),
+            actor_generation: 1,
+            timeline_generation: TimelineGeneration(0),
+            item_count: 1,
+            target_present: true,
+        })
+        .expect("stale commit");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        harness.is_opening(),
+        "a commit for the superseded navigation must not settle the repeat"
+    );
+
+    if release.is_closed() {
+        harness
+            .manager
+            .build_started()
+            .await
+            .send(Ok(()))
+            .expect("replacement build is pending");
+    } else {
+        release.send(Ok(())).expect("build is pending");
+    }
+    harness.wait_anchored().await;
 }

@@ -3,8 +3,9 @@
 //!
 //! A completed test build installs a test actor and, like a real focused
 //! actor, publishes its first focused `InitialItems` for the build's
-//! projection owner (containing the target event), so the private
-//! focused-projection commit lane reaches AppActor exactly as in production.
+//! projection owner (containing the target event) and answers later replays,
+//! so the private focused-projection commit lane reaches AppActor exactly as in
+//! production.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,6 +20,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::executor;
 
+use super::super::actor::{TimelineActorControl, TimelineActorHandle};
 use super::super::manager::{TimelineManagerActor, TimelineMessage};
 use super::super::navigation::{
     FocusedProjectionCommitted, InitialItemsRequestIdentity, NavigationProjectionDemand,
@@ -126,6 +128,74 @@ impl GatedFocusedBuildManager {
 }
 
 impl TimelineManagerActor {
+    /// The handle installed for a completed sessionless focused build. #1796:
+    /// the gated harness actor answers `ReplayInitialItems` the way a real
+    /// focused actor does — it re-emits its retained window for the subscribing
+    /// cause — so a repeat navigation is exercised end to end instead of being
+    /// dropped by a mailbox-only stand-in.
+    pub(in crate::timeline) fn installed_focused_test_actor_handle(
+        &self,
+        key: &TimelineKey,
+        projection_request_id: RequestId,
+        actor_generation: u64,
+    ) -> TimelineActorHandle {
+        let TimelineKind::Focused { event_id, .. } = &key.kind else {
+            return Self::room_subscription_residency_test_actor_handle();
+        };
+        if !self.focused_builds.test_actor_projection {
+            return Self::room_subscription_residency_test_actor_handle();
+        }
+        let items = vec![timeline_item(event_id, Some("target"), "@bob:test", false)];
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let (tx, mut message_rx) = mpsc::channel(1);
+        let event_tx = self.event_tx.clone();
+        let timeline_actor_generations = Arc::clone(&self.timeline_actor_generations);
+        let replay_key = key.clone();
+        let task = executor::spawn(async move {
+            loop {
+                tokio::select! {
+                    control = control_rx.recv() => match control {
+                        Some(TimelineActorControl::ReplayInitialItems {
+                            cause_request_id,
+                        }) => {
+                            emit_initial_items_for_generation(
+                                &event_tx,
+                                &timeline_actor_generations,
+                                &replay_key,
+                                actor_generation,
+                                InitialItemsRequestIdentity::replay(
+                                    projection_request_id,
+                                    Some(cause_request_id),
+                                ),
+                                TimelineGeneration(0),
+                                items.clone(),
+                                Vec::new(),
+                            );
+                        }
+                        Some(_) => {}
+                        None => return,
+                    },
+                    message = message_rx.recv() => {
+                        if message.is_none() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        TimelineActorHandle {
+            tx,
+            control_tx: Some(control_tx),
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
+            position_rx: None,
+            task: Some(task),
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        }
+    }
+
     /// Publish the first focused projection of an installed test actor, as a
     /// real focused actor does for its projection owner.
     pub(in crate::timeline) fn publish_test_actor_focused_projection(

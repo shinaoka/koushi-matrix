@@ -124,6 +124,64 @@ async fn focused_projection_commit_does_not_require_a_core_event_consumer() {
     assert!(committed.target_present);
 }
 
+/// #1796: a replay answers the subscribe that caused it. That identity is what
+/// a completed navigation correlates with, so a repeat navigation settles on
+/// its own replay; the renderer-facing event keeps the actor-owned projection
+/// identity a remounted consumer acknowledges.
+#[tokio::test]
+async fn replay_projection_commit_answers_the_subscribing_cause() {
+    let key = focused_key();
+    let actor_projection_request_id = fake_rid(80);
+    let cause_request_id = fake_rid(81);
+    let (focused_projection_tx, mut focused_projection_rx) = mpsc::unbounded_channel();
+    let generations = Arc::new(
+        TimelineActorGenerationGate::with_focused_projection_commits(Some(focused_projection_tx)),
+    );
+    let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+    let (event_tx, mut event_rx) = broadcast::channel(4);
+    let target_event_id = match &key.kind {
+        TimelineKind::Focused { event_id, .. } => event_id.clone(),
+        _ => unreachable!("focused test key"),
+    };
+
+    assert!(
+        emit_initial_items_for_generation(
+            &event_tx,
+            &generations,
+            &key,
+            actor_generation,
+            InitialItemsRequestIdentity::replay(
+                actor_projection_request_id,
+                Some(cause_request_id),
+            ),
+            TimelineGeneration(0),
+            vec![timeline_item(
+                &target_event_id,
+                Some("target"),
+                "@alice:test",
+                false
+            )],
+            Vec::new(),
+        )
+        .accepted
+    );
+    let committed = focused_projection_rx
+        .recv()
+        .await
+        .expect("a replay must publish a focused projection commit");
+    assert_eq!(committed.projection_request_id, cause_request_id);
+    let CoreEvent::Timeline(TimelineEvent::InitialItems {
+        request_id,
+        cause_request_id: event_cause_request_id,
+        ..
+    }) = event_rx.recv().await.expect("replayed initial items")
+    else {
+        panic!("replay must emit InitialItems");
+    };
+    assert_eq!(request_id, Some(actor_projection_request_id));
+    assert_eq!(event_cause_request_id, Some(cause_request_id));
+}
+
 #[test]
 fn eligibility_skips_redacted_and_own_rows_for_first_unread_and_newer_count() {
     let marker = timeline_item("$marker:test", Some("marker"), "@alice:test", false);
