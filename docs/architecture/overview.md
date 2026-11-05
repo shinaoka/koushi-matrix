@@ -1460,9 +1460,7 @@ relay that model, not fight it.
    guarded queue handles. The persisted draft stays until SDK enqueue succeeds;
    that enqueue clears the submitted revision and releases the composer for the
    next message while remote delivery remains tracked. Recoverable room-queue
-   errors schedule bounded automatic re-enablement. Replies use their known
-   event IDs to build the relation without fetching the original before enqueue;
-   plain thread messages use their known root as the fallback relation.
+   errors schedule bounded automatic re-enablement.
    The presentation handles expose:
    `TimelineItem.send_state`, transaction-id keyed retry/cancel guards, and
    `RetrySend` / `CancelSend` command routing through SDK `SendHandle`s. After
@@ -1482,7 +1480,14 @@ relay that model, not fight it.
    every remaining enqueue future, and then drops the terminal observer. `Transaction`
    timeline identities are stable local-echo keys only; visible failed/sending
    state comes from `TimelineItem.send_state`. The runtime does not serialize
-   sends behind a command loop.
+   sends behind a command loop. A reply resolves its target's sender and thread
+   root from the displayed timeline when that holds the event, and otherwise
+   from one bounded exact-event read whose cache hit needs no request; the
+   resolved root decides whether the reply belongs to a thread, matching the
+   thread composer. A target neither source resolves keeps the plain
+   `m.in_reply_to` relation instead of a failed send or an invented thread, and
+   the resolved sender is mentioned as a displayed reply's is. Plain thread
+   messages use their known root as the fallback relation.
    `RequestId` completion is connection-scoped: after process restart the SDK's
    persisted queue/local echo converges the product projection, but the new
    runtime does not replay completion for a dead connection. Durable

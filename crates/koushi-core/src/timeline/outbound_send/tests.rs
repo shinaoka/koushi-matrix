@@ -63,8 +63,8 @@ use super::{
     apply_send_completion_observation_and_handoff,
     apply_send_completion_observation_loss_and_handoff, await_submission_admission,
     classify_send_queue_error, make_offline_reply_content, make_offline_thread_content,
-    media_upload_progress_identity, pending_send_item, run_global_send_completion_observer,
-    send_retry_delay,
+    media_upload_progress_identity, pending_send_item, reply_source_from_raw,
+    run_global_send_completion_observer, send_retry_delay,
 };
 
 #[test]
@@ -152,6 +152,49 @@ fn cached_reply_metadata_preserves_thread_and_sender_mention() {
         !self_reply
             .mentions
             .is_some_and(|mentions| mentions.user_ids.contains(&sender))
+    );
+}
+
+/// #1808: the event a direct reply points at is read the same way whether the
+/// display window or the room's own event cache produced it.
+#[test]
+fn reply_source_reads_the_sender_and_thread_root_from_a_loaded_event() {
+    let target = matrix_sdk::ruma::event_id!("$in-thread:test");
+    let in_thread = serde_json::json!({
+        "event_id": "$in-thread:test",
+        "sender": "@bob:test",
+        "content": {
+            "msgtype": "m.text",
+            "body": "answer",
+            "m.relates_to": {
+                "rel_type": "m.thread",
+                "event_id": "$root:test",
+                "is_falling_back": true,
+                "m.in_reply_to": { "event_id": "$root:test" }
+            }
+        }
+    })
+    .to_string();
+    let (sender, root) = reply_source_from_raw(target, &in_thread).expect("resolved");
+    assert_eq!(sender.as_str(), "@bob:test");
+    assert_eq!(
+        root.map(|root| root.to_string()).as_deref(),
+        Some("$root:test")
+    );
+
+    let top_level = serde_json::json!({
+        "event_id": "$top:test",
+        "sender": "@bob:test",
+        "content": { "msgtype": "m.text", "body": "hi" }
+    })
+    .to_string();
+    let (_, root) = reply_source_from_raw(matrix_sdk::ruma::event_id!("$top:test"), &top_level)
+        .expect("resolved");
+    assert_eq!(root, None, "a top-level event is not a thread reply");
+
+    assert!(
+        reply_source_from_raw(target, &top_level).is_none(),
+        "the sender of another event is never attributed to the reply target"
     );
 }
 
