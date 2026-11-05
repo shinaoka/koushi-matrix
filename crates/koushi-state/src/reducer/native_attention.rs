@@ -177,6 +177,7 @@ pub(crate) fn recompute_native_attention_from_rooms_for_live_room(
     // published candidate. It keeps the payload and the dispatch it was published with, so
     // the webview sees no change and cannot show the same banner or sound twice. A newer
     // live candidate replaces it; read, mute, and focus changes still clear it.
+    let mut survived_published_candidate = false;
     if projection.state.summary.candidate.is_none()
         && projection.state.dispatch == crate::state::NativeAttentionDispatchState::Idle
         && let Some((room_id, candidate)) = published_candidate(state)
@@ -185,7 +186,23 @@ pub(crate) fn recompute_native_attention_from_rooms_for_live_room(
         projection.state.summary.candidate = Some(candidate.clone());
         projection.state.notification = state.native_attention.notification.clone();
         projection.state.dispatch = state.native_attention.dispatch.clone();
+        survived_published_candidate = true;
     }
+    // #1802: the alert identity is minted here, where the candidate is raised, and only
+    // here. A candidate that survived this observation keeps the identity it was
+    // published with, and a relabel mutates the published candidate in place, so the
+    // webview sees one alert for one unread alert until a canonical clear ends it.
+    let previous_alert_id = state.native_attention.summary.alert_id;
+    projection.state.summary.alert_id = if projection.state.summary.candidate.is_none() {
+        None
+    } else if survived_published_candidate && previous_alert_id.is_some() {
+        // A candidate that survived this observation keeps the identity it was
+        // published with; a raise mints the next one.
+        previous_alert_id
+    } else {
+        state.native_attention_context.alert_sequence += 1;
+        Some(state.native_attention_context.alert_sequence)
+    };
     let suppression = match projection.state.dispatch {
         crate::state::NativeAttentionDispatchState::Suppressed { reason } => Some(reason),
         _ => None,
@@ -241,6 +258,7 @@ pub(crate) fn handle_native_window_focus_changed(
         None,
     );
     next.state.summary.candidate = None;
+    next.state.summary.alert_id = None;
     next.state.dispatch = crate::state::NativeAttentionDispatchState::Idle;
     if state.native_attention == next.state {
         return Vec::new();

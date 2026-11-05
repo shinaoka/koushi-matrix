@@ -5900,6 +5900,14 @@ stateDiagram-v2
   of its own neither erases the published candidate and its payload nor replays
   them; a newer live candidate replaces them, and suppression and the canonical
   clears still end them (#1799).
+- A raised alert has an identity (`NativeAttentionSummary.alert_id`, #1802): a
+  monotonically increasing number minted in Rust where the candidate is raised,
+  kept through `AttentionCandidateUpdated` (a relabel, or a candidate that
+  survives an observation that raises nothing), and cleared with the candidate.
+  A newer live candidate, and a raise after a canonical clear, mint a new
+  identity. It is an opaque private-data-free token, never time-derived and
+  never a room, event, or user identifier, and the webview scopes transient
+  banner and sound effects on it alone instead of on candidate contents.
 - Candidates carry only private-data-minimized fields allowed by the security
   rules: safe room display label, attention kind (`mention`, `dm`, `message`),
   aggregate unread/highlight counts, and coarse capability tokens. They must not

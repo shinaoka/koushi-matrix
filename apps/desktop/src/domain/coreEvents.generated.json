@@ -296,6 +296,7 @@
     "event": {
       "kind": "summaryUpdated",
       "summary": {
+        "alert_id": null,
         "badge_count": 3,
         "candidate": null,
         "capabilities": {

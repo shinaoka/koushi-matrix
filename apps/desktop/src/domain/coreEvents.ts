@@ -1245,6 +1245,8 @@ export interface NativeAttentionSummary {
   unread_count: number;
   highlight_count: number;
   badge_count: number;
+  // #1802: Rust-minted alert identity, absent in older snapshots.
+  alert_id?: number | null;
   candidate: NativeAttentionCandidate | null;
   capabilities: NativeAttentionCapabilities;
 }

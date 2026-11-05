@@ -2961,6 +2961,9 @@ export interface NativeAttentionSummary {
   unread_count: number;
   highlight_count: number;
   badge_count: number;
+  // #1802: minted in Rust when a candidate is raised; the banner dedupes on this
+  // identity instead of on the candidate's contents. Absent in older snapshots.
+  alert_id?: number | null;
   candidate: NativeAttentionCandidate | null;
   capabilities: NativeAttentionCapabilities;
 }

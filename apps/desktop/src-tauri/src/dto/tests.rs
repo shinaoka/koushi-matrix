@@ -2339,6 +2339,7 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
             unread_count: 5,
             highlight_count: 2,
             badge_count: 5,
+            alert_id: Some(1),
             candidate: Some(NativeAttentionCandidate {
                 room_display_name: "Fixture Room".to_owned(),
                 kind: RoomAttentionKind::Message,

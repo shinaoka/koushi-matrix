@@ -43,6 +43,9 @@ export function useDesktopAttentionEffects({
     () => desktopAttentionPortForAccount(accountTabId ?? undefined),
     [accountTabId]
   );
+  // #1802: the webview dedupes on the Rust-minted alert identity alone. Contents
+  // (event ids, counts, labels) move inside one alert, so they cannot be the key.
+  const alertId = snapshot?.state.domain.native_attention.summary.alert_id ?? null;
   const badgeCount = aggregateBadgeCount ?? safeAttentionSummary.badgeCount;
   const notificationActivationHandler = useRef(onNotificationActivated);
   const attentionCapabilities = useMemo(
@@ -130,11 +133,7 @@ export function useDesktopAttentionEffects({
       appendDiagnosticLog({ timestampMs: Date.now(), source: "native.attention", message: token })
     );
   }, [
-    snapshot?.state.domain.native_attention.dispatch.kind,
-    snapshot?.state.domain.native_attention.summary.candidate?.room_display_name,
-    snapshot?.state.domain.native_attention.summary.candidate?.kind,
-    snapshot?.state.domain.native_attention.summary.candidate?.unread_count,
-    snapshot?.state.domain.native_attention.summary.candidate?.highlight_count,
+    alertId,
     desktopAttentionPort
   ]);
 
