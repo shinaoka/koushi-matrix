@@ -26,8 +26,9 @@ pub struct NativeAttentionContext {
     pub window_focus_observation_generation: u64,
     /// Process-local sequence that mints alert identities (#1802).
     ///
-    /// Monotonic, never time-derived: a value handed out once cannot come back
-    /// for a later alert, so the webview can dedupe on identity alone.
+    /// Monotonic, never time-derived, and resumed above any identity that came back
+    /// with a restored summary: a value handed out once cannot come back for a later
+    /// alert, so the webview can dedupe on identity alone.
     pub alert_sequence: u64,
 }
 

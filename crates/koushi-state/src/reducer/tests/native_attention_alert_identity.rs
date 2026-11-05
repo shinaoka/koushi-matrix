@@ -271,3 +271,42 @@ fn a_cleared_candidate_clears_the_alert_identity_with_its_payload() {
         "an identity without a candidate would be a banner the webview can never show"
     );
 }
+
+#[test]
+fn a_restored_state_cannot_reissue_a_published_alert_id() {
+    let state = state_with_published_candidate();
+    let published = alert_id(&state).expect("precondition: the raise mints an identity");
+
+    // The attention summary is serialized into the app state, while the sequence that
+    // mints identities is process-local: a restore keeps the published identity and
+    // drops the counter back to its default.
+    let serialized = serde_json::to_string(&state).expect("the app state serializes");
+    let mut restored: AppState = serde_json::from_str(&serialized).expect("the app state restores");
+    assert_eq!(
+        alert_id(&restored),
+        Some(published),
+        "the restored summary keeps the identity it published"
+    );
+    assert_eq!(
+        restored.native_attention_context.alert_sequence, 0,
+        "the minting sequence is process-local and restarts at its default"
+    );
+
+    // A new live raise for the same room after the restore must not hand out a value
+    // that is already published: the webview would read it as the same alert and drop
+    // a banner it has to show.
+    room_list_update(
+        &mut restored,
+        vec![
+            active_room(),
+            unread_room(NOTIFIED_ROOM, "$notified-later:example.invalid", 46, 2),
+            read_room(NEWEST_ROOM),
+        ],
+    );
+
+    let reissued = alert_id(&restored).expect("the re-raise mints an identity");
+    assert!(
+        reissued > published,
+        "a restored state must mint above every published identity: {reissued} <= {published}"
+    );
+}

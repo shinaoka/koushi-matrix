@@ -66,6 +66,11 @@ pub(crate) fn handle_native_attention_updated(
     if !is_session_ready(state) {
         return Vec::new();
     }
+    // The caller owns the identity of the attention it submits: a state built by the
+    // stateless projection carries `alert_id: None`, which publishes an alert the
+    // webview cannot dedupe. That is safe today because only QA and tests submit
+    // attention this way; the production paths all raise through
+    // `recompute_native_attention_from_rooms_for_live_room` (#1802).
     if !state.settings.values.notifications.badges {
         attention.summary.badge_count = 0;
     }
@@ -200,7 +205,12 @@ pub(crate) fn recompute_native_attention_from_rooms_for_live_room(
         // published with; a raise mints the next one.
         previous_alert_id
     } else {
-        state.native_attention_context.alert_sequence += 1;
+        // #1802: the summary is serialized but this sequence is process-local, so a
+        // restore can bring back a published identity with the counter at its default.
+        // Mint above everything already published, so a value is never issued twice.
+        let published = previous_alert_id.unwrap_or(0);
+        state.native_attention_context.alert_sequence =
+            state.native_attention_context.alert_sequence.max(published) + 1;
         Some(state.native_attention_context.alert_sequence)
     };
     let suppression = match projection.state.dispatch {
