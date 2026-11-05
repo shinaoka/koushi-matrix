@@ -1578,3 +1578,106 @@ fn edited_thread_root_keeps_latest_document_through_service_and_display() {
         );
     }
 }
+
+fn live_receipt(user_id: &str) -> koushi_state::LiveReadReceipt {
+    koushi_state::LiveReadReceipt {
+        user_id: user_id.to_owned(),
+        display_name: None,
+        original_display_label: String::new(),
+        avatar: None,
+        timestamp_ms: None,
+    }
+}
+
+/// #1783: the renderer reads a row's readers under its `content_event_id`, and
+/// the row that represents a hidden thread reply is the moved root, so a receipt
+/// on the reply is published under the root. Ordinary rows keep their own id and
+/// readers of both the root and its suppressed activity land on the one row.
+#[test]
+fn hidden_thread_reply_receipts_are_keyed_by_the_row_that_represents_them() {
+    let key = room_key();
+    let root = timeline_item("$root:test", Some("root"), "@a:test", false);
+    let after = timeline_item("$after:test", Some("after"), "@a:test", false);
+    let mut reply = timeline_item("$reply:test", Some("reply"), "@b:test", false);
+    reply.thread_root = Some("$root:test".to_owned());
+    reply.timestamp_ms = Some(400);
+    let canonical = vec![root.clone(), reply, after];
+    let mut state = DisplayProjectionState::from_canonical_window(&canonical, 0..3);
+    let context =
+        DisplayProjectionContext::for_timeline(&key.kind, &TimelineViewportObservation::default())
+            .with_thread_roots(
+                TimelineThreadRootOrder::LatestReply,
+                vec![crate::threads_list::ThreadRootDisplayData {
+                    root_event_id: "$root:test".to_owned(),
+                    unread: 0,
+                    activity_event_id: "$reply:test".to_owned(),
+                    activity_timestamp_ms: Some(400),
+                    item: Some(root),
+                    aggregate: crate::threads_list::AuthoritativeThreadAggregate {
+                        reply_count: 1,
+                        latest_event_id: Some("$reply:test".to_owned()),
+                        latest_sender: Some("@b:test".to_owned()),
+                        latest_sender_label: None,
+                        latest_body_preview: Some("reply".to_owned()),
+                        latest_timestamp_ms: Some(400),
+                    },
+                    pending: false,
+                    failure_kind: None,
+                }],
+            );
+    state.reproject(&context);
+
+    let receipts = state.receipts_by_representing_row(vec![
+        koushi_state::LiveEventReceipts {
+            event_id: "$reply:test".to_owned(),
+            receipts: vec![live_receipt("@reader:test")],
+        },
+        koushi_state::LiveEventReceipts {
+            event_id: "$after:test".to_owned(),
+            receipts: vec![live_receipt("@other:test")],
+        },
+        koushi_state::LiveEventReceipts {
+            event_id: "$root:test".to_owned(),
+            receipts: vec![live_receipt("@third:test")],
+        },
+    ]);
+
+    assert_eq!(
+        receipts
+            .iter()
+            .map(|entry| entry.event_id.as_str())
+            .collect::<Vec<_>>(),
+        ["$after:test", "$root:test"]
+    );
+    assert_eq!(
+        receipts[1]
+            .receipts
+            .iter()
+            .map(|receipt| receipt.user_id.as_str())
+            .collect::<Vec<_>>(),
+        ["@reader:test", "@third:test"]
+    );
+}
+
+/// #1255: a thread timeline draws the reply as its own row, so its scoped
+/// receipts stay keyed by the reply.
+#[test]
+fn thread_timeline_keeps_reply_receipts_under_the_reply() {
+    let key = thread_key();
+    let mut reply = timeline_item("$reply:test", Some("reply"), "@b:test", false);
+    reply.thread_root = Some("$root:test".to_owned());
+    let canonical = vec![reply];
+    let mut state = DisplayProjectionState::from_canonical_window(&canonical, 0..1);
+    state.reproject(&DisplayProjectionContext::for_timeline(
+        &key.kind,
+        &TimelineViewportObservation::default(),
+    ));
+
+    let receipts = state.receipts_by_representing_row(vec![koushi_state::LiveEventReceipts {
+        event_id: "$reply:test".to_owned(),
+        receipts: vec![live_receipt("@reader:test")],
+    }]);
+
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].event_id, "$reply:test");
+}

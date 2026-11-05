@@ -9,7 +9,7 @@ use koushi_protocol::event::{
     TimelineSendState, TimelineViewportObservation,
 };
 use koushi_protocol::ids::{TimelineKey, TimelineKind};
-use koushi_state::TimelineThreadRootOrder;
+use koushi_state::{LiveEventReceipts, TimelineThreadRootOrder};
 
 // BEGIN GENERATED SIBLING IMPORTS
 use super::navigation::{
@@ -142,6 +142,50 @@ impl DisplayProjectionState {
 
     pub(super) fn display_items(&self) -> &[TimelineItem] {
         &self.display_items
+    }
+
+    /// #1783: Re-key published receipts by the row that represents each event.
+    ///
+    /// Under `LatestReply` the projection draws a thread root at its latest
+    /// reply's position and hides that reply, so a receipt sitting on the reply
+    /// belongs to the root row: the renderer reads a row's readers under its
+    /// `content_event_id` and never looks a hidden row up. Every other event
+    /// keeps its own id. Thread and focused projections draw no moved root, so
+    /// their scoped receipts stay keyed by their own event (#1255).
+    pub(super) fn receipts_by_representing_row(
+        &self,
+        receipts_by_event: Vec<LiveEventReceipts>,
+    ) -> Vec<LiveEventReceipts> {
+        let mut by_row = std::collections::BTreeMap::<String, Vec<_>>::new();
+        for entry in receipts_by_event {
+            let (row_event_id, _) = self.receipt_row(&entry.event_id);
+            by_row
+                .entry(row_event_id.to_owned())
+                .or_default()
+                .extend(entry.receipts);
+        }
+        by_row
+            .into_iter()
+            .map(|(event_id, receipts)| LiveEventReceipts { event_id, receipts })
+            .collect()
+    }
+
+    /// #1783: The row that publishes `event_id`'s receipts: its content event
+    /// id, and the hidden reply a moved thread root row stands for.
+    ///
+    /// The event's own id is returned for every event that is its own row.
+    pub(super) fn receipt_row<'a>(&'a self, event_id: &'a str) -> (&'a str, Option<&'a str>) {
+        self.display_items
+            .iter()
+            .find_map(|item| {
+                let metadata = item.display_metadata.as_ref()?;
+                let content_event_id = metadata.content_event_id.as_deref()?;
+                let activity_event_id = metadata.activity_event_id.as_deref()?;
+                (content_event_id != activity_event_id
+                    && (content_event_id == event_id || activity_event_id == event_id))
+                    .then_some((content_event_id, Some(activity_event_id)))
+            })
+            .unwrap_or((event_id, None))
     }
 
     pub(super) fn reproject(&mut self, context: &DisplayProjectionContext) -> Vec<TimelineDiff> {

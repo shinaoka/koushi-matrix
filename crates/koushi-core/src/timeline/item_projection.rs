@@ -1877,6 +1877,51 @@ pub(super) fn live_event_receipts_from_endpoint_changes(
         .collect()
 }
 
+/// #1783: Publish each receipt entry under the row that represents it.
+///
+/// A moved thread root row publishes the readers of its own event and of the
+/// hidden reply it stands for under that root's id, and the reducer replaces a
+/// row's summary wholesale. Every entry is therefore widened to its row's whole
+/// reader set from the endpoint mirror before re-keying, so an update of one
+/// endpoint never drops readers the row already shows. Call this after the
+/// display projection that decides the rows is committed: a receipt observed
+/// before the row stands for its reply stays under the reply's own id until
+/// that endpoint changes again, because nothing republishes on a projection
+/// change.
+pub(super) fn receipts_by_row(
+    display_projection: &super::display_projection::DisplayProjectionState,
+    endpoints: &super::receipt_endpoints::ReceiptEndpointMirror,
+    receipts_by_event: Vec<LiveEventReceipts>,
+) -> Vec<LiveEventReceipts> {
+    let mut carried = receipts_by_event
+        .iter()
+        .map(|entry| entry.event_id.as_str())
+        .collect::<HashSet<_>>();
+    let partners = receipts_by_event
+        .iter()
+        .filter_map(|entry| {
+            let (row_event_id, activity_event_id) = display_projection.receipt_row(&entry.event_id);
+            if entry.event_id == row_event_id {
+                activity_event_id
+            } else {
+                Some(row_event_id)
+            }
+        })
+        .filter(|event_id| carried.insert(event_id))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let mut receipts_by_event = receipts_by_event;
+    for partner in partners {
+        if let Some(readers) = endpoints.readers(&partner) {
+            receipts_by_event.push(live_event_receipts_from_readers(
+                partner,
+                readers.window(0, usize::MAX, None),
+            ));
+        }
+    }
+    display_projection.receipts_by_representing_row(receipts_by_event)
+}
+
 fn live_event_receipts_from_sdk_item(item: &Arc<SdkTimelineItem>) -> Option<LiveEventReceipts> {
     use matrix_sdk_ui::timeline::TimelineItemKind;
 
@@ -1892,7 +1937,7 @@ fn live_event_receipts_from_sdk_item(item: &Arc<SdkTimelineItem>) -> Option<Live
     Some(live_event_receipts_from_readers(event_id, snapshot.iter()))
 }
 
-fn live_event_receipts_from_readers<'a>(
+pub(super) fn live_event_receipts_from_readers<'a>(
     event_id: String,
     readers: impl Iterator<
         Item = (

@@ -43,9 +43,9 @@ use super::item_projection::{
     ReceiptObservationTarget, apply_link_previews_to_item, apply_timeline_item_visibility,
     apply_timeline_item_visibility_to_diff, cache_sdk_item_media_source,
     emit_live_receipt_observation_actions, emit_receipt_observation_actions,
-    live_event_receipts_from_sdk_items, sdk_item_to_timeline_item_with_send_states,
-    sdk_vector_diffs_to_timeline_diffs, thread_auto_requestable_event_id, timeline_item_event_id,
-    timeline_room_id,
+    live_event_receipts_from_sdk_items, receipts_by_row,
+    sdk_item_to_timeline_item_with_send_states, sdk_vector_diffs_to_timeline_diffs,
+    thread_auto_requestable_event_id, timeline_item_event_id, timeline_room_id,
 };
 use super::media::{PrivateMediaEntry, authoritative_media_gallery_replacement};
 use super::navigation::{
@@ -800,7 +800,11 @@ impl TimelineActor {
                 &self.key,
                 self.actor_generation,
                 &room_id,
-                receipts_by_event,
+                receipts_by_row(
+                    &self.display_projection,
+                    &self.receipt_endpoints,
+                    receipts_by_event,
+                ),
             )
             .await
         {
@@ -1229,7 +1233,11 @@ impl TimelineActor {
                 &self.key,
                 self.actor_generation,
                 &receipt_observation.room_id,
-                receipt_observation.receipts_by_event,
+                receipts_by_row(
+                    &self.display_projection,
+                    &self.receipt_endpoints,
+                    receipt_observation.receipts_by_event,
+                ),
                 receipt_observation.target,
             )
             .await
