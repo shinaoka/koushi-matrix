@@ -77,13 +77,16 @@ function attention(
   };
 }
 
-function desktopSnapshot(nativeAttention: NativeAttentionState): DesktopSnapshot {
+function desktopSnapshot(
+  nativeAttention: NativeAttentionState,
+  overrides: Partial<NotificationSettings> = {}
+): DesktopSnapshot {
   return {
     state: {
       domain: {
         session: { kind: "ready" },
         native_attention: nativeAttention,
-        settings: { values: { notifications: settings } }
+        settings: { values: { notifications: { ...settings, ...overrides } } }
       }
     }
   } as unknown as DesktopSnapshot;
@@ -151,5 +154,32 @@ test("a cleared alert does not leave the last alert id behind", () => {
   // follows is shown again even when Rust hands out the same number.
   rerender({ snapshot: desktopSnapshot(attention(null, null)) });
   rerender({ snapshot: desktopSnapshot(attention(7, candidate("Announcements", 1))) });
+  expect(harness.show).toHaveBeenCalledTimes(2);
+});
+
+test("a candidate without an alert identity still alerts (#1802)", () => {
+  const { rerender } = renderAttentionHook(
+    desktopSnapshot(attention(null, null), { sound: true })
+  );
+  expect(harness.show).not.toHaveBeenCalled();
+
+  // The raise arrives after mount, as a pushed snapshot. A producer that predates the
+  // identity must keep the pre-#1802 banner and sound instead of going silent.
+  rerender({
+    snapshot: desktopSnapshot(attention(null, candidate("Announcements", 1)), { sound: true })
+  });
+  expect(harness.playAttentionSound).toHaveBeenCalledTimes(1);
+  expect(harness.show).toHaveBeenCalledTimes(1);
+
+  // The same contents still dedupe.
+  rerender({
+    snapshot: desktopSnapshot(attention(null, candidate("Announcements", 1)), { sound: true })
+  });
+  expect(harness.show).toHaveBeenCalledTimes(1);
+
+  // A changed content key alerts again, exactly as it did before the identity existed.
+  rerender({
+    snapshot: desktopSnapshot(attention(null, candidate("Announcements", 2)), { sound: true })
+  });
   expect(harness.show).toHaveBeenCalledTimes(2);
 });

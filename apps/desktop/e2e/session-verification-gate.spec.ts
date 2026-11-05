@@ -495,7 +495,7 @@ test("Ready to Locked replaces the shell with the gate", async ({ page }) => {
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
     window.__harness.clearInvocations();
-    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, native_attention: { summary: { unread_count: 1, highlight_count: 1, badge_count: 1, candidate: { room_display_name: "Attention", kind: "mention", unread_count: 1, highlight_count: 1 }, capabilities: { notifications: "available", badge: "available", overlay_icon: "unavailable", sound: "available", tray: "available", activation: "available" } }, dispatch: { kind: "idle" } } } } });
+    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, native_attention: { summary: { unread_count: 1, highlight_count: 1, badge_count: 1, alert_id: 1, candidate: { room_display_name: "Attention", kind: "mention", unread_count: 1, highlight_count: 1 }, capabilities: { notifications: "available", badge: "available", overlay_icon: "unavailable", sound: "available", tray: "available", activation: "available" } }, dispatch: { kind: "idle" } } } } });
     window.__harness.pushStateUpdate();
   });
   await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("play_native_attention_sound").length)).toBeGreaterThanOrEqual(1);
@@ -510,7 +510,7 @@ test("Ready to Locked replaces the shell with the gate", async ({ page }) => {
   await expect(page.getByRole("textbox", { name: "Message composer" })).toHaveCount(0);
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
-    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, native_attention: { ...snapshot.state.domain.native_attention, summary: { ...snapshot.state.domain.native_attention.summary, unread_count: 2, highlight_count: 2, candidate: { room_display_name: "Locked attention", kind: "mention", unread_count: 2, highlight_count: 2 } }, dispatch: { kind: "idle" } } } } });
+    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, native_attention: { ...snapshot.state.domain.native_attention, summary: { ...snapshot.state.domain.native_attention.summary, unread_count: 2, highlight_count: 2, alert_id: 2, candidate: { room_display_name: "Locked attention", kind: "mention", unread_count: 2, highlight_count: 2 } }, dispatch: { kind: "idle" } } } } });
     window.__harness.pushStateUpdate();
   });
   const unexpectedAttention = await page

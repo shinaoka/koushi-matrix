@@ -2320,6 +2320,7 @@ test("notification attention snapshot drives room, space, thread, and click rout
               unread_count: 4,
               highlight_count: 1,
               badge_count: 4,
+              alert_id: 1,
               candidate: {
                 room_display_name: "Attention Room",
                 kind: "mention",
