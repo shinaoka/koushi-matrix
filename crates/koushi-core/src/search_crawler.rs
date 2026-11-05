@@ -119,6 +119,16 @@ impl HistoryCrawlCheckpoint {
             ..Self::new(room_id, settings, settings_generation, false)
         }
     }
+
+    /// Whether this checkpoint reads the room from its newest event, so it
+    /// covers any change that arrived before its first page ran.
+    ///
+    /// A continuation, a catch-up, or a crawl whose page already ran starts
+    /// from a position it reached earlier and cannot cover what it passed
+    /// (#1781).
+    pub fn starts_over(&self) -> bool {
+        self.first_page && self.processed == 0 && self.catch_up_after.is_none()
+    }
 }
 
 pub(crate) enum HistoryCrawlPageResult {

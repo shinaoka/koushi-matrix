@@ -6205,6 +6205,7 @@ stateDiagram-v2
     Failed --> Queued : HistoryCrawlStarted\n(retry)
     Completed --> Queued : HistoryCrawlStarted\n(explicit StartHistoryCrawl: index again, #996)
     Completed --> Queued : HistoryCrawlStarted\n(catch-up: latest event changed since completion, #996)
+    Running --> Queued : HistoryCrawlStarted\n(follow-up scan: a change arrived\nwhile the page ran, #1781)
 ```
 
 ### Guards and lifecycle
@@ -6285,6 +6286,40 @@ stateDiagram-v2
   `pending_retries`, and `queued_rooms` counts only (never room, event, user,
   body, or query data); the headless crawl waiter reports it in its
   `crawl_backfill_timeout` token.
+- **Late-decryption reopen coalescing (#1781)**: A resolved UTD rewrites a
+  stored event in place, and a lag report cannot say which rooms were affected,
+  so the actor reopens the room (or every joined room). One signal must not cost
+  the joined-room count in scheduling and state publication:
+  - A queued checkpoint that has read nothing yet reads the room from its newest
+    event, so it covers a change that arrived after it was queued; the signal is
+    absorbed and publishes nothing.
+  - A queued continuation, a queued catch-up, or a page already in flight
+    starts from a position it reached earlier and cannot cover what it passed.
+    The queued checkpoint is replaced in place by a fresh full reread; the
+    running page is never cancelled for it.
+  - A change that arrives while a page runs is kept as at most one pending
+    follow-up per room (`pending_reread`), recorded even while the crawler is
+    paused. The running scan keeps its position and keeps making progress, but
+    the pending entry — not the page's own completion — decides its end: the
+    last page's progress is recorded, the room is **not** settled, and one fresh
+    scan is queued (`Running --> Queued`). A stale completion therefore never
+    clears a newer obligation, and a burst cannot postpone progress by
+    discarding each page's position. A failed page leaves the entry set, so the
+    next scan that starts after the change serves it; a paused crawler queues
+    no follow-up and the durable flag carries it to the resuming room list.
+  - One lag report records the durable `needs_reread` flag for every joined room
+    and writes the record once; a repeat over rooms that already owe a reread
+    writes nothing and publishes nothing. The work admitted per report is one
+    entry per distinct affected room — the queue is indexed by room id, so the
+    sweep does not scan it once per room — and the bound does not grow with the
+    number of notifications, so a continuous burst cannot postpone progress.
+  - The durable `needs_reread` flag is what survives a restart: such a room is
+    not seeded as settled and is crawled again, and a record write that failed
+    is retried by the next reopen instead of leaving the older settled record in
+    place. Pause clears the in-flight coalescing state and starts nothing (the
+    flag keeps the obligation, and the resuming
+    `NotifySearchCrawlerRoomsAvailable` queues it); a departed room's obligation
+    is dropped with its crawl set.
 - **Paused → active**: When `SettingsUpdateRequested` changes speed from
   `Paused` to any active value, the reducer emits
   `NotifySearchCrawlerRoomsAvailable` with all known rooms so previously-paused
