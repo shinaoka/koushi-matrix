@@ -18,6 +18,7 @@ use koushi_state::{
 
 use crate::send_diagnostics::{SendFailureDiagnostic, classify_send_failure};
 use matrix_sdk::attachment::AttachmentConfig;
+use matrix_sdk::config::RequestConfig;
 use matrix_sdk::ruma::events::Mentions;
 use matrix_sdk::ruma::events::relation::{Reply, Thread};
 use matrix_sdk::ruma::events::room::message::{
@@ -67,6 +68,10 @@ use super::thread_projection::{ThreadAttentionBatchProvenance, ThreadAttentionCo
 /// This is deliberately not a per-worker timeout, so shutdown latency cannot
 /// grow with the number of outstanding sends.
 const SEND_ENQUEUE_WORKER_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Bound on the one exact-event read that resolves a reply target the room is
+/// not displaying (#1808).
+const REPLY_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub(super) struct TimelineSendCompletionDelivery {
     pub(super) request_id: RequestId,
@@ -679,17 +684,7 @@ async fn enqueue_document_reply_send(
         document,
         formatting_options,
     )?;
-    let source = if let Some(timeline) = &context.timeline {
-        timeline.items().await.iter().find_map(|item| {
-            let TimelineItemKind::Event(event) = item.kind() else {
-                return None;
-            };
-            (event.event_id() == Some(reply_event_id.as_ref()))
-                .then(|| (event.sender().to_owned(), event.content().thread_root()))
-        })
-    } else {
-        None
-    };
+    let source = reply_source(&context, &reply_event_id).await;
     let content = make_offline_reply_content(
         content,
         reply_event_id,
@@ -708,6 +703,60 @@ async fn enqueue_document_reply_send(
             media_queued: None,
         })
         .map_err(|error| classify_send_queue_error(&error))
+}
+
+/// Sender and thread root of the event a reply points at (#1808).
+///
+/// Display is the cheapest source, but a direct (MCP) send runs on a room key
+/// with no timeline and a viewed room may not have loaded the target, so an
+/// unresolved display lookup falls back to one exact-event read. The room's
+/// event cache answers that without a request when the event was synced.
+/// Neither source resolving keeps the reply the plain `m.in_reply_to` it is
+/// today; it never invents a thread.
+async fn reply_source(
+    context: &MatrixTimelineSendEnqueueContext,
+    reply_event_id: &matrix_sdk::ruma::EventId,
+) -> Option<(OwnedUserId, Option<OwnedEventId>)> {
+    if let Some(timeline) = &context.timeline {
+        let displayed = timeline.items().await.iter().find_map(|item| {
+            let TimelineItemKind::Event(event) = item.kind() else {
+                return None;
+            };
+            (event.event_id() == Some(reply_event_id))
+                .then(|| (event.sender().to_owned(), event.content().thread_root()))
+        });
+        if displayed.is_some() {
+            return displayed;
+        }
+    }
+    // The exact-event read is the largest future on the send path, and only a
+    // reply whose target is not displayed ever reaches it, so it is boxed to
+    // keep every enclosing send future inside the stack budget.
+    let loaded = executor::timeout(
+        REPLY_SOURCE_TIMEOUT,
+        Box::pin(context.room.load_or_fetch_event(
+            reply_event_id,
+            Some(RequestConfig::new().timeout(REPLY_SOURCE_TIMEOUT)),
+        )),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    reply_source_from_raw(reply_event_id, loaded.raw().json().get())
+}
+
+fn reply_source_from_raw(
+    reply_event_id: &matrix_sdk::ruma::EventId,
+    raw_json: &str,
+) -> Option<(OwnedUserId, Option<OwnedEventId>)> {
+    let raw: serde_json::Value = serde_json::from_str(raw_json).ok()?;
+    if raw.get("event_id")?.as_str()? != reply_event_id.as_str() {
+        return None;
+    }
+    let sender = raw.get("sender")?.as_str()?.parse().ok()?;
+    let thread_root = super::item_projection::thread_root_from_original_json(&raw)
+        .and_then(|root| matrix_sdk::ruma::EventId::parse(root).ok());
+    Some((sender, thread_root))
 }
 
 fn make_offline_reply_content(
