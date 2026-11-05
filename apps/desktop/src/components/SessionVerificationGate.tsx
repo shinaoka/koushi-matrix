@@ -697,6 +697,7 @@ export function SessionVerificationGate({
     {awaiting && deviceVerificationAvailable && <button className="dialog-button" disabled={gateOperations.has("sas")} onClick={() => setConfirmDeviceVerification(true)}>{t("gate.otherDevice")}</button>}
     {awaiting && deviceVerificationAvailable && confirmDeviceVerification && <div className="trust-verification-dialog" role="region" aria-labelledby="device-verification-confirm-title">
       <h2 id="device-verification-confirm-title">{t("gate.deviceVerificationDialogTitle")}</h2>
+      <p>{t("gate.deviceVerificationDialogPrepare")}</p>
       <p>{t("gate.deviceVerificationDialogCopy")}</p>
       <div className="dialog-actions">
         {canUseRecoverySecret && <button className="dialog-button is-primary" type="button" onClick={useRecoveryKey}>{t("gate.useRecoveryKey")}</button>}
@@ -704,6 +705,7 @@ export function SessionVerificationGate({
         <button className="dialog-button" type="button" onClick={() => setConfirmDeviceVerification(false)}>{t("action.cancel")}</button>
       </div>
     </div>}
+    {sasVerifying && session.sas_emojis?.length !== 7 && <p>{t("gate.deviceVerificationWaiting")}</p>}
     {sasVerifying && session.sas_emojis?.length === 7 && <div className="session-verification-emojis">{session.sas_emojis.map((emoji, index) => <span key={index}>{emoji.symbol} {emoji.description}</span>)}</div>}
     {sasVerifying && session.sas_emojis?.length === 7 && flowId !== undefined && <><button onClick={() => void run("sas", () => api.confirmSasVerification(flowId))}>{t("gate.match")}</button><button onClick={() => void run("sas", () => api.mismatchSasVerification(flowId))}>{t("gate.mismatch")}</button></>}
     {awaiting && methods.includes("bootstrap") && <>

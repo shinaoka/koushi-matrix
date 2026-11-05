@@ -1501,9 +1501,11 @@ export type MessageId =
   | "gate.noRecoveryKeyTitle"
   | "gate.noRecoveryKeyCopy"
   | "gate.deviceVerificationDialogTitle"
+  | "gate.deviceVerificationDialogPrepare"
   | "gate.deviceVerificationDialogCopy"
   | "gate.useRecoveryKey"
   | "gate.tryDeviceVerificationAnyway"
+  | "gate.deviceVerificationWaiting"
   | "gate.match"
   | "gate.mismatch"
   | "gate.recoverySecret"
@@ -3966,9 +3968,11 @@ const en: Catalog = {
   "gate.noRecoveryKeyCopy":
     "Koushi cannot verify this session without recovery material. Use a Matrix client that is already verified to set up recovery, or reset your cryptographic identity if recovery is genuinely unavailable. This device stays signed in and may appear unverified to other clients until then.",
   "gate.deviceVerificationDialogTitle": "Try device verification?",
+  "gate.deviceVerificationDialogPrepare": "First open another app or session where this account is already verified, and keep it open. The request appears there; it may not arrive as a notification.",
   "gate.deviceVerificationDialogCopy": "Device-to-device verification can be unreliable if the other device is offline, slow to sync, or missing keys. We recommend verifying with your recovery key when possible.",
   "gate.useRecoveryKey": "Use recovery key",
   "gate.tryDeviceVerificationAnyway": "Try device verification anyway",
+  "gate.deviceVerificationWaiting": "Keep the already verified app or session open and accept the request there if you have not already.",
   "gate.match": "They match",
   "gate.mismatch": "They do not match",
   "gate.recoverySecret": "Recovery secret",
@@ -6319,9 +6323,11 @@ const ja: Catalog = {
   "gate.noRecoveryKeyCopy":
     "リカバリー情報がないため、Koushi はこのセッションを検証できません。すでに検証済みの Matrix クライアントでリカバリーを設定するか、リカバリーが本当に利用できない場合は暗号 ID をリセットしてください。それまでこの端末はサインインしたままで、他のクライアントには未検証として表示される場合があります。",
   "gate.deviceVerificationDialogTitle": "デバイス検証を試しますか？",
+  "gate.deviceVerificationDialogPrepare": "先に、このアカウントで既に検証済みのアプリまたはセッションを開いて、そのままにしておいてください。リクエストはそこに表示され、通知としては届かない場合があります。",
   "gate.deviceVerificationDialogCopy": "デバイス間検証は、相手のデバイスがオフライン、同期が遅い、または鍵が不足している場合に不安定になることがあります。可能な場合はリカバリーキーでの検証をおすすめします。",
   "gate.useRecoveryKey": "リカバリーキーを使う",
   "gate.tryDeviceVerificationAnyway": "それでもデバイス検証を試す",
+  "gate.deviceVerificationWaiting": "既に検証済みのアプリまたはセッションを開いたまま、まだ承認していない場合はそちらで承認してください。",
   "gate.match": "一致しています",
   "gate.mismatch": "一致していません",
   "gate.recoverySecret": "リカバリーシークレット",

@@ -9,10 +9,11 @@ Account sign-in and access to encryption keys are separate steps. At
 
 - With a recovery key, enter it in **Recovery secret** and choose
   **Verify with recovery key**.
-- With another device, keep that already verified device online, select
-  **Verify with another device**, and follow the confirmation. If matching emoji
-  are displayed, compare them on both devices before choosing **They match**.
-  Choose **They do not match** if they differ.
+- With another device, first open that already verified app or session and keep
+  it open. Then select **Verify with another device** and follow the
+  confirmation. The request appears in the open session; it may not arrive as a
+  notification. If matching emoji are displayed, compare them on both devices
+  before choosing **They match**. Choose **They do not match** if they differ.
 - On a brand-new account, choose **Create secure backup** (a backup
   passphrase is optional). Your new recovery key is shown on screen; record it
   as described in the next section, then choose **I saved the recovery key**.
