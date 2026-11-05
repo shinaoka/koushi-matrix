@@ -6686,6 +6686,12 @@ mark {
   font-size: 12px;
 }
 
+/* #1792: `size · widthxheight` stays on one line; at the narrowest dialog
+   width it overflows into the viewer's own scroll area instead of wrapping. */
+.media-viewer-header p {
+  white-space: nowrap;
+}
+
 .upload-staging-caption {
   display: grid;
   color: var(--text-muted);

@@ -43,6 +43,8 @@ describe("TimelineMediaViewer native context menu", () => {
 
 describe("TimelineMediaViewer header", () => {
   // #1784: the header shows size and dimensions only, never the raw MIME type.
+  // #1792: the same expected string appears in mediaLists.test.tsx, so the
+  // timeline viewer and the gallery viewer cannot drift apart.
   it("omits the MIME type from the metadata line", () => {
     render(<TimelineMediaViewer item={item} onClose={vi.fn()} />);
 

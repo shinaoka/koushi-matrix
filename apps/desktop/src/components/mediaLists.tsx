@@ -50,6 +50,7 @@ import { documentFromText, plainBodyFromDocument } from "../domain/composerDocum
 import {
   ICON_SIZE,
   formatUploadBytes,
+  formatDimensions,
   mediaGalleryItemLabel,
   formatTime,
   formatScheduledSendTime,
@@ -178,6 +179,16 @@ function MediaViewer({
   const previousIndex = (index + items.length - 1) % items.length;
   const nextIndex = (index + 1) % items.length;
   const label = mediaGalleryItemLabel(item);
+  // #1784/#1792: the size line carries pixel dimensions for images and videos
+  // only; the format is the timeline viewer's (`size · widthxheight`).
+  const dimensions =
+    item.media.kind === "Image" || item.media.kind === "Video"
+      ? formatDimensions(item.media.width, item.media.height)
+      : null;
+  const metadata = [
+    item.media.size !== null ? formatUploadBytes(item.media.size) : null,
+    dimensions
+  ].filter((value): value is string => Boolean(value));
   const download = mediaDownloads[item.event_id];
   const sourceUrl =
     item.media.kind === "Image" && download?.kind === "ready"
@@ -263,8 +274,8 @@ function MediaViewer({
         <header className="media-viewer-header">
           <div>
             <h2 dir="auto">{label}</h2>
-            {/* #1784: size only; the raw MIME type is not shown. */}
-            {item.media.size !== null ? <p>{formatUploadBytes(item.media.size)}</p> : null}
+            {/* #1784: size (and dimensions); the raw MIME type is not shown. */}
+            {metadata.length > 0 ? <p>{metadata.join(" · ")}</p> : null}
           </div>
           <Tooltip label={t("mediaGallery.close")} placement="below" align="end">
             {(tooltipProps) => (

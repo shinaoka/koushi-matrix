@@ -212,6 +212,14 @@ export function formatUploadDimensions(dimensions: ImageUploadDimensionsPayload)
   return `${dimensions.width}x${dimensions.height}`;
 }
 
+/** Viewer metadata for media whose dimensions may be unknown. */
+export function formatDimensions(width: number | null, height: number | null): string | null {
+  if (!width || !height) {
+    return null;
+  }
+  return `${width}x${height}`;
+}
+
 export function mediaGalleryItemLabel(item: TimelineMediaGalleryItem): string {
   return item.media.filename || item.event_id;
 }
