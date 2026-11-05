@@ -629,7 +629,7 @@ describe("TimelineView", () => {
     const viewer = await screen.findByRole("dialog", { name: "Media viewer" });
     expect(viewer.textContent).toContain("photo.png");
     expect(viewer.textContent).toContain("407 KB");
-    expect(viewer.querySelector<HTMLImageElement>(".timeline-media-viewer-image")?.src).toContain(
+    expect(viewer.querySelector<HTMLImageElement>(".media-viewer-image")?.src).toContain(
       "koushi-media://localhost/download/png/1234567890123456/6543210987654321"
     );
 

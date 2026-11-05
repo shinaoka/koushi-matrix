@@ -4,12 +4,12 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  MediaViewer,
   MessageArticle,
   PinnedEventsList,
   PinnedMessagesEntry,
   ScheduledMessagesList
 } from "./mediaLists";
+import { MediaViewer, mediaViewerEntryFromGallery } from "./mediaViewer";
 import type { TimelineMediaGalleryItem } from "../domain/types";
 
 afterEach(cleanup);
@@ -180,7 +180,7 @@ describe("media gallery viewer header", () => {
     render(
       <MediaViewer
         index={0}
-        items={[galleryItem(media)]}
+        items={[mediaViewerEntryFromGallery(galleryItem(media))]}
         mediaDownloads={{}}
         onClose={vi.fn()}
         onSelectIndex={vi.fn()}
@@ -195,26 +195,14 @@ describe("media gallery viewer header", () => {
       <MediaViewer
         index={0}
         items={[
-          {
-            event_id: "$synthetic-file",
-            room_id: "!room:example.invalid",
-            sender: null,
-            timestamp_ms: 0,
-            media: {
+          mediaViewerEntryFromGallery(
+            galleryItem({
               kind: "File",
               filename: "synthetic_report.xlsx",
-              source: {
-                mxc_uri: "mxc://example.invalid/synthetic",
-                encrypted: false,
-                encryption_version: null
-              },
               mimetype: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-              size: 9 * 1024,
-              width: null,
-              height: null,
-              thumbnail: null
-            }
-          }
+              size: 9 * 1024
+            })
+          )
         ]}
         mediaDownloads={{}}
         onClose={vi.fn()}
@@ -226,9 +214,8 @@ describe("media gallery viewer header", () => {
     expect(header?.textContent).toBe("9 KB");
   });
 
-  // #1792: an image shows its pixel dimensions next to the size. The expected
-  // string is the same literal as TimelineMediaViewer.test.tsx, so the gallery
-  // and the timeline viewer cannot drift apart.
+  // #1792: an image shows its pixel dimensions next to the size. The timeline
+  // and the gallery now share one viewer (#1810), so this is the only header.
   it("shows size and dimensions for an image", () => {
     expect(
       headerText({ kind: "Image", size: 2 * 1024, width: 640, height: 480 })

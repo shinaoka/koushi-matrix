@@ -1,5 +1,3 @@
-import { createTrackedObjectURL, revokeTrackedObjectURL } from "../../domain/objectUrlDiagnostics";
-import { NativeModal } from "../ModalDialog";
 import { FloatingLayer, floatingPlacementStyle, useFloatingPlacement } from "../floatingLayer";
 import {
   Download,
@@ -12,13 +10,9 @@ import {
   FileText,
   FileVideo,
   Presentation,
-  Forward,
   ImageIcon,
   Info,
-  MessageCircle,
-  MoreHorizontal,
   RefreshCw,
-  Trash2,
   XCircle
 } from "lucide-react";
 import { type CSSProperties, Fragment, type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
@@ -26,15 +20,14 @@ import { type CSSProperties, Fragment, type ReactNode, type RefObject, useCallba
 import { t } from "../../i18n/messages";
 import { Tooltip } from "../Tooltip";
 import { useOutsidePressDismissal } from "../popupDismissal";
-import { onMenuKeyDown } from "../ContextMenuSurface";
 import type { MediaTransferProgress, TimelineItem } from "../../domain/coreEvents";
 import type { TimelineMediaDownloadState } from "../../domain/types";
-import type { TimelineForwardDestination } from "../../domain/projectionTypes";
 import { mediaSourceUrl } from "../../backend/linkMediaRuntime";
 import type { MediaSaveNameFacts } from "../../backend/linkMediaPort";
 import type { TimelineTransport } from "./TimelineTransport";
 import { type FileTypeCategory, fileTypeCategory } from "./fileTypeCategory";
 import { formatDimensions } from "../../app/uiShared";
+import { saveMediaSource, type MediaViewerEntry } from "../mediaViewer";
 
 const FILE_TYPE_ICONS: Record<FileTypeCategory, typeof FileText> = {
   spreadsheet: FileSpreadsheet,
@@ -49,89 +42,6 @@ const FILE_TYPE_ICONS: Record<FileTypeCategory, typeof FileText> = {
   other: FileGenericIcon
 };
 
-export type TimelineMediaViewerItem = {
-  sourceUrl: string;
-  downloadSourceRef: string;
-  filename: string;
-  size: number | null;
-  mimeType: string | null;
-  width: number | null;
-  height: number | null;
-  encrypted: boolean;
-  actions: TimelineMediaViewerActions;
-  saveName: MediaSaveNameFacts | null;
-  saveMediaFile?: TimelineTransport["saveMediaFile"];
-};
-
-type TimelineMediaViewerActions = {
-  canForward: boolean;
-  forwardDestinations: readonly TimelineForwardDestination[];
-  onForward: (destinationRoomId: string) => void;
-  canViewSource: boolean;
-  onViewSource: () => void;
-  canRedact: boolean;
-  onRedact: () => void;
-};
-
-async function downloadMediaSource(sourceUrl: string, filename: string): Promise<void> {
-  if (typeof document === "undefined") {
-    return;
-  }
-
-  const safeFilename = filename.trim() || "download";
-  let downloadUrl: string | null = null;
-  let revokeUrl: string | null = null;
-
-  if (typeof fetch === "function" && typeof URL.createObjectURL === "function") {
-    try {
-      const response = await fetch(sourceUrl);
-      if (response.ok) {
-        const blob = await response.blob();
-        revokeUrl = createTrackedObjectURL(blob);
-        downloadUrl = revokeUrl;
-      }
-    } catch {
-      downloadUrl = null;
-    }
-  }
-
-  if (
-    downloadUrl === null &&
-    (/^https?:\/\//.test(sourceUrl) || sourceUrl.startsWith("data:") || sourceUrl.startsWith("blob:"))
-  ) {
-    downloadUrl = sourceUrl;
-  }
-  if (downloadUrl === null) {
-    return;
-  }
-
-  const anchor = document.createElement("a");
-  anchor.href = downloadUrl;
-  anchor.download = safeFilename;
-  anchor.rel = "noreferrer";
-  anchor.style.display = "none";
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  if (revokeUrl) {
-    window.setTimeout(() => revokeTrackedObjectURL(revokeUrl), 0);
-  }
-}
-
-async function saveMediaSource(
-  sourceUrl: string,
-  displayUrl: string,
-  filename: string,
-  saveName: MediaSaveNameFacts | null,
-  saveMediaFile?: TimelineTransport["saveMediaFile"]
-): Promise<void> {
-  if (saveMediaFile) {
-    await saveMediaFile(sourceUrl, filename, saveName);
-    return;
-  }
-  await downloadMediaSource(displayUrl, filename);
-}
-
 export function TimelineMediaAttachment({
   media,
   progress,
@@ -141,17 +51,18 @@ export function TimelineMediaAttachment({
   onOpenMediaViewer,
   onSaveMediaFile,
   saveName,
-  viewerActions
+  viewerEntry
 }: {
   media: NonNullable<TimelineItem["media"]>;
   progress: MediaTransferProgress | null;
   downloadState?: TimelineMediaDownloadState;
   canDownload: boolean;
   onDownload: () => void;
-  onOpenMediaViewer: (item: TimelineMediaViewerItem) => void;
+  onOpenMediaViewer: (entry: MediaViewerEntry) => void;
   onSaveMediaFile?: TimelineTransport["saveMediaFile"];
   saveName: MediaSaveNameFacts | null;
-  viewerActions: TimelineMediaViewerActions;
+  /** The same image as the shared viewer displays it (#1810). */
+  viewerEntry: MediaViewerEntry | null;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const detailsTrigger = useRef<HTMLButtonElement>(null);
@@ -186,22 +97,6 @@ export function TimelineMediaAttachment({
           sourceUrl: readyImageSourceUrl,
           width: readyImageDownload.width,
           height: readyImageDownload.height
-        };
-  const readyImageViewerItem =
-    readyImageDownload === null || readyImagePreview === null
-      ? null
-      : {
-          sourceUrl: readyImagePreview.sourceUrl,
-          downloadSourceRef: readyImageDownload.source_ref,
-          filename: media.filename,
-          size: media.size,
-          mimeType: readyImageMimeType,
-          width: readyImagePreview.width,
-          height: readyImagePreview.height,
-          encrypted: media.source.encrypted,
-          actions: viewerActions,
-          saveName,
-          saveMediaFile: onSaveMediaFile
         };
   const progressPercent =
     uploadProgressPercentValue ?? downloadProgressPercent;
@@ -261,8 +156,8 @@ export function TimelineMediaAttachment({
                   type="button"
                   aria-label={t("timeline.mediaOpenFile")}
                   onClick={() => {
-                    if (readyImageViewerItem) {
-                      onOpenMediaViewer(readyImageViewerItem);
+                    if (viewerEntry) {
+                      onOpenMediaViewer(viewerEntry);
                     }
                   }}
                   {...tooltipProps}
@@ -629,261 +524,6 @@ function MediaDetailsPopup({ anchor, onClose, children }: {
         event.preventDefault(); event.stopPropagation(); onClose(); anchor.current?.focus();
       }
     }}>{children}</div></FloatingLayer>;
-}
-
-export function TimelineMediaViewer({
-  item,
-  onClose
-}: {
-  item: TimelineMediaViewerItem;
-  onClose: () => void;
-}) {
-  const [isActionMenuOpen, setActionMenuOpen] = useState(false);
-  const [isForwardMenuOpen, setForwardMenuOpen] = useState(false);
-  const dialogRef = useRef<HTMLElement | null>(null);
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const actionMenuControlRef = useRef<HTMLDivElement>(null);
-  const firstActionMenuItemRef = useRef<HTMLButtonElement>(null);
-
-  const closeActionMenu = useCallback(() => {
-    setActionMenuOpen(false);
-    setForwardMenuOpen(false);
-  }, []);
-
-  useEffect(() => {
-    closeButtonRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    if (!isActionMenuOpen) {
-      return;
-    }
-    firstActionMenuItemRef.current?.focus();
-  }, [isActionMenuOpen]);
-
-  useEffect(() => {
-    if (!isActionMenuOpen) {
-      return;
-    }
-    const handlePointerDown = (event: PointerEvent) => {
-      const control = actionMenuControlRef.current;
-      if (!control || control.contains(event.target as Node)) {
-        return;
-      }
-      closeActionMenu();
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-    };
-  }, [closeActionMenu, isActionMenuOpen]);
-
-  // #1784: the raw MIME type stays out of the viewer header.
-  const metadata = [
-    formatBytes(item.size),
-    formatDimensions(item.width, item.height)
-  ].filter((value): value is string => Boolean(value));
-  const canForward = item.actions.canForward && item.actions.forwardDestinations.length > 0;
-  const hasActionMenu = canForward || item.actions.canViewSource || item.actions.canRedact;
-
-  return (
-    <NativeModal onDismiss={() => { if (isActionMenuOpen) closeActionMenu(); else onClose(); }} aria-label={t("timeline.mediaViewer")}
-      className="timeline-media-viewer-overlay"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
-          onClose();
-        }
-      }}
-    >
-      <section
-        ref={dialogRef}
-        className="timeline-media-viewer"
-        tabIndex={-1}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="timeline-media-viewer-toolbar">
-          <div className="timeline-media-viewer-info">
-            <div className="timeline-media-viewer-title" dir="auto">
-              {item.filename}
-            </div>
-            {metadata.length > 0 || item.encrypted ? (
-              <div className="timeline-media-viewer-meta">
-                {metadata.length > 0 ? <span>{metadata.join(" · ")}</span> : null}
-                {item.encrypted ? <span>{t("timeline.encryptedMedia")}</span> : null}
-              </div>
-            ) : null}
-          </div>
-          <div className="timeline-media-viewer-actions">
-            <Tooltip
-              label={t("timeline.downloadMedia", { filename: item.filename })}
-              placement="above"
-            >
-              {(tooltipProps) => (
-                <button
-                  className="timeline-media-viewer-action"
-                  type="button"
-                  aria-label={t("timeline.downloadMedia", { filename: item.filename })}
-                  onClick={() => {
-                    void saveMediaSource(
-                      item.downloadSourceRef,
-                      item.sourceUrl,
-                      item.filename,
-                      item.saveName,
-                      item.saveMediaFile
-                    );
-                  }}
-                  {...tooltipProps}
-                >
-                  <Download size={20} />
-                </button>
-              )}
-            </Tooltip>
-            {hasActionMenu ? (
-              <div className="timeline-media-viewer-menu-control" ref={actionMenuControlRef}>
-                <Tooltip label={t("timeline.messageActions")} placement="above" align="end">
-                  {(tooltipProps) => (
-                    <button
-                      className="timeline-media-viewer-action"
-                      type="button"
-                      aria-label={t("timeline.messageActions")}
-                      aria-expanded={isActionMenuOpen}
-                      aria-haspopup="menu"
-                      onClick={() => {
-                        setForwardMenuOpen(false);
-                        setActionMenuOpen((current) => !current);
-                      }}
-                      {...tooltipProps}
-                    >
-                      <MoreHorizontal size={22} />
-                    </button>
-                  )}
-                </Tooltip>
-                {isActionMenuOpen ? (
-                  <div
-                    className="timeline-media-viewer-menu"
-                    role="menu"
-                    aria-label={t("timeline.messageActions")}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape" && !event.nativeEvent.isComposing && event.keyCode !== 229) {
-                        event.preventDefault();
-                        closeActionMenu();
-                        return;
-                      }
-                      onMenuKeyDown(event, event.currentTarget);
-                    }}
-                  >
-                    {canForward ? (
-                      <div className="timeline-media-viewer-forward-control">
-                        <button
-                          ref={firstActionMenuItemRef}
-                          className="timeline-media-viewer-menu-item"
-                          type="button"
-                          role="menuitem"
-                          aria-haspopup="menu"
-                          aria-expanded={isForwardMenuOpen}
-                          onClick={() => setForwardMenuOpen((current) => !current)}
-                        >
-                          <Forward size={17} aria-hidden="true" />
-                          <span>{t("timeline.forwardMessage")}</span>
-                        </button>
-                        {isForwardMenuOpen ? (
-                          <div className="timeline-media-viewer-forward-menu" role="menu">
-                            {item.actions.forwardDestinations.map((destination) => (
-                              <button
-                                className="timeline-media-viewer-menu-item"
-                                type="button"
-                                role="menuitem"
-                                key={destination.room_id}
-                                onClick={() => {
-                                  item.actions.onForward(destination.room_id);
-                                  onClose();
-                                }}
-                              >
-                                <MessageCircle size={17} aria-hidden="true" />
-                                <span dir="auto">{destination.display_name}</span>
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    {item.actions.canViewSource ? (
-                      <button
-                        ref={!canForward ? firstActionMenuItemRef : undefined}
-                        className="timeline-media-viewer-menu-item"
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          item.actions.onViewSource();
-                          onClose();
-                        }}
-                      >
-                        <FileCode2 size={17} aria-hidden="true" />
-                        <span>{t("timeline.viewSource")}</span>
-                      </button>
-                    ) : null}
-                    {item.actions.canRedact ? (
-                      <button
-                        ref={
-                          !canForward && !item.actions.canViewSource
-                            ? firstActionMenuItemRef
-                            : undefined
-                        }
-                        className="timeline-media-viewer-menu-item is-destructive"
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          item.actions.onRedact();
-                          onClose();
-                        }}
-                      >
-                        <Trash2 size={17} aria-hidden="true" />
-                        <span>{t("timeline.removeMessage")}</span>
-                      </button>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-            <Tooltip label={t("mediaGallery.close")} placement="above" align="end">
-              {(tooltipProps) => (
-                <button
-                  ref={closeButtonRef}
-                  className="timeline-media-viewer-action timeline-media-viewer-close"
-                  type="button"
-                  aria-label={t("mediaGallery.close")}
-                  onClick={onClose}
-                  {...tooltipProps}
-                >
-                  <XCircle size={24} />
-                </button>
-              )}
-            </Tooltip>
-          </div>
-        </div>
-        <div className="timeline-media-viewer-stage">
-          {item.mimeType?.startsWith("video/") ? (
-            <video
-              className="timeline-media-viewer-video"
-              src={item.sourceUrl}
-              aria-label={item.filename}
-              controls
-              playsInline
-            />
-          ) : (
-            <img
-              className="timeline-media-viewer-image"
-              src={item.sourceUrl}
-              alt={item.filename}
-              title={item.filename}
-              width={item.width ?? undefined}
-              height={item.height ?? undefined}
-            />
-          )}
-        </div>
-      </section>
-    </NativeModal>
-  );
 }
 
 function formatBytes(size: number | null): string | null {

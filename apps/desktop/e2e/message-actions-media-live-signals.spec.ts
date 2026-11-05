@@ -814,10 +814,18 @@ test("room media gallery opens a viewer from Rust-owned gallery projection", asy
   const viewer = page.getByRole("dialog", { name: "Media viewer" });
   await expect(viewer).toBeVisible();
   await expect(viewer.getByText("new-image.png", { exact: true })).toBeVisible();
-  await viewer.getByRole("button", { name: "Next media" }).click();
+  // #1810: the image viewer walks the room's IMAGE sequence, and this room's
+  // only image is the opened one, so the file is not a previous/next neighbour.
+  await expect(viewer.getByRole("button", { name: "Next media" })).toHaveCount(0);
+  await expect(viewer.getByRole("button", { name: "Previous media" })).toHaveCount(0);
+  await viewer.getByRole("button", { name: "Close media viewer" }).click();
+  await expect(viewer).toHaveCount(0);
+
+  // A file stays reachable from the gallery, alone, with no image navigation.
+  await gallery.getByRole("button", { name: "Open old-file.pdf" }).click();
+  await expect(viewer).toBeVisible();
   await expect(viewer.getByText("old-file.pdf", { exact: true })).toBeVisible();
-  await viewer.getByRole("button", { name: "Previous media" }).click();
-  await expect(viewer.getByText("new-image.png", { exact: true })).toBeVisible();
+  await expect(viewer.getByRole("button", { name: "Next media" })).toHaveCount(0);
   await viewer.getByRole("button", { name: "Close media viewer" }).click();
   await expect(viewer).toHaveCount(0);
 });

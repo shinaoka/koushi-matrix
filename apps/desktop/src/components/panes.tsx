@@ -75,11 +75,16 @@ import { EntityAvatar } from "./Shell";
 import {
   MessageArticle,
   RoomMediaGallery,
-  MediaViewer,
   ScheduledMessagesList,
   PinnedMessagesEntry,
   SearchResults
 } from "./mediaLists";
+import {
+  MediaViewer,
+  imageViewerEntriesFromGallery,
+  mediaViewerEntryFromGallery,
+  type MediaViewerEntry
+} from "./mediaViewer";
 import { Composer, type ComposerSendingAccount } from "./composer";
 import { UploadStagingDialog, uploadStagingItemsAreSendable } from "./dialogs";
 import { ImeSafeForm, ImeTextField } from "./ImeTextControl";
@@ -974,6 +979,10 @@ export function TimelinePane({
   const stagedUploadsReady = uploadStagingItemsAreSendable(stagedUploads);
   const mediaGallery = snapshot.state.ui.timeline.media_gallery ?? [];
   const mediaDownloads = snapshot.state.ui.timeline.media_downloads ?? {};
+  const galleryImageEntries = useMemo(
+    () => imageViewerEntriesFromGallery(mediaGallery),
+    [mediaGallery]
+  );
   const forwardDestinations = useAppStore(selectForwardDestinations);
   const mentionCandidates = useAppStore((state) =>
     selectMentionCandidates(state, timelineRoomId, "main")
@@ -1088,7 +1097,10 @@ export function TimelinePane({
     (entry: TimelineDiagnosticLogEntry) => onTimelineDiagnosticLogEntry?.(entry)
   );
   const [galleryOpen, setGalleryOpen] = useState(false);
-  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  const [viewer, setViewer] = useState<{
+    entries: MediaViewerEntry[];
+    index: number;
+  } | null>(null);
   const jumpToLatestRef = useRef<(() => void) | null>(null);
   const registerJumpToLatest = useCallback((handler: (() => void) | null) => {
     jumpToLatestRef.current = handler;
@@ -1262,7 +1274,23 @@ export function TimelinePane({
         <RoomMediaGallery
           items={mediaGallery}
           mediaDownloads={mediaDownloads}
-          onOpenItem={(index) => setViewerIndex(index)}
+          onOpenItem={(index) => {
+            const opened = mediaGallery[index];
+            if (!opened) {
+              return;
+            }
+            // #1810: an image opens in the room's image sequence; a file or
+            // video opens alone, because the image viewer never walks past it.
+            const entry = mediaViewerEntryFromGallery(opened);
+            const at = galleryImageEntries.findIndex(
+              (candidate) => candidate.eventId === opened.event_id
+            );
+            setViewer(
+              at < 0
+                ? { entries: [entry], index: 0 }
+                : { entries: galleryImageEntries, index: at }
+            );
+          }}
         />
       ) : null}
       <section className="timeline-scroll">
@@ -1332,6 +1360,7 @@ export function TimelinePane({
               onMathModeChange={onComposerMathModeChangeStable}
               searchHighlightsByEventId={searchHighlightsByEventId}
               mediaDownloads={mediaDownloads}
+              mediaGallery={mediaGallery}
               replyQuoteThumbnails={
                 snapshot.state.ui.timeline.reply_quote_thumbnails ?? {}
               }
@@ -1453,13 +1482,24 @@ export function TimelinePane({
         onSend={onSendTextStable}
         onDiagnosticLogEntry={onTimelineDiagnosticLogEntryStable}
       />
-      {viewerIndex !== null && mediaGallery[viewerIndex] ? (
+      {viewer ? (
         <MediaViewer
-          index={viewerIndex}
-          items={mediaGallery}
+          index={viewer.index}
+          items={viewer.entries}
           mediaDownloads={mediaDownloads}
-          onClose={() => setViewerIndex(null)}
-          onSelectIndex={setViewerIndex}
+          onClose={() => setViewer(null)}
+          onSelectIndex={(next) =>
+            setViewer((current) => (current ? { ...current, index: next } : current))
+          }
+          onRequestDownload={
+            timelineTransport && timelineRoomId
+              ? (eventId) => {
+                  void timelineTransport
+                    .downloadMedia(timelineRoomId, eventId, timelineKey ?? undefined)
+                    .catch(() => undefined);
+                }
+              : undefined
+          }
         />
       ) : null}
     </main>

@@ -29,7 +29,7 @@ function Harness() {
   return <>
     <button onClick={() => setOpen(true)}>Open parent</button>
     <button onClick={() => setLegacy(true)}>Open legacy</button>
-    {["media-viewer-backdrop", "timeline-media-viewer-overlay", "dialog-overlay upload-staging-overlay"].map(name =>
+    {["media-viewer-backdrop", "dialog-overlay upload-staging-overlay"].map(name =>
       <button key={name} onClick={() => setViewer(name)}>{name}</button>)}
     {open && <ModalDialog title="Parent" className="user-settings-modal" onClose={() => setOpen(false)}>
       <div style={{ minHeight: 0, overflow: "auto", padding: 12 }}>
@@ -51,7 +51,7 @@ function Harness() {
     </ModalDialog>}
     {legacy && <CreateEntityDialog kind="room" isBusy={false} value="Synthetic room" onValueChange={() => undefined} onSubmit={() => undefined} onCancel={() => setLegacy(false)} />}
     {viewer && <NativeModal className={viewer} aria-label="Viewer" onDismiss={() => setViewer(null)}>
-      <div className={viewer.startsWith("media") ? "media-viewer" : viewer.startsWith("timeline") ? "timeline-media-viewer" : "upload-staging-dialog"}>
+      <div className={viewer.startsWith("media") ? "media-viewer" : "upload-staging-dialog"}>
         <button onClick={() => setViewer(null)}>Close viewer</button>
         <div style={{ minHeight: 0, overflow: "auto" }}><div style={{ height: 900 }}>Synthetic media</div></div>
         <button>Viewer last action</button>
