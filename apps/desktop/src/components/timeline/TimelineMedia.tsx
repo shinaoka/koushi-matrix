@@ -34,6 +34,7 @@ import { mediaSourceUrl } from "../../backend/linkMediaRuntime";
 import type { MediaSaveNameFacts } from "../../backend/linkMediaPort";
 import type { TimelineTransport } from "./TimelineTransport";
 import { type FileTypeCategory, fileTypeCategory } from "./fileTypeCategory";
+import { formatDimensions } from "../../app/uiShared";
 
 const FILE_TYPE_ICONS: Record<FileTypeCategory, typeof FileText> = {
   spreadsheet: FileSpreadsheet,
@@ -896,13 +897,6 @@ function formatBytes(size: number | null): string | null {
     return `${Math.round(size / 1024)} KB`;
   }
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatDimensions(width: number | null, height: number | null): string | null {
-  if (!width || !height) {
-    return null;
-  }
-  return `${width}x${height}`;
 }
 
 const TIMELINE_MEDIA_MAX_INLINE_PX = 420;

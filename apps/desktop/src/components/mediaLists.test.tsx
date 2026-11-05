@@ -10,6 +10,7 @@ import {
   PinnedMessagesEntry,
   ScheduledMessagesList
 } from "./mediaLists";
+import type { TimelineMediaGalleryItem } from "../domain/types";
 
 afterEach(cleanup);
 
@@ -151,6 +152,43 @@ describe("scheduled message editing", () => {
 });
 
 describe("media gallery viewer header", () => {
+  const galleryItem = (
+    media: Partial<TimelineMediaGalleryItem["media"]>
+  ): TimelineMediaGalleryItem => ({
+    event_id: "$synthetic-media",
+    room_id: "!room:example.invalid",
+    sender: null,
+    timestamp_ms: 0,
+    media: {
+      kind: "Image",
+      filename: "synthetic_photo.png",
+      source: {
+        mxc_uri: "mxc://example.invalid/synthetic",
+        encrypted: false,
+        encryption_version: null
+      },
+      mimetype: "image/png",
+      size: 2 * 1024,
+      width: null,
+      height: null,
+      thumbnail: null,
+      ...media
+    }
+  });
+
+  const headerText = (media: Partial<TimelineMediaGalleryItem["media"]>): string | null => {
+    render(
+      <MediaViewer
+        index={0}
+        items={[galleryItem(media)]}
+        mediaDownloads={{}}
+        onClose={vi.fn()}
+        onSelectIndex={vi.fn()}
+      />
+    );
+    return document.querySelector(".media-viewer-header p")?.textContent ?? null;
+  };
+
   // #1784: the header shows the size, never the raw MIME type or media kind.
   it("omits the MIME type from the header", () => {
     render(
@@ -187,4 +225,39 @@ describe("media gallery viewer header", () => {
     const header = document.querySelector(".media-viewer-header p");
     expect(header?.textContent).toBe("9 KB");
   });
+
+  // #1792: an image shows its pixel dimensions next to the size. The expected
+  // string is the same literal as TimelineMediaViewer.test.tsx, so the gallery
+  // and the timeline viewer cannot drift apart.
+  it("shows size and dimensions for an image", () => {
+    expect(
+      headerText({ kind: "Image", size: 2 * 1024, width: 640, height: 480 })
+    ).toBe("2 KB · 640x480");
+  });
+
+  // #1792: a video shows its pixel dimensions the same way.
+  it("shows size and dimensions for a video", () => {
+    expect(
+      headerText({ kind: "Video", size: 5 * 1024 * 1024, width: 1920, height: 1080 })
+    ).toBe("5.0 MB · 1920x1080");
+  });
+
+  // #1792: unknown dimensions stay out of the header instead of rendering
+  // `0x0` or `nullxnull`.
+  it("omits missing and zero dimensions for an image", () => {
+    expect(headerText({ kind: "Image", size: 1024, width: null, height: null })).toBe(
+      "1 KB"
+    );
+    cleanup();
+    expect(headerText({ kind: "Video", size: 1024, width: 0, height: 0 })).toBe("1 KB");
+  });
+
+  // #1792: dimensions belong to images and videos; #1784 keeps every other
+  // kind at the size only even when the event declares a width and height.
+  it.each(["File", "Audio"] as const)(
+    "keeps a %s at the size only when dimensions are declared",
+    (kind) => {
+      expect(headerText({ kind, size: 2048, width: 640, height: 480 })).toBe("2 KB");
+    }
+  );
 });
