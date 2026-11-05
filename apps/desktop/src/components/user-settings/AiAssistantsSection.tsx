@@ -227,13 +227,15 @@ function AssistantCard({
       <div className="settings-assistant-grid" role="table" aria-label={client}>
         <div role="row" className="settings-assistant-row is-heading">
           <span role="columnheader">{t("settings.assistantsAccount")}</span>
-          {NEEDS.map(need => <span role="columnheader" key={need}>{needLabel(need)}</span>)}
+          {NEEDS.map(need => (
+            <span role="columnheader" key={need} title={needLabel(need)}>{needLabel(need)}</span>
+          ))}
         </div>
         {rows.map(row => {
           const account = row.account_id.replace(/^account:/, "");
           return (
             <div role="row" className="settings-assistant-row" key={row.account_id}>
-              <span role="rowheader" dir="ltr">{account}</span>
+              <span role="rowheader" dir="ltr" title={account}>{account}</span>
               {NEEDS.map(need => (
                 <span role="cell" key={need}>
                   <PermissionSwitch
@@ -250,7 +252,7 @@ function AssistantCard({
         })}
         {unrequested.map(tab => (
           <div role="row" className="settings-assistant-row" key={tab.id}>
-            <span role="rowheader" dir="ltr">{tab.accountKey}</span>
+            <span role="rowheader" dir="ltr" title={tab.accountKey ?? undefined}>{tab.accountKey}</span>
             <span role="cell" aria-colspan={NEEDS.length} className="settings-assistant-unrequested">
               {t("settings.assistantsNotRequested", { client })}
             </span>
@@ -289,7 +291,11 @@ function PermissionSwitch({
           <span className="settings-switch-thumb" />
         </span>
       </button>
-      {denied && !allowed ? <span className="settings-assistant-denied">{t("settings.assistantsDenied")}</span> : null}
+      {denied && !allowed ? (
+        <span className="settings-assistant-denied" title={t("settings.assistantsDenied")}>
+          {t("settings.assistantsDenied")}
+        </span>
+      ) : null}
     </span>
   );
 }
