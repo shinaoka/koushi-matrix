@@ -1988,3 +1988,6 @@ fn thread_unread_observation_stamps_the_threads_list_row() {
 
 #[path = "tests/native_attention_candidate_lifetime.rs"]
 mod native_attention_candidate_lifetime;
+
+#[path = "tests/native_attention_mark_read.rs"]
+mod native_attention_mark_read;

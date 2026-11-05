@@ -1280,7 +1280,23 @@ pub(crate) fn handle_room_marked_as_read_succeeded(
         state.locally_read_activity.insert(room_id, activity);
         recompute_room_list_projection(state);
     }
-    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    // #1803: `Candidate --> Idle: RoomMarkedRead`. The counts just moved, so the
+    // published candidate and the badge are recomputed from the projection in
+    // this same reduce; waiting for the next room-list snapshot left the banner
+    // and sound gate raised while the badge was already zero.
+    let (native_attention_changed, native_attention_diagnostic) =
+        super::native_attention::recompute_native_attention_from_rooms(
+            state,
+            crate::state::NativeAttentionObservationKind::InitialSync,
+        );
+    let mut effects = vec![
+        AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+        native_attention_diagnostic,
+    ];
+    if native_attention_changed {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged));
+    }
+    effects
 }
 
 pub(crate) fn handle_room_marked_as_read_failed(
