@@ -233,6 +233,45 @@ fn message_action_tools_declare_their_permission_and_idempotency_contract() {
             .is_none(),
         "thread replies do not accept attachments in v1"
     );
+    // #1807: the thread is named by any of its events, and a message of that
+    // thread can be quoted. The description has to say what a refusal means,
+    // because a caller can only fix it from that answer.
+    let properties = reply.input_schema["properties"]
+        .as_object()
+        .expect("properties");
+    assert!(properties.contains_key("reply_to_event_id"));
+    assert!(
+        properties["reply_to_event_id"]["description"]
+            .as_str()
+            .expect("description")
+            .contains("same thread"),
+        "the quote target has to state its same-thread constraint"
+    );
+    assert!(
+        reply.input_schema["required"]
+            .as_array()
+            .expect("required")
+            .iter()
+            .all(|value| value != "reply_to_event_id"),
+        "quoting stays optional"
+    );
+    for phrase in [
+        "any message already in that thread",
+        "not_in_thread",
+        "nothing is sent",
+    ] {
+        assert!(reply.description.contains(phrase), "{phrase}");
+    }
+    assert!(
+        validate_arguments(
+            "send_thread_reply",
+            &json!({
+                "account_id": "a", "room_id": "!r", "thread_root_event_id": "$root",
+                "reply_to_event_id": "$reply", "body": "hi", "client_request_id": "uuid-1"
+            })
+        )
+        .is_ok()
+    );
 
     let edit = find("edit_message").expect("edit");
     assert!(edit.description.contains("media payload"));

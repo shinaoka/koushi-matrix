@@ -235,6 +235,34 @@ async fn malformed_arguments_are_refused_before_any_approval() {
     harness.stop().await;
 }
 
+/// Quoting a message inside a thread is an ordinary send: quoting changes the
+/// content of the reply, not who may post it, so the `send` grant is still asked
+/// for by name and the call reaches the account once it is given (#1807).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quoting_a_thread_message_still_needs_the_send_grant() {
+    let arguments = json!({
+        "account_id": ACCOUNT, "room_id": ROOM, "thread_root_event_id": "$root",
+        "reply_to_event_id": "$reply", "body": "agree", "client_request_id": "uuid-7"
+    });
+
+    let mut denied = Harness::start(Some(Harness::account_grant(true, false, false))).await;
+    let refused = denied.call("send_thread_reply", arguments.clone()).await;
+    assert_eq!(error_code(&refused), "consent_required");
+    assert!(
+        result_text(&refused).contains("send"),
+        "{}",
+        result_text(&refused)
+    );
+    denied.stop().await;
+
+    let mut granted = Harness::start(Some(Harness::account_grant(true, true, false))).await;
+    let reached = granted.call("send_thread_reply", arguments).await;
+    // This fixture has a reducer session but no SDK session, so the account
+    // answers: the argument was accepted and dispatched, not rejected.
+    assert_eq!(error_code(&reached), "account_unavailable");
+    granted.stop().await;
+}
+
 /// A call that passes validation and holds the grant reaches the account, so a
 /// tool that was never dispatched cannot be mistaken for an unready account.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

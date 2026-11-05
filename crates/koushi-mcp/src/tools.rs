@@ -449,13 +449,14 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ),
         ToolDefinition {
             name: "send_thread_reply",
-            description: "Post a plain-text reply in the thread under a visible thread root, using the same thread relation and reply fallback the composer sends, without opening the thread or changing any GUI state. The target must be a thread root, not itself a thread reply; it may belong to another user. Attachments are not supported here. Reusing the same client_request_id does not post twice. Needs the send permission. If the caller disconnects before the answer, the reply may already be posted and cannot be recalled.",
+            description: "Post a plain-text reply in a thread, using the same thread relation and reply fallback the composer sends, without opening the thread or changing any GUI state. thread_root_event_id names the thread: it may be the thread's root or any message already in that thread, and it may belong to another user. Pass reply_to_event_id to quote and mention the author of one message of the same thread; without it the call posts a plain thread message. A reply_to_event_id in another thread or in the main timeline fails with not_in_thread and nothing is sent; the error names the thread that event belongs to, so retry with thread_root_event_id set to that thread. An id no event in the room has fails with event_not_found and nothing is sent. Attachments are not supported here. Reusing the same client_request_id does not post twice. Needs the send permission. If the caller disconnects before the answer, the reply may already be posted and cannot be recalled.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "account_id": account_id_property(),
                     "room_id": { "type": "string" },
-                    "thread_root_event_id": { "type": "string", "description": "Event id of the thread root to answer in." },
+                    "thread_root_event_id": { "type": "string", "description": "Event id of the thread to answer in: its root, or any message already in that thread." },
+                    "reply_to_event_id": { "type": "string", "description": "Event id of the message in that same thread to quote and mention. Omit to post a plain thread message. Any event outside that thread is rejected and nothing is sent." },
                     "body": { "type": "string", "minLength": 1, "description": "Plain text body." },
                     "client_request_id": client_request_id_property()
                 },

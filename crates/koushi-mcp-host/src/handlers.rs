@@ -466,6 +466,22 @@ fn direct_message_failure(failure: koushi_core::DirectMessageFailure) -> WireErr
             "not_thread_root",
             "the event is a thread reply, not a thread root",
         ),
+        Failure::NotInThread {
+            thread_root_event_id: Some(root),
+        } => WireError::with_reason(
+            ErrorCode::Unsupported,
+            "not_in_thread",
+            format!(
+                "reply_to_event_id belongs to thread {root}, not to the thread in thread_root_event_id; retry with thread_root_event_id={root}"
+            ),
+        ),
+        Failure::NotInThread {
+            thread_root_event_id: None,
+        } => WireError::with_reason(
+            ErrorCode::Unsupported,
+            "not_in_thread",
+            "reply_to_event_id is not in any thread, so send_thread_reply cannot quote it; use send_message with reply_to_event_id",
+        ),
         Failure::RelationsUnavailable => WireError::with_reason(
             ErrorCode::Internal,
             "relations_unavailable",
@@ -755,10 +771,14 @@ async fn delete_message(
     }
 }
 
-/// Posts a plain-text reply under a visible thread root (#1628).
+/// Posts a plain-text reply under a visible thread root (#1628), optionally
+/// quoting one message of that thread (#1807).
 ///
 /// The reply reuses the composer's thread content shape and the direct send
 /// queue that `send_message` already uses, so no thread timeline is mounted.
+/// `thread_root_event_id` may name any event of the thread; Core resolves its
+/// root. `reply_to_event_id` must be in that same thread, and Core refuses the
+/// call before anything is sent when it is not.
 async fn send_thread_reply(
     shared: &Shared,
     client: &ClientIdentity,
@@ -767,6 +787,11 @@ async fn send_thread_reply(
     let account_id = required_account_id(arguments)?;
     let room_id = required_argument(arguments, "room_id")?.to_owned();
     let root_event_id = required_argument(arguments, "thread_root_event_id")?.to_owned();
+    let reply_to_event_id = arguments
+        .get("reply_to_event_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned);
     let body = required_argument(arguments, "body")?.to_owned();
     let request_id = client_request_id(arguments)?.to_owned();
     // Core's retry ledger answers a repeated key at the submission below; every
@@ -792,8 +817,9 @@ async fn send_thread_reply(
         koushi_diagnostics::NavigationOrigin::Mcp,
     );
     let result = async {
-        // The target must be a visible message-like thread root, not itself a
-        // thread reply. The read is bounded by the same budget as `get_message`.
+        // The target must be a visible message-like event of the thread; Core
+        // resolves the root when it is a thread reply. The read is bounded by
+        // the same budget as `get_message`.
         let view = match connection
             .direct_message_action(koushi_core::DirectMessageRequest::Read {
                 room_id: room_id.clone(),
@@ -815,11 +841,6 @@ async fn send_thread_reply(
                 koushi_core::DirectMessageFailure::Redacted,
             ));
         }
-        if view.thread_root_event_id.is_some() {
-            return Err(direct_message_failure(
-                koushi_core::DirectMessageFailure::NotThreadRoot,
-            ));
-        }
         // The grant is re-read immediately before the send, so a revocation
         // during the read is honored.
         shared
@@ -833,6 +854,7 @@ async fn send_thread_reply(
             .direct_message_action(koushi_core::DirectMessageRequest::ThreadReply {
                 room_id: room_id.clone(),
                 root_event_id: root_event_id.clone(),
+                reply_to_event_id: reply_to_event_id.clone(),
                 body,
                 formatting,
                 retry: Some(koushi_core::DirectRetryKey {
@@ -1636,5 +1658,33 @@ mod tests {
         let capacity = direct_message_failure(koushi_core::DirectMessageFailure::Capacity);
         assert_eq!(capacity.code, ErrorCode::Busy);
         assert_eq!(capacity.reason, None);
+    }
+
+    /// A quote target outside the thread has to leave the caller able to fix
+    /// the call: the refusal names the thread that event does belong to (#1807).
+    #[test]
+    fn a_quote_target_outside_the_thread_names_the_thread_to_use() {
+        let elsewhere = direct_message_failure(koushi_core::DirectMessageFailure::NotInThread {
+            thread_root_event_id: Some("$other-root".to_owned()),
+        });
+        assert_eq!(elsewhere.code, ErrorCode::Unsupported);
+        assert_eq!(elsewhere.reason.as_deref(), Some("not_in_thread"));
+        assert!(
+            elsewhere.message.contains("$other-root"),
+            "the retry needs the root it belongs to: {}",
+            elsewhere.message
+        );
+
+        let main_timeline =
+            direct_message_failure(koushi_core::DirectMessageFailure::NotInThread {
+                thread_root_event_id: None,
+            });
+        assert_eq!(main_timeline.code, ErrorCode::Unsupported);
+        assert_eq!(main_timeline.reason.as_deref(), Some("not_in_thread"));
+        assert!(
+            main_timeline.message.contains("send_message"),
+            "an event outside any thread belongs on the main timeline path: {}",
+            main_timeline.message
+        );
     }
 }

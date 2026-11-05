@@ -186,6 +186,7 @@ fn keys_are_scoped_to_the_client_and_requests_without_a_retry_key_are_not_kept()
     let reply = DirectMessageRequest::ThreadReply {
         room_id: "!room:example.invalid".to_owned(),
         root_event_id: "$target".to_owned(),
+        reply_to_event_id: None,
         body: "reply".to_owned(),
         formatting: koushi_state::ComposerFormattingOptions::default(),
         retry: Some(DirectRetryKey {
@@ -203,6 +204,28 @@ fn keys_are_scoped_to_the_client_and_requests_without_a_retry_key_are_not_kept()
         event_id: "$target".to_owned(),
     };
     assert_eq!(DirectActionKey::for_request(&delete), None);
+}
+
+/// A thread reply's retry key is the action's target, so adding a quote target
+/// (#1807) does not turn one repeated request into two sends: a retry of the
+/// same root and `client_request_id` is answered from the ledger, whatever it
+/// quotes.
+#[test]
+fn a_quote_target_does_not_change_a_thread_replys_retry_key() {
+    let reply = |reply_to_event_id: Option<&str>| DirectMessageRequest::ThreadReply {
+        room_id: "!room:example.invalid".to_owned(),
+        root_event_id: "$target".to_owned(),
+        reply_to_event_id: reply_to_event_id.map(str::to_owned),
+        body: "reply".to_owned(),
+        formatting: koushi_state::ComposerFormattingOptions::default(),
+        retry: Some(DirectRetryKey {
+            client: "pi".to_owned(),
+            client_request_id: "uuid-9".to_owned(),
+        }),
+    };
+    let key = DirectActionKey::for_request(&reply(None));
+    assert_eq!(key, DirectActionKey::for_request(&reply(Some("$quoted"))));
+    assert!(key.is_some());
 }
 
 fn slots(count: usize) -> Arc<tokio::sync::Semaphore> {
@@ -334,4 +357,14 @@ async fn a_definite_failure_frees_the_key_and_requests_without_a_key_are_not_kep
     let admitted = admit(&ledger, &slots, &unkeyed, Instant::now()).expect("admitted");
     assert!(admitted.claim.is_none());
     assert_eq!(ledger.lock().expect("ledger").len(), before);
+}
+
+/// A failure that carries a target id keeps it out of `Debug`, as
+/// REPOSITORY_RULES "Security Rules" requires of error logging.
+#[test]
+fn a_failure_carrying_a_target_id_debugs_as_its_case_only() {
+    let failure = DirectMessageFailure::NotInThread {
+        thread_root_event_id: Some("$other-root".to_owned()),
+    };
+    assert_eq!(format!("{failure:?}"), "DirectMessageFailure::NotInThread");
 }

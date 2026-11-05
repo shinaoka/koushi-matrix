@@ -633,52 +633,116 @@ pub(crate) async fn delete_direct(
 #[path = "direct_message_tests.rs"]
 mod tests;
 
-/// Posts a plain-text reply under a visible thread root (#1628).
+/// Posts a plain-text reply under a visible thread root (#1628), optionally
+/// quoting one message of that thread (#1807).
 ///
-/// The content is the composer's own thread shape (`make_offline_thread_content`
-/// over the composer document builder) and the insertion is the SDK room send
-/// queue, but the completion is observed on this call's own channel. Nothing is
-/// registered as a pending send, no resident actor is refreshed, and no
-/// `CoreEvent` is emitted, so an open thread pane cannot change and the GUI sees
-/// the result only through the normal sync echo.
+/// The content is the composer's own thread shape (`make_offline_thread_content`,
+/// or `make_offline_reply_content` when a message is quoted, so the quoted
+/// sender is mentioned exactly as the thread composer mentions it) and the
+/// insertion is the SDK room send queue, but the completion is observed on this
+/// call's own channel. Nothing is registered as a pending send, no resident
+/// actor is refreshed, and no `CoreEvent` is emitted, so an open thread pane
+/// cannot change and the GUI sees the result only through the normal sync echo.
+///
+/// The target is read authoritatively before anything is sent (the mutation rule
+/// this path already follows), so its thread comes from that same event through
+/// `relations_of`, the parse `read_direct_message` reports `thread_root_event_id`
+/// with. Resolving it through `outbound_send::reply_source` instead would read
+/// the event a second time for the same two values, so it is not used here; that
+/// resolver stays the cache-first one for a reply whose target is not read yet
+/// (#1808).
 pub(crate) async fn thread_reply_direct(
     session: Arc<MatrixClientSession>,
     room_id: &str,
     root_event_id: &str,
+    reply_to_event_id: Option<&str>,
     body: &str,
     formatting: koushi_state::ComposerFormattingOptions,
 ) -> Result<crate::direct_operations::DirectThreadReplyOutcome, DirectMessageFailure> {
     const SEND_TIMEOUT: Duration = Duration::from_secs(60);
     let room = joined_room(&session, room_id)?;
-    let root_id = parse_event_id(root_event_id)?;
-    let root = load_event_authoritative(&room, &root_id).await?;
-    let root = action_target(&root)?;
-    if root.is_redacted {
+    let requested_id = parse_event_id(root_event_id)?;
+    let requested = load_event_authoritative(&room, &requested_id).await?;
+    let requested = action_target(&requested)?;
+    if requested.is_redacted {
         return Err(DirectMessageFailure::Redacted);
     }
-    // A redacted root already returned, so the root still carries a message.
-    let Some(message) = &root.message else {
+    // A redacted target already returned, so it still carries a message.
+    let Some(message) = &requested.message else {
         return Err(DirectMessageFailure::NotAMessage);
     };
-    if relations_of(message).0.is_some() {
-        return Err(DirectMessageFailure::NotThreadRoot);
-    }
+    // A thread reply names its thread, so naming any event of a thread answers
+    // that thread; a root keeps naming itself.
+    let target_thread_root = relations_of(message).0;
+    let root_id = match &target_thread_root {
+        Some(root) => parse_event_id(root)?,
+        None => requested_id.clone(),
+    };
+
+    let quoted = match reply_to_event_id {
+        None => None,
+        Some(reply_to_event_id) => {
+            let reply_to_id = parse_event_id(reply_to_event_id)?;
+            // The target was just read, so quoting it reuses that read.
+            let (sender, thread_root) = if reply_to_id == requested_id {
+                (requested.sender.clone(), target_thread_root.clone())
+            } else {
+                let quoted = load_event_authoritative(&room, &reply_to_id).await?;
+                let quoted = action_target(&quoted)?;
+                if quoted.is_redacted {
+                    return Err(DirectMessageFailure::Redacted);
+                }
+                let Some(quoted_message) = &quoted.message else {
+                    return Err(DirectMessageFailure::NotAMessage);
+                };
+                (quoted.sender.clone(), relations_of(quoted_message).0)
+            };
+            let in_this_thread =
+                reply_to_id == root_id || thread_root.as_deref() == Some(root_id.as_str());
+            if !in_this_thread {
+                return Err(DirectMessageFailure::NotInThread {
+                    thread_root_event_id: thread_root,
+                });
+            }
+            Some((reply_to_id, sender))
+        }
+    };
 
     let key = koushi_protocol::ids::TimelineKey {
         account_key: crate::store::account_key_from_info(&session.info),
         kind: koushi_protocol::ids::TimelineKind::Thread {
             room_id: room_id.to_owned(),
-            root_event_id: root_event_id.to_owned(),
+            root_event_id: root_id.to_string(),
         },
     };
     let document = koushi_state::ComposerDocument::from_plain_text(body.to_owned());
-    let mut content =
-        super::composer::build_room_message_content_from_composer_document_with_options(
-            document, formatting,
-        )
-        .map_err(|_| DirectMessageFailure::NotAMessage)?;
-    super::outbound_send::make_offline_thread_content(&mut content, &key)
-        .map_err(|_| DirectMessageFailure::Unavailable)?;
+    let content = match quoted {
+        None => {
+            let mut content =
+                super::composer::build_room_message_content_from_composer_document_with_options(
+                    document, formatting,
+                )
+                .map_err(|_| DirectMessageFailure::NotAMessage)?;
+            super::outbound_send::make_offline_thread_content(&mut content, &key)
+                .map_err(|_| DirectMessageFailure::Unavailable)?;
+            content
+        }
+        Some((quoted_id, sender)) => {
+            let content =
+                super::composer::build_room_message_content_without_relation_from_composer_document_with_options(
+                    document, formatting,
+                )
+                .map_err(|_| DirectMessageFailure::NotAMessage)?;
+            super::outbound_send::make_offline_reply_content(
+                content,
+                quoted_id,
+                &key,
+                Some((sender, Some(root_id.clone()))),
+                session.client().user_id(),
+            )
+            .map_err(|_| DirectMessageFailure::Unavailable)?
+        }
+    };
 
     let queue = room.send_queue();
     // Subscribe before enqueuing so the terminal update cannot be missed.
@@ -778,11 +842,19 @@ pub(crate) async fn run_direct_message_action(
         Request::ThreadReply {
             room_id,
             root_event_id,
+            reply_to_event_id,
             body,
             formatting,
             retry: _,
-        } => thread_reply_direct(session, &room_id, &root_event_id, &body, formatting)
-            .await
-            .map(Response::ThreadReply),
+        } => thread_reply_direct(
+            session,
+            &room_id,
+            &root_event_id,
+            reply_to_event_id.as_deref(),
+            &body,
+            formatting,
+        )
+        .await
+        .map(Response::ThreadReply),
     }
 }
