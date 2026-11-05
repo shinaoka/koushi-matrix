@@ -8975,6 +8975,56 @@ dialog.timeline-media-viewer-overlay::backdrop { background: transparent; }
   border-bottom: 0;
 }
 
+/* Room notification mode: a label + select row inside `.settings-detail-list`,
+   laid out like `.settings-detail-row` so it lines up with the detail rows that
+   follow it instead of rendering as a bare inline label and a native select. */
+.settings-select-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.settings-select-row:last-child {
+  border-bottom: 0;
+}
+
+.settings-select-row > span {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-select-row select {
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 28px 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.settings-select-row select:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--text) 28%, var(--line));
+  background: var(--surface-hover);
+}
+
+.settings-select-row select:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
 .settings-email-group {
   display: grid;
   gap: 6px;
