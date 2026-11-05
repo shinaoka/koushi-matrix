@@ -543,6 +543,23 @@ fn ready_state_with_rooms(rooms: Vec<RoomSummary>) -> AppState {
     }
 }
 
+/// The attention recomputation a successful mark-read carries (#1803): one room
+/// whose counts and badge have just been cleared.
+fn mark_read_attention_diagnostic() -> AppEffect {
+    AppEffect::RecordNativeAttentionRecomputed {
+        observation: koushi_state::NativeAttentionObservationKind::InitialSync,
+        unread_count: 0,
+        notification_count: 0,
+        badge_count: 0,
+        badge_room_count: 1,
+        badge_excluded_room_count: 0,
+        candidate: None,
+        suppression: None,
+        window_focused: true,
+        active_room_match: false,
+    }
+}
+
 fn room_summary(
     room_id: &str,
     is_dm: bool,
@@ -721,9 +738,14 @@ fn mark_as_read_clears_unread_state_and_recomputes_room_list_projection() {
             room_id: "!room1:example.invalid".to_owned(),
         },
     );
+    // #1803: the read clears the counts, the badge and any candidate in one
+    // reduce, so the same reduce carries the attention recomputation.
     assert_eq!(
         effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            mark_read_attention_diagnostic(),
+        ]
     );
 
     let room = state
@@ -763,7 +785,10 @@ fn mark_as_read_success_settles_in_locked_context_only_when_room_is_retained() {
 
     assert_eq!(
         effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            mark_read_attention_diagnostic(),
+        ]
     );
     let room = state
         .rooms
