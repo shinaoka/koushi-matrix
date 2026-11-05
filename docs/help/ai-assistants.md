@@ -19,7 +19,7 @@ account and each permission.
 | `search_messages` | Searches decrypted history and returns room, event id, sender, timestamp, and a snippet. | read |
 | `get_attachment` | Downloads one attachment into Koushi's media cache and returns its path. | attachments |
 | `send_message` | Sends a message, optionally as a reply, or sends local files with an optional caption. | send; also attachments when sending files |
-| `send_thread_reply` | Posts a plain-text reply in a thread, under a visible thread root. | send |
+| `send_thread_reply` | Posts a plain-text reply in a thread, optionally quoting and mentioning one message of that thread. | send |
 | `draft_message` | Puts plain text into a room's or a thread's composer as a draft for you to review, edit, and send. Never sends. | draft |
 | `get_draft` | Reads back what a room's or a thread's composer currently holds, and whether it is the assistant's untouched draft, your own text, or empty. Changes nothing. | draft |
 | `get_message` | Fetches one message by its event id, with sender, time, the body after its latest edit, reactions, and its thread or reply relation. | read |
@@ -393,8 +393,11 @@ Two failures look similar and mean different things:
 - Replies are supported with `reply_to_event_id`; starting a new thread is not.
 - The assistant can only react to, edit, or delete messages that the same
   account sent. Moderating another person's message is not supported.
-  `send_thread_reply` may answer anyone's thread root, but it cannot answer a
-  message that is itself a thread reply.
+  `send_thread_reply` may answer any message of anyone's thread: pass the
+  thread's root or any message already in it as `thread_root_event_id`. To
+  quote and mention the author of one message of that thread, pass it as
+  `reply_to_event_id` too. A `reply_to_event_id` from another thread, from the
+  main timeline, or from no known event is refused and nothing is sent.
 - Thread replies and edits are plain text: attachments are not supported in
   either, and editing an image or file changes its caption only.
 - `get_message` and the reaction calls read at most one bounded page of a
@@ -429,7 +432,8 @@ Two failures look similar and mean different things:
 | `not_permitted` with reason `not_author` | The target message was sent by another account. | Only your own messages can be edited or deleted. |
 | `unsupported` with reason `not_a_message` | The event id names a state event or another non-message event. | Use a message event id from `read_room_messages` or `search_messages`. |
 | `unsupported` with reason `redacted` | The target message was already deleted. | Nothing to change; `delete_message` on it already succeeds with `already_redacted`. |
-| `unsupported` with reason `not_thread_root` | The target of `send_thread_reply` is itself a thread reply. | Reply under the thread's root event instead. |
+| `unsupported` with reason `not_thread_root` | The target of `draft_message` is itself a thread reply. | Name the thread's root event instead. |
+| `unsupported` with reason `not_in_thread` | The `reply_to_event_id` of `send_thread_reply` is not in the thread being answered, so nothing was sent. The message names the thread that event does belong to, or says it is in none. | Retry with `thread_root_event_id` set to that thread, or use `send_message` for a main-timeline message. |
 | `conflict` | `draft_message` found a draft already in that composer, or you were typing or sending in it. Nothing changed. | Send or clear the existing draft, then ask the assistant again. |
 | `busy` with reason `drafts_loading` | Koushi has not finished loading the account's drafts. | Retry in a moment. |
 | `internal` with reason `relations_unavailable` | Koushi could not read the message's reactions (a truncated page or a failed request). | Retry the call; nothing was sent. |

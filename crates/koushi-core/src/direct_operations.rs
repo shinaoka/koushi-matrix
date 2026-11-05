@@ -235,6 +235,8 @@ pub enum DirectMessageRequest {
     ThreadReply {
         room_id: String,
         root_event_id: String,
+        /// The in-thread message to quote; `None` posts a plain thread message.
+        reply_to_event_id: Option<String>,
         body: String,
         formatting: koushi_state::ComposerFormattingOptions,
         retry: Option<DirectRetryKey>,
@@ -278,7 +280,7 @@ impl std::fmt::Debug for DirectMessageResponse {
 /// The GUI's own failure kinds are not reused: an out-of-band caller needs to
 /// tell a permission mistake from a missing target or a bounded-read limit
 /// without reading prose.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum DirectMessageFailure {
     /// The account has no ready session.
     AccountInactive,
@@ -297,6 +299,14 @@ pub enum DirectMessageFailure {
     Redacted,
     /// The target is itself a thread reply, not a thread root.
     NotThreadRoot,
+    /// `reply_to_event_id` is not in the thread being answered, so nothing was
+    /// sent. It carries the thread the target does belong to, if any, so the
+    /// caller can retry with the right root (#1807).
+    NotInThread {
+        /// The `m.thread` root of `reply_to_event_id`; `None` when that event is
+        /// not in any thread.
+        thread_root_event_id: Option<String>,
+    },
     /// One bounded relations page could not establish the reaction set this
     /// action has to decide on, so nothing was sent.
     RelationsUnavailable,
@@ -308,6 +318,30 @@ pub enum DirectMessageFailure {
     DuplicatePending,
     /// The operation did not complete (network, server, or timeout).
     Unavailable,
+}
+
+/// `Debug` records the case only: a failure that carries a target id (for
+/// example `NotInThread`) names the case, as REPOSITORY_RULES "Security Rules"
+/// requires of action and error logging.
+impl std::fmt::Debug for DirectMessageFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let case = match self {
+            Self::AccountInactive => "AccountInactive",
+            Self::SendNotAdmitted => "SendNotAdmitted",
+            Self::RoomNotFound => "RoomNotFound",
+            Self::EventNotFound => "EventNotFound",
+            Self::NotAuthor => "NotAuthor",
+            Self::NotAMessage => "NotAMessage",
+            Self::Redacted => "Redacted",
+            Self::NotThreadRoot => "NotThreadRoot",
+            Self::NotInThread { .. } => "NotInThread",
+            Self::RelationsUnavailable => "RelationsUnavailable",
+            Self::Capacity => "Capacity",
+            Self::DuplicatePending => "DuplicatePending",
+            Self::Unavailable => "Unavailable",
+        };
+        write!(formatter, "DirectMessageFailure::{case}")
+    }
 }
 
 /// An assistant draft to stage with MCP `draft_message` (#1644). The text is

@@ -634,6 +634,7 @@ async fn thread_reply(
         DirectMessageRequest::ThreadReply {
             room_id: room_id.to_owned(),
             root_event_id: root_event_id.to_owned(),
+            reply_to_event_id: None,
             body: body.to_owned(),
             formatting,
             retry: Some(qa_retry_key("thread-reply")),

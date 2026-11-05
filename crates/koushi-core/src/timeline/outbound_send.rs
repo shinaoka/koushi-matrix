@@ -759,7 +759,7 @@ fn reply_source_from_raw(
     Some((sender, thread_root))
 }
 
-fn make_offline_reply_content(
+pub(super) fn make_offline_reply_content(
     content: RoomMessageEventContentWithoutRelation,
     reply_event_id: OwnedEventId,
     key: &TimelineKey,

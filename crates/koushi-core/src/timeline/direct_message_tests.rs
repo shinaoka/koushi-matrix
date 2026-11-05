@@ -420,39 +420,469 @@ fn reaction_groups_count_senders_and_mark_mine() {
     );
 }
 
-/// A thread reply cannot be answered as if it were its thread's root.
-#[tokio::test]
-async fn a_thread_reply_target_is_not_a_thread_root() {
-    let (server, session, room_id) = joined_session().await;
-    let reply = plain(json!({
+fn thread_message(event_id: &str, sender: &str, root: &str, body: &str) -> TimelineEvent {
+    plain(json!({
         "type": "m.room.message",
-        "event_id": "$thread-reply",
-        "sender": "@bob:example.invalid",
+        "event_id": event_id,
+        "sender": sender,
         "origin_server_ts": 1_700_000_400_000u64,
         "content": {
             "msgtype": "m.text",
-            "body": "already in the thread",
-            "m.relates_to": { "rel_type": "m.thread", "event_id": "$root" }
+            "body": body,
+            "m.relates_to": { "rel_type": "m.thread", "event_id": root }
         }
+    }))
+}
+
+fn formatting() -> koushi_state::ComposerFormattingOptions {
+    koushi_state::ComposerFormattingOptions::default()
+}
+
+fn root_event() -> TimelineEvent {
+    plain(text_event(
+        "$root",
+        "@bob:example.invalid",
+        1_700_000_399_000,
+        "the root",
+    ))
+}
+
+/// A room whose send queue can reach a plaintext send, so a test that expects a
+/// sent event and one that expects none use the same setup.
+async fn sendable_session() -> (MatrixMockServer, Arc<MatrixClientSession>, String) {
+    let (server, session, room_id) = joined_session().await;
+    server.mock_room_state_encryption().plain().mount().await;
+    (server, session, room_id)
+}
+
+/// The event content the send queue submitted, so a test can pin the exact
+/// thread relation rather than a subset of it.
+fn sent_content(event: &Raw<matrix_sdk::ruma::events::AnySyncTimelineEvent>) -> serde_json::Value {
+    let raw: serde_json::Value = serde_json::from_str(event.json().get()).expect("event json");
+    raw["content"].clone()
+}
+
+/// A plain thread message keeps today's shape: the thread relation with the
+/// root as its fallback target and no reply relation (#1807).
+#[tokio::test]
+async fn a_plain_thread_reply_targets_the_root() {
+    let (server, session, room_id) = sendable_session().await;
+    server
+        .mock_room_event()
+        .ok(root_event())
+        .mock_once()
+        .mount()
+        .await;
+    let (sent, mock) = server.mock_room_send().ok_with_capture(
+        event_id!("$sent"),
+        session.client().user_id().expect("user id"),
+    );
+    mock.expect(1).mount().await;
+
+    let outcome = thread_reply_direct(session, &room_id, "$root", None, "answer", formatting())
+        .await
+        .expect("a thread root is a valid target");
+    assert_eq!(outcome.event_id, "$sent");
+    assert_eq!(
+        sent_content(&sent.await.expect("the send was captured")),
+        json!({
+            "msgtype": "m.text",
+            "body": "answer",
+            "m.relates_to": {
+                "rel_type": "m.thread",
+                "event_id": "$root",
+                "m.in_reply_to": { "event_id": "$root" },
+                "is_falling_back": true
+            }
+        })
+    );
+}
+
+/// An in-thread event names its thread, so naming one answers the thread it
+/// belongs to instead of failing `not_thread_root` (#1807).
+#[tokio::test]
+async fn an_in_thread_event_names_its_thread_root() {
+    let (server, session, room_id) = sendable_session().await;
+    server
+        .mock_room_event()
+        .ok(thread_message(
+            "$thread-reply",
+            "@bob:example.invalid",
+            "$root",
+            "already here",
+        ))
+        .mock_once()
+        .mount()
+        .await;
+    let (sent, mock) = server.mock_room_send().ok_with_capture(
+        event_id!("$sent"),
+        session.client().user_id().expect("user id"),
+    );
+    mock.expect(1).mount().await;
+
+    let outcome = thread_reply_direct(
+        session,
+        &room_id,
+        "$thread-reply",
+        None,
+        "another answer",
+        formatting(),
+    )
+    .await
+    .expect("an in-thread event resolves to its thread's root");
+    assert_eq!(outcome.event_id, "$sent");
+    assert_eq!(
+        sent_content(&sent.await.expect("the send was captured"))["m.relates_to"],
+        json!({
+            "rel_type": "m.thread",
+            "event_id": "$root",
+            "m.in_reply_to": { "event_id": "$root" },
+            "is_falling_back": true
+        }),
+        "an in-thread target answers its thread as a plain thread message"
+    );
+}
+
+/// Quoting an in-thread message sends the thread relation plus a real reply
+/// relation to that message, as the thread composer does (#1807).
+#[tokio::test]
+async fn a_reply_target_in_the_thread_is_quoted_and_its_sender_mentioned() {
+    let (server, session, room_id) = sendable_session().await;
+    server
+        .mock_room_event()
+        .match_event_id()
+        .ok(root_event())
+        .mock_once()
+        .mount()
+        .await;
+    server
+        .mock_room_event()
+        .match_event_id()
+        .ok(thread_message(
+            "$thread-reply",
+            "@bob:example.invalid",
+            "$root",
+            "a point",
+        ))
+        .mock_once()
+        .mount()
+        .await;
+    let (sent, mock) = server.mock_room_send().ok_with_capture(
+        event_id!("$sent"),
+        session.client().user_id().expect("user id"),
+    );
+    mock.expect(1).mount().await;
+
+    let outcome = thread_reply_direct(
+        session,
+        &room_id,
+        "$root",
+        Some("$thread-reply"),
+        "disagree",
+        formatting(),
+    )
+    .await
+    .expect("a message in the same thread can be quoted");
+    assert_eq!(outcome.event_id, "$sent");
+    assert_eq!(
+        sent_content(&sent.await.expect("the send was captured")),
+        json!({
+            "msgtype": "m.text",
+            "body": "disagree",
+            "m.relates_to": {
+                "rel_type": "m.thread",
+                "event_id": "$root",
+                "m.in_reply_to": { "event_id": "$thread-reply" }
+            },
+            "m.mentions": { "user_ids": ["@bob:example.invalid"] }
+        }),
+        "a genuine in-thread reply quotes its target and mentions its sender"
+    );
+}
+
+/// Quoting the root itself is a reply to the root, without a second read.
+#[tokio::test]
+async fn a_reply_target_naming_the_root_quotes_the_root() {
+    let (server, session, room_id) = sendable_session().await;
+    server
+        .mock_room_event()
+        .ok(root_event())
+        .mock_once()
+        .mount()
+        .await;
+    let (sent, mock) = server.mock_room_send().ok_with_capture(
+        event_id!("$sent"),
+        session.client().user_id().expect("user id"),
+    );
+    mock.expect(1).mount().await;
+
+    let outcome = thread_reply_direct(
+        session,
+        &room_id,
+        "$root",
+        Some("$root"),
+        "about the root",
+        formatting(),
+    )
+    .await
+    .expect("the root is in its own thread");
+    assert_eq!(outcome.event_id, "$sent");
+    assert_eq!(
+        sent_content(&sent.await.expect("the send was captured"))["m.relates_to"],
+        json!({
+            "rel_type": "m.thread",
+            "event_id": "$root",
+            "m.in_reply_to": { "event_id": "$root" }
+        }),
+        "quoting the root is a genuine reply, not a thread fallback"
+    );
+}
+
+/// Naming the thread by one in-thread event and quoting another one combines
+/// both rules: the root comes from the named event, the quote from the quoted
+/// one (#1807).
+#[tokio::test]
+async fn an_in_thread_root_argument_combines_with_a_quote_target() {
+    let (server, session, room_id) = sendable_session().await;
+    server
+        .mock_room_event()
+        .match_event_id()
+        .ok(thread_message(
+            "$thread-reply",
+            "@bob:example.invalid",
+            "$root",
+            "named",
+        ))
+        .mock_once()
+        .mount()
+        .await;
+    server
+        .mock_room_event()
+        .match_event_id()
+        .ok(thread_message(
+            "$later",
+            "@carol:example.invalid",
+            "$root",
+            "quoted",
+        ))
+        .mock_once()
+        .mount()
+        .await;
+    let (sent, mock) = server.mock_room_send().ok_with_capture(
+        event_id!("$sent"),
+        session.client().user_id().expect("user id"),
+    );
+    mock.expect(1).mount().await;
+
+    let outcome = thread_reply_direct(
+        session,
+        &room_id,
+        "$thread-reply",
+        Some("$later"),
+        "both",
+        formatting(),
+    )
+    .await
+    .expect("both events are in the same thread");
+    assert_eq!(outcome.event_id, "$sent");
+    assert_eq!(
+        sent_content(&sent.await.expect("the send was captured")),
+        json!({
+            "msgtype": "m.text",
+            "body": "both",
+            "m.relates_to": {
+                "rel_type": "m.thread",
+                "event_id": "$root",
+                "m.in_reply_to": { "event_id": "$later" }
+            },
+            "m.mentions": { "user_ids": ["@carol:example.invalid"] }
+        }),
+        "the thread comes from the named event, the quote from the quoted one"
+    );
+}
+
+/// A deleted quote target is refused as deleted, not as a missing thread, and
+/// nothing is sent.
+#[tokio::test]
+async fn a_redacted_quote_target_is_refused_and_nothing_is_sent() {
+    let (server, session, room_id) = sendable_session().await;
+    server
+        .mock_room_event()
+        .ok(root_event())
+        .mock_once()
+        .mount()
+        .await;
+    let redacted = plain(json!({
+        "type": "m.room.message",
+        "event_id": "$thread-reply",
+        "sender": "@bob:example.invalid",
+        "origin_server_ts": 1_700_000_400_200u64,
+        "content": {},
+        "unsigned": { "redacted_because": { "type": "m.room.redaction" } }
     }));
-    server.mock_room_event().ok(reply).mount().await;
+    server
+        .mock_room_event()
+        .match_event_id()
+        .ok(redacted)
+        .mock_once()
+        .mount()
+        .await;
+    server
+        .mock_room_send()
+        .ok(event_id!("$sent"))
+        .expect(0)
+        .mount()
+        .await;
 
     let failure = thread_reply_direct(
         session,
         &room_id,
-        "$thread-reply",
-        "another answer",
-        koushi_state::ComposerFormattingOptions::default(),
+        "$root",
+        Some("$thread-reply"),
+        "about a deleted message",
+        formatting(),
     )
     .await
-    .expect_err("a thread reply is not a thread root");
-    assert_eq!(failure, DirectMessageFailure::NotThreadRoot);
+    .expect_err("a deleted message cannot be quoted");
+    assert_eq!(failure, DirectMessageFailure::Redacted);
+}
+
+/// A reply target in another thread is refused, and the failure names the
+/// thread it belongs to so the caller can retry correctly (#1807).
+#[tokio::test]
+async fn a_reply_target_in_another_thread_is_refused_and_nothing_is_sent() {
+    let (server, session, room_id) = sendable_session().await;
+    server
+        .mock_room_event()
+        .ok(root_event())
+        .mock_once()
+        .mount()
+        .await;
+    server
+        .mock_room_event()
+        .ok(thread_message(
+            "$elsewhere",
+            "@bob:example.invalid",
+            "$other-root",
+            "x",
+        ))
+        .mock_once()
+        .mount()
+        .await;
+    server
+        .mock_room_send()
+        .ok(event_id!("$sent"))
+        .expect(0)
+        .mount()
+        .await;
+
+    let failure = thread_reply_direct(
+        session,
+        &room_id,
+        "$root",
+        Some("$elsewhere"),
+        "off topic",
+        formatting(),
+    )
+    .await
+    .expect_err("a message of another thread cannot be quoted here");
+    assert_eq!(
+        failure,
+        DirectMessageFailure::NotInThread {
+            thread_root_event_id: Some("$other-root".to_owned())
+        }
+    );
+}
+
+/// A reply target outside any thread is refused, and the failure says so.
+#[tokio::test]
+async fn a_reply_target_outside_any_thread_is_refused_and_nothing_is_sent() {
+    let (server, session, room_id) = sendable_session().await;
+    server
+        .mock_room_event()
+        .ok(root_event())
+        .mock_once()
+        .mount()
+        .await;
+    server
+        .mock_room_event()
+        .ok(plain(text_event(
+            "$main",
+            "@bob:example.invalid",
+            1_700_000_401_000,
+            "main",
+        )))
+        .mock_once()
+        .mount()
+        .await;
+    server
+        .mock_room_send()
+        .ok(event_id!("$sent"))
+        .expect(0)
+        .mount()
+        .await;
+
+    let failure = thread_reply_direct(
+        session,
+        &room_id,
+        "$root",
+        Some("$main"),
+        "wrong target",
+        formatting(),
+    )
+    .await
+    .expect_err("a main-timeline message is not in the thread");
+    assert_eq!(
+        failure,
+        DirectMessageFailure::NotInThread {
+            thread_root_event_id: None
+        }
+    );
+}
+
+/// An unknown reply target fails as a missing event, and nothing is sent.
+#[tokio::test]
+async fn an_unknown_reply_target_is_refused_and_nothing_is_sent() {
+    let (server, session, room_id) = sendable_session().await;
+    server
+        .mock_room_event()
+        .ok(root_event())
+        .mock_once()
+        .mount()
+        .await;
+    server
+        .mock_room_event()
+        .respond_with_code_and_json(
+            404,
+            json!({ "errcode": "M_NOT_FOUND", "error": "Not found" }),
+        )
+        .mock_once()
+        .mount()
+        .await;
+    server
+        .mock_room_send()
+        .ok(event_id!("$sent"))
+        .expect(0)
+        .mount()
+        .await;
+
+    let failure = thread_reply_direct(
+        session,
+        &room_id,
+        "$root",
+        Some("$missing"),
+        "nobody",
+        formatting(),
+    )
+    .await
+    .expect_err("an unknown event cannot be quoted");
+    assert_eq!(failure, DirectMessageFailure::EventNotFound);
 }
 
 /// A deleted thread root cannot be answered.
 #[tokio::test]
 async fn a_redacted_thread_root_is_refused() {
-    let (server, session, room_id) = joined_session().await;
+    let (server, session, room_id) = sendable_session().await;
     let own = session.client().user_id().expect("user id").to_string();
     let redacted = plain(json!({
         "type": "m.room.message",
@@ -464,15 +894,9 @@ async fn a_redacted_thread_root_is_refused() {
     }));
     server.mock_room_event().ok(redacted).mount().await;
 
-    let failure = thread_reply_direct(
-        session,
-        &room_id,
-        "$root",
-        "answer",
-        koushi_state::ComposerFormattingOptions::default(),
-    )
-    .await
-    .expect_err("a deleted root cannot be answered");
+    let failure = thread_reply_direct(session, &room_id, "$root", None, "answer", formatting())
+        .await
+        .expect_err("a deleted root cannot be answered");
     assert_eq!(failure, DirectMessageFailure::Redacted);
 }
 
@@ -480,7 +904,7 @@ async fn a_redacted_thread_root_is_refused() {
 /// leaves `m.room.encrypted` behind (#1731).
 #[tokio::test]
 async fn a_redacted_encrypted_thread_root_is_refused() {
-    let (server, session, room_id) = joined_session().await;
+    let (server, session, room_id) = sendable_session().await;
     let own = session.client().user_id().expect("user id").to_string();
     server
         .mock_room_event()
@@ -489,15 +913,9 @@ async fn a_redacted_encrypted_thread_root_is_refused() {
         .mount()
         .await;
 
-    let failure = thread_reply_direct(
-        session,
-        &room_id,
-        "$root",
-        "answer",
-        koushi_state::ComposerFormattingOptions::default(),
-    )
-    .await
-    .expect_err("a deleted root cannot be answered");
+    let failure = thread_reply_direct(session, &room_id, "$root", None, "answer", formatting())
+        .await
+        .expect_err("a deleted root cannot be answered");
     assert_eq!(failure, DirectMessageFailure::Redacted);
 }
 

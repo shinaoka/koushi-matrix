@@ -2408,8 +2408,10 @@ Invariants:
   argument validation, the grant check, and failure mapping. Reacting,
   editing, and deleting need the separate `message_actions` grant (schema 3),
   thread replies need `send`, and `get_message` needs `read`. Only the
-  account's own events can be edited or deleted, and a thread reply may answer
-  any visible thread root. Actions are bounded, per-account capped, and fenced
+  account's own events can be edited or deleted. A thread reply may name any
+  visible message of a thread, root or not, and may quote one message of that
+  same thread; a quote target outside it refuses the call before anything is
+  enqueued. Actions are bounded, per-account capped, and fenced
   on the account session, so a revoked grant is refused at submission while an
   already-submitted event is never rolled back.
 - **The message-action retry key is Core retry policy (#1681, #1660).**
