@@ -1985,3 +1985,6 @@ fn thread_unread_observation_stamps_the_threads_list_row() {
     );
     assert_eq!(unread(&state), 0);
 }
+
+#[path = "tests/native_attention_candidate_lifetime.rs"]
+mod native_attention_candidate_lifetime;
