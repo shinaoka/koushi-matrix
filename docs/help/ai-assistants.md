@@ -21,6 +21,7 @@ account and each permission.
 | `send_message` | Sends a message, optionally as a reply, or sends local files with an optional caption. | send; also attachments when sending files |
 | `send_thread_reply` | Posts a plain-text reply in a thread, under a visible thread root. | send |
 | `draft_message` | Puts plain text into a room's or a thread's composer as a draft for you to review, edit, and send. Never sends. | draft |
+| `get_draft` | Reads back what a room's or a thread's composer currently holds, and whether it is the assistant's untouched draft, your own text, or empty. Changes nothing. | draft |
 | `get_message` | Fetches one message by its event id, with sender, time, the body after its latest edit, reactions, and its thread or reply relation. | read |
 | `react_to_message` | Adds the assistant account's reaction to a message. Repeating it with the same reaction does nothing. | message actions |
 | `unreact_to_message` | Removes every reaction of that account with the given key from a message. | message actions |
@@ -182,7 +183,9 @@ assistant's call waits for your answer (up to 40 seconds):
   message is not the same as writing a new one. **Drafts** lets the assistant
   put text into a composer without sending it. It is weaker than sending and
   asked for separately, so you can let an assistant draft while you keep every
-  send to yourself.
+  send to yourself. The same **Drafts** permission lets it read that composer
+  back, which is how it learns whether you kept, edited, or cleared the draft it
+  staged. The answer carries the composer's text but never who typed it.
 - **Allow** keeps that permission for that account. After you allow sending,
   later messages are sent without asking again.
 - **Deny** refuses that permission. Koushi remembers the denial until you turn
@@ -335,6 +338,13 @@ Tool calls run inside Koushi's own runtime, but they are not GUI actions:
   replaces text you wrote: a composer that already holds a draft, or that you
   are typing or sending in, answers `conflict`. If you start typing at the very
   moment a draft arrives, your text stays and the draft is dropped.
+- `get_draft` only reads. It reports the composer's current text and whether the
+  assistant's draft is untouched, edited by hand, or gone; it stages, sends,
+  clears, and focuses nothing, and it marks nothing read. The reply says what the
+  composer holds, never who typed it. If you cleared a draft, or sent it, it
+  reads back as empty either way: Koushi keeps no record of which of the two
+  happened to the draft an assistant wrote. Hiding a draft's **Drafted by** label
+  drops that provenance, so the text stays and reads back as edited by hand.
 
 ## Checking a connection
 

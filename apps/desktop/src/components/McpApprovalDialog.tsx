@@ -163,7 +163,10 @@ export function McpApprovalPrompt({
                 </p>
                 <p className="mcp-approval-preview">{request.message_preview}</p>
               </>
-            ) : (
+            ) : null}
+            {/* A call that only reads a draft is still waiting: it has no text
+                to preview, so the stopped-waiting note would be a lie. */}
+            {request.waiting ? null : (
               <p className="mcp-approval-note">{t("mcp.draftNoLongerWaiting")}</p>
             )}
             <p className="mcp-approval-note">{t("mcp.draftExplain", { client, account })}</p>
