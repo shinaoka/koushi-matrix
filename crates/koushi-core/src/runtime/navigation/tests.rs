@@ -113,6 +113,22 @@ fn focused_projection_commit_missing_target_uses_live_fallback_policy() {
 }
 
 #[test]
+fn a_commit_for_the_superseded_navigation_does_not_settle_the_repeat() {
+    // #1796: a repeat navigation is correlated with its own replay, not with
+    // any projection commit for the key.
+    let superseded = focused_projection_fixture(30);
+    let repeat = focused_projection_fixture(31);
+    let mut pending = Some(repeat.clone());
+    let stale = focused_projection_commit(&superseded, 41, true);
+    assert_eq!(stale.key, repeat.key);
+    assert!(
+        focused_navigation_action_after_projection_commit(&mut pending, &stale).is_none(),
+        "a commit for the superseded navigation must not settle the repeat"
+    );
+    assert_eq!(pending, Some(repeat));
+}
+
+#[test]
 fn stale_or_reordered_focused_projection_commits_are_inert() {
     let expected = focused_projection_fixture(22);
     let mut pending = Some(expected.clone());

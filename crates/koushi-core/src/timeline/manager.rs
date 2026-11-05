@@ -2435,7 +2435,15 @@ impl TimelineManagerActor {
             },
             #[cfg(any(test, feature = "test-hooks"))]
             Ok(PreparedFocusedTimeline::TestActor) => {
-                Ok(Self::room_subscription_residency_test_actor_handle())
+                #[cfg(test)]
+                let handle = self.installed_focused_test_actor_handle(
+                    &key,
+                    pending.request_id,
+                    pending.activation.generation,
+                );
+                #[cfg(not(test))]
+                let handle = Self::room_subscription_residency_test_actor_handle();
+                Ok(handle)
             }
             Err(failure) => Err(failure),
         };

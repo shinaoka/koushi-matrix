@@ -2142,11 +2142,14 @@ UI responsibilities:
   to that later command's request identity.
 - A Focused main-pane anchor is not event delivery or display success. For
   Activity, search, and date navigation, Core publishes the anchor only after
-  the reliable internal `FocusedProjectionCommitted` route proves the exact
-  actor-owned InitialItems request/key/actor/timeline generation and target
-  presence. `EnsureSubscribed` may reproject rows after consumer remount or lost
-  delivery, but renderer application and DOM paint never participate in Core
-  navigation settlement. Tauri only transports the resulting state/events.
+  the reliable internal `FocusedProjectionCommitted` route proves the causal
+  request identity of that projection, its key/actor/timeline generation and
+  target presence. A fresh build takes that identity from the navigation that
+  owns it; a replay takes it from the same-key `Subscribe` that caused it, so a
+  repeat navigation settles on the installed actor's replay. `EnsureSubscribed`
+  may reproject rows after consumer remount or lost delivery, but renderer
+  application and DOM paint never participate in Core navigation settlement.
+  Tauri only transports the resulting state/events.
 - Consumer evidence is renderer-specific: TimelineView captures committed Room
   DOM evidence and App's canonical store captures Focused/Thread application for
   layout and diagnostics only. It is safe to drop on unmount and has no

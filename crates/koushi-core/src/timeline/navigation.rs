@@ -489,13 +489,17 @@ impl InitialItemsRequestIdentity {
         }
     }
 
+    /// A replay of the retained window. The renderer-facing
+    /// `projection_request_id` stays actor-owned so a remounted consumer keeps
+    /// acknowledging the same projection; `cause_request_id` is the subscribe
+    /// that asked for the replay, and it is the identity the focused-projection
+    /// commit answers (#1796), so a repeat navigation settles on its own
+    /// replay. An internal (causeless) recovery replay answers nobody new.
     pub(super) fn replay(
         projection_request_id: RequestId,
         cause_request_id: Option<RequestId>,
     ) -> Self {
         Self {
-            // This is the actor-owned view-source identity. The command that
-            // requested this replay is correlated separately below.
             projection_request_id: Some(projection_request_id),
             cause_request_id,
         }
@@ -569,6 +573,7 @@ pub(super) fn emit_timeline_events_with_lease(
         let focused_commit = match &event {
             TimelineEvent::InitialItems {
                 request_id: Some(projection_request_id),
+                cause_request_id,
                 key,
                 actor_generation,
                 generation,
@@ -582,7 +587,15 @@ pub(super) fn emit_timeline_events_with_lease(
                     _ => false,
                 };
                 Some(FocusedProjectionCommitted {
-                    projection_request_id: *projection_request_id,
+                    // #1796: the commit answers the `Subscribe` that produced
+                    // this projection, which is `InitialItemsRequestIdentity`'s
+                    // cause. A fresh build's cause is its own navigation
+                    // (#1465); a replay's cause is the subscribe that asked for
+                    // it, so a repeat navigation settles on its own replay
+                    // instead of carrying the first navigation's identity and
+                    // being dropped. `request_id` stays the actor-owned
+                    // projection identity the renderer acknowledges.
+                    projection_request_id: cause_request_id.unwrap_or(*projection_request_id),
                     key: key.clone(),
                     actor_generation: *actor_generation,
                     timeline_generation: *generation,
