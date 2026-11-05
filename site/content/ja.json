@@ -311,10 +311,6 @@
     "text": "アプリ → 外観: 言語、テーマ、表示密度、UI フォント、絵文字のスタイル",
     "source_hash": "61cbe5b3d7a0"
   },
-  "settings.app.notifications": {
-    "text": "アプリ → 通知: OS 通知の音とバッジ、この端末から送る通知先",
-    "source_hash": "6da1de54bb90"
-  },
   "settings.app.preferences": {
     "text": "アプリ → 環境設定: コードブロックの折り返し、トレイに常駐、古いメッセージの読み込み、スレッドの並び",
     "source_hash": "ed8eef0149a8"
@@ -336,8 +332,8 @@
     "source_hash": "f5c6f2e6eeff"
   },
   "settings.account.notifications": {
-    "text": "アカウント → 通知: デスクトップ通知、本文のプレビュー、この端末から送る通知、サーバーの通知ルール",
-    "source_hash": "96b0c3db6290"
+    "text": "アカウント → 通知: デスクトップ通知、通知の音とバッジ、本文のプレビュー、この端末から送る通知、サーバーの通知ルール",
+    "source_hash": "a145a024469c"
   },
   "settings.account.privacy": {
     "text": "アカウント → セキュリティとプライバシー: URL プレビュー、既読通知、入力中通知",

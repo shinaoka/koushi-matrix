@@ -311,10 +311,6 @@
     "text": "應用程式 → 外觀：語言、主題、顯示密度、介面字型與表情符號樣式",
     "source_hash": "61cbe5b3d7a0"
   },
-  "settings.app.notifications": {
-    "text": "應用程式 → 通知：系統通知的音效與徽章，以及從這台裝置送出的目的地",
-    "source_hash": "6da1de54bb90"
-  },
   "settings.app.preferences": {
     "text": "應用程式 → 偏好設定：程式碼區塊換行、關閉時縮到系統匣、載入較舊的訊息、討論串排列方式",
     "source_hash": "ed8eef0149a8"
@@ -336,8 +332,8 @@
     "source_hash": "f5c6f2e6eeff"
   },
   "settings.account.notifications": {
-    "text": "帳號 → 通知：桌面通知、訊息預覽、從這台裝置送出的通知與伺服器規則",
-    "source_hash": "96b0c3db6290"
+    "text": "帳號 → 通知：桌面通知、通知音效與徽章、訊息預覽、從這台裝置送出的通知與伺服器規則",
+    "source_hash": "a145a024469c"
   },
   "settings.account.privacy": {
     "text": "帳號 → 安全性與隱私權：網址預覽、已讀回條與輸入中提示",

@@ -311,10 +311,6 @@
     "text": "앱 → 모양: 언어, 테마, 밀도, UI 글꼴, 이모지 스타일",
     "source_hash": "61cbe5b3d7a0"
   },
-  "settings.app.notifications": {
-    "text": "앱 → 알림: OS 알림 소리와 배지, 이 기기에서 보내는 알림 대상",
-    "source_hash": "6da1de54bb90"
-  },
   "settings.app.preferences": {
     "text": "앱 → 환경설정: 코드 블록 줄바꿈, 트레이로 닫기, 이전 메시지 불러오기, 스레드 배치",
     "source_hash": "ed8eef0149a8"
@@ -336,8 +332,8 @@
     "source_hash": "f5c6f2e6eeff"
   },
   "settings.account.notifications": {
-    "text": "계정 → 알림: 데스크톱 알림, 메시지 미리보기, 이 기기에서 보내는 알림, 서버 규칙",
-    "source_hash": "96b0c3db6290"
+    "text": "계정 → 알림: 데스크톱 알림, 알림 소리와 배지, 메시지 미리보기, 이 기기에서 보내는 알림, 서버 규칙",
+    "source_hash": "a145a024469c"
   },
   "settings.account.privacy": {
     "text": "계정 → 보안 및 개인정보: URL 미리보기, 읽음 확인, 입력 중 표시",

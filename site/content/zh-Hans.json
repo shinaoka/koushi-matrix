@@ -311,10 +311,6 @@
     "text": "应用 → 外观：语言、主题、显示密度、界面字体和表情样式",
     "source_hash": "61cbe5b3d7a0"
   },
-  "settings.app.notifications": {
-    "text": "应用 → 通知：系统通知的声音和角标，以及从本设备发送的目标",
-    "source_hash": "6da1de54bb90"
-  },
   "settings.app.preferences": {
     "text": "应用 → 偏好设置：代码块换行、关闭到托盘、加载更早的消息、话题排列方式",
     "source_hash": "ed8eef0149a8"
@@ -336,8 +332,8 @@
     "source_hash": "f5c6f2e6eeff"
   },
   "settings.account.notifications": {
-    "text": "账号 → 通知：桌面通知、消息预览、从本设备发送的通知和服务器规则",
-    "source_hash": "96b0c3db6290"
+    "text": "账号 → 通知：桌面通知、通知声音和角标、消息预览、从本设备发送的通知和服务器规则",
+    "source_hash": "a145a024469c"
   },
   "settings.account.privacy": {
     "text": "账号 → 安全与隐私：URL 预览、已读回执和输入状态提示",

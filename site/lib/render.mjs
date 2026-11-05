@@ -47,7 +47,6 @@ const FEATURES = ["e2ee", "layout", "timeline", "rich", "files", "desktop", "key
 
 const SETTINGS_ROWS = [
   "app.appearance",
-  "app.notifications",
   "app.preferences",
   "app.keyboard",
   "app.search",
