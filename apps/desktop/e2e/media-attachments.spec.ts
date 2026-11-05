@@ -382,7 +382,7 @@ test("ready image details action exposes metadata and click opens viewer without
   const timeline = page.getByTestId("timeline-view");
   const beforeScrollTop = await timeline.evaluate((element) => element.scrollTop);
   await article.getByRole("button", { name: t("timeline.mediaOpenFile") }).click();
-  const viewer = page.getByRole("dialog", { name: t("timeline.mediaViewer") });
+  const viewer = page.getByRole("dialog", { name: t("mediaGallery.viewerTitle") });
   await expect(viewer).toBeVisible();
   await expect(viewer.getByRole("img", { name: "photo.jpg" })).toBeVisible();
   await expect(viewer.getByRole("button", { name: "Close media viewer" })).toBeFocused();
@@ -411,10 +411,10 @@ test("timeline media viewer keeps image inside the visible stage", async ({ page
   const article = page.locator(`[data-event-id="${eventId}"]`);
   await article.getByRole("button", { name: t("timeline.mediaOpenFile") }).click({ force: true });
 
-  const viewer = page.getByRole("dialog", { name: t("timeline.mediaViewer") });
+  const viewer = page.getByRole("dialog", { name: t("mediaGallery.viewerTitle") });
   await expect(viewer).toBeVisible();
-  const stage = page.locator(".timeline-media-viewer-stage");
-  const image = page.locator(".timeline-media-viewer-image");
+  const stage = page.locator(".media-viewer-stage");
+  const image = page.locator(".media-viewer-image");
   await expect(stage).toBeVisible();
   await expect(image).toBeVisible();
 
@@ -765,14 +765,14 @@ test("macOS media viewer leaves the native window buttons above its toolbar", as
     width: 800, height: 600, mime_type: "image/jpeg"
   });
   await page.locator(`[data-event-id="${eventId}"]`).getByRole("button", { name: t("timeline.mediaOpenFile") }).click();
-  const viewer = page.getByRole("dialog", { name: t("timeline.mediaViewer") });
+  const viewer = page.getByRole("dialog", { name: t("mediaGallery.viewerTitle") });
   await expect(viewer).toBeVisible();
-  const toolbar = await viewer.locator(".timeline-media-viewer-toolbar").boundingBox();
+  const toolbar = await viewer.locator(".media-viewer-header").boundingBox();
   expect(toolbar!.y).toBeGreaterThanOrEqual(titlebarBottom);
   const bounds = (await viewer.boundingBox())!;
   expect(bounds.y + bounds.height).toBeLessThanOrEqual(520);
   await expect(viewer.getByRole("button", { name: "Close media viewer" })).toBeInViewport();
-  await expect(viewer.locator(".timeline-media-viewer-image")).toBeInViewport();
+  await expect(viewer.locator(".media-viewer-image")).toBeInViewport();
   await page.keyboard.press("Escape");
   await expect(viewer).toHaveCount(0);
 });

@@ -487,6 +487,7 @@ export type MessageId =
   | "mediaGallery.open"
   | "mediaGallery.openItem"
   | "mediaGallery.previous"
+  | "mediaGallery.position"
   | "mediaGallery.region"
   | "mediaGallery.viewerTitle"
   | "mediaGallery.zoomIn"
@@ -1965,7 +1966,6 @@ export type MessageId =
   | "timeline.mediaDetails"
   | "timeline.mediaDetailsTitle"
   | "timeline.closeMediaDetails"
-  | "timeline.mediaViewer"
   | "timeline.threadReplyCountOne"
   | "timeline.threadReplyCountMany"
   | "timeline.threadRoot"
@@ -2804,6 +2804,7 @@ const en: Catalog = {
   "mediaGallery.open": "Open media gallery",
   "mediaGallery.openItem": "Open {filename}",
   "mediaGallery.previous": "Previous media",
+  "mediaGallery.position": "{index}/{total}",
   "mediaGallery.region": "Room media gallery",
   "mediaGallery.viewerTitle": "Media viewer",
   "mediaGallery.zoomIn": "Zoom in",
@@ -4438,7 +4439,6 @@ const en: Catalog = {
   "timeline.mediaDetails": "Show media details for {filename}",
   "timeline.mediaDetailsTitle": "Media details",
   "timeline.closeMediaDetails": "Close media details",
-  "timeline.mediaViewer": "Media viewer",
   "timeline.threadReplyCountOne": "1 reply",
   "timeline.threadReplyCountMany": "{count} replies",
   "timeline.threadRoot": "Thread root {eventId}",
@@ -5168,6 +5168,7 @@ const ja: Catalog = {
   "mediaGallery.open": "メディアギャラリーを開く",
   "mediaGallery.openItem": "{filename}を開く",
   "mediaGallery.previous": "前のメディア",
+  "mediaGallery.position": "{index}／{total}",
   "mediaGallery.region": "ルームメディアギャラリー",
   "mediaGallery.viewerTitle": "メディアビューア",
   "mediaGallery.zoomIn": "拡大",
@@ -6787,7 +6788,6 @@ const ja: Catalog = {
   "timeline.mediaDetails": "{filename}のメディア詳細を表示",
   "timeline.mediaDetailsTitle": "メディア詳細",
   "timeline.closeMediaDetails": "メディア詳細を閉じる",
-  "timeline.mediaViewer": "メディアビューア",
   "timeline.threadReplyCountOne": "返信 1 件",
   "timeline.threadReplyCountMany": "返信 {count} 件",
   "timeline.threadRoot": "スレッド元 {eventId}",

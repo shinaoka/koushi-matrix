@@ -25,14 +25,16 @@ const fileMedia: NonNullable<TimelineItem["media"]> = {
   thumbnail: null
 };
 
-const viewerActions = {
-  canForward: false,
-  forwardDestinations: [],
-  onForward: vi.fn(),
-  canViewSource: false,
-  onViewSource: vi.fn(),
-  canRedact: false,
-  onRedact: vi.fn()
+const viewerEntry = {
+  eventId: "$synthetic-media:example.invalid",
+  filename: "synthetic_photo.png",
+  kind: "Image" as const,
+  size: 2048,
+  width: 640,
+  height: 480,
+  mimetype: "image/png",
+  encrypted: false,
+  saveName: null
 };
 
 function renderCard({
@@ -57,7 +59,7 @@ function renderCard({
       onDownload={onDownload}
       onOpenMediaViewer={vi.fn()}
       saveName={null}
-      viewerActions={viewerActions}
+      viewerEntry={viewerEntry}
     />
   );
   const card = document.querySelector<HTMLElement>(".message-media");

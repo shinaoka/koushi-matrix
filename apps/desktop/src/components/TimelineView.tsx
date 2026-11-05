@@ -218,6 +218,8 @@ import type {
 RoomLatestEventSummary,
 TimelineContinuityState,
 TimelineMediaDownloadState,
+TimelineMediaGalleryItem,
+TimelineMediaKind,
 TimelineScrollAnchor,
 TextRange,
 UserProfile
@@ -227,15 +229,16 @@ import {
 receiptDisplayName
 } from "./timeline/ReceiptReaders";
 import {
-TimelineMediaViewer,
-type TimelineMediaViewerItem
-} from "./timeline/TimelineMedia";
+  MediaViewer,
+  imageViewerEntriesFromGallery,
+  type MediaViewerActions,
+  type MediaViewerEntry
+} from "./mediaViewer";
 import { useTimelineStoreContext } from "./timelineStoreContext";
 import {
   replyQuoteHasThumbnail,
   replyQuoteMediaLabel
 } from "./timeline/ReplyQuoteThumbnail";
-import { mediaSourceUrl } from "../backend/linkMediaRuntime";
 import {
   timelineAvatarDiagnostics,
   timelineRenderedAvatarDiagnostics,
@@ -361,6 +364,20 @@ const TIMELINE_SCROLL_IDLE_FLUSH_MS = 100;
 const TIMELINE_SCROLL_MAX_DEFER_MS = 500;
 const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
 
+/** #1810: a quoted image opens in the viewer at its quoted media kind. */
+function quotedMediaKind(media: ReplyQuote["media"]): TimelineMediaKind {
+  switch (media?.kind) {
+    case "video":
+      return "Video";
+    case "file":
+      return "File";
+    case "audio":
+      return "Audio";
+    default:
+      return "Image";
+  }
+}
+
 type ViewportIntent = { kind: "free-scroll" } | { kind: "live-edge" };
 
 // ---------------------------------------------------------------------------
@@ -407,6 +424,7 @@ export const TimelineView = memo(function TimelineView({
   canWrite = true,
   searchHighlightsByEventId = {},
   mediaDownloads = {},
+  mediaGallery = [],
   replyQuoteThumbnails = {},
   continuity = { kind: "unknown" },
   roomScrollAnchor: _persistedRoomScrollAnchor = null,
@@ -477,6 +495,13 @@ export const TimelineView = memo(function TimelineView({
   canWrite?: boolean;
   searchHighlightsByEventId?: Record<string, { snippet: string; ranges: TextRange[] }>;
   mediaDownloads?: Record<string, TimelineMediaDownloadState>;
+  /**
+   * #1810: the room media sequence (`ui.timeline.media_gallery`). The image
+   * viewer resolves the opened image's previous/next against it, so React never
+   * invents an order. Absent when the mount has no room sequence (thread panes,
+   * tests), which leaves the viewer in the single-image mode of #163.
+   */
+  mediaGallery?: readonly TimelineMediaGalleryItem[];
   replyQuoteThumbnails?: Record<string, TimelineMediaDownloadState>;
   continuity?: TimelineContinuityState;
   roomScrollAnchor?: TimelineScrollAnchor | null;
@@ -555,7 +580,12 @@ export const TimelineView = memo(function TimelineView({
   const setStore = setTimelineStore ?? timelineStoreContext?.setStore ?? localSetStore;
   const isAppLevelStore = timelineStore !== undefined || timelineStoreContext !== null;
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
-  const [mediaViewerItem, setMediaViewerItem] = useState<TimelineMediaViewerItem | null>(null);
+  const [mediaViewer, setMediaViewer] = useState<{
+    /** The image the viewer shows, by identity: the sequence stays the DTO's. */
+    eventId: string;
+    /** The opened image itself, for one outside the room sequence (#163). */
+    single: MediaViewerEntry;
+  } | null>(null);
   const [pendingQuotedMediaViewer, setPendingQuotedMediaViewer] = useState<ReplyQuote | null>(null);
   const mediaViewerReturnFocusRef = useRef<HTMLElement | null>(null);
   const [viewportAtBottom, setViewportAtBottom] = useState(false);
@@ -621,57 +651,73 @@ export const TimelineView = memo(function TimelineView({
     return subscribeHoverIntent(sync);
   }, []);
   const viewportSettlementAttemptRef = useRef<(() => void) | null>(null);
-  const openMediaViewer = useCallback((item: TimelineMediaViewerItem) => {
-    const activeElement =
-      typeof document !== "undefined" && document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    mediaViewerReturnFocusRef.current = activeElement;
-    setMediaViewerItem(item);
-  }, []);
+  const viewerGalleryEntries = useMemo(
+    () => imageViewerEntriesFromGallery(mediaGallery),
+    [mediaGallery]
+  );
+  const openMediaViewer = useCallback(
+    (entry: MediaViewerEntry) => {
+      const activeElement =
+        typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      mediaViewerReturnFocusRef.current = activeElement;
+      // #1810: the opened image is located in the room sequence by `event_id`.
+      // An image outside it (quoted media, a lagging gallery projection, or a
+      // mount with no sequence) opens alone with navigation hidden (#163).
+      setMediaViewer({ eventId: entry.eventId, single: entry });
+    },
+    []
+  );
+  // The navigable sequence is read from the gallery on every render, so an
+  // image the projection adds or drops while the viewer is open is honoured.
+  const mediaViewerEntries = useMemo(() => {
+    if (!mediaViewer) {
+      return [];
+    }
+    return viewerGalleryEntries.some((entry) => entry.eventId === mediaViewer.eventId)
+      ? viewerGalleryEntries
+      : [mediaViewer.single];
+  }, [mediaViewer, viewerGalleryEntries]);
+  const mediaViewerIndex = mediaViewer
+    ? Math.max(
+        0,
+        mediaViewerEntries.findIndex((entry) => entry.eventId === mediaViewer.eventId)
+      )
+    : 0;
   const closeMediaViewer = useCallback(() => {
     const returnFocusTarget = mediaViewerReturnFocusRef.current;
-    setMediaViewerItem(null);
+    setMediaViewer(null);
     mediaViewerReturnFocusRef.current = null;
     window.setTimeout(() => returnFocusTarget?.focus(), 0);
   }, []);
-  const quotedMediaViewerItem = useCallback(
-    (quote: ReplyQuote, state: TimelineMediaDownloadState): TimelineMediaViewerItem | null => {
+  const quotedMediaViewerEntry = useCallback(
+    (quote: ReplyQuote, state: TimelineMediaDownloadState): MediaViewerEntry | null => {
       if (state.kind !== "ready") {
         return null;
       }
       return {
-        sourceUrl: mediaSourceUrl(state.source_ref, state.mime_type),
-        downloadSourceRef: state.source_ref,
+        eventId: quote.event_id,
         filename: quote.body_preview ?? replyQuoteMediaLabel(quote.media) ?? "image",
+        kind: quotedMediaKind(quote.media),
         size: null,
-        mimeType: state.mime_type,
         width: state.width,
         height: state.height,
+        mimetype: state.mime_type,
         encrypted: false,
-        actions: {
-          canForward: false,
-          forwardDestinations: [],
-          onForward: () => undefined,
-          canViewSource: false,
-          onViewSource: () => undefined,
-          canRedact: false,
-          onRedact: () => undefined
-        },
-        saveName: null,
-        saveMediaFile: transport.saveMediaFile
+        saveName: null
       };
     },
-    [transport.saveMediaFile]
+    []
   );
   const openQuotedMedia = useCallback(
     (quote: ReplyQuote) => {
-      const item = quotedMediaViewerItem(
+      const entry = quotedMediaViewerEntry(
         quote,
         mediaDownloads[quote.event_id] ?? { kind: "notRequested" }
       );
-      if (item) {
-        openMediaViewer(item);
+      if (entry) {
+        openMediaViewer(entry);
         return;
       }
       setPendingQuotedMediaViewer(quote);
@@ -679,21 +725,21 @@ export const TimelineView = memo(function TimelineView({
         setPendingQuotedMediaViewer(null);
       });
     },
-    [mediaDownloads, openMediaViewer, quotedMediaViewerItem, roomId, timelineKey, transport]
+    [mediaDownloads, openMediaViewer, quotedMediaViewerEntry, roomId, timelineKey, transport]
   );
   useEffect(() => {
     if (!pendingQuotedMediaViewer) {
       return;
     }
-    const item = quotedMediaViewerItem(
+    const entry = quotedMediaViewerEntry(
       pendingQuotedMediaViewer,
       mediaDownloads[pendingQuotedMediaViewer.event_id] ?? { kind: "notRequested" }
     );
-    if (item) {
+    if (entry) {
       setPendingQuotedMediaViewer(null);
-      openMediaViewer(item);
+      openMediaViewer(entry);
     }
-  }, [mediaDownloads, openMediaViewer, pendingQuotedMediaViewer, quotedMediaViewerItem]);
+  }, [mediaDownloads, openMediaViewer, pendingQuotedMediaViewer, quotedMediaViewerEntry]);
   /** True while the live-room scroll anchor is being restored. */
   const roomScrollAnchorRestorePendingRef = useRef(false);
   /**
@@ -2520,6 +2566,34 @@ export const TimelineView = memo(function TimelineView({
     forwardDestinations.length > 0
       ? forwardDestinations
       : [{ room_id: roomId, display_name: roomId }];
+  /**
+   * #1810: the per-image actions the shared viewer shows for one event. They
+   * come from the row's own Rust facts, so a neighbour the reader navigated to
+   * offers its own forward/view-source/redact rather than the opened image's.
+   * An event outside the rendered rows keeps the action-less footer.
+   */
+  const mediaViewerActionsFor = useCallback(
+    (eventId: string): MediaViewerActions | null => {
+      // Every loaded row, not only the virtualized window: a neighbour outside
+      // the DOM window still carries its Rust facts.
+      const row = visibleRows.find((candidate) => candidate.content_event_id === eventId);
+      const item = row?.item;
+      if (!item) {
+        return null;
+      }
+      return {
+        canForward: Boolean(item.actions?.can_forward),
+        forwardDestinations: effectiveForwardDestinations,
+        onForward: (destinationRoomId: string) =>
+          rowTransportActions.onForwardMessage(roomId, eventId, destinationRoomId),
+        canViewSource: Boolean(item.actions?.can_view_source),
+        onViewSource: () => rowTransportActions.onLoadMessageSource(roomId, eventId),
+        canRedact: canWrite && !item.is_redacted && item.can_redact,
+        onRedact: () => rowTransportActions.onRedact(roomId, eventId)
+      };
+    },
+    [canWrite, effectiveForwardDestinations, roomId, rowTransportActions, visibleRows]
+  );
   const reportViewportObservation = useCallback(() => {
     const observeViewport = transport.observeViewport;
     const canObserveTimelineViewport = Boolean(
@@ -4130,10 +4204,23 @@ export const TimelineView = memo(function TimelineView({
           onClose={() => setMessageSource(null)}
         />
       ) : null}
-      {mediaViewerItem ? (
-        <TimelineMediaViewer
-          item={mediaViewerItem}
+      {mediaViewer ? (
+        <MediaViewer
+          index={mediaViewerIndex}
+          items={mediaViewerEntries}
+          mediaDownloads={mediaDownloads}
           onClose={closeMediaViewer}
+          onSelectIndex={(next) => {
+            const entry = mediaViewerEntries[next];
+            if (entry) {
+              setMediaViewer({ eventId: entry.eventId, single: entry });
+            }
+          }}
+          onRequestDownload={(eventId) => {
+            void transport.downloadMedia(roomId, eventId, timelineKey).catch(() => undefined);
+          }}
+          actionsFor={mediaViewerActionsFor}
+          onSaveMediaFile={transport.saveMediaFile}
         />
       ) : null}
       {aliasTarget ? (

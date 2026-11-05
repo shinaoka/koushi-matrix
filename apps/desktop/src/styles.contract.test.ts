@@ -568,23 +568,21 @@ describe("styles.css token system", () => {
     expect(selectorBlock(".message-source-copy")).toContain("inline-size: auto");
   });
 
-  test("timeline media viewer uses its own top-level lightbox layer", () => {
-    const overlayBlock = selectorBlock(".timeline-media-viewer-overlay");
+  test("the shared image viewer keeps one top-level layer and its action menu above it", () => {
+    // #1810: the timeline lightbox and the gallery dialog converged on the
+    // gallery viewer, so its backdrop is the only image-viewer layer left.
+    const overlayBlock = selectorBlock(".media-viewer-backdrop");
     expect(overlayBlock).toContain("position: fixed");
-    expect(overlayBlock).toContain("z-index: 140");
-    expect(selectorBlock(".timeline-media-viewer-toolbar")).toContain(
-      "grid-template-columns: minmax(0, 1fr) auto;"
-    );
     expect(
       groupedSelectorBlock(
-        /\.timeline-media-viewer-menu,\s*\.timeline-media-viewer-forward-menu/,
-        "timeline media viewer menus"
+        /\.media-viewer-menu,\s*\.media-viewer-forward-menu/,
+        "media viewer menus"
       )
     ).toContain("position: absolute");
-    expect(selectorBlock(".timeline-media-viewer-menu-item")).toContain(
+    expect(selectorBlock(".media-viewer-menu-item")).toContain(
       "grid-template-columns: 22px minmax(0, 1fr);"
     );
-    expect(css).toContain(".media-viewer-backdrop");
+    expect(css).not.toContain(".timeline-media-viewer");
   });
 
   test("app grid exposes separate resize handles for the room list and right panel", () => {

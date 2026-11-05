@@ -54,11 +54,11 @@ for (const platform of ["macos", "windows", "linux"]) {
         document.documentElement.dir = "rtl";
       }, { platform, zoom });
       const safeTop = platform === "macos" ? Math.max(44, 44 / zoom) : 0;
-      for (const opener of ["Open parent", "Open legacy", "media-viewer-backdrop", "timeline-media-viewer-overlay", "dialog-overlay upload-staging-overlay"]) {
+      for (const opener of ["Open parent", "Open legacy", "media-viewer-backdrop", "dialog-overlay upload-staging-overlay"]) {
         await page.getByRole("button", { name: opener, exact: true }).click();
         const modal = page.locator("dialog:modal");
         await expect(modal).toHaveCount(1);
-        const content = modal.locator(".app-modal-header, .dialog-box, .media-viewer, .timeline-media-viewer, .upload-staging-dialog").first();
+        const content = modal.locator(".app-modal-header, .dialog-box, .media-viewer, .upload-staging-dialog").first();
         const bounds = await content.boundingBox();
         expect(bounds!.y).toBeGreaterThanOrEqual(safeTop - 1);
         expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(321);

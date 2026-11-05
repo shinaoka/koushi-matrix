@@ -5661,92 +5661,27 @@ button.message-media-type-tile:focus-visible .message-media-type-overlay {
   min-width: 0;
 }
 
-.timeline-media-viewer-overlay {
-  padding: 0;
-  padding-block-start: var(--native-titlebar-safe-block, 0px);
-  position: fixed;
-  inset: 0;
-  z-index: 140;
-  display: grid;
-  block-size: 100dvh;
-  overflow: hidden;
-  background: rgb(0 0 0 / 82%);
-}
-
-.timeline-media-viewer {
-  position: relative;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  inline-size: 100%;
-  block-size: 100%;
-  max-block-size: 100dvh;
-  min-inline-size: 0;
-  min-block-size: 0;
-  overflow: hidden;
-  color: #f8fafc;
-}
-
-.timeline-media-viewer-toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  min-block-size: 58px;
-  padding: 10px 18px;
-  background: rgb(0 0 0 / 78%);
-}
-
-.timeline-media-viewer-info {
-  min-inline-size: 0;
-}
-
-.timeline-media-viewer-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.timeline-media-viewer-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-block-start: 3px;
-  color: #cbd5e1;
-  font-size: 12px;
-}
-
-.timeline-media-viewer-actions {
+.media-viewer-header-end {
   display: inline-flex;
-  gap: 8px;
+  flex: 0 0 auto;
   align-items: center;
+  gap: 10px;
 }
 
-.timeline-media-viewer-action {
-  display: inline-grid;
-  place-items: center;
-  inline-size: 42px;
-  block-size: 42px;
-  border: 0;
-  border-radius: 999px;
-  color: #dbe4ef;
-  background: transparent;
-  cursor: pointer;
+/* #1810: the position in the room sequence, e.g. 3/12. */
+.media-viewer-counter {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
-.timeline-media-viewer-action:hover,
-.timeline-media-viewer-action:focus-visible {
-  color: #fff;
-  background: rgb(148 163 184 / 24%);
-}
-
-.timeline-media-viewer-menu-control {
+.media-viewer-menu-control {
   position: relative;
 }
 
-.timeline-media-viewer-menu,
-.timeline-media-viewer-forward-menu {
+/* #1810: the timeline image actions keep their menu inside the shared viewer. */
+.media-viewer-menu,
+.media-viewer-forward-menu {
   position: absolute;
   z-index: 1;
   min-inline-size: 220px;
@@ -5758,21 +5693,21 @@ button.message-media-type-tile:focus-visible .message-media-type-overlay {
   box-shadow: var(--shadow-lg);
 }
 
-.timeline-media-viewer-menu {
-  inset-block-start: calc(100% + 8px);
+.media-viewer-menu {
+  inset-block-end: calc(100% + 8px);
   inset-inline-end: 0;
 }
 
-.timeline-media-viewer-forward-control {
+.media-viewer-forward-control {
   position: relative;
 }
 
-.timeline-media-viewer-forward-menu {
+.media-viewer-forward-menu {
   inset-block-start: 0;
   inset-inline-end: calc(100% + 8px);
 }
 
-.timeline-media-viewer-menu-item {
+.media-viewer-menu-item {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
   gap: 12px;
@@ -5789,47 +5724,25 @@ button.message-media-type-tile:focus-visible .message-media-type-overlay {
   cursor: pointer;
 }
 
-.timeline-media-viewer-menu-item > span {
+.media-viewer-menu-item > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.timeline-media-viewer-menu-item:hover,
-.timeline-media-viewer-menu-item:focus-visible {
+.media-viewer-menu-item:hover,
+.media-viewer-menu-item:focus-visible {
   background: var(--surface-hover);
 }
 
-.timeline-media-viewer-menu-item.is-destructive {
+.media-viewer-menu-item.is-destructive {
   color: var(--danger);
 }
 
-.timeline-media-viewer-menu-item.is-destructive:hover,
-.timeline-media-viewer-menu-item.is-destructive:focus-visible {
+.media-viewer-menu-item.is-destructive:hover,
+.media-viewer-menu-item.is-destructive:focus-visible {
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 10%, var(--surface));
-}
-
-.timeline-media-viewer-close {
-  background: rgb(148 163 184 / 20%);
-}
-
-.timeline-media-viewer-stage {
-  display: grid;
-  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
-  place-items: center;
-  min-inline-size: 0;
-  min-block-size: 0;
-  overflow: hidden;
-  padding: 18px;
-}
-
-.timeline-media-viewer-image,
-.timeline-media-viewer-video {
-  display: block;
-  max-inline-size: 100%;
-  max-block-size: 100%;
-  object-fit: contain;
 }
 
 .message-media-error {
@@ -5844,7 +5757,8 @@ button.message-media-type-tile:focus-visible .message-media-type-overlay {
   background: var(--surface);
 }
 
-.media-viewer-image {
+.media-viewer-image,
+.media-viewer-video {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
@@ -7017,6 +6931,13 @@ mark {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--sidebar);
+  /* Vertical scrolling stays the platform's; horizontal travel is the swipe. */
+  touch-action: pan-y;
+}
+
+/* #1746/#1810: a zoomed image owns both axes while it can pan. */
+.media-viewer-stage.is-pannable {
+  touch-action: none;
 }
 
 .media-viewer-image-placeholder,
@@ -7053,8 +6974,7 @@ mark {
 /* Full-window native shells keep existing content layout and use one inset.
    Their backdrop still covers the complete WebView. */
 dialog.dialog-overlay,
-dialog.media-viewer-backdrop,
-dialog.timeline-media-viewer-overlay {
+dialog.media-viewer-backdrop {
   margin: 0;
   border: 0;
   color: var(--text);
@@ -7064,11 +6984,9 @@ dialog.timeline-media-viewer-overlay {
   max-block-size: none;
 }
 dialog.dialog-overlay:not([open]),
-dialog.media-viewer-backdrop:not([open]),
-dialog.timeline-media-viewer-overlay:not([open]) { display: none; }
+dialog.media-viewer-backdrop:not([open]) { display: none; }
 dialog.dialog-overlay::backdrop,
-dialog.media-viewer-backdrop::backdrop,
-dialog.timeline-media-viewer-overlay::backdrop { background: transparent; }
+dialog.media-viewer-backdrop::backdrop { background: transparent; }
 .dialog-overlay.upload-staging-overlay {
   padding: 12px;
   padding-block-start: calc(12px + var(--native-titlebar-safe-block));

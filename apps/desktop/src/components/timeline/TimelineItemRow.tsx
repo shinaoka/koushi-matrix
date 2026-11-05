@@ -87,10 +87,8 @@ import { MessageMeta } from "./MessageMeta";
 import { MessageTimestamp } from "./MessageTimestampLabel";
 import { formatMessageTimestamp } from "./messageTimestamp";
 import { ReceiptReaders } from "./ReceiptReaders";
-import {
-  TimelineMediaAttachment,
-  type TimelineMediaViewerItem
-} from "./TimelineMedia";
+import { TimelineMediaAttachment } from "./TimelineMedia";
+import { mediaViewerEntryFromMedia, type MediaViewerEntry } from "../mediaViewer";
 import {
   renderFormattedBody,
   renderPlainTextBody,
@@ -426,7 +424,7 @@ export function TimelineItemRow({
   onHideLinkPreview?: TimelineRowActionHandlers["onHideLinkPreview"];
   onCopyText?: TimelineRowActionHandlers["onCopyText"];
   onOpenAliasDialog?: (target: TimelineAliasTarget) => void;
-  onOpenMediaViewer?: (item: TimelineMediaViewerItem) => void;
+  onOpenMediaViewer?: (entry: MediaViewerEntry) => void;
   onSaveMediaFile?: TimelineTransport["saveMediaFile"];
   forwardDestinations?: readonly TimelineForwardDestination[];
   onRetrySend?: TimelineRowActionHandlers["onRetrySend"];
@@ -1066,15 +1064,11 @@ export function TimelineItemRow({
         onOpenMediaViewer={onOpenMediaViewer}
         onSaveMediaFile={onSaveMediaFile}
         saveName={mediaSaveName}
-        viewerActions={{
-          canForward,
-          forwardDestinations,
-          onForward: submitForward,
-          canViewSource,
-          onViewSource: loadMessageSource,
-          canRedact: Boolean(canShowActionButtons && canWrite && item.can_redact),
-          onRedact: submitRedaction
-        }}
+        viewerEntry={
+          eventId
+            ? mediaViewerEntryFromMedia(eventId, item.media, item.timestamp_ms)
+            : null
+        }
       />
     ) : null;
   function handleContextMenu(event: MouseEvent<HTMLElement>) {

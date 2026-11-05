@@ -150,6 +150,17 @@ size to send the file unchanged.
 
 For a failed send, see [sending troubleshooting](troubleshooting.md#message-will-not-send).
 
+## View an image
+
+Select an image in the timeline to open it in the media viewer. The viewer also
+shows where the image sits in the room's images, such as `3/12`, and moves to the
+previous or next image with the side controls, the left and right arrow keys, or
+a horizontal swipe. Navigation stops at the first and last image instead of
+wrapping around. The sequence is the room's media list restricted to images, so
+an image outside it opens on its own without navigation. Changing the image
+resets zoom and pan to the fitted view. The **Room info → Files** gallery opens
+the same viewer, which covers files and videos too.
+
 ## Room changes and unavailable content
 
 Topic and avatar changes appear as notices. Room replacement notices include a
