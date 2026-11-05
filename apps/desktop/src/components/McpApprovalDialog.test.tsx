@@ -225,3 +225,35 @@ test("a draft approval previews the draft and says it cannot send (#1644)", () =
   expect(dialog.textContent).toContain("never replaces text you are writing");
   expect(screen.getByRole("button", { name: "Allow drafts in Synthetic Workspace" })).toBeTruthy();
 });
+
+test("a waiting draft approval without a preview never claims the assistant stopped waiting", () => {
+  // #1809: `get_draft` asks for the draft permission without staging text, so
+  // there is nothing to preview and the request is still waiting.
+  render(
+    <McpApprovalPrompt
+      request={request({ need: "draft", room_label: "Synthetic Room", message_preview: null })}
+      accountTabs={tabs}
+      moreWaiting={0}
+      armingDelayMs={0}
+      onClose={() => undefined}
+    />
+  );
+  const dialog = screen.getByRole("dialog", { name: "Allow claude-code to write drafts?" });
+  expect(dialog.textContent).not.toContain("stopped waiting");
+  expect(dialog.textContent).not.toContain("The draft it is waiting to add");
+  expect(dialog.textContent).toContain("It cannot send them");
+});
+
+test("a draft approval whose caller gave up still says it stopped waiting", () => {
+  render(
+    <McpApprovalPrompt
+      request={request({ need: "draft", room_label: "Synthetic Room", waiting: false })}
+      accountTabs={tabs}
+      moreWaiting={0}
+      armingDelayMs={0}
+      onClose={() => undefined}
+    />
+  );
+  const dialog = screen.getByRole("dialog", { name: "Allow claude-code to write drafts?" });
+  expect(dialog.textContent).toContain("stopped waiting");
+});

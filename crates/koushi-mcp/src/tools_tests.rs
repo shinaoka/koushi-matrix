@@ -6,7 +6,7 @@ use super::*;
 #[test]
 fn definitions_are_unique_and_valid() {
     let tools = definitions();
-    assert_eq!(tools.len(), 15);
+    assert_eq!(tools.len(), 16);
     let mut names: Vec<&str> = tools.iter().map(|tool| tool.name).collect();
     names.sort_unstable();
     names.dedup();
@@ -80,12 +80,13 @@ fn wait_for_events_publishes_its_coverage_and_cursor_contract() {
         json!(["sampled_room_changes"])
     );
     // Typed outputs: read_recent_activity, read_room_messages, wait_for_events,
-    // get_message, the five message actions (#1628), and draft_message (#1644).
+    // get_message, the five message actions (#1628), draft_message (#1644), and
+    // get_draft (#1809).
     let others_typed = definitions()
         .iter()
         .filter(|tool| tool.output_schema.is_some())
         .count();
-    assert_eq!(others_typed, 10);
+    assert_eq!(others_typed, 11);
 }
 
 #[test]
@@ -255,4 +256,29 @@ fn recent_activity_discovery_is_read_only_and_describes_bounded_history() {
     assert!(tool.output_schema.is_some());
     assert_eq!(tool.input_schema["properties"]["limit"]["minimum"], 1);
     assert_eq!(tool.input_schema["properties"]["limit"]["maximum"], 100);
+}
+
+#[test]
+fn get_draft_is_read_only_and_names_its_three_outcomes() {
+    let tool = find("get_draft").expect("get_draft");
+    assert!(tool.read_only, "reading a draft changes nothing");
+    for phrase in [
+        "without changing it",
+        "draft permission",
+        "sent and cleared are not told apart",
+    ] {
+        assert!(tool.description.contains(phrase), "{phrase}");
+    }
+    let output = tool.output_schema.as_ref().expect("output schema");
+    assert_eq!(
+        output["properties"]["status"]["enum"],
+        json!(["assistant", "user_edited", "empty"])
+    );
+    assert_eq!(output["properties"]["body"]["type"], "string");
+    assert!(tool.input_schema["properties"].get("body").is_none());
+    assert!(
+        tool.input_schema["properties"]
+            .get("thread_root_event_id")
+            .is_some()
+    );
 }

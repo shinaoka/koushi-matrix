@@ -473,6 +473,32 @@ pub fn definitions() -> Vec<ToolDefinition> {
             })),
         },
         ToolDefinition {
+            name: "get_draft",
+            description: "Read back the draft in a room's composer, or in a thread's composer when thread_root_event_id is given, without changing it: nothing is staged, sent, cleared, opened, or focused, and no read state changes. status is assistant while the composer still holds exactly the draft an assistant staged, user_edited once anything else has touched that draft since (the body is its current text), and empty when the composer holds nothing, whether the user cleared it or sent it; sent and cleared are not told apart in this version. body is the composer's current plain text, and is the empty string when status is empty. The reply carries no identity of who typed it. Hiding a draft's \"Drafted by\" label drops that provenance, so the draft then reads back as user_edited. Before Koushi has loaded the account's drafts, or if that load failed, it answers empty. Needs the draft permission.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id_property(),
+                    "room_id": { "type": "string", "description": "Room id of a room this account is joined to." },
+                    "thread_root_event_id": { "type": "string", "description": "Read this thread's composer instead of the room's." }
+                },
+                "required": ["account_id", "room_id"],
+                "additionalProperties": false
+            }),
+            read_only: true,
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "enum": ["assistant", "user_edited", "empty"],
+                        "description": "assistant: the staged draft is unchanged; user_edited: the composer holds text someone changed by hand; empty: the composer holds nothing."
+                    },
+                    "body": { "type": "string", "description": "The composer's current plain text, empty when status is empty." }
+                },
+                "required": ["status", "body"]
+            })),
+        },
+        ToolDefinition {
             name: "draft_message",
             description: "Put plain text into a room's composer, or into a thread's composer when thread_root_event_id is given, as a draft the user reviews, edits, and sends from Koushi. Nothing is sent. Koushi does not switch the visible account or room, open a thread, move focus, or change read state; an open, empty composer shows the draft at once, otherwise it appears when the user next opens that composer, marked as written by this assistant. Fails with conflict, changing nothing, when that composer already holds a draft or the user is typing or sending in it; read the room and try again later rather than retrying at once. Replies to a specific message and attachments are not staged in this version. body is at most 16 KiB of UTF-8. Needs the draft permission, which is separate from send.",
             input_schema: json!({

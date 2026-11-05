@@ -1414,6 +1414,18 @@ normal QA-title mode and cannot change product title semantics.
   debounce race in favour of the user's text
   (`domain/assistantDraftAdoption.ts`), and dispatches
   `dismiss_assistant_draft_marker`.
+- Reading a draft back (`get_draft`, #1809) projects that same store and adds no
+  state: the MCP host reads `ComposerDraftStore::composer_for_room` /
+  `composer_for_thread` from the published snapshot and compares the marker's
+  revision with the target's — equal is `assistant`, any later write is
+  `user_edited`, no content is `empty`. It writes nothing and reports no author.
+  An accepted send (`advance_*_revision`) and a manual clear (an empty
+  `apply_*_draft`) both drop the marker, so both read as `empty`; telling them
+  apart would need a staged-revision record that outlives the content, which
+  this change deliberately does not add. A send that keeps the text in place
+  (`settle_*_revision`, #1130) advances the revision without dropping the
+  marker, so it reads as `user_edited` too. Hiding the **Drafted by** label drops
+  the marker, so that draft reads back as `user_edited`.
 
 ## E2EE trust
 

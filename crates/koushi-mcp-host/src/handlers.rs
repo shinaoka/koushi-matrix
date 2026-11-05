@@ -55,6 +55,7 @@ pub(crate) async fn dispatch_tool_call(
         "delete_message" => delete_message(shared, client, &arguments).await,
         "send_thread_reply" => send_thread_reply(shared, client, &arguments).await,
         "draft_message" => draft_message(shared, client, &arguments).await,
+        "get_draft" => get_draft(shared, client, &arguments).await,
         other => Err(WireError::new(
             ErrorCode::Unsupported,
             format!("unknown tool: {other}"),
@@ -977,6 +978,77 @@ async fn draft_message(
         "room_id": room_id,
         "thread_root_event_id": thread_root_event_id,
         "status": "staged",
+    }))
+}
+
+/// Reads back the draft in a composer (#1809).
+///
+/// The read-only counterpart of `draft_message`: an assistant that staged a
+/// draft can learn whether the user kept, edited, or cleared it, which
+/// `draft_message` alone answers only as `conflict`. It reads the same
+/// `ComposerDraftStore` projection the GUI shows, writes nothing, and reports
+/// no identity: only the status and the text.
+async fn get_draft(
+    shared: &Shared,
+    client: &ClientIdentity,
+    arguments: &Value,
+) -> Result<Value, WireError> {
+    let account_id = required_account_id(arguments)?;
+    let room_id = required_argument(arguments, "room_id")?.to_owned();
+    let thread_root_event_id = arguments
+        .get("thread_root_event_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned);
+    let connection = account_connection(&shared.accounts, &account_id)?;
+    // Composer text is the user's own words, so reading it needs the grant that
+    // lets an assistant write one. The approval names the room only: it never
+    // shows a draft the user did not send.
+    shared
+        .broker
+        .authorize(
+            client,
+            &account_id,
+            Need::Draft,
+            ConsentContext {
+                room_label: joined_room_label(&connection, &room_id),
+                message_preview: None,
+            },
+        )
+        .await?;
+    let snapshot = connection.snapshot();
+    ready_account_key(&snapshot.session)?;
+    if joined_room_label(&connection, &room_id).is_none() {
+        return Err(WireError::new(
+            ErrorCode::RoomNotFound,
+            "the room is not joined",
+        ));
+    }
+    let composer = match &thread_root_event_id {
+        None => snapshot.composer_drafts.composer_for_room(&room_id),
+        Some(root_event_id) => snapshot
+            .composer_drafts
+            .composer_for_thread(&room_id, root_event_id),
+    };
+    // The same rule the renderer keys composer adoption on: the marker holds the
+    // revision the assistant wrote at, so an unchanged revision is still that
+    // text. Every later revision — a hand edit, or a send that keeps the text
+    // (#1130) — reads back as `user_edited`, the answer that never claims the
+    // user's words for the assistant.
+    let status = if composer.document.is_empty() {
+        "empty"
+    } else if composer
+        .assistant_draft
+        .as_ref()
+        .is_some_and(|marker| marker.revision == composer.draft_revision)
+    {
+        "assistant"
+    } else {
+        "user_edited"
+    };
+    Ok(json!({
+        "status": status,
+        "body": composer.draft,
     }))
 }
 
