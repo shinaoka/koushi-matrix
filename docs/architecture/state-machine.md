@@ -5896,7 +5896,10 @@ stateDiagram-v2
   The projection prefers `dm` over `message` candidates,
   suppresses initial sync/backfill/self/focused-room observations, suppresses
   duplicate candidates, and clears badge/candidate state when eligible unread
-  attention reaches zero.
+  attention reaches zero. A room-list observation that raises no attention event
+  of its own neither erases the published candidate and its payload nor replays
+  them; a newer live candidate replaces them, and suppression and the canonical
+  clears still end them (#1799).
 - Candidates carry only private-data-minimized fields allowed by the security
   rules: safe room display label, attention kind (`mention`, `dm`, `message`),
   aggregate unread/highlight counts, and coarse capability tokens. They must not

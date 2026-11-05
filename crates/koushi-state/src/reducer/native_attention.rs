@@ -117,14 +117,75 @@ pub(crate) fn recompute_native_attention_from_rooms(
     recompute_native_attention_from_rooms_for_live_room(state, observation, None, None)
 }
 
+/// The published candidate and the room its payload targets.
+fn published_candidate(
+    state: &AppState,
+) -> Option<(&str, &crate::state::NativeAttentionCandidate)> {
+    let candidate = state.native_attention.summary.candidate.as_ref()?;
+    let room_id = state
+        .native_attention
+        .notification
+        .as_ref()
+        .map(|payload| payload.target.room_id.as_str())?;
+    Some((room_id, candidate))
+}
+
+/// Whether `room_id` still holds the attention that justified the published candidate.
+///
+/// Answered by the production projection over that one room, so this lifetime rule cannot
+/// drift from the eligibility rules that raise a candidate.
+fn published_room_still_holds_attention(state: &AppState, room_id: &str) -> bool {
+    let Some(room) = state.rooms.iter().find(|room| room.room_id == room_id) else {
+        return false;
+    };
+    let room_notification_modes = crate::state::attention_room_notification_modes(state);
+    crate::state::native_attention_projection_from_rooms_with_live_room(
+        crate::state::NativeAttentionProjectionInput {
+            rooms: std::slice::from_ref(room),
+            // Focus does not take part: a focus change clears through its own action.
+            active_room_id: None,
+            muted_room_ids: &[],
+            room_notification_modes: &room_notification_modes,
+            ignored_user_ids: &state.profile.ignored_user_ids,
+            window_focused: false,
+            observation: NativeAttentionObservationKind::Live,
+            previous_candidate: None,
+            message_previews: false,
+            capabilities: state.native_attention.summary.capabilities,
+            locale: crate::resolve_catalog_locale(&state.settings.values.locale),
+        },
+        Some(room_id),
+        None,
+        true,
+    )
+    .state
+    .summary
+    .candidate
+    .is_some()
+}
+
 pub(crate) fn recompute_native_attention_from_rooms_for_live_room(
     state: &mut AppState,
     observation: NativeAttentionObservationKind,
     live_room_id: Option<&str>,
     preview_room_id: Option<&str>,
 ) -> (bool, AppEffect) {
-    let projection =
+    let mut projection =
         projected_native_attention_from_rooms(state, observation, live_room_id, preview_room_id);
+    // #1799: the adapter reads the candidate asynchronously, so an observation that raises
+    // nothing (no live room, or a live room with no eligible attention) must not consume the
+    // published candidate. It keeps the payload and the dispatch it was published with, so
+    // the webview sees no change and cannot show the same banner or sound twice. A newer
+    // live candidate replaces it; read, mute, and focus changes still clear it.
+    if projection.state.summary.candidate.is_none()
+        && projection.state.dispatch == crate::state::NativeAttentionDispatchState::Idle
+        && let Some((room_id, candidate)) = published_candidate(state)
+        && published_room_still_holds_attention(state, room_id)
+    {
+        projection.state.summary.candidate = Some(candidate.clone());
+        projection.state.notification = state.native_attention.notification.clone();
+        projection.state.dispatch = state.native_attention.dispatch.clone();
+    }
     let suppression = match projection.state.dispatch {
         crate::state::NativeAttentionDispatchState::Suppressed { reason } => Some(reason),
         _ => None,
