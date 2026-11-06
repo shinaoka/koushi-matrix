@@ -26,19 +26,43 @@ const pinnedToday = {
   "quinn-proto": "0.11.15",
 };
 
+const registry = "registry+https://github.com/rust-lang/crates.io-index";
+
+/** A package value is a version string, or `{ version, source }` to pin the source line. */
 function lockfile(packages) {
   return (
     "version = 4\n" +
     Object.entries(packages)
-      .map(
-        ([name, version]) =>
+      .map(([name, entry]) => {
+        const { version, source } =
+          typeof entry === "string"
+            ? { version: entry, source: name.startsWith("matrix-sdk") ? null : registry }
+            : entry;
+        return (
           `\n[[package]]\nname = "${name}"\nversion = "${version}"\n` +
-          (name.startsWith("matrix-sdk")
-            ? ""
-            : 'source = "registry+https://github.com/rust-lang/crates.io-index"\n')
-      )
+          (source ? `source = "${source}"\n` : "")
+        );
+      })
       .join("")
   );
+}
+
+function githubAdvisory({ ghsa, name, vulnerable = "< 9.0.0", patched = "9.0.0" }) {
+  return {
+    ghsa_id: ghsa,
+    cve_id: null,
+    summary: `Fixture advisory ${ghsa}`,
+    severity: "high",
+    html_url: `https://github.com/advisories/${ghsa}`,
+    withdrawn_at: null,
+    vulnerabilities: [
+      {
+        package: { ecosystem: "rust", name },
+        vulnerable_version_range: vulnerable,
+        patched_versions: patched,
+      },
+    ],
+  };
 }
 
 function auditVulnerability({ id, aliases = [], name, version, patched }) {
@@ -240,6 +264,79 @@ test("withdrawn advisories and other ecosystems are ignored", () => {
   const result = run({ githubAdvisories: [advisory, otherEcosystem] });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^affected_advisories=0$/m);
+});
+
+test("a crates.io advisory asks for a lock bump and names the source", () => {
+  const result = run({
+    packages: { ...pinnedToday, vodozemac: { version: "0.11.1", source: registry } },
+    githubAdvisories: [
+      githubAdvisory({ ghsa: "GHSA-regi-stry-0001", name: "vodozemac", vulnerable: "< 0.11.2", patched: "0.11.2" }),
+    ],
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^issue_action=create .*GHSA-regi-stry-0001/m);
+  assert.match(result.stdout, /comes from crates.io \(`registry\+https:\/\/github\.com\/rust-lang\/crates\.io-index`\)/);
+  assert.match(result.stdout, /`cargo update -p vodozemac --precise 0\.11\.2`/);
+  assert.match(result.stdout, /The fork and its submodule are not involved/);
+  assert.doesNotMatch(result.stdout, /gitlink/);
+});
+
+test("a vendored fork advisory asks for the upstream merge and the gitlink move", () => {
+  const result = run({ packages: { ...pinnedToday, "matrix-sdk-crypto": "0.18.0" } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^issue_action=create .*GHSA-45pr-7vv7-f64m/m);
+  assert.match(result.stdout, /The pinned fork can trail unreleased upstream fixes/);
+  assert.match(result.stdout, /move the gitlink as described in/);
+  assert.doesNotMatch(result.stdout, /cargo update/);
+});
+
+test("an unrecognized lockfile source states both routes instead of guessing one", () => {
+  const result = run({
+    packages: {
+      ...pinnedToday,
+      vodozemac: { version: "0.11.1", source: "sparse+https://example.invalid/index/" },
+    },
+    githubAdvisories: [
+      githubAdvisory({ ghsa: "GHSA-unkn-own0-0001", name: "vodozemac", vulnerable: "< 0.11.2", patched: "0.11.2" }),
+    ],
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /`cargo update -p vodozemac --precise 0\.11\.2` if it comes from/);
+  assert.match(result.stdout, /merge the fix \(or upstream `main`\) into the fork and/);
+  assert.match(result.stdout, /move the gitlink as described in/);
+});
+
+test("a git revision dependency also asks for its pinned revision to move", () => {
+  const result = run({
+    packages: {
+      ...pinnedToday,
+      ruma: { version: "0.17.2", source: `git+https://github.com/ruma/ruma?rev=${"0".repeat(40)}` },
+    },
+    githubAdvisories: [
+      githubAdvisory({ ghsa: "GHSA-git0-rev0-0001", name: "ruma", vulnerable: "< 0.18.0", patched: "0.18.0" }),
+    ],
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /The pinned fork can trail unreleased upstream fixes/);
+  assert.match(result.stdout, /is a pinned revision \(`git\+https:\/\/github\.com\/ruma\/ruma\?rev=0+`\)/);
+  assert.match(result.stdout, /source `git\+https:\/\/github\.com\/ruma\/ruma\?rev=0+`/);
+});
+
+test("a strict lower bound never becomes a --precise version", () => {
+  const result = run({
+    packages: { ...pinnedToday, vodozemac: { version: "0.11.1", source: registry } },
+    auditList: [
+      auditVulnerability({
+        id: "RUSTSEC-2099-0002",
+        name: "vodozemac",
+        version: "0.11.1",
+        patched: [">0.11.1"],
+      }),
+    ],
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /--precise 0\.11\.1/);
+  assert.match(result.stdout, /`cargo update -p vodozemac` to the first release outside the vulnerable range/);
 });
 
 test("an unparseable range fails the run after filing the advisories it could evaluate", () => {
