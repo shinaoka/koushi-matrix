@@ -78,6 +78,23 @@ fn candidate_label(state: &AppState) -> Option<&str> {
         .map(|candidate| candidate.room_display_name.as_str())
 }
 
+fn candidate_unread_count(state: &AppState) -> Option<u64> {
+    state
+        .native_attention
+        .summary
+        .candidate
+        .as_ref()
+        .map(|candidate| candidate.unread_count)
+}
+
+fn published_body(state: &AppState) -> Option<&str> {
+    state
+        .native_attention
+        .notification
+        .as_ref()
+        .map(|payload| payload.body.as_str())
+}
+
 /// A live candidate published for a room that is not the active one.
 fn state_with_published_candidate() -> AppState {
     let mut state = ready_state();
@@ -113,6 +130,76 @@ fn state_with_published_candidate() -> AppState {
         NativeAttentionDispatchState::Idle
     );
     state
+}
+
+/// #1816: the room that holds the attention owns the identity.
+///
+/// A second foreign message in the room that already published the alert is a
+/// relabel of that alert, not a new one: the payload follows the newer event and
+/// count, the identity does not move, so the webview cannot show a second banner
+/// for one unread conversation.
+#[test]
+fn a_second_message_in_the_published_room_relabels_the_same_alert() {
+    let mut state = state_with_published_candidate();
+    let raised = alert_id(&state).expect("precondition: the raised candidate has an identity");
+    assert_eq!(candidate_unread_count(&state), Some(1));
+    let body_before = published_body(&state).map(str::to_owned);
+
+    room_list_update(
+        &mut state,
+        vec![
+            active_room(),
+            unread_room(NOTIFIED_ROOM, "$notified-second:example.invalid", 46, 2),
+            read_room(NEWEST_ROOM),
+        ],
+    );
+
+    assert_eq!(
+        published_room_id(&state),
+        Some(NOTIFIED_ROOM),
+        "the alert still targets the room that holds the attention"
+    );
+    assert_eq!(
+        candidate_unread_count(&state),
+        Some(2),
+        "the candidate follows the newer count"
+    );
+    assert_ne!(
+        published_body(&state),
+        body_before.as_deref(),
+        "the payload follows the newer count"
+    );
+    assert_eq!(
+        alert_id(&state),
+        Some(raised),
+        "a second message in the same room relabels the alert, it does not mint one"
+    );
+}
+
+#[test]
+fn the_first_raise_mints_an_alert_id() {
+    let mut state = ready_state();
+    state.navigation.active_room_id = Some(ACTIVE_ROOM.to_owned());
+    room_list_update(&mut state, vec![active_room(), read_room(NOTIFIED_ROOM)]);
+    assert_eq!(
+        alert_id(&state),
+        None,
+        "precondition: nothing has been published yet"
+    );
+
+    room_list_update(
+        &mut state,
+        vec![
+            active_room(),
+            unread_room(NOTIFIED_ROOM, "$notified:example.invalid", 43, 1),
+        ],
+    );
+
+    assert_eq!(published_room_id(&state), Some(NOTIFIED_ROOM));
+    assert!(
+        alert_id(&state).is_some(),
+        "a raise with nothing published mints an identity"
+    );
 }
 
 #[test]
@@ -292,9 +379,10 @@ fn a_restored_state_cannot_reissue_a_published_alert_id() {
         "the minting sequence is process-local and restarts at its default"
     );
 
-    // A new live raise for the same room after the restore must not hand out a value
-    // that is already published: the webview would read it as the same alert and drop
-    // a banner it has to show.
+    // A newer message in the same room arrives as a live raise whose room cannot be
+    // matched against the published alert: `notification` (the only thing that records
+    // which room an alert was published for) is deliberately never serialized. The raise
+    // therefore mints, and the floor below keeps it from re-issuing a published value.
     room_list_update(
         &mut restored,
         vec![

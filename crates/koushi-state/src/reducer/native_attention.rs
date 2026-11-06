@@ -182,7 +182,6 @@ pub(crate) fn recompute_native_attention_from_rooms_for_live_room(
     // published candidate. It keeps the payload and the dispatch it was published with, so
     // the webview sees no change and cannot show the same banner or sound twice. A newer
     // live candidate replaces it; read, mute, and focus changes still clear it.
-    let mut survived_published_candidate = false;
     if projection.state.summary.candidate.is_none()
         && projection.state.dispatch == crate::state::NativeAttentionDispatchState::Idle
         && let Some((room_id, candidate)) = published_candidate(state)
@@ -191,19 +190,29 @@ pub(crate) fn recompute_native_attention_from_rooms_for_live_room(
         projection.state.summary.candidate = Some(candidate.clone());
         projection.state.notification = state.native_attention.notification.clone();
         projection.state.dispatch = state.native_attention.dispatch.clone();
-        survived_published_candidate = true;
     }
-    // #1802: the alert identity is minted here, where the candidate is raised, and only
-    // here. A candidate that survived this observation keeps the identity it was
-    // published with, and a relabel mutates the published candidate in place, so the
-    // webview sees one alert for one unread alert until a canonical clear ends it.
+    // #1802/#1816: the alert identity is minted here, where the candidate is raised, and
+    // only here. It belongs to the room that holds the attention, not to the observation
+    // that recomputed it: a candidate for the room the published payload already targets
+    // relabels that alert even when this observation itself raises it (an unread increase
+    // reports the room as live, `room.rs`), so the webview keeps seeing one alert for one
+    // unread conversation until a canonical clear ends it. A candidate for another room
+    // is a new alert. A restored summary carries the identity but not the room its payload
+    // targeted (`notification` is never serialized), so a raise after a restore mints.
     let previous_alert_id = state.native_attention.summary.alert_id;
+    let relabelled_alert_id = published_candidate(state)
+        .filter(|(room_id, _)| {
+            projection
+                .state
+                .notification
+                .as_ref()
+                .is_some_and(|payload| payload.target.room_id == *room_id)
+        })
+        .and(previous_alert_id);
     projection.state.summary.alert_id = if projection.state.summary.candidate.is_none() {
         None
-    } else if survived_published_candidate && previous_alert_id.is_some() {
-        // A candidate that survived this observation keeps the identity it was
-        // published with; a raise mints the next one.
-        previous_alert_id
+    } else if let Some(alert_id) = relabelled_alert_id {
+        Some(alert_id)
     } else {
         // #1802: the summary is serialized but this sequence is process-local, so a
         // restore can bring back a published identity with the counter at its default.

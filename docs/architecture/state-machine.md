@@ -5904,12 +5904,16 @@ stateDiagram-v2
   monotonically increasing number minted in Rust where the candidate is raised,
   kept through `AttentionCandidateUpdated` (a relabel, or a candidate that
   survives an observation that raises nothing), and cleared with the candidate.
-  A newer live candidate, and a raise after a canonical clear, mint a new
-  identity; minting always resumes above every identity already published, so a
-  restored snapshot cannot re-issue one. It is an opaque private-data-free token,
-  never time-derived and never a room, event, or user identifier, and the webview
-  scopes transient banner and sound effects on it alone instead of on candidate
-  contents.
+  The identity belongs to the room that holds the attention, not to the
+  observation that recomputed it: a newer live candidate for the room the
+  published payload already targets is a relabel that keeps the identity, and
+  only a candidate for another room, or a raise after a canonical clear, mints a
+  new one (#1816). Minting always resumes above every identity already published,
+  so a restored snapshot cannot re-issue one; a restored snapshot cannot relabel
+  either, because the payload that records the alert's room is never serialized.
+  It is an opaque private-data-free token, never time-derived and never a room,
+  event, or user identifier, and the webview scopes transient banner and sound
+  effects on it alone instead of on candidate contents.
 - Candidates carry only private-data-minimized fields allowed by the security
   rules: safe room display label, attention kind (`mention`, `dm`, `message`),
   aggregate unread/highlight counts, and coarse capability tokens. They must not
