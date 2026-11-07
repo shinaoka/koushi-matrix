@@ -5,8 +5,10 @@ name: Matrix SDK security advisory check
 # matrix-org/matrix-rust-sdk, matrix-org/vodozemac and ruma/ruma, and RustSec
 # through `cargo audit`. Each affecting advisory gets one issue labelled
 # `security` whose title carries its ids; an existing issue in any state
-# naming one of those ids suppresses a duplicate. The SDK crates are path
-# dependencies, so Dependabot does not see them.
+# naming one of those ids suppresses a duplicate. Most SDK crates are path
+# dependencies of the vendored fork, so Dependabot does not see them;
+# `vodozemac` and `ruma` build from crates.io and a git revision instead, so the
+# issue body names each crate's `Cargo.lock` source and the fix that source needs.
 on:
   schedule:
     - cron: "17 * * * *"

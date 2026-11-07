@@ -35,9 +35,20 @@ The fork (`shinaoka/matrix-rust-sdk-work`) follows upstream
 - **Security advisories pre-empt the schedule.**
   `.github/workflows/sdk-security-advisory-check.yml` runs hourly and opens one
   `security` issue per advisory (ids in the title) that affects a pinned
-  `matrix-sdk*`, `ruma*` or `vodozemac` version in the root `Cargo.lock`. The
-  fork's crate version can trail unreleased upstream fixes, so first check
-  whether the pinned commit already carries the fix; if not, sync now.
+  `matrix-sdk*`, `ruma*` or `vodozemac` version in the root `Cargo.lock`. How to
+  fix it depends on where that crate comes from: read the crate's
+  `[[package]]` block in `Cargo.lock` and its `source` line.
+  - **No `source` line, or `source = "git+..."`** — the crate is built from the
+    fork. Its version can trail unreleased upstream fixes, so first check
+    whether the pinned commit already carries the fix; if not, sync now and
+    move the gitlink as described below. A `git+` crate (`ruma`) is also
+    revision-pinned in the fork's `Cargo.toml`, so that revision has to move
+    too.
+  - **`source = "registry+..."`** — the crate comes from crates.io. Raise the
+    lock entry alone, for example
+    `cargo update -p vodozemac --precise 0.11.2`. No fork merge, gitlink move or
+    submodule change is involved, and the every-other-day sync is not
+    pre-empted.
 
 To sync, in a fork checkout on a branch from the fork's `main`:
 

@@ -28,7 +28,7 @@ try {
   );
   const findings = [
     ...githubFindings(githubAdvisories, pinned, unevaluable),
-    ...auditFindings(audit),
+    ...auditFindings(audit, pinned),
   ];
   const advisories = mergeAliases(findings);
   console.log(`affected_advisories=${advisories.length}`);
@@ -92,14 +92,16 @@ function parseArguments(argumentsList) {
   return parsed;
 }
 
-/** SDK-family crate name → versions the lockfile pins (path crates included). */
+/** SDK-family crate name → the lockfile entries it pins, as `{ version, source }`. */
 function pinnedSdkVersions(lockfile) {
   const pinned = new Map();
   for (const block of lockfile.split(/^\[\[package\]\]\s*$/m).slice(1)) {
     const name = /^name = "([^"]+)"$/m.exec(block)?.[1];
     const version = /^version = "([^"]+)"$/m.exec(block)?.[1];
+    // A path crate has no `source` line; registry and git crates name one.
+    const source = /^source = "([^"]+)"$/m.exec(block)?.[1] ?? null;
     if (name && version && sdkCrate.test(name)) {
-      pinned.set(name, [...(pinned.get(name) ?? []), version]);
+      pinned.set(name, [...(pinned.get(name) ?? []), { version, source }]);
     }
   }
   if (!pinned.has("matrix-sdk")) {
@@ -142,6 +144,12 @@ function readAudit() {
   return JSON.parse(result.stdout);
 }
 
+/** The lockfile source of a crate, only when the name and version pick out one entry. */
+function lockSource(pinned, name, version) {
+  const entries = (pinned.get(name) ?? []).filter((entry) => entry.version === version);
+  return entries.length === 1 ? entries[0].source : undefined;
+}
+
 function githubFindings(advisories, pinned, unevaluable) {
   const findings = [];
   for (const advisory of advisories) {
@@ -154,7 +162,7 @@ function githubFindings(advisories, pinned, unevaluable) {
         continue;
       }
       const range = vulnerability.vulnerable_version_range ?? "";
-      for (const version of pinned.get(name)) {
+      for (const { version, source } of pinned.get(name)) {
         let affected;
         try {
           affected = rangeContains(range, version);
@@ -167,6 +175,7 @@ function githubFindings(advisories, pinned, unevaluable) {
             ids: [advisory.ghsa_id, advisory.cve_id].filter(Boolean),
             name,
             version,
+            source,
             vulnerable: range,
             patched: vulnerability.patched_versions ?? "none",
             severity: advisory.severity,
@@ -180,13 +189,14 @@ function githubFindings(advisories, pinned, unevaluable) {
   return findings;
 }
 
-function auditFindings(audit) {
+function auditFindings(audit, pinned) {
   return (audit.vulnerabilities?.list ?? [])
     .filter(({ advisory, package: crate }) => sdkCrate.test(crate.name) && !advisory.withdrawn)
     .map(({ advisory, versions, package: crate }) => ({
       ids: [advisory.id, ...(advisory.aliases ?? [])],
       name: crate.name,
       version: crate.version,
+      source: lockSource(pinned, crate.name, crate.version),
       vulnerable: "see advisory",
       patched: versions?.patched?.join(", ") || "none",
       severity: null,
@@ -220,7 +230,8 @@ function issueBody(advisory) {
       (finding) =>
         `- [${finding.ids[0]}](${finding.url})` +
         `${finding.severity ? ` (${finding.severity})` : ""}: ${finding.summary}\n` +
-        `  \`${finding.name}\` ${finding.version} is pinned (vulnerable \`${finding.vulnerable}\`, patched \`${finding.patched}\`)`
+        `  \`${finding.name}\` ${finding.version} is pinned (vulnerable \`${finding.vulnerable}\`, patched \`${finding.patched}\`, ` +
+        `source \`${finding.source ?? "path dependency"}\`)`
     )
     .join("\n");
   return `A published security advisory affects an SDK crate version pinned by the root \`Cargo.lock\`.
@@ -229,14 +240,73 @@ Advisory ids: ${advisory.ids.join(", ")}
 
 ${sources}
 
-The pinned fork can trail unreleased upstream fixes behind its crate version,
-so first check whether the pinned fork commit already carries the fix. If it
-does not, this pre-empts the every-other-day upstream sync: merge the fix (or
-upstream \`main\`) into the fork and move the gitlink as described in
-\`docs/agents/environment.md\` (Following upstream).
+${dependencyGuidance(advisory.findings)}
 
 Opened by the \`sdk-security-advisory-check\` workflow from public advisory data.
 `;
+}
+
+/**
+ * One paragraph per route to the fix, keyed by the lockfile `source` of each
+ * affected crate. A crates.io crate needs only a lock bump; a crate built from
+ * the fork needs the upstream merge. An unrecognized source states both routes
+ * instead of guessing one.
+ */
+function dependencyGuidance(findings) {
+  const paragraphs = [];
+  const fromFork = findings.filter(({ source }) => forkSourced(source));
+  if (fromFork.length > 0) {
+    paragraphs.push(
+      `The pinned fork can trail unreleased upstream fixes behind its crate version,\n` +
+        "so first check whether the pinned fork commit already carries the fix. If it\n" +
+        "does not, this pre-empts the every-other-day upstream sync: merge the fix (or\n" +
+        "upstream `main`) into the fork and move the gitlink as described in\n" +
+        "`docs/agents/environment.md` (Following upstream)."
+    );
+  }
+  // A `git+` crate is revision-pinned in the fork's own manifest, so the merge
+  // alone does not move it.
+  for (const finding of fromFork.filter(({ source }) => source !== null)) {
+    paragraphs.push(
+      `\`${finding.name}\` ${finding.version} is a pinned revision (\`${finding.source}\`) rather than a\n` +
+        "crates.io release, so the same change has to move that revision in the fork's\n" +
+        "manifest to one that carries the fix."
+    );
+  }
+  for (const finding of findings.filter(({ source }) => isRegistry(source))) {
+    paragraphs.push(
+      `\`${finding.name}\` ${finding.version} comes from crates.io (\`${finding.source}\`), so the fix is a \`Cargo.lock\` bump:\n` +
+        `${lockBump(finding)}. The fork and its submodule are not involved.`
+    );
+  }
+  for (const finding of findings.filter(({ source }) => !forkSourced(source) && !isRegistry(source))) {
+    paragraphs.push(
+      `The root \`Cargo.lock\` does not say where \`${finding.name}\` ${finding.version} comes from ` +
+        `(source \`${finding.source ?? "none"}\`), so both routes apply: ${lockBump(finding)} if it comes from\n` +
+        "crates.io, or otherwise merge the fix (or upstream `main`) into the fork and\n" +
+        "move the gitlink as described in `docs/agents/environment.md` (Following upstream)."
+    );
+  }
+  return paragraphs.join("\n\n");
+}
+
+/** No `source` line means a path crate of the vendored tree; `git+` is a revision of one. */
+function forkSourced(source) {
+  return source === null || source?.startsWith("git+");
+}
+
+function isRegistry(source) {
+  return source?.startsWith("registry+");
+}
+
+/** `cargo update -p <crate> --precise <version>`; `patched` may be a range or `none`. */
+function lockBump({ name, patched }) {
+  // A strict `>` bound is not a version: `--precise 0.11.1` would pick the
+  // excluded one.
+  const version = /^\s*(?:>=|=)?\s*(\d[0-9A-Za-z.+-]*)\s*$/.exec(patched ?? "")?.[1];
+  return version
+    ? `\`cargo update -p ${name} --precise ${version}\``
+    : `\`cargo update -p ${name}\` to the first release outside the vulnerable range`;
 }
 
 /**
