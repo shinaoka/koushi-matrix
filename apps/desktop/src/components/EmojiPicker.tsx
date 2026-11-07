@@ -93,8 +93,11 @@ interface PickerResizeDrag {
   /** Physical edges the grabbed handle moves: -1 is the left/top one. */
   horizontal: -1 | 0 | 1;
   vertical: -1 | 0 | 1;
-  /** Preferred size, the value committed on release. */
-  size: [number, number];
+  /** Preferred size when the drag began: every move is measured from here, so
+   * a panel the layer narrowed cannot stand in for the user's chosen size. */
+  preferred: [number, number];
+  /** Preferred size this drag currently asks for; committed on release. */
+  next: [number, number];
   /** Marked corner, pinned for the drag so an alignment flip cannot move it. */
   marked: FrameZoneName;
   moved: boolean;
@@ -355,8 +358,9 @@ export function EmojiPicker({
       marked: markedZone,
       moved: false,
       pointer: { x: event.clientX, y: event.clientY },
+      preferred: draftSize,
+      next: draftSize,
       rect: { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top },
-      size: draftSize,
       vertical: zone.vertical,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -365,18 +369,15 @@ export function EmojiPicker({
   const moveResize = (event: ReactPointerEvent<HTMLElement>) => {
     const start = drag.current;
     if (!start) return;
-    // An axis this handle does not own keeps the preferred size, so resizing
-    // one dimension cannot overwrite a window-clamped value on the other.
-    start.size = constrainPickerSize(
-      start.horizontal === 0
-        ? start.size[0]
-        : start.rect.right - start.rect.left + start.horizontal * (event.clientX - start.pointer.x),
-      start.vertical === 0
-        ? start.size[1]
-        : start.rect.bottom - start.rect.top + start.vertical * (event.clientY - start.pointer.y),
+    // Measure from the preference, never the rendered box: the layer narrows
+    // that box to a small window, and a drag must not adopt the narrowed size
+    // as the user's choice (#1583).
+    start.next = constrainPickerSize(
+      start.preferred[0] + start.horizontal * (event.clientX - start.pointer.x),
+      start.preferred[1] + start.vertical * (event.clientY - start.pointer.y),
     );
     start.moved = true;
-    setDraftSize(start.size);
+    setDraftSize(start.next);
     // Record the edge this gesture must hold still. The rendered size is
     // narrowed from that edge to the layer bounds, so dragging an edge past a
     // boundary cannot translate the opposite edge (#1613).
@@ -394,7 +395,7 @@ export function EmojiPicker({
     if (!start) return;
     drag.current = null;
     event.currentTarget.releasePointerCapture(event.pointerId);
-    if (start.moved) onSizeChange?.(start.size);
+    if (start.moved) onSizeChange?.(start.next);
   };
 
   const cancelResize = () => {

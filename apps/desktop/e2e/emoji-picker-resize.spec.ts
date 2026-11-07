@@ -272,6 +272,34 @@ test("a drag past the layer boundary keeps the pinned opposite edge in place", a
   expect(top.after.height).toBeGreaterThan(0);
 });
 
+test("resizing a narrowed panel keeps the chosen size and reopens at it", async ({ page }) => {
+  await page.setViewportSize(VIEWPORT);
+  await gotoReadyShell(page);
+  await openComposerPicker(page);
+
+  // The size the user chooses in a roomy window.
+  await dragZone(page, "top-left", -280, -180);
+  const chosen = await pickerBox(page);
+  await expect.poll(() => savedPickerSize(page)).toEqual([chosen.width, chosen.height]);
+
+  // A smaller window narrows the rendered panel but keeps the preference.
+  await page.setViewportSize({ width: 700, height: 650 });
+  await expect.poll(async () => (await pickerBox(page)).height).toBeLessThan(chosen.height);
+
+  // A drag moves the preference by the drag, not by the narrowed box (#1583):
+  // otherwise the clamped rectangle replaces the size the user chose.
+  await dragZone(page, "bottom", 0, -40);
+  await expect.poll(() => savedPickerSize(page)).toEqual([chosen.width, chosen.height - 40]);
+
+  await page.setViewportSize(VIEWPORT);
+  await expect.poll(async () => (await pickerBox(page)).height).toBe(chosen.height - 40);
+  await page.keyboard.press("Escape");
+  await expect(emojiPicker(page)).not.toBeVisible();
+  await openComposerPicker(page);
+  expectNear((await pickerBox(page)).width, chosen.width, "reopened width");
+  expectNear((await pickerBox(page)).height, chosen.height - 40, "reopened height");
+});
+
 test("the focused frame handle resizes with the keyboard and the size survives reopen", async ({
   page
 }) => {
