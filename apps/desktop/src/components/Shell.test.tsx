@@ -579,6 +579,36 @@ describe("Rust-projected workspace shell", () => {
     expect(dms.querySelector(".section-unread-count")?.textContent).toBe("3");
   });
 
+  // #1827: the guide promises `99+` for every red count over 99, so the rail
+  // and the conversation row cap their badge instead of printing the raw number.
+  it("clamps the Home and Space rail unread badges to 99+ (#1827)", () => {
+    const snapshot = readyDesktopSnapshotFixture();
+    snapshot.sidebar.account_home.unread_count = 123;
+    snapshot.sidebar.account_home.attention_count = 123;
+    snapshot.sidebar.space_rail = [railSpace("!lab:example.invalid", "Lab", false)];
+    snapshot.sidebar.space_rail[0].unread_count = 1234;
+
+    render(<WorkspaceRail snapshot={snapshot} {...railProps()} />);
+
+    expect(
+      document.querySelector(".workspace-home-button")?.getAttribute("data-count")
+    ).toBe("99+");
+    expect(screen.getByRole("button", { name: "Lab" }).getAttribute("data-count"))
+      .toBe("99+");
+  });
+
+  it("clamps a conversation row unread badge to 99+ (#1827)", () => {
+    const snapshot = readyDesktopSnapshotFixture();
+    snapshot.sidebar.sections.rooms = [
+      { ...room("!busy:example.invalid", "Busy Room"), unread_count: 123, display_count: 123 }
+    ];
+
+    render(<Sidebar snapshot={snapshot} {...sidebarProps()} />);
+
+    const row = screen.getByRole("button", { name: "Busy Room" });
+    expect(row.querySelector(".room-count")?.textContent).toBe("99+");
+  });
+
   it("hides a zero unread badge and clamps large totals to 99+", () => {
     const snapshot = readyDesktopSnapshotFixture();
     snapshot.sidebar.space_unread_count = 100;

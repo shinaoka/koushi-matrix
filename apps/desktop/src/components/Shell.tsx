@@ -606,7 +606,11 @@ export function WorkspaceRail({
             className={`workspace-button workspace-system-button workspace-home-button ${
               snapshot.sidebar.account_home.is_active ? "is-active" : ""
             }`}
-            data-count={snapshot.sidebar.account_home.unread_count || undefined}
+            data-count={
+              snapshot.sidebar.account_home.unread_count > 99
+                ? "99+"
+                : snapshot.sidebar.account_home.unread_count || undefined
+            }
             data-invite-count={snapshot.sidebar.account_home.invite_count || undefined}
             type="button"
             aria-label={accountHomeLabel(snapshot.sidebar.account_home)}
@@ -666,7 +670,9 @@ export function WorkspaceRail({
                     }`}
                     data-dragging={draggedSpaceId === space.space_id || undefined}
                     data-drag-over={dragOverSpaceId === space.space_id || undefined}
-                    data-count={space.unread_count || undefined}
+                    data-count={
+                      space.unread_count > 99 ? "99+" : space.unread_count || undefined
+                    }
                     data-space-id={space.space_id}
                     draggable
                     type="button"
@@ -1769,6 +1775,8 @@ function RoomButton({
       : null;
   const isOnlineDm = dmUserId ? presence[dmUserId] === "online" : false;
   const displayCount = room.display_count ?? room.unread_count;
+  // #1827: the guide promises `99+` for every red count over 99.
+  const displayCountLabel = displayCount > 99 ? "99+" : displayCount;
   // #1327: a joined ordinary room row shows its own access condition; while it
   // has not been projected the row says so instead of guessing. A DM row shows
   // neither an encryption nor an access indicator, and lanes without a joined
@@ -1932,7 +1940,7 @@ function RoomButton({
               threads: room.thread_unread_count ?? 0,
             })}
           >
-            {displayCount}
+            {displayCountLabel}
           </span>
         ) : null}
         {displayCount === 0 && sourceRoom?.marked_unread ? (
