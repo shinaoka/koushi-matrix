@@ -166,17 +166,49 @@ async fn join(participant: &Participant, room: &OwnedRoomId) -> Result<(), Strin
 /// Keep the reason the join failed in the stage line without rendering the
 /// SDK's message: `matrix_sdk::Error` is `#[error(transparent)]` down to
 /// server-supplied text, request URLs and local paths, none of which may reach
-/// a QA artifact. Only the homeserver's own errcode (a closed ruma set) or one
-/// of two fixed classes is reported.
+/// a QA artifact.
 fn join_failure(err: &matrix_sdk::Error) -> String {
-    let reason = match err {
-        matrix_sdk::Error::Http(http) => http.client_api_error_kind().map_or_else(
-            || "network".to_owned(),
-            |kind| kind.errcode().as_str().to_lowercase(),
-        ),
+    format!(
+        "history recovery: join without invite failed: {}",
+        join_failure_reason(err)
+    )
+}
+/// A closed classification of a `join_room_by_id` failure: the homeserver's own
+/// errcode, `transport` when the request never produced a response,
+/// `http_<status>` or `http_no_errcode` for any other HTTP-layer failure, and
+/// `sdk` for anything else. Only bools, the errcode and the status code are
+/// read; never the response body, which is server-supplied text.
+fn join_failure_reason(err: &matrix_sdk::Error) -> String {
+    match err {
+        matrix_sdk::Error::Http(http) => http_failure_reason(http),
         _ => "sdk".to_owned(),
+    }
+}
+fn http_failure_reason(http: &matrix_sdk::HttpError) -> String {
+    if let Some(kind) = http.client_api_error_kind() {
+        return kind.errcode().as_str().to_lowercase();
+    }
+    match http {
+        // The request never got a response: connect, DNS, TLS or socket.
+        matrix_sdk::HttpError::Reqwest(_) => "transport".to_owned(),
+        matrix_sdk::HttpError::Cached(http) => http_failure_reason(http),
+        _ => http_status(http).map_or_else(
+            || "http_no_errcode".to_owned(),
+            |status| format!("http_{status}"),
+        ),
+    }
+}
+/// The response status of a Matrix error body, and nothing from the body.
+fn http_status(http: &matrix_sdk::HttpError) -> Option<u16> {
+    let matrix_sdk::HttpError::Api(error) = http else {
+        return None;
     };
-    format!("history recovery: join without invite failed: {reason}")
+    match error.as_ref() {
+        matrix_sdk::ruma::api::error::FromHttpResponseError::Server(
+            matrix_sdk::ruma::api::client::uiaa::UiaaResponse::MatrixError(error),
+        ) => Some(error.status_code.as_u16()),
+        _ => None,
+    }
 }
 async fn public_history(sender: &Participant) -> Result<HistoricalRoom, String> {
     let history = create_history(sender).await?;
@@ -439,22 +471,105 @@ pub(super) async fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::join_failure;
+    use super::{join_failure, join_failure_reason};
+    use matrix_sdk::{
+        Error, HttpError, RefreshTokenError,
+        ruma::{
+            api::{
+                client::uiaa::UiaaResponse,
+                error::{
+                    Error as ApiError, ErrorBody, ErrorKind, FromHttpResponseError,
+                    StandardErrorBody,
+                },
+            },
+            exports::http::StatusCode,
+        },
+    };
 
     const PREFIX: &str = "history recovery: join without invite failed: ";
 
+    fn api_error(status: StatusCode, body: ErrorBody) -> Error {
+        Error::Http(Box::new(HttpError::Api(Box::new(
+            FromHttpResponseError::Server(UiaaResponse::MatrixError(ApiError::new(status, body))),
+        ))))
+    }
+
+    fn refused() -> Error {
+        api_error(
+            StatusCode::FORBIDDEN,
+            ErrorBody::Standard(StandardErrorBody::new(
+                ErrorKind::Forbidden,
+                "the join was refused".to_owned(),
+            )),
+        )
+    }
+
+    fn body_without_errcode() -> Error {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            ErrorBody::Json(serde_json::json!({})),
+        )
+    }
+
+    fn no_errcode_and_no_status() -> HttpError {
+        HttpError::RefreshToken(RefreshTokenError::RefreshTokenRequired)
+    }
+
+    fn http_error(http: HttpError) -> Error {
+        Error::Http(Box::new(http))
+    }
+
     #[test]
-    fn join_failure_reports_a_closed_reason_after_the_stage() {
+    fn a_refused_join_reports_the_homeserver_errcode() {
+        assert_eq!(join_failure_reason(&refused()), "m_forbidden");
+    }
+
+    #[test]
+    fn an_error_body_without_an_errcode_reports_the_status_not_a_network_failure() {
+        assert_eq!(join_failure_reason(&body_without_errcode()), "http_400");
+    }
+
+    #[test]
+    fn an_http_failure_with_neither_errcode_nor_status_is_http_no_errcode() {
+        assert_eq!(
+            join_failure_reason(&http_error(no_errcode_and_no_status())),
+            "http_no_errcode"
+        );
+        let cached = http_error(HttpError::Cached(std::sync::Arc::new(
+            no_errcode_and_no_status(),
+        )));
+        assert_eq!(join_failure_reason(&cached), "http_no_errcode");
+    }
+
+    #[test]
+    fn a_non_http_failure_is_an_unclassified_sdk_error() {
+        assert_eq!(
+            join_failure(&Error::AuthenticationRequired),
+            format!("{PREFIX}sdk")
+        );
+    }
+
+    #[test]
+    fn every_reason_is_a_closed_token_after_the_stage_and_never_the_sdk_message() {
         for err in [
-            matrix_sdk::Error::AuthenticationRequired,
-            matrix_sdk::Error::InsufficientData,
-            matrix_sdk::Error::ConcurrentRequestFailed,
+            refused(),
+            body_without_errcode(),
+            http_error(no_errcode_and_no_status()),
+            Error::AuthenticationRequired,
+            Error::InsufficientData,
+            Error::ConcurrentRequestFailed,
         ] {
             let message = join_failure(&err);
             assert!(message.starts_with(PREFIX), "{message}");
+            let reason = &message[PREFIX.len()..];
+            assert!(
+                reason
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "{reason}"
+            );
             // The stage keeps a reason, but never the SDK's own rendering of
             // it, which can carry a URL, a local path or server text.
-            assert_eq!(&message[PREFIX.len()..], "sdk", "{message}");
             assert!(!message.contains(&err.to_string()), "{message}");
         }
     }

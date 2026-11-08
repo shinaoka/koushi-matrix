@@ -14,16 +14,20 @@ fn event(stage: &'static str) -> DiagnosticEvent {
 
 /// The room's unresolved-history window opened (`open`) or closed (`close`).
 ///
-/// A window with no `issued` record after it means the dispatch never
-/// completed; see [`record_issued`] for why that is not the same as "nothing
-/// was attempted".
+/// A window with no `issued` record after it means no completed send was
+/// recorded; see [`record_issued`] for why that is weaker than "nothing was
+/// attempted".
 pub(super) fn record_window(stage: &'static str) {
     koushi_diagnostics::record_and_stderr(event(stage));
 }
 
-/// Every targeted device accepted the request and the episode was durably
-/// marked sent. A dispatch that fails or stalls part way through writes no
-/// `issued` record, so absence means "not completed", not "not attempted".
+/// The server accepted the per-device send and the episode was durably marked
+/// sent.
+///
+/// Send side only: a recipient device has not necessarily received or answered
+/// anything. A dispatch that fails or stalls part way through writes no
+/// `issued` record, so absence means "no completed send was recorded" — it
+/// does not distinguish "never attempted" from "attempted but unfinished".
 pub(super) fn record_issued(trigger: &'static str, recipients: u16) {
     koushi_diagnostics::record_and_stderr(
         event("issued")
