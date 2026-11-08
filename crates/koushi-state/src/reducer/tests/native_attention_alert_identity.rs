@@ -359,6 +359,120 @@ fn a_cleared_candidate_clears_the_alert_identity_with_its_payload() {
     );
 }
 
+/// #1806: submitting a state that carries no identity must not erase the published one.
+///
+/// The stateless projection stamps `alert_id: None`, so the shape it submits over a
+/// live candidate is exactly this: a candidate with no identity.
+#[test]
+fn a_submitted_state_without_an_identity_keeps_the_published_one() {
+    let mut state = state_with_published_candidate();
+    let published = alert_id(&state).expect("precondition: the raise minted an identity");
+
+    let mut submitted = state.native_attention.clone();
+    submitted.summary.alert_id = None;
+    submitted.summary.unread_count += 1;
+    let effects = reduce(
+        &mut state,
+        AppAction::NativeAttentionUpdated {
+            attention: submitted.clone(),
+        },
+    );
+
+    assert_eq!(
+        state.native_attention.summary.unread_count, submitted.summary.unread_count,
+        "the submitted state is applied"
+    );
+    assert_eq!(
+        alert_id(&state),
+        Some(published),
+        "a submitted state with no identity keeps the published one instead of clearing it"
+    );
+    assert!(
+        effects.contains(&AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged)),
+        "the applied state still reaches the webview: {effects:?}"
+    );
+}
+
+#[test]
+fn a_submitted_identity_is_adopted_over_the_published_one() {
+    let mut state = state_with_published_candidate();
+    let published = alert_id(&state).expect("precondition: the raise minted an identity");
+    let explicit = published + 7;
+
+    let mut submitted = state.native_attention.clone();
+    submitted.summary.alert_id = Some(explicit);
+    submitted.summary.unread_count += 1;
+    reduce(
+        &mut state,
+        AppAction::NativeAttentionUpdated {
+            attention: submitted,
+        },
+    );
+
+    assert_eq!(
+        alert_id(&state),
+        Some(explicit),
+        "an identity the caller submits is adopted, not replaced"
+    );
+}
+
+#[test]
+fn a_submitted_state_without_an_identity_mints_nothing_when_nothing_is_published() {
+    let projected = state_with_published_candidate();
+    let mut submitted = projected.native_attention.clone();
+    submitted.summary.alert_id = None;
+    assert!(submitted.summary.candidate.is_some());
+
+    let mut state = ready_state();
+    assert_eq!(
+        state.native_attention.summary.candidate, None,
+        "precondition: nothing is published"
+    );
+    reduce(
+        &mut state,
+        AppAction::NativeAttentionUpdated {
+            attention: submitted,
+        },
+    );
+
+    assert!(state.native_attention.summary.candidate.is_some());
+    assert_eq!(
+        alert_id(&state),
+        None,
+        "the update path has no identity to keep and must not mint one"
+    );
+}
+
+#[test]
+fn a_submitted_state_for_another_room_does_not_inherit_the_published_identity() {
+    let mut state = state_with_published_candidate();
+    let published = alert_id(&state).expect("precondition: the raise minted an identity");
+
+    // The identity belongs to the room that holds the attention (#1816), so a submission
+    // whose payload targets another room is not the alert that is out.
+    let mut submitted = state.native_attention.clone();
+    submitted.summary.alert_id = None;
+    submitted
+        .notification
+        .as_mut()
+        .expect("precondition: the submission carries its payload")
+        .target
+        .room_id = NEWEST_ROOM.to_owned();
+    reduce(
+        &mut state,
+        AppAction::NativeAttentionUpdated {
+            attention: submitted,
+        },
+    );
+
+    assert_eq!(published_room_id(&state), Some(NEWEST_ROOM));
+    assert_eq!(
+        alert_id(&state),
+        None,
+        "another room's alert cannot borrow the published identity, and this path mints none: {published}"
+    );
+}
+
 #[test]
 fn a_restored_state_cannot_reissue_a_published_alert_id() {
     let state = state_with_published_candidate();

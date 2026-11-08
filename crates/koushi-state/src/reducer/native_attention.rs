@@ -66,11 +66,26 @@ pub(crate) fn handle_native_attention_updated(
     if !is_session_ready(state) {
         return Vec::new();
     }
-    // The caller owns the identity of the attention it submits: a state built by the
-    // stateless projection carries `alert_id: None`, which publishes an alert the
-    // webview cannot dedupe. That is safe today because only QA and tests submit
-    // attention this way; the production paths all raise through
-    // `recompute_native_attention_from_rooms_for_live_room` (#1802).
+    // #1806: the stateless projection stamps `alert_id: None`, so a caller that submits
+    // its output over a published candidate would drop the identity the webview dedupes
+    // on. Carry the published identity forward when the submission is the alert that is
+    // already out: the same room its payload targets (#1816). Reading a missing identity
+    // as "new alert" is the double banner #1802 removed, and minting here would add a
+    // second mint rule beside the room-identity one in
+    // `recompute_native_attention_from_rooms_for_live_room`, so a submission for another
+    // room carries none rather than borrowing a published one. An identity the caller
+    // does submit wins, and a submitted clear keeps clearing: an identity without a
+    // candidate would be a banner the webview can never show.
+    if attention.summary.candidate.is_some()
+        && attention.summary.alert_id.is_none()
+        && let Some((published_room_id, _)) = published_candidate(state)
+        && attention
+            .notification
+            .as_ref()
+            .is_some_and(|payload| payload.target.room_id == published_room_id)
+    {
+        attention.summary.alert_id = state.native_attention.summary.alert_id;
+    }
     if !state.settings.values.notifications.badges {
         attention.summary.badge_count = 0;
     }
