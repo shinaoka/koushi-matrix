@@ -187,6 +187,30 @@ async function dragAndMeasure(page: Page, zone: FrameZone, dx: number, dy: numbe
   return { after: await pickerBox(page), before };
 }
 
+/**
+ * Drag a zone and read the box while the pointer is still down: the geometry a
+ * drag itself draws, before the release commits anything.
+ */
+async function dragHolding(page: Page, zone: FrameZone, dx: number, dy: number): Promise<PickerBox> {
+  const box = (await frameZone(page, zone).boundingBox())!;
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + dx, y + dy, { steps: 6 });
+  await settle(page);
+  const held = await pickerBox(page);
+  await page.mouse.up();
+  await settle(page);
+  return held;
+}
+
+/** The marked corner is the one furthest from the anchor. */
+async function markedZone(page: Page): Promise<FrameZone> {
+  const handle = emojiPicker(page).getByRole("button", { name: t("composer.emojiResize") });
+  return (await handle.getAttribute("data-emoji-picker-resize")) as FrameZone;
+}
+
 function savedPickerSize(page: Page) {
   return page.evaluate(
     () => window.__harness.currentSnapshot().state.domain.settings.values.window.emoji_picker_size
@@ -298,6 +322,41 @@ test("resizing a narrowed panel keeps the chosen size and reopens at it", async 
   await openComposerPicker(page);
   expectNear((await pickerBox(page)).width, chosen.width, "reopened width");
   expectNear((await pickerBox(page)).height, chosen.height - 40, "reopened height");
+});
+
+test("the anchor-side edge of a narrowed panel follows the pointer", async ({ page }) => {
+  await page.setViewportSize(VIEWPORT);
+  await gotoReadyShell(page);
+  await openComposerPicker(page);
+
+  // A roomy window draws the panel at the size the picker opens with, which is
+  // also the preference a resize is measured from.
+  const chosen = await pickerBox(page);
+
+  // A small window narrows the drawn panel: the layer clips the block axis, so
+  // the drawn box is shorter than that size. The gap has to beat the assertion
+  // tolerance, or a tiny clip would hide the overshoot this test is about.
+  await page.setViewportSize({ width: 520, height: 560 });
+  await expect
+    .poll(async () => chosen.height - (await pickerBox(page)).height)
+    .toBeGreaterThan(TOLERANCE_PX);
+
+  // The anchor-side block edge is the one opposite the marked corner.
+  const anchorEdge: FrameZone = (await markedZone(page)).startsWith("top") ? "bottom" : "top";
+  const grow = 40;
+  const dy = anchorEdge === "bottom" ? grow : -grow;
+
+  // While the pointer is down the grabbed edge travels exactly as far as the
+  // pointer. Measuring the drawn box from the preference instead would add the
+  // narrowing to the drag, so the edge would outrun the pointer (#1826).
+  const before = await pickerBox(page);
+  const held = await dragHolding(page, anchorEdge, 0, dy);
+  const travelled = anchorEdge === "bottom" ? held.bottom - before.bottom : before.top - held.top;
+  expectNear(travelled, grow, `${anchorEdge} edge follows the pointer`);
+
+  // The committed size still comes from the chosen size, never the drawn box:
+  // #1583's rule is unchanged.
+  await expect.poll(() => savedPickerSize(page)).toEqual([chosen.width, chosen.height + grow]);
 });
 
 test("the focused frame handle resizes with the keyboard and the size survives reopen", async ({

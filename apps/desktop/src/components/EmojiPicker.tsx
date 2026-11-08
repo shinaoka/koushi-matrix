@@ -78,11 +78,37 @@ const MIN_PICKER_WIDTH = 300;
 const MIN_PICKER_HEIGHT = 200;
 const MAX_PICKER_SIZE = 1200;
 const RESIZE_KEY_STEP = 20;
+/**
+ * A keyboard resize commits once the keys stop: every commit is an
+ * `UpdateSettings` round-trip plus a settings write, so auto-repeat must not
+ * send one per key (#1826). 250 ms matches the invite-search debounce in
+ * `SpaceMembersPanel`, the repository's other user-input debounce.
+ */
+export const EMOJI_PICKER_KEYBOARD_COMMIT_MS = 250;
 
 function constrainPickerSize(width: number, height: number): [number, number] {
   return [
     Math.round(Math.max(MIN_PICKER_WIDTH, Math.min(MAX_PICKER_SIZE, width))),
     Math.round(Math.max(MIN_PICKER_HEIGHT, Math.min(MAX_PICKER_SIZE, height))),
+  ];
+}
+
+/**
+ * Move a drawn box by a drag delta.
+ *
+ * The grabbed edge follows the pointer, so a box the layer narrowed moves
+ * exactly as far as the pointer (#1826). A box it already narrowed below the
+ * minimum may only shrink no further, so the drag cannot snap it up to a size
+ * the window does not offer.
+ */
+function movedPickerSize(drawn: FloatingRect, delta: [number, number]): [number, number] {
+  const move = (value: number, by: number, min: number): number =>
+    Math.round(Math.min(Math.max(min, value + by), MAX_PICKER_SIZE));
+  const width = drawn.right - drawn.left;
+  const height = drawn.bottom - drawn.top;
+  return [
+    move(width, delta[0], Math.min(MIN_PICKER_WIDTH, width)),
+    move(height, delta[1], Math.min(MIN_PICKER_HEIGHT, height)),
   ];
 }
 
@@ -205,7 +231,16 @@ export function EmojiPicker({
   const [draftSize, setDraftSize] = useState<[number, number]>(() =>
     size ? constrainPickerSize(...size) : [EMOJI_PICKER_INLINE_SIZE_PX, EMOJI_PICKER_BLOCK_SIZE_PX]
   );
+  /** Size the panel draws while a pointer drag is in flight; null between drags,
+   * when the committed preference is drawn instead. */
+  const [renderedSize, setRenderedSize] = useState<[number, number] | null>(null);
   const drag = useRef<PickerResizeDrag | null>(null);
+  /** Size the last burst of arrow keys asked for, and its commit timer. */
+  const pendingKeyboardSize = useRef<[number, number] | null>(null);
+  const keyboardCommitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Latest commit callback, read by the timer and the unmount flush. */
+  const saveSize = useRef(onSizeChange);
+  saveSize.current = onSizeChange;
   /**
    * Edges a pointer resize must hold still (one per axis); until set, the panel
    * is anchored.
@@ -344,6 +379,17 @@ export function EmojiPicker({
     }
   }, []);
 
+  /** Write the size the last burst of arrow keys asked for, once. */
+  const flushKeyboardResize = useCallback(() => {
+    if (keyboardCommitTimer.current !== null) {
+      clearTimeout(keyboardCommitTimer.current);
+      keyboardCommitTimer.current = null;
+    }
+    const pending = pendingKeyboardSize.current;
+    pendingKeyboardSize.current = null;
+    if (pending) saveSize.current?.(pending);
+  }, []);
+
   // Every edge and corner resizes (#1583). The grabbed edges follow the
   // pointer and the opposite ones stay where the drag started, so the anchored
   // placement and its flip heuristic cannot move the panel under the pointer.
@@ -352,6 +398,9 @@ export function EmojiPicker({
   const beginResize = (zone: FrameZone) => (event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0 || !panelRef.current || !resolvedPlacement) return;
     event.preventDefault();
+    // Keys pressed just before the drag are an earlier choice: write them first
+    // so this drag's release cannot be overwritten by a late timer.
+    flushKeyboardResize();
     const rect = panelRef.current.getBoundingClientRect();
     drag.current = {
       horizontal: zone.horizontal,
@@ -369,16 +418,22 @@ export function EmojiPicker({
   const moveResize = (event: ReactPointerEvent<HTMLElement>) => {
     const start = drag.current;
     if (!start) return;
-    // Measure from the preference, never the rendered box: the layer narrows
-    // that box to a small window, and a drag must not adopt the narrowed size
-    // as the user's choice (#1583).
+    const dx = event.clientX - start.pointer.x;
+    const dy = event.clientY - start.pointer.y;
+    // The committed preference is measured from the chosen size, never the
+    // drawn box: the layer narrows that box to a small window, and a drag must
+    // not adopt the narrowed size as the user's choice (#1583).
     start.next = constrainPickerSize(
-      start.preferred[0] + start.horizontal * (event.clientX - start.pointer.x),
-      start.preferred[1] + start.vertical * (event.clientY - start.pointer.y),
+      start.preferred[0] + start.horizontal * dx,
+      start.preferred[1] + start.vertical * dy,
     );
     start.moved = true;
     setDraftSize(start.next);
-    // Record the edge this gesture must hold still. The rendered size is
+    // What is drawn moves from the box it is drawn at (#1826): measuring it
+    // from the preference would move the grabbed edge past the pointer by
+    // however much the layer had narrowed the box.
+    setRenderedSize(movedPickerSize(start.rect, [start.horizontal * dx, start.vertical * dy]));
+    // Record the edge this gesture must hold still. The drawn size is
     // narrowed from that edge to the layer bounds, so dragging an edge past a
     // boundary cannot translate the opposite edge (#1613).
     setPinnedGeometry({
@@ -395,34 +450,52 @@ export function EmojiPicker({
     if (!start) return;
     drag.current = null;
     event.currentTarget.releasePointerCapture(event.pointerId);
+    // The gesture is over: the committed size is drawn again, narrowed by the
+    // layer like any other box.
+    setRenderedSize(null);
     if (start.moved) onSizeChange?.(start.next);
   };
 
   const cancelResize = () => {
     drag.current = null;
     setPinnedGeometry(null);
+    setRenderedSize(null);
     setDraftSize(size ?? [EMOJI_PICKER_INLINE_SIZE_PX, EMOJI_PICKER_BLOCK_SIZE_PX]);
   };
 
   // The marked handle is the only one in the tab order, and the arrow keys move
-  // its two edges just like a pointer would.
+  // its two edges just like a pointer would. Keys are one gesture: the
+  // preference is written once they stop, the way a pointer drag writes on
+  // release, and a key the clamp cannot honour writes nothing (#1826).
   const keyboardResize = (event: ReactKeyboardEvent<HTMLElement>, zone: FrameZone) => {
     const horizontal = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
     const vertical = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
     if (horizontal === 0 && vertical === 0) return;
     event.preventDefault();
+    // A pointer drag owns the size until it is released; a key pressed during
+    // the gesture must not queue a commit that lands after the release.
+    if (drag.current) return;
     const next = constrainPickerSize(
       draftSize[0] + horizontal * zone.horizontal * RESIZE_KEY_STEP,
       draftSize[1] + vertical * zone.vertical * RESIZE_KEY_STEP,
     );
+    if (next[0] === draftSize[0] && next[1] === draftSize[1]) return;
     setDraftSize(next);
-    onSizeChange?.(next);
+    pendingKeyboardSize.current = next;
+    if (keyboardCommitTimer.current !== null) clearTimeout(keyboardCommitTimer.current);
+    keyboardCommitTimer.current = setTimeout(flushKeyboardResize, EMOJI_PICKER_KEYBOARD_COMMIT_MS);
   };
+
+  // Closing the picker must not drop the size the keys just asked for.
+  useEffect(() => () => flushKeyboardResize(), [flushKeyboardResize]);
 
   // Rendered in a body-level floating layer: the composer lives inside
   // overflow-clipped panes (the thread pane), so an anchored popup would be cut
   // off at the pane boundary. Coordinates are physical because they come from
   // viewport rect measurements; the logical side is carried by `align-*`.
+  // A drag draws the box it is moving; every other moment draws the committed
+  // preference, which the layer narrows to the window.
+  const drawnSize = renderedSize ?? draftSize;
   const panel = (
     <div
       ref={panelRef}
@@ -438,7 +511,7 @@ export function EmojiPicker({
       aria-label={t("composer.emoji")}
       style={
         pinnedGeometry && resolvedPlacement
-          ? pinnedPlacementStyle(resolvedPlacement, pinnedGeometry, draftSize[0], draftSize[1])
+          ? pinnedPlacementStyle(resolvedPlacement, pinnedGeometry, drawnSize[0], drawnSize[1])
           : floatingPlacementStyle(resolvedPlacement)
       }
       onKeyDown={(event) => {
@@ -459,6 +532,7 @@ export function EmojiPicker({
         const pointerHandlers = {
           onLostPointerCapture: () => {
             drag.current = null;
+            setRenderedSize(null);
           },
           onPointerCancel: cancelResize,
           onPointerDown: beginResize(zone),
