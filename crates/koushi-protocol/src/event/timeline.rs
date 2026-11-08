@@ -163,8 +163,10 @@ pub enum TimelineEvent {
         request_id: RequestId,
         key: TimelineKey,
         event_id: String,
-        /// Opaque `download/<room-hash>/<event-hash>` handle for the managed
-        /// cache entry. Never a filesystem path; only the platform adapter
+        /// Opaque handle for the managed cache entry:
+        /// `download/<room-hash>/<event-hash>` for the original,
+        /// `download/<room-hash>/<event-hash>/<width>x<height>` for a
+        /// thumbnail. Never a filesystem path; only the platform adapter
         /// resolves it to a render URL or file.
         source_ref: String,
         byte_count: u64,

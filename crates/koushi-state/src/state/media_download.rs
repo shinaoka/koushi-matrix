@@ -23,8 +23,11 @@ pub enum TimelineMediaDownloadState {
         progress: Option<MediaTransferProgress>,
     },
     Ready {
-        /// Opaque app-owned cache handle (`download/<room-hash>/<event-hash>`),
-        /// never a filesystem path. The platform adapter resolves it.
+        /// Opaque app-owned cache handle: `download/<room-hash>/<event-hash>`
+        /// for the original,
+        /// `download/<room-hash>/<event-hash>/<width>x<height>` for a
+        /// thumbnail. Never a filesystem path; the platform adapter resolves
+        /// it.
         source_ref: String,
         width: Option<u64>,
         height: Option<u64>,
