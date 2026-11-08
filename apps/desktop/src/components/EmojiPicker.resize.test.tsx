@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { EmojiPicker } from "./EmojiPicker";
+import { EMOJI_PICKER_KEYBOARD_COMMIT_MS, EmojiPicker } from "./EmojiPicker";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 it("puts a resize zone on every edge and corner with one keyboard handle", () => {
   render(
@@ -28,19 +31,25 @@ it("puts a resize zone on every edge and corner with one keyboard handle", () =>
   expect(marked).toBe(screen.getByRole("button", { name: /resize emoji picker/i }));
 });
 
-it("offers keyboard resizing on the marked corner and commits the requested size", () => {
+it("offers keyboard resizing on the marked corner and commits the requested size", async () => {
+  vi.useFakeTimers();
   const onSizeChange = vi.fn();
   render(
     <EmojiPicker onSelect={vi.fn()} onClose={vi.fn()} size={[400, 400]} onSizeChange={onSizeChange} />,
   );
   const handle = screen.getByRole("button", { name: /resize emoji picker/i });
   // The arrow keys move the marked corner's own edges, the same way a pointer
-  // drag does.
+  // drag does, and the keys are one gesture: one commit once they stop (#1826).
   const zone = handle.getAttribute("data-emoji-picker-resize") ?? "";
   const horizontal = zone.includes("left") ? -1 : 1;
   const vertical = zone.includes("top") ? -1 : 1;
   fireEvent.keyDown(handle, { key: "ArrowRight" });
-  expect(onSizeChange).toHaveBeenLastCalledWith([400 + horizontal * 20, 400]);
   fireEvent.keyDown(handle, { key: "ArrowDown" });
+  expect(onSizeChange).not.toHaveBeenCalled();
+
+  await act(async () => {
+    vi.advanceTimersByTime(EMOJI_PICKER_KEYBOARD_COMMIT_MS);
+  });
+  expect(onSizeChange).toHaveBeenCalledTimes(1);
   expect(onSizeChange).toHaveBeenLastCalledWith([400 + horizontal * 20, 400 + vertical * 20]);
 });
