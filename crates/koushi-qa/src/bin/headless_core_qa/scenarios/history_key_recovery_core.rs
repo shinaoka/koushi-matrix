@@ -160,8 +160,23 @@ async fn join(participant: &Participant, room: &OwnedRoomId) -> Result<(), Strin
         .client()
         .join_room_by_id(room)
         .await
-        .map_err(|_| "history recovery: join without invite failed")?;
+        .map_err(|err| join_failure(&err))?;
     Ok(())
+}
+/// Keep the reason the join failed in the stage line without rendering the
+/// SDK's message: `matrix_sdk::Error` is `#[error(transparent)]` down to
+/// server-supplied text, request URLs and local paths, none of which may reach
+/// a QA artifact. Only the homeserver's own errcode (a closed ruma set) or one
+/// of two fixed classes is reported.
+fn join_failure(err: &matrix_sdk::Error) -> String {
+    let reason = match err {
+        matrix_sdk::Error::Http(http) => http.client_api_error_kind().map_or_else(
+            || "network".to_owned(),
+            |kind| kind.errcode().as_str().to_lowercase(),
+        ),
+        _ => "sdk".to_owned(),
+    };
+    format!("history recovery: join without invite failed: {reason}")
 }
 async fn public_history(sender: &Participant) -> Result<HistoricalRoom, String> {
     let history = create_history(sender).await?;
@@ -420,4 +435,27 @@ pub(super) async fn run(
         .map_err(|_| "history recovery: fixture directory cleanup failed")?;
     result?;
     cleanup
+}
+
+#[cfg(test)]
+mod tests {
+    use super::join_failure;
+
+    const PREFIX: &str = "history recovery: join without invite failed: ";
+
+    #[test]
+    fn join_failure_reports_a_closed_reason_after_the_stage() {
+        for err in [
+            matrix_sdk::Error::AuthenticationRequired,
+            matrix_sdk::Error::InsufficientData,
+            matrix_sdk::Error::ConcurrentRequestFailed,
+        ] {
+            let message = join_failure(&err);
+            assert!(message.starts_with(PREFIX), "{message}");
+            // The stage keeps a reason, but never the SDK's own rendering of
+            // it, which can carry a URL, a local path or server text.
+            assert_eq!(&message[PREFIX.len()..], "sdk", "{message}");
+            assert!(!message.contains(&err.to_string()), "{message}");
+        }
+    }
 }
