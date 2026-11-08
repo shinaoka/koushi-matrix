@@ -789,7 +789,7 @@ fn timeline_item_serializes_media_metadata_without_encryption_secrets() {
     assert!(!debug.contains("$media:test"), "{debug}");
 }
 #[test]
-fn media_timeline_event_debug_redacts_routing_and_media_identifiers() {
+fn media_upload_progress_debug_redacts_transaction_routing_and_media_identifiers() {
     let key = TimelineKey::room(
         AccountKey("@alice:example.invalid".to_owned()),
         "!room:example.invalid",
@@ -815,10 +815,47 @@ fn media_timeline_event_debug_redacts_routing_and_media_identifiers() {
 
     let debug = format!("{event:?}");
     assert!(debug.contains("MediaUploadProgress"), "{debug}");
-    assert!(debug.contains("txn-media"), "{debug}");
+    assert!(debug.contains("TransactionId(..)"), "{debug}");
+    assert!(!debug.contains("txn-media"), "{debug}");
     assert!(!debug.contains("!room:example.invalid"), "{debug}");
     assert!(!debug.contains("@alice:example.invalid"), "{debug}");
     assert!(!debug.contains("mxc://example.invalid"), "{debug}");
+}
+#[test]
+fn send_completed_and_submission_accepted_debug_redact_transaction_id() {
+    let key = || {
+        TimelineKey::room(
+            AccountKey("@alice:example.invalid".to_owned()),
+            "!room:example.invalid",
+        )
+    };
+    let sent = TimelineEvent::SendCompleted {
+        request_id: fake_rid(1),
+        key: key(),
+        transaction_id: "txn-sent".to_owned(),
+        event_id: "$sent:example.invalid".to_owned(),
+    };
+    let accepted = TimelineEvent::SubmissionAccepted {
+        request_id: fake_rid(2),
+        key: key(),
+        submission_id: SubmissionId::new("submission"),
+        transaction_id: "txn-accepted".to_owned(),
+    };
+
+    for (debug, variant, raw_transaction_id) in [
+        (format!("{sent:?}"), "SendCompleted", "txn-sent"),
+        (
+            format!("{accepted:?}"),
+            "SubmissionAccepted",
+            "txn-accepted",
+        ),
+    ] {
+        assert!(debug.contains(variant), "{debug}");
+        assert!(debug.contains("TransactionId(..)"), "{debug}");
+        assert!(!debug.contains(raw_transaction_id), "{debug}");
+        assert!(!debug.contains("!room:example.invalid"), "{debug}");
+        assert!(!debug.contains("@alice:example.invalid"), "{debug}");
+    }
 }
 #[test]
 fn display_labels_updated_event_serializes_and_redacts_debug() {
