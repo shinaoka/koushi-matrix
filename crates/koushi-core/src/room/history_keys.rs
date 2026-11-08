@@ -1,5 +1,6 @@
 //! Session-owned historical key recovery. All private records use the encrypted
 //! SDK crypto store; the SDK retains ownership of crypto and session provenance.
+mod diagnostics;
 mod policy;
 mod records;
 mod responder;
@@ -311,7 +312,7 @@ impl Recovery {
             .map(|(r, _)| r.clone())
             .collect();
         for room in rooms {
-            self.request(room, false, true, None).await;
+            self.request(room, false, true, None, "startup").await;
         }
         loop {
             if self.poisoned.load(Ordering::Acquire) {
@@ -355,7 +356,10 @@ impl Recovery {
                     room,
                     force_all,
                     request_id,
-                } => self.request(room, force_all, false, Some(request_id)).await,
+                } => {
+                    self.request(room, force_all, false, Some(request_id), "manual")
+                        .await
+                }
                 Message::Incoming { info, raw } => {
                     #[cfg(any(test, feature = "test-hooks"))]
                     let observed_room = serde_json::from_str::<serde_json::Value>(&raw)
@@ -401,8 +405,12 @@ impl Recovery {
                             .entry(room.clone())
                             .or_default()
                             .unresolved = unresolved;
-                        if self.save().await.is_ok() && unresolved {
-                            self.request(room, false, true, None).await;
+                        if self.save().await.is_ok() {
+                            diagnostics::record_window(if unresolved { "open" } else { "close" });
+                            if unresolved {
+                                self.request(room, false, true, None, "recovery_window")
+                                    .await;
+                            }
                         }
                     }
                 }
@@ -627,6 +635,7 @@ impl Recovery {
         force_all: bool,
         automatic: bool,
         request_id: Option<RequestId>,
+        trigger: &'static str,
     ) {
         if automatic
             && (executor::Instant::now() > self.startup_deadline
@@ -685,9 +694,10 @@ impl Recovery {
             return;
         }
         self.publish(&room, generation, Status::Sending).await;
+        let dispatched_at = executor::Instant::now();
         let result = executor::timeout(
             Duration::from_secs(60),
-            self.send_request(&room, generation, force_all, automatic),
+            self.send_request(&room, generation, force_all, automatic, trigger),
         )
         .await;
         let result = match result {
@@ -715,6 +725,11 @@ impl Recovery {
             Ok(recipients) => {
                 self.publish(&room, generation, Self::status(&self.ledger.rooms[&room]))
                     .await;
+                diagnostics::record_requested(
+                    trigger,
+                    recipients,
+                    dispatched_at.elapsed().as_millis(),
+                );
                 if let Some(request_id) = request_id {
                     let _ = self
                         .events
@@ -748,6 +763,7 @@ impl Recovery {
         generation: u64,
         force_all: bool,
         automatic: bool,
+        trigger: &'static str,
     ) -> Result<u16, Failure> {
         self.prune().await?;
         let facts = self.facts(room).await?;
@@ -924,6 +940,7 @@ impl Recovery {
         pending.sent = true;
         let recipients = pending.recipients();
         self.save().await?;
+        diagnostics::record_issued(trigger, recipients);
         Ok(recipients)
     }
     async fn send(&self, devices: &[Device], wire: &Wire) -> Result<(), Failure> {

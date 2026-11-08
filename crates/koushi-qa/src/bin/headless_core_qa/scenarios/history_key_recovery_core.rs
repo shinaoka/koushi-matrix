@@ -160,8 +160,81 @@ async fn join(participant: &Participant, room: &OwnedRoomId) -> Result<(), Strin
         .client()
         .join_room_by_id(room)
         .await
-        .map_err(|_| "history recovery: join without invite failed")?;
+        .map_err(|err| join_failure(&err))?;
     Ok(())
+}
+/// Keep the reason the join failed in the stage line without rendering the
+/// SDK's message: `matrix_sdk::Error` is `#[error(transparent)]` down to
+/// server-supplied text, request URLs and local paths, none of which may reach
+/// a QA artifact.
+fn join_failure(err: &matrix_sdk::Error) -> String {
+    format!(
+        "history recovery: join without invite failed: {}",
+        join_failure_reason(err)
+    )
+}
+/// A closed classification of a `join_room_by_id` failure: a fixed token for the
+/// homeserver's errcode, `transport` when the request never produced a
+/// response, `http_<status>` or `http_no_errcode` for any other HTTP-layer
+/// failure, and `sdk` for anything else. Only booleans, an enum variant of a
+/// closed set and the numeric status are read; never the errcode string or the
+/// response body.
+fn join_failure_reason(err: &matrix_sdk::Error) -> String {
+    match err {
+        matrix_sdk::Error::Http(http) => http_failure_reason(http),
+        _ => "sdk".to_owned(),
+    }
+}
+fn http_failure_reason(http: &matrix_sdk::HttpError) -> String {
+    if let Some(kind) = http.client_api_error_kind() {
+        return errcode_token(kind).to_owned();
+    }
+    match http {
+        // The request never got a response: connect, DNS, TLS or socket.
+        matrix_sdk::HttpError::Reqwest(_) => "transport".to_owned(),
+        matrix_sdk::HttpError::Cached(http) => http_failure_reason(http),
+        _ => http_status(http).map_or_else(
+            || "http_no_errcode".to_owned(),
+            |status| format!("http_{status}"),
+        ),
+    }
+}
+/// A fixed token for the errcodes this scenario can explain. Ruma keeps an
+/// unrecognised errcode as an arbitrary server-supplied string, so the errcode
+/// itself is matched as a variant and never rendered: anything outside this set
+/// collapses to `http_unknown_errcode`.
+fn errcode_token(kind: &matrix_sdk::ruma::api::error::ErrorKind) -> &'static str {
+    use matrix_sdk::ruma::api::error::ErrorKind as K;
+    match kind {
+        K::Forbidden => "forbidden",
+        K::Unauthorized => "unauthorized",
+        K::MissingToken => "missing_token",
+        K::UnknownToken(_) => "unknown_token",
+        K::GuestAccessForbidden => "guest_access_forbidden",
+        K::UserDeactivated => "user_deactivated",
+        K::UserSuspended => "user_suspended",
+        K::ResourceLimitExceeded(_) => "resource_limit_exceeded",
+        K::LimitExceeded(_) => "limit_exceeded",
+        K::BadState => "bad_state",
+        K::NotFound => "not_found",
+        K::UnableToAuthorizeJoin => "unable_to_authorize_join",
+        K::UnableToGrantJoin => "unable_to_grant_join",
+        K::IncompatibleRoomVersion(_) => "incompatible_room_version",
+        K::Unknown => "unknown",
+        _ => "http_unknown_errcode",
+    }
+}
+/// The response status of a Matrix error body, and nothing from the body.
+fn http_status(http: &matrix_sdk::HttpError) -> Option<u16> {
+    let matrix_sdk::HttpError::Api(error) = http else {
+        return None;
+    };
+    match error.as_ref() {
+        matrix_sdk::ruma::api::error::FromHttpResponseError::Server(
+            matrix_sdk::ruma::api::client::uiaa::UiaaResponse::MatrixError(error),
+        ) => Some(error.status_code.as_u16()),
+        _ => None,
+    }
 }
 async fn public_history(sender: &Participant) -> Result<HistoricalRoom, String> {
     let history = create_history(sender).await?;
@@ -420,4 +493,144 @@ pub(super) async fn run(
         .map_err(|_| "history recovery: fixture directory cleanup failed")?;
     result?;
     cleanup
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{join_failure, join_failure_reason};
+    use matrix_sdk::{
+        Error, HttpError, RefreshTokenError,
+        ruma::{
+            api::{
+                client::uiaa::UiaaResponse,
+                error::{
+                    Error as ApiError, ErrorBody, ErrorKind, FromHttpResponseError,
+                    StandardErrorBody,
+                },
+            },
+            exports::http::StatusCode,
+        },
+    };
+
+    const PREFIX: &str = "history recovery: join without invite failed: ";
+
+    fn api_error(status: StatusCode, body: ErrorBody) -> Error {
+        Error::Http(Box::new(HttpError::Api(Box::new(
+            FromHttpResponseError::Server(UiaaResponse::MatrixError(ApiError::new(status, body))),
+        ))))
+    }
+
+    fn refused() -> Error {
+        api_error(
+            StatusCode::FORBIDDEN,
+            ErrorBody::Standard(StandardErrorBody::new(
+                ErrorKind::Forbidden,
+                "the join was refused".to_owned(),
+            )),
+        )
+    }
+
+    fn unknown_errcode(errcode: &str) -> Error {
+        let body = serde_json::from_value(serde_json::json!({
+            "errcode": errcode,
+            "error": "the server refused the join",
+        }))
+        .expect("a standard error body with an unrecognised errcode");
+        api_error(StatusCode::FORBIDDEN, ErrorBody::Standard(body))
+    }
+
+    fn body_without_errcode() -> Error {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            ErrorBody::Json(serde_json::json!({})),
+        )
+    }
+
+    fn no_errcode_and_no_status() -> HttpError {
+        HttpError::RefreshToken(RefreshTokenError::RefreshTokenRequired)
+    }
+
+    fn http_error(http: HttpError) -> Error {
+        Error::Http(Box::new(http))
+    }
+
+    #[test]
+    fn a_refused_join_reports_the_homeserver_errcode() {
+        assert_eq!(join_failure_reason(&refused()), "forbidden");
+    }
+
+    #[test]
+    fn an_unrecognised_errcode_collapses_to_a_fixed_token() {
+        // Ruma keeps an unknown errcode as the server sent it, so this is the
+        // shape an identifier or a secret would arrive in.
+        for errcode in [
+            "@member:example.org",
+            "X_SECRET_/Users/member/store",
+            "M_VERY_LONG_CUSTOM_ERRCODE",
+            &"A".repeat(400),
+        ] {
+            let err = unknown_errcode(errcode);
+            // The errcode is reachable from the error and the SDK renders it,
+            // so a classification that reported the errcode string would leak.
+            assert!(err.to_string().contains(errcode), "{err}");
+            let message = join_failure(&err);
+            assert_eq!(
+                message,
+                format!("{PREFIX}http_unknown_errcode"),
+                "{message}"
+            );
+            assert!(!message.contains(errcode), "{message}");
+        }
+    }
+
+    #[test]
+    fn an_error_body_without_an_errcode_reports_the_status_not_a_network_failure() {
+        assert_eq!(join_failure_reason(&body_without_errcode()), "http_400");
+    }
+
+    #[test]
+    fn an_http_failure_with_neither_errcode_nor_status_is_http_no_errcode() {
+        assert_eq!(
+            join_failure_reason(&http_error(no_errcode_and_no_status())),
+            "http_no_errcode"
+        );
+        let cached = http_error(HttpError::Cached(std::sync::Arc::new(
+            no_errcode_and_no_status(),
+        )));
+        assert_eq!(join_failure_reason(&cached), "http_no_errcode");
+    }
+
+    #[test]
+    fn a_non_http_failure_is_an_unclassified_sdk_error() {
+        assert_eq!(
+            join_failure(&Error::AuthenticationRequired),
+            format!("{PREFIX}sdk")
+        );
+    }
+
+    #[test]
+    fn every_reason_is_a_closed_token_after_the_stage_and_never_the_sdk_message() {
+        for err in [
+            refused(),
+            unknown_errcode("@member:example.org"),
+            body_without_errcode(),
+            http_error(no_errcode_and_no_status()),
+            Error::AuthenticationRequired,
+            Error::InsufficientData,
+            Error::ConcurrentRequestFailed,
+        ] {
+            let message = join_failure(&err);
+            assert!(message.starts_with(PREFIX), "{message}");
+            let reason = &message[PREFIX.len()..];
+            assert!(
+                reason
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "{reason}"
+            );
+            // The stage keeps a reason, but never the SDK's own rendering of
+            // it, which can carry a URL, a local path or server text.
+            assert!(!message.contains(&err.to_string()), "{message}");
+        }
+    }
 }
