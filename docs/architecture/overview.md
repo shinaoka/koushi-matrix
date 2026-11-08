@@ -813,10 +813,11 @@ only an opaque cache reference; the desktop Tauri adapter may map general
 references to `koushi-thumbnail://`, while opened reader rows use the
 revision-qualified installed-resource command and a transient renderer object
 URL. Timeline downloads follow the same split: Core state/events name the
-managed cache entry with an opaque `download/<room-hash>/<event-hash>` ref, and
-the desktop adapter serves the file through `koushi-media://` or resolves the
-ref for a save. Local filesystem paths stay adapter-private. A native adapter
-may consume bytes directly.
+managed cache entry with an opaque `download/<room-hash>/<event-hash>` ref for
+the original or `download/<room-hash>/<event-hash>/<width>x<height>` ref for a
+thumbnail, and the desktop adapter serves the file through `koushi-media://` or
+resolves the ref for a save. Local filesystem paths stay adapter-private. A
+native adapter may consume bytes directly.
 The cache is an entry-and-byte-bounded LRU: access refreshes recency, eviction
 or session clear releases the owned bytes, and an item larger than the byte
 bound fails before a Ready reference is published. Replacing the own profile

@@ -977,8 +977,10 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   only for `AvatarThumbnailState::Ready.source_ref`; otherwise it uses the
   colored-initial fallback. Timeline downloads follow the same opaque-reference
   rule: `TimelineMediaDownloadState::Ready.source_ref` names the managed cache
-  entry (`download/<room-hash>/<event-hash>`), and only the platform port turns
-  it into a render or save URL; no filesystem path crosses the boundary.
+  entry (`download/<room-hash>/<event-hash>` for the original,
+  `download/<room-hash>/<event-hash>/<width>x<height>` for a thumbnail), and
+  only the platform port turns it into a render or save URL; no filesystem path
+  crosses the boundary.
 - Profile update completion settles a user-visible pending state. Actor code must
   deliver `ProfileUpdateSucceeded` / `ProfileUpdateFailed` reliably via the action
   channel, not as a best-effort notification that can leave settings controls
@@ -1151,8 +1153,10 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   emptiness/URL/absolute checks, canonical cache/source containment, symlink and
   component-prefix rejection, destination admission, parent creation ordering,
   and copy admission. Tauri resolves the app-data cache root, the opaque
-  `download/<room-hash>/<event-hash>` ref from `TimelineMediaDownloadState::Ready`,
-  and the selected destination, and supplies only the native syscall port; paths
+  `download/<room-hash>/<event-hash>` (original) or
+  `download/<room-hash>/<event-hash>/<width>x<height>` (thumbnail) ref from
+  `TimelineMediaDownloadState::Ready`, and the selected destination, and
+  supplies only the native syscall port; paths
   never enter Core state, events, commands, or diagnostics. Port and policy
   failures expose closed private-safe kinds, never paths or raw filesystem
   errors. Linux coverage uses deterministic port fakes plus a real temporary
