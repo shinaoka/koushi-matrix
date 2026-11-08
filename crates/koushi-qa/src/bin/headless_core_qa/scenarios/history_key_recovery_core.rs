@@ -173,11 +173,12 @@ fn join_failure(err: &matrix_sdk::Error) -> String {
         join_failure_reason(err)
     )
 }
-/// A closed classification of a `join_room_by_id` failure: the homeserver's own
-/// errcode, `transport` when the request never produced a response,
-/// `http_<status>` or `http_no_errcode` for any other HTTP-layer failure, and
-/// `sdk` for anything else. Only bools, the errcode and the status code are
-/// read; never the response body, which is server-supplied text.
+/// A closed classification of a `join_room_by_id` failure: a fixed token for the
+/// homeserver's errcode, `transport` when the request never produced a
+/// response, `http_<status>` or `http_no_errcode` for any other HTTP-layer
+/// failure, and `sdk` for anything else. Only booleans, an enum variant of a
+/// closed set and the numeric status are read; never the errcode string or the
+/// response body.
 fn join_failure_reason(err: &matrix_sdk::Error) -> String {
     match err {
         matrix_sdk::Error::Http(http) => http_failure_reason(http),
@@ -186,7 +187,7 @@ fn join_failure_reason(err: &matrix_sdk::Error) -> String {
 }
 fn http_failure_reason(http: &matrix_sdk::HttpError) -> String {
     if let Some(kind) = http.client_api_error_kind() {
-        return kind.errcode().as_str().to_lowercase();
+        return errcode_token(kind).to_owned();
     }
     match http {
         // The request never got a response: connect, DNS, TLS or socket.
@@ -196,6 +197,31 @@ fn http_failure_reason(http: &matrix_sdk::HttpError) -> String {
             || "http_no_errcode".to_owned(),
             |status| format!("http_{status}"),
         ),
+    }
+}
+/// A fixed token for the errcodes this scenario can explain. Ruma keeps an
+/// unrecognised errcode as an arbitrary server-supplied string, so the errcode
+/// itself is matched as a variant and never rendered: anything outside this set
+/// collapses to `http_unknown_errcode`.
+fn errcode_token(kind: &matrix_sdk::ruma::api::error::ErrorKind) -> &'static str {
+    use matrix_sdk::ruma::api::error::ErrorKind as K;
+    match kind {
+        K::Forbidden => "forbidden",
+        K::Unauthorized => "unauthorized",
+        K::MissingToken => "missing_token",
+        K::UnknownToken(_) => "unknown_token",
+        K::GuestAccessForbidden => "guest_access_forbidden",
+        K::UserDeactivated => "user_deactivated",
+        K::UserSuspended => "user_suspended",
+        K::ResourceLimitExceeded(_) => "resource_limit_exceeded",
+        K::LimitExceeded(_) => "limit_exceeded",
+        K::BadState => "bad_state",
+        K::NotFound => "not_found",
+        K::UnableToAuthorizeJoin => "unable_to_authorize_join",
+        K::UnableToGrantJoin => "unable_to_grant_join",
+        K::IncompatibleRoomVersion(_) => "incompatible_room_version",
+        K::Unknown => "unknown",
+        _ => "http_unknown_errcode",
     }
 }
 /// The response status of a Matrix error body, and nothing from the body.
@@ -504,6 +530,15 @@ mod tests {
         )
     }
 
+    fn unknown_errcode(errcode: &str) -> Error {
+        let body = serde_json::from_value(serde_json::json!({
+            "errcode": errcode,
+            "error": "the server refused the join",
+        }))
+        .expect("a standard error body with an unrecognised errcode");
+        api_error(StatusCode::FORBIDDEN, ErrorBody::Standard(body))
+    }
+
     fn body_without_errcode() -> Error {
         api_error(
             StatusCode::BAD_REQUEST,
@@ -521,7 +556,31 @@ mod tests {
 
     #[test]
     fn a_refused_join_reports_the_homeserver_errcode() {
-        assert_eq!(join_failure_reason(&refused()), "m_forbidden");
+        assert_eq!(join_failure_reason(&refused()), "forbidden");
+    }
+
+    #[test]
+    fn an_unrecognised_errcode_collapses_to_a_fixed_token() {
+        // Ruma keeps an unknown errcode as the server sent it, so this is the
+        // shape an identifier or a secret would arrive in.
+        for errcode in [
+            "@member:example.org",
+            "X_SECRET_/Users/member/store",
+            "M_VERY_LONG_CUSTOM_ERRCODE",
+            &"A".repeat(400),
+        ] {
+            let err = unknown_errcode(errcode);
+            // The errcode is reachable from the error and the SDK renders it,
+            // so a classification that reported the errcode string would leak.
+            assert!(err.to_string().contains(errcode), "{err}");
+            let message = join_failure(&err);
+            assert_eq!(
+                message,
+                format!("{PREFIX}http_unknown_errcode"),
+                "{message}"
+            );
+            assert!(!message.contains(errcode), "{message}");
+        }
     }
 
     #[test]
@@ -553,6 +612,7 @@ mod tests {
     fn every_reason_is_a_closed_token_after_the_stage_and_never_the_sdk_message() {
         for err in [
             refused(),
+            unknown_errcode("@member:example.org"),
             body_without_errcode(),
             http_error(no_errcode_and_no_status()),
             Error::AuthenticationRequired,
