@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { failureStage } from "./headless-qa-lane.mjs";
+import { failureStage, resultLine } from "./headless-qa-lane.mjs";
 import { laneCoverageViolations, registeredScenarios } from "./lib/headless-qa-lanes.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -122,6 +122,29 @@ test("failure stage is the first clause of the last core QA failure line", () =>
   assert.equal(
     failureStage("Headless core QA failed: avatar model timed out observed_total=1 media_http_requests=0\n"),
     "avatar model timed out"
+  );
+});
+
+// The failure line carries the stage so the CI console shows where the run
+// broke; a passing line keeps its existing shape.
+test("lane result line adds the stage only on failure", () => {
+  assert.equal(
+    resultLine({ scenario: "safety", server: "tuwunel", status: 0, seconds: 12 }),
+    "headless-qa-lane: safety on tuwunel EXIT=0 (12s)"
+  );
+  assert.equal(
+    resultLine({
+      scenario: "safety",
+      server: "tuwunel",
+      status: 1,
+      seconds: 297,
+      stage: "gate negative primary trust loss"
+    }),
+    "headless-qa-lane: safety on tuwunel EXIT=1 (297s) stage=gate negative primary trust loss"
+  );
+  assert.equal(
+    resultLine({ scenario: "safety", server: "synapse", status: 1, seconds: 3, stage: "unknown" }),
+    "headless-qa-lane: safety on synapse EXIT=1 (3s) stage=unknown"
   );
 });
 

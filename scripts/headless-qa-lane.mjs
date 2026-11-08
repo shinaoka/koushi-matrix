@@ -58,6 +58,14 @@ export function failureStage(stderr) {
   return stage === "" ? "unknown" : stage;
 }
 
+// One result line per scenario. A failure also carries the stage that was
+// already computed for the nightly failure issue, so the CI console says where
+// the run broke instead of leaving it only in failures.json and the artifacts.
+export function resultLine({ scenario, server, status, seconds, stage }) {
+  const line = `headless-qa-lane: ${scenario} on ${server} EXIT=${status} (${seconds}s)`;
+  return stage === undefined ? line : `${line} stage=${stage}`;
+}
+
 function latestRunDirectory(server, scenario) {
   if (!existsSync(qaOutputRoot)) return undefined;
   const suffix = `-${server}-${scenario}-`;
@@ -103,8 +111,10 @@ function main() {
     );
     const seconds = Math.round((Date.now() - started) / 1000);
     const status = result.status ?? 1;
-    console.log(`headless-qa-lane: ${scenario} on ${server} EXIT=${status} (${seconds}s)`);
-    if (status !== 0) failures.push({ scenario, stage: stageForRun(server, scenario) });
+    const failed = status !== 0;
+    const stage = failed ? stageForRun(server, scenario) : undefined;
+    console.log(resultLine({ scenario, server, status, seconds, stage }));
+    if (failed) failures.push({ scenario, stage });
   }
 
   if (failuresOut !== undefined) writeFileSync(failuresOut, `${JSON.stringify(failures)}\n`);
