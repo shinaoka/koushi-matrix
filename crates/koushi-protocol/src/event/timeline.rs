@@ -270,15 +270,11 @@ impl fmt::Debug for TimelineEvent {
                 .field("generation", generation)
                 .field("tail_event_id", &"EventId(..)")
                 .finish(),
-            Self::SendCompleted {
-                request_id,
-                transaction_id,
-                ..
-            } => formatter
+            Self::SendCompleted { request_id, .. } => formatter
                 .debug_struct("SendCompleted")
                 .field("request_id", request_id)
                 .field("key", &"TimelineKey(..)")
-                .field("transaction_id", transaction_id)
+                .field("transaction_id", &"TransactionId(..)")
                 .field("event_id", &"EventId(..)")
                 .finish(),
             Self::MediaSendQueued { request_id, .. } => formatter
@@ -290,14 +286,13 @@ impl fmt::Debug for TimelineEvent {
             Self::SubmissionAccepted {
                 request_id,
                 submission_id,
-                transaction_id,
                 ..
             } => formatter
                 .debug_struct("SubmissionAccepted")
                 .field("request_id", request_id)
                 .field("key", &"TimelineKey(..)")
                 .field("submission_id", submission_id)
-                .field("transaction_id", transaction_id)
+                .field("transaction_id", &"TransactionId(..)")
                 .finish(),
             Self::SubmissionRejected {
                 request_id,
@@ -327,7 +322,6 @@ impl fmt::Debug for TimelineEvent {
                 .finish(),
             Self::MediaUploadProgress {
                 request_id,
-                transaction_id,
                 index,
                 progress,
                 source,
@@ -336,7 +330,7 @@ impl fmt::Debug for TimelineEvent {
                 .debug_struct("MediaUploadProgress")
                 .field("request_id", request_id)
                 .field("key", &"TimelineKey(..)")
-                .field("transaction_id", transaction_id)
+                .field("transaction_id", &"TransactionId(..)")
                 .field("index", index)
                 .field("progress", progress)
                 .field("source", source)
