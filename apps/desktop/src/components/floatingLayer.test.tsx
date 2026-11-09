@@ -5,6 +5,7 @@ import { useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  FLOATING_LAYER_ANCHOR_GAP_PX as GAP,
   FLOATING_LAYER_VIEWPORT_MARGIN_PX as MARGIN,
   type FloatingPlacementInput,
   floatingPlacementStyle,
@@ -91,6 +92,59 @@ describe("resolveFloatingPlacement", () => {
 
     expect(placement.placement).toBe("below");
     expect(placement.top + placement.blockSize).toBeLessThanOrEqual(800 - MARGIN);
+  });
+
+  it("flips a fixed-size panel when the opposite side can hold the box it draws", () => {
+    // The anchor leaves 78px above and 600px below the layer gap, and the panel
+    // draws its own 600px. `comfortableBlockSize` is irrelevant here: 20px above
+    // is "comfortable" for the small-popup heuristic, yet flipping is the only
+    // way to draw 600px without covering the trigger (#1839 review).
+    const placement = resolveFloatingPlacement(
+      input({
+        anchor: { top: 100, right: 340, bottom: 178, left: 300 },
+        blockSize: 600,
+        comfortableBlockSize: 20,
+        shrinkToAnchor: false
+      })
+    );
+
+    expect(placement.placement).toBe("below");
+    expect(placement.blockSize).toBe(600);
+    expect(placement.top).toBe(178 + GAP);
+    expect(placement.top + placement.blockSize).toBe(800 - MARGIN);
+  });
+
+  it("takes the roomier side when neither side holds a fixed-size panel", () => {
+    // 318px above against 398px below, and the panel draws 600px: the flip does
+    // not invent room, so the roomier side wins and the clamp keeps the box
+    // inside the bounds.
+    const placement = resolveFloatingPlacement(
+      input({
+        anchor: { top: 340, right: 340, bottom: 380, left: 300 },
+        blockSize: 600,
+        shrinkToAnchor: false
+      })
+    );
+
+    expect(placement.placement).toBe("below");
+    expect(placement.blockSize).toBe(600);
+    expect(placement.top).toBe(800 - MARGIN - 600);
+  });
+
+  it("keeps the comfortable-space flip for a panel that shrinks to its anchor", () => {
+    // The same geometry as the fixed-size flip above, without the new option: the
+    // small-popup heuristic must keep behaving exactly as before.
+    const placement = resolveFloatingPlacement(
+      input({
+        anchor: { top: 100, right: 340, bottom: 178, left: 300 },
+        blockSize: 600,
+        comfortableBlockSize: 20
+      })
+    );
+
+    expect(placement.placement).toBe("above");
+    expect(placement.blockSize).toBe(100 - MARGIN - GAP);
+    expect(placement.top).toBe(MARGIN);
   });
 
   it("keeps a panel's own block size and shifts it inside the bounds instead", () => {

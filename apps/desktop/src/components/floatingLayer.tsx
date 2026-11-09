@@ -141,8 +141,21 @@ export function resolveFloatingPlacement(
   const oppositeAvailable =
     input.placement === "above" ? availableBelow : availableAbove;
   const opposite = input.placement === "above" ? "below" : "above";
+  const keepsItsSize = input.shrinkToAnchor === false;
+  // A panel that keeps its own size flips on the box it actually draws. Judging
+  // it by `comfortableBlockSize` instead would flip into a side that cannot hold
+  // that box and then clamp it back over the trigger (#1839 review).
+  const targetBlock = Math.min(input.blockSize, bounds.bottom - bounds.top);
   let placement = input.placement;
-  if (preferredAvailable < comfortable) {
+  if (keepsItsSize) {
+    const preferredFits = preferredAvailable >= targetBlock;
+    const oppositeFits = oppositeAvailable >= targetBlock;
+    if (!preferredFits && oppositeFits) {
+      placement = opposite;
+    } else if (!preferredFits) {
+      placement = availableAbove >= availableBelow ? "above" : "below";
+    }
+  } else if (preferredAvailable < comfortable) {
     if (oppositeAvailable >= comfortable) {
       placement = opposite;
     } else {
@@ -152,7 +165,7 @@ export function resolveFloatingPlacement(
   const availableBlock = placement === "above" ? availableAbove : availableBelow;
   const blockSize = Math.min(
     input.blockSize,
-    input.shrinkToAnchor === false ? Number.POSITIVE_INFINITY : availableBlock,
+    keepsItsSize ? Number.POSITIVE_INFINITY : availableBlock,
     bounds.bottom - bounds.top,
   );
   const top =

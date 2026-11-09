@@ -41,6 +41,22 @@ import {
   inlineMentionEditorSelection,
   setInlineMentionEditorSelection
 } from "./ImeTextControl";
+import { EMOJI_PICKER_BLOCK_SIZE_PX } from "./EmojiPicker";
+import {
+  FLOATING_LAYER_ANCHOR_GAP_PX,
+  FLOATING_LAYER_VIEWPORT_MARGIN_PX
+} from "./floatingLayer";
+
+/** The mocked message-action box every geometry below is measured from. */
+const TRIGGER_BOX_HEIGHT = 24;
+/** jsdom's window is 768px tall. */
+const WINDOW_HEIGHT = 768;
+/** Where the layer puts the saved-size panel anchored at `triggerTop`. */
+function pickerTopBelow(triggerTop: number): string {
+  const lowest = WINDOW_HEIGHT - FLOATING_LAYER_VIEWPORT_MARGIN_PX - EMOJI_PICKER_BLOCK_SIZE_PX;
+  return `${Math.min(triggerTop + TRIGGER_BOX_HEIGHT + FLOATING_LAYER_ANCHOR_GAP_PX, lowest)}px`;
+}
+const PICKER_BLOCK_SIZE = `${EMOJI_PICKER_BLOCK_SIZE_PX}px`;
 
 function changeInlineEditorText(editor: HTMLDivElement, text: string) {
   if (editor.dataset.composing === "true") {
@@ -708,7 +724,7 @@ describe("TimelineView", () => {
     // window decides what fits.
     expect(picker.classList.contains("is-below")).toBe(true);
     expect(picker.classList.contains("is-above")).toBe(false);
-    expect(picker.style.getPropertyValue("block-size")).toBe("520px");
+    expect(picker.style.getPropertyValue("block-size")).toBe(PICKER_BLOCK_SIZE);
   });
 
   it("orders and routes distinct reply actions in a fully actionable room row", () => {
@@ -1180,10 +1196,12 @@ describe("TimelineView", () => {
     // The pane above the composer is short, but the window is not: the panel
     // keeps the saved block size and is shifted up into the window instead of
     // shrinking to the pane and clipping its grid (#1839).
-    expect(picker.style.getPropertyValue("block-size")).toBe("520px");
-    // 768px window, 16px margin, 520px panel, anchored below a 344px trigger:
-    // the layer moves it to the lowest place the window still holds.
-    expect(picker.style.getPropertyValue("top")).toBe("232px");
+    expect(picker.style.getPropertyValue("block-size")).toBe(PICKER_BLOCK_SIZE);
+    // The trigger's mocked 320px top would leave the panel at 350px, past the
+    // lowest place the window still holds it: the layer shifts it up instead.
+    expect(picker.style.getPropertyValue("top")).toBe(
+      `${WINDOW_HEIGHT - FLOATING_LAYER_VIEWPORT_MARGIN_PX - EMOJI_PICKER_BLOCK_SIZE_PX}px`
+    );
   });
 
   it("keeps the reaction emoji picker at its preferred block size when there is room", async () => {
@@ -1242,7 +1260,7 @@ describe("TimelineView", () => {
 
     const picker = await screen.findByRole("dialog", { name: /emoji/i });
     expect(picker.classList.contains("is-below")).toBe(true);
-    expect(picker.style.getPropertyValue("block-size")).toBe("520px");
+    expect(picker.style.getPropertyValue("block-size")).toBe(PICKER_BLOCK_SIZE);
   });
 
   it("keeps the drawn reaction picker size when the measured pane changes under it", async () => {
@@ -1301,7 +1319,7 @@ describe("TimelineView", () => {
     fireEvent.click(screen.getByRole("button", { name: /add reaction/i }));
 
     const picker = await screen.findByRole("dialog", { name: /emoji/i });
-    expect(picker.style.getPropertyValue("block-size")).toBe("520px");
+    expect(picker.style.getPropertyValue("block-size")).toBe(PICKER_BLOCK_SIZE);
 
     // Moving the row does re-place the panel, but the saved size is what is
     // drawn: only the window may narrow it (#1839).
@@ -1310,8 +1328,9 @@ describe("TimelineView", () => {
 
     await waitFor(() => {
       expect(picker.classList.contains("is-below")).toBe(true);
-      expect(picker.style.getPropertyValue("block-size")).toBe("520px");
-      expect(picker.style.getPropertyValue("top")).toBe("180px");
+      expect(picker.style.getPropertyValue("block-size")).toBe(PICKER_BLOCK_SIZE);
+      // 150px trigger: the panel fits below it, so no shift is needed.
+      expect(picker.style.getPropertyValue("top")).toBe(pickerTopBelow(150));
     });
   });
 

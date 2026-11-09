@@ -263,3 +263,39 @@ test("a picker larger than the window is capped by the window and never drawn ou
     await expect(emojiPicker(page)).not.toBeVisible();
   }
 });
+
+test("a picker that fits on one side of its trigger opens on that side", async ({ page }) => {
+  await page.setViewportSize(VIEWPORT);
+  await page.goto("/appHarness.html");
+  await expect(page.getByRole("main", { name: t("timeline.conversation") })).toBeVisible();
+  // Shorter than a comfortable popup but taller than the room under some rows:
+  // the panel fits whole above its trigger and not below it.
+  const saved: [number, number] = [SAVED[0], 480];
+  await setSavedSize(page, saved);
+  await seedRows(page, 12);
+
+  // Pick the row the flip is about: the saved box fits in the room above it and
+  // not in the room below it, so only a flip can draw the whole panel without
+  // covering the message the picker was opened from.
+  const measured = await rows(page);
+  const row = measured.find(
+    (candidate) =>
+      candidate.top - 2 * WINDOW_MARGIN >= saved[1] &&
+      VIEWPORT.height - WINDOW_MARGIN - candidate.bottom < saved[1]
+  );
+  expect(row, "a row the saved box only fits above").toBeTruthy();
+
+  await openReactionPicker(page, (row as RowBox).eventId);
+
+  const box = await pickerBox(page);
+  expectNear(box.width, saved[0], "drawn width");
+  expectNear(box.height, saved[1], "drawn height");
+  expectInsideWindow(box, "flipped picker");
+  // The panel is drawn above the trigger row instead of being clamped back down
+  // over it (#1840 review: flip by the drawn box, not by the anchor heuristic).
+  expect(
+    box.bottom,
+    "the picker does not cover the message it was opened from"
+  ).toBeLessThanOrEqual((row as RowBox).top + TOLERANCE_PX);
+  await expect(emojiPicker(page).locator(".emoji-picker-clip")).toHaveCount(0);
+});

@@ -679,9 +679,10 @@ export function EmojiPicker({
       )}
 
       {/* The grid scrolls here while the header and tabs stay put. A focused
-          region owns the arrow, Page and Home/End keys for scrolling; the
-          marked frame handle keeps its own arrows for resizing and the grid
-          items keep theirs for moving between cells (#1839). */}
+          region owns the arrow, Page and Home/End keys for scrolling, so the
+          region is its own tab stop: the grid's keys move between cells and
+          cannot scroll it, and the marked frame handle keeps its arrows for
+          resizing (#1839). */}
       <div
         ref={bodyRef}
         className="emoji-picker-body"

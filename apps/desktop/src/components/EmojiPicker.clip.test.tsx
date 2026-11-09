@@ -13,6 +13,7 @@ import { afterEach, expect, it } from "vitest";
 
 import { t } from "../i18n/messages";
 import { EmojiPicker } from "./EmojiPicker";
+import { FLOATING_LAYER_VIEWPORT_MARGIN_PX } from "./floatingLayer";
 
 afterEach(cleanup);
 
@@ -26,12 +27,12 @@ function measuredRect(top: number, right: number, bottom: number, left: number):
     width: right - left,
     x: left,
     y: top,
-    toJSON: () => {}
+    toJSON: () => ({})
   } as DOMRect;
 }
 
-/** jsdom's window is 1024×768 and the layer keeps a 16px margin on every side. */
-const WINDOW_BLOCK_SIZE = 768 - 32;
+/** jsdom's window is 1024×768; the layer keeps its own margin on every side. */
+const WINDOW_BLOCK_SIZE = 768 - 2 * FLOATING_LAYER_VIEWPORT_MARGIN_PX;
 
 /** The mid-window anchor a message row would give the picker. */
 const MID_WINDOW_ANCHOR = measuredRect(400, 340, 420, 300);
