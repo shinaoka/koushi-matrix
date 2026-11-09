@@ -146,6 +146,36 @@ test("recent emoji selection is projected through Rust-owned composer settings",
   await expect(page.getByRole("heading", { name: t("composer.emojiRecent") })).toBeVisible();
 });
 
+test("composer recent-emoji selection names the account scope while App Settings is open", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.getByRole("button", { name: t("settings.appSettings"), exact: true }).click();
+  await expect(page.locator("dialog.user-settings-modal")).toBeVisible();
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  // The Settings dialog is a native modal, so the shell behind it is inert and a
+  // click cannot reach the composer. Activate the same two controls
+  // programmatically: the patch path, and the tab it would inherit, are the same.
+  await page.evaluate((label) => {
+    document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click();
+  }, t("composer.emoji"));
+  const firstEmoji = page.locator(".emoji-picker .emoji-picker-item").first();
+  await expect(firstEmoji).toBeVisible();
+  const selected = await firstEmoji.textContent();
+  await page.evaluate(() => {
+    document.querySelector<HTMLButtonElement>(".emoji-picker .emoji-picker-item")!.click();
+  });
+
+  // recent_emojis is account-scoped. A patch that does not name its scope
+  // inherits the Settings dialog's open tab, and Rust then ignores the
+  // recent-list update (#1244 is the same mistake in the other direction, on
+  // the app-scoped Math switch).
+  await expect
+    .poll(() => page.evaluate(() => window.__harness.invocationsOf("update_settings").at(-1)?.args))
+    .toMatchObject({ patch: { scope: "account", composer: { recent_emojis: [selected] } } });
+});
+
 test("composer and remote-message reaction pickers share Rust-owned recent emojis", async ({ page }) => {
   await gotoReadyShell(page);
   await page.evaluate(() => {
