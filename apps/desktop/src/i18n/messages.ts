@@ -179,6 +179,7 @@ export type MessageId =
   | "composer.code"
   | "composer.dropFiles"
   | "composer.emoji"
+  | "composer.emojiClipped"
   | "composer.emojiResize"
   | "composer.emojiSizeSaveFailed"
   | "composer.emojiSearch"
@@ -897,6 +898,9 @@ export type MessageId =
   | "settings.credentialStoreWindows"
   | "settings.device"
   | "settings.emojiFont"
+  | "settings.emojiPickerSize"
+  | "settings.emojiPickerSizeDefault"
+  | "settings.emojiPickerSizeReset"
   | "settings.fontInter"
   | "settings.fontSystem"
   | "settings.general"
@@ -2489,6 +2493,7 @@ const en: Catalog = {
   "composer.code": "Code",
   "composer.dropFiles": "Drop files to attach",
   "composer.emoji": "Emoji",
+  "composer.emojiClipped": "Shrunk to {drawn} to fit the available space (your size: {saved})",
   "composer.emojiResize": "Resize emoji picker",
   "composer.emojiSizeSaveFailed": "Could not save picker size. Resize to retry.",
   "composer.emojiSearch": "Search emoji",
@@ -3220,6 +3225,9 @@ const en: Catalog = {
   "settings.credentialStoreWindows": "Windows Credential Manager",
   "settings.device": "Device",
   "settings.emojiFont": "Emoji font",
+  "settings.emojiPickerSize": "Emoji picker size",
+  "settings.emojiPickerSizeDefault": "Default",
+  "settings.emojiPickerSizeReset": "Reset to default",
   "settings.fontInter": "Inter",
   "settings.fontSystem": "System",
   "settings.general": "General",
@@ -4853,6 +4861,7 @@ const ja: Catalog = {
   "composer.code": "コード",
   "composer.dropFiles": "ファイルをドロップして添付",
   "composer.emoji": "絵文字",
+  "composer.emojiClipped": "表示できる大きさに合わせて {drawn} に縮小しています（設定したサイズ: {saved}）",
   "composer.emojiResize": "絵文字ピッカーのサイズを変更",
   "composer.emojiSizeSaveFailed": "サイズを保存できませんでした。再度サイズを変更してください。",
   "composer.emojiSearch": "絵文字を検索",
@@ -5584,6 +5593,9 @@ const ja: Catalog = {
   "settings.credentialStoreWindows": "Windows資格情報マネージャー",
   "settings.device": "デバイス",
   "settings.emojiFont": "絵文字フォント",
+  "settings.emojiPickerSize": "絵文字ピッカーのサイズ",
+  "settings.emojiPickerSizeDefault": "既定",
+  "settings.emojiPickerSizeReset": "既定に戻す",
   "settings.fontSystem": "システム",
   "settings.general": "一般",
   "settings.homeserver": "ホームサーバー",

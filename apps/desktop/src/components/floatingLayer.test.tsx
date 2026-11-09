@@ -8,6 +8,7 @@ import {
   FLOATING_LAYER_VIEWPORT_MARGIN_PX as MARGIN,
   type FloatingPlacementInput,
   floatingPlacementStyle,
+  pinnedPanelSize,
   resolveFloatingPlacement,
   useFloatingPlacement
 } from "./floatingLayer";
@@ -189,5 +190,26 @@ describe("useFloatingPlacement with a content-measured panel", () => {
 
     expect(panelStyle().visibility).toBe("");
     expect(panelStyle().top).not.toBe("");
+  });
+});
+
+describe("pinnedPanelSize", () => {
+  // #1583 keeps the chosen size, so a pinned (dragged) box can be narrower than
+  // it on either axis: the layer bounds and the edges the drag holds still both
+  // narrow it. The picker reads this back to say when it draws less than asked.
+  const resolved = resolveFloatingPlacement(input({ blockSize: 900, inlineSize: 700 }));
+  const unpinned = { bottom: null, left: 100, right: null, top: null };
+
+  it("keeps the chosen size when the pinned edges leave room for it", () => {
+    expect(pinnedPanelSize(resolved, unpinned, [700, 900])).toEqual([700, resolved.bounds.bottom - resolved.bounds.top]);
+  });
+
+  it("narrows from the pinned edge, never past the layer bounds", () => {
+    expect(pinnedPanelSize(resolved, { ...unpinned, top: 600 }, [700, 900])[1]).toBe(
+      resolved.bounds.bottom - 600
+    );
+    expect(
+      pinnedPanelSize(resolved, { ...unpinned, right: resolved.bounds.left + 300 }, [700, 900])[0]
+    ).toBe(300);
   });
 });

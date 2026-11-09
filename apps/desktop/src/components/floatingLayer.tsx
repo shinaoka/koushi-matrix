@@ -338,6 +338,44 @@ export function floatingPlacementStyle(
 }
 
 /**
+ * The box a pinned (dragged) panel draws: the caller's size narrowed to the
+ * layer bounds and to the edges the drag holds still.
+ */
+export function pinnedPanelSize(
+  resolved: FloatingPlacementResult,
+  pinned: {
+    left: number | null;
+    right: number | null;
+    top: number | null;
+    bottom: number | null;
+  },
+  [inlineSize, blockSize]: [number, number],
+): [number, number] {
+  const { bounds } = resolved;
+  const maxInline = Math.max(0, bounds.right - bounds.left);
+  const maxBlock = Math.max(0, bounds.bottom - bounds.top);
+  const inline = Math.min(
+    inlineSize,
+    maxInline,
+    pinned.right !== null
+      ? Math.max(0, pinned.right - bounds.left)
+      : pinned.left !== null
+        ? Math.max(0, bounds.right - pinned.left)
+        : maxInline,
+  );
+  const block = Math.min(
+    blockSize,
+    maxBlock,
+    pinned.bottom !== null
+      ? Math.max(0, pinned.bottom - bounds.top)
+      : pinned.top !== null
+        ? Math.max(0, bounds.bottom - pinned.top)
+        : maxBlock,
+  );
+  return [inline, block];
+}
+
+/**
  * Style a panel at a rectangle the user dragged.
  *
  * A resize moves the panel off its anchor, so the pinned rectangle replaces
@@ -360,26 +398,7 @@ export function pinnedPlacementStyle(
   blockSize: number,
 ): CSSProperties {
   const { bounds } = resolved;
-  const maxInline = Math.max(0, bounds.right - bounds.left);
-  const maxBlock = Math.max(0, bounds.bottom - bounds.top);
-  const inline = Math.min(
-    inlineSize,
-    maxInline,
-    pinned.right !== null
-      ? Math.max(0, pinned.right - bounds.left)
-      : pinned.left !== null
-        ? Math.max(0, bounds.right - pinned.left)
-        : maxInline,
-  );
-  const block = Math.min(
-    blockSize,
-    maxBlock,
-    pinned.bottom !== null
-      ? Math.max(0, pinned.bottom - bounds.top)
-      : pinned.top !== null
-        ? Math.max(0, bounds.bottom - pinned.top)
-        : maxBlock,
-  );
+  const [inline, block] = pinnedPanelSize(resolved, pinned, [inlineSize, blockSize]);
   const left = pinned.right !== null ? pinned.right - inline : (pinned.left ?? bounds.left);
   const top = pinned.bottom !== null ? pinned.bottom - block : (pinned.top ?? bounds.top);
   return {
