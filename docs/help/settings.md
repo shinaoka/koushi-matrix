@@ -35,7 +35,7 @@ translated app.
 | Scope and category | Settings and actions |
 | --- | --- |
 | App Settings → Appearance (外観) | Language (English, 日本語, 简体中文, 繁體中文, or 한국어); theme; display density; UI font and emoji style. |
-| App Settings → Preferences (環境設定) | Code-block wrapping; hiding removed messages; close to tray where configurable; placement of threaded conversations at their latest reply. |
+| App Settings → Preferences (環境設定) | Code-block wrapping; hiding removed messages; close to tray where configurable; the saved emoji picker size with **Reset to default**; placement of threaded conversations at their latest reply. |
 | App Settings → Keyboard (キーボード) | Send-message shortcut (Enter or the platform modifier+Enter); reference list of keyboard shortcuts and their availability. |
 | App Settings → Search history (検索履歴) | Shared background-work speed and pause/resume control. Search crawling and media prefetch use this budget across all accounts. **Off** pauses both. |
 | App Settings → AI assistants (AI アシスタント) | Switch that lets AI assistants on this computer connect; each assistant's permissions (read, send, attachments) per account, with **Remove access**; **Register** buttons that run Claude Code's, Codex's, or pi's own registration command; **Create Claude Desktop extension** on macOS and Windows; registration text to copy for every client, including DeepSeek Harness and other MCP clients. See [Connect an AI assistant](ai-assistants.md). |

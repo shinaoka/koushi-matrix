@@ -1,4 +1,4 @@
-import { Search, X } from "lucide-react";
+import { Minimize2, Search, X } from "lucide-react";
 import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -6,6 +6,7 @@ import {
   type RefObject,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -16,6 +17,7 @@ import {
   FloatingLayer,
   type FloatingRect,
   floatingPlacementStyle,
+  pinnedPanelSize,
   pinnedPlacementStyle,
   useFloatingPlacement,
 } from "./floatingLayer";
@@ -253,6 +255,8 @@ export function EmojiPicker({
     top: number | null;
   } | null>(null);
   const [query, setQuery] = useState("");
+  /** Names the clip description the dialog points at while the marker shows. */
+  const clippedDescriptionId = useId();
   const [activeCategory, setActiveCategory] = useState<
     EmojiCategory | "recent"
   >("people");
@@ -496,6 +500,23 @@ export function EmojiPicker({
   // A drag draws the box it is moving; every other moment draws the committed
   // preference, which the layer narrows to the window.
   const drawnSize = renderedSize ?? draftSize;
+  // The size this picker asks for, against the box the layer can actually draw
+  // for it. A narrowed box keeps the preference (#1583), so a smaller picker is
+  // otherwise indistinguishable from a size that never persisted. A drag draws
+  // `renderedSize`, so the comparison uses the box that drag asks for, not the
+  // preference it started from.
+  const shownSize: [number, number] = !resolvedPlacement
+    ? draftSize
+    : pinnedGeometry
+      ? pinnedPanelSize(resolvedPlacement, pinnedGeometry, drawnSize)
+      : [resolvedPlacement.inlineSize, resolvedPlacement.blockSize];
+  const clipped = shownSize[0] < draftSize[0] || shownSize[1] < draftSize[1];
+  const clippedLabel = clipped
+    ? t("composer.emojiClipped", {
+        drawn: `${shownSize[0]}×${shownSize[1]}`,
+        saved: `${draftSize[0]}×${draftSize[1]}`,
+      })
+    : null;
   const panel = (
     <div
       ref={panelRef}
@@ -509,6 +530,7 @@ export function EmojiPicker({
         .join(" ")}
       role="dialog"
       aria-label={t("composer.emoji")}
+      aria-describedby={clipped ? clippedDescriptionId : undefined}
       style={
         pinnedGeometry && resolvedPlacement
           ? pinnedPlacementStyle(resolvedPlacement, pinnedGeometry, drawnSize[0], drawnSize[1])
@@ -562,6 +584,11 @@ export function EmojiPicker({
         );
       })}
       <div className="emoji-picker-header">
+        {clippedLabel ? (
+          <span id={clippedDescriptionId} className="sr-only">
+            {clippedLabel}
+          </span>
+        ) : null}
         <div className="emoji-picker-search">
           <Search size={14} aria-hidden="true" />
           <ImeTextField
@@ -574,6 +601,23 @@ export function EmojiPicker({
             onChange={(event) => setQuery(event.currentTarget.value)}
           />
         </div>
+        {clippedLabel ? (
+          <Tooltip label={clippedLabel} placement="below" align="end">
+            {(tooltipProps) => (
+              // A marker, not a control: it owns no gesture, takes no focus, and
+              // only answers a hover. The same fact is the dialog's description
+              // below, so a keyboard user does not need this pointer-only bubble.
+              <span
+                className="emoji-picker-clip"
+                aria-hidden="true"
+                tabIndex={-1}
+                {...tooltipProps}
+              >
+                <Minimize2 size={14} />
+              </span>
+            )}
+          </Tooltip>
+        ) : null}
         <Tooltip label={t("mediaGallery.close")} placement="below" align="end">
           {(tooltipProps) => (
             <button

@@ -6140,6 +6140,18 @@ mark {
   font-size: 13px;
 }
 
+/* The only visible sign that the layer is drawing a smaller box than the size
+   the user chose. It answers a hover with its own tooltip and owns no other
+   pointer gesture, takes no focus, and is not a resize zone. */
+.emoji-picker-clip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--text-muted);
+  cursor: default;
+  pointer-events: auto;
+}
+
 .emoji-picker-tabs {
   display: flex;
   gap: 2px;

@@ -14,7 +14,7 @@ export function useEmojiPickerSize() {
     settlementSnapshot: () => api.settlementSnapshot(),
     applySnapshot: setAppStoreSnapshot,
   }));
-  const save = (next: [number, number]) => {
+  const save = (next: [number, number] | null) => {
     const current = getAppStoreSnapshot()?.state.domain.settings.values.window;
     if (!current) return;
     previousFailures.current = failureCount;

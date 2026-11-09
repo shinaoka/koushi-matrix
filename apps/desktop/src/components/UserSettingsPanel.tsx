@@ -38,6 +38,7 @@ import {
 } from "./user-settings/NotificationDeliverySection";
 import { TrustSection } from "./user-settings/TrustSection";
 import { AppearanceControls, LanguageControls } from "./user-settings/AppearanceControls";
+import { EmojiPickerSizeRow } from "./user-settings/EmojiPickerSizeRow";
 import { DetailRow } from "./user-settings/SettingsStatusPrimitives";
 import type { DisplayDensity } from "../domain/types";
 import type { ShortcutLabelProfile } from "../domain/shortcuts";
@@ -836,6 +837,7 @@ export function UserSettingsPanel({
                 />
               ) : null}
             </div>
+            <EmojiPickerSizeRow />
           </section>
           <section id="settings-timeline" className="settings-section" aria-label={t("settings.timeline")}>
             <div className="settings-section-heading">
