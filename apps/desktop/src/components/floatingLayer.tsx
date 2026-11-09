@@ -55,6 +55,13 @@ export interface FloatingPlacementInput {
    * small popup wants: flip as soon as it would not fit whole.
    */
   comfortableBlockSize?: number;
+  /**
+   * Whether the space left beside the anchor narrows the panel (the default).
+   * A small popup wants that: it flips and shrinks instead of covering its
+   * trigger. A panel that scrolls its own content passes `false`, so only the
+   * bounds narrow it and the final clamp shifts it into them (#1839).
+   */
+  shrinkToAnchor?: boolean;
   margin?: number;
   gap?: number;
   safeTop?: number;
@@ -89,6 +96,8 @@ function isUsableRect(rect: FloatingRect): boolean {
  * The panel prefers the caller's placement/alignment, flips to the opposite
  * side when the preferred one cannot fit, and is finally clamped inside the
  * boundary so an overflow-clipped pane or a small window can never cut it off.
+ * A panel that keeps its own size is only clamped, never narrowed to the room
+ * beside its anchor: it scrolls its content instead.
  */
 export function resolveFloatingPlacement(
   input: FloatingPlacementInput,
@@ -132,8 +141,21 @@ export function resolveFloatingPlacement(
   const oppositeAvailable =
     input.placement === "above" ? availableBelow : availableAbove;
   const opposite = input.placement === "above" ? "below" : "above";
+  const keepsItsSize = input.shrinkToAnchor === false;
+  // A panel that keeps its own size flips on the box it actually draws. Judging
+  // it by `comfortableBlockSize` instead would flip into a side that cannot hold
+  // that box and then clamp it back over the trigger (#1839 review).
+  const targetBlock = Math.min(input.blockSize, bounds.bottom - bounds.top);
   let placement = input.placement;
-  if (preferredAvailable < comfortable) {
+  if (keepsItsSize) {
+    const preferredFits = preferredAvailable >= targetBlock;
+    const oppositeFits = oppositeAvailable >= targetBlock;
+    if (!preferredFits && oppositeFits) {
+      placement = opposite;
+    } else if (!preferredFits) {
+      placement = availableAbove >= availableBelow ? "above" : "below";
+    }
+  } else if (preferredAvailable < comfortable) {
     if (oppositeAvailable >= comfortable) {
       placement = opposite;
     } else {
@@ -141,7 +163,11 @@ export function resolveFloatingPlacement(
     }
   }
   const availableBlock = placement === "above" ? availableAbove : availableBelow;
-  const blockSize = Math.min(input.blockSize, availableBlock, bounds.bottom - bounds.top);
+  const blockSize = Math.min(
+    input.blockSize,
+    keepsItsSize ? Number.POSITIVE_INFINITY : availableBlock,
+    bounds.bottom - bounds.top,
+  );
   const top =
     placement === "above" ? anchor.top - gap - blockSize : anchor.bottom + gap;
 
@@ -224,6 +250,7 @@ export interface FloatingPlacementOptions {
   inlineSize?: number;
   blockSize?: number;
   comfortableBlockSize?: number;
+  shrinkToAnchor?: boolean;
 }
 
 /**
@@ -246,6 +273,7 @@ export function useFloatingPlacement(
     inlineSize,
     blockSize,
     comfortableBlockSize,
+    shrinkToAnchor,
   } = options;
   const [resolved, setResolved] = useState<FloatingPlacementResult | null>(null);
 
@@ -277,6 +305,7 @@ export function useFloatingPlacement(
       direction: document.documentElement.dir === "rtl" ? "rtl" : "ltr",
       inlineSize: contentSize ? contentSize.right - contentSize.left : inlineSize ?? 0,
       placement,
+      shrinkToAnchor,
       viewport: { height: window.innerHeight, width: window.innerWidth },
     });
     setResolved((current) => (placementsEqual(current, next) ? current : next));
@@ -289,6 +318,7 @@ export function useFloatingPlacement(
     inlineSize,
     placement,
     resolveBoundaryElement,
+    shrinkToAnchor,
   ]);
 
   useLayoutEffect(() => {

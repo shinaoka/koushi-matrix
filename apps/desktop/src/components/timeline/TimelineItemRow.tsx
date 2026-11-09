@@ -222,10 +222,6 @@ function selectedRangeText(selection: Selection): string {
   return parts.join("\n");
 }
 
-function reactionPickerBoundaryElement(anchor: Element): Element | null {
-  return anchor.closest(".timeline-view") ?? anchor.closest(".main-pane");
-}
-
 const ignoreSendQueueAction = () => undefined;
 
 export type TimelineAliasTarget = {
@@ -1484,7 +1480,6 @@ export function TimelineItemRow({
                   anchorRef={reactionTriggerRef}
                   align="end"
                   placement="below"
-                  resolveBoundaryElement={reactionPickerBoundaryElement}
                   className="timeline-reaction-emoji-picker"
                   recentEmojis={recentEmojis}
                   onRecentEmojisChange={onRecentEmojisChange}

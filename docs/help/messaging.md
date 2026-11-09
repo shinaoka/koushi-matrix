@@ -41,11 +41,16 @@ Open **Emoji** in a composer or reaction menu and drag any edge or corner of the
 picker: an edge changes that dimension, a corner changes both. The opposite edge
 or corner stays where it is. You can also focus the marked corner with Tab and
 use the arrow keys. The size is shared across pickers on this device and restored
-after restarting Koushi. In a smaller window the picker fits the available space
-without replacing your saved size; while it is drawn smaller than your size, a
-small marker in the picker's header says so on hover, with the drawn and saved
-measurements. **App Settings** → **Preferences** shows the saved size and has a
-**Reset to default** button.
+after restarting Koushi. The saved size is drawn wherever the picker opens, and
+only a window too small for it narrows it; the emoji grid then scrolls inside the
+picker, the search field stays in view, and the grid scrolls with the arrow keys
+while it has focus. When the window cannot hold the saved size next to the
+message you opened the picker from, the picker covers that message rather than
+shrink any further. A corner you drag stays where you put it, so the window may
+narrow the picker a little further to keep it there. While the picker is drawn
+smaller than your size, a small marker in the header says so on hover, with the
+drawn and saved measurements. **App Settings** → **Preferences** shows the saved
+size and has a **Reset to default** button.
 
 ## Schedule a message
 

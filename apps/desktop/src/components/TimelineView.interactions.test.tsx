@@ -41,6 +41,22 @@ import {
   inlineMentionEditorSelection,
   setInlineMentionEditorSelection
 } from "./ImeTextControl";
+import { EMOJI_PICKER_BLOCK_SIZE_PX } from "./EmojiPicker";
+import {
+  FLOATING_LAYER_ANCHOR_GAP_PX,
+  FLOATING_LAYER_VIEWPORT_MARGIN_PX
+} from "./floatingLayer";
+
+/** The mocked message-action box every geometry below is measured from. */
+const TRIGGER_BOX_HEIGHT = 24;
+/** jsdom's window is 768px tall. */
+const WINDOW_HEIGHT = 768;
+/** Where the layer puts the saved-size panel anchored at `triggerTop`. */
+function pickerTopBelow(triggerTop: number): string {
+  const lowest = WINDOW_HEIGHT - FLOATING_LAYER_VIEWPORT_MARGIN_PX - EMOJI_PICKER_BLOCK_SIZE_PX;
+  return `${Math.min(triggerTop + TRIGGER_BOX_HEIGHT + FLOATING_LAYER_ANCHOR_GAP_PX, lowest)}px`;
+}
+const PICKER_BLOCK_SIZE = `${EMOJI_PICKER_BLOCK_SIZE_PX}px`;
 
 function changeInlineEditorText(editor: HTMLDivElement, text: string) {
   if (editor.dataset.composing === "true") {
@@ -650,7 +666,7 @@ describe("TimelineView", () => {
     });
   });
 
-  it("opens the reaction emoji picker above when the composer-side space is insufficient", async () => {
+  it("opens the reaction emoji picker below its trigger when the pane is short but the window has room", async () => {
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
       this: HTMLElement
     ) {
@@ -703,8 +719,12 @@ describe("TimelineView", () => {
     fireEvent.click(screen.getByRole("button", { name: /add reaction/i }));
 
     const picker = await screen.findByRole("dialog", { name: /emoji/i });
-    expect(picker.classList.contains("is-above")).toBe(true);
-    expect(picker.classList.contains("is-below")).toBe(false);
+    // The pane the row sits in is not a size cap (#1839): a short pane no longer
+    // flips the panel or narrows it, because the panel escapes the pane and the
+    // window decides what fits.
+    expect(picker.classList.contains("is-below")).toBe(true);
+    expect(picker.classList.contains("is-above")).toBe(false);
+    expect(picker.style.getPropertyValue("block-size")).toBe(PICKER_BLOCK_SIZE);
   });
 
   it("orders and routes distinct reply actions in a fully actionable room row", () => {
@@ -1118,7 +1138,7 @@ describe("TimelineView", () => {
     expect(document.activeElement).toBe(items[items.length - 1]);
   });
 
-  it("shrinks the reaction emoji picker to the visible space instead of clipping it", async () => {
+  it("draws the saved reaction picker size inside a short pane instead of shrinking to it", async () => {
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
       this: HTMLElement
     ) {
@@ -1173,7 +1193,15 @@ describe("TimelineView", () => {
     fireEvent.click(screen.getByRole("button", { name: /add reaction/i }));
 
     const picker = await screen.findByRole("dialog", { name: /emoji/i });
-    expect(picker.style.getPropertyValue("block-size")).toBe("194px");
+    // The pane above the composer is short, but the window is not: the panel
+    // keeps the saved block size and is shifted up into the window instead of
+    // shrinking to the pane and clipping its grid (#1839).
+    expect(picker.style.getPropertyValue("block-size")).toBe(PICKER_BLOCK_SIZE);
+    // The trigger's mocked 320px top would leave the panel at 350px, past the
+    // lowest place the window still holds it: the layer shifts it up instead.
+    expect(picker.style.getPropertyValue("top")).toBe(
+      `${WINDOW_HEIGHT - FLOATING_LAYER_VIEWPORT_MARGIN_PX - EMOJI_PICKER_BLOCK_SIZE_PX}px`
+    );
   });
 
   it("keeps the reaction emoji picker at its preferred block size when there is room", async () => {
@@ -1232,10 +1260,10 @@ describe("TimelineView", () => {
 
     const picker = await screen.findByRole("dialog", { name: /emoji/i });
     expect(picker.classList.contains("is-below")).toBe(true);
-    expect(picker.style.getPropertyValue("block-size")).toBe("520px");
+    expect(picker.style.getPropertyValue("block-size")).toBe(PICKER_BLOCK_SIZE);
   });
 
-  it("updates the reaction emoji picker size when the visible space changes", async () => {
+  it("keeps the drawn reaction picker size when the measured pane changes under it", async () => {
     let reactionControlTop = 320;
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
       this: HTMLElement
@@ -1291,14 +1319,18 @@ describe("TimelineView", () => {
     fireEvent.click(screen.getByRole("button", { name: /add reaction/i }));
 
     const picker = await screen.findByRole("dialog", { name: /emoji/i });
-    expect(picker.style.getPropertyValue("block-size")).toBe("194px");
+    expect(picker.style.getPropertyValue("block-size")).toBe(PICKER_BLOCK_SIZE);
 
+    // Moving the row does re-place the panel, but the saved size is what is
+    // drawn: only the window may narrow it (#1839).
     reactionControlTop = 150;
     fireEvent(window, new Event("resize"));
 
     await waitFor(() => {
       expect(picker.classList.contains("is-below")).toBe(true);
-      expect(picker.style.getPropertyValue("block-size")).toBe("200px");
+      expect(picker.style.getPropertyValue("block-size")).toBe(PICKER_BLOCK_SIZE);
+      // 150px trigger: the panel fits below it, so no shift is needed.
+      expect(picker.style.getPropertyValue("top")).toBe(pickerTopBelow(150));
     });
   });
 

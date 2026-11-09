@@ -203,12 +203,6 @@ interface EmojiPickerProps {
    * re-opening after the outside-click handler fires. It is also the anchor
    * rectangle the floating layer is positioned against. */
   anchorRef?: RefObject<Element | null>;
-  /**
-   * Resolves an extra container the panel must stay inside. Layout knowledge
-   * stays with the caller; the panel re-resolves it on every measurement so a
-   * resize or scroll cannot leave a stale boundary behind.
-   */
-  resolveBoundaryElement?: (anchor: Element) => Element | null;
   placement?: "above" | "below";
   align?: "start" | "end";
   className?: string;
@@ -222,7 +216,6 @@ export function EmojiPicker({
   recentEmojis = [],
   onRecentEmojisChange,
   anchorRef,
-  resolveBoundaryElement,
   placement = "above",
   align = "start",
   className,
@@ -313,7 +306,10 @@ export function EmojiPicker({
     comfortableBlockSize: EMOJI_PICKER_COMFORTABLE_BLOCK_SIZE_PX,
     inlineSize: draftSize[0],
     placement,
-    resolveBoundaryElement
+    // The messages and the pane an anchor sits in are not a size cap: the
+    // picker draws the saved size and scrolls its grid, so only the window
+    // can narrow it (and the layer then shifts it into view) (#1839).
+    shrinkToAnchor: false,
   });
 
   const resizeAbove = resolvedPlacement?.placement === "above";
@@ -682,7 +678,18 @@ export function EmojiPicker({
         </div>
       )}
 
-      <div ref={bodyRef} className="emoji-picker-body">
+      {/* The grid scrolls here while the header and tabs stay put. A focused
+          region owns the arrow, Page and Home/End keys for scrolling, so the
+          region is its own tab stop: the grid's keys move between cells and
+          cannot scroll it, and the marked frame handle keeps its arrows for
+          resizing (#1839). */}
+      <div
+        ref={bodyRef}
+        className="emoji-picker-body"
+        role="region"
+        aria-label={t("composer.emojiList")}
+        tabIndex={0}
+      >
         {savedSize.failed && <p role="alert">{t("composer.emojiSizeSaveFailed")}</p>}
         {searching ? (
           filtered && filtered.length > 0 ? (
