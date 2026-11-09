@@ -93,6 +93,31 @@ describe("resolveFloatingPlacement", () => {
     expect(placement.top + placement.blockSize).toBeLessThanOrEqual(800 - MARGIN);
   });
 
+  it("keeps a panel's own block size and shifts it inside the bounds instead", () => {
+    // A panel that scrolls its content (#1839) is narrowed by the bounds only;
+    // the final clamp moves it off its anchor room rather than cutting it down.
+    const placement = resolveFloatingPlacement(
+      input({
+        anchor: { top: 500, right: 340, bottom: 520, left: 300 },
+        blockSize: 600,
+        shrinkToAnchor: false
+      })
+    );
+
+    expect(placement.blockSize).toBe(600);
+    expect(placement.top).toBeGreaterThanOrEqual(MARGIN);
+    expect(placement.top + placement.blockSize).toBeLessThanOrEqual(800 - MARGIN);
+  });
+
+  it("narrows a panel that keeps its own size to the bounds", () => {
+    const placement = resolveFloatingPlacement(
+      input({ blockSize: 900, shrinkToAnchor: false })
+    );
+
+    expect(placement.blockSize).toBe(800 - 2 * MARGIN);
+    expect(placement.top).toBe(MARGIN);
+  });
+
   it("ignores a collapsed boundary and falls back to the viewport", () => {
     const placement = resolveFloatingPlacement(
       input({ boundary: { top: 0, right: 0, bottom: 0, left: 0 } })

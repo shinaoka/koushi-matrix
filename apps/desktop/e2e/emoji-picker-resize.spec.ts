@@ -333,30 +333,32 @@ test("the anchor-side edge of a narrowed panel follows the pointer", async ({ pa
   // also the preference a resize is measured from.
   const chosen = await pickerBox(page);
 
-  // A small window narrows the drawn panel: the layer clips the block axis, so
-  // the drawn box is shorter than that size. The gap has to beat the assertion
+  // A small window narrows the drawn panel: the window is the only cap on the
+  // saved size (#1839), and the layer clips the block axis to it, so the drawn
+  // box is shorter than that size. The gap has to beat the assertion
   // tolerance, or a tiny clip would hide the overshoot this test is about.
-  await page.setViewportSize({ width: 520, height: 560 });
+  await page.setViewportSize({ width: 520, height: 480 });
   await expect
     .poll(async () => chosen.height - (await pickerBox(page)).height)
     .toBeGreaterThan(TOLERANCE_PX);
 
-  // The anchor-side block edge is the one opposite the marked corner.
+  // The anchor-side block edge is the one opposite the marked corner. A panel
+  // narrowed to the window fills it, so that edge has room only inward.
   const anchorEdge: FrameZone = (await markedZone(page)).startsWith("top") ? "bottom" : "top";
-  const grow = 40;
-  const dy = anchorEdge === "bottom" ? grow : -grow;
+  const moved = 40;
+  const dy = anchorEdge === "bottom" ? -moved : moved;
 
   // While the pointer is down the grabbed edge travels exactly as far as the
   // pointer. Measuring the drawn box from the preference instead would add the
   // narrowing to the drag, so the edge would outrun the pointer (#1826).
   const before = await pickerBox(page);
   const held = await dragHolding(page, anchorEdge, 0, dy);
-  const travelled = anchorEdge === "bottom" ? held.bottom - before.bottom : before.top - held.top;
-  expectNear(travelled, grow, `${anchorEdge} edge follows the pointer`);
+  const travelled = anchorEdge === "bottom" ? before.bottom - held.bottom : held.top - before.top;
+  expectNear(travelled, moved, `${anchorEdge} edge follows the pointer`);
 
   // The committed size still comes from the chosen size, never the drawn box:
   // #1583's rule is unchanged.
-  await expect.poll(() => savedPickerSize(page)).toEqual([chosen.width, chosen.height + grow]);
+  await expect.poll(() => savedPickerSize(page)).toEqual([chosen.width, chosen.height - moved]);
 });
 
 test("the focused frame handle resizes with the keyboard and the size survives reopen", async ({

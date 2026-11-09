@@ -6187,6 +6187,13 @@ mark {
   padding: 8px;
 }
 
+/* The scroll region is a tab stop: the ring sits inside the frame gutter so the
+   panel's own overflow cannot clip it. */
+.emoji-picker-body:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
+}
+
 /* Whole-frame resizing (#1583): thin strips on all four edges, squares on all
    four corners. Insets are logical; the cursor names the physical edge pair,
    because the drag itself follows physical pointer coordinates. */
