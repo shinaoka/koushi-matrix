@@ -7804,6 +7804,10 @@ function AccountContent({
             onRecentEmojisChange={(recent_emojis) => {
               runInBackground(
                 updateSettings({
+                  // Recent emojis are account-scoped while the same patch shape
+                  // carries app-scoped math mode, so name the scope; an unnamed
+                  // patch takes the Settings dialog's open tab (#1244).
+                  scope: "account",
                   composer: {
                     ...snapshot.state.domain.settings.values.composer,
                     recent_emojis
