@@ -537,7 +537,7 @@ async fn wait_for_focused_context_closed(
                 request_id,
                 account_key,
                 room_id,
-                allow_projection_only: true,
+                allow_projection_only: !allow_room_restore,
                 allow_room_restore,
             },
             baseline_generation,

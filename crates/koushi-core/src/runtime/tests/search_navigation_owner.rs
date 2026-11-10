@@ -57,6 +57,7 @@ fn selected_room_state() -> AppState {
 
 struct Harness {
     command_tx: mpsc::Sender<CoreCommandEnvelope>,
+    event_rx: broadcast::Receiver<CoreEvent>,
     snapshot_rx: watch::Receiver<VersionedAppStateSnapshot>,
     focused_projection_tx: mpsc::UnboundedSender<FocusedProjectionCommitted>,
     manager: GatedFocusedBuildManager,
@@ -121,7 +122,7 @@ fn start_with(state: AppState) -> Harness {
         command_tx,
         action_tx,
         mut account_rx,
-        _event_rx,
+        event_rx,
         snapshot_rx,
         navigation_projection_rx,
         _event_navigation_prepared_tx,
@@ -171,6 +172,7 @@ fn start_with(state: AppState) -> Harness {
     });
     Harness {
         command_tx,
+        event_rx,
         snapshot_rx,
         focused_projection_tx,
         manager,
@@ -230,6 +232,26 @@ impl Harness {
             })
             .await
             .expect("close focused context command");
+    }
+
+    /// The close is complete once its request-correlated `Committed` is
+    /// published, which follows the restore and the close.
+    async fn wait_for_close_committed(&mut self, request_id: RequestId) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match self.event_rx.recv().await {
+                    Ok(CoreEvent::IntentLifecycle {
+                        request_id: committed,
+                        outcome: IntentOutcome::Committed,
+                        ..
+                    }) if committed == request_id => return,
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(error) => panic!("event stream closed: {error:?}"),
+                }
+            }
+        })
+        .await
+        .expect("the close must publish its committed outcome");
     }
 
     /// The renderer's recovery `ensure_timeline_subscribed` for the same key.
@@ -720,6 +742,8 @@ async fn cancelling_a_pending_navigation_publishes_no_failure() {
     let release = harness.manager.build_started().await;
 
     harness.close_focused_context(request(2)).await;
+
+    harness.wait_for_close_committed(request(2)).await;
     harness
         .wait_for_state("cancel must clear the pending navigation", |state| {
             matches!(
@@ -764,6 +788,7 @@ async fn cancelling_a_pending_navigation_restores_the_previous_room() {
     harness.navigate(request(1)).await;
     let release = harness.manager.build_started().await;
     harness.close_focused_context(request(2)).await;
+    harness.wait_for_close_committed(request(2)).await;
     harness
         .wait_for_state("cancel must restore the previous room", |state| {
             state.navigation.active_room_id.as_deref() == Some(PREVIOUS_ROOM)
@@ -813,6 +838,7 @@ async fn cancelling_a_superseded_navigation_restores_the_original_room() {
         .await;
     let _second = harness.manager.build_started().await;
     harness.close_focused_context(request(4)).await;
+    harness.wait_for_close_committed(request(4)).await;
     harness
         .wait_for_state("cancel must restore the original room", |state| {
             state.navigation.active_room_id.as_deref() == Some(PREVIOUS_ROOM)
@@ -861,7 +887,8 @@ async fn user_room_selection_supersedes_without_rollback() {
         })
         .await;
 
-    tokio::time::advance(crate::runtime::navigation::EVENT_NAVIGATION_TIMEOUT).await;
+    harness.close_focused_context(request(3)).await;
+    harness.wait_for_close_committed(request(3)).await;
     assert_eq!(
         harness
             .snapshot_rx
@@ -886,6 +913,7 @@ async fn cancelling_from_home_returns_to_home() {
     harness.navigate(request(1)).await;
     let _held = harness.manager.build_started().await;
     harness.close_focused_context(request(2)).await;
+    harness.wait_for_close_committed(request(2)).await;
     harness
         .wait_for_state("cancel must return to Home", |state| {
             state.navigation.active_room_id.is_none()
@@ -921,6 +949,7 @@ async fn cancelling_restores_the_previous_space_and_room() {
     harness.navigate(request(1)).await;
     let _held = harness.manager.build_started().await;
     harness.close_focused_context(request(2)).await;
+    harness.wait_for_close_committed(request(2)).await;
     harness
         .wait_for_state("cancel must restore the Space and its room", |state| {
             state.navigation.active_space_id.as_deref() == Some(SPACE)

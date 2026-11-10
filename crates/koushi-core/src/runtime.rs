@@ -4342,6 +4342,13 @@ impl AppActor {
                                     .await;
                                 }
                                 Box::pin(self.handle_app_effects(request_id, effects)).await;
+                                // #1848: published after the restore and the close, so a
+                                // waiter that needs the final selection can wait for it.
+                                self.emit(CoreEvent::IntentLifecycle {
+                                    request_id,
+                                    outcome: IntentOutcome::Committed,
+                                    published_generation: self.state_generation,
+                                });
                                 true
                             })
                             .await

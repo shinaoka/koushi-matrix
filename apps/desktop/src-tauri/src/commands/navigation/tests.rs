@@ -215,6 +215,7 @@ async fn focused_context_close_wait_uses_core_outcome_guards() {
         request_id,
         account_key,
         room_id,
+        false,
         0,
         tokio::time::Instant::now() + std::time::Duration::from_secs(1),
     )

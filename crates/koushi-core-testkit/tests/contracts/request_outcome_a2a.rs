@@ -108,6 +108,51 @@ async fn signed_out_rejects_a_foreign_account_event() {
     assert_eq!(waiter.await, Err(RequestOutcomeError::TimedOut));
 }
 
+/// #1848: a cancel's close is complete only at its committed outcome. A
+/// projection that matches while the restore is still in flight (the room is
+/// still the navigation target) must not satisfy it.
+#[tokio::test]
+async fn focused_context_cancel_close_waits_for_its_committed_outcome() {
+    let account_key = AccountKey("@alice:example.invalid".to_owned());
+    let target = "!target:example.invalid".to_owned();
+    let previous = "!previous:example.invalid".to_owned();
+    let (mut connection, control) = CoreConnection::new_for_testing(4);
+    let close_request = request(5);
+    let close = connection.wait_for_request_outcome(
+        OutcomeCorrelation::Request(close_request),
+        RequestOutcomeExpectation::FocusedContextClosed {
+            request_id: close_request,
+            account_key: account_key.clone(),
+            room_id: Some(target.clone()),
+            allow_projection_only: false,
+            allow_room_restore: true,
+        },
+        0,
+        tokio::time::Instant::now() + Duration::from_secs(1),
+    );
+    tokio::pin!(close);
+
+    // The cancel publishes the target still selected, with the focused context closed.
+    let mut in_flight = ready_state(&account_key.0);
+    in_flight.navigation.active_room_id = Some(target);
+    in_flight.focused_context = FocusedContextState::Closed;
+    control.send_snapshot(versioned(in_flight, 1));
+    assert!(close.as_mut().now_or_never().is_none());
+
+    // The restored selection is published, but the close has not committed yet.
+    let mut restored = ready_state(&account_key.0);
+    restored.navigation.active_room_id = Some(previous);
+    restored.focused_context = FocusedContextState::Closed;
+    control.send_snapshot(versioned(restored, 2));
+    assert!(close.as_mut().now_or_never().is_none());
+
+    control.send_event(commit(close_request));
+    assert!(matches!(
+        close.await,
+        Ok(RequestOutcome::FocusedContext { .. })
+    ));
+}
+
 #[tokio::test]
 async fn focused_context_close_and_open_require_correlated_snapshot_targets() {
     let account_key = AccountKey("@alice:example.invalid".to_owned());
@@ -123,6 +168,7 @@ async fn focused_context_close_and_open_require_correlated_snapshot_targets() {
             account_key: account_key.clone(),
             room_id: Some(room_id.clone()),
             allow_projection_only: false,
+            allow_room_restore: false,
         },
         0,
         tokio::time::Instant::now() + Duration::from_secs(1),
@@ -449,6 +495,7 @@ async fn projection_only_idempotent_outcomes_settle_without_unavailable_terminal
             account_key: AccountKey("@alice:example.invalid".to_owned()),
             room_id: Some("!room:example.invalid".to_owned()),
             allow_projection_only: true,
+            allow_room_restore: false,
         },
         0,
         tokio::time::Instant::now() + Duration::from_secs(1),

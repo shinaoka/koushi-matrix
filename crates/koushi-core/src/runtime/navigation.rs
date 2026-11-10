@@ -425,9 +425,12 @@ impl AppActor {
     // shortcut: a prior Space with no open room is not restored when that Space has rooms, because SelectSpace auto-selects one and no action clears the room within a Space (reducer/navigation.rs:395-440, reducer/mod.rs:3023-3040); upgrade with a reducer action that sets Space and room together.
     pub(super) async fn restore_prior_selection(&mut self, prior: PriorSelection) {
         let current_space = self.state.navigation.active_space_id.clone();
-        // SelectSpace(None) is the only action that clears an open room in Home.
+        // SelectSpace(None) is the only action that clears an open room in Home,
+        // so a prior Home with no room needs it; a prior room is selected directly.
         let needs_space_select = prior.space_id != current_space
-            || (prior.space_id.is_none() && self.state.navigation.active_room_id.is_some());
+            || (prior.space_id.is_none()
+                && prior.room_id.is_none()
+                && self.state.navigation.active_room_id.is_some());
         if needs_space_select {
             self.commit_local_navigation(AppAction::SelectSpace {
                 space_id: prior.space_id.clone(),
