@@ -175,6 +175,18 @@ impl Harness {
         self.wait_forwarded(request_id).await;
     }
 
+    /// The pending banner's cancel: the existing `CloseFocusedContext` command.
+    async fn close_focused_context(&mut self, request_id: RequestId) {
+        self.command_tx
+            .send(CoreCommandEnvelope::Public {
+                command: CoreCommand::App(AppCommand::CloseFocusedContext { request_id }),
+                composer_permit: None,
+                admission: None,
+            })
+            .await
+            .expect("close focused context command");
+    }
+
     /// The renderer's recovery `ensure_timeline_subscribed` for the same key.
     async fn renderer_subscribe(&mut self, request_id: RequestId) {
         self.command_tx
@@ -450,7 +462,9 @@ async fn blocked_focused_build_with_an_observer_settles_at_the_deadline() {
     let _held = harness.manager.build_started().await;
     harness.renderer_subscribe(request(2)).await;
 
-    let failed = tokio::time::timeout(Duration::from_secs(30), async {
+    // #1848: the focused budget (30 s) must settle this, before the 45 s
+    // backstop could be what fails it.
+    let failed = tokio::time::timeout(Duration::from_secs(40), async {
         loop {
             if matches!(
                 harness
@@ -623,4 +637,69 @@ async fn a_commit_for_the_superseded_navigation_does_not_settle_the_repeat() {
         release.send(Ok(())).expect("build is pending");
     }
     harness.wait_anchored().await;
+}
+
+/// #1848: a slow old-history build that finishes inside its budget must anchor.
+/// Under the former 10 s budget and 15 s backstop it was cut at 10 s.
+#[tokio::test(start_paused = true)]
+async fn slow_old_history_build_within_budget_anchors_without_failure() {
+    let mut harness = start();
+    harness.navigate(request(1)).await;
+    let release = harness.manager.build_started().await;
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(20)).await;
+    tokio::task::yield_now().await;
+    release.send(Ok(())).expect("build is still pending");
+    harness.wait_anchored().await;
+}
+
+/// #1848: the AppActor backstop must outlive the focused build it backs, plus
+/// the up-to-5 s room-event cache lookup that runs before the build starts
+/// (`account/routing.rs` `ROOM_EVENT_CACHE_TIMEOUT`).
+#[test]
+fn event_navigation_backstop_outlives_the_focused_build_budget() {
+    assert!(
+        crate::runtime::navigation::EVENT_NAVIGATION_TIMEOUT
+            > crate::timeline::FOCUSED_TIMELINE_BUILD_TIMEOUT + Duration::from_secs(5)
+    );
+}
+
+/// #1848: cancelling the pending navigation from its banner (`CloseFocusedContext`)
+/// ends the wait without a failure: the held build is dropped, the owner is
+/// cleared, and the superseded deadline cannot publish a failure later.
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_pending_navigation_publishes_no_failure() {
+    let mut harness = start();
+    let key = focused_key();
+    harness.navigate(request(1)).await;
+    let release = harness.manager.build_started().await;
+
+    harness.close_focused_context(request(2)).await;
+    harness
+        .wait_for_state("cancel must clear the pending navigation", |state| {
+            matches!(
+                state.navigation.event_navigation,
+                EventNavigationState::Idle
+            )
+        })
+        .await;
+    assert!(
+        release.is_closed(),
+        "cancel must drop the held focused build"
+    );
+    assert_eq!(harness.manager.pending_owner(&key).await, None);
+
+    tokio::time::advance(crate::runtime::navigation::EVENT_NAVIGATION_TIMEOUT).await;
+    assert!(
+        matches!(
+            harness
+                .snapshot_rx
+                .borrow()
+                .state
+                .navigation
+                .event_navigation,
+            EventNavigationState::Idle
+        ),
+        "no late deadline may publish a failure after cancel"
+    );
 }

@@ -623,7 +623,9 @@ pub(super) fn build_select_room_command(
 pub(super) const SELECT_ROOM_EVENT_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(10);
 
-const FOCUSED_CONTEXT_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// #1848: must outlast the core event-navigation backstop (45 s), so a core
+/// timeout reaches the waiter as the core's own `Failed` outcome.
+const FOCUSED_CONTEXT_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(50);
 
 #[cfg(test)]
 mod tests;

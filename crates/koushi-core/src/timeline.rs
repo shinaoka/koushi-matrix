@@ -85,6 +85,8 @@ mod typing;
 pub(crate) use diagnostics::record_thread_summary_reconciliation;
 
 #[cfg(test)]
+pub(crate) use focused_build::FOCUSED_TIMELINE_BUILD_TIMEOUT;
+#[cfg(test)]
 pub(crate) use focused_build::gated_manager::{
     GatedFocusedBuildManager, spawn_gated_focused_build_manager,
 };

@@ -2671,7 +2671,7 @@ stateDiagram-v2
   key (renderer recovery/replay, a right-panel mount) is an observer that
   reuses the build, keeps the projection owner, and receives only its own
   failure terminal (#1465). Unsubscribe, demand retirement (supersession, Home, room
-  change, navigation deadline), shutdown, and the 10 s build timeout release
+  change, navigation deadline), shutdown, and the 30 s build timeout release
   the lease and activation, and a late completion can never install an actor.
   SDK event-focused initialization is transactional: initial `/context`
   loading succeeds before cache state and the reusable handle are published,

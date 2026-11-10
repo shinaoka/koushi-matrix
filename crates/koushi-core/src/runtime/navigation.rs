@@ -22,7 +22,9 @@ pub(super) enum NavigationPersistenceStatus {
     LoadFailed(koushi_protocol::SessionKeyId),
 }
 
-pub(super) const EVENT_NAVIGATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// #1848: 45 s, which outlives the 5 s lookup plus the 30 s focused build
+/// budget (`FOCUSED_TIMELINE_BUILD_TIMEOUT`), so the backstop never fires first.
+pub(super) const EVENT_NAVIGATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 
 /// #971: a scroll gesture updates the room scroll anchor about ten times a
 /// second, and every distinct anchor changes `NavigationState`. Persisting each
