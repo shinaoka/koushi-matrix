@@ -131,6 +131,21 @@ export function roomOrSpaceForPeoplePanelScope(
   return activeRoom ?? activeSpace;
 }
 
+/**
+ * #1854: the thread pane Core opened for the active room, identified by its room
+ * and root, or `null`. Core alone decides that a navigation target is a reply
+ * inside a thread and opens that pane; the renderer only reveals what Rust state
+ * reports, so it never classifies an event or a search result itself.
+ */
+export function threadPaneIdentityForActiveRoom(
+  snapshot: Pick<DesktopSnapshot, "state">
+): string | null {
+  const thread = snapshot.state.ui.thread;
+  if (thread.kind === "closed") return null;
+  if (thread.room_id !== snapshot.state.ui.navigation.active_room_id) return null;
+  return `${thread.room_id}\u0000${thread.root_event_id}`;
+}
+
 export function effectiveRightPanelModeForSnapshot(
   requestedMode: RightPanelMode,
   snapshot: Pick<DesktopSnapshot, "state">

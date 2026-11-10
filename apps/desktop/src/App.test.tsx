@@ -1873,13 +1873,25 @@ describe("desktop integration source guards", () => {
     expect(selectSearchResultSource).not.toContain("document.querySelector");
     expect(selectSearchResultSource).not.toContain("scrollIntoView");
     expect(selectSearchResultSource).not.toContain("cssEscape");
-    // #1854: Core routes a hit that is a reply inside a thread into the thread
-    // pane, so the renderer reveals the pane Rust opened instead of leaving the
-    // search panel over it. It reads Rust state; it never decides from the
-    // result whether the hit is threaded.
-    expect(selectSearchResultSource).toContain("state.ui.thread");
-    expect(selectSearchResultSource).toContain('setRightPanelMode("thread")');
-    expect(selectSearchResultSource).not.toContain("thread_root");
+  });
+
+  test("#1854: one Rust-state effect reveals the thread pane every navigation source can open", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const start = source.indexOf("const threadPaneIdentity = snapshot");
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf("const homeSelection", start);
+    expect(end).toBeGreaterThan(start);
+    const effect = source.slice(start, end);
+
+    // The reveal is driven by the Rust thread pane for the active room, so a
+    // reply-quote, pinned, notification, or Activity navigation gets the same
+    // behavior as a search hit.
+    expect(effect).toContain("threadPaneIdentityForActiveRoom(snapshot)");
+    expect(effect).toContain('setRightPanelMode("thread")');
+    // It never classifies the target itself: no source or event-content branch.
+    expect(effect).not.toContain("source ===");
+    expect(effect).not.toContain("thread_root");
+    expect(effect).not.toContain("event_navigation");
   });
 
   test("message context menu reply uses the row's route, falling back to the room composer", () => {

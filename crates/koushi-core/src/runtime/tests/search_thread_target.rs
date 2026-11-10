@@ -88,7 +88,7 @@ impl Harness {
     /// `thread_root_event_id` is what the event lookup reports for the target:
     /// `Some` when the target replies inside that thread, `None` when it is an
     /// ordinary room message.
-    fn start(thread_root_event_id: Option<&'static str>) -> Self {
+    fn start(thread_root_event_id: Option<String>) -> Self {
         let data_dir = tempfile::tempdir().expect("runtime data directory");
         let (
             actor,
@@ -107,7 +107,7 @@ impl Harness {
                 match message {
                     AccountMessage::EnsureRoomEventCached { response_tx, .. } => {
                         let _ = response_tx.send(crate::account::RoomEventLookupResult::Located {
-                            thread_root_event_id: thread_root_event_id.map(ToOwned::to_owned),
+                            thread_root_event_id: thread_root_event_id.clone(),
                         });
                     }
                     AccountMessage::TimelineCommand(
@@ -266,7 +266,7 @@ impl Harness {
 
 #[tokio::test]
 async fn a_search_hit_in_a_thread_opens_the_thread_pane_on_the_reply() {
-    let mut harness = Harness::start(Some(ROOT));
+    let mut harness = Harness::start(Some(ROOT.to_owned()));
     harness
         .navigate(EventNavigationSource::Search, request(1))
         .await;
@@ -332,7 +332,7 @@ async fn every_other_navigate_to_event_source_routes_a_thread_reply_the_same_way
         EventNavigationSource::Notification,
         EventNavigationSource::ReplyQuote,
     ] {
-        let mut harness = Harness::start(Some(ROOT));
+        let mut harness = Harness::start(Some(ROOT.to_owned()));
         harness.navigate(source, request(1)).await;
         let state = harness
             .wait_for_state(
@@ -414,5 +414,123 @@ async fn a_search_hit_outside_a_thread_keeps_the_main_pane_focused_contract() {
     assert!(
         harness.thread_subscriptions().is_empty(),
         "a room message never opens a thread timeline"
+    );
+}
+
+/// #1854: the guard across the production boundary. The event lookup reads the
+/// located target from the SDK, reports its `m.thread` root, and that reported
+/// value is what routing consumes. Dropping `timeline_event_thread_root` from the
+/// production lookup leaves the routing tests green but fails this one.
+#[tokio::test]
+async fn the_production_event_lookup_reports_the_root_that_opens_the_thread_pane() {
+    use matrix_sdk::ruma::{event_id, room_id, user_id};
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    use matrix_sdk_test::event_factory::EventFactory;
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = room_id!("!search-thread-room:example.invalid");
+    server.sync_joined_room(&client, room_id).await;
+    let factory = EventFactory::new()
+        .room(room_id)
+        .sender(user_id!("@alice:example.invalid"));
+    let root = event_id!("$search-thread-root:example.invalid");
+    let target = factory
+        .text_msg("Synthetic thread reply")
+        .event_id(event_id!("$search-thread-target:example.invalid"))
+        .in_thread(root, root)
+        .into_event();
+    // The lookup fetches a missing event through the room's event endpoint.
+    server
+        .mock_room_event()
+        .room(room_id)
+        .ok(target)
+        .mount()
+        .await;
+
+    let session = std::sync::Arc::new(koushi_sdk::MatrixClientSession::from_client_for_testing(
+        client,
+        SessionInfo {
+            homeserver: server.uri(),
+            user_id: "@alice:example.invalid".to_owned(),
+            device_id: "SYNTHETIC".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        },
+    ));
+    let cred_dir = tempfile::tempdir().expect("credential directory");
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let (account, _action_rx, _event_rx) =
+        crate::account::test_support::spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    let (acknowledged, configured) = tokio::sync::oneshot::channel();
+    assert!(
+        account
+            .send(AccountMessage::ConfigureSessionForTesting {
+                session,
+                acknowledged,
+            })
+            .await
+    );
+    configured
+        .await
+        .expect("the synthetic session must be installed");
+
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    assert!(
+        account
+            .send(AccountMessage::EnsureRoomEventCached {
+                request_id: request(1),
+                room_id: ROOM.to_owned(),
+                event_id: TARGET.to_owned(),
+                response_tx,
+            })
+            .await
+    );
+    let crate::account::RoomEventLookupResult::Located {
+        thread_root_event_id,
+    } = response_rx.await.expect("lookup response")
+    else {
+        panic!("the thread reply target must be located");
+    };
+    assert_eq!(
+        thread_root_event_id.as_deref(),
+        Some(ROOT),
+        "the production lookup must report the target's m.thread root"
+    );
+
+    // Routing consumes the value the lookup reported, not a constant.
+    let mut harness = Harness::start(thread_root_event_id.clone());
+    harness
+        .navigate(EventNavigationSource::Search, request(2))
+        .await;
+    let state = harness
+        .wait_for_state(
+            "the reported thread root must open the thread pane",
+            |state| thread_pane(state).is_some(),
+        )
+        .await;
+    match thread_pane(&state) {
+        Some((pane_room_id, root_event_id, ThreadOpenIntent::PinnedReply { event_id })) => {
+            assert_eq!(root_event_id, ROOT);
+            assert_eq!(pane_room_id, ROOM);
+            assert_eq!(event_id.as_str(), TARGET);
+        }
+        other => panic!("the thread pane must pin the located reply; got {other:?}"),
+    }
+    assert_eq!(
+        harness.wait_for_outcome(request(2)).await,
+        IntentOutcome::Committed
+    );
+    harness
+        .wait_for_subscription("the thread timeline must be subscribed", |kind| {
+            matches!(
+                kind,
+                TimelineKind::Thread { room_id, root_event_id }
+                    if room_id == ROOM && root_event_id == ROOT
+            )
+        })
+        .await;
+    assert!(
+        harness.focused_subscriptions().is_empty(),
+        "a thread reply target must never reach the main pane as a Focused projection"
     );
 }
