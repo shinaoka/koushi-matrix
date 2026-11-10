@@ -140,6 +140,21 @@ impl DisplayProjectionState {
         self.gap_after = GapEnds::of(&canonical[start..]);
     }
 
+    /// #1846: the row this projection already published for a transaction, so a refused write can
+    /// keep showing it instead of publishing a cleared or unresolved candidate.
+    pub(super) fn published_row(&self, render_id: &str) -> Option<TimelineItem> {
+        self.display_items
+            .iter()
+            .chain(self.pending_items.iter())
+            .find(|item| {
+                matches!(
+                    &item.id,
+                    TimelineItemId::Transaction { transaction_id } if transaction_id == render_id
+                )
+            })
+            .cloned()
+    }
+
     pub(super) fn display_items(&self) -> &[TimelineItem] {
         &self.display_items
     }

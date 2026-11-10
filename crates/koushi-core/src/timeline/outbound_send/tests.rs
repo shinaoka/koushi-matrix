@@ -4214,7 +4214,7 @@ struct SendQueueActorFixture {
     terminal_ingress: TimelineSendTerminalIngress,
     _terminal_rx: mpsc::UnboundedReceiver<TimelineSendTerminalHandoff>,
     pending: Vec<SendCompletionRegistration>,
-    rows: HashMap<String, TimelineSendState>,
+    rows: RowCache,
     retry_request_id: Option<RequestId>,
 }
 
@@ -4291,7 +4291,7 @@ impl SendQueueActorFixture {
             terminal_ingress,
             _terminal_rx: terminal_rx,
             pending: Vec::new(),
-            rows: HashMap::new(),
+            rows: RowCache::default(),
             retry_request_id: None,
         }
     }
@@ -4395,7 +4395,7 @@ impl SendQueueActorFixture {
     }
 
     fn row_state(&self, render_id: &str) -> Option<TimelineSendState> {
-        self.rows.get(render_id).cloned()
+        self.rows.observed.get(render_id).cloned()
     }
 
     /// The manager-owned observer records the SDK's own terminal for this row; the actor's
@@ -4526,33 +4526,33 @@ impl SendQueueActorFixture {
             .await;
     }
 
-    /// Causal barrier: the actor emits this progress event only after every earlier mailbox
-    /// message has been handled, so an assertion after it reads a settled state instead of the
-    /// last value some earlier publication happened to leave in the cache.
-    async fn barrier(&mut self, tag: &str) {
-        let related_to =
-            matrix_sdk::ruma::OwnedTransactionId::from(format!("barrier-{tag}").as_str());
-        self.push(RoomSendQueueUpdate::MediaUpload {
-            related_to: related_to.clone(),
-            file: None,
-            index: 0,
-            progress: matrix_sdk::send_queue::AbstractProgress {
-                current: 0,
-                total: 1,
-            },
-        })
-        .await;
+    /// Causal barrier: the actor acknowledges only after every earlier mailbox message has been
+    /// handled. Every publication it drained on the way is folded into the cache, so an assertion
+    /// after this reads the state the actor actually published — a cleared row included.
+    async fn barrier(&mut self) {
+        let (acknowledged, acknowledgement) = oneshot::channel();
+        self.handle
+            .tx
+            .send(TimelineActorMessage::Barrier(acknowledged))
+            .await
+            .expect("actor accepts the barrier");
+        let rows = &mut self.rows;
         let events = &mut self.actor_events;
         tokio::time::timeout(Duration::from_secs(10), async {
+            let mut acknowledgement = acknowledgement;
             loop {
-                let event = events.recv().await.expect("core event");
-                if let CoreEvent::Timeline(TimelineEvent::MediaUploadProgress {
-                    transaction_id,
-                    ..
-                }) = &event
-                    && transaction_id == related_to.as_str()
-                {
-                    return;
+                tokio::select! {
+                    reached = &mut acknowledgement => {
+                        reached.expect("the actor answers the barrier");
+                        // Everything the actor published before the barrier is now in the cache.
+                        while let Ok(event) = events.try_recv() {
+                            record_row_states(event, rows);
+                        }
+                        return;
+                    }
+                    event = events.recv() => {
+                        record_row_states(event.expect("core event"), rows);
+                    }
                 }
             }
         })
@@ -4633,7 +4633,7 @@ impl SendQueueActorFixture {
         let events = &mut self.actor_events;
         let observed = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                if let Some(state) = rows.get(render_id)
+                if let Some(state) = rows.observed.get(render_id)
                     && expected(state)
                 {
                     return state.clone();
@@ -4662,7 +4662,7 @@ impl SendQueueActorFixture {
         let events = &mut self.actor_events;
         let observed = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                if let Some(state) = rows.get(transaction_id.as_str())
+                if let Some(state) = rows.observed.get(transaction_id.as_str())
                     && expected(state)
                 {
                     return state.clone();
@@ -4753,6 +4753,13 @@ fn echo_handle(
     }
 }
 
+/// #1846: the rows the actor published, as a test-visible cache. A row whose publication carried
+/// no send state is absent — publishing that must not look like "still not sent".
+#[derive(Debug, Default)]
+struct RowCache {
+    observed: HashMap<String, TimelineSendState>,
+}
+
 fn room_key_from(room: &matrix_sdk::Room) -> TimelineKey {
     TimelineKey::room(
         AccountKey(
@@ -4776,29 +4783,29 @@ fn send_error(
     }
 }
 
-fn record_row_states(event: CoreEvent, rows: &mut HashMap<String, TimelineSendState>) {
-    let record = |item: &koushi_protocol::event::TimelineItem,
-                  rows: &mut HashMap<String, TimelineSendState>| {
-        let Some(state) = &item.send_state else {
-            return;
-        };
-        match &item.id {
+fn record_row_states(event: CoreEvent, rows: &mut RowCache) {
+    let record = |item: &koushi_protocol::event::TimelineItem, rows: &mut RowCache| {
+        let render_id = match &item.id {
             koushi_protocol::event::TimelineItemId::Transaction { transaction_id } => {
-                rows.insert(transaction_id.clone(), state.clone());
+                transaction_id.clone()
             }
             // A settled fallback row is addressed by the event id it resolved to.
-            koushi_protocol::event::TimelineItemId::Event { event_id } => {
-                rows.insert(event_id.clone(), state.clone());
-            }
-            _ => {}
-        }
+            koushi_protocol::event::TimelineItemId::Event { event_id } => event_id.clone(),
+            _ => return,
+        };
+        // A published `None` is an observation too: the row lost its send state, so a cleared
+        // row must not keep hiding behind an older value in the cache.
+        match &item.send_state {
+            Some(state) => rows.observed.insert(render_id, state.clone()),
+            None => rows.observed.remove(&render_id),
+        };
     };
     let diffs = match event {
         CoreEvent::Timeline(TimelineEvent::ItemsUpdated { diffs, .. }) => diffs,
         // A lag rebuild republishes the whole window under a recovery identity, so it
         // replaces the cache instead of merging into it.
         CoreEvent::Timeline(TimelineEvent::InitialItems { items, .. }) => {
-            rows.clear();
+            rows.observed.clear();
             for item in &items {
                 record(item, rows);
             }
@@ -4823,12 +4830,13 @@ fn record_row_states(event: CoreEvent, rows: &mut HashMap<String, TimelineSendSt
                     .iter()
                     .filter_map(transaction_id_of)
                     .collect::<Vec<_>>();
-                rows.retain(|transaction_id, _| live.contains(transaction_id));
+                rows.observed
+                    .retain(|transaction_id, _| live.contains(transaction_id));
                 for item in &items {
                     record(item, rows);
                 }
             }
-            koushi_protocol::event::TimelineDiff::Clear => rows.clear(),
+            koushi_protocol::event::TimelineDiff::Clear => rows.observed.clear(),
             // An index-based removal does not name its transaction, and these tests
             // never remove a row: the cache keeps the last state published for it.
             _ => {}
@@ -5032,7 +5040,7 @@ async fn a_settled_row_keeps_sent_when_a_later_send_fails() {
         .await_row(&second.transaction_id, "the failed later row", is_not_sent)
         .await;
 
-    fixture.barrier("settled-row").await;
+    fixture.barrier().await;
     assert_eq!(
         fixture.row_state(sent_event_id),
         Some(TimelineSendState::Sent),
@@ -5072,7 +5080,7 @@ async fn an_sdk_reported_failure_survives_a_stale_retry_event() {
         })
         .await;
     // The barrier proves the stale retry was consumed before this assertion.
-    fixture.barrier("stale-retry").await;
+    fixture.barrier().await;
 
     assert_eq!(
         fixture.row_state(head.transaction_id.as_str()),

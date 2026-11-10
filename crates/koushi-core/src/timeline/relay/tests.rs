@@ -83,6 +83,7 @@ fn relay_pending_inputs_resolve_a_blocked_manager_owned_row() {
         Default::default(),
         &incoming,
         HashSet::new(),
+        |_| None,
     );
 
     assert_eq!(pending.len(), 1);
@@ -135,6 +136,7 @@ fn mixed_bound_and_unbound_local_echo_batch_keeps_exactly_one_row_per_send() {
         Default::default(),
         &incoming,
         HashSet::new(),
+        |_| None,
     );
 
     assert_eq!(pending.len(), 2);

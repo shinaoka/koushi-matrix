@@ -92,6 +92,7 @@ fn pending_display_inputs_for_incoming_transactions(
     revision: super::item_projection::RowRevision,
     incoming_transaction_ids: &HashSet<String>,
     mut suppressed: HashSet<String>,
+    previously_published: impl Fn(&str) -> Option<TimelineItem>,
 ) -> (Vec<TimelineItem>, HashSet<String>) {
     let has_unbound = projections.iter().any(|projection| {
         projection.phase == PendingSendPhase::Pending && projection.sdk_transaction_id.is_none()
@@ -115,8 +116,16 @@ fn pending_display_inputs_for_incoming_transactions(
                     bound_incoming_transaction_ids.contains(transaction_id)
                 })
         })
-        .map(|projection| {
-            super::outbound_send::pending_display_item(projection, send_statuses, revision)
+        .filter_map(|projection| {
+            // #1846: a refused write publishes nothing; keep the row this projection already
+            // shows instead of a cleared or unresolved candidate.
+            super::outbound_send::pending_display_item(projection, send_statuses, revision).or_else(
+                || {
+                    previously_published(super::outbound_send::pending_display_render_id(
+                        projection,
+                    ))
+                },
+            )
         })
         .collect();
     suppressed.extend(
@@ -312,11 +321,7 @@ impl TimelineActor {
     /// either order. Its own item values are therefore not authoritative for outbound rows:
     /// before the batch is published, the send states of its transaction rows are resolved
     /// again against the SDK's current items, the boundary `republish_send_rows` reads.
-    async fn resolve_batch_send_states(
-        &mut self,
-        core_diffs: &mut [TimelineDiff],
-        batch_observation: u64,
-    ) {
+    async fn resolve_batch_send_states(&mut self, core_diffs: &mut [TimelineDiff]) {
         let mut wanted = std::collections::HashSet::new();
         for diff in core_diffs.iter() {
             for item in timeline_diff_items(diff) {
@@ -331,7 +336,10 @@ impl TimelineActor {
         if wanted.is_empty() {
             return;
         }
-        let observed = self.observe_sdk_observation();
+        // #1846: the observation this reconstruction is made at. It is carried into the install
+        // unchanged — re-reading the actor's counter there would tag the fresh correction with a
+        // newer revision and have the fence reject it, letting the stale diff commit.
+        let resolved_at = self.observe_sdk_observation();
         let (sdk_items, _) = self.timeline.subscribe().await;
         let mut resolved = HashMap::new();
         for item in &sdk_items {
@@ -355,8 +363,8 @@ impl TimelineActor {
                 super::item_projection::RowWriteInputs {
                     send_statuses: &self.send_statuses,
                     revision: super::item_projection::RowRevision {
-                        observed,
-                        current: self.sdk_observation_revision,
+                        observed: resolved_at,
+                        current: resolved_at,
                     },
                 },
             );
@@ -364,12 +372,9 @@ impl TimelineActor {
                 resolved.insert(transaction_id, send_state);
             }
         }
-        if resolved.is_empty() {
-            return;
-        }
         let revision = super::item_projection::RowRevision {
-            observed: batch_observation,
-            current: self.sdk_observation_revision,
+            observed: resolved_at,
+            current: resolved_at,
         };
         for diff in core_diffs.iter_mut() {
             for item in timeline_diff_items_mut(diff) {
@@ -378,20 +383,54 @@ impl TimelineActor {
                 else {
                     continue;
                 };
-                let Some(send_state) = resolved.get(transaction_id) else {
+                let transaction_id = transaction_id.clone();
+                if !wanted.contains(&transaction_id) {
+                    continue;
+                }
+                // The snapshot's resolution wins; when the SDK no longer holds the item this
+                // batch carries its own value. Either way the row is installed at the
+                // observation the resolution was made at, before the batch can commit.
+                let Some(send_state) = resolved
+                    .get(&transaction_id)
+                    .cloned()
+                    .or_else(|| item.send_state.clone())
+                else {
                     continue;
                 };
-                // #1846: the batch's snapshot resolution is installed through the same
-                // boundary, so a newer observation wins over this batch.
-                super::item_projection::install_row(
+                match super::item_projection::install_row(
                     item,
-                    Some(send_state.clone()),
-                    self.send_statuses.get(transaction_id),
+                    Some(send_state),
+                    self.send_statuses.get(&transaction_id),
                     false,
                     revision,
-                );
+                ) {
+                    super::item_projection::RowWrite::Applied => {}
+                    // A refused write must not leave this batch's provisional state eligible for
+                    // the commit below: publish the row's already-committed state instead.
+                    super::item_projection::RowWrite::DroppedStale => {
+                        item.send_state = self.committed_send_state(&transaction_id);
+                    }
+                }
             }
         }
+    }
+
+    /// #1846: the send state this actor already published for a transaction row, used when a
+    /// fresh write is refused: the batch then republishes what the row shows instead of its own
+    /// provisional value.
+    fn committed_send_state(&self, transaction_id: &str) -> Option<TimelineSendState> {
+        self.navigation_items
+            .iter()
+            .chain(self.display_projection.display_items())
+            .find(|item| {
+                matches!(
+                    &item.id,
+                    koushi_protocol::event::TimelineItemId::Transaction {
+                        transaction_id: committed
+                    } if committed == transaction_id
+                )
+            })
+            .and_then(|item| item.send_state.clone())
     }
 
     pub(super) async fn handle_diff_batch(
@@ -569,8 +608,7 @@ impl TimelineActor {
                 },
             },
         );
-        self.resolve_batch_send_states(&mut core_diffs, batch_observation)
-            .await;
+        self.resolve_batch_send_states(&mut core_diffs).await;
         for diff in &mut core_diffs {
             apply_timeline_item_visibility_to_diff(
                 diff,
@@ -658,7 +696,7 @@ impl TimelineActor {
                     &projections,
                     &self.send_statuses,
                     super::item_projection::RowRevision {
-                        observed: batch_observation,
+                        observed: self.sdk_observation_revision,
                         current: self.sdk_observation_revision,
                     },
                     &incoming_transaction_ids,
@@ -670,6 +708,7 @@ impl TimelineActor {
                                 .chain(incoming_items.iter().copied()),
                         ),
                     ),
+                    |render_id| self.display_projection.published_row(render_id),
                 )
             };
             self.overlay_reply_quotes_on_pending(&mut pending_items, &batch.originals);
@@ -867,15 +906,20 @@ impl TimelineActor {
             let mut pending_items = self
                 .pending_send_projections
                 .iter()
-                .map(|projection| {
+                .filter_map(|projection| {
                     super::outbound_send::pending_display_item(
                         projection,
                         &self.send_statuses,
                         super::item_projection::RowRevision {
-                            observed: batch_observation,
+                            observed: self.sdk_observation_revision,
                             current: self.sdk_observation_revision,
                         },
                     )
+                    .or_else(|| {
+                        self.display_projection.published_row(
+                            super::outbound_send::pending_display_render_id(projection),
+                        )
+                    })
                 })
                 .collect::<Vec<_>>();
             self.overlay_reply_quotes_on_pending(&mut pending_items, &batch.originals);

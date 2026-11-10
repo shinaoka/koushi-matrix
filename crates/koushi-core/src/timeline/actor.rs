@@ -1233,7 +1233,7 @@ impl TimelineActor {
         let mut pending_items = self
             .pending_send_projections
             .iter()
-            .map(|projection| {
+            .filter_map(|projection| {
                 super::outbound_send::pending_display_item(
                     projection,
                     &self.send_statuses,
@@ -1242,6 +1242,10 @@ impl TimelineActor {
                         current: self.sdk_observation_revision,
                     },
                 )
+                .or_else(|| {
+                    self.display_projection
+                        .published_row(super::outbound_send::pending_display_render_id(projection))
+                })
             })
             .collect::<Vec<_>>();
         // No batch is being committed here: the canonical items are current.
@@ -1829,12 +1833,16 @@ impl TimelineActor {
         };
         let pending_items = pending_send_projections
             .iter()
-            .map(|projection| {
+            .filter_map(|projection| {
                 super::outbound_send::pending_display_item(
                     projection,
                     &startup_send_statuses,
                     super::item_projection::RowRevision::default(),
                 )
+                .or_else(|| {
+                    display_projection
+                        .published_row(super::outbound_send::pending_display_render_id(projection))
+                })
             })
             .collect();
         let mut suppressed = pending_send_projections

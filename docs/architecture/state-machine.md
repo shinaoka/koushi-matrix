@@ -4318,17 +4318,27 @@ itself when the failure is retried, sent, cancelled or wedged. The derivation ne
 row's own observed transaction in the send table, so a bound but not yet observed row
 keeps its normal state.
 
-Every rendered row's send state is assigned in exactly one place,
+A rendered row's send state is assigned in one place,
 `install_row(item, sdk_state, recorded, blocked, revision)`
 (`crates/koushi-core/src/timeline/item_projection.rs`): the SDK item conversion (relay
 batches, lag restore, startup), the manager-owned pending row, the queued batch's
 snapshot re-resolution and the send-state republish all install through it, and a path
 that cannot supply the SDK state it saw does not write a row. Each write carries the
-actor's SDK observation revision it was computed at; a write older than the current
+actor's SDK observation revision **the reconstruction was made at** — carried from that
+observation, never re-read at install time — and a write older than the current
 observation is refused and counted (`core.timeline_send_state` /
-`stale_row_write_dropped`), so a queued batch or an old snapshot cannot roll a row back.
-The `TimelineGeneration` gate stays separate: it fences actor replacement, not observation
-order.
+`stale_row_write_dropped`). A refusal is authoritative where it happens: a queued batch
+publishes the row's already-committed state instead of its provisional conversion, and a
+manager-owned row that is refused is not republished at all (the previously published row
+stays).
+
+That is a boundary-level guarantee, not an end-to-end ordering proof: within one valid
+generation a batch that is resolved from the current SDK snapshot carries that snapshot's
+state, but the relay stream and the send-queue monitor remain independent tasks, so the
+*inputs* two surfaces see can still differ. Separate gates cover the other dimension:
+`TimelineGeneration` rejects diff/recovery streams from a superseded relay generation
+(`relay.rs`), while actor replacement is fenced by the `actor_generation` lease
+(`display_projection.rs`). Neither gate substitutes for the row-write revision fence.
 
 The `RetrySend` guard judges **the state the row renders** — not a second reading of the
 send table. Exactly what that guarantees, and what it does not:
@@ -4337,9 +4347,14 @@ send table. Exactly what that guarantees, and what it does not:
   as anything else is refused (`invalid_send_state`, or `invalid_send_target` when the
   actor knows no such row);
 - not promised: that the SDK's view and the actor's send table agree. They are fed by
-  separate tasks, so a row can render from the SDK's failure before the table records it.
-  That direction is intended — the reader acted on the SDK's terminal, and the retry
-  follows the row;
+  separate tasks, so a row can render from the SDK's failure before the table records it,
+  and an unrelated batch cannot be claimed to be harmless — it is only guaranteed to carry
+  the send state the batch resolved at its own observation. The direction this design
+  relies on is that both surfaces end up resolving from the same function;
+- not promised: that a stale-input write never happens at all. The revision fence refuses
+  one at the row-write boundary; a path that resolves and publishes a whole item vector
+  (a batch's `Set`, a pending-vector install) is only as fresh as the state it installed
+  through that boundary;
 - not covered: a row the actor cannot resolve at all. The guard reads the rendered state
   first (the bounded display window) and falls back to the canonical navigation window, so a
   row that is merely scrolled out of the display is still resolvable; `invalid_send_target`

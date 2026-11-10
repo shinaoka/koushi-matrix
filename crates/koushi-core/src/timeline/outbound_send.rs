@@ -407,20 +407,33 @@ pub(super) fn pending_display_item(
     projection: &PendingSendProjection,
     send_statuses: &HashMap<String, TimelineSendState>,
     revision: super::item_projection::RowRevision,
-) -> TimelineItem {
+) -> Option<TimelineItem> {
     let mut item = projection.item.clone();
-    let recorded = item.send_state.take();
-    super::item_projection::install_row(
+    // #1846: the base is only read here — taking it first would publish a cleared row (no send
+    // actions, no retry target) when the write is refused.
+    let base = item.send_state.clone();
+    match super::item_projection::install_row(
         &mut item,
         None,
-        recorded.as_ref(),
+        base.as_ref(),
         super::item_projection::blocked_behind_recoverable_failure(
             projection.sdk_transaction_id.as_deref(),
             send_statuses,
         ),
         revision,
-    );
-    item
+    ) {
+        super::item_projection::RowWrite::Applied => Some(item),
+        // A refused write publishes nothing: the caller keeps the row it already shows.
+        super::item_projection::RowWrite::DroppedStale => None,
+    }
+}
+
+/// The id a manager-owned row is rendered under.
+pub(super) fn pending_display_render_id(projection: &PendingSendProjection) -> &str {
+    projection
+        .sdk_transaction_id
+        .as_deref()
+        .unwrap_or(&projection.client_txn_id)
 }
 
 #[derive(Clone)]

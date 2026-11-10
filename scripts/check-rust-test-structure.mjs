@@ -2556,6 +2556,44 @@ export function checkCoreTimelineThreadComposerRoute() {
   return failures;
 }
 
+/// Files allowed to assign a send state: the row-write boundary itself
+/// (`item_projection.rs`), its display sink (`display_projection.rs` is checked separately) and
+/// the manager-owned base records in `outbound_send.rs`, which are resolved at render time.
+const ROW_SEND_STATE_WRITERS = new Set(["item_projection.rs", "outbound_send.rs"]);
+
+const ROW_SEND_STATE_ASSIGNMENT = /(?:^|[^\w.])(?:[\w]+\.)*send_state\s*=\s*(?:Some\(|None;|resolve_send_state)/u;
+
+/// #1846: every `send_state` assignment in the given sources that is not one of the two allowed
+/// writers. Returns `file:line` strings so a failure names the site.
+export function findForbiddenRowSendStateAssignments(sources) {
+  const offenders = [];
+  for (const [file, source] of Object.entries(sources)) {
+    const relative = file.replace(/^.*timeline\//u, "");
+    if (ROW_SEND_STATE_WRITERS.has(relative)) continue;
+    source.split("\n").forEach((line, index) => {
+      if (line.trimStart().startsWith("//") || line.trimStart().startsWith("*")) return;
+      if (ROW_SEND_STATE_ASSIGNMENT.test(line)) offenders.push(`${relative}:${index + 1}`);
+    });
+  }
+  return offenders;
+}
+
+/// #1846: a row-write verdict that nobody reads — `let _ = install_row(...)` or a bare statement
+/// call — is a fence that cannot refuse anything.
+export function findIgnoredInstallRowVerdicts(sources) {
+  const offenders = [];
+  for (const [file, source] of Object.entries(sources)) {
+    const relative = file.replace(/^.*timeline\//u, "");
+    source.split("\n").forEach((line, index) => {
+      const trimmed = line.trim();
+      if (/^let _ = .*install_row\(/u.test(trimmed) || /^.*install_row\(.*\);$/u.test(trimmed) && !/^(if|match|return|\})/u.test(trimmed)) {
+        offenders.push(`${relative}:${index + 1}`);
+      }
+    });
+  }
+  return offenders;
+}
+
 export function checkCoreTimelineOutboundState() {
   const rule = "core.timeline.outbound_state";
   const outbound = timelineSource("outbound_send.rs");
@@ -2607,19 +2645,28 @@ export function checkCoreTimelineOutboundState() {
   // through it (the converter, the pending row helper, the batch re-resolution) or writes only
   // a pending base that is resolved at render time.
   const install = timelineItemBody("item_projection.rs", "pub(super) fn install_row");
-  const rowAssignments = ["item_projection.rs", "actor.rs", "outbound_send.rs", "relay.rs", "navigation.rs"]
-    .flatMap((file) => timelineSource(file).split("\n").map((line) => ({ file, line })))
-    .filter(({ line }) => /(^|[^_.])\b\w+\\.send_state = /.test(line) || /\\bitem\\.send_state = /.test(line))
-    .map(({ file }) => file);
   if (!install?.includes("resolve_send_state")) failures.push(sourceContractFailure(rule, "the row-write boundary does not resolve the state"));
   if (!install?.includes("revision.observed < revision.current")) failures.push(sourceContractFailure(rule, "the row-write boundary has no SDK revision fence"));
-  if (rowAssignments.some((file) => file !== "item_projection.rs")) failures.push(sourceContractFailure(rule, "a send state is assigned outside the row-write boundary"));
+  const sources = Object.fromEntries(
+    ["item_projection.rs", "actor.rs", "outbound_send.rs", "relay.rs", "navigation.rs", "media.rs"]
+      .map((file) => [file, timelineSource(file)])
+  );
+  const forbiddenAssignments = findForbiddenRowSendStateAssignments(sources);
+  if (forbiddenAssignments.length > 0) {
+    failures.push(sourceContractFailure(rule, `a rendered send state is assigned outside the row-write boundary (${forbiddenAssignments.join(", ")})`));
+  }
+  const ignoredVerdicts = findIgnoredInstallRowVerdicts(sources);
+  if (ignoredVerdicts.length > 0) {
+    failures.push(sourceContractFailure(rule, `a row-write verdict is ignored (${ignoredVerdicts.join(", ")})`));
+  }
   const converter = timelineItemBody("item_projection.rs", "fn sdk_item_to_timeline_item_with_send_states");
   if (!converter?.includes("install_row")) failures.push(sourceContractFailure(rule, "the SDK item conversion does not install through the boundary"));
   const pendingRow = timelineItemBody("outbound_send.rs", "fn pending_display_item");
   if (!pendingRow?.includes("install_row")) failures.push(sourceContractFailure(rule, "the pending row does not install through the boundary"));
+  if (!pendingRow?.includes("RowWrite::DroppedStale")) failures.push(sourceContractFailure(rule, "the pending row publishes after a refused write"));
   const batchResolve = timelineItemBody("relay.rs", "async fn resolve_batch_send_states");
   if (!batchResolve?.includes("install_row")) failures.push(sourceContractFailure(rule, "the queued batch does not install through the boundary"));
+  if (!batchResolve?.includes("RowWrite::DroppedStale")) failures.push(sourceContractFailure(rule, "the queued batch commits after a refused write"));
   return failures;
 }
 

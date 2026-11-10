@@ -39,6 +39,8 @@ import {
   checkCoreTimelinePaginationScheduler,
   checkCoreTimelineRetryQueueOrder,
   checkCoreTimelineOutboundState,
+  findForbiddenRowSendStateAssignments,
+  findIgnoredInstallRowVerdicts,
   checkCoreTimelineSendSupervision,
   checkCoreTimelineThreadReadReceipts,
   checkSdkLibrarySourceManifest,
@@ -169,6 +171,40 @@ test("runs representative migrated timeline source-contract rules", () => {
     checkCoreTimelineSendSupervision,
     checkCoreTimelineThreadReadReceipts
   ]) assert.deepEqual(check(), []);
+});
+
+test("the single-writer tripwire rejects a rendered-row assignment but exempts the boundary", () => {
+  // #1846: the check must not be vacuous. A rendered-row assignment outside the boundary is
+  // reported, while the boundary itself and the manager-owned base records stay exempt.
+  assert.deepEqual(
+    findForbiddenRowSendStateAssignments({
+      "crates/koushi-core/src/timeline/relay.rs": [
+        "                item.send_state = Some(TimelineSendState::Sending);",
+        "        // send_state = Some(x) in a comment is not an assignment"
+      ].join("\n"),
+      "crates/koushi-core/src/timeline/actor.rs": "                item.send_state = resolve_send_state(None, base, blocked);",
+      "crates/koushi-core/src/timeline/item_projection.rs": "    item.send_state = resolve_send_state(sdk_state, recorded, blocked);",
+      "crates/koushi-core/src/timeline/outbound_send.rs": [
+        "        projection.item.send_state = Some(TimelineSendState::Sending);",
+        "        item.send_state = Some(TimelineSendState::Sent);"
+      ].join("\n")
+    }),
+    ["relay.rs:1", "actor.rs:1"],
+    "only the boundary and the base records may assign a send state"
+  );
+});
+
+test("the tripwire rejects an ignored row-write verdict", () => {
+  assert.deepEqual(
+    findIgnoredInstallRowVerdicts({
+      "crates/koushi-core/src/timeline/relay.rs": [
+        "    let _ = super::item_projection::install_row(item, state, recorded, false, revision);",
+        "    match super::item_projection::install_row(item, state, recorded, false, revision) {"
+      ].join("\n")
+    }),
+    ["relay.rs:1"],
+    "a verdict nobody reads cannot refuse anything"
+  );
 });
 
 test("runs the retry queue order rule through the shared resume helper", () => {

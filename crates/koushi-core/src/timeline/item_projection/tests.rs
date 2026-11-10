@@ -1337,7 +1337,9 @@ fn install_row_refuses_a_write_from_a_superseded_observation() {
         reason: TimelineSendFailureReason::Recoverable,
     };
     let mut item = timeline_item("$row:test", Some("body"), "@alice:test", false);
-    // A stale batch would publish `sending` over the failure a newer observation resolved.
+    // Start from the row a newer observation already published: a failure the SDK reported.
+    item.send_state = Some(recoverable.clone());
+    // A stale batch would publish `sending` over that published failure.
     assert_eq!(
         install_row(
             &mut item,
@@ -1352,8 +1354,9 @@ fn install_row_refuses_a_write_from_a_superseded_observation() {
         RowWrite::DroppedStale
     );
     assert_eq!(
-        item.send_state, None,
-        "a refused write leaves the row alone"
+        item.send_state,
+        Some(recoverable.clone()),
+        "a refused write leaves the published failure in place"
     );
     let refused = koushi_diagnostics::test_support::detail_snapshot()
         .records
