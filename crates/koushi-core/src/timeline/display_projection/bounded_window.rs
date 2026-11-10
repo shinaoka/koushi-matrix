@@ -186,6 +186,10 @@ impl DisplayProjectionState {
         context: &DisplayProjectionContext,
     ) -> Vec<TimelineDiff> {
         let before = self.display_items.clone();
+        // #1846: the materialized rows take their send state from the rows this projection already
+        // accepted, not from the canonical copy, which can lag behind a resolved row (the actor
+        // resolves a row's send state into the display without rewriting the canonical DTO).
+        let accepted_send_states = self.accepted_send_states();
         self.canonical_len = canonical.len();
         let mut slots = Vec::with_capacity(WINDOW_SLOTS);
         let mut rows = 0;
@@ -198,9 +202,13 @@ impl DisplayProjectionState {
                 roots.len() < ROOM_REPLAY_INITIAL_ITEMS_MAX - 1 && roots.insert(root)
             });
             if terminal || row || reply {
+                let mut materialized = item.clone();
+                if let Some(send_state) = accepted_send_states.get(&timeline_item_render_id(item)) {
+                    materialized.send_state = Some(send_state.clone());
+                }
                 slots.push(DisplayProjectionSlot {
                     canonical_index: index,
-                    item: item.clone(),
+                    item: materialized,
                     gap_before: GapEnds::default(),
                 });
             }
@@ -217,6 +225,19 @@ impl DisplayProjectionState {
         self.window_revision = self.window_revision.saturating_add(1);
         self.rebuild_window_items(context);
         finalize_display_projection_diffs(&before, &self.display_items, false).0
+    }
+
+    /// #1846: the send state this projection already accepted for each rendered row, keyed by render
+    /// id. A window that is materialized again consumes this instead of the canonical copy's older
+    /// state, so a resolved row cannot lose its affordance to a rebuild.
+    fn accepted_send_states(&self) -> HashMap<String, TimelineSendState> {
+        self.slots
+            .iter()
+            .filter_map(|slot| {
+                let send_state = slot.item.send_state.clone()?;
+                Some((timeline_item_render_id(&slot.item), send_state))
+            })
+            .collect()
     }
 
     pub(in crate::timeline) fn window_reaches_live_end(&self, canonical_len: usize) -> bool {

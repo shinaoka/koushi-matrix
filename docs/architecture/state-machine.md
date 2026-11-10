@@ -4332,6 +4332,14 @@ publishes the row's already-committed state instead of its provisional conversio
 manager-owned row that is refused is not republished at all (the previously published row
 stays).
 
+The window is materialized by consuming, not by copying: `return_to_live_window`
+(`display_projection/bounded_window.rs`) takes each materialized row's send state from the
+row this projection already accepted (`accepted_send_states`), because the actor resolves a
+row's send state into the display without rewriting the canonical DTO. A rebuild therefore
+cannot roll a resolved `not_sent` row back to the canonical copy's older `sending`, which
+would drop the reader's `Resend` while `RetrySend` still answered `invalid_send_state` for
+it.
+
 That is a boundary-level guarantee, not an end-to-end ordering proof: within one valid
 generation a batch that is resolved from the current SDK snapshot carries that snapshot's
 state, but the relay stream and the send-queue monitor remain independent tasks, so the

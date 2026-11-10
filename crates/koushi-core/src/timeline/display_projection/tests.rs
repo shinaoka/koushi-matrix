@@ -1681,3 +1681,63 @@ fn thread_timeline_keeps_reply_receipts_under_the_reply() {
     assert_eq!(receipts.len(), 1);
     assert_eq!(receipts[0].event_id, "$reply:test");
 }
+
+/// #1846: the rows a window is materialized from can lag behind a resolved row — the actor
+/// resolves a row's send state into the display without rewriting the canonical DTO. A rebuild must
+/// therefore consume the state this projection already accepted, or the reader loses `Resend` (and
+/// `RetrySend` answers `invalid_send_state`) on a row that still shows it.
+#[test]
+fn returning_to_the_live_window_keeps_the_accepted_send_state() {
+    let recoverable = TimelineSendState::NotSent {
+        reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
+    };
+    let mut queued = timeline_item("$queued:test", Some("queued"), "@me:test", false);
+    queued.id = TimelineItemId::Transaction {
+        transaction_id: "a".to_owned(),
+    };
+    queued.send_state = Some(TimelineSendState::Sending);
+    let head = timeline_item("$head:test", Some("head"), "@me:test", false);
+    let mut canonical = vec![head, queued];
+    let context = DisplayProjectionContext::bounded_live_edge();
+    let mut projection =
+        DisplayProjectionState::from_canonical_window(&canonical, 0..canonical.len());
+
+    // The actor resolves the failure into the row the reader sees (the same call the
+    // send-state republish makes); the canonical DTO stays as the SDK last projected it.
+    projection.update_send_state("a", recoverable.clone(), &context);
+    assert_eq!(
+        projection
+            .display_items()
+            .iter()
+            .find(|item| item.id
+                == TimelineItemId::Transaction {
+                    transaction_id: "a".to_owned()
+                })
+            .and_then(|item| item.send_state.clone()),
+        Some(recoverable.clone()),
+        "the resolved row is what the reader acts on"
+    );
+    assert!(super::super::item_projection::validate_retry_send(Some(recoverable.clone())).is_ok());
+    assert!(
+        super::super::item_projection::validate_retry_send(Some(TimelineSendState::Sending))
+            .is_err()
+    );
+
+    // The unchanged canonical window is materialized again (ReturnToLive).
+    projection.return_to_live_window(&canonical, &context);
+
+    assert_eq!(
+        projection
+            .display_items()
+            .iter()
+            .find(|item| item.id
+                == TimelineItemId::Transaction {
+                    transaction_id: "a".to_owned()
+                })
+            .and_then(|item| item.send_state.clone()),
+        Some(recoverable),
+        "a rebuild must not roll the row back to the canonical copy's state"
+    );
+    // The canonical copy stays the SDK's own report; the rebuild consumes the accepted row instead.
+    canonical[1].send_state = Some(TimelineSendState::Sending);
+}

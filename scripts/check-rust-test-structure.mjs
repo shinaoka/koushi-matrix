@@ -2578,18 +2578,43 @@ export function findForbiddenRowSendStateAssignments(sources) {
   return offenders;
 }
 
-/// #1846: a row-write verdict that nobody reads — `let _ = install_row(...)` or a bare statement
-/// call — is a fence that cannot refuse anything.
+/// #1846: a row-write verdict that nobody reads — `let _ = install_row(...)` or a bare call, which
+/// may span several lines — is a fence that cannot refuse anything. A call is "read" when it is part
+/// of an expression: matched, bound, returned, compared or used as an argument.
 export function findIgnoredInstallRowVerdicts(sources) {
   const offenders = [];
   for (const [file, source] of Object.entries(sources)) {
     const relative = file.replace(/^.*timeline\//u, "");
-    source.split("\n").forEach((line, index) => {
-      const trimmed = line.trim();
-      if (/^let _ = .*install_row\(/u.test(trimmed) || /^.*install_row\(.*\);$/u.test(trimmed) && !/^(if|match|return|\})/u.test(trimmed)) {
-        offenders.push(`${relative}:${index + 1}`);
+    const lines = source.split("\n");
+    for (let index = 0; index < lines.length; index += 1) {
+      if (!lines[index].includes("install_row(")) continue;
+      // Fold the whole statement, including a multi-line argument list.
+      let text = "";
+      let depth = 0;
+      let statement = "";
+      for (let cursor = index; cursor < lines.length; cursor += 1) {
+        const line = lines[cursor];
+        statement += `${line}\n`;
+        for (const char of line) {
+          if (char === "(") depth += 1;
+          else if (char === ")") depth -= 1;
+        }
+        if (depth === 0 && line.includes(";")) {
+          text = statement;
+          break;
+        }
+        if (cursor - index > 24) {
+          text = statement;
+          break;
+        }
       }
-    });
+      if (!text) text = statement;
+      const ignoredLet = /let\s+_\s*=\s*(?:[\w:]+::)*install_row\(/u.test(text);
+      const firstLine = text.trimStart();
+      const bareCall =
+        /^(?:[\w:]+::)*install_row\(/u.test(firstLine) && /;\s*$/u.test(text.trimEnd());
+      if (ignoredLet || bareCall) offenders.push(`${relative}:${index + 1}`);
+    }
   }
   return offenders;
 }

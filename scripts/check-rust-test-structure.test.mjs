@@ -207,6 +207,27 @@ test("the tripwire rejects an ignored row-write verdict", () => {
   );
 });
 
+test("the tripwire catches a bare multi-line install_row call", () => {
+  // #1846: the detector must fold the whole statement, or a bare call whose arguments span
+  // several lines stays invisible while the fence is effectively off.
+  assert.deepEqual(
+    findIgnoredInstallRowVerdicts({
+      "crates/koushi-core/src/timeline/item_projection.rs": [
+        "            install_row(",
+        "                &mut projected,",
+        "                sdk_send_state,",
+        "                recorded,",
+        "                blocked,",
+        "                revision,",
+        "            );",
+        "            match install_row(item, state, recorded, false, revision) {"
+      ].join("\n")
+    }),
+    ["item_projection.rs:1"],
+    "a bare multi-line call discards the verdict just like `let _ =`"
+  );
+});
+
 test("runs the retry queue order rule through the shared resume helper", () => {
   // #1846: retry and the queued-behind retry share one resume helper, so the
   // re-enable-before-unwedge order is asserted on the helper body every caller uses;

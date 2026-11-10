@@ -140,8 +140,12 @@ impl DisplayProjectionState {
         self.gap_after = GapEnds::of(&canonical[start..]);
     }
 
-    /// #1846: the row this projection already published for a transaction, so a refused write can
-    /// keep showing it instead of publishing a cleared or unresolved candidate.
+    /// #1846: the row this projection already published under `render_id`, so a refused write can
+    /// keep showing it instead of publishing a cleared or unresolved candidate. It matches the id
+    /// the row is rendered under: a settled fallback row is published under its event id, so a
+    /// refusal for a row that has already moved to that id finds nothing and publishes nothing —
+    /// that case cannot arise here, because the pending reconstruction is resolved at the actor's
+    /// current observation.
     pub(super) fn published_row(&self, render_id: &str) -> Option<TimelineItem> {
         self.display_items
             .iter()

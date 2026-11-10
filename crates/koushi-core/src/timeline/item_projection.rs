@@ -2261,7 +2261,8 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 send_state: None,
                 display_metadata: None,
             };
-            install_row(
+            let sdk_report = sdk_send_state.clone();
+            match install_row(
                 &mut projected,
                 sdk_send_state,
                 transaction_id
@@ -2269,7 +2270,13 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                     .and_then(|transaction_id| send_statuses.get(transaction_id)),
                 blocked_behind_recoverable_failure(transaction_id.as_deref(), send_statuses),
                 row.revision,
-            );
+            ) {
+                RowWrite::Applied => {}
+                // A conversion installs at the observation it just took, so this is unreachable; a
+                // refused write must still not hand out a cleared row, so the row keeps the SDK's
+                // own report this conversion was built from.
+                RowWrite::DroppedStale => projected.send_state = sdk_report,
+            }
             projected
         }
         TimelineItemKind::Virtual(virtual_item) => {

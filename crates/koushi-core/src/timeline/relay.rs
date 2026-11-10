@@ -415,22 +415,11 @@ impl TimelineActor {
         }
     }
 
-    /// #1846: the send state this actor already published for a transaction row, used when a
-    /// fresh write is refused: the batch then republishes what the row shows instead of its own
-    /// provisional value.
+    /// #1846: the send state a row already carries on screen, used when a fresh write is refused:
+    /// the batch then republishes what the reader acts on instead of its provisional value. This is
+    /// the same accepted row the retry guard reads (`rendered_send_state`), not a second policy.
     fn committed_send_state(&self, transaction_id: &str) -> Option<TimelineSendState> {
-        self.navigation_items
-            .iter()
-            .chain(self.display_projection.display_items())
-            .find(|item| {
-                matches!(
-                    &item.id,
-                    koushi_protocol::event::TimelineItemId::Transaction {
-                        transaction_id: committed
-                    } if committed == transaction_id
-                )
-            })
-            .and_then(|item| item.send_state.clone())
+        self.rendered_send_state(transaction_id)
     }
 
     pub(super) async fn handle_diff_batch(
