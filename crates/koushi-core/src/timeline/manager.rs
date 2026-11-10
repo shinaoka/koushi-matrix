@@ -2899,6 +2899,8 @@ pub(super) fn internal_timeline_request_id() -> RequestId {
 mod thread_mention_projection_tests;
 
 #[cfg(test)]
+mod search_thread_target_tests;
+#[cfg(test)]
 mod thread_hydration_tests;
 
 #[cfg(test)]
