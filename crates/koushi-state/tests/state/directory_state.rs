@@ -1,8 +1,8 @@
 use koushi_state::{
     AppAction, AppEffect, AppState, DirectoryJoinState, DirectoryPreviewJoinability,
     DirectoryPreviewMembership, DirectoryPreviewState, DirectoryQuery, DirectoryQueryState,
-    DirectoryRoomPreview, DirectoryRoomSummary, DirectoryState, OperationFailureKind, SessionInfo,
-    SessionState, UiEvent, reduce,
+    DirectoryRoomPreview, DirectoryRoomSummary, DirectoryState, OperationFailureKind, RoomSummary,
+    RoomTags, SessionInfo, SessionState, SpaceSummary, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -27,6 +27,85 @@ fn query() -> DirectoryQuery {
         server_name: Some("example.invalid".to_owned()),
         limit: Some(10),
         since: None,
+    }
+}
+
+const LEFT_ROOM: &str = "!left:example.invalid";
+const LEFT_ALIAS: &str = "#left:example.invalid";
+const SPACE: &str = "!space:example.invalid";
+
+fn summary(room_id: &str, label: &str) -> RoomSummary {
+    RoomSummary {
+        display_name_placeholder: None,
+        display_label_placeholder: None,
+        room_id: room_id.to_owned(),
+        display_name: label.to_owned(),
+        display_label: label.to_owned(),
+        original_display_label: label.to_owned(),
+        avatar: None,
+        is_dm: false,
+        dm_user_ids: Vec::new(),
+        tags: RoomTags::default(),
+        unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
+        thread_unread_count: 0,
+        thread_highlight_count: 0,
+        marked_unread: false,
+        recency_stamp: None,
+        conversation_activity: None,
+        latest_event: None,
+        parent_space_ids: vec![SPACE.to_owned()],
+        dm_space_ids: Vec::new(),
+        is_encrypted: false,
+        joined_members: 2,
+    }
+}
+
+fn space() -> SpaceSummary {
+    SpaceSummary {
+        space_id: SPACE.to_owned(),
+        raw_name: None,
+        display_name: "Synthetic Space".to_owned(),
+        avatar: None,
+        join_rule: None,
+        topic: None,
+        child_room_ids: vec![LEFT_ROOM.to_owned()],
+        parent_side_child_room_ids: vec![LEFT_ROOM.to_owned()],
+    }
+}
+
+fn room_list() -> Vec<RoomSummary> {
+    vec![summary(LEFT_ROOM, "Synthetic Room")]
+}
+
+/// #1843: a room left here keeps a tombstone that every room-list snapshot honours,
+/// so rejoining it through the directory has to clear that tombstone.
+fn state_after_local_leave() -> AppState {
+    let mut state = ready_state();
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: vec![space()],
+            rooms: room_list(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomLeftLocally {
+            room_id: LEFT_ROOM.to_owned(),
+        },
+    );
+    assert!(state.room_list.locally_left_room_ids.contains(LEFT_ROOM));
+    assert!(!state.rooms.iter().any(|room| room.room_id == LEFT_ROOM));
+    state
+}
+
+fn directory_join_requested(request_id: u64) -> AppAction {
+    AppAction::DirectoryJoinRequested {
+        request_id,
+        room_id_or_alias: LEFT_ALIAS.to_owned(),
+        via_servers: vec!["example.invalid".to_owned()],
     }
 }
 
@@ -366,6 +445,93 @@ fn directory_join_selects_joined_room_in_home_scope() {
                 room_id: "!joined:example.invalid".to_owned(),
             }),
         ]
+    );
+}
+
+#[test]
+fn directory_join_clears_the_leave_tombstone() {
+    let mut state = state_after_local_leave();
+
+    reduce(&mut state, directory_join_requested(31));
+    reduce(
+        &mut state,
+        AppAction::DirectoryJoinSucceeded {
+            request_id: 31,
+            room_id: LEFT_ROOM.to_owned(),
+        },
+    );
+
+    assert!(
+        !state.room_list.locally_left_room_ids.contains(LEFT_ROOM),
+        "a directory join is a local join decision like accept or direct join"
+    );
+}
+
+#[test]
+fn a_directory_joined_room_returns_to_the_next_room_list() {
+    let mut state = state_after_local_leave();
+
+    reduce(&mut state, directory_join_requested(32));
+    reduce(
+        &mut state,
+        AppAction::DirectoryJoinSucceeded {
+            request_id: 32,
+            room_id: LEFT_ROOM.to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: vec![space()],
+            rooms: room_list(),
+        },
+    );
+
+    assert!(
+        state.rooms.iter().any(|room| room.room_id == LEFT_ROOM),
+        "the rejoined room must not stay hidden by the stale leave tombstone"
+    );
+    assert_eq!(state.spaces[0].child_room_ids, [LEFT_ROOM.to_owned()]);
+}
+
+#[test]
+fn a_failed_or_stale_directory_join_keeps_the_leave_tombstone() {
+    let mut state = state_after_local_leave();
+    reduce(&mut state, directory_join_requested(33));
+
+    reduce(
+        &mut state,
+        AppAction::DirectoryJoinFailed {
+            request_id: 44,
+            room_id_or_alias: LEFT_ALIAS.to_owned(),
+            via_servers: vec!["example.invalid".to_owned()],
+            kind: OperationFailureKind::Forbidden,
+        },
+    );
+    assert!(state.room_list.locally_left_room_ids.contains(LEFT_ROOM));
+
+    reduce(
+        &mut state,
+        AppAction::DirectoryJoinFailed {
+            request_id: 33,
+            room_id_or_alias: LEFT_ALIAS.to_owned(),
+            via_servers: vec!["example.invalid".to_owned()],
+            kind: OperationFailureKind::Forbidden,
+        },
+    );
+    assert!(state.room_list.locally_left_room_ids.contains(LEFT_ROOM));
+
+    reduce(&mut state, directory_join_requested(34));
+    reduce(
+        &mut state,
+        AppAction::DirectoryJoinSucceeded {
+            request_id: 35,
+            room_id: LEFT_ROOM.to_owned(),
+        },
+    );
+    assert!(
+        state.room_list.locally_left_room_ids.contains(LEFT_ROOM),
+        "a stale completion must not resurrect the room"
     );
 }
 
