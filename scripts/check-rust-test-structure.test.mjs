@@ -37,6 +37,8 @@ import {
   checkCoreThreadsReliableRelays,
   checkCoreTimelineUnsubscribeCleanupOrder,
   checkCoreTimelinePaginationScheduler,
+  checkCoreTimelineRetryQueueOrder,
+  checkCoreTimelineOutboundState,
   checkCoreTimelineSendSupervision,
   checkCoreTimelineThreadReadReceipts,
   checkSdkLibrarySourceManifest,
@@ -162,9 +164,18 @@ test("runs representative migrated timeline source-contract rules", () => {
   for (const check of [
     checkCoreTimelineUnsubscribeCleanupOrder,
     checkCoreTimelinePaginationScheduler,
+    checkCoreTimelineRetryQueueOrder,
+    checkCoreTimelineOutboundState,
     checkCoreTimelineSendSupervision,
     checkCoreTimelineThreadReadReceipts
   ]) assert.deepEqual(check(), []);
+});
+
+test("runs the retry queue order rule through the shared resume helper", () => {
+  // #1846: retry, cancel and the queued-behind retry share one resume helper, so the
+  // re-enable-before-unwedge order is asserted on the helper body every caller uses.
+  assert.deepEqual(checkCoreTimelineRetryQueueOrder(), []);
+  assert.deepEqual(checkCoreTimelineOutboundState(), []);
 });
 
 test("timeline source-contract failures stay closed-token and private-data-free", () => {

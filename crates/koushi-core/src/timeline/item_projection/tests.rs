@@ -1121,29 +1121,38 @@ fn timeline_item_structured_fields_match_private_legacy_semantics() {
 /// `Sending`; the actor's record of a recoverable failure beats that collapse.
 #[test]
 fn recorded_recoverable_failure_beats_the_sdk_not_sent_yet_collapse() {
-    let not_sent_yet = matrix_sdk_ui::timeline::EventSendState::NotSentYet { progress: None };
     let recoverable = TimelineSendState::NotSent {
         reason: TimelineSendFailureReason::Recoverable,
     };
+    // The SDK's `NotSentYet` reads as `Sending`; only the recorded recoverable
+    // failure replaces it.
     assert_eq!(
-        send_state_with_recorded(Some(&not_sent_yet), Some(&recoverable)),
+        send_state_with_recorded(Some(TimelineSendState::Sending), Some(&recoverable)),
         Some(recoverable.clone())
     );
-    // An attempt in flight and every explicit SDK terminal keep their own state.
     assert_eq!(
-        send_state_with_recorded(Some(&not_sent_yet), Some(&TimelineSendState::Sending)),
+        send_state_with_recorded(Some(TimelineSendState::Sending), None),
         Some(TimelineSendState::Sending)
     );
+    // In flight, wedged and every explicit SDK terminal keep their own state.
     assert_eq!(
-        send_state_with_recorded(Some(&not_sent_yet), None),
-        Some(TimelineSendState::Sending)
+        send_state_with_recorded(
+            Some(TimelineSendState::NotSent {
+                reason: TimelineSendFailureReason::Unrecoverable
+            }),
+            Some(&recoverable)
+        ),
+        Some(TimelineSendState::NotSent {
+            reason: TimelineSendFailureReason::Unrecoverable
+        })
     );
-    let sent = matrix_sdk_ui::timeline::EventSendState::Sent {
-        event_id: matrix_sdk::ruma::event_id!("$sent:test").to_owned(),
-    };
     assert_eq!(
-        send_state_with_recorded(Some(&sent), Some(&recoverable)),
+        send_state_with_recorded(Some(TimelineSendState::Sent), Some(&recoverable)),
         Some(TimelineSendState::Sent)
+    );
+    assert_eq!(
+        send_state_with_recorded(None, Some(&recoverable)),
+        Some(recoverable)
     );
 }
 

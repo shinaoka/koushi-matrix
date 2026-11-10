@@ -872,6 +872,10 @@ pub(super) struct TimelineActor {
     pub(super) send_completion: SharedSendCompletionCoordinator,
     /// SDK transaction id -> Rust-owned outbound send state.
     pub(super) send_statuses: HashMap<String, TimelineSendState>,
+    /// #1846: this room's send queue was disabled by a recoverable failure, so
+    /// echoes created while it stays disabled have never been attempted. Held
+    /// only here; no protocol or coordinator key carries it.
+    pub(super) recoverable_send_blocked: bool,
     /// SDK transaction id -> SDK send handle used for retry/cancel.
     pub(super) send_handles: HashMap<String, SendHandle>,
     /// Manager-owned sends retained even when the SDK local echo is omitted.
@@ -2083,6 +2087,7 @@ impl TimelineActor {
             next_batch_id: TimelineBatchId(0),
             send_completion: Arc::clone(&send_completion),
             send_statuses,
+            recoverable_send_blocked: false,
             send_handles,
             pending_send_projections,
             own_user_id,

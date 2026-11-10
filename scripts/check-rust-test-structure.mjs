@@ -2255,12 +2255,16 @@ export function checkCoreTimelineMediaAttentionReliableDelivery() {
 
 export function checkCoreTimelineRetryQueueOrder() {
   const rule = "core.timeline.retry_queue_order";
-  const body = timelineSection("outbound_send.rs", "async fn handle_retry_send", "async fn handle_cancel_send");
-  const enable = body?.indexOf("set_enabled(true)") ?? -1;
-  const unwedge = body?.indexOf("unwedge().await") ?? -1;
-  return enable >= 0 && unwedge >= 0 && enable < unwedge
-    ? []
-    : [sourceContractFailure(rule, "retry unwedges the SDK queue before re-enabling it")];
+  const retry = timelineSection("outbound_send.rs", "async fn handle_retry_send", "async fn handle_cancel_send");
+  // #1846: retry, cancel and the queued-behind case share one resume helper, so the
+  // order lives there and every caller inherits it.
+  const resume = timelineItemBody("outbound_send.rs", "pub(super) async fn resume_room_send_queue");
+  const enable = resume?.indexOf("set_enabled(true)") ?? -1;
+  const unwedge = resume?.indexOf("unwedge().await") ?? -1;
+  const failures = [];
+  if (!retry?.includes("resume_room_send_queue")) failures.push(sourceContractFailure(rule, "retry does not resume the room queue through the ordered helper"));
+  if (!(enable >= 0 && unwedge >= 0 && enable < unwedge)) failures.push(sourceContractFailure(rule, "retry unwedges the SDK queue before re-enabling it"));
+  return failures;
 }
 
 export function checkCoreTimelineCancelQueueOrder() {
@@ -2566,6 +2570,12 @@ export function checkCoreTimelineOutboundState() {
   if (!monitor?.includes("TimelineActorMessage::SendQueueLagged") || monitor.includes("not critical for send completion tracking")) failures.push(sourceContractFailure(rule, "send queue lag is not treated as terminally relevant"));
   const sdk = projection?.indexOf("timeline_send_state_from_sdk") ?? -1;
   const mirror = projection?.indexOf("send_statuses.get") ?? -1;
+  // #1846: the actor mirror may replace the SDK state for exactly one case — a
+  // recorded recoverable failure standing in for the SDK's `NotSentYet` collapse -
+  // and the helper must show that condition instead of preferring the mirror.
+  const precedence = timelineItemBody("item_projection.rs", "fn send_state_with_recorded");
+  if (!precedence?.includes("TimelineSendState::Sending")) failures.push(sourceContractFailure(rule, "recorded send state override is not scoped to the SDK collecting state"));
+  if (!precedence?.includes("TimelineSendFailureReason::Recoverable")) failures.push(sourceContractFailure(rule, "recorded send state override is not scoped to a recoverable failure"));
   if (sdk < 0 || mirror < 0 || sdk >= mirror) failures.push(sourceContractFailure(rule, "SDK send state does not win over the actor mirror"));
   if (!boundary?.includes("terminal_ingress.admit(handoff)") || boundary.includes(".await") || boundary.includes("executor::spawn")) failures.push(sourceContractFailure(rule, "terminal handoff is not synchronously admitted"));
   for (const marker of ["SendQueueUpdate", "RecvError::Lagged", "apply_send_completion_observation_loss_and_handoff"]) if (!observer?.includes(marker)) failures.push(sourceContractFailure(rule, `global send observer lacks ${marker}`));

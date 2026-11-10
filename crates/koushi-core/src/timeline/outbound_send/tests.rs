@@ -26,7 +26,7 @@ use koushi_protocol::event::{CoreEvent, TimelineEvent};
 use koushi_protocol::failure::{CoreFailure, TimelineFailureKind};
 #[cfg(any(test, feature = "test-hooks"))]
 use koushi_protocol::ids::AccountKey;
-use koushi_protocol::ids::{TimelineKey, TimelineKind};
+use koushi_protocol::ids::{RequestId, TimelineKey, TimelineKind};
 
 use crate::live_tail_freshness::LiveTailRefreshCoordinator;
 
@@ -63,9 +63,9 @@ use super::{
     apply_send_completion_observation_and_handoff,
     apply_send_completion_observation_loss_and_handoff, await_submission_admission,
     classify_send_queue_error, make_offline_reply_content, make_offline_thread_content,
-    media_upload_progress_identity, pending_send_item, queued_behind_recoverable_failure,
-    reply_source_from_raw, resume_room_send_queue, run_global_send_completion_observer,
-    send_retry_delay,
+    media_upload_progress_identity, pending_send_item, reply_source_from_raw,
+    resume_room_send_queue, run_global_send_completion_observer, send_retry_delay,
+    sending_items_blocked_by_recoverable_failure,
 };
 
 #[test]
@@ -334,7 +334,7 @@ fn recoverable_failure_fans_out_to_the_items_queued_behind_it() {
         ),
     ]);
 
-    let mut behind = queued_behind_recoverable_failure(&statuses, "failed");
+    let mut behind = sending_items_blocked_by_recoverable_failure(&statuses);
     behind.sort();
     assert_eq!(behind, vec!["behind".to_owned()]);
 
@@ -347,7 +347,7 @@ fn recoverable_failure_fans_out_to_the_items_queued_behind_it() {
             },
         );
     }
-    assert!(queued_behind_recoverable_failure(&statuses, "behind").is_empty());
+    assert!(sending_items_blocked_by_recoverable_failure(&statuses).is_empty());
 }
 
 /// #1846: the retry of an item that was never attempted has no wedged request to
@@ -4318,6 +4318,284 @@ async fn plain_thread_submissions_clear_persisted_drafts_and_settle_after_reopen
                 .composer_for_thread(room_id, "$other-root:test")
                 .draft,
             "other draft"
+        );
+    }
+}
+
+/// #1846: the actor's own event path — a recoverable `SendError`, then a message
+/// queued while the room queue stays disabled — must leave the later message
+/// retryable, and that `Resend` must resume the queue in FIFO order.
+#[tokio::test]
+async fn a_send_queued_after_a_recoverable_failure_is_retryable_in_the_actor() {
+    let mut fixture = SendQueueActorFixture::start().await;
+    fixture
+        .mount_send("head", "$queued-head:example.invalid")
+        .await;
+    fixture
+        .mount_send("behind", "$queued-behind:example.invalid")
+        .await;
+
+    let head = fixture.queue_echo("head").await;
+    fixture
+        .push(RoomSendQueueUpdate::NewLocalEvent(head.clone()))
+        .await;
+    fixture.push(send_error(&head, true)).await;
+
+    // The user sends again while the SDK keeps the room queue disabled.
+    let behind = fixture.queue_echo("behind").await;
+    fixture
+        .push(RoomSendQueueUpdate::NewLocalEvent(behind.clone()))
+        .await;
+
+    // `Resend` on the queued-behind item: refused while it still mirrored as
+    // `Sending`, accepted once it is recorded as not sent.
+    fixture.retry(&behind).await;
+    fixture
+        .await_sent(&[&head.transaction_id, &behind.transaction_id])
+        .await;
+    fixture.assert_retry_accepted();
+}
+
+/// #1846: the block ends with the room's send queue. An unrecoverable failure
+/// wedges the head instead, so a later message keeps the SDK's own state and its
+/// retry is refused exactly as before.
+#[tokio::test]
+async fn a_send_after_an_unrecoverable_failure_is_not_marked_not_sent() {
+    let mut fixture = SendQueueActorFixture::start().await;
+
+    let head = fixture.queue_echo("head").await;
+    fixture
+        .push(RoomSendQueueUpdate::NewLocalEvent(head.clone()))
+        .await;
+    fixture.push(send_error(&head, true)).await;
+    let behind = fixture.queue_echo("behind").await;
+    fixture
+        .push(RoomSendQueueUpdate::NewLocalEvent(behind.clone()))
+        .await;
+
+    // The room wedges: a recoverable block is not what stops sends any more.
+    fixture.push(send_error(&head, false)).await;
+    let later = fixture.queue_echo("later").await;
+    fixture
+        .push(RoomSendQueueUpdate::NewLocalEvent(later.clone()))
+        .await;
+
+    fixture.retry(&later).await;
+    fixture
+        .await_retry_refused(TimelineFailureKind::InvalidSendState)
+        .await;
+}
+
+fn send_error(
+    echo: &matrix_sdk::send_queue::LocalEcho,
+    is_recoverable: bool,
+) -> RoomSendQueueUpdate {
+    RoomSendQueueUpdate::SendError {
+        transaction_id: echo.transaction_id.clone(),
+        error: Arc::new(matrix_sdk::Error::Timeout),
+        is_recoverable,
+    }
+}
+
+/// A real SDK room queue feeding a real actor through its own mailbox.
+struct SendQueueActorFixture {
+    _server: MatrixMockServer,
+    room: matrix_sdk::Room,
+    handle: TimelineActorHandle,
+    actor_events: broadcast::Receiver<CoreEvent>,
+    queue_updates: broadcast::Receiver<RoomSendQueueUpdate>,
+    retry_request_id: Option<RequestId>,
+}
+
+impl SendQueueActorFixture {
+    async fn start() -> Self {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = matrix_sdk::ruma::room_id!("!queued-behind:example.invalid");
+        let room = server.sync_joined_room(&client, room_id).await;
+        server.mock_room_state_encryption().plain().mount().await;
+        let (initial_echoes, queue_updates) = room
+            .send_queue()
+            .subscribe()
+            .await
+            .expect("room queue subscription");
+        assert!(initial_echoes.is_empty());
+        // Nothing is attempted until the test asks for it.
+        room.send_queue().set_enabled(false);
+        let session = Arc::new(koushi_sdk::MatrixClientSession::from_client_for_testing(
+            client.clone(),
+            SessionInfo {
+                homeserver: server.server().uri(),
+                user_id: client.user_id().expect("logged-in client").to_string(),
+                device_id: client.device_id().expect("logged-in client").to_string(),
+                authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+            },
+        ));
+        let key = TimelineKey::room(
+            AccountKey(session.info.user_id.clone()),
+            room.room_id().as_str(),
+        );
+        let timeline = Arc::new(
+            matrix_sdk_ui::timeline::TimelineBuilder::new(&room)
+                .build()
+                .await
+                .expect("a room timeline"),
+        );
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let (action_tx, _action_rx) = mpsc::channel(32);
+        let (event_tx, actor_events) = broadcast::channel(64);
+        let (manager_tx, mut manager_rx) = mpsc::channel(8);
+        executor::spawn(async move { while manager_rx.recv().await.is_some() {} });
+        let (terminal_ingress, _terminal_rx) = TimelineSendTerminalIngress::channel();
+        let handle = super::super::actor::TimelineActor::spawn(
+            key,
+            timeline,
+            session,
+            fake_rid(9300),
+            false,
+            action_tx,
+            event_tx,
+            None,
+            Default::default(),
+            None,
+            LinkPreviewContext::default(),
+            AccountWorkScheduler::default(),
+            Arc::new(Mutex::new(ThreadRootProjectionService::default())),
+            koushi_state::TimelineThreadRootOrder::LatestReply,
+            false,
+            generations,
+            actor_generation,
+            None,
+            SharedSendCompletionCoordinator::default(),
+            terminal_ingress,
+            manager_tx,
+        )
+        .await;
+        Self {
+            _server: server,
+            room,
+            handle,
+            actor_events,
+            queue_updates,
+            retry_request_id: None,
+        }
+    }
+
+    async fn mount_send(&self, body: &str, event_id: &str) {
+        let event_id =
+            matrix_sdk::ruma::OwnedEventId::try_from(event_id).expect("a synthetic event id");
+        self._server
+            .mock_room_send()
+            .body_matches_partial_json(serde_json::json!({ "body": body, "msgtype": "m.text" }))
+            .ok(event_id)
+            .expect(1)
+            .mount()
+            .await;
+    }
+
+    async fn queue_echo(&mut self, body: &str) -> matrix_sdk::send_queue::LocalEcho {
+        use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+
+        let sent = self
+            .room
+            .send_queue()
+            .send(RoomMessageEventContent::text_plain(body).into())
+            .await
+            .expect("queue a send");
+        let transaction_id = sent.transaction_id().to_string();
+        loop {
+            match self.queue_updates.recv().await.expect("room queue update") {
+                RoomSendQueueUpdate::NewLocalEvent(echo)
+                    if echo.transaction_id.as_str() == transaction_id =>
+                {
+                    return echo;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    async fn push(&self, update: RoomSendQueueUpdate) {
+        self.handle
+            .tx
+            .send(TimelineActorMessage::SendQueueUpdate(update))
+            .await
+            .expect("actor accepts the queue update");
+    }
+
+    async fn retry(&mut self, echo: &matrix_sdk::send_queue::LocalEcho) {
+        let request_id = fake_rid(9301);
+        self.retry_request_id = Some(request_id);
+        self.handle
+            .tx
+            .send(TimelineActorMessage::RetrySend {
+                request_id,
+                transaction_id: echo.transaction_id.to_string(),
+            })
+            .await
+            .expect("actor accepts the retry");
+    }
+
+    /// The retry accepted the item: the resumed queue sends the requests in FIFO
+    /// order, oldest first, and the retry reports no failure of its own.
+    async fn await_sent(&mut self, expected: &[&matrix_sdk::ruma::OwnedTransactionId]) {
+        let updates = &mut self.queue_updates;
+        let sent = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut sent = Vec::new();
+            while sent.len() < expected.len() {
+                if let RoomSendQueueUpdate::SentEvent { transaction_id, .. } =
+                    updates.recv().await.expect("room queue update")
+                {
+                    sent.push(transaction_id);
+                }
+            }
+            sent
+        })
+        .await
+        .expect("the resumed queue sends every request");
+        assert_eq!(
+            sent,
+            expected.iter().copied().cloned().collect::<Vec<_>>(),
+            "the resumed queue sends the oldest request first"
+        );
+    }
+
+    fn assert_retry_accepted(&mut self) {
+        let request_id = self.retry_request_id.expect("a retry was sent");
+        while let Ok(event) = self.actor_events.try_recv() {
+            if let CoreEvent::OperationFailed {
+                request_id: failed,
+                failure,
+            } = event
+                && failed == request_id
+            {
+                panic!("the retry of a queued-behind send was refused: {failure:?}");
+            }
+        }
+    }
+
+    async fn await_retry_refused(&mut self, expected: TimelineFailureKind) {
+        let request_id = self.retry_request_id.expect("a retry was sent");
+        let events = &mut self.actor_events;
+        let failure = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let event = events.recv().await.expect("core event");
+                if let CoreEvent::OperationFailed {
+                    request_id: failed,
+                    failure,
+                } = event
+                    && failed == request_id
+                {
+                    return failure;
+                }
+            }
+        })
+        .await
+        .expect("the refused retry reports its failure");
+        assert_eq!(
+            failure,
+            CoreFailure::TimelineOperationFailed { kind: expected }
         );
     }
 }
