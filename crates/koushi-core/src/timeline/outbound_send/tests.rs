@@ -4350,19 +4350,24 @@ impl SendQueueActorFixture {
         .await;
     }
 
-    /// Binds the most recently registered row to a confirmed SDK transaction.
-    async fn bind_last_row(&mut self, echo: &matrix_sdk::send_queue::LocalEcho) {
+    /// Binds the most recently registered row to an SDK transaction, without delivering
+    /// the echo: the actor cannot have observed the row's own send state yet.
+    fn bind_last_row_to(&mut self, sdk_transaction_id: &str) {
         self.pending
             .last_mut()
             .expect("a registered row")
-            .bind(echo.transaction_id.to_string());
+            .bind(sdk_transaction_id.to_owned());
+    }
+
+    /// Binds the most recently registered row and delivers the SDK's local echo for it.
+    async fn bind_last_row(&mut self, echo: &matrix_sdk::send_queue::LocalEcho) {
+        self.bind_last_row_to(echo.transaction_id.as_str());
         // The republish after the binding is what makes the derived state apply.
         self.push(RoomSendQueueUpdate::NewLocalEvent(echo.clone()))
             .await;
     }
 
-    /// Queues a real send, registers the manager-owned row a composer send would
-    /// show, and waits until the actor has recorded the SDK's local echo for it.
+    /// Queues a real send and returns the SDK's local echo for it.
     async fn queue_echo(&mut self, body: &str) -> matrix_sdk::send_queue::LocalEcho {
         use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 
@@ -4385,6 +4390,8 @@ impl SendQueueActorFixture {
         }
     }
 
+    /// Queues a real send, registers the manager-owned row a composer send would show,
+    /// and waits until the actor has published that row.
     async fn queue_row(&mut self, body: &str) -> matrix_sdk::send_queue::LocalEcho {
         let echo = self.queue_echo(body).await;
         let transaction_id = echo.transaction_id.to_string();
@@ -4608,8 +4615,10 @@ fn record_row_states(event: CoreEvent, rows: &mut HashMap<String, TimelineSendSt
     };
     let diffs = match event {
         CoreEvent::Timeline(TimelineEvent::ItemsUpdated { diffs, .. }) => diffs,
-        // A lag rebuild republishes the whole window under a recovery identity.
+        // A lag rebuild republishes the whole window under a recovery identity, so it
+        // replaces the cache instead of merging into it.
         CoreEvent::Timeline(TimelineEvent::InitialItems { items, .. }) => {
+            rows.clear();
             for item in &items {
                 record(item, rows);
             }
@@ -4761,6 +4770,40 @@ async fn an_unbound_row_is_not_derived_as_blocked_until_the_sdk_binds_it() {
             "a bound row behind the failure",
             is_not_sent,
         )
+        .await;
+}
+
+/// #1846: the SDK binds a composer row to a transaction id before this actor's monitor
+/// delivers its echo. In that window the row is not derivable — the send table has no
+/// entry for it, so `RetrySend` would answer `InvalidSendTarget` — and the row therefore
+/// keeps its normal state, so what it renders and what its commands do agree.
+#[tokio::test]
+async fn a_bound_row_is_not_derived_before_the_actor_observes_its_echo() {
+    let mut fixture = SendQueueActorFixture::start().await;
+
+    let head = fixture.queue_row("head").await;
+    fixture.fail(&head, true).await;
+    fixture
+        .await_row(&head.transaction_id, "the failed head", is_not_sent)
+        .await;
+
+    // The enqueue worker binds the row and the pending refresh lands before the send
+    // queue monitor's echo, so the table still holds only the failed head.
+    fixture.register_unbound_row("draft").await;
+    fixture.republish_rows().await;
+    let sdk_transaction_id = matrix_sdk::ruma::OwnedTransactionId::from("bound-without-echo");
+    fixture.bind_last_row_to(sdk_transaction_id.as_str());
+    fixture.republish_rows().await;
+    fixture
+        .await_row(
+            &sdk_transaction_id,
+            "a bound row without its echo",
+            is_sending,
+        )
+        .await;
+    fixture.retry_transaction(sdk_transaction_id.as_str()).await;
+    fixture
+        .await_retry_refused(TimelineFailureKind::InvalidSendTarget)
         .await;
 }
 

@@ -2571,14 +2571,14 @@ export function checkCoreTimelineOutboundState() {
   if (!monitor?.includes("TimelineActorMessage::SendQueueLagged") || monitor.includes("not critical for send completion tracking")) failures.push(sourceContractFailure(rule, "send queue lag is not treated as terminally relevant"));
   const sdk = projection?.indexOf("timeline_send_state_from_sdk") ?? -1;
   const derived = projection?.indexOf("send_state_with_recoverable_block") ?? -1;
-  // #1846: the actor mirror may replace the SDK state for exactly one case — a room
-  // that still holds a recoverable failure, where the SDK's `NotSentYet` collapse
-  // would read as sending. The SDK state stays the base and the record is only its
-  // fallback; the single derivation must stay scoped to that pair.
+  // #1846: one decision (`resolve_send_state`) answers both "does the row show Resend"
+  // and "is RetrySend accepted". It may only turn the SDK's `NotSentYet` collapse into
+  // not-sent for a room that still holds a recoverable failure; the SDK state stays the
+  // base and the record is only its fallback.
   const recordFallback = timelineItemBody("item_projection.rs", "fn send_state_with_recoverable_block");
   const record = recordFallback?.indexOf("send_statuses.get") ?? -1;
   const fallback = recordFallback?.indexOf(".or_else") ?? -1;
-  const precedence = timelineItemBody("item_projection.rs", "fn derive_blocked_send_state");
+  const precedence = timelineItemBody("item_projection.rs", "fn resolve_send_state");
   if (!precedence?.includes("TimelineSendState::Sending")) failures.push(sourceContractFailure(rule, "recorded send state override is not scoped to the SDK collecting state"));
   if (!precedence?.includes("TimelineSendFailureReason::Recoverable")) failures.push(sourceContractFailure(rule, "recorded send state override is not scoped to a recoverable failure"));
   if (sdk < 0 || derived < 0 || sdk >= derived) failures.push(sourceContractFailure(rule, "SDK send state does not win over the actor mirror"));

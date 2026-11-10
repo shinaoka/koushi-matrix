@@ -1126,11 +1126,12 @@ impl TimelineActor {
             .collect::<Vec<_>>();
         let mut diffs = Vec::new();
         for (transaction_id, state) in states {
-            let state = super::item_projection::derive_blocked_send_state(
-                state,
+            let state = super::item_projection::resolve_send_state(
                 Some(transaction_id.as_str()),
+                Some(state),
                 &self.send_statuses,
-            );
+            )
+            .expect("a recorded state resolves to itself");
             diffs.extend(self.display_projection.update_send_state(
                 &transaction_id,
                 state,
@@ -1184,13 +1185,11 @@ impl TimelineActor {
                 // #1846: a pending row queued behind a recoverable failure was never
                 // attempted, so it is not sending. Derived here from the send table so
                 // the row resolves itself once the failure is retried, sent or cancelled.
-                item.send_state = item.send_state.take().map(|state| {
-                    super::item_projection::derive_blocked_send_state(
-                        state,
-                        projection.sdk_transaction_id.as_deref(),
-                        &self.send_statuses,
-                    )
-                });
+                item.send_state = super::item_projection::resolve_send_state(
+                    projection.sdk_transaction_id.as_deref(),
+                    item.send_state.take(),
+                    &self.send_statuses,
+                );
                 item
             })
             .collect::<Vec<_>>();

@@ -70,7 +70,7 @@ use super::{
     message_projection_from_msgtype, msgtype_carries_editable_caption,
     project_local_megolm_rotation_reason, raw_event_reply_quote_media, reaction_groups_from_sdk,
     reply_quote_from_message_projection, reply_quote_from_timeline_item,
-    reset_loading_link_previews_to_pending, room_name_notice_projection,
+    reset_loading_link_previews_to_pending, resolve_send_state, room_name_notice_projection,
     send_state_with_recoverable_block, state_event_notice_body, state_event_notice_projection,
     timeline_item_can_edit, timeline_item_can_react, timeline_item_can_redact,
     timeline_item_should_be_hidden, validate_cancel_send, validate_redact_reaction,
@@ -1126,7 +1126,10 @@ fn a_request_queued_behind_a_recoverable_failure_projects_as_not_sent() {
     let recoverable = TimelineSendState::NotSent {
         reason: TimelineSendFailureReason::Recoverable,
     };
-    let queued = HashMap::from([("head".to_owned(), recoverable.clone())]);
+    let queued = HashMap::from([
+        ("head".to_owned(), recoverable.clone()),
+        ("behind".to_owned(), TimelineSendState::Sending),
+    ]);
     assert_eq!(
         send_state_with_recoverable_block(
             Some(TimelineSendState::Sending),
@@ -1135,6 +1138,22 @@ fn a_request_queued_behind_a_recoverable_failure_projects_as_not_sent() {
         ),
         Some(recoverable.clone())
     );
+    // A row the actor has not observed yet has no entry of its own: nothing in the table
+    // proves it was queued behind the failure, and `RetrySend` would answer
+    // `InvalidSendTarget`, so it keeps its normal state.
+    let unobserved = HashMap::from([("head".to_owned(), recoverable.clone())]);
+    assert_eq!(
+        send_state_with_recoverable_block(
+            Some(TimelineSendState::Sending),
+            Some("behind"),
+            &unobserved
+        ),
+        Some(TimelineSendState::Sending)
+    );
+    assert!(!blocked_behind_recoverable_failure(
+        Some("behind"),
+        &unobserved
+    ));
     // The failed request itself keeps its own state, never "blocked behind itself".
     assert_eq!(
         send_state_with_recoverable_block(Some(TimelineSendState::Sending), Some("head"), &queued),
@@ -1196,6 +1215,78 @@ fn a_request_queued_behind_a_recoverable_failure_projects_as_not_sent() {
         send_state_with_recoverable_block(None, Some("behind"), &recorded_behind),
         Some(recoverable)
     );
+}
+
+/// #1846: the invariant, both ways. A row shows `Resend` exactly when `RetrySend` is
+/// accepted, for every row state and every room table — the projection, the pending row,
+/// the coordinator's retry lookup and the guard all read this one decision.
+#[test]
+fn a_rendered_resend_and_retry_acceptance_always_agree() {
+    let recoverable = TimelineSendState::NotSent {
+        reason: TimelineSendFailureReason::Recoverable,
+    };
+    let wedged = TimelineSendState::NotSent {
+        reason: TimelineSendFailureReason::Unrecoverable,
+    };
+    let mut tables = vec![HashMap::new()];
+    for predecessor in [
+        TimelineSendState::Sending,
+        recoverable.clone(),
+        wedged.clone(),
+        TimelineSendState::Sent,
+        TimelineSendState::Cancelled,
+    ] {
+        for item in [
+            TimelineSendState::Sending,
+            recoverable.clone(),
+            wedged.clone(),
+            TimelineSendState::Sent,
+            TimelineSendState::Cancelled,
+        ] {
+            // The row's own record is present (the actor observed its echo) or absent
+            // (the SDK bound it but the echo has not arrived).
+            tables.push(HashMap::from([("head".to_owned(), predecessor.clone())]));
+            tables.push(HashMap::from([
+                ("head".to_owned(), predecessor.clone()),
+                ("item".to_owned(), item.clone()),
+            ]));
+        }
+    }
+
+    for table in &tables {
+        let observed = table.get("item").cloned();
+        // What the SDK and the actor together report for the row: its own record when
+        // the actor has one, otherwise the SDK's "not attempted yet".
+        let report = observed.clone().unwrap_or(TimelineSendState::Sending);
+        let accepted = validate_retry_send("item", table).is_ok();
+
+        // The record-driven surfaces: the pending row and the coordinator's retry lookup.
+        // An unobserved pending row still carries its own base state (`Sending`).
+        let pending = resolve_send_state(Some("item"), Some(report.clone()), table);
+        assert_eq!(
+            matches!(pending, Some(TimelineSendState::NotSent { .. })),
+            accepted,
+            "pending row {pending:?} vs acceptance {accepted} for {table:?}"
+        );
+        // The canonical row reports the same answer through the same decision.
+        let canonical = send_state_with_recoverable_block(Some(report), Some("item"), table);
+        assert_eq!(
+            canonical, pending,
+            "canonical row {canonical:?} vs pending row {pending:?} for {table:?}"
+        );
+        assert_eq!(
+            matches!(canonical, Some(TimelineSendState::NotSent { .. })),
+            accepted,
+            "canonical row {canonical:?} vs acceptance {accepted} for {table:?}"
+        );
+
+        if observed.is_none() {
+            // Nothing has been observed for this row: it renders sending and the command
+            // reports an unknown target instead of accepting it.
+            assert_eq!(canonical, Some(TimelineSendState::Sending));
+            assert!(!accepted);
+        }
+    }
 }
 
 #[test]
