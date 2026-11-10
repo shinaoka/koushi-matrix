@@ -3349,7 +3349,7 @@ dependencies = [
 
 [[package]]
 name = "koushi-desktop"
-version = "0.34.1"
+version = "0.34.2"
 dependencies = [
  "dirs 6.0.0",
  "gtk",
