@@ -83,6 +83,14 @@ export function uiNumberFormat(options: Intl.NumberFormatOptions = {}): Intl.Num
   return cachedNumberFormat(uiFormatLocale(), options);
 }
 
+/**
+ * A red unread badge, capped at `99+` (#1827, #1857). The full count belongs in
+ * the badge's `title` and `aria-label`, not in the digits on screen.
+ */
+export function formatCappedUnread(count: number): string {
+  return count > 99 ? "99+" : uiNumberFormat().format(count);
+}
+
 export function clearIntlFormatCache(): void {
   dateTimeFormats.clear();
   listFormats.clear();

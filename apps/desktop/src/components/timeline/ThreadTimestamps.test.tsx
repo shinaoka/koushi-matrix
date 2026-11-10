@@ -155,4 +155,18 @@ describe("thread unread badge", () => {
     const { container } = renderRoot();
     expect(container.querySelector(".thread-summary-unread-badge")).toBeNull();
   });
+
+  it("caps the badge at 99+ and keeps the full count in the labels (#1857)", () => {
+    const { container } = renderRoot({ unread: 104 });
+    const chip = container.querySelector<HTMLButtonElement>(".thread-summary-chip")!;
+    const badge = chip.querySelector(".thread-summary-unread-badge")!;
+    expect(badge.textContent).toBe("99+");
+    expect(badge.getAttribute("title")).toContain("104");
+    expect(chip.getAttribute("aria-label")).toContain("104");
+  });
+
+  it("shows 99 itself rather than the cap", () => {
+    const { container } = renderRoot({ unread: 99 });
+    expect(container.querySelector(".thread-summary-unread-badge")?.textContent).toBe("99");
+  });
 });

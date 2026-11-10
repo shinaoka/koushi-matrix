@@ -94,7 +94,11 @@ import {
   renderPlainTextBody,
   type OpenMatrixTargetHandler
 } from "./TimelineMessageBody";
-import { uiDateTimeFormat, uiListFormat, uiNumberFormat } from "../../domain/intlFormatCache";
+import {
+  formatCappedUnread,
+  uiDateTimeFormat,
+  uiListFormat
+} from "../../domain/intlFormatCache";
 
 export type TimelineThreadAttention = {
   rootEventId: string;
@@ -1352,7 +1356,7 @@ export function TimelineItemRow({
               </span>
               {threadUnreadCount > 0 ? (
                 <span className="thread-summary-unread-badge" aria-hidden="true" title={threadNotificationsText}>
-                  {uiNumberFormat().format(threadUnreadCount)}
+                  {formatCappedUnread(threadUnreadCount)}
                 </span>
               ) : null}
             </button>
